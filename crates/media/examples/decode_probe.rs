@@ -18,13 +18,17 @@ fn main() {
 #[cfg(feature = "decode")]
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: decode_probe <path> [seek_ms] [native|rgba] [sw]");
+    let path = args
+        .next()
+        .expect("usage: decode_probe <path> [seek_ms] [native|rgba] [sw]");
     let seek_ms: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(12_500);
     let rest: Vec<String> = args.collect();
     let native = rest.iter().any(|a| a == "native");
     let software = rest.iter().any(|a| a == "sw");
 
-    tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
 
     println!("--- registry ---");
     for d in media::gst_backend::decoders_for("video/x-h264") {
@@ -39,7 +43,10 @@ fn main() {
         config = config.software_only();
     }
     println!("\n--- config ---");
-    println!("  acceptance {:?}, policy {:?}", config.acceptance, config.hw_policy);
+    println!(
+        "  acceptance {:?}, policy {:?}",
+        config.acceptance, config.hw_policy
+    );
 
     let mut engine = media::MediaEngine::with_config(config);
     println!("  real decode: {}", engine.is_real_decode());
@@ -50,14 +57,21 @@ fn main() {
     let elapsed = started.elapsed();
 
     println!("\n--- result ---");
-    println!("  seek to {seek_ms}ms: {} in {:?}", if ok { "frame" } else { "NO FRAME" }, elapsed);
+    println!(
+        "  seek to {seek_ms}ms: {} in {:?}",
+        if ok { "frame" } else { "NO FRAME" },
+        elapsed
+    );
     println!("  decoder: {}", engine.hw_report().describe());
     println!("  duration: {:?}ms", engine.duration_ms());
     match engine.latest() {
         Some(f) => {
             println!("  frame: {}x{} pts={}ms", f.width, f.height, f.pts_ms);
             println!("  payload: {:?}", f.payload);
-            println!("  drift from request: {}ms", f.pts_ms as i64 - seek_ms as i64);
+            println!(
+                "  drift from request: {}ms",
+                f.pts_ms as i64 - seek_ms as i64
+            );
         }
         None => println!("  frame: none"),
     }

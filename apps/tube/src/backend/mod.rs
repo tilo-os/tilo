@@ -5,17 +5,16 @@
 //! * **offline** (the default build): the bundled [`crate::sample`] catalogue.
 //!   The `--shots` renderer and every test run here — no network, fully
 //!   hermetic, deterministic screenshots.
-//! * **live** (`--features live`): real YouTube data via the pure-Rust
-//!   [`rustypipe`](https://docs.rs/rustypipe) InnerTube client, with PoTokens
+//! * **live** (`--features live`): real `YouTube` data via the pure-Rust
+//!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client, with `PoTokens`
 //!   minted by a swappable [`potoken`] provider (`rustypipe-botguard` by
 //!   default). This pulls in `tokio` + a network stack, so it is *off* by
 //!   default and never compiled into the hermetic shots path.
 //!
 //! Both worlds implement the same [`YtBackend`] trait, so the rest of the app
 //! (the fetch worker in [`crate::api`]) is written once against the trait and
-//! the build feature picks the implementation. This is the clean seam the
-//! research brief asks for: rustypipe is real but gated, the offline sample is
-//! the default, and PoToken is a module you can swap.
+//! the build feature picks the implementation: rustypipe is real but gated,
+//! the offline sample is the default, and `PoToken` is a module you can swap.
 //!
 //! ## What lives where
 //!
@@ -24,21 +23,19 @@
 //! | data-source trait  | [`YtBackend`]                       |
 //! | offline impl       | [`offline::OfflineBackend`]         |
 //! | live impl (gated)  | `live::RustyPipeBackend` (`live`)   |
-//! | PoToken seam       | [`potoken::PoTokenProvider`]        |
+//! | `PoToken` seam       | [`potoken::PoTokenProvider`]        |
 //! | request/result DTO | [`Query`], [`BackendResult`]        |
 //!
 //! Recommendations model (Home): the trait exposes the three no-auth signals
-//! NewPipe / Piped use — [`YtBackend::subscription_feed`] (fan-out of latest
+//! `NewPipe` / Piped use — [`YtBackend::subscription_feed`] (fan-out of latest
 //! uploads across subscribed channels), [`YtBackend::trending`], and
 //! [`YtBackend::related`] (per-video "up next"). See [`crate::recommend`].
 
-pub mod mp4;
 pub mod offline;
 pub mod potoken;
 /// Fully-rangeable stream resolution through public Invidious `local=true`
 /// proxies — the reliable, seekable playback URL for the media engine.
 pub mod proxy;
-pub mod stream;
 
 #[cfg(feature = "live")]
 pub mod live;
@@ -47,11 +44,6 @@ pub mod live;
 /// behind `live` alongside the rustypipe fallback.
 #[cfg(feature = "live")]
 pub mod ytdlp;
-
-/// GStreamer decode/playback (VP9 / AV1 / H.264 + audio, adaptive). Gated
-/// behind `media`.
-#[cfg(feature = "media")]
-pub mod gst_playback;
 
 use crate::model::{Channel, Comment, Playlist, Video};
 
@@ -91,7 +83,10 @@ pub enum Query {
 pub enum BackendResult {
     Videos(Vec<Video>),
     Video(Box<Video>),
-    Channel { channel: Box<Channel>, uploads: Vec<Video> },
+    Channel {
+        channel: Box<Channel>,
+        uploads: Vec<Video>,
+    },
 }
 
 /// Error surfaced by a backend. Stringly-typed on purpose — the UI only ever
@@ -109,53 +104,11 @@ impl std::error::Error for BackendError {}
 
 pub type BackendOutcome = Result<BackendResult, BackendError>;
 
-/// A resolved, directly-playable video stream: enough of a real googlevideo
-/// media URL (plus its container shape) to download and decode from.
+/// A resolved, directly-playable media URL for the `GStreamer` decode path.
 ///
-/// Produced by [`YtBackend::resolve_video_stream`]; consumed by
-/// [`crate::backend::stream::fetch_h264`]. Kept toolkit-free so it can cross the
-/// worker boundary.
-#[derive(Clone, Debug)]
-pub struct StreamHandle {
-    /// Direct media URL (signature/nsig already applied by the backend).
-    pub url: String,
-    /// User-Agent the media request must carry. googlevideo validates the UA
-    /// against the client that minted the URL (iOS/TV), returning 403 on a
-    /// mismatch, so the backend records the exact UA to replay here.
-    pub user_agent: String,
-    /// YouTube format id (itag) — e.g. 160 = 144p H.264, 18 = 360p muxed.
-    pub itag: u32,
-    /// Full MIME string, e.g. `video/mp4; codecs="avc1.4d400c"`.
-    pub mime: String,
-    /// True when the stream is H.264 (avc1) — the only codec Tube can decode.
-    pub is_avc: bool,
-    /// True when the container is MP4 (ISO-BMFF).
-    pub is_mp4: bool,
-    /// True for an adaptive, video-only DASH stream (safe to walk its `mdat` as
-    /// a pure run of video NAL units). False for a progressive/muxed stream.
-    pub adaptive: bool,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u8,
-    /// YouTube quality label, e.g. "144p".
-    pub quality: String,
-    /// Total content length in bytes, if the backend reported one.
-    pub content_length: Option<u64>,
-    /// DASH init-segment byte range (`ftyp`+`moov`), if present.
-    pub init_range: Option<(u64, u64)>,
-    /// DASH index (`sidx`) byte range, if present. The first media fragment
-    /// begins just after `index_range.1`.
-    pub index_range: Option<(u64, u64)>,
-}
-
-/// A resolved, directly-playable media URL for the GStreamer decode path.
-///
-/// Unlike [`StreamHandle`] (a byte-range H.264 stream for the openh264 demux
-/// path), this is a whole playable URL handed straight to GStreamer's
-/// `uridecodebin`, which negotiates the demuxer + decoder itself — so it works
-/// for VP9 / AV1 / H.264 and, when the format is muxed, audio too. Produced by
-/// [`YtBackend::resolve_playback_source`]; consumed by
-/// [`crate::backend::gst_playback`].
+/// This whole playable URL is handed to the shared [`media::MediaEngine`],
+/// which negotiates the container and codec and routes audio through the same
+/// playback backend as the system video player and editor preview.
 #[derive(Clone, Debug)]
 pub struct PlaybackSource {
     /// Directly-playable media URL (progressive muxed when available, else the
@@ -170,13 +123,13 @@ pub struct PlaybackSource {
     pub width: u32,
     pub height: u32,
     pub fps: u8,
-    /// YouTube quality label, e.g. "360p".
+    /// `YouTube` quality label, e.g. "360p".
     pub quality: String,
 }
 
 /// The data-source seam. One trait, two worlds (offline sample / live
 /// rustypipe). Methods are intentionally coarse-grained — one per screen need
-/// — so a backend can batch the underlying InnerTube calls however it likes.
+/// — so a backend can batch the underlying `InnerTube` calls however it likes.
 ///
 /// Implementations must be `Send + Sync` because the live backend is driven
 /// from the fetch worker thread.
@@ -208,7 +161,7 @@ pub trait YtBackend: Send + Sync {
     }
 
     /// Top comments for a video. The default returns none — only a backend that
-    /// can reach YouTube's `next`/comments continuation (the live rustypipe one)
+    /// can reach `YouTube`'s `next`/comments continuation (the live rustypipe one)
     /// produces real comments; the offline sample carries its own, and the
     /// yt-dlp path leaves comments to rustypipe (yt-dlp's own comment extraction
     /// is slow and unreliable). The UI degrades to "no comments" when empty.
@@ -217,7 +170,7 @@ pub trait YtBackend: Send + Sync {
     }
 
     /// Popular recent videos matching `query`, used to compose a real "popular"
-    /// home feed when YouTube's dedicated trending browse is unavailable. The
+    /// home feed when `YouTube`'s dedicated trending browse is unavailable. The
     /// default is a plain [`search`](YtBackend::search); a live backend can
     /// override it with a view-count-sorted, recent-upload filter so the feed is
     /// genuinely "popular" rather than arbitrary.
@@ -225,21 +178,14 @@ pub trait YtBackend: Send + Sync {
         self.search(query)
     }
 
-    /// Resolve a real, directly-playable video stream for `id`.
-    ///
-    /// The default errors — only a backend that can reach YouTube's player
-    /// endpoint (the live one) can produce a stream. The UI degrades to a poster
-    /// when this fails.
-    fn resolve_video_stream(&self, _id: &str) -> Result<StreamHandle, BackendError> {
-        Err(BackendError("this backend cannot resolve video streams".into()))
-    }
-
-    /// Resolve a whole directly-playable media URL for `id`, for the GStreamer
+    /// Resolve a whole directly-playable media URL for `id`, for the `GStreamer`
     /// decode path (VP9 / AV1 / H.264 + audio). The default errors — only a
     /// backend that can reach a real extractor (yt-dlp) produces one. The UI
     /// degrades to the poster when this fails.
     fn resolve_playback_source(&self, _id: &str) -> Result<PlaybackSource, BackendError> {
-        Err(BackendError("this backend cannot resolve a playback source".into()))
+        Err(BackendError(
+            "this backend cannot resolve a playback source".into(),
+        ))
     }
 
     /// Fan-out the latest uploads across `channel_ids` (the subscriptions
@@ -289,6 +235,9 @@ mod tests {
     #[test]
     fn run_dispatches_trending() {
         let b = default_backend();
-        assert!(matches!(b.run(Query::Trending), Ok(BackendResult::Videos(_))));
+        assert!(matches!(
+            b.run(Query::Trending),
+            Ok(BackendResult::Videos(_))
+        ));
     }
 }

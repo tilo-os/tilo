@@ -34,7 +34,6 @@
 set -euo pipefail
 
 WT=$(cd "$(dirname "$0")/../../.." && pwd)
-SCCACHE_DIR=${SCCACHE_DIR:-/var/home/quinten/Development/quickdesktop/.claude/qos-sccache}
 RUNTIME_VERSION=${RUNTIME_VERSION:-thin-1}
 BUNDLE_ROOT="$WT/target/thin-bundle"
 BUNDLE_DIR="$BUNDLE_ROOT/qos-runtime/$RUNTIME_VERSION"
@@ -43,7 +42,13 @@ IDENTITY_JSON="$BUNDLE_ROOT/identity.json"
 run() { distrobox enter my-distrobox -- bash -c "cd '$WT' && $*"; }
 hr() { printf '\n─── %s ───\n' "$*"; }
 size() { stat -c%s "$1"; }
-env_prefix="CARGO_TARGET_DIR='$WT/target' SCCACHE_DIR='$SCCACHE_DIR' RUSTC_WRAPPER=sccache"
+# No CARGO_TARGET_DIR, SCCACHE_DIR or RUSTC_WRAPPER here: `run` already cd's to
+# $WT, so cargo's default target dir is the one this used to name, and the cargo
+# shim on PATH picks the sccache server belonging to the container's namespace.
+# Naming the target dir is not free — sccache hashes CARGO_TARGET_DIR into its
+# Rust cache key, so setting it even to the path cargo would have chosen anyway
+# turns every compilation into a private namespace nothing else can hit.
+env_prefix=""
 
 hr "1. baseline: static release (whole SDK baked into each app)"
 run "$env_prefix cargo build --release -p hello -p notes-cli >/dev/null 2>&1"
@@ -55,8 +60,23 @@ printf '  qos-hello (static): %s bytes\n' "$HELLO_STATIC"
 printf '  notes     (static): %s bytes\n' "$NOTES_STATIC"
 
 hr "2. thin: runtime-dylib + prefer-dynamic (--profile thin-app, --features thin)"
-run "$env_prefix RUSTFLAGS='-C prefer-dynamic' \
-     cargo build --profile thin-app -p hello -p notes-cli --features thin 2>&1 | tail -2"
+# `cargo rustc -- <flag>`, not `RUSTFLAGS=<flag> cargo build`. RUSTFLAGS
+# REPLACES build.rustflags from .cargo/config.toml, so the env-var form
+# silently drops target-cpu=x86-64-v3 and every link-time hardening flag
+# -- full RELRO, BIND_NOW, noexecstack and the GNU_PROPERTY shadow-stack
+# mark -- from the very binaries this script exists to show off. The
+# `--` form is additive, so the config list survives. Verified three
+# ways on a one-file crate whose build.rustflags asks for `-z shstk`:
+# plain build keeps the mark, RUSTFLAGS= loses it, `cargo rustc --`
+# keeps it.
+#
+# One invocation per binary, because `cargo rustc` takes a single target.
+run "$env_prefix cargo rustc --profile thin-app -p runtime-dylib \
+     -- -C prefer-dynamic 2>&1 | tail -2"
+run "$env_prefix cargo rustc --profile thin-app -p hello --bin qos-hello --features thin \
+     -- -C prefer-dynamic 2>&1 | tail -2"
+run "$env_prefix cargo rustc --profile thin-app -p notes-cli --bin notes --features thin \
+     -- -C prefer-dynamic 2>&1 | tail -2"
 HELLO_THIN=$(size "$WT/target/thin-app/qos-hello")
 NOTES_THIN=$(size "$WT/target/thin-app/notes")
 LIBRT="$WT/target/thin-app/libruntime_dylib.so"

@@ -267,7 +267,9 @@ pub fn point_frame(
         ),
         None => (
             timeline_key(),
-            PresencePayload::Caret { pos: ticks(playhead) },
+            PresencePayload::Caret {
+                pos: ticks(playhead),
+            },
         ),
     }
 }
@@ -282,7 +284,10 @@ pub fn range_frame(selected: Option<(ClipId, f64, f64)>) -> (PresenceKey, Presen
     match selected {
         Some((id, start, end)) => (
             clip_key(id),
-            PresencePayload::Selection { start: ticks(start), end: ticks(end) },
+            PresencePayload::Selection {
+                start: ticks(start),
+                end: ticks(end),
+            },
         ),
         None => (
             timeline_key(),
@@ -323,7 +328,10 @@ pub fn peer_playheads(presence: &PresenceCtx) -> Vec<PeerPlayhead> {
         .get(&key)
         .map(|list| {
             list.iter()
-                .map(|(user, pos)| PeerPlayhead { user: user.clone(), at: seconds(*pos) })
+                .map(|(user, pos)| PeerPlayhead {
+                    user: user.clone(),
+                    at: seconds(*pos),
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -695,12 +703,7 @@ mod tests {
     fn both_facets_get_published_across_successive_polls() {
         let clip = Uuid::new_v4();
         let local = LocalPresence::default();
-        let facets = || {
-            [
-                point_frame(None, 12.5),
-                range_frame(Some((clip, 2.0, 6.0))),
-            ]
-        };
+        let facets = || [point_frame(None, 12.5), range_frame(Some((clip, 2.0, 6.0)))];
 
         let first = local.next(facets()).expect("a first frame");
         let second = local.next(facets()).expect("a second frame");
@@ -734,10 +737,7 @@ mod tests {
         for frame in 0..8 {
             // A playhead moving every frame, and a selection that never does.
             let t = 1.0 + frame as f64 * 0.25;
-            let out = local.next([
-                point_frame(None, t),
-                range_frame(Some((clip, 2.0, 6.0))),
-            ]);
+            let out = local.next([point_frame(None, t), range_frame(Some((clip, 2.0, 6.0)))]);
             if out.map(|(k, _)| k) == Some(clip_key(clip)) {
                 saw_selection = true;
             }
@@ -909,7 +909,11 @@ mod tests {
                 Rect::new(40.0, 60.0, 42.0, 80.0)
             },
         );
-        assert_eq!(asked, vec![7], "the field is asked for the byte the peer sent");
+        assert_eq!(
+            asked,
+            vec![7],
+            "the field is asked for the byte the peer sent"
+        );
 
         let mut r = OffscreenRenderer::new(120, 120);
         let rgba = r.render(&scene, Color::BLACK);

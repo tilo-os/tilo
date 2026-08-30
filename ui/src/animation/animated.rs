@@ -1,14 +1,9 @@
 //! Unified animation primitives. Replaces ad-hoc Instant-based fields
 //! with a single `Animated<T: Lerp>` driver consumable by widgets.
-//!
-//! Foundation spec item #17. Existing widgets (which currently track their
-//! own `spawned_at`/`closing_at`/`wheel_anim_state`/`snap_anim` fields) are
-//! migrated in a follow-up — this module just ships the primitives + tests.
 
 use crate::color_compat::ColorCompat;
 use std::time::{Duration, Instant};
 
-/// Linear interpolation between two values.
 pub trait Lerp {
     fn lerp(self, other: Self, t: f32) -> Self;
 }
@@ -21,15 +16,15 @@ impl Lerp for f32 {
 
 impl Lerp for f64 {
     fn lerp(self, b: f64, t: f32) -> f64 {
-        self + (b - self) * t as f64
+        self + (b - self) * f64::from(t)
     }
 }
 
 impl Lerp for vello::peniko::Color {
     fn lerp(self, other: Self, t: f32) -> Self {
         let lerp_u8 = |a: u8, b: u8, t: f32| -> u8 {
-            let a = a as f32;
-            let b = b as f32;
+            let a = f32::from(a);
+            let b = f32::from(b);
             (a + (b - a) * t).round().clamp(0.0, 255.0) as u8
         };
         vello::peniko::Color::from_rgba8(
@@ -47,12 +42,12 @@ impl Lerp for vello::peniko::Color {
 #[derive(Clone, Copy, Debug)]
 pub enum Curve {
     Linear,
-    /// `1 - (1 - t)^3` — matches the existing widget pattern (e.g. tile_host).
+    /// `1 - (1 - t)^3`.
     EaseOut,
     /// Smoothstep: `t * t * (3 - 2t)`.
     EaseInOut,
-    /// Damped-oscillator unit-step response. The curve approaches `1.0` as
-    /// `t -> 1`; under-damped configurations briefly overshoot `1.0`.
+    /// Damped-oscillator unit-step response. Approaches `1.0` as `t -> 1`;
+    /// under-damped configurations briefly overshoot `1.0`.
     Spring {
         stiffness: f32,
         damping: f32,
@@ -61,11 +56,6 @@ pub enum Curve {
 }
 
 impl Curve {
-    /// Apply the curve to a normalized `0..1` input.
-    ///
-    /// `Linear`/`EaseOut`/`EaseInOut` clamp to `0..1`. `Spring` uses the
-    /// closed-form damped-oscillator solution for the unit step, which can
-    /// briefly exceed `1.0` for under-damped parameters.
     pub fn apply(&self, t: f32) -> f32 {
         match *self {
             Curve::Linear => t.clamp(0.0, 1.0),
@@ -86,11 +76,9 @@ impl Curve {
     }
 }
 
-/// Closed-form unit-step response of a damped harmonic oscillator at time `t`.
-///
-/// Solves `m * x'' + c * x' + k * x = k` with `x(0) = 0`, `x'(0) = 0`, so the
-/// position approaches `1.0` as `t -> infinity`. Time is in normalized
-/// progress units (matching the `0..1` duration ratio passed in).
+/// Solves `m * x'' + c * x' + k * x = k` with `x(0) = 0`, `x'(0) = 0`, so
+/// the position approaches `1.0` as `t -> infinity`. `t` is the `0..1`
+/// duration ratio.
 fn spring_unit_step(stiffness: f32, damping: f32, mass: f32, t: f32) -> f32 {
     let m = mass.max(1e-4);
     let k = stiffness.max(0.0);
@@ -134,12 +122,10 @@ fn spring_unit_step(stiffness: f32, damping: f32, mass: f32, t: f32) -> f32 {
     }
 }
 
-/// The shared ease-out-cubic (`1 - (1-t)^3`) as a plain `f64` function,
-/// for the many widget call sites whose surrounding math is `f64`.
 /// Delegates to [`Curve::EaseOut`] so there is exactly one home for the
 /// formula — retune it there and every fade/slide/spawn/snap follows.
 pub fn ease_out(t: f64) -> f64 {
-    Curve::EaseOut.apply(t as f32) as f64
+    f64::from(Curve::EaseOut.apply(t as f32))
 }
 
 /// A driver that interpolates `from -> to` over `duration` using `curve`,
@@ -155,8 +141,6 @@ pub struct Animated<T: Lerp + Copy> {
 }
 
 impl<T: Lerp + Copy> Animated<T> {
-    /// Create an animation that runs from `from` to `to` over `duration`,
-    /// starting now.
     pub fn new(from: T, to: T, duration: Duration, curve: Curve) -> Self {
         Self {
             from,
@@ -169,13 +153,7 @@ impl<T: Lerp + Copy> Animated<T> {
 
     /// Like `new`, but with an explicit start instant — useful for tests
     /// and for scheduling animations to begin in the future.
-    pub fn starting_at(
-        from: T,
-        to: T,
-        started: Instant,
-        duration: Duration,
-        curve: Curve,
-    ) -> Self {
+    pub fn starting_at(from: T, to: T, started: Instant, duration: Duration, curve: Curve) -> Self {
         Self {
             from,
             to,
@@ -185,8 +163,7 @@ impl<T: Lerp + Copy> Animated<T> {
         }
     }
 
-    /// Interpolated value at `now`. Clamps before/after the active window
-    /// to `from`/`to` respectively.
+    /// Clamps before/after the active window to `from`/`to` respectively.
     pub fn current(&self, now: Instant) -> T {
         let raw = self.raw_t(now);
         if raw <= 0.0 {
@@ -199,7 +176,6 @@ impl<T: Lerp + Copy> Animated<T> {
         self.from.lerp(self.to, eased)
     }
 
-    /// `true` once `duration` has fully elapsed since `started`.
     pub fn done(&self, now: Instant) -> bool {
         self.raw_t(now) >= 1.0
     }
@@ -235,22 +211,9 @@ impl<T: Lerp + Copy> Animated<T> {
     }
 }
 
-/// An interruptible open/close transition tracking a `0.0..=1.0`
-/// "openness". Everything the shell used to gate on a raw `bool`
-/// (palette visible, quick-settings open, modal shown) becomes a
-/// `Transition` so the surface animates in **and out** — and a
-/// mid-flight reversal retargets from the current value instead of
-/// snapping or restarting from 0.
-///
-/// This is the single primitive that fixes the two biggest motion
-/// smells at once:
-/// - **Exits pop.** Draw code keys on [`Self::is_visible`] (openness
-///   `> 0`) rather than the bool, so the panel keeps painting through
-///   its close curve and fades/scales out.
-/// - **Restart instead of retarget.** [`Self::set_open`] captures the
-///   current eased value and animates from *there*, scaling the
-///   duration by the remaining distance so a reversal near the end is
-///   quick and velocity-continuous.
+/// An interruptible open/close transition tracking a `0.0..=1.0` "openness"
+/// so a surface animates in **and out**, and a mid-flight reversal
+/// retargets from the current value instead of snapping to 0 first.
 #[derive(Clone, Copy, Debug)]
 pub struct Transition {
     anim: Animated<f32>,
@@ -258,13 +221,11 @@ pub struct Transition {
 }
 
 impl Transition {
-    /// A transition resting fully closed (openness 0).
     pub fn closed() -> Self {
         Self::at(0.0, false)
     }
 
-    /// A transition resting fully open (openness 1) — for surfaces that
-    /// boot already shown.
+    /// For surfaces that boot already shown.
     pub fn open() -> Self {
         Self::at(1.0, true)
     }
@@ -282,10 +243,9 @@ impl Transition {
         self.anim.current(now).clamp(0.0, 1.0)
     }
 
-    /// Whether the surface should be drawn at all — true while opening,
-    /// open, or closing (openness `> 0`). Draw code gates on this so the
-    /// exit animation is visible instead of the panel vanishing. A
-    /// resting closed transition (openness 0, not opening) is invisible.
+    /// True while opening, open, or closing (openness `> 0`) — draw code
+    /// gates on this, not the raw intent bool, so the exit curve paints
+    /// instead of the panel vanishing.
     pub fn is_visible(&self, now: Instant) -> bool {
         self.open || self.value(now) > f32::EPSILON
     }
@@ -301,11 +261,8 @@ impl Transition {
         !self.anim.done(now)
     }
 
-    /// Drive toward open (`true`) or closed (`false`). No-op when the
-    /// intent is unchanged AND the animation has settled, so repeated
-    /// calls each frame don't restart the curve. On a real change (or a
-    /// mid-flight reversal) it retargets from the current value, scaling
-    /// `duration` by the remaining distance for a continuous feel.
+    /// No-op when the intent is unchanged AND the animation has settled, so
+    /// repeated calls each frame don't restart the curve.
     pub fn set_open(&mut self, open: bool, duration: Duration, curve: Curve) {
         self.set_open_at(open, duration, curve, Instant::now());
     }
@@ -313,24 +270,14 @@ impl Transition {
     /// [`Self::set_open`] against a caller-supplied clock.
     ///
     /// Every other reader here — [`Self::value`], [`Self::is_visible`],
-    /// [`Self::is_animating`] — already takes `now`; `set_open` was the
-    /// one that reached for the clock itself. That asymmetry is not
-    /// only inconsistent, it is untestable: a test could start a
-    /// transition and ask whether it was still running, but the two
-    /// calls read the clock independently, so a scheduler stall longer
-    /// than the animation between them let it finish and the assertion
-    /// flip. Under a loaded parallel run that is a real stall, not a
-    /// hypothetical one, and it produced exactly that flake.
-    ///
-    /// Pinning both ends to one instant makes such a test a statement
-    /// about the animation rather than about the machine's load.
-    pub fn set_open_at(
-        &mut self,
-        open: bool,
-        duration: Duration,
-        curve: Curve,
-        now: Instant,
-    ) {
+    /// [`Self::is_animating`] — already takes `now`; `set_open` was the one
+    /// that reached for the clock itself. That asymmetry is untestable: a
+    /// test could start a transition and ask whether it was still running,
+    /// but the two calls read the clock independently, so a scheduler stall
+    /// longer than the animation between them let it finish and the
+    /// assertion flip. Pinning both ends to one instant makes such a test a
+    /// statement about the animation rather than about the machine's load.
+    pub fn set_open_at(&mut self, open: bool, duration: Duration, curve: Curve, now: Instant) {
         if open == self.open && self.anim.done(now) {
             return;
         }
@@ -340,9 +287,9 @@ impl Transition {
             self.open = open;
             return;
         }
-        // Scale the duration by how far we still have to travel so a
-        // reversal at 80% openness closes in ~80% of the exit time —
-        // velocity stays roughly continuous across the flip.
+        // Scale duration by remaining distance so a reversal at 80%
+        // openness closes in ~80% of the exit time — velocity stays
+        // roughly continuous across the flip.
         let remaining = (target - current).abs();
         let scaled = duration.mul_f32(remaining.clamp(0.05, 1.0));
         self.anim = Animated::starting_at(current, target, now, scaled, curve);
@@ -370,7 +317,10 @@ mod tests {
     #[test]
     fn ease_out_starts_fast_ends_slow() {
         let half = Curve::EaseOut.apply(0.5);
-        assert!(half > 0.5, "ease-out at midpoint should be past linear: {half}");
+        assert!(
+            half > 0.5,
+            "ease-out at midpoint should be past linear: {half}"
+        );
         assert!(Curve::EaseOut.apply(0.0).abs() < 1e-6);
         assert!((Curve::EaseOut.apply(1.0) - 1.0).abs() < 1e-6);
     }
@@ -442,18 +392,15 @@ mod tests {
     #[test]
     fn raw_t_is_unclamped() {
         let now = Instant::now();
-        let a = Animated::starting_at(
-            0.0_f32,
-            1.0,
-            now,
-            Duration::from_millis(100),
-            Curve::Linear,
-        );
+        let a = Animated::starting_at(0.0_f32, 1.0, now, Duration::from_millis(100), Curve::Linear);
         assert!((a.raw_t(now + Duration::from_millis(50)) - 0.5).abs() < 0.01);
         let over = a.raw_t(now + Duration::from_millis(300));
         assert!(over > 2.5 && over < 3.5, "raw_t should overshoot: {over}");
         let under = a.raw_t(now - Duration::from_millis(50));
-        assert!(under < -0.4 && under > -0.6, "raw_t should be negative: {under}");
+        assert!(
+            under < -0.4 && under > -0.6,
+            "raw_t should be negative: {under}"
+        );
     }
 
     #[test]
@@ -468,10 +415,8 @@ mod tests {
     #[test]
     fn color_lerp_interpolates_per_channel() {
         use vello::peniko::Color;
-        // UFCS: peniko::Color (AlphaColor<Srgb>) inherits its own
-        // 3-arg `lerp(other, t, HueDirection)` from the color crate.
-        // Disambiguate to our 2-arg `Lerp::lerp` so the test exercises
-        // the per-channel u8 interpolation, not the color-space lerp.
+        // UFCS: disambiguates from peniko's own 3-arg `lerp` so this
+        // exercises per-channel u8 interpolation, not the color-space lerp.
         let red = Color::from_rgba8(255, 0, 0, 255);
         let blue = Color::from_rgba8(0, 0, 255, 255);
         let mid = <Color as Lerp>::lerp(red, blue, 0.5);
@@ -497,7 +442,11 @@ mod tests {
             Curve::Linear,
         );
         let mid = a.current(now + Duration::from_millis(50));
-        assert!(mid.r() > 90 && mid.r() < 110, "mid R should be ~100: {}", mid.r());
+        assert!(
+            mid.r() > 90 && mid.r() < 110,
+            "mid R should be ~100: {}",
+            mid.r()
+        );
         assert!(mid.g() > 40 && mid.g() < 60);
         assert!(mid.b() > 20 && mid.b() < 30);
     }
@@ -524,16 +473,12 @@ mod tests {
     fn transition_opening_stays_visible_through_the_curve() {
         let mut t = Transition::closed();
         t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
-        // The moment it starts opening it is already visible (so the
-        // enter animation is drawn), and remains so once open.
         assert!(t.is_visible(Instant::now()));
         assert!(t.is_open());
     }
 
     #[test]
     fn transition_closing_stays_visible_until_settled() {
-        // Simulate: open, then close — while closing it must remain
-        // visible so the exit animation paints, then go invisible.
         let mut t = Transition::open();
         t.set_open(false, Duration::from_millis(80), Curve::EaseOut);
         let now = Instant::now();
@@ -541,7 +486,6 @@ mod tests {
             t.is_visible(now),
             "a closing surface must stay visible so its exit animates"
         );
-        // Far in the future it has settled closed and is no longer drawn.
         let later = now + Duration::from_millis(500);
         assert!(!t.is_visible(later));
         assert!((t.value(later) - 0.0).abs() < 1e-6);
@@ -549,14 +493,11 @@ mod tests {
 
     #[test]
     fn transition_reversal_retargets_from_current_value() {
-        // Open halfway, then reverse to close: the close must start from
-        // the partial value, not snap to 1 first.
         let mut t = Transition::closed();
         t.set_open(true, Duration::from_millis(1000), Curve::Linear);
-        // Can't advance wall-clock precisely in a unit test without
-        // sleeping, so assert the structural contract: after a reversal
-        // the intent flips and it's still visible (mid-flight, not
-        // popped to 0).
+        // Can't advance wall-clock precisely without sleeping, so assert the
+        // structural contract: after a reversal it's still visible
+        // (mid-flight, not popped to 0).
         t.set_open(false, Duration::from_millis(1000), Curve::Linear);
         assert!(!t.is_open());
         assert!(t.is_visible(Instant::now()));
@@ -566,7 +507,6 @@ mod tests {
     fn transition_repeated_same_intent_is_noop_once_settled() {
         let mut t = Transition::open();
         let before = t.value(Instant::now());
-        // Already open + settled → set_open(true) must not restart.
         t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
         let after = t.value(Instant::now());
         assert!((before - after).abs() < 1e-6);

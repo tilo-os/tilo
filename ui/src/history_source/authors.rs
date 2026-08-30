@@ -1,39 +1,19 @@
 //! Resolving an automerge actor id to the person behind it.
 //!
-//! `qdoc::history::VersionMeta` hands back an `actor_hex` — a raw hex string.
-//! On its own that is unreadable, and every row of an activity timeline built
-//! from it says the same nothing. This module is the join.
+//! `qdoc::history::VersionMeta` hands back an `actor_hex` — a raw hex string,
+//! unreadable on its own. This module is the join.
 //!
-//! # Where an actor id comes from in qOS
+//! Three shapes show up in a real document: a raw 32-byte public key (the
+//! only cryptographically meaningful one, joining to a
+//! `collab_types::Identity`); a self-declared handle
+//! (`ActorId::from(app_id.as_bytes())`, the same key `ui::presence::user_color`
+//! and the per-character `author` marks already use, but **unverified**); and
+//! a random id (`ActorId::random()`, which resolves to nobody).
 //!
-//! There are three shapes in the tree today, and the directory handles all
-//! three because they all show up in a real document:
-//!
-//! 1. **A raw 32-byte public key.** `WorkspaceDirectory::new` does
-//!    `set_actor(ActorId::from(device_public_key.as_slice()))`, so the hex is
-//!    the key. This is the shape that joins straight to a
-//!    `collab_types::Identity` or to the on-disk qOS identity, and it is the
-//!    only one that is cryptographically meaningful.
-//! 2. **A self-declared handle.** The apps set
-//!    `ActorId::from(app_id.as_bytes())` where `app_id` is `QUICK_APP_ID` /
-//!    `QOS_PACKAGE_ID` — the hex decodes back to the literal string the
-//!    process chose for itself. It is the same key `ui::presence::user_color`
-//!    and the per-character `author` marks are already keyed on, so honouring
-//!    it keeps the timeline consistent with the carets and the highlight
-//!    colours the user already sees. It is **not** verified: anyone can pick
-//!    any handle. The row therefore always also carries the short actor hex.
-//! 3. **A random id.** `app_state::DocStore` mints `ActorId::random()` and
-//!    persists it per install directory. Nothing can resolve that to a person.
-//!
-//! # What happens for an actor we have never seen
-//!
-//! Nothing is invented. The author's name becomes
-//! [`UNKNOWN_AUTHOR_NAME`], the identity label becomes the first eight hex
-//! characters of the actor id, and the avatar hue is derived deterministically
-//! from the actor id so the same stranger keeps the same colour across
-//! sessions, processes, and peers. A stable colour plus an honest label is
-//! genuinely useful — you can still see that rows 3, 7 and 11 were all the
-//! same person — where a fabricated name would be a lie.
+//! For an actor never seen before, nothing is invented: the name becomes
+//! [`UNKNOWN_AUTHOR_NAME`], the label is the first eight hex characters, and
+//! the avatar hue is derived deterministically from the actor id so the same
+//! stranger keeps the same colour across sessions.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -79,17 +59,9 @@ impl AuthorDirectory {
     }
 
     /// Bind `actor_hex` to the local user, read from the qOS identity on disk.
-    ///
-    /// Tries the launcher-provided path first (`QOS_USER_IDENTITY`, which is
-    /// what the sandbox bind-mounts), then the user's own
-    /// `$XDG_CONFIG_HOME/qos/identity/primary.json`, then
-    /// `$HOME/.config/qos/identity/primary.json` — the file
-    /// `shell::firstboot::ensure_primary_identity` writes at first boot.
-    ///
-    /// Returns `true` when an identity was found and registered. A `false`
-    /// return is not an error: an app run outside a qOS session has no
-    /// identity, and the caller should leave the actor to resolve through the
-    /// handle path.
+    /// A `false` return is not an error: an app run outside a qOS session has
+    /// no identity, and the caller should leave the actor to resolve through
+    /// the handle path.
     pub fn register_local_identity(&mut self, actor_hex: &str) -> bool {
         let Some(author) = local_identity_author() else {
             return false;
@@ -120,27 +92,22 @@ impl AuthorDirectory {
         self.by_actor.contains_key(&actor_hex.to_lowercase())
     }
 
-    /// Number of explicitly registered actors.
     pub fn len(&self) -> usize {
         self.by_actor.len()
     }
 
-    /// True when nothing has been registered.
     pub fn is_empty(&self) -> bool {
         self.by_actor.is_empty()
     }
 }
 
 /// Build a [`HistoryAuthor`] from the qOS identity on disk, if there is one.
-///
 /// Public because the shell wants the same answer for its own chrome without
 /// having to own an [`AuthorDirectory`].
 pub fn local_identity_author() -> Option<HistoryAuthor> {
-    let id = runtime_identity::load()
-        .ok()
-        .or_else(|| {
-            config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
-        })?;
+    let id = runtime_identity::load().ok().or_else(|| {
+        config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
+    })?;
     let key_hex = hex_lower(&id.group_public_key());
     let name = if id.display_name().is_empty() {
         // First boot writes an empty display name and the user names
@@ -170,22 +137,18 @@ fn config_identity_path() -> Option<PathBuf> {
 }
 
 /// Decode an actor id back to the handle the authoring process chose for
-/// itself, when it did.
-///
-/// `ActorId::from(&[u8])` stores the bytes verbatim, so an app that did
+/// itself, when it did. `ActorId::from(&[u8])` stores the bytes verbatim, so
 /// `set_actor(ActorId::from(app_id.as_bytes()))` leaves the UTF-8 of `app_id`
-/// in the hex. Returns `None` for anything that is not a plausible handle:
-/// odd-length or non-hex input, non-UTF-8 bytes, control characters, an empty
-/// string, or something longer than a name could reasonably be. A 32-byte
-/// public key almost never survives this filter, and when it does the caller
-/// still sees the short hex alongside it.
+/// in the hex. Returns `None` for anything not a plausible handle (odd-length
+/// /non-hex input, non-UTF-8, control chars, empty, or too long); a 32-byte
+/// public key almost never survives this filter.
 pub fn actor_handle(actor_hex: &str) -> Option<String> {
     let bytes = decode_hex(actor_hex)?;
     if bytes.is_empty() || bytes.len() > MAX_HANDLE_LEN {
         return None;
     }
     let s = String::from_utf8(bytes).ok()?;
-    if s.chars().any(|c| c.is_control()) {
+    if s.chars().any(char::is_control) {
         return None;
     }
     let trimmed = s.trim();
@@ -201,28 +164,25 @@ pub fn short_id(actor_hex: &str) -> String {
     actor_hex.chars().take(SHORT_LEN).collect()
 }
 
-/// Deterministic avatar hue for an actor with no registered colour.
-///
-/// FNV-1a over the actor hex, folded into `[0, 360)`. The same actor gets the
-/// same hue in every process and on every peer, which is what makes "these
-/// three rows are the same stranger" readable without a name.
+/// Deterministic avatar hue for an actor with no registered colour: FNV-1a
+/// over the actor hex, folded into `[0, 360)`. Same actor, same hue in every
+/// process and on every peer.
 pub fn stable_hue(actor_hex: &str) -> f32 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in actor_hex.as_bytes() {
-        hash ^= *b as u64;
+        hash ^= u64::from(*b);
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
     (hash % 360) as f32
 }
 
-/// RGB → hue in degrees, so an identity's chosen avatar colour drives the
-/// timeline dot. Saturation and value are fixed by
-/// `crate::widget::history::hue_to_rgb`, so only the hue survives; that is
+/// RGB → hue in degrees. Saturation/value are fixed by
+/// `crate::widget::history::hue_to_rgb`, so only the hue survives —
 /// deliberate, it keeps the dots a coherent family.
 fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
-    let r = rgb[0] as f32 / 255.0;
-    let g = rgb[1] as f32 / 255.0;
-    let b = rgb[2] as f32 / 255.0;
+    let r = f32::from(rgb[0]) / 255.0;
+    let g = f32::from(rgb[1]) / 255.0;
+    let b = f32::from(rgb[2]) / 255.0;
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let d = max - min;
@@ -245,13 +205,13 @@ fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
 fn hex_lower(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        s.push_str(&format!("{:02x}", b));
+        s.push_str(&format!("{b:02x}"));
     }
     s
 }
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let b = s.as_bytes();
@@ -268,10 +228,8 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// The apps set their actor to the UTF-8 of `QUICK_APP_ID`. That has to
-    /// come back out, because it is the same key the presence colours and the
-    /// per-character author marks already use — a timeline that called the
-    /// caret's owner something else would contradict the editor.
+    /// Apps set their actor to the UTF-8 of `QUICK_APP_ID`; that has to come
+    /// back out, since it's the same key presence colours and author marks use.
     #[test]
     fn handle_round_trips_the_app_id_an_app_set() {
         let actor = automerge::ActorId::from("alice".as_bytes());
@@ -289,31 +247,40 @@ mod tests {
         // A key with high bytes: not valid UTF-8, so the handle decode fails.
         let key: Vec<u8> = (0u8..32).map(|i| 0x80u8.wrapping_add(i)).collect();
         let hex = automerge::ActorId::from(key.as_slice()).to_hex_string();
-        assert_eq!(actor_handle(&hex), None, "a raw key must not decode to a handle");
+        assert_eq!(
+            actor_handle(&hex),
+            None,
+            "a raw key must not decode to a handle"
+        );
 
         let dir = AuthorDirectory::new();
         let a = dir.resolve(&hex);
         assert_eq!(a.name, UNKNOWN_AUTHOR_NAME);
         assert_eq!(a.identity_short.len(), SHORT_LEN);
-        assert!(hex.starts_with(&a.identity_short), "short id prefixes the actor");
+        assert!(
+            hex.starts_with(&a.identity_short),
+            "short id prefixes the actor"
+        );
     }
 
     /// An unknown actor gets a stable colour, so the same stranger is
-    /// recognisable across rows even with no name. Different actors get
-    /// different colours.
+    /// recognisable across rows even with no name.
     #[test]
     fn unknown_actors_get_stable_distinct_hues() {
         let a = "ff00ff00ff00ff00";
         let b = "00ff00ff00ff00ff";
         assert_eq!(stable_hue(a), stable_hue(a), "hue is deterministic");
-        assert_ne!(stable_hue(a), stable_hue(b), "distinct actors, distinct hues");
+        assert_ne!(
+            stable_hue(a),
+            stable_hue(b),
+            "distinct actors, distinct hues"
+        );
         assert!((0.0..360.0).contains(&stable_hue(a)));
         assert!((0.0..360.0).contains(&stable_hue(b)));
     }
 
     /// An explicit registration beats the decoded handle — the collaboration
-    /// layer knows the peer's real display name, the handle is only what the
-    /// process called itself.
+    /// layer knows the peer's real name; the handle is just self-declared.
     #[test]
     fn registration_wins_over_the_decoded_handle() {
         let hex = automerge::ActorId::from("wp-1234".as_bytes()).to_hex_string();
@@ -371,17 +338,14 @@ mod tests {
     const FIXTURE_SEED: [u8; 32] = [0x5a; 32];
 
     /// Mint an identity record through the **real writer**, exactly as
-    /// `shell::firstboot::ensure_primary_identity` does: build a
-    /// single-device `ThresholdIdentity`, hand it to
-    /// `IdentityRecord::from_threshold_identity`, and encode with
-    /// `to_json_bytes`.
-    ///
-    /// Returns the JSON bytes alongside the public key the seed *actually*
-    /// derives — computed here straight from `ed25519-dalek`, independently
-    /// of anything the writer or the reader reports, so a test asserting on
-    /// it is checking the whole chain rather than echoing one side of it.
+    /// `shell::firstboot::ensure_primary_identity` does. Returns the JSON
+    /// bytes alongside the public key the seed *actually* derives — computed
+    /// here straight from `ed25519-dalek`, independently of anything the
+    /// writer or reader reports, so a test asserting on it checks the whole
+    /// chain rather than echoing one side of it.
     fn firstboot_identity_bytes(display_name: &str, avatar_color: [u8; 3]) -> (Vec<u8>, [u8; 32]) {
-        let identity = threshold_identity::ThresholdIdentity::from_single_device_seed(&FIXTURE_SEED);
+        let identity =
+            threshold_identity::ThresholdIdentity::from_single_device_seed(&FIXTURE_SEED);
         let record = crate::widget::identity_flow::IdentityRecord::from_threshold_identity(
             &identity,
             display_name,
@@ -399,11 +363,10 @@ mod tests {
     /// Bound every source `local_identity_author` consults to the test's own
     /// temp dir, and put the environment back afterwards, panic or not.
     ///
-    /// Both variables matter. `QOS_USER_IDENTITY` is the launcher-provided
-    /// path the function tries first; `XDG_CONFIG_HOME` is the fallback it
-    /// tries second, and leaving that one alone would let a developer's real
-    /// `~/.config/qos/identity/primary.json` decide the result — the test
-    /// would pass or fail on whose machine it ran.
+    /// Both variables matter: `QOS_USER_IDENTITY` is the launcher-provided
+    /// path tried first; `XDG_CONFIG_HOME` is the fallback tried second, and
+    /// leaving it alone would let a developer's real
+    /// `~/.config/qos/identity/primary.json` decide the result.
     struct IdentityEnvGuard {
         saved: Vec<(&'static str, Option<String>)>,
     }
@@ -447,16 +410,11 @@ mod tests {
     /// A real on-disk identity file is read and turned into an author.
     ///
     /// The record is minted by the writer `shell::firstboot` actually calls,
-    /// not hand-typed, because the two sides of this schema are declared
-    /// twice on purpose: `ui::widget::identity_flow::IdentityRecord`
-    /// serialises it, and `runtime_identity` re-declares it rather than
-    /// depending on `ui` (that edge would close a cycle). Only a fixture
-    /// that came out of the writer can prove the reader still accepts what
-    /// the writer emits — a hand-written literal proves the test author
-    /// remembered the shape on the day they typed it, and silently rots
-    /// afterwards, which is exactly what happened to the previous version of
-    /// this fixture when the loader began rejecting records whose secret
-    /// does not derive their recorded public key.
+    /// not hand-typed: this schema is declared twice on purpose
+    /// (`ui::widget::identity_flow::IdentityRecord` serialises it,
+    /// `runtime_identity` re-declares it rather than depending on `ui`), so
+    /// only a fixture that came out of the writer proves the reader still
+    /// accepts what the writer emits.
     #[test]
     #[serial_test::serial(qos_user_identity)]
     fn local_identity_is_read_from_the_firstboot_json_shape() {
@@ -483,7 +441,10 @@ mod tests {
 
         let author = local_identity_author().expect("an identity on disk resolves to an author");
         assert_eq!(author.name, "Quinten");
-        assert!((author.avatar_hue - 120.0).abs() < 0.5, "green avatar colour");
+        assert!(
+            (author.avatar_hue - 120.0).abs() < 0.5,
+            "green avatar colour"
+        );
         assert_eq!(author.identity_short, short_id(&hex_lower(&public_key)));
         assert_eq!(author.identity_short.len(), SHORT_LEN);
     }

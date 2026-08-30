@@ -8,7 +8,7 @@
 //! not depend on `ui` for parsing) — this test ensures they emit the
 //! same bytes for the same block list.
 
-use notes::markdown::{parse, serialize, BlockSpec};
+use notes::markdown::{BlockSpec, parse, serialize};
 
 #[test]
 fn round_trip_paragraph_only() {
@@ -32,15 +32,15 @@ fn round_trip_bullets_at_three_indents() {
             assert_eq!(*indent, 0);
             assert_eq!(text.text, "a");
         }
-        b => panic!("expected Bullet, got {:?}", b),
+        b => panic!("expected Bullet, got {b:?}"),
     }
     match &blocks[1] {
         BlockSpec::Bullet { indent, .. } => assert_eq!(*indent, 1),
-        b => panic!("expected Bullet, got {:?}", b),
+        b => panic!("expected Bullet, got {b:?}"),
     }
     match &blocks[2] {
         BlockSpec::Bullet { indent, .. } => assert_eq!(*indent, 2),
-        b => panic!("expected Bullet, got {:?}", b),
+        b => panic!("expected Bullet, got {b:?}"),
     }
     assert_eq!(serialize(&blocks), md);
 }
@@ -112,7 +112,7 @@ fn parse_accepts_max_indent_level() {
             assert_eq!(*indent, 5);
             assert_eq!(text.text, "deep");
         }
-        b => panic!("expected Bullet, got {:?}", b),
+        b => panic!("expected Bullet, got {b:?}"),
     }
     assert_eq!(serialize(&blocks), md);
 }

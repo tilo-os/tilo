@@ -175,7 +175,11 @@ mod tests {
             peer.get_heads(),
             "byte-identical convergence after merge — the native text path already replicates",
         );
-        assert_eq!(peer.text(&rename).unwrap(), "renamed.txt", "the peer sees the same rename text");
+        assert_eq!(
+            peer.text(&rename).unwrap(),
+            "renamed.txt",
+            "the peer sees the same rename text"
+        );
     }
 
     /// A file operation is external: renaming through the real command path
@@ -211,7 +215,10 @@ mod tests {
         assert!(w.apply_command(FileCommand::RenameCommit));
 
         // The world changed on disk (external / FUSE), …
-        assert!(dir.path().join("new.txt").exists(), "the file was renamed on disk");
+        assert!(
+            dir.path().join("new.txt").exists(),
+            "the file was renamed on disk"
+        );
         assert!(!dir.path().join("old.txt").exists());
 
         // … and the document's structure did not: no record was written for it.
@@ -253,12 +260,18 @@ mod tests {
 
         // Pin a place and zoom in through the real command path.
         let fav = home.path().join("Projects");
-        assert!(w.apply_command(FileCommand::AddFavorite(fav.clone())));
+        assert!(w.apply_command(FileCommand::AddFavorite(fav)));
         assert!(w.apply_command(FileCommand::ZoomIn));
 
         // Both persisted to per-user config *files*, not the CRDT.
-        assert!(cfg.path().join("favorites").exists(), "favourites persisted to a config file");
-        assert!(cfg.path().join("zoom").exists(), "zoom level persisted to a config file");
+        assert!(
+            cfg.path().join("favorites").exists(),
+            "favourites persisted to a config file"
+        );
+        assert!(
+            cfg.path().join("zoom").exists(),
+            "zoom level persisted to a config file"
+        );
 
         // And the shared document gained no structural record for either.
         w.sync(&mut doc, &ROOT);

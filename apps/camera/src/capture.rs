@@ -1,8 +1,8 @@
-//! Live camera capture via GStreamer's `v4l2src`.
+//! Live camera capture via `GStreamer`'s `v4l2src`.
 //!
 //! This entire module is gated behind the `live-capture` feature so the
 //! default build — and the `--shots` headless path — never need the
-//! GStreamer dev libraries or a `/dev/video*` device. On a real qOS install
+//! `GStreamer` dev libraries or a `/dev/video*` device. On a real qOS install
 //! the app is built with `--features live-capture` and the compositor grants
 //! the cluster access to the camera device.
 //!
@@ -37,15 +37,17 @@ pub struct CamFrame {
 /// this list. Empty when no camera is attached.
 pub fn list_devices() -> Vec<String> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/dev") else { return out };
+    let Ok(entries) = std::fs::read_dir("/dev") else {
+        return out;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if let Some(num) = name.strip_prefix("video") {
-                if !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) {
-                    out.push(path.to_string_lossy().into_owned());
-                }
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && let Some(num) = name.strip_prefix("video")
+            && !num.is_empty()
+            && num.bytes().all(|b| b.is_ascii_digit())
+        {
+            out.push(path.to_string_lossy().into_owned());
         }
     }
     // Numeric order, not lexical, so video2 sorts before video10.
@@ -104,8 +106,13 @@ impl Capture {
                 .build(),
         );
 
-        pipeline.set_state(gst::State::Playing).context("set playing")?;
-        Ok(Self { pipeline, frames: rx })
+        pipeline
+            .set_state(gst::State::Playing)
+            .context("set playing")?;
+        Ok(Self {
+            pipeline,
+            frames: rx,
+        })
     }
 }
 
@@ -131,7 +138,10 @@ mod tests {
             .iter()
             .filter_map(|d| d.rsplit("video").next().and_then(|n| n.parse().ok()))
             .collect();
-        assert!(nums.windows(2).all(|w| w[0] <= w[1]), "devices sorted numerically");
+        assert!(
+            nums.windows(2).all(|w| w[0] <= w[1]),
+            "devices sorted numerically"
+        );
     }
 
     #[test]

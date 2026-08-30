@@ -121,9 +121,15 @@ mod tests {
     #[test]
     fn wit_dir_exists() {
         let dir = std::path::Path::new(WIT_DIR);
-        assert!(dir.is_dir(), "WIT_DIR must point at a real directory: {dir:?}");
+        assert!(
+            dir.is_dir(),
+            "WIT_DIR must point at a real directory: {dir:?}"
+        );
         let wit = dir.join("format-provider.wit");
-        assert!(wit.is_file(), "format-provider.wit ships with the crate: {wit:?}");
+        assert!(
+            wit.is_file(),
+            "format-provider.wit ships with the crate: {wit:?}"
+        );
     }
 
     #[test]

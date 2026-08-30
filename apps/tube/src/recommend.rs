@@ -1,38 +1,29 @@
 //! Recommendations model — how Tube decides what to show without an account.
 //!
-//! YouTube's personalised home needs the user's Google cookies (ToS / ban
-//! risk). Tube deliberately mirrors **NewPipe / Piped** instead, which build a
-//! home from three *no-auth* signals:
+//! `YouTube`'s personalised home needs the user's Google cookies (`ToS` / ban
+//! risk). Tube mirrors **`NewPipe` / Piped** instead: three no-auth signals —
+//! subscriptions feed (fan-out + interleave, [`fan_out_subscription_feed`]),
+//! region trending, and per-video related — all exposed on
+//! [`crate::backend::YtBackend`]. This module holds the backend-agnostic
+//! *composition* logic so the offline sample and the live backend behave
+//! identically.
 //!
-//! 1. **Subscriptions feed** — fan-out the latest uploads across the channels
-//!    the user subscribed to, interleaved newest-first. This is the primary
-//!    home surface ([`fan_out_subscription_feed`]).
-//! 2. **Trending** — the region trending browse feed (no personalisation).
-//! 3. **Per-video related** — the "up next" list from the video's `next`
-//!    endpoint, shown on the watch page.
-//!
-//! All three are exposed on [`crate::backend::YtBackend`]; this module holds
-//! the backend-agnostic *composition* logic (the fan-out + ranking) so both the
-//! offline sample and the live rustypipe backend get identical behaviour and it
-//! is unit-tested in isolation.
-//!
-//! Ranking is intentionally simple and explainable — "newest first, round-robin
-//! across channels so one prolific uploader can't flood the feed" — matching
-//! Tube's no-dark-patterns promise. No engagement signals, no watch-time
-//! optimisation.
+//! Ranking is intentionally simple and explainable — newest first,
+//! round-robin across channels so one prolific uploader can't flood the feed.
+//! No engagement signals, no watch-time optimisation.
 
 use crate::backend::{BackendError, BackendOutcome, BackendResult, YtBackend};
 use crate::model::Video;
 
-/// Build the subscriptions feed by asking the backend for each subscribed
-/// channel's uploads and interleaving them.
+/// Default body of [`YtBackend::subscription_feed`] (a backend with a cheaper
+/// bulk endpoint may override). Channels that error (deleted / private) are
+/// skipped rather than failing the whole feed — one bad subscription
+/// shouldn't blank the home page.
 ///
-/// This is the default body of [`YtBackend::subscription_feed`]; a backend with
-/// a cheaper bulk endpoint can override, but the offline sample and any simple
-/// live backend share this.
+/// # Errors
 ///
-/// Channels that error (deleted / private) are skipped rather than failing the
-/// whole feed — one bad subscription shouldn't blank the home page.
+/// Returns an error when every subscribed channel either failed to fetch or
+/// had no uploads.
 pub fn fan_out_subscription_feed<B: YtBackend + ?Sized>(
     backend: &B,
     channel_ids: &[String],
@@ -42,10 +33,10 @@ pub fn fan_out_subscription_feed<B: YtBackend + ?Sized>(
     }
     let mut per_channel: Vec<Vec<Video>> = Vec::new();
     for id in channel_ids {
-        if let Ok(BackendResult::Channel { uploads, .. }) = backend.channel(id) {
-            if !uploads.is_empty() {
-                per_channel.push(uploads);
-            }
+        if let Ok(BackendResult::Channel { uploads, .. }) = backend.channel(id)
+            && !uploads.is_empty()
+        {
+            per_channel.push(uploads);
         }
     }
     if per_channel.is_empty() {
@@ -76,8 +67,8 @@ pub fn interleave_newest_first(mut per_channel: Vec<Vec<Video>>) -> Vec<Video> {
     out
 }
 
-/// Cap a feed to a sane page size so a thousand-subscription user doesn't build
-/// an enormous widget tree in one frame. Returns the first `n`.
+/// Cap a feed to a sane page size so a thousand-subscription user doesn't
+/// build an enormous widget tree in one frame.
 pub fn page(mut videos: Vec<Video>, n: usize) -> Vec<Video> {
     videos.truncate(n);
     videos

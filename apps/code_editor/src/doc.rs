@@ -33,7 +33,7 @@ impl EditorDoc {
         }
     }
 
-    /// The `Text` ObjId for `node`'s buffer, if it has been opened.
+    /// The `Text` `ObjId` for `node`'s buffer, if it has been opened.
     pub fn buffer_text(doc: &AutoCommit, node: NodeId) -> Option<ObjId> {
         let buffers = match doc.get(&ROOT, "buffers") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -46,21 +46,20 @@ impl EditorDoc {
     }
 
     /// Get-or-create the `Text` object for `node`, seeding it with `seed` if it
-    /// did not already exist. Returns the Text ObjId.
+    /// did not already exist. Returns the Text `ObjId`.
     pub fn ensure_buffer(doc: &mut AutoCommit, node: NodeId, seed: &str) -> ObjId {
         let buffers = Self::buffers_map(doc);
         let key = node.to_string();
-        match doc.get(&buffers, key.as_str()) {
-            Ok(Some((Value::Object(ObjType::Text), t))) => t,
-            _ => {
-                let t = doc
-                    .put_object(&buffers, key.as_str(), ObjType::Text)
-                    .expect("put_object buffer text never fails");
-                if !seed.is_empty() {
-                    let _ = doc.splice_text(&t, 0, 0, seed);
-                }
-                t
+        if let Ok(Some((Value::Object(ObjType::Text), t))) = doc.get(&buffers, key.as_str()) {
+            t
+        } else {
+            let t = doc
+                .put_object(&buffers, key.as_str(), ObjType::Text)
+                .expect("put_object buffer text never fails");
+            if !seed.is_empty() {
+                let _ = doc.splice_text(&t, 0, 0, seed);
             }
+            t
         }
     }
 

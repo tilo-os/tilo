@@ -18,31 +18,22 @@
 //! +----------------------------------------+
 //! ```
 //!
-//! Submit-button is disabled while the display name is empty (whitespace
-//! only counts as empty). On click:
-//!
-//! 1. `ThresholdIdentity::bootstrap_single_device(&mut OsRng)` mints a
-//!    fresh single-device identity.
-//! 2. The identity is wrapped in an `IdentityRecord` (display name +
-//!    accent + timestamp) and handed to the `IdentityStore`.
-//! 3. The screen records the new record so the container can pull it
-//!    into the recovery-share screen.
-//! 4. The container advances to screen 2.
-//!
-//! ## Test surface
+//! Submit is disabled while the display name is empty (whitespace only
+//! counts as empty). On click: mints a fresh identity, wraps it in an
+//! `IdentityRecord`, saves it via the `IdentityStore`, then advances to
+//! screen 2 with the new record cached for the recovery-share screen.
 //!
 //! The form validation + submit pipeline is exposed as plain methods so
-//! tests can drive the screen without rendering. `submit_to_store` is
-//! the load-bearing path — exercised by tests and re-used by
-//! `handle_event_screen` on a real button click.
+//! tests can drive the screen without rendering; `submit_to_store` is the
+//! load-bearing path, also used by `handle_event_screen` on a real click.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
-use threshold_identity::ThresholdIdentity;
 use rand_core::OsRng;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use threshold_identity::ThresholdIdentity;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -53,6 +44,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, ScreenOutcome,
@@ -71,7 +63,6 @@ pub const ACCENT_PALETTE: [[u8; 3]; 8] = [
     [244, 114, 182], // pink
 ];
 
-/// Screen 1: identity creation form.
 pub struct CreateIdentityScreen {
     rect: Rect,
     /// Single-line editor backing the display-name field. Use
@@ -91,6 +82,12 @@ pub struct CreateIdentityScreen {
     /// Last cursor position (set by `CursorMoved`) so the next
     /// `MouseInput` can hit-test against rects.
     last_cursor: Point,
+}
+
+impl Default for CreateIdentityScreen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CreateIdentityScreen {
@@ -141,11 +138,8 @@ impl CreateIdentityScreen {
         self.submit_error.as_deref()
     }
 
-    /// Bootstrap a fresh identity + persist it via the store. On
-    /// success the new `IdentityRecord` is cached and returned;
-    /// callers (`handle_event_screen`) advance to the next screen.
-    /// On error the `submit_error` field is set so the UI can
-    /// surface it inline.
+    /// On success the new `IdentityRecord` is cached and returned. On
+    /// error `submit_error` is set so the UI can surface it inline.
     pub fn submit_to_store(
         &mut self,
         store: &dyn IdentityStore,
@@ -169,9 +163,12 @@ impl CreateIdentityScreen {
         Ok(record)
     }
 
-    /// Event handler called by the container. Routes clicks +
-    /// keystrokes; returns `ScreenOutcome::Advance` only on a
-    /// successful submit.
+    /// Returns `ScreenOutcome::Advance` only on a successful submit.
+    // Mirrors `Widget::handle_event`'s parameter list on purpose --
+    // this is invoked from the trait impl, forwarding the same event,
+    // scale, modifiers, CRDT handle, and out-params the screen host
+    // received; bundling it would mean bundling the trait method too.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -232,11 +229,7 @@ impl CreateIdentityScreen {
                     },
                 ..
             } => {
-                // Enter submits; everything else delegates to the
-                // shared single-line editor so we get arrow keys,
-                // Ctrl+arrows (word jump), Shift selection,
-                // Ctrl+A/C/X/V, Home/End, Delete — without
-                // re-implementing them per-screen.
+                // Enter submits; everything else delegates to the shared editor.
                 if matches!(logical_key, Key::Named(NamedKey::Enter)) {
                     if self.is_submit_enabled() {
                         *handled = true;
@@ -247,7 +240,10 @@ impl CreateIdentityScreen {
                     }
                     return ScreenOutcome::Stay;
                 }
-                if self.editor.apply_key(logical_key, _modifiers, text.as_deref()) {
+                if self
+                    .editor
+                    .apply_key(logical_key, _modifiers, text.as_deref())
+                {
                     *handled = true;
                 }
                 ScreenOutcome::Stay
@@ -266,53 +262,49 @@ impl Widget for CreateIdentityScreen {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(800.0),
-                    height: Dimension::length(600.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(800.0),
+                height: Dimension::length(600.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        // Card centered inside the allotted rect.
         let card_w = 520.0;
         let card_h = 440.0;
         let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
         let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
         let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
         let pad = 32.0;
-        // Display-name input rect.
         self.input_rect = Rect::new(
             card.x0 + pad,
             card.y0 + 140.0,
             card.x1 - pad,
             card.y0 + 140.0 + 40.0,
         );
-        // Accent tile rects — eight 32×32 swatches with 8 px gap.
         self.tile_rects.clear();
         let tile_size = 32.0;
         let gap = 8.0;
-        let tiles_total_width = ACCENT_PALETTE.len() as f64 * tile_size + (ACCENT_PALETTE.len() - 1) as f64 * gap;
+        let tiles_total_width =
+            ACCENT_PALETTE.len() as f64 * tile_size + (ACCENT_PALETTE.len() - 1) as f64 * gap;
         let tile_y = card.y0 + 232.0;
         let tile_x0 = card.x0 + (card_w - tiles_total_width) / 2.0;
         for i in 0..ACCENT_PALETTE.len() {
             let x = tile_x0 + i as f64 * (tile_size + gap);
-            self.tile_rects.push(Rect::new(x, tile_y, x + tile_size, tile_y + tile_size));
+            self.tile_rects
+                .push(Rect::new(x, tile_y, x + tile_size, tile_y + tile_size));
         }
-        // Submit-button rect (bottom-right).
         let btn_w = 160.0;
         let btn_h = 44.0;
         self.submit_rect = Rect::new(
@@ -331,10 +323,8 @@ impl Widget for CreateIdentityScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Dim backdrop.
         let backdrop = Color::from_rgba8(0, 0, 0, 180);
         scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
-        // Card body.
         let card_pad = 32.0;
         let card_w = 520.0;
         let card_h = 440.0;
@@ -356,7 +346,6 @@ impl Widget for CreateIdentityScreen {
             None,
             &RoundedRect::from_rect(card, radius),
         );
-        // Title.
         text_renderer.draw_text(
             scene,
             "Create your qOS identity",
@@ -365,7 +354,6 @@ impl Widget for CreateIdentityScreen {
             transform * Affine::translate((card.x0 + card_pad, card.y0 + card_pad)),
             None,
         );
-        // Explanation paragraph.
         text_renderer.draw_text(
             scene,
             "Your identity signs every action you take and lets you join shared channels.",
@@ -374,7 +362,6 @@ impl Widget for CreateIdentityScreen {
             transform * Affine::translate((card.x0 + card_pad, card.y0 + card_pad + 36.0)),
             None,
         );
-        // Display-name label.
         text_renderer.draw_text(
             scene,
             "Display name",
@@ -383,7 +370,6 @@ impl Widget for CreateIdentityScreen {
             transform * Affine::translate((card.x0 + card_pad, card.y0 + 116.0)),
             None,
         );
-        // Display-name input chrome.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -411,7 +397,6 @@ impl Widget for CreateIdentityScreen {
         };
         let text_origin_x = self.input_rect.x0 + 12.0;
         let text_origin_y = self.input_rect.y0 + 12.0;
-        // Selection highlight band, if any.
         if let Some((lo, hi)) = self.editor.selection_range() {
             let (pre_w, _) = text_renderer.measure(&name[..lo], 15.0, None);
             let (mid_w, _) = text_renderer.measure(&name[lo..hi], 15.0, None);
@@ -422,9 +407,9 @@ impl Widget for CreateIdentityScreen {
                 sel_color,
                 None,
                 &Rect::new(
-                    text_origin_x + pre_w as f64,
+                    text_origin_x + f64::from(pre_w),
                     text_origin_y - 2.0,
-                    text_origin_x + pre_w as f64 + mid_w as f64,
+                    text_origin_x + f64::from(pre_w) + f64::from(mid_w),
                     text_origin_y + 18.0,
                 ),
             );
@@ -437,12 +422,11 @@ impl Widget for CreateIdentityScreen {
             transform * Affine::translate((text_origin_x, text_origin_y)),
             None,
         );
-        // Caret — drawn over selection (if any) so the user always
-        // sees where they'd type. Uses the editor's byte cursor.
+        // Drawn over the selection so the user always sees where they'd type.
         let cursor_byte = self.editor.cursor.min(name.len());
         let prefix = &name[..cursor_byte];
         let (prefix_w, _) = text_renderer.measure(prefix, 15.0, None);
-        let caret_x = text_origin_x + prefix_w as f64;
+        let caret_x = text_origin_x + f64::from(prefix_w);
         let caret_top = text_origin_y - 2.0;
         let caret_bottom = text_origin_y + 18.0;
         let caret_rect = Rect::new(caret_x, caret_top, caret_x + 1.5, caret_bottom);
@@ -453,7 +437,6 @@ impl Widget for CreateIdentityScreen {
             None,
             &caret_rect,
         );
-        // Accent-tile heading.
         text_renderer.draw_text(
             scene,
             "Accent colour",
@@ -462,11 +445,16 @@ impl Widget for CreateIdentityScreen {
             transform * Affine::translate((card.x0 + card_pad, card.y0 + 208.0)),
             None,
         );
-        // Accent tiles.
         for (i, r) in self.tile_rects.iter().enumerate() {
             let [r_, g_, b_] = ACCENT_PALETTE[i];
             let fill = Color::from_rgb8(r_, g_, b_);
-            scene.fill(Fill::NonZero, transform, fill, None, &RoundedRect::from_rect(*r, 6.0));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
             if i == self.selected_accent {
                 scene.stroke(
                     &Stroke::new(2.0),
@@ -477,7 +465,6 @@ impl Widget for CreateIdentityScreen {
                 );
             }
         }
-        // Submit button.
         let btn_bg = if self.is_submit_enabled() {
             if self.submit_hovered {
                 theme.bg_active
@@ -501,17 +488,19 @@ impl Widget for CreateIdentityScreen {
         );
         let label = "Create my identity";
         let (label_w, _) = text_renderer.measure(label, 14.0, None);
-        let label_x = self.submit_rect.x0 + (self.submit_rect.width() - label_w as f64) / 2.0;
+        let label_x = self.submit_rect.x0 + (self.submit_rect.width() - f64::from(label_w)) / 2.0;
         text_renderer.draw_text(
             scene,
             label,
             14.0,
             btn_text_color,
             transform
-                * Affine::translate((label_x, self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0)),
+                * Affine::translate((
+                    label_x,
+                    self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0,
+                )),
             None,
         );
-        // Inline error, if any.
         if let Some(err) = &self.submit_error {
             text_renderer.draw_text(
                 scene,
@@ -536,12 +525,11 @@ impl Widget for CreateIdentityScreen {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // Real input goes through `handle_event_screen` so the
-        // container can supply the IdentityStore. The default
-        // Widget::handle_event path is unused.
+        // Real input goes through `handle_event_screen`, which the
+        // container calls with the IdentityStore; this path is unused.
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CreateIdentityScreen"
     }
 
@@ -577,7 +565,10 @@ mod tests {
     fn submit_disabled_for_whitespace_only_name() {
         let mut s = CreateIdentityScreen::new();
         s.set_display_name("   \t  ");
-        assert!(!s.is_submit_enabled(), "whitespace must be treated as empty");
+        assert!(
+            !s.is_submit_enabled(),
+            "whitespace must be treated as empty"
+        );
     }
 
     #[test]

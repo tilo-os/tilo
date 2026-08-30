@@ -1,6 +1,10 @@
 [Desktop Entry]
-# Wayland session entry advertised to greetd's session picker
-# (tuigreet --sessions /usr/share/wayland-sessions).
+# Wayland session entry advertised to the graphical greeter's session
+# picker (qos-greeter reads this directory directly).
+#
+# `Name` is shown to the person logging in, so it is the product name, not
+# the internal desktop id. `DesktopNames` below is the machine-facing id and
+# is a contract with the portal — the two are deliberately different.
 #
 # `Exec` runs shell in its default mode (`--mode native` as of
 # Phase 7), so the binary itself binds the wayland-N socket. No `cage`
@@ -8,8 +12,8 @@
 #
 # `DesktopNames=nirios` is what the xdg-desktop-portal `qos.portal`
 # file matches via `UseIn=nirios` to activate our portal backend.
-Name=nirios
-GenericName=qOS
+Name=qOS
+GenericName=Desktop
 Comment=Collaborative spatial desktop environment
 Exec=/usr/bin/shell --backend drm
 Type=Application

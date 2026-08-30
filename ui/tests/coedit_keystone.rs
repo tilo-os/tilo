@@ -3,44 +3,28 @@
 //! of its own converged Automerge doc — never a streamed frame), and
 //! each sees the other's caret/presence.
 //!
-//! Everything here runs against the REAL path with no mocks of the
-//! thing under test:
-//!   * the production fan-out broker (`ui::collaboration::broker::serve`,
-//!     the in-tree relay),
-//!   * two real `CollaborationManager`s trading real `CollabRequest` /
-//!     `CollabEvent` frames over a real `UnixStream`,
-//!   * real `automerge` documents on each side,
-//!   * the real `ui::widget::TextInput` render passes (`sync` pulls the
-//!     text out of the converged doc, then `draw` rasterises it through
-//!     the offscreen renderer).
+//! Runs against the REAL path: the production fan-out broker
+//! (`ui::collaboration::broker::serve`), two real `CollaborationManager`s
+//! over a real `UnixStream`, real `automerge` documents, and the real
+//! `ui::widget::TextInput` render pass — no mocks of the thing under test.
 //!
-//! The three proofs:
-//!   1. `peer_edit_converges_and_each_renders_the_shared_state_locally`
-//!      — A edits, the delta flows over the wire, B's doc converges, and
-//!      B's *independent local render* of its converged doc is the same
-//!      frame as A's independent local render of the same state
-//!      (proving both draw the shared CRDT locally, not a streamed
-//!      pixel buffer), and differs from B's pre-edit render (proving B
-//!      actually re-rendered the change).
-//!   2. `remote_caret_presence_round_trips_both_ways` — A's caret reaches
-//!      B and B's caret reaches A over the real presence path, and the
-//!      remote caret paints into the local render.
-//!   3. `signed_edit_is_permission_gated` — a co-edit op signed by a
-//!      writer validates through the real `collab_types::validate_inbound_op`
-//!      pipeline (the exact gate the shell broker runs) and applies; the
-//!      same op signed by a viewer without a write capability is rejected
-//!      and never mutates the peer's doc or its render.
+//! Three proofs: converged co-edit renders identically on both peers
+//! (`peer_edit_converges_...`), a caret round-trips through the real
+//! presence path and paints into the local render
+//! (`remote_caret_presence_...`), and a signed op validates/rejects
+//! through the real `collab_types::validate_inbound_op` pipeline by role
+//! (`signed_edit_is_permission_gated`).
 
 use std::thread;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ROOT, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::{PermissionContext, UserId};
-use ui::presence::{PresenceCtx, PresenceKey, PathSegment};
+use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
@@ -49,13 +33,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use taffy::prelude::*;
 use std::collections::HashMap;
+use taffy::prelude::*;
 
 const W: u32 = 480;
 const H: u32 = 120;
 
-/// Resolve the `Text` object bound at `ROOT["text"]`, if present.
 fn text_obj(doc: &AutoCommit) -> Option<ObjId> {
     match doc.get(&ROOT, "text") {
         Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
@@ -69,30 +52,19 @@ fn text_of(doc: &AutoCommit) -> String {
         .unwrap_or_default()
 }
 
-/// One peer's local frame: what the widget drew, and what the GPU made
-/// of it.
-///
-/// The two halves answer different questions. `drawn` is the exact
-/// output of the production draw pass and is compared with `==`.
-/// `pixels` proves the frame really rasterises, but two rasterisations
-/// of one scene are not guaranteed bit-identical — vello slots path
-/// segments into a tile with an `atomicAdd` and then accumulates
-/// coverage over them in float, so an antialiased edge pixel can land
-/// one 8-bit step either side (see the `ui::offscreen` module docs).
-/// Pixels are therefore compared with
-/// `OffscreenRenderer::pixels_differing_beyond_aa`, which still fails on
-/// any real change — a visible difference moves pixels by far more than
-/// one step — and by ink count, which does not move at all.
+/// `drawn` is the exact draw-pass output, compared with `==`. `pixels`
+/// proves the frame really rasterises, but two rasterisations of one
+/// scene aren't guaranteed bit-identical — vello's tile `atomicAdd`
+/// coverage accumulation can land an antialiased edge pixel one 8-bit
+/// step either side — so pixels are compared with
+/// `OffscreenRenderer::pixels_differing_beyond_aa` and by ink count.
 struct LocalRender {
     drawn: Drawn,
     pixels: Vec<u8>,
 }
 
-/// The vello `Scene` a draw pass emitted, flattened to bytes so two
-/// frames can be compared exactly: geometry, transforms, styles, the
-/// draw stream, and every positioned glyph. This is what the widget
-/// actually drew from the CRDT, so comparing it is both exact and more
-/// specific than comparing the rasterised image.
+/// The vello `Scene` a draw pass emitted, flattened to bytes so two frames
+/// can be compared exactly — more specific than comparing rasterised images.
 #[derive(PartialEq, Eq)]
 struct Drawn(Vec<u8>);
 
@@ -101,7 +73,12 @@ impl std::fmt::Debug for Drawn {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.0.hash(&mut h);
-        write!(f, "Drawn({} bytes, digest {:016x})", self.0.len(), h.finish())
+        write!(
+            f,
+            "Drawn({} bytes, digest {:016x})",
+            self.0.len(),
+            h.finish()
+        )
     }
 }
 
@@ -148,7 +125,7 @@ fn drawn_of(scene: &Scene) -> Drawn {
     for run in &e.resources.glyph_runs {
         push_f32(&mut b, run.font_size);
         push_u32(&mut b, run.font.index);
-        push_u32(&mut b, run.hint as u32);
+        push_u32(&mut b, u32::from(run.hint));
         push_u32(&mut b, run.glyphs.start as u32);
         push_u32(&mut b, run.glyphs.end as u32);
         for v in run.transform.matrix {
@@ -170,16 +147,9 @@ fn drawn_of(scene: &Scene) -> Drawn {
     Drawn(b)
 }
 
-/// Render `input` against `doc` **locally**: run the real `sync` (which
-/// pulls the converged text out of the Automerge doc into the widget),
-/// lay it out, and rasterise, painting `presence` on top.
-///
-/// This is the "each peer renders from its own converged doc" path:
-/// nothing here consumes a frame from a peer — the frame is a pure
-/// function of the local Automerge state + the shared `Theme` + local
-/// presence. `with_plain_chrome` strips the input's background box so
-/// the rasterised ink is the text/caret geometry itself (a filled box
-/// would swamp any pixel-count comparison).
+/// Render `input` against `doc` **locally**: real `sync` (pulls converged
+/// text out of the Automerge doc), layout, and rasterise — a pure
+/// function of local state, never a frame consumed from a peer.
 fn render_widget(
     mut input: TextInput,
     doc: &mut AutoCommit,
@@ -245,9 +215,6 @@ fn render_widget(
     }
 }
 
-/// Render a `TextInput` bound directly to the shared `Text` object at
-/// `bound`, syncing its content from `doc`. This is the local render of
-/// the converged document content.
 fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> LocalRender {
     let mut input = TextInput::new(Vec::new())
         .with_font_size(28.0)
@@ -256,18 +223,16 @@ fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> 
     render_widget(input, doc, presence)
 }
 
-/// Render a path-mode `TextInput` whose presence key is
-/// `Widget { path }` — so a remote caret published under the same key
-/// paints into this widget's local render.
+/// Presence key is `Widget { path }`, so a remote caret published under
+/// the same key paints into this widget's local render.
 fn render_presence_probe(path: Vec<PathSegment>, presence: &PresenceCtx) -> LocalRender {
-    let input = TextInput::new(path).with_font_size(28.0).with_plain_chrome();
+    let input = TextInput::new(path)
+        .with_font_size(28.0)
+        .with_plain_chrome();
     let mut throwaway = AutoCommit::new();
     render_widget(input, &mut throwaway, presence)
 }
 
-/// Assert two local frames are the same image: the same drawing (exact)
-/// and the same rasterisation up to the rasteriser's ±1 antialiasing
-/// wobble.
 #[track_caller]
 fn assert_same_frame(a: &LocalRender, b: &LocalRender, what: &str) {
     assert_eq!(a.drawn, b.drawn, "{what}: the drawn scene must match");
@@ -283,31 +248,31 @@ fn assert_same_frame(a: &LocalRender, b: &LocalRender, what: &str) {
     );
 }
 
-/// Count pixels that diverge from the BLACK background — a cheap proxy
-/// for "the render actually drew content".
 fn non_background_pixels(rgba: &[u8]) -> usize {
     rgba.chunks_exact(4)
-        .filter(|px| px[0] as u32 + px[1] as u32 + px[2] as u32 > 16 && px[3] > 16)
+        .filter(|px| u32::from(px[0]) + u32::from(px[1]) + u32::from(px[2]) > 16 && px[3] > 16)
         .count()
 }
 
-/// `QUICK_COLLAB_SOCK` / `QUICK_APP_ID` are process-global, and the
-/// tests in this binary run on parallel threads. Serialise the
-/// env-set + connect window so two `two_peers` calls never clobber
-/// each other's socket path while a manager is still connecting. Once
-/// `two_peers` returns, the managers hold their streams and the env is
-/// irrelevant, so the guard only spans construction.
+/// `QUICK_COLLAB_SOCK` / `QUICK_APP_ID` are process-global and tests in
+/// this binary run on parallel threads — serialise the env-set + connect
+/// window so two `two_peers` calls never clobber each other's socket
+/// path. The guard only spans construction; once connected the env is
+/// irrelevant.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Stand up the production broker on a per-pid socket and point two
-/// managers at it, attributed "alice" (peer A) and "bob" (peer B).
-fn two_peers(tag: &str) -> (CollaborationManager, CollaborationManager, std::path::PathBuf) {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+fn two_peers(
+    tag: &str,
+) -> (
+    CollaborationManager,
+    CollaborationManager,
+    std::path::PathBuf,
+) {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    let sock = std::env::temp_dir().join(format!(
-        "quick-coedit-{tag}-{}.sock",
-        std::process::id()
-    ));
+    let sock = std::env::temp_dir().join(format!("quick-coedit-{tag}-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock);
     let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind broker socket");
     thread::spawn(move || ui::collaboration::broker::serve(listener));
@@ -332,7 +297,6 @@ fn two_peers(tag: &str) -> (CollaborationManager, CollaborationManager, std::pat
     (a, b, sock)
 }
 
-/// Poll `mgr` until `f` yields a value or the deadline passes.
 fn poll_until<T>(
     mgr: &mut CollaborationManager,
     mut f: impl FnMut(&CollabEvent) -> Option<T>,
@@ -349,10 +313,10 @@ fn poll_until<T>(
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
     let (mut a, mut b, sock) = two_peers("render");
 
-    // Peer A owns the seed document: a Text object with "SEED".
     let mut a_doc = AutoCommit::new();
     a_doc.set_actor(automerge::ActorId::from(b"alice".as_slice()));
     let a_text = a_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
@@ -379,7 +343,6 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
     // A created — this is genuinely one shared CRDT object.
     assert_eq!(b_text, a_text, "both peers share one CRDT Text object id");
 
-    // B's local render of the shared state BEFORE the live edit.
     let empty_presence = PresenceCtx::empty();
     let b_before = render_bound(&mut b_doc, &b_text, &empty_presence);
     assert!(
@@ -387,13 +350,11 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
         "B's pre-edit render must show the seeded text"
     );
 
-    // Peer A types: an incremental live edit -> `SyncIncremental`.
     a_doc.splice_text(&a_text, 4, 0, "-EDIT").unwrap();
     let delta = a_doc.save_incremental();
     assert!(!delta.is_empty(), "the edit must produce a delta");
     a.send(CollabRequest::SyncIncremental { data: delta });
 
-    // B converges by applying the incremental over the real wire.
     let got = poll_until(&mut b, |ev| match ev {
         CollabEvent::CRDTIncremental { data } => Some(data.clone()),
         _ => None,
@@ -408,7 +369,6 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
     );
     assert_eq!(text_of(&a_doc), text_of(&b_doc), "the two peers converge");
 
-    // Each peer renders the converged shared state independently.
     let b_after = render_bound(&mut b_doc, &b_text, &empty_presence);
     let a_after = render_bound(&mut a_doc, &a_text, &empty_presence);
 
@@ -423,11 +383,7 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
         "the added text must add drawn pixels in B's local render"
     );
 
-    // The keystone assertion: B's independent local render of its own
-    // converged CRDT doc is the same image as A's independent local
-    // render of the same shared state. Neither peer streamed pixels to
-    // the other — they each drew the shared CRDT locally and arrived at
-    // the same frame.
+    // The keystone assertion.
     assert_same_frame(
         &a_after,
         &b_after,
@@ -441,6 +397,7 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn remote_caret_presence_round_trips_both_ways() {
     let (mut a, mut b, sock) = two_peers("presence");
 
@@ -448,7 +405,6 @@ fn remote_caret_presence_round_trips_both_ways() {
         path: vec![PathSegment::Field("text".into())],
     };
 
-    // A's caret moves -> B sees it, attributed to alice.
     a.send(CollabRequest::Presence {
         key: key.clone(),
         payload: PresencePayload::Caret { pos: 7 },
@@ -507,12 +463,8 @@ fn remote_caret_presence_round_trips_both_ways() {
 }
 
 // ---------------------------------------------------------------------
-// Permission-gated signed co-edit.
-//
-// This drives the exact enforcement pipeline the shell broker runs
-// (`collab_types::validate_inbound_op`), not a re-implementation: a
-// writer's op validates and applies; a viewer's op is rejected and
-// never mutates the peer doc or its render.
+// Permission-gated signed co-edit: drives the real
+// `collab_types::validate_inbound_op` pipeline, not a re-implementation.
 // ---------------------------------------------------------------------
 
 use collab_types::{
@@ -572,6 +524,7 @@ fn sign_delta(
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn signed_edit_is_permission_gated() {
     // One channel owner underwrites two members: a writer (Editor) and a
     // viewer (Viewer, no write capability). Both target the same Note
@@ -593,14 +546,12 @@ fn signed_edit_is_permission_gated() {
     state.register_attestation(writer_att);
     state.register_attestation(viewer_att);
 
-    // The shared receiving doc, seeded with a Text object.
     let mut peer_doc = AutoCommit::new();
     let t = peer_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();
     peer_doc.splice_text(&t, 0, 0, "base").unwrap();
     let bound = text_obj(&peer_doc).unwrap();
     let baseline_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
 
-    // The writer produces a real Automerge edit and signs it.
     let mut writer_doc = AutoCommit::load(&peer_doc.save()).unwrap();
     writer_doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
     let wt = text_obj(&writer_doc).unwrap();
@@ -630,7 +581,6 @@ fn signed_edit_is_permission_gated() {
         1,
     );
 
-    // The viewer's op is refused by the real validator BEFORE any merge.
     match validate_inbound_op(&viewer_op, &mut state) {
         Err(ValidationError::RoleForbidsOpClass) => {}
         other => panic!("viewer without write cap must be rejected, got {other:?}"),

@@ -86,8 +86,8 @@ pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
             command: cmd,
             launcher: spec.launcher_override,
         };
-        let sidecar_text = toml::to_string(&sidecar)
-            .map_err(|e| ShimError::EncodeSidecar(e.to_string()))?;
+        let sidecar_text =
+            toml::to_string(&sidecar).map_err(|e| ShimError::EncodeSidecar(e.to_string()))?;
         fs::write(&sidecar_target, sidecar_text).map_err(|e| ShimError::WriteSidecar {
             path: sidecar_target.clone(),
             source: e,
@@ -121,12 +121,12 @@ pub fn locate_shim_source() -> PathBuf {
     if let Some(over) = std::env::var_os("QOS_CLI_SHIM_PATH") {
         return PathBuf::from(over);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let sib = parent.join("qos-cli-shim");
-            if sib.exists() {
-                return sib;
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let sib = parent.join("qos-cli-shim");
+        if sib.exists() {
+            return sib;
         }
     }
     let system = PathBuf::from("/usr/libexec/qos-cli-shim");
@@ -174,7 +174,9 @@ fn set_executable(_path: &Path) -> Result<(), ShimError> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ShimError {
-    #[error("shim command name {0:?} is not filesystem-safe (empty, contains `/`, or starts with `.`)")]
+    #[error(
+        "shim command name {0:?} is not filesystem-safe (empty, contains `/`, or starts with `.`)"
+    )]
     BadCommandName(String),
     #[error("create dir {path}: {source}")]
     CreateDir {
@@ -252,7 +254,10 @@ mod tests {
         })
         .unwrap();
         let text = fs::read_to_string(bin_dir.join("notes.qos-shim")).unwrap();
-        assert!(text.contains("launcher"), "sidecar must carry launcher override; got: {text}");
+        assert!(
+            text.contains("launcher"),
+            "sidecar must carry launcher override; got: {text}"
+        );
         assert!(text.contains("/tmp/dev/qos-launcher"));
     }
 
@@ -285,7 +290,7 @@ mod tests {
             "../evil".to_string(),
             "a/b".to_string(),
             ".hidden".to_string(),
-            "".to_string(),
+            String::new(),
         ];
         for name in bad_names {
             let commands = vec![name.clone()];

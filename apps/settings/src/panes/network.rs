@@ -18,18 +18,18 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::{Dispatcher, WifiNetworkInfo, WiredInfo};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Button, Row, Spacer, Text, TextInput, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::widgets::{card, card_with_action, caption, rows, value_row, El};
+use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
 
 pub const WIFI_ENABLED_KEY: &str = "network.wifi_enabled";
 pub const REFRESH_KEY: &str = "network.refresh";
@@ -62,10 +62,9 @@ fn password_key(ssid: &str) -> String {
 
 /// Nerd Font (Material Design Icons) Wi-Fi signal-strength glyph for a 0..=4
 /// bar level. These are the same MDI `wifi-strength-*` family the sidebar's
-/// Network icon draws, so they render as real signal arcs. The previous
-/// Unicode block-element bars (`▁▂▄▆█`) have no glyph in the shipped fonts and
-/// fell back to a `.notdef` tofu box, which read as broken and conveyed no
-/// signal level.
+/// Network icon draws, so they render as real signal arcs. Unicode
+/// block-element bars (`▁▂▄▆█`) have no glyph in the shipped fonts and fall
+/// back to a `.notdef` tofu box — do not substitute those here.
 fn wifi_signal_glyph(signal: u8) -> &'static str {
     match signal {
         0 => "\u{f092b}", // wifi-strength-outline (no bars)
@@ -103,7 +102,7 @@ fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
 /// (or only thread-safe state).
 type NetworkLister = Arc<dyn Fn() -> Result<Vec<WifiNetworkInfo>, String> + Send + Sync>;
 
-/// A configured VPN / WireGuard connection and whether it is currently up.
+/// A configured VPN / `WireGuard` connection and whether it is currently up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VpnInfo {
     pub name: String,
@@ -113,14 +112,16 @@ pub struct VpnInfo {
 /// VPN-list provider — prod shells out to `nmcli`, tests supply a closure.
 type VpnLister = Arc<dyn Fn() -> Vec<VpnInfo> + Send + Sync>;
 
-/// Read the configured VPN connections from NetworkManager. Two `nmcli`
+/// Read the configured VPN connections from `NetworkManager`. Two `nmcli`
 /// calls: every connection (to find the VPN/WireGuard ones) and the active
 /// set (to mark which are up). Best-effort — an empty vec when `nmcli` is
 /// missing.
 fn read_vpn_connections() -> Vec<VpnInfo> {
     let run = |args: &[&str]| -> Option<String> {
         let out = Command::new("nmcli").args(args).output().ok()?;
-        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
     };
     let all = match run(&["-t", "-f", "NAME,TYPE", "connection", "show"]) {
         Some(s) => s,
@@ -134,7 +135,11 @@ fn read_vpn_connections() -> Vec<VpnInfo> {
 /// `NAME:TYPE`; a connection is a VPN when its type is `vpn` or
 /// `wireguard`. `active` lines are bare `NAME`s of up connections.
 pub fn parse_vpn_connections(all: &str, active: &str) -> Vec<VpnInfo> {
-    let active_names: Vec<&str> = active.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let active_names: Vec<&str> = active
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     let mut out = Vec::new();
     for line in all.lines() {
         // NAME may itself contain no colon in practice; split on the LAST
@@ -196,7 +201,7 @@ impl Default for NetworkPane {
 
 impl NetworkPane {
     pub fn new() -> Self {
-        let lister: NetworkLister = Arc::new(|| os_actions::list_wifi_networks());
+        let lister: NetworkLister = Arc::new(os_actions::list_wifi_networks);
         let networks = lister().unwrap_or_default();
         let initial_wifi = os_actions::get_wifi().unwrap_or(true);
         let wired = os_actions::get_wired().unwrap_or_default();
@@ -236,7 +241,7 @@ impl NetworkPane {
             networks,
             wired: WiredInfo::default(),
             vpns: Vec::new(),
-            vpn_lister: Arc::new(|| Vec::<VpnInfo>::new()),
+            vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
             needs_seed: true,
@@ -259,7 +264,7 @@ impl NetworkPane {
             networks,
             wired: WiredInfo::default(),
             vpns: Vec::new(),
-            vpn_lister: Arc::new(|| Vec::<VpnInfo>::new()),
+            vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             initial_wifi_enabled: true,
             last_wifi_enabled: true,
             needs_seed: true,
@@ -292,7 +297,7 @@ impl NetworkPane {
     }
 
     /// Rows for the VPN card — a read-only status list of configured
-    /// profiles. Connecting/disconnecting needs a privileged NetworkManager
+    /// profiles. Connecting/disconnecting needs a privileged `NetworkManager`
     /// action seam that isn't in this app yet, so the card reports status
     /// truthfully rather than offering a button that can't act.
     fn vpn_rows(&self) -> Vec<El> {
@@ -306,10 +311,16 @@ impl NetworkPane {
         for v in &self.vpns {
             out.push(value_row(
                 &v.name,
-                if v.active { "Connected" } else { "Disconnected" },
+                if v.active {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                },
             ));
         }
-        out.push(caption("VPN profiles are managed with your network connections."));
+        out.push(caption(
+            "VPN profiles are managed with your network connections.",
+        ));
         out
     }
 
@@ -359,15 +370,13 @@ impl NetworkPane {
                 }
             }
         }
-        wifi_rows.push(Box::new(
-            Row::new()
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(Button::new(
-                    "settings.network.refresh",
-                    "\u{f0450}  Refresh",
-                    Some(REFRESH_KEY),
-                ))),
-        ));
+        wifi_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
+            Box::new(Button::new(
+                "settings.network.refresh",
+                "\u{f0450}  Refresh",
+                Some(REFRESH_KEY),
+            )),
+        )));
         wifi_rows.push(caption(
             "Wi-Fi scanning and connection are best-effort via nmcli; \
              secure networks prompt for a password before joining.",
@@ -449,10 +458,7 @@ impl NetworkPane {
         if let Some(dev) = &self.wired.device {
             out.push(value_row("Interface", dev));
         }
-        out.push(value_row(
-            "IPv4",
-            self.wired.ipv4.as_deref().unwrap_or("—"),
-        ));
+        out.push(value_row("IPv4", self.wired.ipv4.as_deref().unwrap_or("—")));
         out
     }
 
@@ -504,14 +510,12 @@ impl Widget for NetworkPane {
                     WIFI_ENABLED_KEY,
                     automerge::ScalarValue::Boolean(self.initial_wifi_enabled),
                 );
-            } else {
+            } else if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIFI_ENABLED_KEY)
+                && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            {
                 // Adopt the existing value so the dispatcher-change guard
                 // doesn't re-fire `set_wifi` on the first post-rebuild sync.
-                if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIFI_ENABLED_KEY) {
-                    if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                        self.last_wifi_enabled = *b;
-                    }
-                }
+                self.last_wifi_enabled = *b;
             }
             let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
             // Seed the expansion mirror from the field so a pre-expanded
@@ -534,16 +538,14 @@ impl Widget for NetworkPane {
         }
 
         // Wi-Fi toggle.
-        if let Ok(Some((val, _))) = state.get(root, WIFI_ENABLED_KEY) {
-            if let Value::Scalar(s) = val {
-                if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                    if *b != self.last_wifi_enabled {
-                        self.last_wifi_enabled = *b;
-                        if let Err(e) = self.dispatcher.set_wifi(*b) {
-                            warn!(target: "qos::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
-                        }
-                    }
-                }
+        if let Ok(Some((val, _))) = state.get(root, WIFI_ENABLED_KEY)
+            && let Value::Scalar(s) = val
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            && *b != self.last_wifi_enabled
+        {
+            self.last_wifi_enabled = *b;
+            if let Err(e) = self.dispatcher.set_wifi(*b) {
+                warn!(target: "qos::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
             }
         }
 
@@ -557,7 +559,9 @@ impl Widget for NetworkPane {
             let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
             match (self.lister)() {
                 Ok(nets) => self.networks = nets,
-                Err(e) => warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed"),
+                Err(e) => {
+                    warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed");
+                }
             }
             self.vpns = (self.vpn_lister)();
         }
@@ -640,24 +644,23 @@ impl Widget for NetworkPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -686,22 +689,21 @@ impl Widget for NetworkPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -721,7 +723,7 @@ impl Widget for NetworkPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NetworkPane"
     }
 
@@ -737,8 +739,7 @@ impl Widget for NetworkPane {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -786,7 +787,10 @@ mod tests {
                 "signal {signal} glyph U+{cp:04X} must be an MDI wifi-strength glyph"
             );
             // Never a Unicode block element (the old tofu bars).
-            assert!(!(0x2580..=0x259F).contains(&cp), "block-element bars are tofu");
+            assert!(
+                !(0x2580..=0x259F).contains(&cp),
+                "block-element bars are tofu"
+            );
         }
         // Distinct levels for 1..=4 so strength is legible at a glance.
         let levels: Vec<&str> = (1u8..=4).map(wifi_signal_glyph).collect();
@@ -798,11 +802,8 @@ mod tests {
     fn wifi_list_renders_each_returned_network() {
         let rec = Arc::new(RecordingDispatcher::default());
         let nets = sample_networks();
-        let pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            nets.clone(),
-        );
+        let pane =
+            NetworkPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, true, nets);
         assert_eq!(pane.networks().len(), 3);
         let by_ssid: Vec<&str> = pane.networks().iter().map(|n| n.ssid.as_str()).collect();
         assert_eq!(by_ssid, vec!["Home_Network", "Cafe_Guest", "Neighbour_5G"]);
@@ -822,7 +823,11 @@ mod tests {
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         // User flips the toggle off.
-        let _ = doc.put(&root, WIFI_ENABLED_KEY, automerge::ScalarValue::Boolean(false));
+        let _ = doc.put(
+            &root,
+            WIFI_ENABLED_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
         pane.sync(&mut doc, &root);
         assert_eq!(rec.calls(), vec!["set_wifi(false)"]);
     }
@@ -852,7 +857,7 @@ mod tests {
     fn refresh_button_replaces_network_list() {
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
             sample_networks(),
         );
@@ -883,18 +888,28 @@ mod tests {
         calls: std::sync::Mutex<Vec<String>>,
     }
     impl Dispatcher for PwRecorder {
-        fn set_brightness(&self, _p: f32) -> Result<(), String> { Ok(()) }
-        fn set_volume(&self, _p: f32) -> Result<(), String> { Ok(()) }
-        fn set_wifi(&self, _e: bool) -> Result<(), String> { Ok(()) }
-        fn set_bluetooth(&self, _e: bool) -> Result<(), String> { Ok(()) }
-        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("connect_wifi({ssid}, pw={})", password.unwrap_or("<none>")));
+        fn set_brightness(&self, _p: f32) -> Result<(), String> {
             Ok(())
         }
-        fn set_power_profile(&self, _p: os_actions::PowerProfile) -> Result<(), String> { Ok(()) }
+        fn set_volume(&self, _p: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_wifi(&self, _e: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_bluetooth(&self, _e: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!(
+                "connect_wifi({ssid}, pw={})",
+                password.unwrap_or("<none>")
+            ));
+            Ok(())
+        }
+        fn set_power_profile(&self, _p: os_actions::PowerProfile) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     /// Clicking "Connect" on a SECURE network does not connect immediately —
@@ -957,7 +972,7 @@ mod tests {
     fn second_connect_press_collapses_prompt() {
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
             sample_networks(),
         );
@@ -1009,8 +1024,14 @@ mod tests {
     #[test]
     fn vpn_rows_reflect_configured_profiles() {
         let pane = NetworkPane::new_demo(sample_networks()).with_vpns(vec![
-            VpnInfo { name: "Work VPN".into(), active: true },
-            VpnInfo { name: "Home WG".into(), active: false },
+            VpnInfo {
+                name: "Work VPN".into(),
+                active: true,
+            },
+            VpnInfo {
+                name: "Home WG".into(),
+                active: false,
+            },
         ]);
         assert_eq!(pane.vpns().len(), 2);
         // 2 status rows + 1 caption.

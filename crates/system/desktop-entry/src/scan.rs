@@ -1,21 +1,18 @@
 //! Finding every application entry installed on the host.
 //!
-//! The search path is the XDG one: `$XDG_DATA_HOME/applications` first,
-//! then each `$XDG_DATA_DIRS` entry's `applications` in order. Flatpak's
-//! two export roots are appended when the environment did not already
-//! name them — on a desktop session Flatpak puts them in `XDG_DATA_DIRS`
-//! itself, but a compositor started from a bare service manager may not
-//! have inherited that, and the apps are installed either way.
+//! The search path is the XDG one: `$XDG_DATA_HOME/applications` first, then each
+//! `$XDG_DATA_DIRS` entry's `applications` in order. Flatpak's two export roots are appended
+//! when the environment did not already name them — a desktop session usually puts them in
+//! `XDG_DATA_DIRS` itself, but a compositor started from a bare service manager may not have
+//! inherited that, and the apps are installed either way.
 //!
 //! ## Precedence
 //!
-//! Entries are keyed by desktop-file ID — the path relative to the
-//! `applications` directory with `/` folded to `-`. The **first**
-//! directory in the search order that provides an ID wins, and a later
-//! one is discarded: that is what makes a user's
-//! `~/.local/share/applications/foo.desktop` override the system's. A
-//! `Hidden=true` entry is the spec's tombstone; it wins the same way and
-//! then removes the ID from the result entirely.
+//! Entries are keyed by desktop-file ID — the path relative to the `applications` directory
+//! with `/` folded to `-`. The **first** directory in the search order that provides an ID
+//! wins, and a later one is discarded — what makes a user's
+//! `~/.local/share/applications/foo.desktop` override the system's. A `Hidden=true` entry is
+//! the spec's tombstone; it wins the same way and then removes the ID entirely.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -24,25 +21,21 @@ use std::path::{Path, PathBuf};
 use crate::entry::{DesktopEntry, EntryType, parse};
 use crate::locale::locale_candidates;
 
-/// `XDG_CURRENT_DESKTOP` this desktop announces, and the name
-/// `OnlyShowIn` / `NotShowIn` are matched against.
+/// `XDG_CURRENT_DESKTOP` this desktop announces, and the name `OnlyShowIn` / `NotShowIn`
+/// are matched against.
 pub const CURRENT_DESKTOP: &str = "nirios";
 
-/// What a scan turned up, plus what it declined and why.
-///
-/// The counters are not decoration. "The app I installed is not in the
-/// palette" has half a dozen legitimate causes — `NoDisplay`, a
-/// `TryExec` that does not resolve, a desktop filter, a tombstone — and
-/// an answer that reports only the survivors cannot distinguish any of
-/// them from a scanner bug.
+/// What a scan turned up, plus what it declined and why. The counters are not decoration:
+/// "the app I installed is not in the palette" has half a dozen legitimate causes
+/// (`NoDisplay`, an unresolved `TryExec`, a desktop filter, a tombstone), and reporting only
+/// the survivors couldn't distinguish any of them from a scanner bug.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanStats {
     /// `.desktop` files read.
     pub files_seen: usize,
     /// Files that did not parse as a desktop entry at all.
     pub unparseable: usize,
-    /// Dropped because a higher-precedence directory already provided
-    /// the same ID.
+    /// Dropped because a higher-precedence directory already provided the same ID.
     pub shadowed: usize,
     /// Removed by a `Hidden=true` tombstone.
     pub tombstoned: usize,
@@ -58,15 +51,13 @@ pub struct ScanStats {
     pub no_exec: usize,
 }
 
-/// The result of one scan: the launchable entries, sorted by name, plus
-/// the accounting.
+/// The result of one scan: the launchable entries, sorted by name, plus the accounting.
 #[derive(Debug, Clone, Default)]
 pub struct Scan {
     pub entries: Vec<DesktopEntry>,
     pub stats: ScanStats,
-    /// The directories that were searched, in precedence order. Kept so
-    /// a cache can stat them for changes and a diagnostic can print
-    /// them.
+    /// The directories that were searched, in precedence order. Kept so a cache can stat them
+    /// for changes and a diagnostic can print them.
     pub dirs: Vec<PathBuf>,
 }
 
@@ -76,10 +67,8 @@ impl Scan {
     }
 }
 
-/// The `applications` directories to search, in precedence order.
-///
-/// Reads the environment, so it reflects the session the compositor
-/// actually started in rather than a compiled-in guess.
+/// The `applications` directories to search, in precedence order. Reads the environment, so
+/// it reflects the session the compositor actually started in rather than a compiled-in guess.
 pub fn application_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut push = |dir: PathBuf| {
@@ -94,25 +83,21 @@ pub fn application_dirs() -> Vec<PathBuf> {
     for base in data_dirs() {
         push(base.join("applications"));
     }
-    // Flatpak's exports. Appended, not prepended: if the session already
-    // put them in XDG_DATA_DIRS the dedup above keeps their real
-    // precedence, and if it did not, the apps are still found — at the
-    // bottom, which is correct, because anything a user or the system
-    // installed by hand should override an export.
+    // Flatpak's exports. Appended, not prepended: the dedup above keeps their real precedence if
+    // the session already listed them, and appending is correct otherwise — a hand-installed
+    // entry should override an export.
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         push(home.join(".local/share/flatpak/exports/share/applications"));
     }
-    push(PathBuf::from(
-        "/var/lib/flatpak/exports/share/applications",
-    ));
+    push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
     dirs
 }
 
 fn data_home() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir));
-        }
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
+        && !dir.is_empty()
+    {
+        return Some(PathBuf::from(dir));
     }
     let home = std::env::var_os("HOME")?;
     if home.is_empty() {
@@ -137,19 +122,16 @@ pub fn scan() -> Scan {
     scan_dirs(&application_dirs(), &[CURRENT_DESKTOP.to_string()])
 }
 
-/// Scan an explicit list of `applications` directories, in precedence
-/// order, filtering for `desktop`.
-///
-/// Split out from [`scan`] so tests drive real directories they built,
-/// rather than whatever the machine running them happens to have
-/// installed.
+/// Scan an explicit list of `applications` directories, in precedence order, filtering for
+/// `desktop`. Split out from [`scan`] so tests drive real directories they built, rather
+/// than whatever the machine running them happens to have installed.
 pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
     let locales = locale_candidates();
     let mut stats = ScanStats::default();
     // id -> entry, first writer wins.
     let mut claimed: BTreeMap<String, DesktopEntry> = BTreeMap::new();
-    // IDs a tombstone has removed. Recorded separately so a later
-    // directory's file for the same ID stays suppressed.
+    // IDs a tombstone has removed. Recorded separately so a later directory's file for the same
+    // ID stays suppressed.
     let mut tombstoned: Vec<String> = Vec::new();
 
     for dir in dirs {
@@ -194,11 +176,11 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
             stats.other_desktop += 1;
             continue;
         }
-        if let Some(try_exec) = entry.try_exec.as_deref() {
-            if !program_exists(try_exec) {
-                stats.try_exec_missing += 1;
-                continue;
-            }
+        if let Some(try_exec) = entry.try_exec.as_deref()
+            && !program_exists(try_exec)
+        {
+            stats.try_exec_missing += 1;
+            continue;
         }
         entries.push(entry);
     }
@@ -216,12 +198,9 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
     }
 }
 
-/// Every `.desktop` file under `dir`, with its desktop-file ID.
-///
-/// The spec makes subdirectories part of the ID
-/// (`kde4/konsole.desktop` → `kde4-konsole`), so this walks rather than
-/// listing. Depth is capped because the ID is the only thing depth buys
-/// and a symlink loop is not worth the risk.
+/// Every `.desktop` file under `dir`, with its desktop-file ID. The spec makes subdirectories
+/// part of the ID (`kde4/konsole.desktop` → `kde4-konsole`), so this walks rather than lists;
+/// depth is capped since it's the only thing depth buys and a symlink loop isn't worth the risk.
 fn entry_files(dir: &Path) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     walk(dir, dir, 0, &mut out);
@@ -243,10 +222,10 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>)
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        // `metadata()` follows symlinks, which is what we want: Flatpak
-        // and distribution packaging both export entries as symlinks.
+        // `metadata()` follows symlinks, which is what we want: Flatpak and distribution packaging
+        // both export entries as symlinks.
         let is_dir = if file_type.is_symlink() {
-            std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false)
+            std::fs::metadata(&path).is_ok_and(|m| m.is_dir())
         } else {
             file_type.is_dir()
         };
@@ -271,8 +250,8 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>)
     }
 }
 
-/// Whether `TryExec` names something runnable. An absolute path is
-/// checked directly; a bare name is looked up on `PATH`.
+/// Whether `TryExec` names something runnable. An absolute path is checked directly; a bare
+/// name is looked up on `PATH`.
 pub fn program_exists(program: &str) -> bool {
     let program = program.trim();
     if program.is_empty() {
@@ -293,9 +272,7 @@ pub fn program_exists(program: &str) -> bool {
 
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]
@@ -328,8 +305,8 @@ mod tests {
         assert_eq!(scan.entries[0].id, "kde4-konsole");
     }
 
-    /// The whole point of the precedence order: a user's file replaces
-    /// the system's, and the system's copy is not offered twice.
+    /// The whole point of the precedence order: a user's file replaces the system's, and the
+    /// system's copy is not offered twice.
     #[test]
     fn the_first_directory_to_provide_an_id_wins() {
         let user = tempfile::tempdir().unwrap();
@@ -340,7 +317,12 @@ mod tests {
             &[user.path().to_path_buf(), system.path().to_path_buf()],
             &nirios(),
         );
-        assert_eq!(scan.entries.len(), 1, "one id, one entry: {:?}", scan.entries);
+        assert_eq!(
+            scan.entries.len(),
+            1,
+            "one id, one entry: {:?}",
+            scan.entries
+        );
         assert_eq!(scan.entries[0].name, "Mine");
         assert_eq!(scan.stats.shadowed, 1);
     }

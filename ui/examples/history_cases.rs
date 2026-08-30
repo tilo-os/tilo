@@ -1,7 +1,7 @@
 //! Renders the history surfaces over real documents, one PNG per case.
 //!
 //! ```bash
-//! cargo run -p ui --example history_cases -- target/shots-history
+//! cargo run -p ui --example ui-shots -- history_cases target/shots-history
 //! ```
 //!
 //! Every case here builds an **automerge document**, edits it through `qdoc` (or
@@ -55,7 +55,11 @@ fn three_session_doc() -> AutoCommit {
     qdoc::history::commit_stamped_at(&mut doc, base);
 
     let para = {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let id = dm.insert_block(None, "paragraph");
         dm.splice_text(&id, 0, 0, "Quarterly report");
         id
@@ -65,9 +69,12 @@ fn three_session_doc() -> AutoCommit {
     // Session one: six edits about twenty seconds apart.
     for i in 0..6 {
         let at = text_len(&doc, &root);
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         dm.splice_text(&para, at, 0, " Revenue held steady.");
-        drop(dm);
         qdoc::history::commit_stamped_at(&mut doc, base + 40 + i * 20);
     }
 
@@ -79,9 +86,12 @@ fn three_session_doc() -> AutoCommit {
         let at = text_len(&peer, &root);
         let cc = qdoc::model::open(&peer, &root).unwrap();
         let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut peer, c: &cc, ids: &mut pids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut peer,
+            c: &cc,
+            ids: &mut pids,
+        };
         dm.splice_text(&para, at, 0, " Costs fell by four percent.");
-        drop(dm);
         qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
     }
     doc.merge(&mut peer).expect("peers merge");
@@ -90,9 +100,12 @@ fn three_session_doc() -> AutoCommit {
     for i in 0..7 {
         let at = text_len(&doc, &root);
         let cc = qdoc::model::open(&doc, &root).unwrap();
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &cc, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &cc,
+            ids: &mut ids,
+        };
         dm.splice_text(&para, at, 0, " Headcount is unchanged.");
-        drop(dm);
         qdoc::history::commit_stamped_at(&mut doc, base + 4 * 3600 + i * 25);
     }
     doc
@@ -103,8 +116,7 @@ fn text_len(doc: &AutoCommit, root: &automerge::ObjId) -> usize {
     qdoc::model::materialize(doc, &c)
         .blocks
         .first()
-        .map(|b| b.text.chars().count())
-        .unwrap_or(0)
+        .map_or(0, |b| b.text.chars().count())
 }
 
 /// A document three people took turns editing, so most runs are one change long.
@@ -122,7 +134,11 @@ fn singleton_bands_doc() -> AutoCommit {
     let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
     qdoc::history::commit_stamped_at(&mut doc, NOW_SECS as i64 - 900);
     let para = {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let id = dm.insert_block(None, "paragraph");
         dm.splice_text(&id, 0, 0, "Alice starts.");
         id
@@ -139,9 +155,12 @@ fn singleton_bands_doc() -> AutoCommit {
         let at = text_len(&peer, &root);
         let cc = qdoc::model::open(&peer, &root).unwrap();
         let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut peer, c: &cc, ids: &mut pids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut peer,
+            c: &cc,
+            ids: &mut pids,
+        };
         dm.splice_text(&para, at, 0, text);
-        drop(dm);
         qdoc::history::commit_stamped_at(&mut peer, NOW_SECS as i64 - ago);
         doc.merge(&mut peer).expect("peers merge");
     }
@@ -155,11 +174,11 @@ fn rows(doc: &mut AutoCommit) -> Vec<HistoryEntry> {
     // "Unknown participant" path.
     authors.register(
         &hex_actor("alice"),
-        ui::HistoryAuthor::new("Alice", 210.0, &short(&hex_actor("alice"))),
+        ui::HistoryAuthor::new("Alice", 210.0, short(&hex_actor("alice"))),
     );
     authors.register(
         &hex_actor("Ada Lovelace"),
-        ui::HistoryAuthor::new("Ada Lovelace", 320.0, &short(&hex_actor("Ada Lovelace"))),
+        ui::HistoryAuthor::new("Ada Lovelace", 320.0, short(&hex_actor("Ada Lovelace"))),
     );
     HistorySource::new()
         .with_authors(authors)
@@ -196,16 +215,17 @@ impl Shot {
         self.n += 1;
         let path = self.dir.join(format!("{:02}-{name}.png", self.n));
         std::fs::create_dir_all(&self.dir).ok();
-        OffscreenRenderer::new(w, h).render_png(
-            &scene,
-            theme.tokens.colors.surfaces.base,
-            &path,
-        );
+        OffscreenRenderer::new(w, h).render_png(&scene, theme.tokens.colors.surfaces.base, &path);
         println!("  {}", path.display());
     }
 }
 
-fn timeline(w: f64, h: f64, entries: Vec<HistoryEntry>, named: Vec<ui::NamedRange>) -> ActivityTimeline {
+fn timeline(
+    w: f64,
+    h: f64,
+    entries: Vec<HistoryEntry>,
+    named: Vec<ui::NamedRange>,
+) -> ActivityTimeline {
     let mut t = ActivityTimeline::with_entries(entries);
     t.set_named_ranges(named);
     t.set_rect(Rect::new(0.0, 0.0, w, h));
@@ -237,9 +257,10 @@ fn segments(entries: &[HistoryEntry], named: &[ui::NamedRange]) -> Vec<ScrubberG
         .collect()
 }
 
-fn main() {
-    let dir = std::env::args()
-        .nth(1)
+pub fn run(args: &[String]) {
+    let dir = args
+        .first()
+        .cloned()
         .unwrap_or_else(|| "target/shots-history".to_string());
     let mut shot = Shot {
         dir: PathBuf::from(&dir),
@@ -258,7 +279,12 @@ fn main() {
     // band reads "named by Ada Lovelace" for everyone else.
     let mut peer = doc.fork();
     peer.set_actor(automerge::ActorId::from("Ada Lovelace".as_bytes()));
-    ui::history_groups::name_range(&mut peer, &entries[8].id, Some(&entries[11].id), "Costs section");
+    ui::history_groups::name_range(
+        &mut peer,
+        &entries[8].id,
+        Some(&entries[11].id),
+        "Costs section",
+    );
     qdoc::history::commit_stamped_at(&mut peer, NOW_SECS as i64 - 2 * 3600);
     doc.merge(&mut peer).expect("peers merge");
 
@@ -355,7 +381,9 @@ fn main() {
         "  (bands-of-one case: {} changes, {} lines, {} bands)",
         t.visible_len(),
         t.row_count(),
-        (0..t.row_count()).filter(|i| t.group_at_row(*i).is_some()).count()
+        (0..t.row_count())
+            .filter(|i| t.group_at_row(*i).is_some())
+            .count()
     );
     shot.paint("bands-of-one", 520, 300, &mut t);
 
@@ -367,7 +395,9 @@ fn main() {
     println!(
         "  (one-change case: {} lines, {} bands)",
         t.row_count(),
-        (0..t.row_count()).filter(|i| t.group_at_row(*i).is_some()).count()
+        (0..t.row_count())
+            .filter(|i| t.group_at_row(*i).is_some())
+            .count()
     );
     shot.paint("one-change", 520, 300, &mut t);
 
@@ -447,7 +477,7 @@ fn main() {
 
     // Narrow strips: the button row has to shed buttons rather than overlap.
     for w in [620u32, 460, 360] {
-        let mut s = scrubber(w as f64, entries.clone(), segs.clone());
+        let mut s = scrubber(f64::from(w), entries.clone(), segs.clone());
         s.set_current_tick(entries.len() - 1);
         shot.paint(&format!("strip-narrow-{w}"), w, h, &mut s);
     }
@@ -461,8 +491,13 @@ fn main() {
 
     // One change, and none at all.
     let single_segs = segments(&single_entries, &[]);
-    let mut s = scrubber(1000.0, single_entries.clone(), single_segs);
-    shot.paint("strip-bands-of-one", 1000, s.natural_height() as u32, &mut s);
+    let mut s = scrubber(1000.0, single_entries, single_segs);
+    shot.paint(
+        "strip-bands-of-one",
+        1000,
+        s.natural_height() as u32,
+        &mut s,
+    );
     let mut s = scrubber(1000.0, Vec::new(), Vec::new());
     shot.paint("strip-no-history", 1000, s.natural_height() as u32, &mut s);
 
@@ -475,11 +510,11 @@ fn author_dir() -> AuthorDirectory {
     let mut authors = AuthorDirectory::new();
     authors.register(
         &hex_actor("alice"),
-        ui::HistoryAuthor::new("Alice", 210.0, &short(&hex_actor("alice"))),
+        ui::HistoryAuthor::new("Alice", 210.0, short(&hex_actor("alice"))),
     );
     authors.register(
         &hex_actor("Ada Lovelace"),
-        ui::HistoryAuthor::new("Ada Lovelace", 320.0, &short(&hex_actor("Ada Lovelace"))),
+        ui::HistoryAuthor::new("Ada Lovelace", 320.0, short(&hex_actor("Ada Lovelace"))),
     );
     authors
 }

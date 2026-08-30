@@ -17,7 +17,9 @@ pub struct OfflineBackend {
 
 impl OfflineBackend {
     pub fn new() -> Self {
-        Self { model: crate::sample::model() }
+        Self {
+            model: crate::sample::model(),
+        }
     }
 
     /// Build over an explicit model (used by tests / a future cache).
@@ -33,7 +35,7 @@ impl Default for OfflineBackend {
 }
 
 impl YtBackend for OfflineBackend {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "offline sample"
     }
 
@@ -67,8 +69,8 @@ impl YtBackend for OfflineBackend {
     }
 
     fn trending(&self) -> BackendOutcome {
-        let mut vids: Vec<_> = self.model.videos.iter().cloned().collect();
-        vids.sort_by(|a, b| b.views.cmp(&a.views));
+        let mut vids: Vec<_> = self.model.videos.clone();
+        vids.sort_by_key(|v| std::cmp::Reverse(v.views));
         Ok(BackendResult::Videos(vids))
     }
 }
@@ -89,7 +91,10 @@ mod tests {
     #[test]
     fn offline_video_and_related_resolve() {
         let b = OfflineBackend::new();
-        assert!(matches!(b.video("vid_rust_async"), Ok(BackendResult::Video(_))));
+        assert!(matches!(
+            b.video("vid_rust_async"),
+            Ok(BackendResult::Video(_))
+        ));
         let BackendResult::Videos(rel) = b.related("vid_rust_async").unwrap() else {
             panic!("Videos")
         };
@@ -99,7 +104,9 @@ mod tests {
     #[test]
     fn offline_trending_is_view_sorted() {
         let b = OfflineBackend::new();
-        let BackendResult::Videos(v) = b.trending().unwrap() else { panic!() };
+        let BackendResult::Videos(v) = b.trending().unwrap() else {
+            panic!()
+        };
         for w in v.windows(2) {
             assert!(w[0].views >= w[1].views, "trending sorted by views desc");
         }

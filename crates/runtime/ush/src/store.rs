@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use crate::layer::{Layer, LayerKind};
 
-/// Environment override for the store root. Set by tests, and by anyone
-/// running two independent runtimes on one machine.
+/// Environment override for the store root; set by tests or to run two
+/// independent runtimes on one machine.
 pub const STORE_ENV: &str = "QOS_USH_HOME";
 
 /// The layer store.
@@ -81,11 +81,10 @@ impl Store {
     }
 
     /// The guest's home directory — one per store, shared by every session.
-    ///
-    /// This is what makes "your home directory is write-isolated by default"
-    /// concrete: the guest's `$HOME` is *this* directory bound over the real
-    /// one, so a shell inside sees its own dotfiles and none of your files.
-    /// `perm trust-dir` is the only way a real directory appears.
+    /// This is what makes "write-isolated by default" concrete: the guest's
+    /// `$HOME` is bound over the real one, so a shell sees its own dotfiles and
+    /// none of the user's files; `perm trust-dir` is the only way a real
+    /// directory appears.
     pub fn guest_home(&self) -> PathBuf {
         self.root.join("home")
     }
@@ -102,9 +101,8 @@ impl Store {
         ] {
             std::fs::create_dir_all(&dir)?;
         }
-        // The store carries the user's permission decisions and the record of
-        // what asked for them. Other users on the machine have no business
-        // reading either.
+        // The store carries permission decisions and the record of what asked for
+        // them; other users on the machine have no business reading either.
         restrict_to_owner(&self.root)?;
         Ok(())
     }
@@ -116,10 +114,7 @@ impl Store {
 
     /// An ephemeral layer for one session.
     pub fn ephemeral_layer(&self, session_id: &str) -> Layer {
-        Layer::new(
-            self.ephemeral_dir().join(session_id),
-            LayerKind::Ephemeral,
-        )
+        Layer::new(self.ephemeral_dir().join(session_id), LayerKind::Ephemeral)
     }
 
     /// Every ephemeral layer currently on disk, newest name last.
@@ -177,7 +172,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("ush"));
         store.ensure().unwrap();
-        let mode = std::fs::metadata(store.root()).unwrap().permissions().mode();
+        let mode = std::fs::metadata(store.root())
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(
             mode & 0o077,
             0,

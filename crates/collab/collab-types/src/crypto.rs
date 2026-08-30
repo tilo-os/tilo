@@ -1,43 +1,29 @@
 //! Ed25519 signing + verification primitives.
 //!
-//! Ed25519 is the spec-mandated signature scheme: it is fast (~70µs
-//! per sign on commodity hardware — negligible vs human typing
-//! latency), deterministic (no per-signature RNG required after key
-//! generation), and has small (32-byte pubkey, 64-byte signature)
-//! on-wire artifacts. We use `ed25519-dalek` because it is the most
-//! widely audited Rust implementation; the API surface used here is
-//! the stable `2.x` shape.
+//! Ed25519 is the spec-mandated scheme: fast (~70µs/sign, negligible vs
+//! human typing latency), deterministic (no per-signature RNG), small
+//! (32-byte pubkey, 64-byte signature) on-wire artifacts. Uses
+//! `ed25519-dalek` (the most widely audited Rust implementation), stable
+//! `2.x` API.
 //!
 //! ## Newtypes
 //!
-//! We re-export `Ed25519PublicKey` and `Signature` as newtypes around
-//! the `ed25519-dalek` primitives. The reasons:
-//!
-//! 1. Stable wire shape across `ed25519-dalek` major bumps. If the
-//!    underlying crate breaks its `VerifyingKey`/`Signature` `serde`
-//!    impl, this crate adapts in one place.
-//! 2. Trait isolation: the newtypes derive `PartialEq`, `Eq`, `Hash`,
-//!    `Ord` so they can be used as `HashMap` / `BTreeMap` keys
-//!    without callers needing to know that the underlying type
-//!    doesn't implement those traits.
-//! 3. Smaller blast radius: we don't want `dalek` types in every
-//!    crate that consumes us.
+//! `Ed25519PublicKey`/`Signature` wrap the dalek primitives so: (1) a
+//! wire-shape break in dalek's own `serde` impl is adapted in one place;
+//! (2) they derive `PartialEq`/`Eq`/`Hash`/`Ord` for map keys without the
+//! underlying type needing to; (3) dalek types don't leak into every
+//! downstream crate.
 //!
 //! ## Signing API
 //!
-//! - [`sign_event`] / [`verify_event`]: generic helpers for the
-//!   `ChannelEvent` variants. Each variant carries its own
-//!   `signature: Signature` field and the wire bytes that bind into
-//!   the signature are produced by the variant's `signing_bytes()`
-//!   helper (see [`crate::event`]).
-//! - [`sign_op`] / [`verify_op`]: specialised wrappers for
-//!   [`crate::op::SignedOp`]. The op envelope's signature covers
-//!   every other field of the struct in canonical-bytes form.
+//! [`sign_event`]/[`verify_event`] are generic helpers for `ChannelEvent`
+//! variants, each with its own `signature` field and a `signing_bytes()`
+//! helper (see [`crate::event`]). [`sign_op`]/[`verify_op`] specialise for
+//! [`crate::op::SignedOp`], whose signature covers every other field in
+//! canonical-bytes form.
 //!
-//! Verification returns `Result<(), VerifyError>` so callers can
-//! pattern-match the failure mode. Signing is infallible at this
-//! layer — the actual `ed25519-dalek` sign call cannot fail with the
-//! `2.x` API.
+//! Verification returns `Result<(), VerifyError>`; signing is infallible
+//! at this layer.
 
 use ed25519_dalek::Signer;
 use ed25519_dalek::Verifier;
@@ -48,21 +34,19 @@ use thiserror::Error;
 use crate::canonical::{CanonicalError, canonical_bytes};
 use crate::op::SignedOp;
 
-/// Public half of an Ed25519 keypair. 32 bytes on the wire.
+/// Public half of an Ed25519 keypair, 32 bytes on the wire.
 ///
-/// Wrapped so we can derive `Eq`/`Hash`/`Ord` and shield consumers
-/// from `ed25519-dalek` major-version churn. The wrapped type is
-/// `[u8; 32]` rather than `ed25519_dalek::VerifyingKey` so that
-/// equality and hashing are byte-exact and free; conversion to the
-/// dalek type happens at verify time.
+/// Wrapped as `[u8; 32]` (not `ed25519_dalek::VerifyingKey`) so equality
+/// and hashing are byte-exact and free; conversion to the dalek type
+/// happens at verify time.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Ed25519PublicKey(pub [u8; 32]);
 
 impl std::fmt::Debug for Ed25519PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Print first 4 + last 4 bytes hex. Full 32-byte hex spam is
-        // useless in logs; the short form is enough to disambiguate.
+        // Print first 4 + last 4 bytes hex — full 32-byte hex spam is
+        // useless in logs, the short form disambiguates.
         let s = self.0;
         write!(
             f,
@@ -73,12 +57,9 @@ impl std::fmt::Debug for Ed25519PublicKey {
 }
 
 impl Ed25519PublicKey {
-    /// Construct from raw bytes. Does NOT validate the bytes form a
-    /// point on the curve; that check happens lazily at verify time.
-    /// We accept "syntactically a public key" here because the wire
-    /// might carry an invalid key from a malicious peer and we want
-    /// the validator (not the deserialiser) to be the rejection
-    /// point.
+    /// Construct from raw bytes. Does NOT validate the bytes form a curve
+    /// point — that happens lazily at verify time, so the validator (not the
+    /// deserialiser) is the rejection point for a malicious peer's key.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -88,18 +69,15 @@ impl Ed25519PublicKey {
         &self.0
     }
 
-    /// Convert into the underlying `ed25519-dalek` verifying key.
-    /// Fails if the bytes do not decode to a valid curve point.
+    /// Convert into the underlying `ed25519-dalek` verifying key. Fails if
+    /// the bytes don't decode to a valid curve point.
     fn to_verifying_key(self) -> Result<ed25519_dalek::VerifyingKey, VerifyError> {
         ed25519_dalek::VerifyingKey::from_bytes(&self.0).map_err(|_| VerifyError::InvalidPublicKey)
     }
 }
 
-/// Detached Ed25519 signature. 64 bytes on the wire.
-///
-/// Same rationale for the newtype wrapper as [`Ed25519PublicKey`]:
-/// stable wire shape, `Eq`/`Hash` for use in `HashMap`s, and trait
-/// isolation from the dalek dependency.
+/// Detached Ed25519 signature, 64 bytes on the wire. Same newtype
+/// rationale as [`Ed25519PublicKey`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Signature(#[serde(with = "serde_bytes_64")] pub [u8; 64]);
@@ -116,8 +94,7 @@ impl std::fmt::Debug for Signature {
 }
 
 impl Signature {
-    /// Construct from raw bytes. No curve-validity check; that
-    /// happens at verify time.
+    /// Construct from raw bytes; no curve-validity check (happens at verify time).
     pub fn from_bytes(bytes: [u8; 64]) -> Self {
         Self(bytes)
     }
@@ -128,10 +105,9 @@ impl Signature {
     }
 }
 
-/// A 64-byte-array serde adapter: serialise as a borrowed bytes slice
-/// so postcard uses the length-prefixed bytes form rather than
-/// 64 separate `u8`s. Saves 63 bytes of varint overhead per
-/// signature on the wire.
+/// A 64-byte-array serde adapter: serialise as a borrowed bytes slice so
+/// postcard uses length-prefixed bytes rather than 64 separate `u8`s —
+/// saves 63 bytes of varint overhead per signature.
 mod serde_bytes_64 {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -155,38 +131,30 @@ mod serde_bytes_64 {
     }
 }
 
-/// Failure modes for signature verification.
-///
-/// Each variant maps to a specific cause and is human-readable in
-/// logs. Validator-level errors (replay, missing attestation, etc.)
-/// live in [`crate::validator::ValidationError`]; this type covers
-/// only the *cryptographic* outcome of verifying one signature.
+/// Failure modes for signature verification. Validator-level errors
+/// (replay, missing attestation, …) live in
+/// [`crate::validator::ValidationError`]; this covers only the
+/// *cryptographic* outcome of verifying one signature.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum VerifyError {
-    /// The public-key bytes do not decode to a valid Ed25519 point.
-    /// Caused by a corrupted or maliciously-crafted key.
+    /// The public-key bytes don't decode to a valid Ed25519 point —
+    /// corrupted or maliciously-crafted.
     #[error("invalid Ed25519 public key (not a point on the curve)")]
     InvalidPublicKey,
 
-    /// The signature bytes decoded but failed the Ed25519 check.
-    /// Either the signer used a different secret, the bytes were
-    /// tampered with after signing, or the message bytes differ from
-    /// what was signed.
+    /// The signature bytes decoded but failed the Ed25519 check — wrong
+    /// secret, tampered bytes, or the message differs from what was signed.
     #[error("Ed25519 signature did not verify")]
     BadSignature,
 
-    /// The canonical-bytes encoder failed. In practice unreachable
-    /// for the types in this crate, but propagated for hygiene.
+    /// Canonical-bytes encoder failed. Unreachable in practice; propagated for hygiene.
     #[error("could not canonicalise message: {0}")]
     Canonical(#[from] CanonicalError),
 }
 
-/// Generate a fresh Ed25519 keypair using the OS RNG.
-///
-/// Returns `(secret, public)` so the caller can persist the secret
-/// separately from any wire-bound public-key field. The secret type
-/// is `ed25519_dalek::SigningKey` (no newtype): it is intentionally
-/// not `Serialize` to discourage accidental wire exposure.
+/// Generate a fresh Ed25519 keypair via the OS RNG. Returns `(secret,
+/// public)`; the secret type is `ed25519_dalek::SigningKey` (no newtype),
+/// intentionally not `Serialize` to discourage accidental wire exposure.
 pub fn generate_keypair() -> (ed25519_dalek::SigningKey, Ed25519PublicKey) {
     let mut rng = OsRng;
     let signing = ed25519_dalek::SigningKey::generate(&mut rng);
@@ -194,15 +162,10 @@ pub fn generate_keypair() -> (ed25519_dalek::SigningKey, Ed25519PublicKey) {
     (signing, Ed25519PublicKey(verifying.to_bytes()))
 }
 
-/// Sign an arbitrary serializable value with the given secret key.
-///
-/// The serialisation goes through [`canonical_bytes`] so the
-/// signature is over the deterministic postcard encoding of `event`.
-/// Callers are responsible for handing in a value that omits the
-/// final `signature` field (otherwise the signature would cover its
-/// own placeholder, which is fine cryptographically but confusing
-/// semantically). See `event::*::signing_bytes()` helpers for the
-/// convention.
+/// Sign an arbitrary serializable value with the given secret key,
+/// through [`canonical_bytes`] so the signature covers the deterministic
+/// postcard encoding of `event`. Callers must hand in a value that omits
+/// the final `signature` field — see `event::*::signing_bytes()`.
 pub fn sign_event<T: Serialize>(
     event: &T,
     secret_key: &ed25519_dalek::SigningKey,
@@ -212,13 +175,9 @@ pub fn sign_event<T: Serialize>(
     Ok(Signature(sig.to_bytes()))
 }
 
-/// Verify a signature over an arbitrary serializable value.
-///
-/// Mirrors [`sign_event`]: the same `event` (representing the same
-/// pre-signature view) must be reconstructable on the receiving
-/// side. Returns `Err(VerifyError::BadSignature)` on signature
-/// mismatch; `Err(VerifyError::InvalidPublicKey)` if `public_key`
-/// is malformed.
+/// Verify a signature over an arbitrary serializable value. Mirrors
+/// [`sign_event`]: the same pre-signature view must be reconstructable on
+/// the receiving side. `BadSignature` on mismatch, `InvalidPublicKey` if malformed.
 pub fn verify_event<T: Serialize>(
     event: &T,
     sig: &Signature,
@@ -231,14 +190,9 @@ pub fn verify_event<T: Serialize>(
         .map_err(|_| VerifyError::BadSignature)
 }
 
-/// Sign a `SignedOp` in place. Mutates `op.signature` so the caller
-/// can pass the op straight to the wire afterwards.
-///
-/// The signed bytes are produced by [`SignedOp::signing_bytes`],
-/// which serialises a view of the op that omits the signature
-/// field. Calling `sign_op` twice on the same op is harmless: the
-/// helper view does not include the signature so the second call
-/// reproduces the first.
+/// Sign a `SignedOp` in place via [`SignedOp::signing_bytes`], which
+/// omits the signature field — calling this twice on the same op is
+/// harmless, the second call reproduces the first.
 pub fn sign_op(
     op: &mut SignedOp,
     secret_key: &ed25519_dalek::SigningKey,
@@ -249,12 +203,9 @@ pub fn sign_op(
     Ok(())
 }
 
-/// Verify a `SignedOp` against its declared author public key.
-///
-/// This is the cryptographic-only check. The full validation
-/// pipeline (does this author have a valid attestation, does the
-/// role permit this op class, replay defence, etc.) lives in
-/// [`crate::validator::validate_inbound_op`].
+/// Verify a `SignedOp` against its declared author key — the
+/// cryptographic-only check. Full validation (attestation, role, replay
+/// defence, …) lives in [`crate::validator::validate_inbound_op`].
 pub fn verify_op(op: &SignedOp) -> Result<(), VerifyError> {
     let bytes = op.signing_bytes()?;
     let vk = op.author.to_verifying_key()?;
@@ -278,9 +229,9 @@ mod tests {
     #[test]
     fn debug_does_not_panic() {
         let (_, pk) = generate_keypair();
-        let _ = format!("{:?}", pk);
+        let _ = format!("{pk:?}");
         let sig = Signature::from_bytes([7u8; 64]);
-        let _ = format!("{:?}", sig);
+        let _ = format!("{sig:?}");
     }
 
     #[test]
@@ -321,18 +272,15 @@ mod tests {
         let bad = Ed25519PublicKey([0u8; 32]);
         let payload: Vec<u8> = b"x".to_vec();
         let sig = Signature([0u8; 64]);
-        // The dalek crate happens to accept the all-zero pubkey as a
-        // syntactically-valid (but cryptographically useless) point.
-        // What we care about is that some random non-curve bytes are
-        // rejected. Pick a value with the high bit set on the last
-        // byte to encode an invalid sign bit.
+        // dalek accepts the all-zero pubkey as syntactically valid but
+        // cryptographically useless; pick a value with the high bit set on
+        // the last byte to encode an invalid sign bit instead.
         let _ = verify_event(&payload, &sig, &bad); // don't unwrap; behaviour exercised below
         let mut bytes = [0u8; 32];
         bytes[31] = 0xff;
         let bad2 = Ed25519PublicKey(bytes);
-        // Either InvalidPublicKey (decode fails) or BadSignature
-        // (decode succeeds but sig is wrong). We accept both — the
-        // contract is "not Ok".
+        // Either InvalidPublicKey (decode fails) or BadSignature (decode
+        // succeeds but sig is wrong) — both satisfy "not Ok".
         assert!(verify_event(&payload, &sig, &bad2).is_err());
     }
 }

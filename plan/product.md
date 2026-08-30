@@ -3,7 +3,7 @@
 The **main-focus apps** below are the priority — for building, fixing, and
 demoing. Everything else in `apps/` (dev/system tools: disks, hex_editor,
 db_client, logs, api_tester, snippets, firewall, vpn, containers, backups,
-permissions, remote, imager, themes, software_store, monitor…) is secondary for
+permissions, remote, imager, themes, store, monitor…) is secondary for
 now: keep them working, but do not prioritize them over the focus list.
 
 ## Focus apps + intent
@@ -84,7 +84,7 @@ stubbed or absent write/action/connect path (a wiring job, not a rebuild).
 - **real**: notes, sheets, file-explorer, calculator, contacts, pdf_viewer
   (fallback-text only), typst_editor, browser (engine), feeds, ebook, totp,
   weather, maps, monitor, api_tester, logs, git_client, containers, permissions
-  (authoring), software_store, camera (feature-gated).
+  (authoring), store, camera (feature-gated).
 - **partial** (real engine, stubbed write/action/connect): word-processor,
   terminal, slides (no save), video_editor (no decode/export), music (default
   silent), calendar (no delete), chat (calls stubbed), disks, snippets, themes,

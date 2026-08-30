@@ -1,0 +1,18 @@
+[package]
+name = "collab-probe"
+version = "0.1.0"
+edition = "2024"
+description = "Sandboxed CRDT collaboration probe — reaches the broker exactly as a packaged app does."
+
+[[bin]]
+name = "qos-collab-probe"
+path = "src/main.rs"
+
+[dependencies]
+runtime-collab = { path = "../../runtime/runtime-collab" }
+runtime-portal = { path = "../../runtime/runtime-portal" }
+automerge.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+
+[lints]
+workspace = true

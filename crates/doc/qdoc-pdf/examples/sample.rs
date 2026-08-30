@@ -29,11 +29,14 @@ fn main() {
         .collect::<Vec<_>>()
         .windows(2)
         .find(|w| w[0] == "--out")
-        .map(|w| w[1].clone())
-        .unwrap_or_else(|| "target/docpdf-sample.pdf".into());
+        .map_or_else(|| "target/docpdf-sample.pdf".into(), |w| w[1].clone());
 
     let mut blocks = vec![
-        block("heading", "qOS Document Export", &[("level", AttrVal::Int(1))]),
+        block(
+            "heading",
+            "qOS Document Export",
+            &[("level", AttrVal::Int(1))],
+        ),
         block(
             "paragraph",
             "This document was produced by the docpdf engine from a qdoc DocSnapshot. \
@@ -42,9 +45,25 @@ fn main() {
             &[],
         ),
         block("heading", "A Numbered List", &[("level", AttrVal::Int(2))]),
-        block("list_item", "First item", &[("ordered", AttrVal::Bool(true)), ("index", AttrVal::Int(1))]),
-        block("list_item", "Second item, nested", &[("ordered", AttrVal::Bool(true)), ("index", AttrVal::Int(2)), ("level", AttrVal::Int(1))]),
-        block("list_item", "Third item", &[("ordered", AttrVal::Bool(true)), ("index", AttrVal::Int(3))]),
+        block(
+            "list_item",
+            "First item",
+            &[("ordered", AttrVal::Bool(true)), ("index", AttrVal::Int(1))],
+        ),
+        block(
+            "list_item",
+            "Second item, nested",
+            &[
+                ("ordered", AttrVal::Bool(true)),
+                ("index", AttrVal::Int(2)),
+                ("level", AttrVal::Int(1)),
+            ],
+        ),
+        block(
+            "list_item",
+            "Third item",
+            &[("ordered", AttrVal::Bool(true)), ("index", AttrVal::Int(3))],
+        ),
         block("heading", "A Table", &[("level", AttrVal::Int(2))]),
     ];
 

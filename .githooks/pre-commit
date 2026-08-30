@@ -1,8 +1,54 @@
 #!/usr/bin/env bash
-# qOS pre-commit: fast structural guards (no compile — that's CI's job).
-# Enable once with:  git config core.hooksPath .githooks
+# Fast guards only. Compiling is CI's job; a hook that takes a minute gets
+# bypassed with --no-verify and then guards nothing.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Skip deliberately:      git commit --no-verify
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
-# 1. Every crate on disk must be a workspace member (stops apps silently dropping
-#    out of the build — as 37 of them once did).
+fail=0
+note() { printf '  %s\n' "$*" >&2; }
+
+# Every crate on disk must be a workspace member. 37 apps once dropped out of
+# the build this way and nothing noticed.
 "$root/scripts/check-workspace-complete.sh"
+
+staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' | grep -v '^vendor/' || true)
+
+# rustfmt on staged files only, so the hook cost scales with the change.
+if [ -n "$staged_rs" ] && command -v rustfmt >/dev/null 2>&1; then
+  unformatted=$(echo "$staged_rs" | xargs rustfmt --edition 2024 --check -- 2>/dev/null | grep -c '^Diff in' || true)
+  if [ "${unformatted:-0}" -gt 0 ]; then
+    note "rustfmt: $unformatted hunk(s) unformatted in staged files. Run: cargo fmt"
+    fail=1
+  fi
+fi
+
+# Every tests/*.rs must be reachable from its crate's tests/it.rs. Crates build
+# one test binary, so a file with no `mod` line is not compiled and not run —
+# it fails silently, which is the worst way to fail.
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  case "$f" in */tests/*.rs) ;; *) continue ;; esac
+  base=$(basename "$f" .rs)
+  [ "$base" = "it" ] && continue
+  crate_tests=$(dirname "$f")
+  # only crates that consolidated
+  [ -f "$crate_tests/it.rs" ] || continue
+  # helper modules live in a subdirectory or are named in it.rs already
+  case "$f" in */tests/*/*) continue ;; esac
+  if ! grep -q "mod ${base};" "$crate_tests/it.rs"; then
+    note "$f is not declared in $crate_tests/it.rs — it will not be compiled or run"
+    fail=1
+  fi
+done <<< "$staged_rs"
+
+# The verification covenant, as a check rather than a paragraph: an added
+# #[ignore] needs a reason, so "temporarily disabled" cannot pass as a skip.
+added_ignores=$(git diff --cached -U0 -- '*.rs' | grep -E '^\+\s*#\[ignore\]\s*$' || true)
+if [ -n "$added_ignores" ]; then
+  note "#[ignore] added with no reason string. Use #[ignore = \"why\"]."
+  fail=1
+fi
+
+exit "$fail"

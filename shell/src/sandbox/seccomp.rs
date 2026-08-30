@@ -4,10 +4,6 @@
 //! never need: namespace manipulation, ptrace, raw sockets, mount /
 //! chroot and friends. The compiled BPF blob is cached on disk so each
 //! workspace pays compilation only once per cold start.
-//!
-//! Phase 2 of `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`.
-//! Phase 3+ will swap in fd-passing of the cached blob to `bwrap
-//! --seccomp <fd>`; here we only produce and persist the bytes.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -34,7 +30,7 @@ pub const DEFAULT_CACHE_ROOT: &str = "/var/cache/qos-fs";
 #[derive(Debug)]
 pub enum SeccompError {
     /// The crate was built for a target architecture seccompiler does
-    /// not support (only x86_64, aarch64, riscv64 are wired here).
+    /// not support (only `x86_64`, aarch64, riscv64 are wired here).
     UnsupportedArch(&'static str),
     /// Anything that went wrong inside the seccompiler backend — bad
     /// rule, identical actions, filter too large, invalid arg index.
@@ -105,7 +101,6 @@ fn build_workspace_filter() -> Result<SeccompFilter, SeccompError> {
     // rule vector, which seccompiler treats as "match any args for
     // this syscall" — i.e. blanket-deny.
     //
-    // Phase 2 v1 simplification (matches plan §Phase 2 step 1):
     //   * `clone3` is fully blocked here. A more nuanced filter that
     //     allowed `clone3` without namespace flags belongs to a later
     //     phase once we actually need glibc threads inside the sandbox
@@ -131,7 +126,7 @@ fn build_workspace_filter() -> Result<SeccompFilter, SeccompError> {
     // stable across runs, which matters for the on-disk cache.
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     for nr in blanket_denies {
-        rules.insert(nr as i64, Vec::new());
+        rules.insert(nr, Vec::new());
     }
 
     // Conditional: socket(family, type, protocol) where family ==
@@ -139,7 +134,7 @@ fn build_workspace_filter() -> Result<SeccompFilter, SeccompError> {
     // value (Dword) so we don't accidentally match on adjacent bits
     // of a 64-bit register.
     rules.insert(
-        libc::SYS_socket as i64,
+        libc::SYS_socket,
         vec![SeccompRule::new(vec![SeccompCondition::new(
             0,
             SeccompCmpArgLen::Dword,
@@ -273,8 +268,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_nanos())
         );
         let dir = base.join(unique);
         std::fs::create_dir_all(&dir).expect("create test cache root");

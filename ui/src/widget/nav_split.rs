@@ -1,30 +1,17 @@
-//! `NavSplit` — a reusable responsive sidebar / split view.
+//! `NavSplit` — a reusable responsive sidebar / split view. Behaves like the
+//! Adwaita `OverlaySplitView` "flap" plus a single-pane master-detail `Push`
+//! mode:
 //!
-//! This is the promotion of the sidebar/split logic that ~half a dozen apps
-//! hand-rolled independently (weather `sidebar.rs`, chat `responsive.rs`,
-//! and the latent copies in calendar / mail / settings). The behaviour is
-//! the Adwaita `OverlaySplitView` "flap" plus a single-pane master-detail
-//! `Push` mode:
+//! * **Adaptive** (default): above the breakpoint the sidebar is a
+//!   persistent pane; below it, it collapses into an overlay flap (closed by
+//!   default) that slides over the content behind a [`Scrim`], dismissed by
+//!   the scrim, Esc, or a toggle.
+//! * **Push** (master-detail): single-pane mode for narrow layouts, showing
+//!   the sidebar OR the content, never both — driven via
+//!   [`NavSplit::show_detail`] / [`NavSplit::show_master`].
 //!
-//! * **Adaptive** (the default): when the allocated width is `>=` the
-//!   breakpoint, the sidebar is a persistent pane docked beside the content.
-//!   Below the breakpoint it collapses into an overlay flap that slides over
-//!   the content behind a dimming [`Scrim`]. The flap is CLOSED by default
-//!   in overlay mode, reveals with an eased slide, and is dismissed by the
-//!   scrim, the Esc key, or a toggle.
-//!
-//! * **Push** (master-detail): a single-pane mode for narrow layouts. Shows
-//!   the sidebar (the "master" list) OR the content (the "detail") — never
-//!   both. Selecting an item pushes the detail in with an eased slide and a
-//!   Back affordance returns to the master. The host drives the master→detail
-//!   transition by calling [`NavSplit::show_detail`] / [`NavSplit::show_master`]
-//!   (typically from the list's selection handler).
-//!
-//! The split owns the breakpoint, the eased reveal, the scrim, and the
-//! toggle/scrim/Esc dismissal — apps supply only the two child widgets and
-//! react to selection. The easing kernel ([`FlapState`]) is the exact
-//! algorithm proven in weather + chat: a frame-rate-independent exponential
-//! approach (`rate = 14.0`) with an ease-out-cubic slide.
+//! The split owns the breakpoint, eased reveal, scrim, and dismissal; apps
+//! supply only the two child widgets.
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -40,6 +27,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Element, Widget};
 
 /// Default sidebar width (logical px) when docked or fully revealed.
@@ -48,55 +36,48 @@ pub const DEFAULT_SIDEBAR_WIDTH: f64 = 300.0;
 /// docked; below it the sidebar becomes an overlay flap.
 pub const DEFAULT_BREAKPOINT: f64 = 900.0;
 /// Exponential approach rate for the reveal animation — `~0.2s` Adwaita-like
-/// slide. Proven in weather + chat.
+/// slide.
 const REVEAL_RATE: f64 = 14.0;
 /// Upper bound (seconds) on the per-frame delta used to advance the slide.
-/// The gap between construction and the first painted frame — or any frame
-/// after the host parks the event loop — can be large; clamping keeps a
-/// stale `Instant` from teleporting the flap straight to its endpoint and
-/// skipping the slide entirely.
+/// A large gap (first frame, or a parked event loop) would otherwise
+/// teleport the flap straight to its endpoint instead of sliding.
 const MAX_FRAME_DT: f64 = 0.1;
 
 /// How the split resolves at the current width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplitLayout {
-    /// Sidebar docked beside content (wide).
     Docked,
-    /// Sidebar is an overlay flap over the content behind a scrim (narrow).
     Overlay,
 }
 
 impl SplitLayout {
-    /// Resolve the layout purely from the allocated width. Boundary is
-    /// inclusive at the breakpoint → `Docked` (matches weather/chat).
+    /// Boundary is inclusive at the breakpoint → `Docked`.
     pub fn from_width(total_w: f64, breakpoint: f64) -> Self {
-        if total_w >= breakpoint { SplitLayout::Docked } else { SplitLayout::Overlay }
+        if total_w >= breakpoint {
+            SplitLayout::Docked
+        } else {
+            SplitLayout::Overlay
+        }
     }
 }
 
 /// Which pane the [`SplitMode::Push`] master-detail flow is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PushPane {
-    /// The sidebar (list) fills the pane.
     Master,
-    /// The content (detail) fills the pane, with a Back affordance.
     Detail,
 }
 
-/// The split's structural behaviour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplitMode {
     /// Docked-or-overlay flap, chosen per-frame from the width vs breakpoint.
     Adaptive,
-    /// Always docked beside content regardless of width.
     AlwaysDocked,
-    /// Single-pane master-detail push. Shows master OR detail.
     Push,
 }
 
-/// The eased reveal kernel shared by every flap (weather `SidebarState`,
-/// chat `FlapState`). Tracks a binary open/closed target and animates a
-/// `reveal` value in `0..=1` toward it.
+/// The eased reveal kernel shared by every flap. Tracks a binary
+/// open/closed target and animates a `reveal` value in `0..=1` toward it.
 #[derive(Clone, Debug)]
 pub struct FlapState {
     /// `None` ⇒ follow the layout default; `Some` once the user has toggled.
@@ -113,13 +94,23 @@ pub struct FlapState {
 impl FlapState {
     /// A flap that is open when docked (the common navigation sidebar).
     pub fn open_when_docked() -> Self {
-        Self { user_open: None, reveal: 1.0, last_layout: None, docked_default_open: true }
+        Self {
+            user_open: None,
+            reveal: 1.0,
+            last_layout: None,
+            docked_default_open: true,
+        }
     }
 
     /// A flap that is closed even when docked — summoned on demand (e.g. a
     /// members / inspector panel).
     pub fn closed_by_default() -> Self {
-        Self { user_open: None, reveal: 0.0, last_layout: None, docked_default_open: false }
+        Self {
+            user_open: None,
+            reveal: 0.0,
+            last_layout: None,
+            docked_default_open: false,
+        }
     }
 
     /// Whether the flap is currently open, resolving the user preference
@@ -138,10 +129,14 @@ impl FlapState {
     }
 
     /// Force the flap open (structural action, e.g. opening a detail).
-    pub fn open(&mut self) { self.user_open = Some(true); }
+    pub fn open(&mut self) {
+        self.user_open = Some(true);
+    }
 
     /// Force the flap closed (scrim / Esc / selection-dismiss).
-    pub fn close(&mut self) { self.user_open = Some(false); }
+    pub fn close(&mut self) {
+        self.user_open = Some(false);
+    }
 
     /// Set open state with NO animation — snaps `reveal` to the endpoint.
     /// Used by `--shots` / headless so a frame is deterministic.
@@ -151,27 +146,24 @@ impl FlapState {
     }
 
     /// Snap `reveal` to whatever the current (resolved) openness is, WITHOUT
-    /// recording a user preference. Unlike [`Self::snap`] this keeps the flap
-    /// following the layout default — it just removes the eased transient. Use
-    /// it on the first frame (or a structural breakpoint cross) so a flap that
-    /// starts `open_when_docked` doesn't briefly paint its reveal at a width
-    /// where the resolved default is closed.
+    /// recording a user preference — unlike [`Self::snap`], the flap keeps
+    /// following the layout default; this only removes the eased transient.
+    /// Used on the first frame (or a breakpoint cross) so a flap that starts
+    /// `open_when_docked` doesn't briefly paint open at a width whose
+    /// resolved default is closed.
     pub fn settle(&mut self, layout: SplitLayout) {
         self.reveal = if self.is_open(layout) { 1.0 } else { 0.0 };
     }
 
     /// Drop a stale user preference when the layout crosses the breakpoint,
     /// so a window resize returns to the auto behaviour. Call once per frame
-    /// before reading [`Self::reveal`]. The first reconcile (no prior
-    /// layout) does NOT clear the preference.
-    ///
-    /// The first reconcile *does* [`Self::settle`]: the constructor picks a
-    /// `reveal` before any width is known (`open_when_docked` starts at 1.0),
-    /// so a flap whose first resolved layout is [`SplitLayout::Overlay`] would
-    /// otherwise paint fully open and ease shut over the following frames —
-    /// a drawer flashing over the content on open, and a *permanently* open
-    /// drawer in a single-frame render like `--shots`. A later breakpoint
-    /// crossing still animates; that transition is worth showing.
+    /// before reading [`Self::reveal`]. The first reconcile does NOT clear
+    /// the preference — instead it [`Self::settle`]s: the constructor picks
+    /// a `reveal` before any width is known, so without this a flap whose
+    /// first resolved layout is [`SplitLayout::Overlay`] would paint fully
+    /// open and ease shut over the following frames, staying permanently
+    /// open in a single-frame render like `--shots`. A later breakpoint
+    /// crossing still animates — that transition is worth showing.
     pub fn reconcile(&mut self, layout: SplitLayout) {
         if self.last_layout != Some(layout) {
             let first = self.last_layout.is_none();
@@ -201,7 +193,9 @@ impl FlapState {
 
     /// The raw eased reveal in `0..=1` — used directly for scrim alpha and
     /// docked content inset.
-    pub fn reveal(&self) -> f64 { self.reveal.clamp(0.0, 1.0) }
+    pub fn reveal(&self) -> f64 {
+        self.reveal.clamp(0.0, 1.0)
+    }
 
     /// Ease-out-cubic of [`Self::reveal`] — used for the overlay slide so
     /// the flap decelerates into place.
@@ -237,7 +231,7 @@ pub struct NavSplit {
     sidebar_rect: Rect,
     content_rect: Rect,
     scrim_rect: Rect,
-    /// Last cursor position in logical coords (MouseInput carries none).
+    /// Last cursor position in logical coords (`MouseInput` carries none).
     last_cursor: Point,
     /// Inner taffy tree for the children so they receive layout + events.
     inner_taffy: Option<TaffyTree<()>>,
@@ -246,13 +240,10 @@ pub struct NavSplit {
     /// The `(sidebar_rect, content_rect)` the inner tree was last *solved* at.
     /// A full re-solve (`place_children` — rebuild + `compute_layout` + text
     /// re-measure) is only needed when the pane geometry actually changes
-    /// (first layout, resize, flap slide). When it hasn't — the overwhelmingly
-    /// common case of a **scroll inside the content pane**, which repositions
-    /// but does not resize — `apply_layout` merely re-applies the children on
-    /// the cached tree so the inner `Scrollable` pushes its new offset down,
-    /// with no rebuild and no re-measure. Without this, every scroll frame
-    /// re-solved the entire content pane (all cards/comments + all text),
-    /// which dominated the per-frame cost.
+    /// (first layout, resize, flap slide). A pure **scroll inside the content
+    /// pane** repositions but doesn't resize, so `apply_layout` re-applies the
+    /// children on the cached tree instead, letting the inner `Scrollable`
+    /// push its new offset down with no rebuild and no re-measure.
     solved_rects: Option<(Rect, Rect)>,
     /// `true` while the reveal/push animation is settling — read by
     /// `needs_animation_frame`.
@@ -260,10 +251,9 @@ pub struct NavSplit {
     /// Whether the user toggled this frame (so the host re-syncs).
     dirty: bool,
     /// Wall-clock anchor of the last `draw`, so the slide self-ticks off a
-    /// real `dt` from inside the draw path. `ui::App` never calls
-    /// `Widget::update()`, so the flap MUST advance here (the host pumps
-    /// another frame whenever `needs_animation_frame` is true). `None` until
-    /// the first draw, which therefore advances by `0` and never jumps.
+    /// real `dt` from inside the draw path — `ui::App` never calls
+    /// `Widget::update()`, so the flap must advance here. `None` until the
+    /// first draw, which therefore advances by `0` and never jumps.
     last_tick: Option<Instant>,
 }
 
@@ -307,7 +297,7 @@ impl NavSplit {
         self
     }
 
-    /// Choose the structural mode (Adaptive / AlwaysDocked / Push).
+    /// Choose the structural mode (Adaptive / `AlwaysDocked` / Push).
     pub fn with_mode(mut self, mode: SplitMode) -> Self {
         self.mode = mode;
         self
@@ -403,8 +393,12 @@ impl NavSplit {
                 // Single pane: master OR detail, sliding horizontally.
                 let p = self.push.slide(); // 0 = master, 1 = detail
                 // Master sits at x0, detail slides in from the right.
-                self.sidebar_rect =
-                    Rect::new(self.rect.x0 - w * p, self.rect.y0, self.rect.x1 - w * p, self.rect.y1);
+                self.sidebar_rect = Rect::new(
+                    self.rect.x0 - w * p,
+                    self.rect.y0,
+                    self.rect.x1 - w * p,
+                    self.rect.y1,
+                );
                 self.content_rect = Rect::new(
                     self.rect.x0 + w * (1.0 - p),
                     self.rect.y0,
@@ -478,8 +472,16 @@ impl NavSplit {
                 },
             );
         }
-        self.sidebar.apply_layout(&taffy, s_node, Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0));
-        self.content.apply_layout(&taffy, c_node, Point::new(self.content_rect.x0, self.content_rect.y0));
+        self.sidebar.apply_layout(
+            &taffy,
+            s_node,
+            Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0),
+        );
+        self.content.apply_layout(
+            &taffy,
+            c_node,
+            Point::new(self.content_rect.x0, self.content_rect.y0),
+        );
         self.inner_taffy = Some(taffy);
         self.sidebar_node = Some(s_node);
         self.content_node = Some(c_node);
@@ -487,15 +489,15 @@ impl NavSplit {
     }
 
     /// Re-apply the children onto the **cached** inner tree at the current
-    /// sub-rects, without rebuilding or re-solving it. This is the scroll fast
-    /// path: the pane geometry is unchanged, so the intrinsic layout in the
-    /// inner tree is still valid; re-running `apply_layout` just lets a
-    /// descendant `Scrollable` push its new offset down to its children. Falls
-    /// back to a full `place_children` if no cached tree exists yet.
+    /// sub-rects, without rebuilding or re-solving it — the pane geometry is
+    /// unchanged, so re-running `apply_layout` just lets a descendant
+    /// `Scrollable` push its new offset down. Falls back to a full
+    /// `place_children` if no cached tree exists yet.
     fn reapply_children(&mut self) {
-        if self.inner_taffy.is_none() || self.sidebar_node.is_none() || self.content_node.is_none() {
-            // No cached tree yet (shouldn't happen on a reposition, but be safe):
-            // fall back to a full solve, paying for the `TextRenderer` only here.
+        if self.inner_taffy.is_none() || self.sidebar_node.is_none() || self.content_node.is_none()
+        {
+            // Shouldn't happen on a reposition, but be safe: fall back to a
+            // full solve, paying for the `TextRenderer` only here.
             let mut tr = TextRenderer::new();
             let theme = Theme::dark();
             self.place_children(&theme, &mut tr);
@@ -516,17 +518,14 @@ impl NavSplit {
     /// Advance the reveal + push animations off a real wall-clock delta,
     /// recomputing the child rects when something moved. Driven from `draw`
     /// (NOT `update`, which `ui::App` never calls) so the slide actually
-    /// plays: the App re-requests a frame while `needs_animation_frame` is
-    /// true, each `draw` ticks the easing forward, and the loop settles when
-    /// the flap reaches its endpoint. The first draw sees `dt == 0` (no prior
-    /// `Instant`), so the flap never teleports; later deltas are clamped to
-    /// [`MAX_FRAME_DT`] so a parked event loop can't skip the slide.
+    /// plays. The first draw sees `dt == 0` (no prior `Instant`), so the
+    /// flap never teleports; later deltas are clamped to [`MAX_FRAME_DT`] so
+    /// a parked event loop can't skip the slide.
     fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let now = Instant::now();
-        let dt = self
-            .last_tick
-            .map(|t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT))
-            .unwrap_or(0.0);
+        let dt = self.last_tick.map_or(0.0, |t| {
+            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
+        });
         self.last_tick = Some(now);
 
         let layout = self.layout_mode();
@@ -538,11 +537,9 @@ impl NavSplit {
         };
         self.animating = a || b;
         if self.animating {
-            // Re-derive the sub-rects from the freshly-eased reveal AND
+            // Re-derive the sub-rects from the freshly-eased reveal and
             // re-lay the children at them, so the panes visually slide every
-            // frame instead of just the scrim alpha fading. Without the
-            // re-place the children would stay pinned at their
-            // `apply_layout` rects and the slide would be invisible.
+            // frame instead of just the scrim alpha fading.
             self.recompute_rects();
             self.place_children(theme, text_renderer);
         }
@@ -559,15 +556,12 @@ impl NavSplit {
 }
 
 /// Cached `QUICK_UI_NO_SPLIT_CACHE=1` check: when set, `apply_layout` always
-/// re-solves the content pane (the pre-cache behaviour), as a safety escape and
-/// a perf baseline. Read once and cached so the hot layout path never touches an
-/// env var.
+/// re-solves the content pane, as a safety escape and a perf baseline. Read
+/// once and cached so the hot layout path never touches an env var.
 fn split_cache_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("QUICK_UI_NO_SPLIT_CACHE").map(|s| !s.is_empty()).unwrap_or(false)
-    })
+    *FLAG.get_or_init(|| std::env::var("QUICK_UI_NO_SPLIT_CACHE").is_ok_and(|s| !s.is_empty()))
 }
 
 impl Widget for NavSplit {
@@ -585,49 +579,40 @@ impl Widget for NavSplit {
         // The split occupies its whole allocation; children are laid out in
         // an isolated inner tree (their rects escape normal flow in overlay
         // mode). Same approach as ModalDialog / PopoverWidget.
-        let node = _taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = _taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // Reconcile + recompute geometry, then lay out children. A full
         // (re)solve of the inner tree is only needed when the pane geometry
-        // changed (first layout, resize, flap slide); a pure reposition — the
-        // common case of a scroll inside the content pane — just re-applies the
-        // children on the cached tree, skipping the expensive rebuild +
-        // `compute_layout` + text re-measure that otherwise ran every frame.
+        // changed; a pure reposition just re-applies the children on the
+        // cached tree, skipping the expensive rebuild + `compute_layout` +
+        // text re-measure that otherwise ran every scroll frame.
         self.flap.reconcile(self.layout_mode());
         self.recompute_rects();
-        // Re-solve only when the pane geometry moved (first layout / resize /
-        // flap slide) or a descendant genuinely needs re-measuring (an intrinsic
-        // size changed). A pure scroll reports neither — `Scrollable` overrides
-        // `layout_needs_measure` to `false` for a reposition — so it takes the
-        // cheap re-apply path, which crucially does NOT build a `TextRenderer`
-        // (a cosmic-text `FontSystem`, expensive to construct) that only the
-        // re-solve path actually needs.
+        // A pure scroll reports no measure need (`Scrollable` overrides
+        // `layout_needs_measure` to `false` for a reposition), so it takes
+        // the cheap re-apply path, which does NOT build a `TextRenderer` (a
+        // cosmic-text `FontSystem`, expensive to construct).
         let geometry_changed = self.solved_rects != Some((self.sidebar_rect, self.content_rect));
         let needs_resolve = geometry_changed
             || self.content.layout_needs_measure()
             || self.sidebar.layout_needs_measure()
-            // `QUICK_UI_NO_SPLIT_CACHE=1` forces the old always-re-solve
-            // behaviour (a safety escape + a before/after perf baseline),
-            // mirroring the App's `QUICK_UI_NO_SCROLL_OPT`.
             || split_cache_disabled();
         if needs_resolve {
             let mut tr = TextRenderer::new();
@@ -640,12 +625,11 @@ impl Widget for NavSplit {
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         // The reveal/push slide is driven from the draw path (`self_tick`),
-        // NOT here: `ui::App` never calls `Widget::update`, so advancing the
-        // easing on this tick would silently snap the flap open/closed
-        // instead of sliding it. This method now only forwards to children
-        // (for any host that still drives the legacy update chain) and
-        // reports whether anything still needs frames. The authoritative
-        // "still animating?" signal is `needs_animation_frame`.
+        // NOT here — `ui::App` never calls `Widget::update`, so advancing the
+        // easing on this tick would silently snap the flap instead of
+        // sliding it. This only forwards to children and reports whether
+        // anything still needs frames; `needs_animation_frame` is
+        // authoritative.
         let sc = self.sidebar.update(state, path);
         let cc = self.content.update(state, path);
         self.flap.is_animating(self.layout_mode()) || sc || cc
@@ -664,7 +648,8 @@ impl Widget for NavSplit {
         self.self_tick(theme, text_renderer);
 
         // Content first (it's behind the overlay flap).
-        self.content.draw(scene, transform, text_renderer, theme, presence);
+        self.content
+            .draw(scene, transform, text_renderer, theme, presence);
 
         // Scrim (overlay mode only), then the sidebar on top.
         if self.scrim_rect.width() > 0.0 {
@@ -673,7 +658,8 @@ impl Widget for NavSplit {
             scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
         }
         if self.sidebar_visible() {
-            self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+            self.sidebar
+                .draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -693,16 +679,28 @@ impl Widget for NavSplit {
         if presence.should_cull(self.get_rect()) {
             return;
         }
-        self.content
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        self.content.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
         if self.scrim_rect.width() > 0.0 {
             let alpha = (self.flap.reveal() * 0.5) as f32;
             let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
             scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
         }
         if self.sidebar_visible() {
-            self.sidebar
-                .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            self.sidebar.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
     }
 
@@ -720,8 +718,7 @@ impl Widget for NavSplit {
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -772,9 +769,11 @@ impl Widget for NavSplit {
         let route_sidebar_first = self.layout_mode() == SplitLayout::Overlay
             && self.is_sidebar_open()
             || self.mode == SplitMode::Push && self.push_pane == PushPane::Master;
-        let (Some(taffy), Some(s_node), Some(c_node)) =
-            (self.inner_taffy.as_ref(), self.sidebar_node, self.content_node)
-        else {
+        let (Some(taffy), Some(s_node), Some(c_node)) = (
+            self.inner_taffy.as_ref(),
+            self.sidebar_node,
+            self.content_node,
+        ) else {
             return;
         };
         let order = if route_sidebar_first {
@@ -786,8 +785,11 @@ impl Widget for NavSplit {
             if *handled {
                 break;
             }
-            let target: &mut dyn Widget =
-                if is_sidebar { self.sidebar.as_mut() } else { self.content.as_mut() };
+            let target: &mut dyn Widget = if is_sidebar {
+                self.sidebar.as_mut()
+            } else {
+                self.content.as_mut()
+            };
             target.handle_event(
                 event,
                 scale_factor,
@@ -810,9 +812,13 @@ impl Widget for NavSplit {
         vec![self.sidebar.as_mut(), self.content.as_mut()]
     }
 
-    fn name(&self) -> &str { "NavSplit" }
+    fn name(&self) -> &'static str {
+        "NavSplit"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn needs_animation_frame(&self) -> bool {
         self.animating
@@ -829,9 +835,7 @@ impl Widget for NavSplit {
 
     fn needs_idle_sync(&self) -> bool {
         // While animating, keep the host pumping frames.
-        self.animating
-            || self.sidebar.needs_idle_sync()
-            || self.content.needs_idle_sync()
+        self.animating || self.sidebar.needs_idle_sync() || self.content.needs_idle_sync()
     }
 }
 
@@ -890,7 +894,10 @@ mod tests {
     fn narrow_is_overlay_and_closed_by_default() {
         let ns = split(600.0, SplitMode::Adaptive);
         assert_eq!(ns.layout_mode(), SplitLayout::Overlay);
-        assert!(!ns.is_sidebar_open(), "overlay sidebar is closed by default");
+        assert!(
+            !ns.is_sidebar_open(),
+            "overlay sidebar is closed by default"
+        );
         // Content spans full width when the flap is closed.
         assert!(
             (ns.content_panel_rect().width() - ns.get_rect().width()).abs() < 1.0,
@@ -905,7 +912,10 @@ mod tests {
         ns.snap_open(true); // settle the animation deterministically
         ns.recompute_rects();
         assert!(ns.is_sidebar_open());
-        assert!(ns.scrim_rect.width() > 0.0, "open overlay flap shows a scrim");
+        assert!(
+            ns.scrim_rect.width() > 0.0,
+            "open overlay flap shows a scrim"
+        );
         // The sidebar slides fully on-screen at reveal 1.
         assert!(
             (ns.sidebar_rect().x0 - ns.get_rect().x0).abs() < 1.0,
@@ -966,10 +976,9 @@ mod tests {
 
     #[test]
     fn first_reconcile_settles_the_reveal_to_the_layout_default() {
-        // `open_when_docked` guesses reveal = 1.0 before any width is known.
-        // If the first resolved layout is an overlay, the drawer must already
-        // be shut — not ease shut over the next frames, which paints it over
-        // the content and, in a single-frame render, leaves it open for good.
+        // `open_when_docked` guesses reveal = 1.0 before any width is known;
+        // if the first resolved layout is an overlay the drawer must already
+        // be shut, not ease shut over the next frames.
         let mut f = FlapState::open_when_docked();
         assert_eq!(f.reveal(), 1.0, "constructor guess");
         f.reconcile(SplitLayout::Overlay);
@@ -1027,7 +1036,14 @@ mod tests {
         let presence = PresenceCtx::default();
         let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+        ns.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &perms,
+        );
         let fills = scene
             .encoding()
             .draw_tags
@@ -1044,16 +1060,21 @@ mod tests {
         let presence = PresenceCtx::default();
         let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+        ns.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &perms,
+        );
     }
 
     /// The overlay flap must *slide* — advance its eased reveal across
     /// successive frames from the DRAW path — not snap straight to the
-    /// endpoint. This is the regression the apps reported: the old code
-    /// advanced the easing only in `Widget::update()`, which `ui::App` never
-    /// calls, so the flap teleported. We open the flap (reveal target = 1
-    /// from 0), draw two frames a few ms apart, and assert the reveal moved
-    /// strictly between 0 and 1 — i.e. it actually slid.
+    /// endpoint (`Widget::update()`, which `ui::App` never calls, would
+    /// teleport it). Opens the flap, draws two frames a few ms apart, and
+    /// asserts the reveal moved strictly between 0 and 1.
     #[test]
     fn overlay_flap_slides_across_frames_from_draw_path() {
         let mut ns = split(600.0, SplitMode::Adaptive);
@@ -1061,7 +1082,11 @@ mod tests {
         // target flips to 1 while the current reveal is 0, so a correct
         // slide must traverse the gap across frames.
         ns.snap_open(false);
-        assert_eq!(ns.flap().reveal(), 0.0, "snap gives a deterministic closed start");
+        assert_eq!(
+            ns.flap().reveal(),
+            0.0,
+            "snap gives a deterministic closed start"
+        );
         ns.open_sidebar();
         assert!(ns.is_sidebar_open());
 
@@ -1103,9 +1128,8 @@ mod tests {
         );
     }
 
-    /// `snap_open` must remain a hard, deterministic jump for `--shots`:
-    /// after a snap, a draw (which self-ticks) must NOT drift the reveal off
-    /// the snapped endpoint — the screenshot has to be stable.
+    /// `snap_open` must remain a hard, deterministic jump for `--shots`: a
+    /// draw afterward (which self-ticks) must not drift the reveal.
     #[test]
     fn snap_open_stays_deterministic_through_draw() {
         let mut ns = split(600.0, SplitMode::Adaptive);
@@ -1148,8 +1172,9 @@ mod tests {
     fn esc_event() -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Escape);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1162,7 +1187,7 @@ mod tests {
     }
     fn dispatch(ns: &mut NavSplit, event: &WindowEvent, handled: &mut bool) {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1179,22 +1204,18 @@ mod tests {
         );
     }
 
-    /// Scroll-perf regression guard: after the first layout, a second
-    /// `apply_layout` at the SAME pane geometry (what happens on every scroll
-    /// frame, where the content only repositions) must NOT rebuild + re-solve
-    /// the content pane. Re-solving it every frame — a full `build_layout` +
-    /// `compute_layout` + text re-measure of the whole content — was the
-    /// dominant per-frame cost that made scrolling long lists / the watch page
-    /// crawl. A resize DOES re-solve (the geometry genuinely changed).
+    /// Scroll-perf regression guard: a second `apply_layout` at the SAME
+    /// pane geometry (every scroll frame) must NOT rebuild + re-solve the
+    /// content pane — that full rebuild was the dominant per-frame cost that
+    /// made scrolling long lists crawl. A resize DOES re-solve.
     #[test]
     fn pure_reposition_reuses_the_inner_layout_instead_of_re_solving() {
         use std::cell::Cell;
         use std::rc::Rc;
 
-        // Content spy: counts its `build_layout` calls — the expensive rebuild
-        // `place_children` performs. Reports `layout_needs_measure() == false`
-        // once laid out (a laid-out subtree being repositioned by a scroll needs
-        // no re-solve), exactly like `Scrollable`.
+        // Content spy: counts its `build_layout` calls (the expensive rebuild
+        // `place_children` performs) and reports `layout_needs_measure() ==
+        // false`, exactly like `Scrollable`.
         struct Spy {
             builds: Rc<Cell<usize>>,
             rect: Rect,
@@ -1208,20 +1229,18 @@ mod tests {
                 node_map: &mut HashMap<NodeId, *mut dyn Widget>,
             ) -> NodeId {
                 self.builds.set(self.builds.get() + 1);
-                let n = taffy
-                    .new_leaf(Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
-                        ..Default::default()
-                    })
-                    .unwrap();
+                let n = taffy.leaf_node(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                });
                 node_map.insert(n, self as *mut dyn Widget);
                 n
             }
             fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-                let l = taffy.layout(node).unwrap();
+                let l = taffy.layout(node).copied().unwrap_or_default();
                 self.rect = Rect::new(
                     origin.x + l.location.x as f64,
                     origin.y + l.location.y as f64,
@@ -1268,7 +1287,10 @@ mod tests {
         let builds = Rc::new(Cell::new(0usize));
         let mut ns = NavSplit::new(
             Box::new(Text::new("sidebar")),
-            Box::new(Spy { builds: builds.clone(), rect: Rect::ZERO }),
+            Box::new(Spy {
+                builds: builds.clone(),
+                rect: Rect::ZERO,
+            }),
         )
         .with_mode(SplitMode::AlwaysDocked);
 

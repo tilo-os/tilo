@@ -4,20 +4,18 @@
 //! that already rejects cross-user device clients.
 //!
 //! We spin up two relays under two different users, put user A's
-//! relay1 into a peer_relays config pointing at user B's relay2,
+//! relay1 into a `peer_relays` config pointing at user B's relay2,
 //! and assert:
 //!  - the dial task's `RelayClient::connect` fails at the mutual-
 //!    auth stage (user B's cert doesn't chain to user A's root);
 //!  - no state for any workspace leaks from B → A.
-
-mod common;
 
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cross_user_peer_relay_is_rejected() {
@@ -96,5 +94,8 @@ async fn cross_user_peer_relay_is_rejected() {
         .join("42")
         .join("pending")
         .join(hex::encode(a_client_dev.device_pubkey()));
-    assert!(!leak.exists(), "cross-user peer relay must not queue: {leak:?}");
+    assert!(
+        !leak.exists(),
+        "cross-user peer relay must not queue: {leak:?}"
+    );
 }

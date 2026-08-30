@@ -72,21 +72,11 @@ impl ZoneKind {
     /// One-line description shown under the zone title in the summary.
     pub fn description(self) -> &'static str {
         match self {
-            ZoneKind::Drop => {
-                "Incoming packets are dropped with no reply. Outgoing allowed."
-            }
-            ZoneKind::Block => {
-                "Incoming rejected with icmp-host-prohibited. Outgoing allowed."
-            }
-            ZoneKind::Public => {
-                "For untrusted public networks. Only selected services accepted."
-            }
-            ZoneKind::External => {
-                "For routers with masquerading enabled. Untrusted networks."
-            }
-            ZoneKind::Dmz => {
-                "For a demilitarized zone — limited internal access, public-facing."
-            }
+            ZoneKind::Drop => "Incoming packets are dropped with no reply. Outgoing allowed.",
+            ZoneKind::Block => "Incoming rejected with icmp-host-prohibited. Outgoing allowed.",
+            ZoneKind::Public => "For untrusted public networks. Only selected services accepted.",
+            ZoneKind::External => "For routers with masquerading enabled. Untrusted networks.",
+            ZoneKind::Dmz => "For a demilitarized zone — limited internal access, public-facing.",
             ZoneKind::Work => "For mostly-trusted work networks.",
             ZoneKind::Home => "For trusted home networks. Peers mostly allowed.",
             ZoneKind::Internal => "For internal networks. Peers mostly trusted.",
@@ -142,8 +132,12 @@ impl Target {
         }
     }
 
-    pub const ALL: [Target; 4] =
-        [Target::Default, Target::Accept, Target::Reject, Target::Drop];
+    pub const ALL: [Target; 4] = [
+        Target::Default,
+        Target::Accept,
+        Target::Reject,
+        Target::Drop,
+    ];
 }
 
 /// Transport protocol for a port rule.
@@ -367,20 +361,104 @@ pub struct ServiceCatalog;
 
 impl ServiceCatalog {
     pub const ALL: &'static [ServiceDef] = &[
-        ServiceDef { id: "ssh", name: "SSH", ports: "22", proto: "tcp", description: "Secure Shell remote login" },
-        ServiceDef { id: "http", name: "HTTP", ports: "80", proto: "tcp", description: "Web server (cleartext)" },
-        ServiceDef { id: "https", name: "HTTPS", ports: "443", proto: "tcp", description: "Web server (TLS)" },
-        ServiceDef { id: "dns", name: "DNS", ports: "53", proto: "tcp/udp", description: "Domain name resolver" },
-        ServiceDef { id: "mdns", name: "mDNS", ports: "5353", proto: "udp", description: "Multicast DNS / service discovery" },
-        ServiceDef { id: "dhcpv6-client", name: "DHCPv6 Client", ports: "546", proto: "udp", description: "IPv6 address autoconfiguration" },
-        ServiceDef { id: "samba", name: "Samba", ports: "137-139,445", proto: "tcp/udp", description: "Windows file & printer sharing" },
-        ServiceDef { id: "samba-client", name: "Samba Client", ports: "137-138", proto: "udp", description: "Browse Windows shares" },
-        ServiceDef { id: "cockpit", name: "Cockpit", ports: "9090", proto: "tcp", description: "Web management console" },
-        ServiceDef { id: "ipp", name: "IPP", ports: "631", proto: "tcp", description: "Internet printing protocol" },
-        ServiceDef { id: "nfs", name: "NFS", ports: "2049", proto: "tcp", description: "Network file system" },
-        ServiceDef { id: "wireguard", name: "WireGuard", ports: "51820", proto: "udp", description: "Modern VPN tunnel" },
-        ServiceDef { id: "ntp", name: "NTP", ports: "123", proto: "udp", description: "Network time sync" },
-        ServiceDef { id: "ftp", name: "FTP", ports: "21", proto: "tcp", description: "File transfer (legacy)" },
+        ServiceDef {
+            id: "ssh",
+            name: "SSH",
+            ports: "22",
+            proto: "tcp",
+            description: "Secure Shell remote login",
+        },
+        ServiceDef {
+            id: "http",
+            name: "HTTP",
+            ports: "80",
+            proto: "tcp",
+            description: "Web server (cleartext)",
+        },
+        ServiceDef {
+            id: "https",
+            name: "HTTPS",
+            ports: "443",
+            proto: "tcp",
+            description: "Web server (TLS)",
+        },
+        ServiceDef {
+            id: "dns",
+            name: "DNS",
+            ports: "53",
+            proto: "tcp/udp",
+            description: "Domain name resolver",
+        },
+        ServiceDef {
+            id: "mdns",
+            name: "mDNS",
+            ports: "5353",
+            proto: "udp",
+            description: "Multicast DNS / service discovery",
+        },
+        ServiceDef {
+            id: "dhcpv6-client",
+            name: "DHCPv6 Client",
+            ports: "546",
+            proto: "udp",
+            description: "IPv6 address autoconfiguration",
+        },
+        ServiceDef {
+            id: "samba",
+            name: "Samba",
+            ports: "137-139,445",
+            proto: "tcp/udp",
+            description: "Windows file & printer sharing",
+        },
+        ServiceDef {
+            id: "samba-client",
+            name: "Samba Client",
+            ports: "137-138",
+            proto: "udp",
+            description: "Browse Windows shares",
+        },
+        ServiceDef {
+            id: "cockpit",
+            name: "Cockpit",
+            ports: "9090",
+            proto: "tcp",
+            description: "Web management console",
+        },
+        ServiceDef {
+            id: "ipp",
+            name: "IPP",
+            ports: "631",
+            proto: "tcp",
+            description: "Internet printing protocol",
+        },
+        ServiceDef {
+            id: "nfs",
+            name: "NFS",
+            ports: "2049",
+            proto: "tcp",
+            description: "Network file system",
+        },
+        ServiceDef {
+            id: "wireguard",
+            name: "WireGuard",
+            ports: "51820",
+            proto: "udp",
+            description: "Modern VPN tunnel",
+        },
+        ServiceDef {
+            id: "ntp",
+            name: "NTP",
+            ports: "123",
+            proto: "udp",
+            description: "Network time sync",
+        },
+        ServiceDef {
+            id: "ftp",
+            name: "FTP",
+            ports: "21",
+            proto: "tcp",
+            description: "File transfer (legacy)",
+        },
     ];
 
     pub fn get(id: &str) -> Option<&'static ServiceDef> {
@@ -388,11 +466,11 @@ impl ServiceCatalog {
     }
 
     pub fn name_of(id: &str) -> &str {
-        Self::get(id).map(|s| s.name).unwrap_or(id)
+        Self::get(id).map_or(id, |s| s.name)
     }
 
     pub fn proto_of(id: &str) -> &'static str {
-        Self::get(id).map(|s| s.proto).unwrap_or("tcp")
+        Self::get(id).map_or("tcp", |s| s.proto)
     }
 
     /// The list of catalog ids — used to seed the service dropdown in the
@@ -427,9 +505,19 @@ mod tests {
     #[test]
     fn rule_counts_split_allow_deny() {
         let mut z = Zone::new(ZoneKind::Public, Target::Default);
-        z.rules.push(Rule::new(Matcher::Service("https".into()), Action::Allow, ""));
-        z.rules
-            .push(Rule::new(Matcher::Port { port: "23".into(), proto: Proto::Tcp }, Action::Deny, ""));
+        z.rules.push(Rule::new(
+            Matcher::Service("https".into()),
+            Action::Allow,
+            "",
+        ));
+        z.rules.push(Rule::new(
+            Matcher::Port {
+                port: "23".into(),
+                proto: Proto::Tcp,
+            },
+            Action::Deny,
+            "",
+        ));
         assert_eq!(z.rule_counts(), (1, 1));
     }
 
@@ -437,7 +525,11 @@ mod tests {
     fn matcher_labels_are_stable() {
         assert_eq!(Matcher::Service("https".into()).label(), "https");
         assert_eq!(
-            Matcher::Port { port: "8080".into(), proto: Proto::Tcp }.label(),
+            Matcher::Port {
+                port: "8080".into(),
+                proto: Proto::Tcp
+            }
+            .label(),
             "8080/tcp"
         );
     }

@@ -19,6 +19,22 @@
 //! [`app_root`] is the single integration point used by both the live
 //! event loop and the `--shots` offscreen renderer.
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 pub mod app;
 pub mod doc;
 pub mod journal;
@@ -40,8 +56,7 @@ use ui::widget::Widget;
 /// unreadable the viewer shows an honest zero-state, never the sample — a
 /// system log app must not fabricate log lines.
 pub fn app_root() -> Box<dyn Widget> {
-    let shots_mode = std::env::args()
-        .any(|a| a == "--shots" || a.starts_with("--shots="));
+    let shots_mode = std::env::args().any(|a| a == "--shots" || a.starts_with("--shots="));
 
     if shots_mode {
         return Box::new(LogsApp::new(journal::sample_entries(), false));

@@ -1,42 +1,29 @@
-//! Where a new window lands in the strip.
+//! Where a new window lands in the strip, which has unlimited space to
+//! the right, so "wherever the tree walk reached first" isn't an answer:
 //!
-//! Opening a window is the moment the layout decides something on the
-//! user's behalf, and the strip has unlimited space to the right, so
-//! "wherever the tree walk reached first" is not an answer. The rule is:
+//! 1. **Right of the window you're in** — next to what opened it, not
+//!    at the end of the strip.
+//! 2. **Into the group you're in, when it's tabbed** — a tab of several
+//!    means the person is working *inside* that group.
+//! 3. **At a seam, when nothing is selected** — the visible border
+//!    between two groups, else the next one rightwards.
 //!
-//! 1. **Right of the window you are in.** A new window goes immediately
-//!    to the right of the selected one, not at the end of the strip —
-//!    the thing you just opened should be next to the thing you opened
-//!    it from.
-//! 2. **Into the group you are in, when that group is tabbed.** If the
-//!    selection is one tab of several, the person is working *inside*
-//!    that group; the new window joins it as a tab immediately right of
-//!    the selected one rather than splitting the layout into another
-//!    column.
-//! 3. **At a seam, when nothing is selected.** With no selection there
-//!    is no "here", so the window goes into the space between windows:
-//!    a border between two groups that is currently on screen, else the
-//!    next border going rightwards.
+//! Rules 1–2 read the tree alone; rule 3 needs [`StripViewport`], the
+//! layout fact the shell publishes on
+//! [`crate::shell::chrome_state::ChromeState`] every frame.
 //!
-//! Rules 1 and 2 read the tree alone. Rule 3 needs to know what is on
-//! screen, which is a layout fact — [`StripViewport`] carries it, and
-//! the shell publishes one on [`crate::shell::chrome_state::ChromeState`]
-//! every frame.
-//!
-//! [`placement_for_new_window`] is the whole decision and the only place
-//! it is made. Callers that open a window record its answer for the
-//! launch ([`note_placement_for_launch`]); the adoption of the toplevel
-//! reads the note back (`crate::shell::launcher::placement_for_toplevel`)
-//! and splices the window in.
+//! [`placement_for_new_window`] is the whole decision, made once.
+//! Callers record its answer for the launch
+//! ([`note_placement_for_launch`]); the toplevel adoption reads the
+//! note back and splices the window in.
 
 use crate::compositor::tab_binding::Placement;
 use crate::shell::chrome_state::OpenTarget;
 use crate::shell::state::{GroupId, StripId, WorkspaceTree};
 
-/// One window group's horizontal extent in the strip's **unscrolled
-/// canvas space** — the same space [`ui::widget::GroupRow::usable_at`]
-/// resolves widths in, so a seam's position does not move when the user
-/// pans the strip.
+/// In the strip's **unscrolled canvas space** — the same space
+/// [`ui::widget::GroupRow::usable_at`] resolves widths in, so a seam's
+/// position doesn't move when the user pans the strip.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroupSpan {
     pub id: GroupId,
@@ -44,42 +31,31 @@ pub struct GroupSpan {
     pub x1: f64,
 }
 
-/// A border between windows, and where it sits on the strip's canvas.
-///
-/// The seam *after* the last group counts: the strip is unbounded to the
-/// right, so the last window's trailing edge is a border between a
-/// window and the open space beyond it. That is the seam "rightwards"
-/// always terminates at, which is what keeps rule 3 total.
+/// A border between windows. The seam *after* the last group counts —
+/// the strip is unbounded to the right, so the trailing edge is a
+/// border against open space, which is where "rightwards" terminates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Seam {
     /// The group whose right edge this seam is.
     pub after: GroupId,
-    /// Canvas-x of the border.
     pub x: f64,
 }
 
-/// What the person can currently see of one strip: where its groups sit
-/// on the canvas, and which part of that canvas the displays are showing.
-///
-/// Built by the shell from the live [`ui::widget::GroupRow`] — see
-/// [`crate::shell::overlay_host::ShellOverlayHost`] — and published on
-/// the chrome so a launch can consult it without reaching into the
-/// widget tree.
+/// What the person can currently see of one strip. Built by the shell
+/// from the live [`ui::widget::GroupRow`] and published on the chrome
+/// so a launch can consult it without reaching into the widget tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StripViewport {
-    /// The strip these spans belong to.
     pub strip: StripId,
-    /// Every group in the strip, in strip order.
+    /// Every group, in strip order.
     pub groups: Vec<GroupSpan>,
-    /// Canvas-x of the left edge of what is on screen.
+    /// Canvas-x of the visible edges.
     pub visible_x0: f64,
-    /// Canvas-x of the right edge of what is on screen.
     pub visible_x1: f64,
 }
 
 impl StripViewport {
-    /// Every border between windows, left to right, including the one
-    /// after the last group. Empty only when the strip has no groups.
+    /// Left to right, including the one after the last group.
     pub fn seams(&self) -> Vec<Seam> {
         self.groups
             .iter()
@@ -90,28 +66,10 @@ impl StripViewport {
             .collect()
     }
 
-    /// The leftmost border **between two windows** that the user can
-    /// actually see a space at.
-    ///
-    /// Two things this deliberately excludes.
-    ///
-    /// A seam lying exactly on an edge of the screen is not a space you
-    /// can see: the window on its far side is entirely off the display.
-    /// That is not a corner case — a full-width window puts its trailing
-    /// border precisely on the right edge, which is the resting state of
-    /// a default strip. So the bound is strict, and that case falls
-    /// through to [`Self::next_seam_rightwards`], which lands the window
-    /// immediately after the one filling the screen.
-    ///
-    /// And the seam after the *last* window, which is a border between a
-    /// window and open space rather than between two windows. It is
-    /// still where "rightwards" terminates — see
-    /// [`Self::next_seam_rightwards`] — just not something to call
-    /// visible.
-    ///
-    /// Leftmost rather than nearest-to-centre: the strip reads left to
-    /// right, so the first gap you can see is the one you would point at
-    /// if asked where the space between the windows is.
+    /// The leftmost border **between two windows** actually visible.
+    /// Excludes a seam sitting exactly on the screen edge (falls
+    /// through to [`Self::next_seam_rightwards`]) and the one after the
+    /// *last* window, a border against open space.
     pub fn visible_seam(&self) -> Option<Seam> {
         let seams = self.seams();
         let between_windows = seams.len().saturating_sub(1);
@@ -121,14 +79,8 @@ impl StripViewport {
             .find(|s| s.x > self.visible_x0 && s.x < self.visible_x1)
     }
 
-    /// The first seam at or past the right edge of the screen — where a
-    /// window goes when no space between windows is visible, which is
-    /// the ordinary case for a full-width window.
-    ///
-    /// Falls back to the rightmost seam when every seam is already
-    /// behind the viewport (the user has panned into the empty space
-    /// past the last window): "rightwards" runs out at the end of the
-    /// strip, and that end is still a seam.
+    /// Falls back to the rightmost seam when every seam is behind the
+    /// viewport — the end of the strip is still a seam.
     pub fn next_seam_rightwards(&self) -> Option<Seam> {
         let seams = self.seams();
         seams
@@ -139,15 +91,10 @@ impl StripViewport {
     }
 }
 
-/// Where the next window opened in `tree` should land.
-///
-/// `viewport` is the layout snapshot for the active strip, when the
-/// caller has one. It is only consulted for rule 3 — with a selection
-/// the answer is a property of the tree alone. Passing `None` (a caller
-/// with no layout to hand, such as an adoption arriving straight off the
-/// Wayland protocol) degrades rule 3 to the strip's trailing seam, which
-/// is where "the next seam rightwards" ends up once no other seam
-/// qualifies.
+/// `viewport` is only consulted for rule 3 — with a selection the
+/// answer is a property of the tree alone. `None` (a caller with no
+/// layout, e.g. an adoption straight off the Wayland protocol) degrades
+/// rule 3 to the strip's trailing seam.
 pub fn placement_for_new_window(
     tree: &WorkspaceTree,
     viewport: Option<&StripViewport>,
@@ -155,10 +102,8 @@ pub fn placement_for_new_window(
     let Some(ws) = tree.active_workspace() else {
         return Placement::NewGroup;
     };
-    // The strip a new window lands in is the focused one, falling back
-    // to the first — the same resolution `adopt_toplevel_at` performs
-    // when it splices the window in, so the two cannot disagree about
-    // which strip the decision was about.
+    // The same resolution `adopt_toplevel_at` performs when splicing the
+    // window in, so the two cannot disagree about which strip this was about.
     let strip = match tree
         .active_strip
         .get(&ws.id)
@@ -176,35 +121,24 @@ pub fn placement_for_new_window(
         .active_group_for(strip.id)
         .and_then(|id| strip.window_groups.iter().find(|g| g.id == id))
     {
-        // A group holding more than one tab is a group the person is
-        // working *in*, so the new window joins it. A single-window
-        // group is just that window, and a second window beside it is
-        // the strip doing its job.
         if selected.tabs.len() > 1 {
             return Placement::TabIn(selected.id);
         }
         return Placement::RightOf(selected.id);
     }
 
-    // Rule 3: nothing is selected, so the window goes into the space
-    // between windows.
-    if let Some(view) = viewport.filter(|v| v.strip == strip.id) {
-        if let Some(seam) = view.visible_seam().or_else(|| view.next_seam_rightwards()) {
-            return Placement::RightOf(seam.after);
-        }
+    // Rule 3: nothing is selected.
+    if let Some(view) = viewport.filter(|v| v.strip == strip.id)
+        && let Some(seam) = view.visible_seam().or_else(|| view.next_seam_rightwards())
+    {
+        return Placement::RightOf(seam.after);
     }
-    // No layout to consult, or a strip with no groups at all: the end of
-    // the strip is the only seam left.
     Placement::NewGroup
 }
 
-/// Record where the window of the launch about to start should land.
-///
-/// The one call an "open this app" path needs. A launch and the toplevel
-/// it eventually maps are two events on two processes; this leaves the
-/// decision as a note for the adoption to read, so the rule is applied
-/// once, at the moment the user asked, against the layout they were
-/// looking at.
+/// A launch and the toplevel it eventually maps are two events on two
+/// processes; this leaves the decision as a note the adoption reads,
+/// applied once against the layout the user was looking at.
 pub fn note_placement_for_launch(
     package_id: &str,
     tree: &WorkspaceTree,
@@ -215,16 +149,9 @@ pub fn note_placement_for_launch(
 }
 
 /// [`note_placement_for_launch`] for a launch whose window identities
-/// cannot be derived from its id.
-///
-/// A `.qpkg`'s wayland app-id follows its package id by convention, so
-/// the qOS path derives both from one string. A host application's
-/// cannot be derived from anything qOS controls — the `.desktop` entry
-/// states it, or the toolkit picks the desktop-file id, or a Flatpak
-/// reports its application id — so the caller that read the entry
-/// passes them in. Without this a foreign toplevel matches no note and
-/// lands wherever the default puts it, which is the bug: the user asked
-/// for it somewhere specific and the window ignored them.
+/// cannot be derived from its id — a `.qpkg`'s wayland app-id follows
+/// its package id by convention, but a host app's cannot, so the caller
+/// that read the `.desktop`/Flatpak id passes it in instead.
 pub fn note_placement_for_launch_identities(
     key: &str,
     identities: &[String],
@@ -235,19 +162,10 @@ pub fn note_placement_for_launch_identities(
     crate::shell::launcher::set_pending_placement_for_identities(key, identities, placement);
 }
 
-/// [`note_placement_for_launch`], with an explicit destination allowed to
-/// override the rule.
-///
-/// The rule infers where a window belongs from what is selected. That is
-/// the right answer when the user did not say — but the "+" on a group's
-/// tab strip *does* say, and naming a destination has to beat inferring
-/// one. Notably [`OpenTarget::Here`] lands a tab in a single-window group,
-/// which the rule would never do (it opens beside instead, so a lone
-/// window never silently acquires a tab bar).
-///
-/// A target naming a group that has since closed falls back to the rule
-/// rather than to `NewGroup`, so a stale aim degrades to the ordinary
-/// behaviour instead of to an arbitrary one.
+/// An explicit destination (the "+" on a group's tab strip) beats
+/// inferring one. [`OpenTarget::Here`] lands a tab in a single-window
+/// group, which the rule alone would never do. A group that has since
+/// closed falls back to the rule rather than to `NewGroup`.
 pub fn note_placement_for_launch_targeted(
     package_id: &str,
     tree: &WorkspaceTree,
@@ -261,7 +179,6 @@ pub fn note_placement_for_launch_targeted(
     crate::shell::launcher::set_pending_placement(package_id, placement);
 }
 
-/// Whether `group` is still a live window group in the active workspace.
 fn group_exists(tree: &WorkspaceTree, group: GroupId) -> bool {
     tree.active_workspace().is_some_and(|ws| {
         ws.strips
@@ -292,7 +209,7 @@ mod tests {
                     },
                 })
                 .collect();
-            let active = tabs.first().map(|t| t.id).unwrap_or(0);
+            let active = tabs.first().map_or(0, |t| t.id);
             let group = WindowGroup {
                 id: next_id(),
                 tabs,
@@ -307,11 +224,11 @@ mod tests {
     }
 
     /// Even spans, 100 wide each, for a strip of `ids`.
-    fn viewport(
-        strip: StripId,
-        ids: &[GroupId],
-        visible: (f64, f64),
-    ) -> StripViewport {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "test fixture: ids.len() is a handful of groups, nowhere near f64's precision limit"
+    )]
+    fn viewport(strip: StripId, ids: &[GroupId], visible: (f64, f64)) -> StripViewport {
         StripViewport {
             strip,
             groups: ids
@@ -377,10 +294,7 @@ mod tests {
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
         tree.active_group.remove(&strip_id);
-        // The screen shows canvas 120..190 — inside group 1, with its
-        // left border behind the viewport and its right one ahead of it.
-        // That is what a full-width window scrolled into the middle of a
-        // strip looks like: no border between windows anywhere on screen.
+        // Inside group 1: no border between windows anywhere on screen.
         let view = viewport(strip_id, &ids, (120.0, 190.0));
         assert_eq!(
             placement_for_new_window(&tree, Some(&view)),
@@ -405,10 +319,8 @@ mod tests {
     }
 
     /// The resting state of a strip of full-width windows: the border
-    /// between the window you are looking at and the next one lands
-    /// exactly on the screen's right edge. Nothing of the space is on
-    /// screen, so the window goes after the one filling it — not two
-    /// windows along.
+    /// lands exactly on the screen's right edge, so the window goes
+    /// after the one filling it — not two windows along.
     #[test]
     fn a_border_exactly_on_the_screen_edge_is_not_a_space_you_can_see() {
         let mut tree = WorkspaceTree::bootstrap_demo();
@@ -439,13 +351,9 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // End to end: the note a launch leaves, read back by the adoption
-    // that splices the window in. Same two calls the palette's
-    // Applications row and the compositor's `new_toplevel` make, in the
-    // same order. `PENDING_PLACEMENT` is process-global, so these are
-    // serialised against each other and against the launcher's own tests.
-    // -----------------------------------------------------------------
+    // that splices the window in. `PENDING_PLACEMENT` is process-global,
+    // so these are serialised against the launcher's own tests.
 
     /// Adopt a window for `app_id` and report the strip's group ids and
     /// the group the window landed in.
@@ -457,11 +365,7 @@ mod tests {
         viewport: Option<&StripViewport>,
     ) -> (Vec<GroupId>, GroupId) {
         note_placement_for_launch(package_id, tree, viewport);
-        crate::compositor::tab_binding::adopt_toplevel(
-            tree,
-            surface_id,
-            Some(app_id.to_string()),
-        );
+        crate::compositor::tab_binding::adopt_toplevel(tree, surface_id, Some(app_id.to_string()));
         let landed = tree.workspaces[0].strips[0]
             .window_groups
             .iter()
@@ -524,9 +428,6 @@ mod tests {
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
         tree.active_group.remove(&strip_id);
-        // The screen shows canvas 120..190 — the inside of group 1, its
-        // left border behind the viewport and its right one ahead of it.
-        // No border between windows is on screen at all.
         let view = viewport(strip_id, &ids, (120.0, 190.0));
 
         let (order, landed) = launch_and_adopt(
@@ -596,10 +497,7 @@ mod tests {
         );
 
         assert_eq!(landed, ids[1], "the window joined the selected group");
-        assert_eq!(
-            order, ids,
-            "and the strip did not grow a column to hold it"
-        );
+        assert_eq!(order, ids, "and the strip did not grow a column to hold it");
         crate::shell::launcher::clear_pending_placements();
     }
 

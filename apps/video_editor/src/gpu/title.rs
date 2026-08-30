@@ -211,7 +211,11 @@ mod tests {
     #[test]
     fn a_title_rasters_visible_glyphs_on_a_transparent_field() {
         let mut raster = TitleRaster::new();
-        let text = TextSource { content: "HELLO".into(), size: 0.4, ..TextSource::default() };
+        let text = TextSource {
+            content: "HELLO".into(),
+            size: 0.4,
+            ..TextSource::default()
+        };
         let Some(rgba) = raster.raster(&text, 128, 64) else {
             panic!("the title raster tests need a wgpu adapter (llvmpipe is enough)");
         };
@@ -219,7 +223,10 @@ mod tests {
         let opaque = rgba.chunks_exact(4).filter(|p| p[3] > 200).count();
         let clear = rgba.chunks_exact(4).filter(|p| p[3] == 0).count();
         assert!(opaque > 100, "the glyphs cover real pixels, got {opaque}");
-        assert!(clear > 1000, "and most of the field stays transparent, got {clear}");
+        assert!(
+            clear > 1000,
+            "and most of the field stays transparent, got {clear}"
+        );
         // White text: every solid texel is bright.
         let dark = rgba
             .chunks_exact(4)
@@ -267,14 +274,24 @@ mod tests {
         let left = at(TextAlign::Left);
         let centre = at(TextAlign::Center);
         let right = at(TextAlign::Right);
-        assert!(left < centre, "left-aligned sits left of centred: {left} vs {centre}");
-        assert!(centre < right, "and centred left of right-aligned: {centre} vs {right}");
+        assert!(
+            left < centre,
+            "left-aligned sits left of centred: {left} vs {centre}"
+        );
+        assert!(
+            centre < right,
+            "and centred left of right-aligned: {centre} vs {right}"
+        );
     }
 
     #[test]
     fn the_backdrop_fills_the_field_behind_the_text() {
         let mut raster = TitleRaster::new();
-        let t = TextSource { content: "x".into(), backdrop: 0.8, ..TextSource::default() };
+        let t = TextSource {
+            content: "x".into(),
+            backdrop: 0.8,
+            ..TextSource::default()
+        };
         let rgba = raster.raster(&t, 32, 32).expect("needs a wgpu adapter");
         // A corner is well away from any glyph, so it is plate or nothing.
         let corner = &rgba[0..4];
@@ -293,10 +310,17 @@ mod tests {
         assert_eq!(raster.cache.len(), 1);
         assert!(raster.raster(&a, 64, 32).is_some());
         assert_eq!(raster.cache.len(), 1, "an identical request is a cache hit");
-        let b = TextSource { content: "different".into(), ..a.clone() };
+        let b = TextSource {
+            content: "different".into(),
+            ..a.clone()
+        };
         assert!(raster.raster(&b, 64, 32).is_some());
         assert_eq!(raster.cache.len(), 2, "changed text rasters again");
         assert!(raster.raster(&a, 96, 32).is_some());
-        assert_eq!(raster.cache.len(), 1, "a new frame size rebuilds the renderer");
+        assert_eq!(
+            raster.cache.len(),
+            1,
+            "a new frame size rebuilds the renderer"
+        );
     }
 }

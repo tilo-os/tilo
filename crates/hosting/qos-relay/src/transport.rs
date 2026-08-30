@@ -314,9 +314,7 @@ mod tests {
     async fn frame_reader_reads_multiple() {
         let mut wire = Vec::new();
         wire.extend_from_slice(&encode(&Envelope::Ping).unwrap());
-        wire.extend_from_slice(
-            &encode(&Envelope::Subscribe { workspace_id: 1 }).unwrap(),
-        );
+        wire.extend_from_slice(&encode(&Envelope::Subscribe { workspace_id: 1 }).unwrap());
         wire.extend_from_slice(&encode(&Envelope::Pong).unwrap());
         let cursor = std::io::Cursor::new(wire);
         let mut reader = FrameReader::new(cursor);

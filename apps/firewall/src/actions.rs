@@ -70,7 +70,11 @@ pub enum FirewallAction {
     ToggleRule { zone: ZoneKind, id: RuleId },
     /// Move a rule within its zone by `delta` positions (clamped to the ends).
     /// A move that would leave it in place is a no-op.
-    ReorderRule { zone: ZoneKind, id: RuleId, delta: i32 },
+    ReorderRule {
+        zone: ZoneKind,
+        id: RuleId,
+        delta: i32,
+    },
     /// Set a zone's default policy — the target applied to traffic no rule
     /// matched.
     SetZoneTarget { zone: ZoneKind, target: Target },
@@ -78,7 +82,11 @@ pub enum FirewallAction {
     SetDefaultZone { zone: ZoneKind },
     /// Enable (`on`) or disable a named service in a zone. The target state is
     /// resolved at authoring time and carried, so replay is order-free.
-    SetService { zone: ZoneKind, service: String, on: bool },
+    SetService {
+        zone: ZoneKind,
+        service: String,
+        on: bool,
+    },
     /// Set firewalld panic mode (drop all traffic in + out).
     SetPanic { on: bool },
     /// Set the master switch — whether the firewall runs at all.
@@ -114,7 +122,9 @@ impl qos_actions::Action for FirewallAction {
 fn apply_to_config(action: &FirewallAction, cfg: &mut FirewallConfig) -> bool {
     match action {
         FirewallAction::AddRule { zone, rule } => {
-            let Some(z) = cfg.zone_mut(*zone) else { return false };
+            let Some(z) = cfg.zone_mut(*zone) else {
+                return false;
+            };
             if z.rules.iter().any(|r| r.id == rule.id) {
                 return false;
             }
@@ -122,7 +132,9 @@ fn apply_to_config(action: &FirewallAction, cfg: &mut FirewallConfig) -> bool {
             true
         }
         FirewallAction::EditRule { zone, rule } => {
-            let Some(z) = cfg.zone_mut(*zone) else { return false };
+            let Some(z) = cfg.zone_mut(*zone) else {
+                return false;
+            };
             let Some(slot) = z.rules.iter_mut().find(|r| r.id == rule.id) else {
                 return false;
             };
@@ -133,13 +145,17 @@ fn apply_to_config(action: &FirewallAction, cfg: &mut FirewallConfig) -> bool {
             true
         }
         FirewallAction::DeleteRule { zone, id } => {
-            let Some(z) = cfg.zone_mut(*zone) else { return false };
+            let Some(z) = cfg.zone_mut(*zone) else {
+                return false;
+            };
             let before = z.rules.len();
             z.rules.retain(|r| r.id != *id);
             z.rules.len() != before
         }
         FirewallAction::ToggleRule { zone, id } => {
-            let Some(z) = cfg.zone_mut(*zone) else { return false };
+            let Some(z) = cfg.zone_mut(*zone) else {
+                return false;
+            };
             let Some(r) = z.rules.iter_mut().find(|r| r.id == *id) else {
                 return false;
             };
@@ -147,7 +163,9 @@ fn apply_to_config(action: &FirewallAction, cfg: &mut FirewallConfig) -> bool {
             true
         }
         FirewallAction::ReorderRule { zone, id, delta } => {
-            let Some(z) = cfg.zone_mut(*zone) else { return false };
+            let Some(z) = cfg.zone_mut(*zone) else {
+                return false;
+            };
             let Some(idx) = z.rules.iter().position(|r| r.id == *id) else {
                 return false;
             };
@@ -161,7 +179,9 @@ fn apply_to_config(action: &FirewallAction, cfg: &mut FirewallConfig) -> bool {
             true
         }
         FirewallAction::SetZoneTarget { zone, target } => {
-            let Some(z) = cfg.zone_mut(*zone) else { return false };
+            let Some(z) = cfg.zone_mut(*zone) else {
+                return false;
+            };
             if z.target == *target {
                 return false;
             }
@@ -176,7 +196,9 @@ fn apply_to_config(action: &FirewallAction, cfg: &mut FirewallConfig) -> bool {
             true
         }
         FirewallAction::SetService { zone, service, on } => {
-            let Some(z) = cfg.zone_mut(*zone) else { return false };
+            let Some(z) = cfg.zone_mut(*zone) else {
+                return false;
+            };
             let has = z.has_service(service);
             if *on && !has {
                 z.services.push(service.clone());
@@ -252,7 +274,11 @@ pub fn set_default_zone_action(zone: ZoneKind) -> FirewallAction {
 }
 
 pub fn set_service_action(zone: ZoneKind, service: impl Into<String>, on: bool) -> FirewallAction {
-    FirewallAction::SetService { zone, service: service.into(), on }
+    FirewallAction::SetService {
+        zone,
+        service: service.into(),
+        on,
+    }
 }
 
 pub fn set_panic_action(on: bool) -> FirewallAction {
@@ -283,7 +309,11 @@ fn parse_target(name: &str) -> Target {
 /// add-rule form's own [`FormState::matcher`](crate::app) handling.
 fn normalize_port(p: &str) -> String {
     let t = p.trim();
-    if t.is_empty() { "0".to_string() } else { t.to_string() }
+    if t.is_empty() {
+        "0".to_string()
+    } else {
+        t.to_string()
+    }
 }
 
 /// A one-line label for a zone in the palette.
@@ -297,7 +327,12 @@ fn zone_label(z: &Zone, is_default: bool) -> String {
 
 /// A one-line label for a rule, marking a disabled one.
 fn rule_label(r: &Rule) -> String {
-    let base = format!("{} {} from {}", r.action.label(), r.matcher.label(), r.source_label());
+    let base = format!(
+        "{} {} from {}",
+        r.action.label(),
+        r.matcher.label(),
+        r.source_label()
+    );
     if r.enabled {
         base
     } else {
@@ -317,13 +352,21 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
     let mut root = Resource::new("firewall.config", "firewall.config", "Firewall");
 
     // Config-level: master switch + panic mode.
-    let enable_label = if config.enabled { "Stop firewall" } else { "Start firewall" };
+    let enable_label = if config.enabled {
+        "Stop firewall"
+    } else {
+        "Start firewall"
+    };
     root = root.with_action(immediate_spec(
         "toggle-enabled",
         enable_label,
         &set_enabled_action(!config.enabled),
     ));
-    let panic_label = if config.panic_mode { "Exit panic mode" } else { "Enter panic mode" };
+    let panic_label = if config.panic_mode {
+        "Exit panic mode"
+    } else {
+        "Enter panic mode"
+    };
     root = root.with_action(immediate_spec(
         "toggle-panic",
         panic_label,
@@ -369,7 +412,10 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
                 encode(&add_rule_action(
                     kind,
                     Rule::new(
-                        Matcher::Port { port: normalize_port(port), proto: Proto::Tcp },
+                        Matcher::Port {
+                            port: normalize_port(port),
+                            proto: Proto::Tcp,
+                        },
                         Action::Allow,
                         "",
                     ),
@@ -380,14 +426,26 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
         let n = z.rules.len();
         for (idx, r) in z.rules.iter().enumerate() {
             let id = r.id;
-            let toggle_label = if r.enabled { "Disable rule" } else { "Enable rule" };
+            let toggle_label = if r.enabled {
+                "Disable rule"
+            } else {
+                "Enable rule"
+            };
             let mut rr = Resource::new(
                 format!("firewall.rule:{id}"),
                 "firewall.rule",
                 rule_label(r),
             )
-            .with_action(immediate_spec("toggle", toggle_label, &toggle_rule_action(kind, id)))
-            .with_action(immediate_spec("delete", "Delete rule", &delete_rule_action(kind, id)));
+            .with_action(immediate_spec(
+                "toggle",
+                toggle_label,
+                &toggle_rule_action(kind, id),
+            ))
+            .with_action(immediate_spec(
+                "delete",
+                "Delete rule",
+                &delete_rule_action(kind, id),
+            ));
 
             // Edit — replace the rule's source (its most editable field). Carries
             // the rest of the rule unchanged so the edit is a whole-rule replace.
@@ -507,7 +565,10 @@ mod tests {
         assert!(z_actions.contains(&"set-policy"), "{z_actions:?}");
         assert!(z_actions.contains(&"add-allow"), "{z_actions:?}");
         // public is the active zone in the sample, so make-active is suppressed.
-        assert!(!z_actions.contains(&"set-default"), "active zone omits make-active");
+        assert!(
+            !z_actions.contains(&"set-default"),
+            "active zone omits make-active"
+        );
         assert!(!public.children.is_empty(), "public has rules");
 
         let rule = &public.children[0];
@@ -545,7 +606,10 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(
-            labels.iter().any(|l| l.contains("firewall") || l.contains("Firewall") || l.contains("Stop") || l.contains("Start")),
+            labels.iter().any(|l| l.contains("firewall")
+                || l.contains("Firewall")
+                || l.contains("Stop")
+                || l.contains("Start")),
             "{labels:?}"
         );
     }
@@ -580,16 +644,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         let after = FirewallDoc::load(&state.doc).unwrap();
         assert_eq!(
@@ -598,14 +653,20 @@ mod tests {
             "the action deleted a rule"
         );
         assert!(
-            !after.zone(zone).unwrap().rules.iter().any(|r| r.id == victim),
+            !after
+                .zone(zone)
+                .unwrap()
+                .rules
+                .iter()
+                .any(|r| r.id == victim),
             "the right rule is gone"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         let restored = FirewallDoc::load(&state.doc).unwrap();
         assert_eq!(
             restored.zone(zone).unwrap().rules.len(),
@@ -613,7 +674,12 @@ mod tests {
             "undo reverted the deletion and nothing else"
         );
         assert!(
-            restored.zone(zone).unwrap().rules.iter().any(|r| r.id == victim),
+            restored
+                .zone(zone)
+                .unwrap()
+                .rules
+                .iter()
+                .any(|r| r.id == victim),
             "the rule is back after undo"
         );
     }
@@ -628,7 +694,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // Toggle a rule: deterministic against the shared base (each replica
         // reads the stored value and negates it).
@@ -642,11 +712,29 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         let after_a = FirewallDoc::load(&a).unwrap();
         let after_b = FirewallDoc::load(&b).unwrap();
-        let enabled_a = after_a.zone(zone).unwrap().rules.iter().find(|r| r.id == rule_id).unwrap().enabled;
-        let enabled_b = after_b.zone(zone).unwrap().rules.iter().find(|r| r.id == rule_id).unwrap().enabled;
+        let enabled_a = after_a
+            .zone(zone)
+            .unwrap()
+            .rules
+            .iter()
+            .find(|r| r.id == rule_id)
+            .unwrap()
+            .enabled;
+        let enabled_b = after_b
+            .zone(zone)
+            .unwrap()
+            .rules
+            .iter()
+            .find(|r| r.id == rule_id)
+            .unwrap()
+            .enabled;
         assert_eq!(enabled_a, !was, "the toggle landed");
         assert_eq!(enabled_a, enabled_b, "both replicas agree");
     }
@@ -662,7 +750,14 @@ mod tests {
         let mut b = AutoCommit::load(&bytes).unwrap();
 
         let zone = FirewallDoc::load(&a).unwrap().default_zone;
-        let rule = Rule::new(Matcher::Port { port: "9443".into(), proto: Proto::Tcp }, Action::Allow, "10.0.0.0/8");
+        let rule = Rule::new(
+            Matcher::Port {
+                port: "9443".into(),
+                proto: Proto::Tcp,
+            },
+            Action::Allow,
+            "10.0.0.0/8",
+        );
         let rid = rule.id;
         let action = add_rule_action(zone, rule);
         let encoded = encode(&action);
@@ -672,7 +767,13 @@ mod tests {
 
         assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
         assert!(
-            FirewallDoc::load(&b).unwrap().zone(zone).unwrap().rules.iter().any(|r| r.id == rid),
+            FirewallDoc::load(&b)
+                .unwrap()
+                .zone(zone)
+                .unwrap()
+                .rules
+                .iter()
+                .any(|r| r.id == rid),
             "the added rule is present on the peer"
         );
     }
@@ -689,7 +790,11 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        assert_eq!(doc.get_heads(), before, "a delete of an absent rule changed nothing");
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "a delete of an absent rule changed nothing"
+        );
     }
 
     /// Single source of truth: the palette's per-rule "Delete rule" spec and the
@@ -706,13 +811,21 @@ mod tests {
             .find(|r| r.id.as_str() == "firewall.zone:public")
             .unwrap();
         let rule = &public.children[0];
-        let id: RuleId = rule.id.as_str().trim_start_matches("firewall.rule:").parse().unwrap();
+        let id: RuleId = rule
+            .id
+            .as_str()
+            .trim_start_matches("firewall.rule:")
+            .parse()
+            .unwrap();
 
         let delete_spec = rule.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&delete_rule_action(ZoneKind::Public, id));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         // The edit spec matches the edit builder for the same new source.
         let mut edited = FirewallDoc::load(&doc)
@@ -728,7 +841,10 @@ mod tests {
         let from_spec = prompted_encode(edit_spec, "172.16.0.0/12");
         edited.source = "172.16.0.0/12".to_string();
         let from_builder = encode(&edit_rule_action(ZoneKind::Public, edited));
-        assert_eq!(from_spec.payload, from_builder.payload, "edit is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "edit is one source of truth"
+        );
     }
 
     /// Dispatching the zone-level "Add allow rule" prompted action creates a
@@ -743,7 +859,12 @@ mod tests {
             .find(|r| r.id.as_str() == "firewall.zone:public")
             .unwrap();
         let spec = public.actions.iter().find(|a| a.id == "add-allow").unwrap();
-        let before = FirewallDoc::load(&doc).unwrap().zone(ZoneKind::Public).unwrap().rules.len();
+        let before = FirewallDoc::load(&doc)
+            .unwrap()
+            .zone(ZoneKind::Public)
+            .unwrap()
+            .rules
+            .len();
 
         let encoded = prompted_encode(spec, "8443");
         let decoded = registry().decode(&encoded).unwrap();
@@ -754,7 +875,11 @@ mod tests {
         let rules = &after.zone(ZoneKind::Public).unwrap().rules;
         assert_eq!(rules.len(), before + 1, "the action added a rule");
         assert!(
-            rules.iter().any(|r| r.matcher == Matcher::Port { port: "8443".into(), proto: Proto::Tcp }
+            rules.iter().any(|r| r.matcher
+                == Matcher::Port {
+                    port: "8443".into(),
+                    proto: Proto::Tcp
+                }
                 && r.action == Action::Allow),
             "the created rule carries the committed port"
         );

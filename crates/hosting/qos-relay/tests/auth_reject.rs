@@ -10,15 +10,12 @@
 //! (e.g. skipping the revocation check) would slip past the unit
 //! tests but fail here.
 
-mod common;
-
 use qos_relay::RelayClient;
 use qos_user_identity::{
-    DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason,
-    sign_revocation_entry,
+    DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
 };
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn peer_from_different_user_is_rejected() {
@@ -87,7 +84,9 @@ async fn revoked_device_is_rejected() {
         device_cert: relay_dev.cert.clone(),
         revocations: revs,
     };
-    let relay = qos_relay::daemon::Relay::start(cfg, identity).await.unwrap();
+    let relay = qos_relay::daemon::Relay::start(cfg, identity)
+        .await
+        .unwrap();
     relay
         .set_workspace_membership(9, true, vec![good_dev.device_pubkey()], state_root)
         .await
@@ -119,4 +118,58 @@ async fn revoked_device_is_rejected() {
     )
     .await;
     assert!(res_ok.is_ok(), "good device should still connect");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn newly_persisted_revocation_closes_an_existing_session() {
+    let user = TestUser::fresh("Alice");
+    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let device = user.enrol("lost-phone", DeviceCapabilities::member());
+    let device_key = device.device_pubkey();
+    let state = tempfile::tempdir().unwrap();
+    let relay = qos_relay::daemon::Relay::start(
+        qos_relay::RelayConfig {
+            state_root: state.path().to_path_buf(),
+            ..Default::default()
+        },
+        qos_relay::daemon::RelayIdentity {
+            user_public_key: user.user_pk,
+            device_signing_key: relay_dev.sk,
+            device_cert: relay_dev.cert,
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let client = RelayClient::connect(
+        client_endpoint().await,
+        relay.node_addr(),
+        user.user_pk,
+        device.cert,
+        device.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    client
+        .send(qos_relay::Envelope::Subscribe { workspace_id: 33 })
+        .unwrap();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), client.recv())
+        .await
+        .unwrap();
+
+    let mut entry = RevocationEntry {
+        user_public_key: user.user_pk,
+        revoked_device_public_key: device_key,
+        revoked_at_ns: 1,
+        reason: RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
+    qos_relay::store::save_revocations(state.path(), &[entry]).unwrap();
+
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(4), client.recv()).await,
+        Ok(None)
+    ));
 }

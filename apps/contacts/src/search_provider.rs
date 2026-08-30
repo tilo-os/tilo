@@ -30,7 +30,9 @@ pub struct ContactSearchProvider {
 impl ContactSearchProvider {
     /// Snapshot the current address book into a provider.
     pub fn new(store: &ContactStore) -> Self {
-        Self { contacts: store.contacts.clone() }
+        Self {
+            contacts: store.contacts.clone(),
+        }
     }
 
     /// The `action_id` for a contact — what a chosen row hands back.
@@ -64,8 +66,9 @@ impl SearchProvider for ContactSearchProvider {
             .iter()
             .filter(|c| c.matches(&q))
             .map(|c| {
-                let mut r = SearchResult::new(CONTACT_KIND, c.display_name(), Self::action_id(c.id))
-                    .with_icon(Icon::Mail);
+                let mut r =
+                    SearchResult::new(CONTACT_KIND, c.display_name(), Self::action_id(c.id))
+                        .with_icon(Icon::Mail);
                 let sub = c.subtitle();
                 if !sub.is_empty() {
                     r = r.with_subtitle(sub);
@@ -83,7 +86,7 @@ impl SearchProvider for ContactSearchProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{sample_contacts, ContactStore};
+    use crate::model::{ContactStore, sample_contacts};
     use ui::search::SearchRegistry;
 
     fn store_with_samples() -> ContactStore {
@@ -104,7 +107,10 @@ mod tests {
             "the provider surfaces the real matching contact, got {:?}",
             hits.iter().map(|r| &r.title).collect::<Vec<_>>()
         );
-        assert!(hits.iter().all(|r| r.kind == CONTACT_KIND), "all hits are tagged Contacts");
+        assert!(
+            hits.iter().all(|r| r.kind == CONTACT_KIND),
+            "all hits are tagged Contacts"
+        );
     }
 
     #[test]
@@ -137,8 +143,14 @@ mod tests {
 
         let id = ContactSearchProvider::parse_action_id(&top.action_id)
             .expect("action_id parses back to a ContactId");
-        let contact = store.get(id).expect("the id resolves to a real stored contact");
-        assert_eq!(contact.display_name(), top.title, "activation lands on the right record");
+        let contact = store
+            .get(id)
+            .expect("the id resolves to a real stored contact");
+        assert_eq!(
+            contact.display_name(),
+            top.title,
+            "activation lands on the right record"
+        );
     }
 
     #[test]
@@ -147,8 +159,14 @@ mod tests {
         let provider = ContactSearchProvider::new(&store);
         // Ada Lovelace is a favourite in the sample set.
         let hits = provider.search("ada");
-        let ada = hits.iter().find(|r| r.title == "Ada Lovelace").expect("Ada is found");
-        assert!(ada.score >= 1, "a favourite result carries a positive score bias");
+        let ada = hits
+            .iter()
+            .find(|r| r.title == "Ada Lovelace")
+            .expect("Ada is found");
+        assert!(
+            ada.score >= 1,
+            "a favourite result carries a positive score bias"
+        );
     }
 
     #[test]
@@ -164,6 +182,10 @@ mod tests {
         registry.register(Box::new(ContactSearchProvider::new(&store)));
         let groups = registry.query_grouped("");
         assert_eq!(groups.len(), 1, "one Contacts group");
-        assert_eq!(groups[0].results.len(), store.len(), "every contact is browsable");
+        assert_eq!(
+            groups[0].results.len(),
+            store.len(),
+            "every contact is browsable"
+        );
     }
 }

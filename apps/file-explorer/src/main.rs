@@ -1,3 +1,19 @@
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 // Thin binary entry point — all logic lives in the library.
 //
 // Supports two modes:
@@ -10,19 +26,67 @@
 use std::collections::HashMap;
 
 use file_explorer::FileExplorerWidget;
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 /// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
+
+/// An Automerge actor id that is actually distinct from every other replica's.
+///
+/// `format!("{prefix}-{pid}")` was not. Every application here runs in its own
+/// PID namespace, so every instance sees itself as pid 2 and every session
+/// wrote under the *same* actor — and Automerge refuses a frame whose actor
+/// already used that sequence number:
+///
+///     blob_relay: a document frame did not parse; it is lost for this replica
+///     error=duplicate seq 1 found for actor 66696c65732d32     ("files-2")
+///
+/// Frames dropped, silently, in the one direction that matters: a change made
+/// on one machine never reaching another.
+///
+/// `have` is the actor `ui::persist::open` has already put on the document:
+/// `app_state::DocStore` mints one at random per state directory, persists it
+/// in an `actor` sidecar and takes a lock so a second instance cannot claim
+/// it. That is precisely the guarantee this needs, and the app used to throw
+/// it away. Prefixing keeps the readable half without inventing the unique
+/// half, and it is *stable across restarts*, which a clock reading is not.
+///
+/// Deliberately reads no environment: the whole failure was an id that was a
+/// function of things two replicas share, and a function of its arguments is
+/// the only shape that can be tested for it.
+fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
+    let hex = have.to_hex_string();
+    format!("{prefix}-{}", &hex[..hex.len().min(12)])
+}
+
+/// The name this replica is given, if anything has named it.
+///
+/// `QUICK_APP_ID` is how a dev run points two instances at one shell and gets
+/// a history it can read. `QOS_USER_ID` is the session's own identity and
+/// would be the best of both — it does not reach a sandboxed app, because the
+/// launcher builds an app's environment from an allowlist and it is not on
+/// it, so in the product neither of these answers and the actor comes from
+/// [`distinct_actor`].
+fn named_actor(prefix: &str) -> Option<String> {
+    if let Ok(id) = std::env::var("QUICK_APP_ID")
+        && !id.is_empty()
+    {
+        return Some(id);
+    }
+    match std::env::var("QOS_USER_ID") {
+        Ok(user) if !user.is_empty() => Some(format!("{prefix}-{user}")),
+        _ => None,
+    }
+}
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -51,8 +115,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Pre-layout scenario setup (view mode + selection must be set before
         // the tree is built so the composed view captures them).
         match scenario.as_deref() {
-            Some("grid") | Some("thumbnails") | Some("thumbnails-fs") => {
-                widget.set_view_mode(file_explorer::model::ViewMode::Grid)
+            Some("grid" | "thumbnails" | "thumbnails-fs") => {
+                widget.set_view_mode(file_explorer::model::ViewMode::Grid);
             }
             Some("select") => {
                 widget.debug_select(&[7, 8]);
@@ -85,17 +149,23 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.file-explorer"));
+        std::process::exit(ui::headless::run(
+            spec,
+            Box::new(widget),
+            "dev.qos.file-explorer",
+        ));
     }
 
     let (mut state, autosave) = ui::persist::open("dev.qos.file-explorer");
     // Two windows of the file manager are two authors of the same document
     // — an inline rename is native collaborative `Text` (see
     // `actions.rs`), so concurrent edits have to be attributable to tell
-    // them apart. A missing `QUICK_APP_ID` falls back to a per-process id
-    // so two un-configured instances still get distinct actors.
-    let app_id = std::env::var("QUICK_APP_ID")
-        .unwrap_or_else(|_| format!("files-{}", std::process::id()));
+    // them apart. `QUICK_APP_ID`/`QOS_USER_ID` name a known replica; a
+    // sandboxed launch has neither, so the fallback has to be sound on its
+    // own — see [`distinct_actor`].
+    let app_id =
+        named_actor("files").unwrap_or_else(|| distinct_actor("files", state.doc.get_actor()));
+    ui::diag!("file-explorer: automerge actor {app_id}");
     state
         .doc
         .set_actor(automerge::ActorId::from(app_id.as_bytes()));
@@ -148,10 +218,34 @@ fn seed_thumbnails_demo() -> std::path::PathBuf {
     let _ = std::fs::create_dir_all(dir.join("Camera Roll"));
 
     // Real raster images across formats + patterns.
-    write_image(&dir.join("sunset.png"), 640, 480, 0, image::ImageFormat::Png);
-    write_image(&dir.join("harbour.jpg"), 640, 480, 1, image::ImageFormat::Jpeg);
-    write_image(&dir.join("forest-path.png"), 480, 640, 2, image::ImageFormat::Png);
-    write_image(&dir.join("bloom.jpg"), 600, 600, 3, image::ImageFormat::Jpeg);
+    write_image(
+        &dir.join("sunset.png"),
+        640,
+        480,
+        0,
+        image::ImageFormat::Png,
+    );
+    write_image(
+        &dir.join("harbour.jpg"),
+        640,
+        480,
+        1,
+        image::ImageFormat::Jpeg,
+    );
+    write_image(
+        &dir.join("forest-path.png"),
+        480,
+        640,
+        2,
+        image::ImageFormat::Png,
+    );
+    write_image(
+        &dir.join("bloom.jpg"),
+        600,
+        600,
+        3,
+        image::ImageFormat::Jpeg,
+    );
     write_image(&dir.join("study.png"), 720, 480, 4, image::ImageFormat::Png);
 
     // A genuine one-page PDF (pdfium renders its first page) and a real EPUB.
@@ -243,17 +337,33 @@ fn gradient_image(w: u32, h: u32, kind: u8) -> image::RgbaImage {
         let fx = x as f32 / w as f32;
         let fy = y as f32 / h as f32;
         let (r, g, b) = match kind % 5 {
-            0 => (lerp(255.0, 60.0, fy), lerp(150.0, 40.0, fy), lerp(70.0, 130.0, fy)), // sunset
+            0 => (
+                lerp(255.0, 60.0, fy),
+                lerp(150.0, 40.0, fy),
+                lerp(70.0, 130.0, fy),
+            ), // sunset
             1 => {
                 let (dx, dy) = (fx - 0.5, fy - 0.42);
                 let d = (dx * dx + dy * dy).sqrt() * 1.7;
-                (lerp(40.0, 12.0, d), lerp(165.0, 55.0, d), lerp(215.0, 120.0, d)) // harbour
+                (
+                    lerp(40.0, 12.0, d),
+                    lerp(165.0, 55.0, d),
+                    lerp(215.0, 120.0, d),
+                ) // harbour
             }
             2 => {
                 let t = (fx + fy) * 0.5;
-                (lerp(90.0, 24.0, t), lerp(185.0, 95.0, t), lerp(95.0, 55.0, t)) // forest
+                (
+                    lerp(90.0, 24.0, t),
+                    lerp(185.0, 95.0, t),
+                    lerp(95.0, 55.0, t),
+                ) // forest
             }
-            3 => (lerp(240.0, 250.0, fx), lerp(90.0, 190.0, fy), lerp(170.0, 70.0, fx)), // bloom
+            3 => (
+                lerp(240.0, 250.0, fx),
+                lerp(90.0, 190.0, fy),
+                lerp(170.0, 70.0, fx),
+            ), // bloom
             _ => {
                 let band = (((x / 18 + y / 18) % 2) as f32) * 34.0;
                 let c = 120.0 + fy * 70.0 + band;
@@ -334,7 +444,8 @@ fn minimal_epub(title: &str, cover_png: &[u8]) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let stored =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         let deflated =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         zip.start_file("mimetype", stored).unwrap();
@@ -345,7 +456,8 @@ fn minimal_epub(title: &str, cover_png: &[u8]) -> Vec<u8> {
   <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
 </container>"#).unwrap();
         zip.start_file("OEBPS/content.opf", deflated).unwrap();
-        let opf = format!(r#"<?xml version="1.0"?>
+        let opf = format!(
+            r#"<?xml version="1.0"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
   <metadata><dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">{title}</dc:title></metadata>
   <manifest>
@@ -353,10 +465,12 @@ fn minimal_epub(title: &str, cover_png: &[u8]) -> Vec<u8> {
     <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
   </manifest>
   <spine><itemref idref="c1"/></spine>
-</package>"#);
+</package>"#
+        );
         zip.write_all(opf.as_bytes()).unwrap();
         zip.start_file("OEBPS/ch1.xhtml", deflated).unwrap();
-        zip.write_all(b"<html><body><p>Chapter one.</p></body></html>").unwrap();
+        zip.write_all(b"<html><body><p>Chapter one.</p></body></html>")
+            .unwrap();
         zip.start_file("OEBPS/cover.png", deflated).unwrap();
         zip.write_all(cover_png).unwrap();
         zip.finish().unwrap();
@@ -494,7 +608,7 @@ fn render_shot_to_png(
         Some("menu") => {
             // Right-click context menu + the "New File" template flyout, anchored
             // in the content pane.
-            widget.debug_show_templates_menu(Point::new((w as f64) * 0.45, (h as f64) * 0.34));
+            widget.debug_show_templates_menu(Point::new(f64::from(w) * 0.45, f64::from(h) * 0.34));
         }
         Some("reorder") => {
             // Grab a favourite and lift it two rows up — mid-drag.
@@ -510,7 +624,11 @@ fn render_shot_to_png(
             // Drag a file onto a folder — mid-drop, so the ghost + the folder's
             // drop-target highlight both show. Pick the first published folder
             // row as the target and the first file as the dragged item.
-            let target = widget.debug_folder_targets().into_iter().next().map(|(p, _)| p);
+            let target = widget
+                .debug_folder_targets()
+                .into_iter()
+                .next()
+                .map(|(p, _)| p);
             let source = widget
                 .entries()
                 .iter()
@@ -525,13 +643,21 @@ fn render_shot_to_png(
             // alongside the accent selection.
             let ev = winit::event::WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new((w as f64) * 0.35, 560.0),
+                position: winit::dpi::PhysicalPosition::new(f64::from(w) * 0.35, 560.0),
             };
             let mut handled = false;
             let mut focus = None;
             let mods = winit::event::Modifiers::default();
             widget.handle_event(
-                &ev, 1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, child, &taffy,
+                &ev,
+                1.0,
+                &mods,
+                &mut state.doc,
+                &state.root,
+                &mut handled,
+                &mut focus,
+                child,
+                &taffy,
             );
         }
         _ => {}
@@ -541,7 +667,7 @@ fn render_shot_to_png(
     // warm-up draw kicks off generation for the visible cells, then we wait for
     // the pool to settle before the frame we keep — so the shot captures real
     // previews, never the loading placeholders.
-    if matches!(scenario, Some("thumbnails") | Some("thumbnails-fs")) {
+    if matches!(scenario, Some("thumbnails" | "thumbnails-fs")) {
         let mut warm = Scene::new();
         widget.draw_with_presence(
             &mut warm,
@@ -564,7 +690,13 @@ fn render_shot_to_png(
         &permission,
     );
     // Composite the overlay layer (context menu + flyout) on top.
-    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
+    widget.draw_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -573,4 +705,35 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("file-explorer: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod actor_tests {
+    use super::distinct_actor;
+
+    /// The regression, stated as the property it broke.
+    ///
+    /// Both ids below are minted inside one process, so anything derived from
+    /// the process — a pid, which is 2 in every sandbox on this system —
+    /// produces the same string twice. Automerge then refuses the second
+    /// replica's frames with `duplicate seq 1 found for actor`, and a change
+    /// made on one machine never reaches the other.
+    #[test]
+    fn two_replicas_in_one_process_do_not_share_an_actor() {
+        let a = automerge::AutoCommit::new();
+        let b = automerge::AutoCommit::new();
+        assert_ne!(
+            distinct_actor("files", a.get_actor()),
+            distinct_actor("files", b.get_actor()),
+            "two replicas were given the same actor id, which is the failure \
+             that silently drops one of them's changes",
+        );
+    }
+
+    /// And it still says what it is, so a history can be read.
+    #[test]
+    fn the_actor_still_names_the_application() {
+        let doc = automerge::AutoCommit::new();
+        assert!(distinct_actor("files", doc.get_actor()).starts_with("files-"));
+    }
 }

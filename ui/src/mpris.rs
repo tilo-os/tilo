@@ -1,27 +1,18 @@
 //! MPRIS — `org.mpris.MediaPlayer2` desktop media control, in the toolkit.
 //!
-//! This is the shared, app-agnostic core that publishes now-playing metadata +
-//! transport state to the desktop (GNOME's top-bar media widget, `playerctl`,
-//! KDE, …) and receives **media-key** / system-widget commands back. It was
-//! lifted out of the Music app so that *any* `ui` consumer — the
-//! [`crate::widget::video_player::VideoPlayer`] widget, and hence Tube and the
-//! local video player — gets media-key + top-bar now-playing for free.
+//! Shared, app-agnostic core that publishes now-playing metadata + transport
+//! state to the desktop and receives media-key / system-widget commands back.
+//! Lifted out of the Music app so any `ui` consumer (e.g.
+//! [`crate::widget::video_player::VideoPlayer`], hence Tube) gets this free.
 //!
-//! The real D-Bus serving is gated behind the `mpris` feature (via [`zbus`]);
-//! the pure state/command core always compiles so the default build + tests
-//! exercise it without a D-Bus dependency.
+//! Real D-Bus serving is gated behind the `mpris` feature (via [`zbus`]); the
+//! pure state/command core always compiles so tests run without D-Bus.
 //!
-//! ## Threading
-//!
-//! MPRIS lives on its own worker thread with a private Tokio runtime — the UI
-//! thread is never blocked by D-Bus. Two channels bridge it to the widget:
-//!   * **commands** (bus → widget): an external Play/Pause/… lands as a
-//!     [`MprisCommand`] the widget drains each frame
-//!     ([`MprisHandle::drain_commands`]) and applies to the engine.
-//!   * **publishes** (widget → bus): the widget pushes a [`PlayerSnapshot`]
-//!     whenever state changes ([`MprisHandle::publish`]); the worker updates the
-//!     served properties and emits `PropertiesChanged` for
-//!     `PlaybackStatus` / `Metadata` / `Volume` / the `Can*` flags.
+//! Runs on its own worker thread with a private Tokio runtime so the UI
+//! thread is never blocked. Two channels bridge it to the widget: external
+//! commands land as [`MprisCommand`]s drained each frame
+//! ([`MprisHandle::drain_commands`]); the widget pushes a [`PlayerSnapshot`]
+//! on change ([`MprisHandle::publish`]) and the worker emits `PropertiesChanged`.
 
 use std::sync::mpsc::Receiver;
 
@@ -58,8 +49,6 @@ pub struct MprisConfig {
 }
 
 impl MprisConfig {
-    /// Build a config from an MPRIS app suffix + human-readable identity. The
-    /// bus name becomes `org.mpris.MediaPlayer2.<app_id>` (MPRIS convention).
     pub fn new(app_id: &str, identity: &str) -> Self {
         Self {
             bus_name: format!("org.mpris.MediaPlayer2.{app_id}"),
@@ -223,7 +212,7 @@ impl MprisHandle {
         out
     }
 
-    /// Publish the current player state to the bus, emitting PropertiesChanged
+    /// Publish the current player state to the bus, emitting `PropertiesChanged`
     /// for whatever changed. Cheap and deduped: identical/insignificant updates
     /// are dropped so the bus isn't spammed each frame.
     pub fn publish(&mut self, snap: PlayerSnapshot) {
@@ -266,45 +255,41 @@ pub fn track_object_path(track_id: &str) -> String {
 /// The single object path both MPRIS interfaces live at.
 pub const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
-// ---------------------------------------------------------------------------
-// Real D-Bus implementation (feature = "mpris").
-// ---------------------------------------------------------------------------
-
 #[cfg(feature = "mpris")]
 mod imp {
     use std::collections::HashMap;
     use std::sync::mpsc::{Receiver, Sender};
 
     use tokio::sync::mpsc::UnboundedSender;
+    use zbus::interface;
     use zbus::object_server::SignalContext;
     use zbus::zvariant::{ObjectPath, OwnedValue, Value};
-    use zbus::interface;
 
-    use super::{MprisCommand, MprisConfig, PlayerSnapshot, OBJECT_PATH};
+    use super::{MprisCommand, MprisConfig, OBJECT_PATH, PlayerSnapshot};
 
     /// Build the MPRIS `Metadata` map (`a{sv}`) from a snapshot.
     pub(super) fn build_metadata(snap: &PlayerSnapshot) -> HashMap<String, OwnedValue> {
         let mut m: HashMap<String, OwnedValue> = HashMap::new();
         let path = super::track_object_path(&snap.track_id);
-        if let Ok(op) = ObjectPath::try_from(path) {
-            if let Ok(v) = OwnedValue::try_from(Value::from(op)) {
-                m.insert("mpris:trackid".into(), v);
-            }
+        if let Ok(op) = ObjectPath::try_from(path)
+            && let Ok(v) = OwnedValue::try_from(Value::from(op))
+        {
+            m.insert("mpris:trackid".into(), v);
         }
-        if snap.length_us > 0 {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.length_us)) {
-                m.insert("mpris:length".into(), v);
-            }
+        if snap.length_us > 0
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.length_us))
+        {
+            m.insert("mpris:length".into(), v);
         }
-        if !snap.art_url.is_empty() {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.art_url.clone())) {
-                m.insert("mpris:artUrl".into(), v);
-            }
+        if !snap.art_url.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.art_url.clone()))
+        {
+            m.insert("mpris:artUrl".into(), v);
         }
-        if !snap.title.is_empty() {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.title.clone())) {
-                m.insert("xesam:title".into(), v);
-            }
+        if !snap.title.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.title.clone()))
+        {
+            m.insert("xesam:title".into(), v);
         }
         if !snap.artist.is_empty() {
             let artists = vec![snap.artist.clone()];
@@ -312,10 +297,10 @@ mod imp {
                 m.insert("xesam:artist".into(), v);
             }
         }
-        if !snap.album.is_empty() {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.album.clone())) {
-                m.insert("xesam:album".into(), v);
-            }
+        if !snap.album.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.album.clone()))
+        {
+            m.insert("xesam:album".into(), v);
         }
         m
     }
@@ -481,7 +466,7 @@ mod imp {
         Ok(())
     }
 
-    /// Emit PropertiesChanged for whichever served properties changed between
+    /// Emit `PropertiesChanged` for whichever served properties changed between
     /// `old` and `new`, then store `new` as the served snapshot.
     pub(super) async fn apply_update(
         connection: &zbus::Connection,
@@ -521,9 +506,7 @@ mod imp {
                 guard.can_seek_changed(&ctxt).await?;
             }
         }
-        if old.track_id == new.track_id
-            && (new.position_us - old.position_us).abs() > 2_000_000
-        {
+        if old.track_id == new.track_id && (new.position_us - old.position_us).abs() > 2_000_000 {
             let _ = PlayerIface::seeked(&ctxt, new.position_us).await;
         }
         Ok(())
@@ -556,9 +539,12 @@ mod imp {
         let root = RootIface {
             cmd: cmd_tx.clone(),
             identity: config.identity.clone(),
-            desktop_entry: config.desktop_entry.clone(),
+            desktop_entry: config.desktop_entry,
         };
-        let player = PlayerIface { snap: initial.clone(), cmd: cmd_tx.clone() };
+        let player = PlayerIface {
+            snap: initial.clone(),
+            cmd: cmd_tx,
+        };
         if rt.block_on(serve(&connection, player, root)).is_err() {
             return None;
         }
@@ -603,10 +589,16 @@ mod tests {
 
     #[test]
     fn track_object_path_is_valid_and_sanitised() {
-        assert_eq!(track_object_path(""), "/org/mpris/MediaPlayer2/TrackList/NoTrack");
+        assert_eq!(
+            track_object_path(""),
+            "/org/mpris/MediaPlayer2/TrackList/NoTrack"
+        );
         let p = track_object_path("yt:abc-123");
         assert_eq!(p, "/org/mpris/qos/track/yt_abc_123");
-        assert!(p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'_'));
+        assert!(
+            p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'_')
+        );
     }
 
     #[test]
@@ -614,10 +606,16 @@ mod tests {
         let base = PlayerSnapshot::default();
         let mut same = base.clone();
         same.position_us = 200_000;
-        assert!(!same.should_republish(&base), "sub-second position jitter is ignored");
+        assert!(
+            !same.should_republish(&base),
+            "sub-second position jitter is ignored"
+        );
         let mut playing = base.clone();
         playing.status = PlaybackStatus::Playing;
-        assert!(playing.should_republish(&base), "a status change republishes");
+        assert!(
+            playing.should_republish(&base),
+            "a status change republishes"
+        );
         let mut track = base.clone();
         track.title = "Runaway".into();
         assert!(track.metadata_differs(&base));
@@ -636,11 +634,9 @@ mod tests {
         });
     }
 
-    /// Hermetic D-Bus round-trip (`--features mpris`): serve the real MPRIS
-    /// interfaces over an in-process p2p socket pair (no session bus), then from
-    /// a client proxy call Pause / Next / Play and read `PlaybackStatus` +
-    /// `Metadata` — proving the toolkit's MPRIS service *responds* and *reflects*
-    /// the player state a `VideoPlayer` publishes.
+    /// Hermetic round-trip over an in-process p2p socket pair (no session
+    /// bus): proves the served MPRIS interfaces *respond* and *reflect* the
+    /// player state a `VideoPlayer` publishes.
     #[cfg(feature = "mpris")]
     #[tokio::test]
     async fn mpris_interface_responds_and_reflects_state() {
@@ -663,7 +659,10 @@ mod tests {
         };
 
         let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
-        let player = imp::PlayerIface { snap: snap.clone(), cmd: cmd_tx.clone() };
+        let player = imp::PlayerIface {
+            snap: snap.clone(),
+            cmd: cmd_tx.clone(),
+        };
         let root = imp::RootIface {
             cmd: cmd_tx.clone(),
             identity: "qOS Player".into(),
@@ -701,8 +700,10 @@ mod tests {
             .expect("read PlaybackStatus");
         assert_eq!(status, "Playing", "served status reflected over D-Bus");
 
-        let metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
-            player_proxy.get_property("Metadata").await.expect("read Metadata");
+        let metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> = player_proxy
+            .get_property("Metadata")
+            .await
+            .expect("read Metadata");
         let title: String = metadata
             .get("xesam:title")
             .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string))
@@ -714,10 +715,18 @@ mod tests {
             .expect("title in metadata");
         assert_eq!(title, "Runaway", "served now-playing reflected over D-Bus");
 
-        // Media-key style control reaches the widget as commands.
-        player_proxy.call_method("Pause", &()).await.expect("Pause call");
-        player_proxy.call_method("Next", &()).await.expect("Next call");
-        player_proxy.call_method("Play", &()).await.expect("Play call");
+        player_proxy
+            .call_method("Pause", &())
+            .await
+            .expect("Pause call");
+        player_proxy
+            .call_method("Next", &())
+            .await
+            .expect("Next call");
+        player_proxy
+            .call_method("Play", &())
+            .await
+            .expect("Play call");
         let mut got = Vec::new();
         for _ in 0..3 {
             got.push(cmd_rx.recv().expect("command delivered"));
@@ -728,10 +737,11 @@ mod tests {
             "external control reaches the widget as commands"
         );
 
-        // A published state change propagates + is readable as new state.
         let mut updated = snap.clone();
         updated.status = PlaybackStatus::Paused;
-        imp::apply_update(&server_conn, &snap, &updated).await.expect("apply update");
+        imp::apply_update(&server_conn, &snap, &updated)
+            .await
+            .expect("apply update");
         let status: String = player_proxy
             .get_property("PlaybackStatus")
             .await

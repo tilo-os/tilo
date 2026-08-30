@@ -80,10 +80,18 @@ pub struct ContentBlock {
 
 impl ContentBlock {
     pub fn new(kind: BlockKind, text: impl Into<String>) -> Self {
-        Self { kind, text: text.into(), href: None }
+        Self {
+            kind,
+            text: text.into(),
+            href: None,
+        }
     }
     pub fn link(text: impl Into<String>, href: impl Into<String>) -> Self {
-        Self { kind: BlockKind::Link, text: text.into(), href: Some(href.into()) }
+        Self {
+            kind: BlockKind::Link,
+            text: text.into(),
+            href: Some(href.into()),
+        }
     }
 }
 
@@ -319,8 +327,7 @@ impl Store {
 
     /// Feeds in a folder (None = uncategorised), sorted by order/title.
     pub fn feeds_in_folder(&self, folder: Option<Id>) -> Vec<&Feed> {
-        let mut v: Vec<&Feed> =
-            self.feeds.iter().filter(|f| f.folder == folder).collect();
+        let mut v: Vec<&Feed> = self.feeds.iter().filter(|f| f.folder == folder).collect();
         v.sort_by_key(|f| (f.order, f.title.clone()));
         v
     }
@@ -392,7 +399,10 @@ impl Store {
     }
 
     pub fn count_for(&self, filter: Filter) -> usize {
-        self.articles.iter().filter(|a| self.matches(a, filter)).count()
+        self.articles
+            .iter()
+            .filter(|a| self.matches(a, filter))
+            .count()
     }
 
     pub fn unread_count_for(&self, filter: Filter) -> usize {
@@ -454,9 +464,7 @@ impl Store {
     }
 
     pub fn upsert_folder(&mut self, folder: Folder) {
-        if let Some(existing) =
-            self.folders.iter_mut().find(|f| f.id == folder.id)
-        {
+        if let Some(existing) = self.folders.iter_mut().find(|f| f.id == folder.id) {
             *existing = folder;
         } else {
             self.folders.push(folder);
@@ -468,9 +476,7 @@ impl Store {
     pub fn insert_article_dedup(&mut self, article: Article) -> bool {
         let dup = self.articles.iter().any(|a| {
             a.id == article.id
-                || (a.feed_id == article.feed_id
-                    && !article.url.is_empty()
-                    && a.url == article.url)
+                || (a.feed_id == article.feed_id && !article.url.is_empty() && a.url == article.url)
         });
         if dup {
             return false;
@@ -571,8 +577,11 @@ mod tests {
         s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 100));
         s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 300));
         s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 200));
-        let got: Vec<i64> =
-            s.articles_for(Filter::All).iter().map(|a| a.published).collect();
+        let got: Vec<i64> = s
+            .articles_for(Filter::All)
+            .iter()
+            .map(|a| a.published)
+            .collect();
         assert_eq!(got, vec![300, 200, 100]);
     }
 
@@ -580,7 +589,12 @@ mod tests {
     fn unread_counts_track_feed_and_folder() {
         let mut s = Store::new();
         let folder = Uuid::new_v4();
-        s.upsert_folder(Folder { id: folder, name: "N".into(), order: 0, collapsed: false });
+        s.upsert_folder(Folder {
+            id: folder,
+            name: "N".into(),
+            order: 0,
+            collapsed: false,
+        });
         let f = Uuid::new_v4();
         s.upsert_feed(feed(f, Some(folder)));
         s.insert_article_dedup(art(Uuid::new_v4(), f, false, false, 1));
@@ -644,7 +658,11 @@ mod tests {
         assert_eq!(removed, vec![doomed], "returns the removed article ids");
         assert!(s.feed(drop).is_none(), "the feed is gone");
         assert!(s.feed(keep).is_some(), "the other feed survives");
-        assert_eq!(s.articles.len(), 1, "only the doomed feed's article is dropped");
+        assert_eq!(
+            s.articles.len(),
+            1,
+            "only the doomed feed's article is dropped"
+        );
         assert_eq!(s.articles[0].id, survivor);
         // Removing an unknown feed is a harmless no-op.
         assert!(s.remove_feed(Uuid::new_v4()).is_empty());
@@ -665,12 +683,23 @@ mod tests {
         assert_eq!(ReadFont::Serif.next(), ReadFont::Mono);
         assert_eq!(ReadFont::Mono.next(), ReadFont::Sans);
         // Clamp keeps font_scale inside bounds.
-        let s = ReadSettings { font_scale: 5.0, ..Default::default() }.clamped();
+        let s = ReadSettings {
+            font_scale: 5.0,
+            ..Default::default()
+        }
+        .clamped();
         assert_eq!(s.font_scale, ReadSettings::FONT_MAX);
-        let s = ReadSettings { font_scale: 0.1, ..Default::default() }.clamped();
+        let s = ReadSettings {
+            font_scale: 0.1,
+            ..Default::default()
+        }
+        .clamped();
         assert_eq!(s.font_scale, ReadSettings::FONT_MIN);
         // Body size scales with the multiplier.
-        let s = ReadSettings { font_scale: 1.5, ..Default::default() };
+        let s = ReadSettings {
+            font_scale: 1.5,
+            ..Default::default()
+        };
         assert!((s.body_size() - ReadSettings::BASE_SIZE * 1.5).abs() < 0.01);
     }
 

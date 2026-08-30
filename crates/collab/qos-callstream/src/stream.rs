@@ -1,17 +1,13 @@
 //! Per-share frame-transport substrate for encoded video frames.
 //!
-//! # Why not a raw broadcast
+//! Video wants drop-oldest, not reliable retransmit: a dropped frame isn't
+//! worth re-delivering since the next frame is already better data. Each
+//! subscriber gets an independent bounded queue with drop-oldest
+//! backpressure and a drop counter; a sequence-gap detector on the receive
+//! side tells a late-joining viewer to wait for the next keyframe.
 //!
-//! Video wants drop-oldest, not reliable retransmit: a dropped frame is
-//! not worth re-delivering — the next frame is already better data. This
-//! substrate gives each subscriber an independent bounded queue with
-//! drop-oldest backpressure and a per-stream drop counter, plus a
-//! sequence-gap detector on the receive side so a late-joining viewer
-//! knows to wait for the next keyframe.
-//!
-//! # Wire format
-//!
-//! Each frame is prefixed by a 13-byte header:
+//! Each frame carries a fixed 13-byte header, then an opaque payload
+//! (H.264 Annex-B NALUs in the current pipeline):
 //!
 //! ```text
 //! offset  bytes  field
@@ -21,65 +17,45 @@
 //! 13      N      payload    N = length bytes of NALU data
 //! ```
 //!
-//! The header is fixed-width so a receiver can frame the stream without
-//! a length delimiter; the payload is opaque to this module (H.264
-//! Annex-B NALUs in the current pipeline).
-//!
-//! # Transport binding is decoupled
-//!
-//! The framing + per-subscriber queues + backpressure counters live here.
-//! The actual byte transport — the compositor's gossipsub/QUIC path, or
-//! the chat call app's iroh-QUIC media transport — carries the framed
-//! bytes and feeds them back into a [`SurfaceStreamReceiver`]. The split
-//! keeps the core unit-testable without a running network stack.
+//! The byte transport itself — compositor gossip/QUIC, or the call
+//! app's iroh-QUIC media transport — lives outside this module, keeping
+//! framing and backpressure unit-testable without a running network stack.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Peer identifier — opaque numeric handle assigned per session. Matches
-/// the compositor's `network::protocol::PeerId`.
+/// Opaque numeric peer handle; matches the compositor's `network::protocol::PeerId`.
 pub type PeerId = u64;
 
-/// Surface / source identifier — opaque numeric handle for stream
-/// routing. Matches the compositor's `network::protocol::SurfaceId`.
+/// Opaque numeric handle for stream routing; matches the compositor's `network::protocol::SurfaceId`.
 pub type SurfaceId = u64;
 
 /// Fixed header size in bytes: u64 sequence + u32 length + u8 flags.
 pub const FRAME_HEADER_LEN: usize = 8 + 4 + 1;
 
-/// Bit 0 of the header's `flags` byte — this NALU carries an IDR /
-/// keyframe.
+/// Bit 0 of the header's `flags` byte: this NALU is an IDR / keyframe.
 pub const FLAG_KEYFRAME: u8 = 0b0000_0001;
 
 /// Bounded frame-queue size per subscriber. 3 frames matches a typical
-/// paint side's tolerance for undrawn buffers before drop-oldest kicks
-/// in.
+/// paint side's tolerance before drop-oldest kicks in.
 pub const DEFAULT_QUEUE_CAP: usize = 3;
 
-/// A single frame flowing across the substream.
-///
-/// Contents are opaque past the header — the sender packs H.264 Annex-B
-/// NALUs into `payload`; the receiver hands them straight to a decoder
-/// without inspection.
+/// A single frame flowing across the substream. Contents past the header
+/// are opaque — payload is packed/consumed without inspection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceFrame {
-    /// Per-stream monotonically increasing sequence number. Starts at 0
-    /// on the first frame after [`SurfaceStreamSender::new`] and
-    /// increments once per `publish`.
+    /// Per-stream sequence number; starts at 0 and increments once per `publish`.
     pub sequence: u64,
-    /// Whether this frame is an IDR / keyframe — the first frame of an
-    /// H.264 GOP. Late-joining viewers must start at a keyframe or the
-    /// decoder emits garbage until the next one.
+    /// Whether this is an IDR / keyframe. Late-joining viewers must start at
+    /// a keyframe or the decoder emits garbage until the next one.
     pub keyframe: bool,
-    /// Payload bytes. Opaque to this module.
     pub payload: Vec<u8>,
 }
 
 impl SurfaceFrame {
-    /// Serialise into the on-wire binary layout described in the module
-    /// comment. Cheap (one allocation).
+    /// Serialises into the wire format above (one allocation).
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(FRAME_HEADER_LEN + self.payload.len());
         buf.extend_from_slice(&self.sequence.to_be_bytes());
@@ -91,10 +67,8 @@ impl SurfaceFrame {
         buf
     }
 
-    /// Parse a single frame off the front of `input`. Returns the parsed
-    /// frame + the number of input bytes consumed on success, or `None`
-    /// if `input` is shorter than the encoded frame length (the caller
-    /// should read more bytes and retry).
+    /// Parses one frame off the front of `input`. Returns the frame and bytes
+    /// consumed, or `None` if `input` doesn't yet hold a full frame.
     pub fn decode(input: &[u8]) -> Result<Option<(SurfaceFrame, usize)>, FrameError> {
         if input.len() < FRAME_HEADER_LEN {
             return Ok(None);
@@ -124,17 +98,13 @@ impl SurfaceFrame {
 /// Framing errors surfaced by [`SurfaceFrame::decode`].
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum FrameError {
-    /// The length prefix exceeded u32::MAX, which the wire format can't
-    /// address. In practice this means the header was corrupt.
+    /// The length prefix exceeded `u32::MAX`; in practice the header was corrupt.
     #[error("frame length {0} overflowed u32")]
     LengthOverflow(usize),
 }
 
-/// One subscriber's inbound queue.
-///
-/// Bounded at [`DEFAULT_QUEUE_CAP`] frames. Drop-oldest on overflow:
-/// `push` pops the front of the queue when the queue is full, so the
-/// most-recent frame always lands. `drops` counts each drop.
+/// One subscriber's inbound queue, bounded at [`DEFAULT_QUEUE_CAP`].
+/// Drop-oldest on overflow; `drops` counts each one.
 #[derive(Debug)]
 struct SubscriberQueue {
     frames: std::collections::VecDeque<SurfaceFrame>,
@@ -168,16 +138,10 @@ impl SubscriberQueue {
     }
 }
 
-/// Owner-side sender for a single source's video substream.
-///
-/// One `SurfaceStreamSender` per active share. Each subscribed viewer
-/// gets an independent bounded queue — a slow viewer only drops its own
-/// frames, not other viewers'. The sequence counter is per-stream, not
-/// per-subscriber.
+/// Owner-side sender for one source's video substream. Each subscribed
+/// viewer gets an independent queue, so a slow viewer only drops its own frames.
 pub struct SurfaceStreamSender {
-    /// The surface / source this stream carries.
     pub surface: SurfaceId,
-    /// The host that opened the stream.
     pub source_peer: PeerId,
     next_sequence: AtomicU64,
     subscribers: Mutex<HashMap<PeerId, SubscriberQueue>>,
@@ -201,27 +165,23 @@ impl SurfaceStreamSender {
         }
     }
 
-    /// Register a viewer. Idempotent — a second `subscribe` for the same
-    /// peer resets the drop counter and empties the queue.
+    /// Registers a viewer; idempotent — resets the drop counter and empties the queue if already subscribed.
     pub fn subscribe(&self, peer: PeerId) {
         let mut subs = self.subscribers.lock().expect("subscribers");
         subs.insert(peer, SubscriberQueue::new(self.queue_cap));
     }
 
-    /// Drop a viewer.
     pub fn unsubscribe(&self, peer: PeerId) {
         let mut subs = self.subscribers.lock().expect("subscribers");
         subs.remove(&peer);
     }
 
-    /// Number of currently subscribed viewers.
     pub fn subscriber_count(&self) -> usize {
         self.subscribers.lock().expect("subscribers").len()
     }
 
-    /// Ship one frame to every subscribed viewer. The sequence counter
-    /// advances once regardless of how many viewers exist. Returns the
-    /// sequence number that was minted.
+    /// Ships one frame to every subscribed viewer. The sequence counter
+    /// advances once regardless of viewer count; returns the minted sequence.
     pub fn publish(&self, keyframe: bool, payload: Vec<u8>) -> u64 {
         let sequence = self.next_sequence.fetch_add(1, Ordering::AcqRel);
         let frame = SurfaceFrame {
@@ -236,40 +196,31 @@ impl SurfaceStreamSender {
         sequence
     }
 
-    /// Pop the front frame for `peer`, if any. Returns `None` if the peer
-    /// isn't subscribed or has no pending frames.
+    /// Pops the front frame for `peer`, or `None` if unsubscribed / empty.
     pub fn poll(&self, peer: PeerId) -> Option<SurfaceFrame> {
         let mut subs = self.subscribers.lock().expect("subscribers");
         subs.get_mut(&peer)?.pop()
     }
 
-    /// Cumulative drop count for a subscriber. Returns 0 when the peer
-    /// isn't subscribed.
+    /// Cumulative drop count for a subscriber; 0 if not subscribed.
     pub fn drops_for(&self, peer: PeerId) -> u64 {
         let subs = self.subscribers.lock().expect("subscribers");
-        subs.get(&peer).map(|q| q.drops()).unwrap_or(0)
+        subs.get(&peer).map_or(0, SubscriberQueue::drops)
     }
 
-    /// Total drops across every subscriber.
     pub fn total_drops(&self) -> u64 {
         let subs = self.subscribers.lock().expect("subscribers");
-        subs.values().map(|q| q.drops()).sum()
+        subs.values().map(SubscriberQueue::drops).sum()
     }
 
-    /// Snapshot of the pending queue length for `peer`.
     pub fn pending_for(&self, peer: PeerId) -> usize {
         let subs = self.subscribers.lock().expect("subscribers");
-        subs.get(&peer).map(|q| q.frames.len()).unwrap_or(0)
+        subs.get(&peer).map_or(0, |q| q.frames.len())
     }
 }
 
-/// Receiver-side framer that pulls whole [`SurfaceFrame`]s off a wire.
-///
-/// The transport adapter feeds arbitrary byte chunks in via
-/// [`Self::push_bytes`]; the receiver buffers them and emits framed
-/// [`SurfaceFrame`]s as they become complete. A sequence-gap detector
-/// emits [`ReceiverEvent::SequenceGap`] when the received sequence jumps
-/// by more than 1.
+/// Receiver-side framer pulling whole [`SurfaceFrame`]s off a wire fed via
+/// [`Self::push_bytes`]; flags a sequence gap greater than 1 as [`ReceiverEvent::SequenceGap`].
 #[derive(Debug)]
 pub struct SurfaceStreamReceiver {
     buffer: Vec<u8>,
@@ -280,16 +231,15 @@ pub struct SurfaceStreamReceiver {
 /// Event emitted by [`SurfaceStreamReceiver::drain`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReceiverEvent {
-    /// A complete frame surfaced from the byte stream.
     Frame(SurfaceFrame),
-    /// A gap in sequence numbers was observed — some frames dropped
-    /// between the sender and the receiver (or the sender's own
-    /// drop-oldest queue).
-    SequenceGap { dropped: u64, next_sequence: u64 },
+    /// A sequence gap was observed — frames dropped somewhere between sender and receiver.
+    SequenceGap {
+        dropped: u64,
+        next_sequence: u64,
+    },
 }
 
 impl SurfaceStreamReceiver {
-    /// Empty receiver ready to accept the first byte.
     pub fn new() -> Self {
         Self {
             buffer: Vec::with_capacity(4096),
@@ -298,15 +248,12 @@ impl SurfaceStreamReceiver {
         }
     }
 
-    /// Append `bytes` to the internal buffer. Call [`Self::drain`]
-    /// afterwards to pull framed events.
+    /// Appends `bytes` to the internal buffer; call [`Self::drain`] afterwards.
     pub fn push_bytes(&mut self, bytes: &[u8]) {
         self.buffer.extend_from_slice(bytes);
     }
 
-    /// Drain every whole frame currently in the buffer. Yields a mix of
-    /// [`ReceiverEvent::Frame`] and [`ReceiverEvent::SequenceGap`] in
-    /// arrival order.
+    /// Drains every whole frame in the buffer as [`ReceiverEvent`]s, in arrival order.
     pub fn drain(&mut self) -> Result<Vec<ReceiverEvent>, FrameError> {
         let mut out = Vec::new();
         loop {
@@ -318,8 +265,7 @@ impl SurfaceStreamReceiver {
                         let expected = prev.wrapping_add(1);
                         if frame.sequence != expected {
                             let dropped = frame.sequence.wrapping_sub(expected);
-                            self.total_dropped_seq =
-                                self.total_dropped_seq.saturating_add(dropped);
+                            self.total_dropped_seq = self.total_dropped_seq.saturating_add(dropped);
                             out.push(ReceiverEvent::SequenceGap {
                                 dropped,
                                 next_sequence: frame.sequence,
@@ -375,7 +321,7 @@ mod tests {
         };
         let bytes = frame.encode();
         assert!(
-            SurfaceFrame::decode(&bytes[..FRAME_HEADER_LEN + 1])
+            SurfaceFrame::decode(&bytes[..=FRAME_HEADER_LEN])
                 .expect("decode")
                 .is_none()
         );

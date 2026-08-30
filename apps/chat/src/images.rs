@@ -80,26 +80,62 @@ fn call_grid() -> (u32, u32, Vec<u8>) {
 
     let margin = 26.0;
     let gap = 16.0;
-    let tw = (w as f64 - 2.0 * margin - gap) / 2.0;
-    let th = (h as f64 - 2.0 * margin - gap) / 2.0;
+    let tw = (f64::from(w) - 2.0 * margin - gap) / 2.0;
+    let th = (f64::from(h) - 2.0 * margin - gap) / 2.0;
     let tiles = [
         (margin, margin, [58, 74, 120], [120, 158, 255], true),
-        (margin + tw + gap, margin, [70, 60, 96], [176, 150, 244], false),
-        (margin, margin + th + gap, [54, 84, 84], [120, 214, 200], false),
-        (margin + tw + gap, margin + th + gap, [92, 72, 66], [240, 178, 150], false),
+        (
+            margin + tw + gap,
+            margin,
+            [70, 60, 96],
+            [176, 150, 244],
+            false,
+        ),
+        (
+            margin,
+            margin + th + gap,
+            [54, 84, 84],
+            [120, 214, 200],
+            false,
+        ),
+        (
+            margin + tw + gap,
+            margin + th + gap,
+            [92, 72, 66],
+            [240, 178, 150],
+            false,
+        ),
     ];
     for (x, y, base, accent, active) in tiles {
         let r = Rectf { x, y, w: tw, h: th };
         c.round_rect(r, 12.0, base);
         // A camera "surface" sheen across the upper half.
-        c.round_rect(Rectf { x, y, w: tw, h: th * 0.5 }, 12.0, lighten(base, 18));
+        c.round_rect(
+            Rectf {
+                x,
+                y,
+                w: tw,
+                h: th * 0.5,
+            },
+            12.0,
+            lighten(base, 18),
+        );
         // Centred avatar disc.
         let cx = x + tw * 0.5;
         let cy = y + th * 0.46;
         c.disc(cx, cy, th * 0.24, accent);
         c.disc(cx, cy, th * 0.24 - 6.0, lighten(accent, 26));
         // Name plate.
-        c.round_rect(Rectf { x: x + 12.0, y: y + th - 30.0, w: tw * 0.44, h: 18.0 }, 6.0, [12, 13, 18]);
+        c.round_rect(
+            Rectf {
+                x: x + 12.0,
+                y: y + th - 30.0,
+                w: tw * 0.44,
+                h: 18.0,
+            },
+            6.0,
+            [12, 13, 18],
+        );
         if active {
             c.stroke_round(r, 12.0, [88, 214, 140], 3.0);
         }
@@ -113,20 +149,57 @@ fn shared_shot() -> (u32, u32, Vec<u8>) {
     let (w, h) = (620u32, 400u32);
     let mut c = Canvas::new(w, h);
     c.vgradient([32, 34, 44], [22, 23, 31]);
-    let card = Rectf { x: 28.0, y: 28.0, w: w as f64 - 56.0, h: h as f64 - 56.0 };
+    let card = Rectf {
+        x: 28.0,
+        y: 28.0,
+        w: f64::from(w) - 56.0,
+        h: f64::from(h) - 56.0,
+    };
     c.round_rect(card, 16.0, [244, 245, 248]);
     // Header bar.
-    c.round_rect(Rectf { x: card.x, y: card.y, w: card.w, h: 46.0 }, 16.0, [94, 122, 232]);
+    c.round_rect(
+        Rectf {
+            x: card.x,
+            y: card.y,
+            w: card.w,
+            h: 46.0,
+        },
+        16.0,
+        [94, 122, 232],
+    );
     for i in 0..3 {
-        c.disc(card.x + 22.0 + i as f64 * 20.0, card.y + 23.0, 6.0, [255, 255, 255]);
+        c.disc(
+            card.x + 22.0 + f64::from(i) * 20.0,
+            card.y + 23.0,
+            6.0,
+            [255, 255, 255],
+        );
     }
     // Content rows.
     let mut ry = card.y + 74.0;
     for i in 0..6 {
         let rw = card.w * if i % 3 == 0 { 0.82 } else { 0.62 };
-        c.round_rect(Rectf { x: card.x + 24.0, y: ry, w: rw, h: 16.0 }, 5.0, [212, 216, 224]);
+        c.round_rect(
+            Rectf {
+                x: card.x + 24.0,
+                y: ry,
+                w: rw,
+                h: 16.0,
+            },
+            5.0,
+            [212, 216, 224],
+        );
         if i % 3 == 0 {
-            c.round_rect(Rectf { x: card.x + 24.0, y: ry, w: 90.0, h: 16.0 }, 5.0, [126, 150, 240]);
+            c.round_rect(
+                Rectf {
+                    x: card.x + 24.0,
+                    y: ry,
+                    w: 90.0,
+                    h: 16.0,
+                },
+                5.0,
+                [126, 150, 240],
+            );
         }
         ry += 38.0;
     }
@@ -153,7 +226,11 @@ struct Canvas {
 
 impl Canvas {
     fn new(w: u32, h: u32) -> Self {
-        Self { w, h, px: vec![0u8; (w * h * 4) as usize] }
+        Self {
+            w,
+            h,
+            px: vec![0u8; (w * h * 4) as usize],
+        }
     }
 
     fn blend(&mut self, x: i32, y: i32, rgb: [u8; 3], a: f64) {
@@ -163,15 +240,15 @@ impl Canvas {
         let i = ((y as u32 * self.w + x as u32) * 4) as usize;
         let a = a.clamp(0.0, 1.0);
         for k in 0..3 {
-            let dst = self.px[i + k] as f64;
-            self.px[i + k] = (rgb[k] as f64 * a + dst * (1.0 - a)) as u8;
+            let dst = f64::from(self.px[i + k]);
+            self.px[i + k] = (f64::from(rgb[k]) * a + dst * (1.0 - a)) as u8;
         }
         self.px[i + 3] = 255;
     }
 
     fn vgradient(&mut self, top: [u8; 3], bottom: [u8; 3]) {
         for y in 0..self.h {
-            let t = y as f64 / (self.h.max(1) - 1) as f64;
+            let t = f64::from(y) / f64::from(self.h.max(1) - 1);
             let rgb = [
                 lerp(top[0], bottom[0], t),
                 lerp(top[1], bottom[1], t),
@@ -192,7 +269,7 @@ impl Canvas {
         let y1 = (r.y + r.h).ceil() as i32;
         for y in y0..y1 {
             for x in x0..x1 {
-                let a = self.round_coverage(r, rad, x as f64 + 0.5, y as f64 + 0.5);
+                let a = self.round_coverage(r, rad, f64::from(x) + 0.5, f64::from(y) + 0.5);
                 self.blend(x, y, rgb, a);
             }
         }
@@ -212,8 +289,8 @@ impl Canvas {
         let y1 = (r.y + r.h).ceil() as i32;
         for y in y0..y1 {
             for x in x0..x1 {
-                let fx = x as f64 + 0.5;
-                let fy = y as f64 + 0.5;
+                let fx = f64::from(x) + 0.5;
+                let fy = f64::from(y) + 0.5;
                 let outer = self.round_coverage(r, rad, fx, fy);
                 let hole = self.round_coverage(inner, (rad - width).max(0.0), fx, fy);
                 self.blend(x, y, rgb, (outer - hole).max(0.0));
@@ -246,7 +323,8 @@ impl Canvas {
         let y1 = (cy + rad).ceil() as i32;
         for y in y0..y1 {
             for x in x0..x1 {
-                let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                let d =
+                    ((f64::from(x) + 0.5 - cx).powi(2) + (f64::from(y) + 0.5 - cy).powi(2)).sqrt();
                 self.blend(x, y, rgb, (rad + 0.5 - d).clamp(0.0, 1.0));
             }
         }
@@ -258,14 +336,14 @@ impl Canvas {
 }
 
 fn lerp(a: u8, b: u8, t: f64) -> u8 {
-    (a as f64 + (b as f64 - a as f64) * t) as u8
+    (f64::from(a) + (f64::from(b) - f64::from(a)) * t) as u8
 }
 
 fn lighten(rgb: [u8; 3], by: i32) -> [u8; 3] {
     [
-        (rgb[0] as i32 + by).clamp(0, 255) as u8,
-        (rgb[1] as i32 + by).clamp(0, 255) as u8,
-        (rgb[2] as i32 + by).clamp(0, 255) as u8,
+        (i32::from(rgb[0]) + by).clamp(0, 255) as u8,
+        (i32::from(rgb[1]) + by).clamp(0, 255) as u8,
+        (i32::from(rgb[2]) + by).clamp(0, 255) as u8,
     ]
 }
 

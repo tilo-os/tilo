@@ -31,7 +31,9 @@ pub struct TotpSearchProvider {
 impl TotpSearchProvider {
     /// Snapshot the current vault into a provider.
     pub fn new(vault: &Vault) -> Self {
-        Self { accounts: vault.ordered() }
+        Self {
+            accounts: vault.ordered(),
+        }
     }
 
     /// The `action_id` for an account — what a chosen row hands back.
@@ -42,7 +44,9 @@ impl TotpSearchProvider {
     /// Resolve an `action_id` produced by this provider back into an
     /// [`AccountId`]. Returns `None` for an id this provider did not emit.
     pub fn parse_action_id(action_id: &str) -> Option<AccountId> {
-        action_id.strip_prefix(ACTION_PREFIX).and_then(|rest| rest.parse::<AccountId>().ok())
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .and_then(|rest| rest.parse::<AccountId>().ok())
     }
 }
 
@@ -58,9 +62,7 @@ impl SearchProvider for TotpSearchProvider {
         let q = query.to_lowercase();
         self.accounts
             .iter()
-            .filter(|a| {
-                a.issuer.to_lowercase().contains(&q) || a.label.to_lowercase().contains(&q)
-            })
+            .filter(|a| a.issuer.to_lowercase().contains(&q) || a.label.to_lowercase().contains(&q))
             .map(|a| {
                 let mut r = SearchResult::new(ACCOUNT_KIND, a.title(), Self::action_id(a.id))
                     .with_icon(Icon::Shield);
@@ -92,7 +94,10 @@ mod tests {
         let vault = populated();
         let provider = TotpSearchProvider::new(&vault);
         let hits = provider.search("github");
-        assert!(hits.iter().any(|r| r.title == "GitHub"), "the provider surfaces the account");
+        assert!(
+            hits.iter().any(|r| r.title == "GitHub"),
+            "the provider surfaces the account"
+        );
         assert!(hits.iter().all(|r| r.kind == ACCOUNT_KIND));
     }
 
@@ -115,7 +120,10 @@ mod tests {
             .find(|r| r.action_id == TotpSearchProvider::action_id(some.id))
             .expect("the account is browsable through the registry");
         let id = TotpSearchProvider::parse_action_id(&hit.action_id).unwrap();
-        assert!(vault.get(id).is_some(), "the id resolves to a real stored account");
+        assert!(
+            vault.get(id).is_some(),
+            "the id resolves to a real stored account"
+        );
     }
 
     #[test]
@@ -136,13 +144,24 @@ mod tests {
         // Browse the app's OWN provider (its real ids) and take an account.
         let (action_id, id) = {
             let providers = app.search_providers();
-            assert!(!providers.is_empty(), "the authenticator publishes a search provider");
-            let hit = providers[0].search("").into_iter().next().expect("the vault is browsable");
+            assert!(
+                !providers.is_empty(),
+                "the authenticator publishes a search provider"
+            );
+            let hit = providers[0]
+                .search("")
+                .into_iter()
+                .next()
+                .expect("the vault is browsable");
             let id = TotpSearchProvider::parse_action_id(&hit.action_id).unwrap();
             (hit.action_id, id)
         };
 
         app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(app.selected_account(), Some(id), "activation selected the chosen account");
+        assert_eq!(
+            app.selected_account(),
+            Some(id),
+            "activation selected the chosen account"
+        );
     }
 }

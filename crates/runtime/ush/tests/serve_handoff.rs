@@ -27,7 +27,7 @@ fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
     let mut buf = [0u8; 4096];
     while Instant::now() < deadline {
         // SAFETY: as above; `buf` is a live local buffer.
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
         if n > 0 {
             seen.push_str(&String::from_utf8_lossy(&buf[..n as usize]));
             if seen.contains(needle) {
@@ -68,13 +68,10 @@ fn the_service_refuses_a_developer_session_to_a_caller() {
     }
 }
 
-/// The whole handoff, against a real kernel: the supervisor serves, a client
-/// asks, a descriptor arrives, and a shell answers on it.
-///
-/// Skipped where the machine cannot build a guest at all — a container with no
-/// `bwrap`, or a kernel with unprivileged user namespaces disabled. The skip is
-/// loud and names the reason, because a test that quietly passes when it could
-/// not look is worse than one that fails.
+/// The whole handoff, against a real kernel: the supervisor serves, a
+/// client asks, a descriptor arrives, and a shell answers on it. Skipped
+/// (loudly, with the reason) where the machine can't build a guest at all —
+/// a container with no `bwrap`, or unprivileged user namespaces disabled.
 #[test]
 fn a_terminal_gets_a_working_shell_over_the_service_socket() {
     let Some(reason) = guest_unavailable() else {
@@ -87,16 +84,15 @@ fn a_terminal_gets_a_working_shell_over_the_service_socket() {
     );
 }
 
-/// Can this machine build the guest's layered root at all?
-///
-/// The probe performs **the actual overlay mount the runtime performs** — a
-/// user namespace, `/usr` as the lower, a directory on the store's filesystem
-/// as the upper — rather than something that merely correlates with it. An
-/// earlier version only checked that a user namespace could be created, which
-/// passed inside this repository's build container and then let the test fail
-/// 180 seconds later on a mount the container cannot make: its own `/usr` is a
-/// podman overlay, and overlayfs refuses to stack that way. A check that cannot
-/// see the thing it is checking is worse than no check.
+/// Can this machine build the guest's layered root at all? The probe
+/// performs the actual overlay mount the runtime performs — a user
+/// namespace, `/usr` as the lower, a directory on the store's filesystem as
+/// the upper — not something that merely correlates with it. An earlier
+/// version only checked that a user namespace could be created, which
+/// passed in this repo's build container and then failed 180s later on a
+/// mount the container can't make (its own `/usr` is a podman overlay,
+/// which overlayfs refuses to stack on). A check that can't see the thing
+/// it's checking is worse than no check.
 fn guest_unavailable() -> Option<String> {
     if which_bwrap().is_none() {
         return Some("bwrap is not installed".into());
@@ -116,10 +112,9 @@ fn guest_unavailable() -> Option<String> {
         .arg(&upper)
         .arg(&work)
         .arg("/usr")
-        // The loader lives at /lib64/ld-linux-*.so.2 and a dynamically linked
-        // binary whose interpreter is missing fails `execvp` with ENOENT — the
-        // same error as a missing binary, which is how this probe first
-        // "failed" on a machine that was perfectly capable.
+        // The loader lives at /lib64/ld-linux-*.so.2; a missing interpreter fails
+        // `execvp` with ENOENT, same as a missing binary — how this first "failed"
+        // on a machine that was perfectly capable.
         .args(["--symlink", "usr/bin", "/bin"])
         .args(["--symlink", "usr/sbin", "/sbin"])
         .args(["--symlink", "usr/lib", "/lib"])
@@ -127,9 +122,8 @@ fn guest_unavailable() -> Option<String> {
         .args(["--proc", "/proc", "--dev", "/dev"])
         .arg("/usr/bin/true")
         .output();
-    // The probe mounted an overlay here, so its workdir holds a mode-000
-    // directory that an ordinary recursive delete cannot enter. `TempDir`'s
-    // own cleanup would fail silently and leave it on disk.
+    // The probe's overlay leaves its workdir at mode 000, which an ordinary
+    // recursive delete can't enter — `TempDir`'s own cleanup would fail silently.
     let path = dir.keep();
     ush::guest::remove_dir_all_forced(&path);
 
@@ -150,10 +144,9 @@ fn which_bwrap() -> Option<PathBuf> {
 }
 
 fn run_handoff() {
-    // The supervisor starts a session by re-executing itself. In production
-    // `current_exe` is `qos-ush`; under `cargo test` it is this test binary,
-    // which would take `run` as a name filter, run nothing and exit — leaving
-    // the caller holding a pty that never speaks. Point it at the real one.
+    // The supervisor re-execs itself to start a session. In production
+    // `current_exe` is `qos-ush`; under `cargo test` it's this test binary,
+    // which would treat `run` as a name filter and exit — point it at the real one.
     //
     // SAFETY: set before any thread that reads it is spawned, and this test is
     // the only writer.
@@ -161,9 +154,8 @@ fn run_handoff() {
         std::env::set_var("QOS_USH_BIN", env!("CARGO_BIN_EXE_qos-ush"));
     }
 
-    // On ordinary disk, not `/tmp`: a layer is an overlayfs upper directory and
-    // tmpfs cannot be one. `Layer::create` says so now, but a test that put its
-    // store there would be testing the refusal rather than the handoff.
+    // On ordinary disk, not `/tmp`: a layer is an overlayfs upper and tmpfs
+    // can't be one — putting the store there would test the refusal, not the handoff.
     let dir = tempfile::TempDir::with_prefix_in(
         "ush-handoff-",
         dirs::data_dir().expect("no data directory on this machine"),
@@ -174,7 +166,7 @@ fn run_handoff() {
     store.ensure().expect("store");
 
     let serve_socket = socket.clone();
-    let serve_store = store.clone();
+    let serve_store = store;
     std::thread::spawn(move || {
         let _ = ush::supervisor::serve(&serve_socket, serve_store, PathBuf::from("/"));
     });
@@ -222,29 +214,24 @@ fn run_handoff() {
         "the pty was not sized to the caller's grid"
     );
 
-    // Wait for a prompt before typing. Building the first layer mirrors ~22k
-    // directories and copies the rpm database, and the guest then runs the
-    // base's own `/etc/profile.d`, so the shell is not listening for a while —
-    // anything written before it is read by nothing and lost.
-    let prompt = read_until(fd, "]#", Duration::from_secs(240));
+    // Wait for a prompt before typing: the first layer mirrors ~22k
+    // directories and runs `/etc/profile.d`, so early writes are lost.
+    let prompt = read_until(fd, "]#", Duration::from_mins(4));
     assert!(
         prompt.contains("]#"),
         "no prompt appeared within the timeout. What came back:\n{prompt}"
     );
 
-    // The marker is assembled by the shell rather than typed, so the pty's own
-    // echo of the command line cannot satisfy the wait. Without that the test
-    // passes in 0.3 s by reading back what it just wrote, which is exactly the
-    // shape of a check that cannot see what it claims to.
+    // The marker is assembled by the shell, not typed, so the pty's own echo
+    // can't satisfy the wait — without that this passes in 0.3s reading back
+    // what it just wrote.
     let marker = "USH_HANDOFF_OK";
     let script = "printf 'USH%s_OK-%s\\n' _HANDOFF \"$(whoami)\"\n".to_string();
     // SAFETY: `fd` is a live pty master.
-    let written = unsafe {
-        libc::write(fd, script.as_ptr() as *const libc::c_void, script.len())
-    };
+    let written = unsafe { libc::write(fd, script.as_ptr().cast::<libc::c_void>(), script.len()) };
     assert!(written > 0, "could not write to the pty");
 
-    let seen = read_until(fd, marker, Duration::from_secs(60));
+    let seen = read_until(fd, marker, Duration::from_mins(1));
     assert!(
         seen.contains(marker),
         "no shell answered on the pty within the timeout. What came back:\n{seen}"
@@ -258,10 +245,8 @@ fn run_handoff() {
     // SAFETY: this test owns the descriptor.
     unsafe { libc::close(fd) };
 
-    // `TempDir`'s own cleanup is an ordinary recursive delete and overlayfs
-    // leaves its workdir's inner directory at mode 000, so dropping the guard
-    // would fail silently and leave a few hundred megabytes of layer behind on
-    // every run. Take it down the way the runtime does.
+    // Overlayfs leaves the workdir's inner directory at mode 000, so
+    // `TempDir`'s own cleanup fails silently — tear it down like the runtime does.
     let path = dir.keep();
     ush::guest::remove_dir_all_forced(&path);
     assert!(!path.exists(), "the test left its store behind at {path:?}");

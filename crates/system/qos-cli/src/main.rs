@@ -9,21 +9,20 @@
 //!
 //! ## Why this is thin
 //!
-//! The work lives in `/usr/libexec/qos-deployment`, which is a few renames on the
-//! ESP and one EFI variable write. This is the part that decides *how to become
-//! root to run it*, which is a different question with three answers and no good
-//! way to guess between them:
+//! The work lives in `/usr/libexec/qos-deployment`, a few renames on the ESP and one EFI
+//! variable write. This is the part that decides *how to become root to run it*, which has
+//! three answers and no good way to guess between them:
 //!
 //! * already root — run it directly
-//! * a desktop session — `systemctl start qos-deployment-rollback.service`,
-//!   which polkit authorises for the local active user without a password
+//! * a desktop session — `systemctl start qos-deployment-rollback.service`, which polkit
+//!   authorises for the local active user without a password
 //!   (`os/etc/polkit-1/rules.d/49-qos-updates.rules`)
-//! * anything else — say to use sudo, rather than failing with a permission
-//!   error from three layers down
+//! * anything else — say to use sudo, rather than failing with a permission error from three
+//!   layers down
 //!
-//! Settings' rollback control takes the second of those. That is deliberate:
-//! one privileged implementation, reached the same way from the button and from
-//! the command line, so the two cannot drift.
+//! Settings' rollback control takes the second of those, deliberately: one privileged
+//! implementation, reached the same way from the button and the command line, so the two
+//! cannot drift.
 
 use std::process::{Command, ExitCode, Stdio};
 
@@ -92,8 +91,8 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.cmd {
-        // Read-only, so it never needs to become anything. A person diagnosing a
-        // machine should not have to authenticate to be told what is on it.
+        // Read-only, so it never needs to become anything. A person diagnosing a machine should not
+        // have to authenticate to be told what is on it.
         Cmd::Status { json } => {
             let mut args = vec!["list"];
             if json {
@@ -114,8 +113,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             "Fetch and stage the current image",
         ),
         Cmd::Boot { entry } => {
-            // No unit for this one: it names an entry, and a fixed unit cannot
-            // carry an argument without becoming a way to run anything.
+            // No unit for this one: it names an entry, and a fixed unit cannot carry an argument
+            // without becoming a way to run anything.
             if !is_root() {
                 bail!(
                     "booting a specific deployment once needs root:\n  \
@@ -132,8 +131,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 fn is_root() -> bool {
-    // No libc dependency for one number: /proc/self/status is where it is
-    // anyway, and this only runs on Linux.
+    // No libc dependency for one number: /proc/self/status is where it is anyway, and this
+    // only runs on Linux.
     std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|s| {
@@ -141,8 +140,7 @@ fn is_root() -> bool {
                 .find_map(|l| l.strip_prefix("Uid:"))
                 .and_then(|v| v.split_whitespace().next().map(str::to_string))
         })
-        .map(|uid| uid == "0")
-        .unwrap_or(false)
+        .is_some_and(|uid| uid == "0")
 }
 
 fn run_helper_directly(args: &[&str]) -> Result<ExitCode> {
@@ -165,9 +163,8 @@ fn privileged(args: &[&str], yes: bool, unit: &str, what: &str) -> Result<ExitCo
         return run_helper_directly(&a);
     }
 
-    // Not root. The caveats belong in front of the confirmation, not behind it,
-    // so print them here rather than letting the unit print them into a journal
-    // nobody is reading.
+    // Not root. The caveats belong in front of the confirmation, not behind it, so print them
+    // here rather than letting the unit print them into a journal nobody is reading.
     let _ = Command::new(helper()).arg("caveats").status();
     if !yes {
         eprint!("\n{what}? [y/N] ");
@@ -181,8 +178,8 @@ fn privileged(args: &[&str], yes: bool, unit: &str, what: &str) -> Result<ExitCo
         }
     }
 
-    // polkit authorises exactly this unit for a local active session in wheel.
-    // If it does not, systemctl says so far more usefully than a guess would.
+    // polkit authorises exactly this unit for a local active session in wheel; if it doesn't,
+    // systemctl says so far more usefully than a guess would.
     let status = Command::new("systemctl")
         .args(["start", "--wait", unit])
         .status()
@@ -195,8 +192,7 @@ fn privileged(args: &[&str], yes: bool, unit: &str, what: &str) -> Result<ExitCo
             helper(),
             args.join(" ")
         );
-        // The unit's own output is the useful part; point at it rather than
-        // reprinting a guess.
+        // The unit's own output is the useful part; point at it rather than reprinting a guess.
         let _ = Command::new("journalctl")
             .args(["-u", unit, "-n", "20", "--no-pager"])
             .status();
@@ -243,17 +239,16 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// clap's own consistency check: duplicate names, bad arg definitions, a
-    /// subcommand with no help. It fails the build rather than a user's first
-    /// attempt to use it.
+    /// clap's own consistency check: duplicate names, bad arg definitions, a subcommand with no
+    /// help. Fails the build rather than a user's first attempt to use it.
     #[test]
     fn the_command_tree_is_well_formed() {
         Cli::command().debug_assert();
     }
 
-    /// `status` must not require root. A person diagnosing a machine that will
-    /// not boot properly should not have to authenticate to be told what is on
-    /// it, and requiring it would push them towards `sudo` for a read.
+    /// `status` must not require root. A person diagnosing a machine that won't boot properly
+    /// shouldn't have to authenticate to be told what's on it, which requiring it would push
+    /// them towards `sudo` for a read.
     #[test]
     fn status_takes_the_unprivileged_path() {
         let cli = Cli::try_parse_from(["qos", "status"]).expect("parses");
@@ -263,13 +258,12 @@ mod tests {
         );
     }
 
-    /// The helper path is a single named constant, not a string repeated at
-    /// each call site — the failure mode being one verb pointing at a path the
-    /// image does not have.
+    /// The helper path is a single named constant, not a string repeated at each call site — the
+    /// failure mode being one verb pointing at a path the image does not have.
     #[test]
     fn the_helper_path_is_overridable_and_defaults_to_libexec() {
-        // Not asserting on a process-global env var here (tests run in
-        // parallel); assert the default, which is the part that ships.
+        // Not asserting on a process-global env var here (tests run in parallel); assert the
+        // default, which is the part that ships.
         assert!(
             helper().ends_with("qos-deployment"),
             "the helper must be qos-deployment, got {}",

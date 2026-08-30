@@ -45,12 +45,11 @@ impl TokenClass {
 
 /// Tokens recognised as keywords across the languages we ship samples for.
 const KEYWORDS: &[&str] = &[
-    "fn", "let", "mut", "pub", "use", "impl", "struct", "enum", "trait", "for",
-    "while", "loop", "if", "else", "match", "return", "self", "Self", "true",
-    "false", "as", "in", "mod", "const", "static", "ref", "move", "where",
-    "type", "dyn", "async", "await", "crate", "super", "break", "continue",
-    "and", "or", "not", "def", "class", "import", "from", "None", "True",
-    "False", "null", "var", "function", "new", "this",
+    "fn", "let", "mut", "pub", "use", "impl", "struct", "enum", "trait", "for", "while", "loop",
+    "if", "else", "match", "return", "self", "Self", "true", "false", "as", "in", "mod", "const",
+    "static", "ref", "move", "where", "type", "dyn", "async", "await", "crate", "super", "break",
+    "continue", "and", "or", "not", "def", "class", "import", "from", "None", "True", "False",
+    "null", "var", "function", "new", "this",
 ];
 
 /// Classify one line into a sequence of spans covering every character.
@@ -105,8 +104,7 @@ pub fn classify(line: &str) -> Vec<Span> {
         // Numbers.
         if c.is_ascii_digit() {
             let start = i;
-            while i < n
-                && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_')
+            while i < n && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_')
             {
                 i += 1;
             }
@@ -130,7 +128,11 @@ pub fn classify(line: &str) -> Vec<Span> {
             } else {
                 TokenClass::Ident
             };
-            spans.push(Span { start, end: i, class });
+            spans.push(Span {
+                start,
+                end: i,
+                class,
+            });
             continue;
         }
 
@@ -170,7 +172,7 @@ pub fn classify(line: &str) -> Vec<Span> {
 }
 
 /// Slice the original line into `(text, color)` segments using the theme.
-pub fn segments<'a>(line: &'a str, theme: &Theme) -> Vec<(String, Color)> {
+pub fn segments(line: &str, theme: &Theme) -> Vec<(String, Color)> {
     let chars: Vec<char> = line.chars().collect();
     classify(line)
         .into_iter()
@@ -201,7 +203,10 @@ mod tests {
     #[test]
     fn comment_consumes_rest_of_line() {
         let spans = classify("x = 1 // trailing");
-        let comment = spans.iter().find(|s| s.class == TokenClass::Comment).unwrap();
+        let comment = spans
+            .iter()
+            .find(|s| s.class == TokenClass::Comment)
+            .unwrap();
         // Comment runs to end of line.
         assert_eq!(comment.end, "x = 1 // trailing".chars().count());
     }

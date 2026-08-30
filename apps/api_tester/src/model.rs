@@ -68,10 +68,7 @@ impl HttpMethod {
     /// Whether this verb conventionally carries a request body. Used to
     /// decide whether the Body tab is meaningful for the current request.
     pub fn has_body(&self) -> bool {
-        matches!(
-            self,
-            HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch
-        )
+        matches!(self, HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch)
     }
 }
 
@@ -114,11 +111,19 @@ impl KeyValue {
 pub enum Auth {
     None,
     /// `Authorization: Bearer <token>`.
-    Bearer { token: String },
+    Bearer {
+        token: String,
+    },
     /// `Authorization: Basic base64(user:pass)`.
-    Basic { username: String, password: String },
+    Basic {
+        username: String,
+        password: String,
+    },
     /// A header `name: value` carrying an API key (e.g. `X-Api-Key`).
-    ApiKey { header: String, value: String },
+    ApiKey {
+        header: String,
+        value: String,
+    },
 }
 
 impl Auth {
@@ -154,7 +159,12 @@ impl BodyMode {
         }
     }
 
-    pub const ALL: [BodyMode; 4] = [BodyMode::None, BodyMode::Json, BodyMode::Form, BodyMode::Raw];
+    pub const ALL: [BodyMode; 4] = [
+        BodyMode::None,
+        BodyMode::Json,
+        BodyMode::Form,
+        BodyMode::Raw,
+    ];
 }
 
 /// The four editing tabs in the request builder.
@@ -201,8 +211,11 @@ impl ResponseView {
         }
     }
 
-    pub const ALL: [ResponseView; 3] =
-        [ResponseView::Pretty, ResponseView::Raw, ResponseView::Preview];
+    pub const ALL: [ResponseView; 3] = [
+        ResponseView::Pretty,
+        ResponseView::Raw,
+        ResponseView::Preview,
+    ];
 }
 
 /// One saved/active HTTP request. This is the unit a collection holds and
@@ -351,7 +364,7 @@ pub enum StatusClass {
 /// Format a byte count as a compact human string ("512 B", "1.4 KB").
 pub fn human_size(bytes: usize) -> String {
     if bytes < 1024 {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     } else if bytes < 1024 * 1024 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
@@ -362,7 +375,7 @@ pub fn human_size(bytes: usize) -> String {
 /// Format a millisecond duration compactly ("84 ms", "1.2 s").
 pub fn human_duration(ms: u64) -> String {
     if ms < 1000 {
-        format!("{} ms", ms)
+        format!("{ms} ms")
     } else {
         format!("{:.2} s", ms as f64 / 1000.0)
     }

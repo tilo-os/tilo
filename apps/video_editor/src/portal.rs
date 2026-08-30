@@ -24,9 +24,9 @@ pub use ui::portal::{MultiChannel as ImportChannel, MultiOutcome as ImportOutcom
 pub use ui::portal::{PortalChannel as ExportDestChannel, PortalOutcome as ExportDestOutcome};
 
 #[cfg(test)]
-pub use ui::portal::inject_multi_for_test as inject_for_test;
-#[cfg(test)]
 pub use ui::portal::inject_for_test as inject_dest_for_test;
+#[cfg(test)]
+pub use ui::portal::inject_multi_for_test as inject_for_test;
 
 /// The container / still formats the editor can bring into the bin. Both globs
 /// and MIME types are supplied because portal backends differ in which they
@@ -190,7 +190,10 @@ pub fn inject_project_for_test(outcome: ProjectOutcome) -> ProjectChannel {
         ProjectOutcome::Cancelled => (ui::portal::PortalOutcome::Cancelled, false),
         ProjectOutcome::Failed(e) => (ui::portal::PortalOutcome::Failed(e), false),
     };
-    ProjectChannel { rx: ui::portal::inject_for_test(single), save }
+    ProjectChannel {
+        rx: ui::portal::inject_for_test(single),
+        save,
+    }
 }
 
 #[cfg(test)]

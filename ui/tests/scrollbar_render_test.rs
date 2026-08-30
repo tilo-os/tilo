@@ -1,5 +1,5 @@
 //! Offscreen render guard for [`Scrollable`]'s visual scrollbar: drives
-//! the full build_layout → measure → apply_layout → draw pipeline with a
+//! the full `build_layout` → measure → `apply_layout` → draw pipeline with a
 //! tall child and asserts the scrollbar actually paints along the right
 //! edge. A differential render with the scrollbar disabled proves the
 //! painted pixels come from the bar, not from the content.
@@ -7,14 +7,12 @@
 //! Skips gracefully when no wgpu adapter is available, matching the other
 //! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
-mod support;
-
+use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
-use support::offscreen::OffscreenRenderer;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -26,7 +24,10 @@ const H: u32 = 300;
 const BG: [u8; 4] = [0x0f, 0x17, 0x2a, 0xff];
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h))).ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 /// Tall column of left-aligned text, far taller than the viewport so the
@@ -34,7 +35,9 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 fn tall_child() -> Box<dyn Widget> {
     let mut col = Column::new().with_intrinsic_height();
     for i in 0..60 {
-        col = col.push(Box::new(Text::new(&format!("Row number {i} of the scrolling list"))));
+        col = col.push(Box::new(Text::new(&format!(
+            "Row number {i} of the scrolling list"
+        ))));
     }
     Box::new(col)
 }
@@ -103,9 +106,8 @@ fn scrollbar_paints_along_right_edge() {
         .with_scrollbar(false);
     let rgba_without = render(&mut without_bar, &mut renderer);
 
-    // The right-edge strip (where the bar is drawn) must light up only
-    // when the scrollbar is enabled. Content is left-aligned text, so the
-    // no-bar render leaves this strip on the background.
+    // Content is left-aligned, so the no-bar render leaves the right-edge
+    // strip on the background — it must light up only with the bar on.
     let with_px = right_edge_non_bg(&rgba_with, 12);
     let without_px = right_edge_non_bg(&rgba_without, 12);
 
@@ -121,7 +123,10 @@ fn scrollbar_paints_along_right_edge() {
 
     if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
-        for (name, buf) in [("scrollbar_on", &rgba_with), ("scrollbar_off", &rgba_without)] {
+        for (name, buf) in [
+            ("scrollbar_on", &rgba_with),
+            ("scrollbar_off", &rgba_without),
+        ] {
             let path = format!("{dir}/{name}.png");
             let mut png = Vec::new();
             {

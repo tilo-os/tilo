@@ -136,8 +136,7 @@ impl Settings {
     fn from_obj(doc: &AutoCommit, obj: &ObjId) -> Self {
         let def = Settings::default();
         let layout = get_str(doc, obj, keys::DIFF_LAYOUT)
-            .map(|s| DiffLayout::from_str(&s))
-            .unwrap_or(def.diff_layout);
+            .map_or(def.diff_layout, |s| DiffLayout::from_str(&s));
         Self {
             diff_layout: layout,
             show_whitespace: get_bool(doc, obj, keys::SHOW_WHITESPACE, def.show_whitespace),

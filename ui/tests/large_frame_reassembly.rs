@@ -2,9 +2,7 @@
 //! reply) does not fit in one socket read, so it arrives split across
 //! reads. `CollaborationManager::poll` must reassemble it from its
 //! persistent buffer instead of dropping the frame and desyncing the
-//! stream. This is the bug that made two live notes instances fail to
-//! converge while small presence frames went through fine — the test
-//! relay only ever sent tiny payloads, so it was never exercised.
+//! stream.
 
 use std::os::unix::net::UnixListener;
 use std::thread;
@@ -13,9 +11,10 @@ use std::time::Duration;
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn large_frame_survives_split_reads() {
-    let socket_path = std::env::temp_dir()
-        .join(format!("quick-collab-big-{}.sock", std::process::id()));
+    let socket_path =
+        std::env::temp_dir().join(format!("quick-collab-big-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path).expect("bind broker");
     thread::spawn(move || ui::collaboration::broker::serve(listener));

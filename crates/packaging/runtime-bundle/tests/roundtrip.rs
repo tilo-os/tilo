@@ -118,9 +118,11 @@ fn build_verify_roundtrip_aarch64_debian_fixture() {
     .expect("build aarch64");
     assert_eq!(manifest.arch, "aarch64");
     let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
-    assert!(paths
-        .iter()
-        .any(|p| p.ends_with("aarch64-linux-gnu/libc.so.6")));
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.ends_with("aarch64-linux-gnu/libc.so.6"))
+    );
 
     verify_bundle(out.path()).expect("verify aarch64");
     // Arch mismatch policy refuses.
@@ -223,7 +225,10 @@ fn signed_bundle_verifies_and_publisher_pin_works() {
         },
     )
     .expect("build signed");
-    assert_eq!(manifest.publisher_hex.as_deref(), Some(identity.public_key_hex()).as_deref());
+    assert_eq!(
+        manifest.publisher_hex.as_deref(),
+        Some(identity.public_key_hex()).as_deref()
+    );
 
     // Verify accepts.
     verify_bundle(out.path()).expect("verify signed");

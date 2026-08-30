@@ -1,10 +1,7 @@
 //! Benchmark for the "dropping a dragged window freezes the shell ~3s"
-//! bug. The freeze is the compositor's render thread blocking while it
-//! *re-materializes* a detached window group — `resync_strips_from_tree`
-//! calls `to_ui_window_group` → `to_ui_tile`, which constructs a live
-//! app widget synchronously (reads a directory for Files, forks a PTY
-//! for Terminal). This bench times those construction paths so the fix
-//! can be proven to remove the stall from the render thread.
+//! bug: the render thread blocks while `resync_strips_from_tree` ->
+//! `to_ui_window_group` -> `to_ui_tile` constructs a live app widget
+//! synchronously (reads a directory for Files, forks a PTY for Terminal).
 //!
 //! Run: `cargo test -p shell --test freeze_bench -- --ignored --nocapture`
 
@@ -21,10 +18,8 @@ fn ms(f: impl FnOnce()) -> f64 {
 }
 
 fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
-    // Build a one-tab group whose tile is an AppPlaceholder — exactly the
-    // shape the persisted tree carries and that resync feeds to
-    // `to_ui_window_group` when it re-materializes a detached group.
-    // GroupId / TabId are `u64` aliases; literals are fine for a bench.
+    // A one-tab group whose tile is an AppPlaceholder — the shape the
+    // persisted tree carries into `to_ui_window_group`.
     use shell::shell::state::Tab;
     let tab_id: u64 = 9_000_001;
     // Map the ui AppKind back to the shell AppKind the tile expects.
@@ -50,12 +45,11 @@ fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
 fn terminal_first_sync_crdt_cost() {
-    // The actual drop freeze: a terminal's first `sync`/`handle_event`
-    // lazily populates its grid into the shared Automerge doc
-    // (`init_crdt` → `ensure_lines`). This times that first sync — the
-    // stall the render thread pays when a terminal first interacts.
+    // The actual drop freeze: a terminal's first sync/handle_event lazily
+    // populates its grid into the shared Automerge doc (`init_crdt` ->
+    // `ensure_lines`).
     use automerge::{AutoCommit, ROOT};
     use terminal::TerminalWidget;
     use ui::widget::Widget;
@@ -67,8 +61,8 @@ fn terminal_first_sync_crdt_cost() {
             return;
         }
     };
-    // Give the PTY a moment to emit its prompt so the grid has content,
-    // matching the live "terminal that's been alive a couple seconds".
+    // Let the PTY emit its prompt so the grid has content, matching a
+    // terminal that's been alive a couple of seconds.
     std::thread::sleep(std::time::Duration::from_millis(300));
 
     // Fresh shared doc (like the compositor's `test_control_ctx.doc`).
@@ -85,10 +79,10 @@ fn terminal_first_sync_crdt_cost() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
 fn rematerialize_group_cost() {
-    // The benchmark keeps its records in memory: it measures widget
-    // construction, not what a session writes to disk.
+    // Records stay in memory: this measures widget construction, not what a
+    // session writes to disk.
     let records = ui::record::RecordStore::in_memory();
     // Warm the OS caches once so we measure steady-state, not first-touch.
     let _ = to_ui_window_group(&placeholder_group(UiKind::Files, "Files"), &records);
@@ -100,10 +94,13 @@ fn rematerialize_group_cost() {
         let _ = to_ui_window_group(&placeholder_group(UiKind::Terminal, "Terminal"), &records);
     });
     let notes = ms(|| {
-        let _ = to_ui_window_group(&placeholder_group(
-            UiKind::Editor, // routed to a Stub unless "Notes"/"Editor" label
-            "Notes",
-        ), &records);
+        let _ = to_ui_window_group(
+            &placeholder_group(
+                UiKind::Editor, // routed to a Stub unless "Notes"/"Editor" label
+                "Notes",
+            ),
+            &records,
+        );
     });
 
     println!("--- re-materialize cost (render-thread stall per detached group) ---");

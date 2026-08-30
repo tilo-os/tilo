@@ -1,17 +1,20 @@
-//! Integration test: end-to-end RPC round-trip over a real Unix
-//! socket against a hand-rolled fake `WorkspaceFs` server.
+//! Integration test: end-to-end RPC round-trip over a real Unix socket
+//! against a hand-rolled fake `WorkspaceFs` server.
 //!
-//! Covers:
-//! - The `UnixCapnpClient` plumbing (same code-path a real app takes).
-//! - The generated `WorkspaceFs` schema (params, results, capability
-//!   returns).
-//! - The idiomatic `FsClient` wrappers: `open`, `list`, `stat`,
-//!   `FileHandle::write_at`, `FileHandle::read_all`.
+//! Covers the `UnixCapnpClient` plumbing (the same path a real app takes),
+//! the generated `WorkspaceFs` schema, and the idiomatic `FsClient`
+//! wrappers (`open`, `list`, `stat`, `FileHandle::write_at`/`read_all`).
 //!
-//! The fake backend is an in-memory map. Directories are inferred
-//! from path prefixes rather than represented explicitly — the test
-//! only exercises write→read on files and a single list.
+//! The fake backend is an in-memory map; directories are inferred from
+//! path prefixes rather than represented explicitly, so the test only
+//! exercises write→read on files and a single list.
 
+// capnp's generated `Server` traits declare each verb as `-> impl Future`,
+// and these fakes return capnp's own `Promise`, which is the concrete type
+// behind it. The lint's concern is a caller coming to depend on the narrower
+// return; nothing outside this file constructs these servers, so the
+// refinement stays where it is written.
+#![allow(refining_impl_trait_internal)]
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::os::fd::IntoRawFd;
@@ -23,11 +26,11 @@ use tokio::net::UnixStream;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use runtime_fs::raw::{file_handle, workspace_fs, EntryKind as WireKind, OpenMode};
+use runtime_fs::raw::{EntryKind as WireKind, OpenMode, file_handle, workspace_fs};
 use runtime_fs::{FsClient, WorkspaceFsClient};
 use runtime_portal::UnixCapnpClient;
 
-// --- Shared in-memory backend --------------------------------------------
+// shared in-memory backend
 
 type Store = Rc<RefCell<BTreeMap<String, Vec<u8>>>>;
 
@@ -35,7 +38,7 @@ fn normalise(path: &str) -> String {
     path.trim_start_matches('/').to_owned()
 }
 
-// --- Server impls --------------------------------------------------------
+// server impls
 
 struct FakeFile {
     store: Store,
@@ -83,7 +86,7 @@ impl file_handle::Server for FakeFile {
             Err(e) => return Promise::err(e),
         };
         let mut store = self.store.borrow_mut();
-        let entry = store.entry(self.path.clone()).or_insert_with(Vec::new);
+        let entry = store.entry(self.path.clone()).or_default();
         if entry.len() < offset {
             entry.resize(offset, 0);
         }
@@ -115,7 +118,7 @@ impl file_handle::Server for FakeFile {
         mut results: file_handle::MetadataResults,
     ) -> Promise<(), capnp::Error> {
         let store = self.store.borrow();
-        let size = store.get(&self.path).map(|b| b.len() as u64).unwrap_or(0);
+        let size = store.get(&self.path).map_or(0, |b| b.len() as u64);
         let mut md = results.get().init_metadata();
         md.set_kind(WireKind::File);
         md.set_size(size);
@@ -141,7 +144,7 @@ impl workspace_fs::Server for FakeFs {
         };
         let path = match r.get_path().and_then(|t| {
             t.to_str()
-                .map(|s| s.to_owned())
+                .map(std::borrow::ToOwned::to_owned)
                 .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
         }) {
             Ok(p) => normalise(&p),
@@ -155,10 +158,7 @@ impl workspace_fs::Server for FakeFs {
         if matches!(mode, OpenMode::Write) {
             self.store.borrow_mut().insert(path.clone(), Vec::new());
         } else if matches!(mode, OpenMode::Append) {
-            self.store
-                .borrow_mut()
-                .entry(path.clone())
-                .or_insert_with(Vec::new);
+            self.store.borrow_mut().entry(path.clone()).or_default();
         }
         let file = FakeFile {
             store: self.store.clone(),
@@ -180,7 +180,7 @@ impl workspace_fs::Server for FakeFs {
         };
         let path = match r.get_path().and_then(|t| {
             t.to_str()
-                .map(|s| s.to_owned())
+                .map(std::borrow::ToOwned::to_owned)
                 .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
         }) {
             Ok(p) => normalise(&p),
@@ -224,11 +224,14 @@ impl workspace_fs::Server for FakeFs {
         params: workspace_fs::StatParams,
         mut results: workspace_fs::StatResults,
     ) -> Promise<(), capnp::Error> {
-        let path = match params.get().and_then(|r| r.get_path()).and_then(|t| {
-            t.to_str()
-                .map(|s| s.to_owned())
-                .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
-        }) {
+        let path = match params
+            .get()
+            .and_then(runtime_fs::fs_capnp::workspace_fs::stat_params::Reader::get_path)
+            .and_then(|t| {
+                t.to_str()
+                    .map(std::borrow::ToOwned::to_owned)
+                    .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
+            }) {
             Ok(p) => normalise(&p),
             Err(e) => return Promise::err(e),
         };
@@ -258,11 +261,14 @@ impl workspace_fs::Server for FakeFs {
         params: workspace_fs::RemoveParams,
         _results: workspace_fs::RemoveResults,
     ) -> Promise<(), capnp::Error> {
-        let path = match params.get().and_then(|r| r.get_path()).and_then(|t| {
-            t.to_str()
-                .map(|s| s.to_owned())
-                .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
-        }) {
+        let path = match params
+            .get()
+            .and_then(runtime_fs::fs_capnp::workspace_fs::remove_params::Reader::get_path)
+            .and_then(|t| {
+                t.to_str()
+                    .map(std::borrow::ToOwned::to_owned)
+                    .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
+            }) {
             Ok(p) => normalise(&p),
             Err(e) => return Promise::err(e),
         };
@@ -271,7 +277,7 @@ impl workspace_fs::Server for FakeFs {
     }
 }
 
-// --- The test itself -----------------------------------------------------
+// the test itself
 
 #[tokio::test(flavor = "current_thread")]
 async fn round_trip_write_read_list_stat() {
@@ -281,7 +287,9 @@ async fn round_trip_write_read_list_stat() {
             let (server_side, client_side) = UnixStream::pair().unwrap();
 
             let store: Store = Rc::new(RefCell::new(BTreeMap::new()));
-            let backend = FakeFs { store: store.clone() };
+            let backend = FakeFs {
+                store: store.clone(),
+            };
             let backend_client: workspace_fs::Client = capnp_rpc::new_client(backend);
 
             let (server_read, server_write) = server_side.into_split();
@@ -297,8 +305,9 @@ async fn round_trip_write_read_list_stat() {
             });
 
             let client_fd = client_side.into_std().unwrap().into_raw_fd();
-            let unix = UnixCapnpClient::from_connected_fd(client_fd, rpc_twoparty_capnp::Side::Client)
-                .expect("connect");
+            let unix =
+                UnixCapnpClient::from_connected_fd(client_fd, rpc_twoparty_capnp::Side::Client)
+                    .expect("connect");
             let client: WorkspaceFsClient = unix.bootstrap();
             let fs = FsClient::from_raw(client);
 
@@ -307,7 +316,10 @@ async fn round_trip_write_read_list_stat() {
                 .open("docs/notes.md", runtime_fs::OpenMode::Write)
                 .await
                 .expect("open notes");
-            notes.write_at(0, b"hello world").await.expect("write notes");
+            notes
+                .write_at(0, b"hello world")
+                .await
+                .expect("write notes");
 
             let plan = fs
                 .open("docs/plan.md", runtime_fs::OpenMode::Write)

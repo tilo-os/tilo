@@ -6,20 +6,16 @@
 //! behaviour instead of re-deriving the timing/anchor rules.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use vello::kurbo::Point;
 
-// ─────────────────────── navigation gestures (back / forward) ──────────────
+// Navigation gestures (back / forward): app-agnostic recognisers for the
+// two ways a user asks to go back or forward, recognised once in the host
+// `App` and delivered to the whole widget tree via `Widget::on_nav_gesture`.
 //
-// App-agnostic recognisers for the two ways a user asks to go back or
-// forward, recognised once in the host `App` and delivered to the whole
-// widget tree via `Widget::on_nav_gesture` — so every app gets history
-// navigation without re-implementing the input plumbing:
-//
-//   * **two-finger horizontal swipe** on a touchpad (precise / pixel
-//     scroll), and
-//   * **edge-pull swipe** from the left or right screen edge on a
-//     touchscreen (the phone/tablet back gesture).
+//   * two-finger horizontal swipe on a touchpad (precise/pixel scroll)
+//   * edge-pull swipe from a screen edge (the phone/tablet back gesture)
 
 /// The direction a recognised navigation gesture asks for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -54,9 +50,8 @@ const EDGE_ZONE_PX: f64 = 24.0;
 const EDGE_PULL_PX: f64 = 56.0;
 
 /// Default sign mapping: a positive horizontal scroll delta (as winit
-/// reports it) is treated as a *back* swipe — matching the touchpad
-/// convention on Firefox/Safari (swipe the content rightward to reveal
-/// the previous page). Flip this one constant if it feels inverted for a
+/// reports it) is treated as a *back* swipe — matching the Firefox/Safari
+/// touchpad convention. Flip this one constant if it feels inverted for a
 /// given natural-scroll setting.
 const POSITIVE_DX_IS_BACK: bool = true;
 
@@ -109,8 +104,7 @@ impl NavGestureRecognizer {
         let now = Instant::now();
         let idle = self
             .last_scroll
-            .map(|t| now.duration_since(t).as_millis() > SWIPE_IDLE_RESET_MS)
-            .unwrap_or(true);
+            .is_none_or(|t| now.duration_since(t).as_millis() > SWIPE_IDLE_RESET_MS);
         self.last_scroll = Some(now);
         if phase == GesturePhase::Begin || idle {
             self.reset_swipe();
@@ -160,7 +154,14 @@ impl NavGestureRecognizer {
                     None
                 };
                 if let Some(edge) = edge {
-                    self.touches.insert(id, EdgeTouch { start_x: x, edge, fired: false });
+                    self.touches.insert(
+                        id,
+                        EdgeTouch {
+                            start_x: x,
+                            edge,
+                            fired: false,
+                        },
+                    );
                 }
                 None
             }
@@ -212,9 +213,29 @@ pub struct PressIntent {
     pub granularity: Granularity,
 }
 
-/// Two presses count as a multi-click within this gap and distance.
-const MULTI_CLICK_MS: u128 = 450;
+/// How far apart two presses may be and still count as one multi-click.
+///
+/// A pointer preference the session owns, not a per-widget constant. Five
+/// widgets each carried their own copy of 450–500 ms, so the value could not be
+/// changed for the accessibility setting it is, and a test could only race it:
+/// a slow frame between two presses is indistinguishable from a slow user.
+static MULTI_CLICK_MS: AtomicU64 = AtomicU64::new(450);
+
+/// How far the pointer may travel between them.
 const MULTI_CLICK_DIST: f64 = 4.0;
+
+/// The current multi-click window.
+pub fn multi_click_interval() -> Duration {
+    Duration::from_millis(MULTI_CLICK_MS.load(Ordering::Relaxed))
+}
+
+/// Set the multi-click window for this session.
+pub fn set_multi_click_interval(d: Duration) {
+    MULTI_CLICK_MS.store(
+        d.as_millis().min(u128::from(u64::MAX)) as u64,
+        Ordering::Relaxed,
+    );
+}
 
 /// Tracks a text-selection drag gesture across press → move → release, including
 /// multi-click (word/line) and shift-extend.
@@ -238,9 +259,15 @@ impl DragSelect {
     pub fn press(&mut self, pos: Point, shift: bool) -> PressIntent {
         let now = Instant::now();
         let multi = !shift
-            && self.last_click.map(|t| now.duration_since(t).as_millis() < MULTI_CLICK_MS).unwrap_or(false)
+            && self
+                .last_click
+                .is_some_and(|t| now.duration_since(t) < multi_click_interval())
             && self.last_pos.distance(pos) < MULTI_CLICK_DIST;
-        self.click_count = if multi { (self.click_count + 1).min(3) } else { 1 };
+        self.click_count = if multi {
+            (self.click_count + 1).min(3)
+        } else {
+            1
+        };
         self.last_click = Some(now);
         self.last_pos = pos;
         self.dragging = true;
@@ -249,7 +276,10 @@ impl DragSelect {
             n if n >= 3 => Granularity::Line,
             _ => Granularity::Char,
         };
-        PressIntent { extend: shift, granularity: self.granularity }
+        PressIntent {
+            extend: shift,
+            granularity: self.granularity,
+        }
     }
 
     /// While dragging, the granularity to extend the selection to the current
@@ -282,7 +312,10 @@ mod tests {
         assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Word);
         assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Line);
         // a far-away press resets to single
-        assert_eq!(g.press(Point::new(500.0, 500.0), false).granularity, Granularity::Char);
+        assert_eq!(
+            g.press(Point::new(500.0, 500.0), false).granularity,
+            Granularity::Char
+        );
     }
 
     #[test]
@@ -291,7 +324,11 @@ mod tests {
         g.press(Point::ZERO, false);
         let p = g.press(Point::ZERO, true);
         assert!(p.extend, "shift extends");
-        assert_eq!(p.granularity, Granularity::Char, "shift press is not a double-click");
+        assert_eq!(
+            p.granularity,
+            Granularity::Char,
+            "shift press is not a double-click"
+        );
     }
 
     #[test]
@@ -310,11 +347,20 @@ mod tests {
     /// Drive a two-finger swipe as a sequence of precise scroll samples
     /// within one gesture (single `Begin`), returning the first direction
     /// the recogniser commits to.
-    fn swipe(recognizer: &mut NavGestureRecognizer, total_dx: f64, total_dy: f64) -> Option<NavDirection> {
+    fn swipe(
+        recognizer: &mut NavGestureRecognizer,
+        total_dx: f64,
+        total_dy: f64,
+    ) -> Option<NavDirection> {
         let steps = 6;
         let (mut fired, mut phase) = (None, GesturePhase::Begin);
         for i in 0..steps {
-            let d = recognizer.on_scroll(total_dx / steps as f64, total_dy / steps as f64, phase, true);
+            let d = recognizer.on_scroll(
+                total_dx / steps as f64,
+                total_dy / steps as f64,
+                phase,
+                true,
+            );
             fired = fired.or(d);
             phase = GesturePhase::Update;
             let _ = i;
@@ -325,7 +371,6 @@ mod tests {
     #[test]
     fn two_finger_swipe_navigates_by_direction() {
         let mut g = NavGestureRecognizer::new();
-        // Positive-dx swipe → Back by default; negative → Forward.
         assert_eq!(swipe(&mut g, 200.0, 5.0), Some(NavDirection::Back));
         let mut g2 = NavGestureRecognizer::new();
         assert_eq!(swipe(&mut g2, -200.0, 5.0), Some(NavDirection::Forward));
@@ -334,7 +379,6 @@ mod tests {
     #[test]
     fn mostly_vertical_scroll_never_navigates() {
         let mut g = NavGestureRecognizer::new();
-        // Large horizontal but even larger vertical → not a swipe.
         assert_eq!(swipe(&mut g, 200.0, 400.0), None);
     }
 
@@ -347,7 +391,10 @@ mod tests {
     #[test]
     fn swipe_fires_once_per_gesture() {
         let mut g = NavGestureRecognizer::new();
-        assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Begin, true), Some(NavDirection::Back));
+        assert_eq!(
+            g.on_scroll(120.0, 0.0, GesturePhase::Begin, true),
+            Some(NavDirection::Back)
+        );
         // Continued travel in the same gesture must not re-fire.
         assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Update, true), None);
     }
@@ -362,21 +409,28 @@ mod tests {
     fn left_edge_pull_goes_back_right_edge_goes_forward() {
         let w = 1000.0;
         let mut g = NavGestureRecognizer::new();
-        // Left edge → drag inward (rightward) past threshold → Back.
         assert_eq!(g.on_touch(1, 10.0, 300.0, GesturePhase::Begin, w), None);
-        assert_eq!(g.on_touch(1, 80.0, 305.0, GesturePhase::Update, w), Some(NavDirection::Back));
+        assert_eq!(
+            g.on_touch(1, 80.0, 305.0, GesturePhase::Update, w),
+            Some(NavDirection::Back)
+        );
         assert_eq!(g.on_touch(1, 900.0, 305.0, GesturePhase::End, w), None);
 
-        // Right edge → drag inward (leftward) past threshold → Forward.
         assert_eq!(g.on_touch(2, 995.0, 300.0, GesturePhase::Begin, w), None);
-        assert_eq!(g.on_touch(2, 900.0, 305.0, GesturePhase::Update, w), Some(NavDirection::Forward));
+        assert_eq!(
+            g.on_touch(2, 900.0, 305.0, GesturePhase::Update, w),
+            Some(NavDirection::Forward)
+        );
     }
 
     #[test]
     fn touch_starting_mid_screen_never_navigates() {
         let mut g = NavGestureRecognizer::new();
         g.on_touch(1, 500.0, 300.0, GesturePhase::Begin, 1000.0);
-        assert_eq!(g.on_touch(1, 800.0, 300.0, GesturePhase::Update, 1000.0), None);
+        assert_eq!(
+            g.on_touch(1, 800.0, 300.0, GesturePhase::Update, 1000.0),
+            None
+        );
     }
 
     #[test]
@@ -384,7 +438,14 @@ mod tests {
         let w = 1000.0;
         let mut g = NavGestureRecognizer::new();
         g.on_touch(1, 8.0, 300.0, GesturePhase::Begin, w);
-        assert_eq!(g.on_touch(1, 80.0, 300.0, GesturePhase::Update, w), Some(NavDirection::Back));
-        assert_eq!(g.on_touch(1, 160.0, 300.0, GesturePhase::Update, w), None, "must not re-fire");
+        assert_eq!(
+            g.on_touch(1, 80.0, 300.0, GesturePhase::Update, w),
+            Some(NavDirection::Back)
+        );
+        assert_eq!(
+            g.on_touch(1, 160.0, 300.0, GesturePhase::Update, w),
+            None,
+            "must not re-fire"
+        );
     }
 }

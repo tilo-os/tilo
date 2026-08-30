@@ -35,10 +35,10 @@ pub fn decode_luma(luma: image::GrayImage) -> Result<String, String> {
         return Err("No QR code found in that image".to_string());
     }
     for grid in &grids {
-        if let Ok((_meta, content)) = grid.decode() {
-            if !content.trim().is_empty() {
-                return Ok(content);
-            }
+        if let Ok((_meta, content)) = grid.decode()
+            && !content.trim().is_empty()
+        {
+            return Ok(content);
         }
     }
     Err("Found a QR code but couldn\u{2019}t read it \u{2014} try a sharper image".to_string())

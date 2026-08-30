@@ -23,19 +23,36 @@
 # Then start the shell from the same tree (it finds qos-install and
 # qos-launcher beside its own binary):
 #
-#   cargo run -p shell -- --enable-peer-sync          # (--release with QOS_DEMO_PROFILE=release)
+#   cargo run --profile demo -p shell -- --enable-peer-sync
+#
+# from the same profile as the packages above — the shell finds qos-install
+# and qos-launcher beside its own binary, so a `debug` shell will not see a
+# `demo` toolchain.
 #
 # Super+Space, type "word", Enter — the row reads "Open Word Processor" like
 # any installed app; the fetch happens behind it.
 set -euo pipefail
 
 REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-# QOS_DEMO_PROFILE=release packs a ~20 MB word processor instead of the
-# ~400 MB debug build. The shell must then run from the same profile, since
-# it resolves qos-install and qos-launcher beside its own binary.
-PROFILE="${QOS_DEMO_PROFILE:-debug}"
+# The profile decides what a viewer waits through, so the default is an
+# optimised one. A `debug` word processor is 449 MB against 24 MB built
+# here, and the packaging then spends its time moving and BLAKE3-hashing
+# eighteen times the bytes it needs to: measured keystroke-to-first-frame
+# is ~1.9 s optimised and 6.7-21 s debug, for the same mechanism.
+#
+# `demo` rather than `release` because the shell has to run from the same
+# profile — it resolves qos-install and qos-launcher beside its own binary
+# — and `target/demo/shell` is the one that keeps the QOS_TEST_CONTROL
+# socket a `--release` build deliberately omits. For every package built
+# here `demo` IS the release configuration; it overrides one thing,
+# `debug-assertions` for `shell`.
+PROFILE="${QOS_DEMO_PROFILE:-demo}"
 BIN="$REPO/target/$PROFILE"
-CARGO_PROFILE_FLAG=""; [ "$PROFILE" = "release" ] && CARGO_PROFILE_FLAG="--release"
+case "$PROFILE" in
+    debug)   CARGO_PROFILE_FLAG="" ;;
+    release) CARGO_PROFILE_FLAG="--release" ;;
+    *)       CARGO_PROFILE_FLAG="--profile $PROFILE" ;;
+esac
 OUT="${QOS_DEMO_REGISTRY_DIR:-$REPO/target/demo-registry}"
 PORT="${QOS_DEMO_REGISTRY_PORT:-8765}"
 BASE_URL="http://127.0.0.1:$PORT"

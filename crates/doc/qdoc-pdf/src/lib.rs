@@ -1,33 +1,28 @@
 //! `qdoc-pdf` — render a [`qdoc::DocSnapshot`] to a paginated PDF.
 //!
-//! This is the export *engine*. It takes the materialized, read-only view of a
-//! qdoc document (headings, paragraphs, lists, tables, images) and lays it out
-//! onto US-Letter pages, returning the bytes of a valid PDF 1.7 file.
-//!
-//! Wiring this into the editor's "Save as PDF" action is a separate task; this
+//! Takes the materialized, read-only document view and lays it out onto
+//! US-Letter pages, returning the bytes of a valid PDF 1.7 file. This
 //! crate only exposes [`render_pdf`].
 //!
 //! ## Approach
 //!
-//! The PDF is written by a small hand-rolled writer ([`pdf`]) — no `printpdf`
-//! dependency — so the crate stays lockfile-stable and we keep full control of
-//! pagination and image embedding. Text uses the base-14 Helvetica /
-//! Helvetica-Bold fonts (the viewer ships them); we carry the AFM advance
-//! widths ([`metrics`]) to word-wrap accurately. Images are decoded with the
-//! `image` crate and embedded as `/DeviceRGB` `Image` XObjects.
+//! Written by a small hand-rolled writer ([`pdf`]) — no `printpdf`
+//! dependency — for lockfile stability and full control of pagination
+//! and image embedding. Text uses the base-14 Helvetica/Helvetica-Bold
+//! fonts (viewer-shipped); AFM advance widths ([`metrics`]) drive
+//! accurate word-wrap. Images are decoded with the `image` crate and
+//! embedded as `/DeviceRGB` `Image` `XObjects`.
 //!
 //! ## Known limitations
 //!
-//! - **Fonts**: base-14 Helvetica only. Glyphs outside WinAnsiEncoding (CJK,
-//!   most non-Latin scripts) render as `?`. Italic is not distinguished from
-//!   regular (no Helvetica-Oblique wired up); only bold is.
-//! - **Images**: PNG/JPEG (and anything `image` can decode) are re-encoded to
-//!   raw RGB and Flate-compressed — fine for export, not size-optimal. Images
-//!   that fail to decode fall back to a labelled placeholder box.
-//! - **Tables**: rendered as a simple fixed-grid; no cell merging, no per-cell
-//!   wrapping beyond a single clipped line, no row spanning.
-//! - **Marks**: inline marks (bold/italic spans) are not yet applied per-span;
-//!   bold is driven by block kind/level, not by `strong` marks.
+//! Fonts: base-14 Helvetica only — glyphs outside `WinAnsiEncoding` (CJK,
+//! most non-Latin) render as `?`; italic isn't distinguished from
+//! regular, only bold is. Images: re-encoded to raw RGB and
+//! Flate-compressed (fine for export, not size-optimal); failures fall
+//! back to a labelled placeholder. Tables: a simple fixed-grid, no
+//! merging/per-cell wrapping beyond one clipped line/row spanning.
+//! Marks: inline bold/italic spans aren't yet applied per-span — bold
+//! comes from block kind/level, not `strong` marks.
 
 mod metrics;
 mod pdf;
@@ -41,9 +36,9 @@ use pdf::{ObjId, PdfWriter, escape_pdf_text};
 /// Errors that can arise while rendering a snapshot to PDF.
 #[derive(Debug)]
 pub enum DocPdfError {
-    /// An image block referenced a blob that could not be decoded. Carries the
-    /// blob hash for diagnostics. Non-fatal in [`render_pdf`] (a placeholder is
-    /// drawn instead); surfaced only by stricter callers.
+    /// An image block referenced a blob that could not be decoded. Carries
+    /// the blob hash for diagnostics; non-fatal in [`render_pdf`] (a
+    /// placeholder is drawn instead).
     ImageDecode(String),
 }
 
@@ -74,48 +69,68 @@ const TABLE_PAD: f32 = 4.0; // cell text padding
 
 // ---- low-level drawing model ------------------------------------------------
 
-/// One drawing op accumulated into a page's content stream. We collect ops per
-/// page and serialize them at the end so the writer stays a single pass.
+/// One drawing op accumulated into a page's content stream, collected
+/// per page and serialized at the end so the writer stays a single pass.
 enum Op {
     /// Show `text` at baseline `(x, y)` in font `bold?` at `size` pt.
-    Text { x: f32, y: f32, size: f32, bold: bool, text: String },
+    Text {
+        x: f32,
+        y: f32,
+        size: f32,
+        bold: bool,
+        text: String,
+    },
     /// Stroke a 1pt line from `(x1,y1)` to `(x2,y2)`.
     Line { x1: f32, y1: f32, x2: f32, y2: f32 },
     /// Stroke a rectangle outline at `(x,y)` (lower-left) sized `w`×`h`.
     Rect { x: f32, y: f32, w: f32, h: f32 },
-    /// Paint image XObject `name` into the box `(x,y,w,h)` (lower-left origin).
-    Image { name: String, x: f32, y: f32, w: f32, h: f32 },
+    /// Paint image `XObject` `name` into the box `(x,y,w,h)` (lower-left origin).
+    Image {
+        name: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
 }
 
-/// One page under construction: a cursor that descends from the top margin and
-/// the list of ops drawn so far.
+/// One page under construction: a cursor descending from the top margin
+/// and the list of ops drawn so far.
 struct Page {
     ops: Vec<Op>,
-    /// Image XObjects referenced on this page: `(resource_name, obj_id)`.
+    /// Image `XObjects` referenced on this page: `(resource_name, obj_id)`.
     images: Vec<(String, ObjId)>,
 }
 
 impl Page {
     fn new() -> Self {
-        Self { ops: Vec::new(), images: Vec::new() }
+        Self {
+            ops: Vec::new(),
+            images: Vec::new(),
+        }
     }
 }
 
-/// The pagination/rendering cursor. Owns the writer (so images can be added as
-/// XObjects on demand) and the running list of pages.
+/// The pagination/rendering cursor. Owns the writer (so images can be
+/// added as `XObjects` on demand) and the running list of pages.
 struct Layout {
     writer: PdfWriter,
     pages: Vec<Page>,
-    /// Y cursor on the current page (PDF coords: larger = higher). Text is drawn
-    /// at the baseline, so the cursor tracks the *top* of the next line and we
-    /// subtract ascent when placing.
+    /// Y cursor on the current page (PDF coords: larger = higher). Text
+    /// draws at the baseline, so the cursor tracks the *top* of the next
+    /// line and subtracts ascent when placing.
     y: f32,
     next_img: usize,
 }
 
 impl Layout {
     fn new() -> Self {
-        let mut l = Layout { writer: PdfWriter::new(), pages: Vec::new(), y: CONTENT_TOP, next_img: 0 };
+        let mut l = Layout {
+            writer: PdfWriter::new(),
+            pages: Vec::new(),
+            y: CONTENT_TOP,
+            next_img: 0,
+        };
         l.new_page();
         l
     }
@@ -136,13 +151,19 @@ impl Layout {
         }
     }
 
-    /// Draw a single already-wrapped line of text at the current cursor, then
-    /// advance the cursor by `leading`. `size`/`bold` pick the font.
+    /// Draw a single already-wrapped line at the current cursor, then
+    /// advance by `leading`. `size`/`bold` pick the font.
     fn line(&mut self, text: &str, x: f32, size: f32, leading: f32, bold: bool) {
         self.ensure(leading);
         // Baseline sits ~`size` below the cursor's top (approx ascent).
         let baseline = self.y - size * 0.8;
-        self.cur().ops.push(Op::Text { x, y: baseline, size, bold, text: text.to_string() });
+        self.cur().ops.push(Op::Text {
+            x,
+            y: baseline,
+            size,
+            bold,
+            text: text.to_string(),
+        });
         self.y -= leading;
     }
 
@@ -153,12 +174,10 @@ impl Layout {
 
 // ---- public entry point -----------------------------------------------------
 
-/// Render a materialized qdoc snapshot to PDF bytes.
-///
-/// Always succeeds for a well-formed snapshot — image blocks whose blobs fail
-/// to decode degrade to a placeholder box rather than erroring, so the returned
-/// `Result` is `Ok` in practice. An empty document still yields a valid,
-/// single-page PDF.
+/// Render a materialized qdoc snapshot to PDF bytes. Always succeeds for
+/// a well-formed snapshot — undecodable image blobs degrade to a
+/// placeholder box rather than erroring; an empty document still yields
+/// a valid, single-page PDF.
 pub fn render_pdf(snap: &DocSnapshot) -> Result<Vec<u8>, DocPdfError> {
     let mut layout = Layout::new();
 
@@ -243,7 +262,8 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
     } else {
         "\u{2022}".to_string() // bullet
     };
-    let marker_w = metrics::text_width(&metrics::HELVETICA, &pdf::to_winansi(&marker), BODY_SIZE) + 4.0;
+    let marker_w =
+        metrics::text_width(&metrics::HELVETICA, &pdf::to_winansi(&marker), BODY_SIZE) + 4.0;
     let text_indent = indent + marker_w;
     let avail = (MARGIN + TEXT_W) - text_indent;
     let lines = wrap(&block.text, avail.max(40.0), BODY_SIZE, false);
@@ -251,29 +271,39 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
     // Marker on the first line, hung to the left of the wrapped text.
     layout.ensure(BODY_LEADING);
     let first_y_top = layout.y;
-    layout.line(lines.first().map(String::as_str).unwrap_or(""), text_indent, BODY_SIZE, BODY_LEADING, false);
+    layout.line(
+        lines.first().map_or("", String::as_str),
+        text_indent,
+        BODY_SIZE,
+        BODY_LEADING,
+        false,
+    );
     // Place the marker at the same baseline as the first text line.
     let baseline = first_y_top - BODY_SIZE * 0.8;
-    layout.cur().ops.push(Op::Text { x: indent, y: baseline, size: BODY_SIZE, bold: false, text: marker });
+    layout.cur().ops.push(Op::Text {
+        x: indent,
+        y: baseline,
+        size: BODY_SIZE,
+        bold: false,
+        text: marker,
+    });
     for line in lines.iter().skip(1) {
         layout.line(line, text_indent, BODY_SIZE, BODY_LEADING, false);
     }
 }
 
 fn render_image(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
-    let hash = match block.attrs.get("blob") {
-        Some(AttrVal::Str(s)) => s.clone(),
-        _ => {
-            placeholder(layout, "image (no blob)");
-            return;
-        }
+    let hash = if let Some(AttrVal::Str(s)) = block.attrs.get("blob") {
+        s.clone()
+    } else {
+        placeholder(layout, "image (no blob)");
+        return;
     };
-    let bytes = match snap.blobs.get(&hash) {
-        Some(b) => b,
-        None => {
-            placeholder(layout, "image (missing blob)");
-            return;
-        }
+    let bytes = if let Some(b) = snap.blobs.get(&hash) {
+        b
+    } else {
+        placeholder(layout, "image (missing blob)");
+        return;
     };
     match decode_image(bytes) {
         Ok(img) => place_image(layout, img),
@@ -282,23 +312,36 @@ fn render_image(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
 }
 
 fn render_table(layout: &mut Layout, block: &BlockView) {
-    // Rows are child blocks; each row's children are cells. Tolerate the
-    // alternate shape where children are flat cells with a `cols` attr.
+    // Rows are child blocks, each row's children its cells. Tolerates
+    // the alternate flat-cells-with-`cols`-attr shape.
     let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block.children.iter().map(|row| row.children.iter().collect()).collect()
+        block
+            .children
+            .iter()
+            .map(|row| row.children.iter().collect())
+            .collect()
     } else if !block.children.is_empty() {
         let cols = match block.attrs.get("cols") {
             Some(AttrVal::Int(n)) => (*n).max(1) as usize,
             _ => block.children.len().max(1),
         };
-        block.children.chunks(cols).map(|c| c.iter().collect()).collect()
+        block
+            .children
+            .chunks(cols)
+            .map(|c| c.iter().collect())
+            .collect()
     } else {
         Vec::new()
     };
     if rows.is_empty() {
         return;
     }
-    let ncols = rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+    let ncols = rows
+        .iter()
+        .map(std::vec::Vec::len)
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let col_w = TEXT_W / ncols as f32;
     let row_h = BODY_LEADING + 2.0 * TABLE_PAD;
 
@@ -311,7 +354,12 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         // Cell grid + text.
         for (ci, cell) in row.iter().enumerate() {
             let x = MARGIN + ci as f32 * col_w;
-            layout.cur().ops.push(Op::Rect { x, y: bottom, w: col_w, h: row_h });
+            layout.cur().ops.push(Op::Rect {
+                x,
+                y: bottom,
+                w: col_w,
+                h: row_h,
+            });
             let text = clip_to_width(&cell.text, col_w - 2.0 * TABLE_PAD, BODY_SIZE);
             let baseline = top - TABLE_PAD - BODY_SIZE * 0.8;
             layout.cur().ops.push(Op::Text {
@@ -325,7 +373,12 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         // Outline any missing trailing cells so the grid stays rectangular.
         for ci in row.len()..ncols {
             let x = MARGIN + ci as f32 * col_w;
-            layout.cur().ops.push(Op::Rect { x, y: bottom, w: col_w, h: row_h });
+            layout.cur().ops.push(Op::Rect {
+                x,
+                y: bottom,
+                w: col_w,
+                h: row_h,
+            });
         }
         layout.y -= row_h;
     }
@@ -342,9 +395,14 @@ struct DecodedImage {
 }
 
 fn decode_image(bytes: &[u8]) -> Result<DecodedImage, DocPdfError> {
-    let img = image::load_from_memory(bytes).map_err(|_| DocPdfError::ImageDecode(String::new()))?;
+    let img =
+        image::load_from_memory(bytes).map_err(|_| DocPdfError::ImageDecode(String::new()))?;
     let rgb = img.to_rgb8();
-    Ok(DecodedImage { width: rgb.width(), height: rgb.height(), rgb: rgb.into_raw() })
+    Ok(DecodedImage {
+        width: rgb.width(),
+        height: rgb.height(),
+        rgb: rgb.into_raw(),
+    })
 }
 
 fn place_image(layout: &mut Layout, img: DecodedImage) {
@@ -372,7 +430,13 @@ fn place_image(layout: &mut Layout, img: DecodedImage) {
     );
     let obj = layout.writer.add_stream(&dict, &compressed);
     layout.cur().images.push((name.clone(), obj));
-    layout.cur().ops.push(Op::Image { name, x: MARGIN, y: bottom, w, h });
+    layout.cur().ops.push(Op::Image {
+        name,
+        x: MARGIN,
+        y: bottom,
+        w,
+        h,
+    });
     layout.y -= h;
     layout.gap(PARA_GAP);
 }
@@ -384,24 +448,49 @@ fn placeholder(layout: &mut Layout, label: &str) {
     layout.ensure(h);
     let top = layout.y;
     let bottom = top - h;
-    layout.cur().ops.push(Op::Rect { x: MARGIN, y: bottom, w: TEXT_W, h });
+    layout.cur().ops.push(Op::Rect {
+        x: MARGIN,
+        y: bottom,
+        w: TEXT_W,
+        h,
+    });
     // Diagonal cross to read clearly as a placeholder.
-    layout.cur().ops.push(Op::Line { x1: MARGIN, y1: bottom, x2: MARGIN + TEXT_W, y2: top });
-    layout.cur().ops.push(Op::Line { x1: MARGIN, y1: top, x2: MARGIN + TEXT_W, y2: bottom });
+    layout.cur().ops.push(Op::Line {
+        x1: MARGIN,
+        y1: bottom,
+        x2: MARGIN + TEXT_W,
+        y2: top,
+    });
+    layout.cur().ops.push(Op::Line {
+        x1: MARGIN,
+        y1: top,
+        x2: MARGIN + TEXT_W,
+        y2: bottom,
+    });
     let baseline = top - h / 2.0;
     let label = clip_to_width(label, TEXT_W - 8.0, BODY_SIZE);
-    layout.cur().ops.push(Op::Text { x: MARGIN + 6.0, y: baseline, size: BODY_SIZE, bold: false, text: label });
+    layout.cur().ops.push(Op::Text {
+        x: MARGIN + 6.0,
+        y: baseline,
+        size: BODY_SIZE,
+        bold: false,
+        text: label,
+    });
     layout.y -= h;
     layout.gap(PARA_GAP);
 }
 
 // ---- text wrapping ----------------------------------------------------------
 
-/// Word-wrap `text` to `max_w` points at `size`pt in the regular/bold font.
-/// Hard newlines in the source split lines; over-long single words are hard-
-/// broken so they never overflow the text column.
+/// Word-wrap `text` to `max_w` points at `size`pt. Hard newlines in the
+/// source split lines; over-long single words are hard-broken so they
+/// never overflow the text column.
 fn wrap(text: &str, max_w: f32, size: f32, bold: bool) -> Vec<String> {
-    let table = if bold { &metrics::HELVETICA_BOLD } else { &metrics::HELVETICA };
+    let table = if bold {
+        &metrics::HELVETICA_BOLD
+    } else {
+        &metrics::HELVETICA
+    };
     let mut out = Vec::new();
     for src_line in text.split('\n') {
         if src_line.is_empty() {
@@ -410,7 +499,11 @@ fn wrap(text: &str, max_w: f32, size: f32, bold: bool) -> Vec<String> {
         }
         let mut line = String::new();
         for word in src_line.split(' ') {
-            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            let candidate = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
             let w = metrics::text_width(table, &pdf::to_winansi(&candidate), size);
             if w <= max_w || line.is_empty() {
                 if w <= max_w {
@@ -450,7 +543,8 @@ fn hard_break(word: &str, max_w: f32, size: f32, table: &[u16; 256]) -> Vec<Stri
     let mut cur = String::new();
     for ch in word.chars() {
         let candidate = format!("{cur}{ch}");
-        if metrics::text_width(table, &pdf::to_winansi(&candidate), size) > max_w && !cur.is_empty() {
+        if metrics::text_width(table, &pdf::to_winansi(&candidate), size) > max_w && !cur.is_empty()
+        {
             chunks.push(std::mem::take(&mut cur));
             cur.push(ch);
         } else {
@@ -463,8 +557,8 @@ fn hard_break(word: &str, max_w: f32, size: f32, table: &[u16; 256]) -> Vec<Stri
     chunks
 }
 
-/// Truncate `text` to fit `max_w` at `size`pt, appending "…" if clipped. Used
-/// for table cells and placeholder labels where we render a single line.
+/// Truncate `text` to fit `max_w` at `size`pt, appending "…" if clipped
+/// — used for table cells and single-line placeholder labels.
 fn clip_to_width(text: &str, max_w: f32, size: f32) -> String {
     let table = &metrics::HELVETICA;
     if metrics::text_width(table, &pdf::to_winansi(text), size) <= max_w {
@@ -503,7 +597,9 @@ fn finish(mut layout: Layout) -> Vec<u8> {
     for page in pages {
         let content = serialize_ops(&page.ops);
         let content_data = pdf::flate(&content);
-        let content_obj = layout.writer.add_stream(" /Filter /FlateDecode", &content_data);
+        let content_obj = layout
+            .writer
+            .add_stream(" /Filter /FlateDecode", &content_data);
 
         // Per-page resources: fonts always; XObjects when images were placed.
         let mut xobjects = String::new();
@@ -527,7 +623,11 @@ fn finish(mut layout: Layout) -> Vec<u8> {
     }
 
     // Fill in the pages tree now that we have the kids.
-    let kids = page_objs.iter().map(|o| format!("{} 0 R", o.0)).collect::<Vec<_>>().join(" ");
+    let kids = page_objs
+        .iter()
+        .map(|o| format!("{} 0 R", o.0))
+        .collect::<Vec<_>>()
+        .join(" ");
     let pages_body = format!(
         "<< /Type /Pages /Count {} /Kids [{}] >>",
         page_objs.len(),
@@ -535,14 +635,14 @@ fn finish(mut layout: Layout) -> Vec<u8> {
     );
     layout.writer.set(pages_obj, pages_body.into_bytes());
 
-    let catalog = layout.writer.add(format!("<< /Type /Catalog /Pages {} 0 R >>", pages_obj.0).into_bytes());
+    let catalog = layout
+        .writer
+        .add(format!("<< /Type /Catalog /Pages {} 0 R >>", pages_obj.0).into_bytes());
     layout.writer.finish(catalog)
 }
 
 fn font_dict(base: &str) -> String {
-    format!(
-        "<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /WinAnsiEncoding >>"
-    )
+    format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /WinAnsiEncoding >>")
 }
 
 /// Serialize a page's ops into a PDF content stream.
@@ -551,21 +651,27 @@ fn serialize_ops(ops: &[Op]) -> Vec<u8> {
     let mut s = Vec::new();
     for op in ops {
         match op {
-            Op::Text { x, y, size, bold, text } => {
+            Op::Text {
+                x,
+                y,
+                size,
+                bold,
+                text,
+            } => {
                 let font = if *bold { "F2" } else { "F1" };
-                let _ = write!(s, "BT /{font} {size} Tf {x:.2} {y:.2} Td (", );
+                let _ = write!(s, "BT /{font} {size} Tf {x:.2} {y:.2} Td (");
                 s.extend_from_slice(&escape_pdf_text(text));
-                let _ = write!(s, ") Tj ET\n");
+                let _ = writeln!(s, ") Tj ET");
             }
             Op::Line { x1, y1, x2, y2 } => {
-                let _ = write!(s, "{x1:.2} {y1:.2} m {x2:.2} {y2:.2} l S\n");
+                let _ = writeln!(s, "{x1:.2} {y1:.2} m {x2:.2} {y2:.2} l S");
             }
             Op::Rect { x, y, w, h } => {
-                let _ = write!(s, "{x:.2} {y:.2} {w:.2} {h:.2} re S\n");
+                let _ = writeln!(s, "{x:.2} {y:.2} {w:.2} {h:.2} re S");
             }
             Op::Image { name, x, y, w, h } => {
                 // Image space is a unit square mapped by the CTM; q/Q isolates it.
-                let _ = write!(s, "q {w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm /{name} Do Q\n");
+                let _ = writeln!(s, "q {w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm /{name} Do Q");
             }
         }
     }

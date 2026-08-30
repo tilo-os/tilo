@@ -15,17 +15,17 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::region::{Currency, DateStyle, Measurement, RegionSettings, TimeStyle};
-use crate::widgets::{card, caption, choice_row, rows};
+use crate::widgets::{caption, card, choice_row, rows};
 
 pub const CURRENCY_KEY: &str = "region.currency";
 pub const DATE_KEY: &str = "region.date_format";
@@ -75,18 +75,26 @@ impl RegionPane {
             .with_id("region.currency")
             .with_placeholder(loc.currency.code());
 
-        let date_opts: Vec<String> = DateStyle::ALL.iter().map(|d| d.label().to_string()).collect();
+        let date_opts: Vec<String> = DateStyle::ALL
+            .iter()
+            .map(|d| d.label().to_string())
+            .collect();
         let date = Dropdown::new(date_opts, DATE_KEY)
             .with_id("region.date")
             .with_placeholder(loc.date_format.label());
 
-        let time_opts: Vec<String> = TimeStyle::ALL.iter().map(|t| t.label().to_string()).collect();
+        let time_opts: Vec<String> = TimeStyle::ALL
+            .iter()
+            .map(|t| t.label().to_string())
+            .collect();
         let time = Dropdown::new(time_opts, TIME_KEY)
             .with_id("region.time")
             .with_placeholder(loc.time_format.label());
 
-        let unit_opts: Vec<String> =
-            Measurement::ALL.iter().map(|m| m.label().to_string()).collect();
+        let unit_opts: Vec<String> = Measurement::ALL
+            .iter()
+            .map(|m| m.label().to_string())
+            .collect();
         let units = Dropdown::new(unit_opts, MEASUREMENT_KEY)
             .with_id("region.measurement")
             .with_placeholder(loc.measurement.label());
@@ -105,10 +113,7 @@ impl RegionPane {
         let preview = card(
             "Preview",
             rows(vec![
-                preview_line(
-                    "Amount",
-                    &format!("{}1,234.50", loc.currency.symbol()),
-                ),
+                preview_line("Amount", &format!("{}1,234.50", loc.currency.symbol())),
                 preview_line("Date", loc.date_format.example()),
                 preview_line("Time", loc.time_format.example()),
                 preview_line(
@@ -164,43 +169,37 @@ impl Widget for RegionPane {
 
         let mut changed = false;
 
-        if let Some(code) = Self::read_str(state, root, CURRENCY_KEY) {
-            if let Some(c) = Currency::from_code(&code) {
-                if c != self.settings.locale.currency {
-                    self.settings.locale.currency = c;
-                    changed = true;
-                }
-            }
+        if let Some(code) = Self::read_str(state, root, CURRENCY_KEY)
+            && let Some(c) = Currency::from_code(&code)
+            && c != self.settings.locale.currency
+        {
+            self.settings.locale.currency = c;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, DATE_KEY) {
-            if let Some(d) = DateStyle::ALL.iter().find(|d| d.label() == label) {
-                if *d != self.settings.locale.date_format {
-                    self.settings.locale.date_format = *d;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, DATE_KEY)
+            && let Some(d) = DateStyle::ALL.iter().find(|d| d.label() == label)
+            && *d != self.settings.locale.date_format
+        {
+            self.settings.locale.date_format = *d;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, TIME_KEY) {
-            if let Some(t) = TimeStyle::ALL.iter().find(|t| t.label() == label) {
-                if *t != self.settings.locale.time_format {
-                    self.settings.locale.time_format = *t;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, TIME_KEY)
+            && let Some(t) = TimeStyle::ALL.iter().find(|t| t.label() == label)
+            && *t != self.settings.locale.time_format
+        {
+            self.settings.locale.time_format = *t;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, MEASUREMENT_KEY) {
-            if let Some(m) = Measurement::ALL.iter().find(|m| m.label() == label) {
-                if *m != self.settings.locale.measurement {
-                    self.settings.locale.measurement = *m;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, MEASUREMENT_KEY)
+            && let Some(m) = Measurement::ALL.iter().find(|m| m.label() == label)
+            && *m != self.settings.locale.measurement
+        {
+            self.settings.locale.measurement = *m;
+            changed = true;
         }
 
-        if changed {
-            if let Err(e) = self.settings.save() {
-                warn!(target: "qos::settings", op = "region_save", error = %e, "failed to persist region settings");
-            }
+        if changed && let Err(e) = self.settings.save() {
+            warn!(target: "qos::settings", op = "region_save", error = %e, "failed to persist region settings");
         }
 
         if let Some(c) = &mut self.composed {
@@ -227,24 +226,23 @@ impl Widget for RegionPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -273,15 +271,21 @@ impl Widget for RegionPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -301,7 +305,7 @@ impl Widget for RegionPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RegionPane"
     }
 
@@ -322,7 +326,10 @@ mod tests {
     #[test]
     fn seed_writes_current_settings_into_crdt() {
         let mut pane = RegionPane::with_settings(RegionSettings {
-            locale: Locale { currency: Currency::EUR, ..Default::default() },
+            locale: Locale {
+                currency: Currency::EUR,
+                ..Default::default()
+            },
         });
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;

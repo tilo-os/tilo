@@ -1,20 +1,15 @@
-//! End-to-end for the prompt queue: a portal request that needs the
-//! user's answer gets one, instead of waiting forever.
+//! End-to-end for the prompt queue: a portal request that needs the user's
+//! answer gets one, instead of waiting forever.
 //!
-//! `PromptQueueHandle::drain()` had exactly one caller in the tree, and
-//! it was inside `#[cfg(test)]`. In production nothing emptied the
-//! queue, so `flow::resolve` enqueued a `PendingGrant`, awaited its
-//! oneshot, and never woke: the request hung. The "channel closed ≡
-//! deny" defence could not fire either, because the sender was parked
-//! in a `Vec` that stayed alive for the life of the process — so the
-//! failure was an indefinite hang rather than a refusal.
+//! `PromptQueueHandle::drain()` must actually be called in production —
+//! nothing else empties the queue, and an unanswered `PendingGrant` hangs
+//! the D-Bus caller indefinitely rather than closing the channel, so the
+//! "channel closed = deny" defence never fires.
 //!
-//! `FileChooser` no longer uses the prompt queue at all (the dialog is
-//! the consent), which means the file-chooser tests do not cover this.
-//! `Access` still does, and it is the interface `xdg-desktop-portal`
-//! routes `Camera.AccessCamera` through, so it is the honest subject.
-//!
-//! The chain under test, all production code:
+//! `FileChooser` no longer uses the prompt queue (its dialog is the
+//! consent), so `Access` is the honest subject — the interface
+//! `xdg-desktop-portal` routes `Camera.AccessCamera` through. The chain
+//! under test, all production code:
 //!
 //! ```text
 //!   D-Bus AccessDialog
@@ -33,9 +28,9 @@ use std::time::Duration;
 
 use shell::portal::{
     self, CallerMap, FilePickerQueue, FilePickerSpawnerHandle, GrantStoreHandle,
-    MockScreenCastProvisioner, NullFilePickerSpawner, PortalCaller, PortalContext,
+    MockScreenCastProvisioner, NullFilePickerSpawner, OBJECT_PATH, PortalCaller, PortalContext,
     PromptQueueHandle, PromptResolver, RemoteInputInjectorHandle,
-    ScreenCastStreamProvisionerHandle, OBJECT_PATH,
+    ScreenCastStreamProvisionerHandle,
 };
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{Capability, Workspace, WorkspaceId, WorkspaceTree};
@@ -77,9 +72,8 @@ async fn access_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'sta
         .serve_at(OBJECT_PATH, portal::AccessBackend::new(ctx))
         .expect("serve_at");
     let client_builder = Builder::unix_stream(client_sock).p2p();
-    let (server, client) =
-        futures_util::try_join!(server_builder.build(), client_builder.build())
-            .expect("p2p connection pair");
+    let (server, client) = futures_util::try_join!(server_builder.build(), client_builder.build())
+        .expect("p2p connection pair");
     let proxy = Proxy::new(
         &client,
         "org.freedesktop.impl.portal.desktop.qos",
@@ -138,8 +132,7 @@ fn tick(host: &mut ShellOverlayHost) {
     host.pump_permission_prompt();
 }
 
-/// Wait for the prompt widget to appear, turning the pumps as the
-/// compositor would.
+/// Wait for the prompt widget to appear, turning the pumps as the compositor would.
 async fn pump_until_prompt(host: &mut ShellOverlayHost) {
     for _ in 0..1000 {
         tick(host);
@@ -219,15 +212,15 @@ async fn denying_a_prompt_releases_the_portal_call_too() {
         .iter()
         .find(|w| w.id == ws)
         .expect("workspace")
-        .app_capabilities(&APP.to_string());
+        .app_capabilities(APP);
     assert!(
         caps.is_empty(),
         "a denied prompt must record nothing; got {caps:?}"
     );
 }
 
-/// Session-scoped approval both answers the call and persists, so the
-/// next request for the same capability does not ask again.
+/// Session-scoped approval answers the call and persists, so the next
+/// request for the same capability does not ask again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_grant_answers_and_persists() {
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
@@ -247,19 +240,22 @@ async fn a_session_grant_answers_and_persists() {
         .iter()
         .find(|w| w.id == ws)
         .expect("workspace")
-        .app_capabilities(&APP.to_string())
+        .app_capabilities(APP)
         .into_iter()
-        .any(|c| matches!(Capability::from_capability(c), Some(Capability::Camera { .. })));
+        .any(|c| {
+            matches!(
+                Capability::from_capability(c),
+                Some(Capability::Camera { .. })
+            )
+        });
     assert!(
         has_camera,
         "a Session answer must persist the capability on the workspace"
     );
 }
 
-/// The compositor with no chrome cannot show a prompt. It must say so by
-/// answering, rather than holding a sender nobody will ever fulfil —
-/// that is the shape of the original bug, and it must not be
-/// reintroduced by a code path that simply has nowhere to draw.
+/// The compositor with no chrome cannot show a prompt. It must say so
+/// by answering, rather than holding a sender nobody will ever fulfil.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_request_that_cannot_be_shown_is_denied_rather_than_parked() {
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
@@ -275,8 +271,7 @@ async fn a_request_that_cannot_be_shown_is_denied_rather_than_parked() {
 
     let call = spawn_access(proxy);
 
-    // Wait for the request to reach the queue, then drop the queue's
-    // contents the way a compositor with no chrome does.
+    // Drop the queue's contents the way a compositor with no chrome does.
     for _ in 0..1000 {
         if prompts.queued_len() > 0 {
             break;

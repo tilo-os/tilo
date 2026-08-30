@@ -60,7 +60,7 @@ impl Container {
 
         // 5. Wayland Socket
         let host_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or("/run/user/1000".into());
-        let host_socket_path = format!("{}/{}", host_runtime_dir, wayland_socket);
+        let host_socket_path = format!("{host_runtime_dir}/{wayland_socket}");
 
         let sandbox_runtime_dir = "/tmp/runtime";
         cmd.arg("--dir").arg(sandbox_runtime_dir);
@@ -68,7 +68,7 @@ impl Container {
         if Path::new(&host_socket_path).exists() {
             cmd.arg("--bind")
                 .arg(&host_socket_path)
-                .arg(format!("{}/{}", sandbox_runtime_dir, wayland_socket));
+                .arg(format!("{sandbox_runtime_dir}/{wayland_socket}"));
         }
 
         cmd.env("XDG_RUNTIME_DIR", sandbox_runtime_dir);
@@ -94,11 +94,10 @@ impl Container {
         // Wrapper to ensure we capture startup errors
         let wrapped_script = format!(
             "echo '[WRAPPER] Date: $(date)'; \
-             echo '[WRAPPER] Socket: {}'; \
-             ls -l {}/{} || echo '[WRAPPER] Socket NOT FOUND'; \
-             echo '[WRAPPER] Executing: {}'; \
-             exec {} 2>&1",
-            wayland_socket, sandbox_runtime_dir, wayland_socket, app_command, app_command
+             echo '[WRAPPER] Socket: {wayland_socket}'; \
+             ls -l {sandbox_runtime_dir}/{wayland_socket} || echo '[WRAPPER] Socket NOT FOUND'; \
+             echo '[WRAPPER] Executing: {app_command}'; \
+             exec {app_command} 2>&1"
         );
 
         cmd.arg("sh").arg("-c").arg(wrapped_script);
@@ -114,15 +113,12 @@ impl Container {
     ) -> std::io::Result<std::process::Child> {
         let mut cmd = self.build_command(app_command, wayland_socket);
 
-        let log_path = format!("/tmp/quick-desktop-app-{}.log", tab_id);
+        let log_path = format!("/tmp/quick-desktop-app-{tab_id}.log");
         let log_file = File::create(log_path)?;
         cmd.stdout(Stdio::from(log_file.try_clone()?));
         cmd.stderr(Stdio::from(log_file));
 
-        println!(
-            "DEBUG: Spawning Tab {} Log: /tmp/quick-desktop-app-{}.log",
-            tab_id, tab_id
-        );
+        println!("DEBUG: Spawning Tab {tab_id} Log: /tmp/quick-desktop-app-{tab_id}.log");
         cmd.spawn()
     }
 }

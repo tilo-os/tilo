@@ -26,7 +26,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::model::{
-    AnnoKind, Annotation, Block, Page, Signature, SignatureInk, Swatch, MARGIN, PAGE_W,
+    AnnoKind, Annotation, Block, MARGIN, PAGE_W, Page, Signature, SignatureInk, Swatch,
 };
 
 pub fn ink() -> Color {
@@ -38,8 +38,17 @@ pub fn ink_soft() -> Color {
 pub fn ink_faint() -> Color {
     Color::from_rgb8(148, 163, 184)
 }
-pub fn paper(theme: &Theme) -> Color {
-    theme.tokens.colors.surfaces.window_card
+/// The page's own stock.
+///
+/// A PDF page is *document content*, not chrome: the ink above is the
+/// document's ink, fixed at near-black regardless of theme, so the stock it
+/// sits on has to be paper for the same reason — a themed page would leave
+/// black type on a dark ground the moment the desktop went dark. It used to
+/// borrow `surfaces.window_card`, which happened to be light on the default
+/// theme; that made the page's legibility depend on the colour of the
+/// *window frame*, which is not something a document has an opinion about.
+pub fn paper(_theme: &Theme) -> Color {
+    Color::WHITE
 }
 
 /// Resolve an annotation swatch into a concrete colour. Pulls from the
@@ -72,19 +81,60 @@ struct Spec {
 
 fn body_spec(block: &Block, theme: &Theme) -> Option<Spec> {
     Some(match block {
-        Block::Title(_) => Spec { size: 24.0, weight: TextWeight::Bold, italic: false, color: ink(), after: 6.0 },
-        Block::H1(_) => Spec { size: 17.0, weight: TextWeight::Semibold, italic: false, color: ink(), after: 5.0 },
-        Block::H2(_) => Spec { size: 13.5, weight: TextWeight::Semibold, italic: false, color: ink(), after: 3.0 },
-        Block::Body(_) => Spec { size: 10.5, weight: TextWeight::Regular, italic: false, color: ink_soft(), after: 6.0 },
-        Block::Caption(_) => Spec { size: 9.5, weight: TextWeight::Regular, italic: false, color: ink_faint(), after: 4.0 },
-        Block::Quote(_) => Spec { size: 12.0, weight: TextWeight::Regular, italic: true, color: theme.accent_hover, after: 8.0 },
+        Block::Title(_) => Spec {
+            size: 24.0,
+            weight: TextWeight::Bold,
+            italic: false,
+            color: ink(),
+            after: 6.0,
+        },
+        Block::H1(_) => Spec {
+            size: 17.0,
+            weight: TextWeight::Semibold,
+            italic: false,
+            color: ink(),
+            after: 5.0,
+        },
+        Block::H2(_) => Spec {
+            size: 13.5,
+            weight: TextWeight::Semibold,
+            italic: false,
+            color: ink(),
+            after: 3.0,
+        },
+        Block::Body(_) => Spec {
+            size: 10.5,
+            weight: TextWeight::Regular,
+            italic: false,
+            color: ink_soft(),
+            after: 6.0,
+        },
+        Block::Caption(_) => Spec {
+            size: 9.5,
+            weight: TextWeight::Regular,
+            italic: false,
+            color: ink_faint(),
+            after: 4.0,
+        },
+        Block::Quote(_) => Spec {
+            size: 12.0,
+            weight: TextWeight::Regular,
+            italic: true,
+            color: theme.accent_hover,
+            after: 8.0,
+        },
         _ => return None,
     })
 }
 
 /// The drawn screen rect for the page card at the given page size (points).
 pub fn page_card_rect(origin: Point, scale: f64, page_w: f64, page_h: f64) -> Rect {
-    Rect::new(origin.x, origin.y, origin.x + page_w * scale, origin.y + page_h * scale)
+    Rect::new(
+        origin.x,
+        origin.y,
+        origin.x + page_w * scale,
+        origin.y + page_h * scale,
+    )
 }
 
 /// One laid-out line of body text, in **page-point** space (origin =
@@ -131,30 +181,46 @@ pub fn collect_text_lines(tr: &mut TextRenderer, theme: &Theme, page: &Page) -> 
                 y += height + 4.0;
                 let csize = 9.5f32;
                 let (_, ch) = tr.measure(label, csize, Some(content_w as f32));
-                y += ch as f64 + 8.0;
+                y += f64::from(ch) + 8.0;
             }
             _ => {
-                let Some(spec) = body_spec(block, theme) else { continue };
+                let Some(spec) = body_spec(block, theme) else {
+                    continue;
+                };
                 let text = block.search_text().unwrap_or("");
                 let size = spec.size; // page-point size (scale == 1 here)
                 let max_w = content_w as f32;
                 let (line_w, th) = tr.measure(text, size, Some(max_w));
                 // Quote blocks indent their text past a left rule.
-                let x = if matches!(block, Block::Quote(_)) { content_x + 14.0 } else { content_x };
-                let line_h = (size * 1.25) as f64;
-                let n_lines = if line_h > 0.0 { (th as f64 / line_h).round().max(1.0) as usize } else { 1 };
+                let x = if matches!(block, Block::Quote(_)) {
+                    content_x + 14.0
+                } else {
+                    content_x
+                };
+                let line_h = f64::from(size * 1.25);
+                let n_lines = if line_h > 0.0 {
+                    (f64::from(th) / line_h).round().max(1.0) as usize
+                } else {
+                    1
+                };
                 for li in 0..n_lines {
                     // The final wrapped line is usually shorter; only its
                     // measured width is known precisely, so the last line
                     // uses `line_w` and full lines span the column.
                     let x_end = if li == n_lines - 1 {
-                        (x + line_w as f64).min(content_x + content_w)
+                        (x + f64::from(line_w)).min(content_x + content_w)
                     } else {
                         content_x + content_w
                     };
-                    out.push(TextLine { block: bi, x, x_end, y: y + li as f64 * line_h, h: line_h });
+                    out.push(TextLine {
+                        block: bi,
+                        x,
+                        x_end,
+                        y: y + li as f64 * line_h,
+                        h: line_h,
+                    });
                 }
-                y += th as f64 + spec.after;
+                y += f64::from(th) + spec.after;
             }
         }
     }
@@ -198,20 +264,34 @@ pub fn draw_page(
     // card width, then let the shared markup overlay draw on top.
     if let Some(img) = raster {
         if img.width > 0 && img.height > 0 {
-            let sx = card.width() / img.width as f64;
-            let img_tf = base
-                * Affine::translate((card.x0, card.y0))
-                * Affine::scale_non_uniform(sx, sx);
+            let sx = card.width() / f64::from(img.width);
+            let img_tf =
+                base * Affine::translate((card.x0, card.y0)) * Affine::scale_non_uniform(sx, sx);
             scene.draw_image(img, img_tf);
         }
         for a in annotations.iter().filter(|a| a.page == page.number) {
-            draw_annotation(scene, tr, theme, base, a, origin, scale, selected_anno == Some(a.id.as_str()));
+            draw_annotation(
+                scene,
+                tr,
+                theme,
+                base,
+                a,
+                origin,
+                scale,
+                selected_anno == Some(a.id.as_str()),
+            );
         }
         for s in signatures.iter().filter(|s| s.page == page.number) {
             draw_signature(scene, tr, theme, base, s, origin, scale);
         }
         scene.pop_layer();
-        scene.stroke(&Stroke::new(1.0), base, Color::from_rgb8(203, 213, 225), None, &card_rr);
+        scene.stroke(
+            &Stroke::new(1.0),
+            base,
+            Color::from_rgb8(203, 213, 225),
+            None,
+            &card_rr,
+        );
         return;
     }
 
@@ -233,8 +313,20 @@ pub fn draw_page(
             Block::Figure { height, label } => {
                 let h = height * scale;
                 let box_rect = Rect::new(content_x, y, content_x + content_w, y + h);
-                scene.fill(Fill::NonZero, base, Color::from_rgb8(241, 245, 249), None, &RoundedRect::from_rect(box_rect, 2.0));
-                scene.stroke(&Stroke::new(1.0), base, ink_faint(), None, &RoundedRect::from_rect(box_rect, 2.0));
+                scene.fill(
+                    Fill::NonZero,
+                    base,
+                    Color::from_rgb8(241, 245, 249),
+                    None,
+                    &RoundedRect::from_rect(box_rect, 2.0),
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    base,
+                    ink_faint(),
+                    None,
+                    &RoundedRect::from_rect(box_rect, 2.0),
+                );
                 draw_figure_glyph(scene, theme, base, box_rect);
                 y += h + 4.0 * scale;
                 let csize = 9.5 * scale as f32;
@@ -250,10 +342,12 @@ pub fn draw_page(
                     false,
                 );
                 let (_, ch) = tr.measure(label, csize, Some(content_w as f32));
-                y += ch as f64 + 8.0 * scale;
+                y += f64::from(ch) + 8.0 * scale;
             }
             _ => {
-                let Some(spec) = body_spec(block, theme) else { continue };
+                let Some(spec) = body_spec(block, theme) else {
+                    continue;
+                };
                 let text = block.search_text().unwrap_or("");
                 let size = spec.size * scale as f32;
                 let max_w = content_w as f32;
@@ -264,7 +358,7 @@ pub fn draw_page(
                         content_x - 4.0 * scale,
                         y - 1.0 * scale,
                         content_x + content_w + 4.0 * scale,
-                        y + th as f64 + 1.0 * scale,
+                        y + f64::from(th) + 1.0 * scale,
                     );
                     let is_active = active_block == Some(bi);
                     let fill = if is_active {
@@ -272,7 +366,13 @@ pub fn draw_page(
                     } else {
                         alpha(theme.accent_primary, 26)
                     };
-                    scene.fill(Fill::NonZero, base, fill, None, &RoundedRect::from_rect(band, 2.0));
+                    scene.fill(
+                        Fill::NonZero,
+                        base,
+                        fill,
+                        None,
+                        &RoundedRect::from_rect(band, 2.0),
+                    );
                     if is_active {
                         let bar = Rect::new(band.x0, band.y0, band.x0 + 2.5 * scale, band.y1);
                         scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
@@ -281,7 +381,7 @@ pub fn draw_page(
 
                 let mut x = content_x;
                 if matches!(block, Block::Quote(_)) {
-                    let bar = Rect::new(content_x, y, content_x + 3.0 * scale, y + th as f64);
+                    let bar = Rect::new(content_x, y, content_x + 3.0 * scale, y + f64::from(th));
                     scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
                     x += 14.0 * scale;
                 }
@@ -296,13 +396,22 @@ pub fn draw_page(
                     spec.italic,
                     false,
                 );
-                y += th as f64 + spec.after * scale;
+                y += f64::from(th) + spec.after * scale;
             }
         }
     }
 
     for a in annotations.iter().filter(|a| a.page == page.number) {
-        draw_annotation(scene, tr, theme, base, a, origin, scale, selected_anno == Some(a.id.as_str()));
+        draw_annotation(
+            scene,
+            tr,
+            theme,
+            base,
+            a,
+            origin,
+            scale,
+            selected_anno == Some(a.id.as_str()),
+        );
     }
     for s in signatures.iter().filter(|s| s.page == page.number) {
         draw_signature(scene, tr, theme, base, s, origin, scale);
@@ -310,11 +419,17 @@ pub fn draw_page(
 
     scene.pop_layer();
 
-    scene.stroke(&Stroke::new(1.0), base, Color::from_rgb8(203, 213, 225), None, &card_rr);
+    scene.stroke(
+        &Stroke::new(1.0),
+        base,
+        Color::from_rgb8(203, 213, 225),
+        None,
+        &card_rr,
+    );
 }
 
 fn draw_figure_glyph(scene: &mut Scene, theme: &Theme, base: Affine, b: Rect) {
-    let cy = (b.y0 + b.y1) / 2.0;
+    let cy = f64::midpoint(b.y0, b.y1);
     let w = b.width();
     let r = (b.height().min(w) * 0.16).max(8.0);
     let lx = b.x0 + w * 0.32;
@@ -323,8 +438,20 @@ fn draw_figure_glyph(scene: &mut Scene, theme: &Theme, base: Affine, b: Rect) {
     scene.stroke(&Stroke::new(2.0), base, theme.accent_primary, None, &conn);
     for cx in [lx, rx] {
         let node = Rect::new(cx - r, cy - r, cx + r, cy + r);
-        scene.fill(Fill::NonZero, base, alpha(theme.accent_primary, 46), None, &RoundedRect::from_rect(node, 4.0));
-        scene.stroke(&Stroke::new(1.5), base, theme.accent_primary, None, &RoundedRect::from_rect(node, 4.0));
+        scene.fill(
+            Fill::NonZero,
+            base,
+            alpha(theme.accent_primary, 46),
+            None,
+            &RoundedRect::from_rect(node, 4.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.5),
+            base,
+            theme.accent_primary,
+            None,
+            &RoundedRect::from_rect(node, 4.0),
+        );
     }
 }
 
@@ -364,10 +491,15 @@ fn draw_annotation(
             for w in points.windows(2) {
                 let a0 = pt(origin, scale, w[0].0, w[0].1);
                 let b0 = pt(origin, scale, w[1].0, w[1].1);
-                let mid = Point::new((a0.x + b0.x) / 2.0, (a0.y + b0.y) / 2.0);
+                let mid = Point::new(f64::midpoint(a0.x, b0.x), f64::midpoint(a0.y, b0.y));
                 path.quad_to(a0, mid);
             }
-            let last = pt(origin, scale, points[points.len() - 1].0, points[points.len() - 1].1);
+            let last = pt(
+                origin,
+                scale,
+                points[points.len() - 1].0,
+                points[points.len() - 1].1,
+            );
             path.line_to(last);
             scene.stroke(&Stroke::new((2.4 * scale).max(1.5)), base, col, None, &path);
         }
@@ -379,10 +511,23 @@ fn draw_annotation(
     }
 }
 
-fn draw_note_marker(scene: &mut Scene, base: Affine, p: Point, col: Color, scale: f64, selected: bool) {
+fn draw_note_marker(
+    scene: &mut Scene,
+    base: Affine,
+    p: Point,
+    col: Color,
+    scale: f64,
+    selected: bool,
+) {
     let s = (22.0 * scale).max(16.0);
     let r = Rect::new(p.x, p.y, p.x + s, p.y + s);
-    scene.fill(Fill::NonZero, base, col, None, &RoundedRect::from_rect(r, 3.0));
+    scene.fill(
+        Fill::NonZero,
+        base,
+        col,
+        None,
+        &RoundedRect::from_rect(r, 3.0),
+    );
     let fold = {
         let mut path = BezPath::new();
         path.move_to((r.x1 - s * 0.36, r.y1));
@@ -391,11 +536,23 @@ fn draw_note_marker(scene: &mut Scene, base: Affine, p: Point, col: Color, scale
         path.close_path();
         path
     };
-    scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, 46), None, &fold);
+    scene.fill(
+        Fill::NonZero,
+        base,
+        Color::from_rgba8(0, 0, 0, 46),
+        None,
+        &fold,
+    );
     for i in 0..3 {
-        let ly = r.y0 + s * (0.32 + i as f64 * 0.18);
+        let ly = r.y0 + s * (0.32 + f64::from(i) * 0.18);
         let line = Line::new((r.x0 + s * 0.2, ly), (r.x1 - s * 0.2, ly));
-        scene.stroke(&Stroke::new((1.2 * scale).max(0.8)), base, Color::from_rgba8(255, 255, 255, 220), None, &line);
+        scene.stroke(
+            &Stroke::new((1.2 * scale).max(0.8)),
+            base,
+            Color::from_rgba8(255, 255, 255, 220),
+            None,
+            &line,
+        );
     }
     if selected {
         let ring = RoundedRect::from_rect(r.inflate(2.5, 2.5), 5.0);
@@ -423,8 +580,20 @@ fn draw_signature(
 ) {
     let p0 = pt(origin, scale, s.rect.x, s.rect.y);
     let r = Rect::new(p0.x, p0.y, p0.x + s.rect.w * scale, p0.y + s.rect.h * scale);
-    scene.fill(Fill::NonZero, base, alpha(theme.accent_primary, 16), None, &RoundedRect::from_rect(r, 3.0));
-    scene.stroke(&Stroke::new(1.2), base, alpha(theme.accent_primary, 150), None, &RoundedRect::from_rect(r, 3.0));
+    scene.fill(
+        Fill::NonZero,
+        base,
+        alpha(theme.accent_primary, 16),
+        None,
+        &RoundedRect::from_rect(r, 3.0),
+    );
+    scene.stroke(
+        &Stroke::new(1.2),
+        base,
+        alpha(theme.accent_primary, 150),
+        None,
+        &RoundedRect::from_rect(r, 3.0),
+    );
 
     let stroke_area = Rect::new(
         r.x0 + r.width() * 0.06,
@@ -454,7 +623,7 @@ fn draw_signature(
         &date_label,
         (7.5 * scale).max(7.0) as f32,
         ink_faint(),
-        base * Affine::translate((r.x0 + 8.0, base_y + 3.0 + name_size as f64 + 2.0)),
+        base * Affine::translate((r.x0 + 8.0, base_y + 3.0 + f64::from(name_size) + 2.0)),
         Some((r.width() - 16.0) as f32),
     );
 }
@@ -477,7 +646,11 @@ pub fn draw_signature_ink(
     }
     match ink {
         SignatureInk::Typed => {
-            let name = if signer.trim().is_empty() { "Signature" } else { signer.trim() };
+            let name = if signer.trim().is_empty() {
+                "Signature"
+            } else {
+                signer.trim()
+            };
             // A signature script: an italic serif face, sized to the field.
             let family = FontChoice::Serif;
             let mut size = (area.height() * 0.85).clamp(9.0, 30.0) as f32;
@@ -485,10 +658,12 @@ pub fn draw_signature_ink(
             let (mut tw, _) = tr.measure_font(name, size, None, TextWeight::Medium, true, &family);
             if tw > maxw && tw > 0.0 {
                 size = (size * maxw / tw).max(7.0);
-                tw = tr.measure_font(name, size, None, TextWeight::Medium, true, &family).0;
+                tw = tr
+                    .measure_font(name, size, None, TextWeight::Medium, true, &family)
+                    .0;
             }
-            let tx = area.x0 + ((area.width() as f32 - tw).max(0.0) / 2.0) as f64;
-            let ty = area.y0 + (area.height() - size as f64) / 2.0;
+            let tx = area.x0 + f64::from((area.width() as f32 - tw).max(0.0) / 2.0);
+            let ty = area.y0 + (area.height() - f64::from(size)) / 2.0;
             tr.draw_text_font(
                 scene,
                 name,
@@ -560,20 +735,29 @@ pub fn draw_thumbnail(
     if let Some(img) = raster {
         if img.width > 0 && img.height > 0 {
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rr);
-            let sx = rect.width() / img.width as f64;
-            let tf = base
-                * Affine::translate((rect.x0, rect.y0))
-                * Affine::scale_non_uniform(sx, sx);
+            let sx = rect.width() / f64::from(img.width);
+            let tf =
+                base * Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sx);
             scene.draw_image(img, tf);
             scene.pop_layer();
         }
-        let border = if is_current { theme.accent_primary } else { theme.tokens.colors.border_standard };
+        let border = if is_current {
+            theme.accent_primary
+        } else {
+            theme.tokens.colors.border_standard
+        };
         let stroke_w = if is_current { 2.0 } else { 1.0 };
         scene.stroke(&Stroke::new(stroke_w), base, border, None, &rr);
         if has_markup {
             let d = 5.0;
             let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
-            scene.fill(Fill::NonZero, base, theme.tokens.colors.semantic.warning, None, &dot);
+            scene.fill(
+                Fill::NonZero,
+                base,
+                theme.tokens.colors.semantic.warning,
+                None,
+                &dot,
+            );
         }
         return;
     }
@@ -601,19 +785,41 @@ pub fn draw_thumbnail(
                 y += h + 10.0 * scale;
             }
             Block::Title(_) => {
-                bar(scene, y + 2.0 * scale, (16.0 * scale).max(2.5), cx, cw * 0.85, head_col);
+                bar(
+                    scene,
+                    y + 2.0 * scale,
+                    (16.0 * scale).max(2.5),
+                    cx,
+                    cw * 0.85,
+                    head_col,
+                );
                 y += 30.0 * scale;
             }
             Block::H1(_) | Block::H2(_) => {
-                bar(scene, y + 1.0 * scale, (8.0 * scale).max(2.0), cx, cw * 0.55, head_col);
+                bar(
+                    scene,
+                    y + 1.0 * scale,
+                    (8.0 * scale).max(2.0),
+                    cx,
+                    cw * 0.55,
+                    head_col,
+                );
                 y += 18.0 * scale;
             }
             Block::Quote(t) | Block::Body(t) | Block::Caption(t) => {
                 let lines = (t.len() / 52).clamp(1, 8);
                 let lh = 6.0 * scale;
-                let indent = if matches!(block, Block::Quote(_)) { 10.0 * scale } else { 0.0 };
+                let indent = if matches!(block, Block::Quote(_)) {
+                    10.0 * scale
+                } else {
+                    0.0
+                };
                 for i in 0..lines {
-                    let w = if i == lines - 1 { cw * 0.6 } else { cw - indent };
+                    let w = if i == lines - 1 {
+                        cw * 0.6
+                    } else {
+                        cw - indent
+                    };
                     bar(scene, y, (2.2 * scale).max(1.0), cx + indent, w, line_col);
                     y += lh;
                 }
@@ -631,12 +837,24 @@ pub fn draw_thumbnail(
         theme.tokens.colors.border_standard
     };
     let stroke_w = if is_current { 2.0 } else { 1.0 };
-    scene.stroke(&Stroke::new(stroke_w), base, border, None, &RoundedRect::from_rect(rect, 2.0));
+    scene.stroke(
+        &Stroke::new(stroke_w),
+        base,
+        border,
+        None,
+        &RoundedRect::from_rect(rect, 2.0),
+    );
 
     if has_markup {
         let d = 5.0;
         let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
-        scene.fill(Fill::NonZero, base, theme.tokens.colors.semantic.warning, None, &dot);
+        scene.fill(
+            Fill::NonZero,
+            base,
+            theme.tokens.colors.semantic.warning,
+            None,
+            &dot,
+        );
     }
 }
 
@@ -694,8 +912,15 @@ mod tests {
         for l in &lines {
             // Bands sit within the page's text column and below the top.
             assert!(l.x >= MARGIN - 0.5, "line left {} inside margin", l.x);
-            assert!(l.x_end <= PAGE_W - MARGIN + 0.5, "line right {} inside margin", l.x_end);
-            assert!(l.y >= 0.0 && l.y + l.h <= crate::model::PAGE_H, "line within page height");
+            assert!(
+                l.x_end <= PAGE_W - MARGIN + 0.5,
+                "line right {} inside margin",
+                l.x_end
+            );
+            assert!(
+                l.y >= 0.0 && l.y + l.h <= crate::model::PAGE_H,
+                "line within page height"
+            );
             assert!(l.h > 0.0);
         }
     }

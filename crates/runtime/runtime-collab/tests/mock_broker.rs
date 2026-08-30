@@ -1,22 +1,22 @@
-//! Integration test: end-to-end RPC round-trip over a real Unix
-//! socket against a hand-rolled fake `CollabService` server.
+//! Integration test: end-to-end RPC round-trip over a real Unix socket
+//! against a hand-rolled fake `CollabService` server.
 //!
-//! What this exercises:
-//! - The `UnixCapnpClient` plumbing through `runtime-portal`.
-//! - The generated `CollabService` schema (params, results,
-//!   capability returns).
-//! - The idiomatic `CollabClient::join_channel`,
-//!   `ChannelHandle::send`, `subscribe`, `OpStream::read` wrappers.
+//! Exercises the `UnixCapnpClient` plumbing through `runtime-portal`, the
+//! generated `CollabService` schema, and the idiomatic
+//! `CollabClient::join_channel` / `ChannelHandle::send` / `subscribe` /
+//! `OpStream::read` wrappers.
 //!
-//! The fake broker is a minimal impl that:
-//! - Echoes the join request: any channel_id succeeds, hands back
-//!   a single ChannelHandle.
-//! - On `send`, stores the op in a `Vec<Vec<u8>>`.
-//! - On `subscribe`, returns a stream that yields the stored ops
-//!   in order; further `read` calls after exhaustion block on a
-//!   never-resolving promise (the test does not exercise that
-//!   path).
+//! The fake broker: any `channel_id` joins and gets one `ChannelHandle`;
+//! `send` stores the op in a `Vec<Vec<u8>>`; `subscribe` yields the stored
+//! ops in order, and further reads after exhaustion block forever
+//! (unexercised here).
 
+// capnp's generated `Server` traits declare each verb as `-> impl Future`,
+// and these fakes return capnp's own `Promise`, which is the concrete type
+// behind it. The lint's concern is a caller coming to depend on the narrower
+// return; nothing outside this file constructs these servers, so the
+// refinement stays where it is written.
+#![allow(refining_impl_trait_internal)]
 use std::cell::RefCell;
 use std::os::fd::IntoRawFd;
 use std::rc::Rc;
@@ -31,7 +31,7 @@ use runtime_collab::raw::{channel_handle, collab_service, presence_handle, strea
 use runtime_collab::{CollabClient, CollabServiceClient};
 use runtime_portal::UnixCapnpClient;
 
-// --- Server impls --------------------------------------------------------
+// server impls
 
 struct FakeStream {
     backlog: Rc<RefCell<Vec<Vec<u8>>>>,
@@ -45,8 +45,7 @@ impl stream::Server for FakeStream {
     ) -> Promise<(), capnp::Error> {
         let mut backlog = self.backlog.borrow_mut();
         if backlog.is_empty() {
-            // Never resolve. Real broker would suspend here; this
-            // test never exhausts the backlog so the path is
+            // Never resolves — the test never exhausts the backlog, so this path is
             // unreachable in practice.
             return Promise::err(capnp::Error::failed("backlog exhausted".into()));
         }
@@ -92,7 +91,10 @@ impl channel_handle::Server for FakeChannel {
         params: channel_handle::SendParams,
         _results: channel_handle::SendResults,
     ) -> Promise<(), capnp::Error> {
-        let op = match params.get().and_then(|r| r.get_op()) {
+        let op = match params
+            .get()
+            .and_then(runtime_collab::collab_capnp::channel_handle::send_params::Reader::get_op)
+        {
             Ok(o) => o.to_vec(),
             Err(e) => return Promise::err(e),
         };
@@ -142,7 +144,7 @@ impl collab_service::Server for FakeBroker {
         };
         let chan = match reader.get_channel_id().and_then(|t| {
             t.to_str()
-                .map(|s| s.to_owned())
+                .map(std::borrow::ToOwned::to_owned)
                 .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
         }) {
             Ok(s) => s,
@@ -164,24 +166,21 @@ impl collab_service::Server for FakeBroker {
     }
 }
 
-// --- The test itself -----------------------------------------------------
+// the test itself
 
 #[tokio::test(flavor = "current_thread")]
 async fn round_trip_join_send_subscribe_read() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            // 1. Create a connected socket pair. One end becomes
-            //    the "server" half (we run the RPC system on it
-            //    locally), the other gets handed to the client via
-            //    UnixCapnpClient.
+            // 1. A connected socket pair: one end runs the server RPC system locally,
+            //    the other is handed to the client via UnixCapnpClient.
             let (server_side, client_side) = UnixStream::pair().unwrap();
 
             // 2. Stand up the server RPC system.
             let captured_joins = Rc::new(RefCell::new(Vec::<(String, Vec<u8>)>::new()));
             let captured_ops = Rc::new(RefCell::new(Vec::<Vec<u8>>::new()));
-            let seed_backlog: Vec<Vec<u8>> =
-                vec![b"first-op".to_vec(), b"second-op".to_vec()];
+            let seed_backlog: Vec<Vec<u8>> = vec![b"first-op".to_vec(), b"second-op".to_vec()];
 
             let broker = FakeBroker {
                 captured_joins: captured_joins.clone(),
@@ -202,8 +201,7 @@ async fn round_trip_join_send_subscribe_read() {
                 let _ = server_rpc.await;
             });
 
-            // 3. Stand up the client via UnixCapnpClient (the same
-            //    code-path real apps take).
+            // 3. Stand up the client via UnixCapnpClient — the same path real apps take.
             let client_fd = client_side.into_std().unwrap().into_raw_fd();
             let unix =
                 UnixCapnpClient::from_connected_fd(client_fd, rpc_twoparty_capnp::Side::Client)

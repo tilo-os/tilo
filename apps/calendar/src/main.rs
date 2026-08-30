@@ -20,16 +20,32 @@
 //! The offscreen pass is identical to the live app's frame cycle — only the
 //! sample seed and viewport differ, which is exactly what drives the layout.
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 use std::collections::HashMap;
 
 use calendar::{CalendarApp, View};
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -46,10 +62,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wide = parse_flag_value(&args, "--shots");
     let narrow = parse_flag_value(&args, "--shots-narrow");
     if wide.is_some() || narrow.is_some() {
-        let view = parse_flag_value(&args, "--view")
-            .and_then(|p| view_from_str(p.to_str().unwrap_or("")));
-        let screen = parse_flag_value(&args, "--screen")
-            .map(|p| p.to_str().unwrap_or("").to_string());
+        let view =
+            parse_flag_value(&args, "--view").and_then(|p| view_from_str(p.to_str().unwrap_or("")));
+        let screen =
+            parse_flag_value(&args, "--screen").map(|p| p.to_str().unwrap_or("").to_string());
         let flap = args.iter().any(|a| a == "--flap");
         // `--collapse` collapses the persistent sidebar (wide layout) so a shot
         // can prove the three-abreast layout folds down to calendar + detail.
@@ -60,8 +76,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Event-form screenshots: `--new-event` opens the New-Event edit form;
         // `--date-popover` / `--calendar-popover` additionally float the date
         // grid / calendar selector over it.
-        let new_event = args.iter().any(|a| a == "--new-event")
-            || screen.as_deref() == Some("new-event");
+        let new_event =
+            args.iter().any(|a| a == "--new-event") || screen.as_deref() == Some("new-event");
         let date_popover = args.iter().any(|a| a == "--date-popover");
         let calendar_popover = args.iter().any(|a| a == "--calendar-popover");
         // `--scroll-hour N` pins the week/day timeline scroll to hour N (0 = top
@@ -120,7 +136,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, calendar::app_root(), "dev.qos.calendar"));
+        std::process::exit(ui::headless::run(
+            spec,
+            calendar::app_root(),
+            "dev.qos.calendar",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.calendar");
@@ -218,8 +238,8 @@ fn layout_once(
 
 /// Render `widget` offscreen and write RGBA to `out` as PNG.
 ///
-/// Mirrors `ui::App`'s cycle (sync → build_layout → compute_layout →
-/// apply_layout → draw) but runs the layout pass **twice**. The live event
+/// Mirrors `ui::App`'s cycle (sync → `build_layout` → `compute_layout` →
+/// `apply_layout` → draw) but runs the layout pass **twice**. The live event
 /// loop feeds each frame's allocated rect back into the next frame's
 /// `build_layout`, which is how responsive widths (here: the detail/notes
 /// column) settle. A single offscreen frame would build its layout before the

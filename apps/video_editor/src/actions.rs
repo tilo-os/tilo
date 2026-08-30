@@ -530,7 +530,7 @@ pub fn upsert_track_action(t: &Track) -> VideoEditorAction {
 pub fn delete_track_action(id: &Uuid, clips: &[Uuid]) -> VideoEditorAction {
     VideoEditorAction::DeleteTrack {
         id: id.to_string(),
-        clips: clips.iter().map(|c| c.to_string()).collect(),
+        clips: clips.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 
@@ -541,7 +541,7 @@ pub fn upsert_media_action(m: &MediaItem) -> VideoEditorAction {
 pub fn remove_media_action(id: &Uuid, clips: &[Uuid]) -> VideoEditorAction {
     VideoEditorAction::RemoveMedia {
         id: id.to_string(),
-        clips: clips.iter().map(|c| c.to_string()).collect(),
+        clips: clips.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 
@@ -613,7 +613,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     let mut root = Resource::new(
         "video.project".to_string(),
         "video.project",
-        if p.name.is_empty() { "Project".to_string() } else { p.name.clone() },
+        if p.name.is_empty() {
+            "Project".to_string()
+        } else {
+            p.name.clone()
+        },
     );
 
     // Project-level: rename (settings live in the doc).
@@ -645,7 +649,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             ExecutionLocus::ClientLocal,
             move |name: &str| {
                 let mut next = snap.clone();
-                let name = if name.trim().is_empty() { "Marker" } else { name.trim() };
+                let name = if name.trim().is_empty() {
+                    "Marker"
+                } else {
+                    name.trim()
+                };
                 next.add_marker(at, name, 1);
                 encode(&set_project_meta_action(&next))
             },
@@ -673,7 +681,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             "Title",
             ExecutionLocus::ClientLocal,
             move |text: &str| {
-                let content = if text.trim().is_empty() { "Title" } else { text.trim() };
+                let content = if text.trim().is_empty() {
+                    "Title"
+                } else {
+                    text.trim()
+                };
                 let item = MediaItem {
                     id: Uuid::new_v4(),
                     name: content.lines().next().unwrap_or("Title").to_string(),
@@ -697,9 +709,27 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     // max of that kind + 1) — the same whole-track write the timeline's
     // add-track buttons dispatch.
     for kind in [TrackKind::Video, TrackKind::Audio] {
-        let index = p.tracks.iter().filter(|t| t.kind == kind).map(|t| t.index).max().unwrap_or(0) + 1;
-        let name = format!("{}{index}", if kind == TrackKind::Video { "V" } else { "A" });
-        let track = Track { id: Uuid::new_v4(), name, kind, index, muted: false, locked: false, solo: false };
+        let index = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == kind)
+            .map(|t| t.index)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let name = format!(
+            "{}{index}",
+            if kind == TrackKind::Video { "V" } else { "A" }
+        );
+        let track = Track {
+            id: Uuid::new_v4(),
+            name,
+            kind,
+            index,
+            muted: false,
+            locked: false,
+            solo: false,
+        };
         let (id, label) = if kind == TrackKind::Video {
             ("add-video-track", "Add video track")
         } else {
@@ -735,7 +765,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         muted.muted = !muted.muted;
         tr = tr.with_action(immediate(
             "toggle-mute",
-            if track.muted { "Unmute track" } else { "Mute track" },
+            if track.muted {
+                "Unmute track"
+            } else {
+                "Mute track"
+            },
             &upsert_track_action(&muted),
         ));
         let track_clip_ids: Vec<Uuid> = p.clips_on(tid).iter().map(|c| c.id).collect();
@@ -749,13 +783,8 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             let cid = clip.id;
             let label = p
                 .media(clip.media)
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| format!("Clip {cid}"));
-            let mut cr = Resource::new(
-                format!("video.clip:{cid}"),
-                "video.clip",
-                label,
-            );
+                .map_or_else(|| format!("Clip {cid}"), |m| m.name.clone());
+            let mut cr = Resource::new(format!("video.clip:{cid}"), "video.clip", label);
 
             // Delete + ripple-delete.
             cr = cr.with_action(immediate(
@@ -777,16 +806,15 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
             // Split at the playhead — only when the playhead is strictly inside.
             let mut split_project = p.clone();
-            if let Some(new_id) = split_project.split_clip(cid, ctx.playhead) {
-                if let (Some(left), Some(right)) =
+            if let Some(new_id) = split_project.split_clip(cid, ctx.playhead)
+                && let (Some(left), Some(right)) =
                     (split_project.clip(cid), split_project.clip(new_id))
-                {
-                    cr = cr.with_action(immediate(
-                        "split",
-                        "Split at playhead",
-                        &split_clip_action(left, right),
-                    ));
-                }
+            {
+                cr = cr.with_action(immediate(
+                    "split",
+                    "Split at playhead",
+                    &split_clip_action(left, right),
+                ));
             }
 
             // Trim in / out to the playhead — only when it lies within the span.
@@ -795,13 +823,21 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 let din = ctx.playhead - clip.start;
                 ti.trim_in(cid, din);
                 if let Some(c) = ti.clip(cid) {
-                    cr = cr.with_action(immediate("trim-in", "Trim in to playhead", &upsert_clip_action(c)));
+                    cr = cr.with_action(immediate(
+                        "trim-in",
+                        "Trim in to playhead",
+                        &upsert_clip_action(c),
+                    ));
                 }
                 let mut to = p.clone();
                 let dout = ctx.playhead - clip.end();
                 to.trim_out(cid, dout);
                 if let Some(c) = to.clip(cid) {
-                    cr = cr.with_action(immediate("trim-out", "Trim out to playhead", &upsert_clip_action(c)));
+                    cr = cr.with_action(immediate(
+                        "trim-out",
+                        "Trim out to playhead",
+                        &upsert_clip_action(c),
+                    ));
                 }
             }
 
@@ -851,7 +887,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             if !clip.effects.is_empty() {
                 let mut cleared = clip.clone();
                 cleared.effects.clear();
-                cr = cr.with_action(immediate("clear-effects", "Clear effects", &upsert_clip_action(&cleared)));
+                cr = cr.with_action(immediate(
+                    "clear-effects",
+                    "Clear effects",
+                    &upsert_clip_action(&cleared),
+                ));
             }
 
             // Speed. The rate is prompted; reverse is a toggle, because
@@ -865,7 +905,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 ExecutionLocus::ClientLocal,
                 move |arg: &str| {
                     let mut next = speed_base.clone();
-                    let rate = arg.trim().trim_end_matches(['x', 'X', '\u{d7}']).parse().unwrap_or(1.0);
+                    let rate = arg
+                        .trim()
+                        .trim_end_matches(['x', 'X', '\u{d7}'])
+                        .parse()
+                        .unwrap_or(1.0);
                     next.set_speed(rate, next.speed.reverse);
                     encode(&upsert_clip_action(&next))
                 },
@@ -874,7 +918,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             reversed.set_speed(clip.speed.rate(), !clip.speed.reverse);
             cr = cr.with_action(immediate(
                 "toggle-reverse",
-                if clip.speed.reverse { "Play forwards" } else { "Play backwards" },
+                if clip.speed.reverse {
+                    "Play forwards"
+                } else {
+                    "Play backwards"
+                },
                 &upsert_clip_action(&reversed),
             ));
             if !clip.speed.is_normal() {
@@ -981,7 +1029,9 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 let at = ctx.playhead;
                 for param in Param::SIMPLE {
                     let base = clip.clone();
-                    let Some(now) = base.param_const(param) else { continue };
+                    let Some(now) = base.param_const(param) else {
+                        continue;
+                    };
                     let mut keyed = base.clone();
                     let current = keyed.param_at(param, at);
                     keyed.set_key_at(param, at, current, Interp::Linear);
@@ -1010,7 +1060,11 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     ExecutionLocus::ClientLocal,
                     move |arg: &str| {
                         let mut next = marker_base.clone();
-                        let name = if arg.trim().is_empty() { "Marker" } else { arg.trim() };
+                        let name = if arg.trim().is_empty() {
+                            "Marker"
+                        } else {
+                            arg.trim()
+                        };
                         next.add_marker(at, name, next.palette);
                         encode(&upsert_clip_action(&next))
                     },
@@ -1161,8 +1215,12 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 encode(&upsert_media_action(&next))
             },
         ));
-        let clip_ids: Vec<Uuid> =
-            p.clips.iter().filter(|c| c.media == mid).map(|c| c.id).collect();
+        let clip_ids: Vec<Uuid> = p
+            .clips
+            .iter()
+            .filter(|c| c.media == mid)
+            .map(|c| c.id)
+            .collect();
         mr = mr.with_action(immediate(
             "delete-media",
             "Delete from bin",
@@ -1246,8 +1304,15 @@ mod tests {
         all_specs(ctx)
             .into_iter()
             .find(|(i, _)| i == id)
-            .unwrap_or_else(|| panic!("the palette offers {id}: {:?}",
-                all_specs(ctx).iter().map(|(i, _)| i.clone()).collect::<Vec<_>>()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the palette offers {id}: {:?}",
+                    all_specs(ctx)
+                        .iter()
+                        .map(|(i, _)| i.clone())
+                        .collect::<Vec<_>>()
+                )
+            })
             .1
     }
 
@@ -1283,9 +1348,20 @@ mod tests {
             ..Default::default()
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), index: 1, ..Default::default() });
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            index: 1,
+            ..Default::default()
+        });
         let cid = p.add_clip(tid, mid, 0.0).expect("media exists");
-        (VideoResourceCtx { project: p, playhead: 4.0 }, cid)
+        (
+            VideoResourceCtx {
+                project: p,
+                playhead: 4.0,
+            },
+            cid,
+        )
     }
 
     #[test]
@@ -1337,7 +1413,11 @@ mod tests {
         let back = VideoDoc::load_project(&doc);
         assert_eq!(back.name, "Opened");
         assert_eq!(back.fps, 24.0);
-        assert_eq!(back.media.len(), 1, "the previous bin is replaced, not merged");
+        assert_eq!(
+            back.media.len(),
+            1,
+            "the previous bin is replaced, not merged"
+        );
         assert_eq!(back.media[0].name, "New.mp4");
         assert_eq!(back.tracks.len(), 1);
         assert!(back.tracks[0].solo);
@@ -1421,12 +1501,18 @@ mod tests {
         // is dropped the moment it is encoded.
         let wire = serde_json::to_vec(&data).expect("encodes");
         let decoded: ClipData = serde_json::from_slice(&wire).expect("decodes");
-        assert_eq!(decoded.to_clip().expect("rebuilds"), want, "and over the wire");
+        assert_eq!(
+            decoded.to_clip().expect("rebuilds"),
+            want,
+            "and over the wire"
+        );
 
         // And through a real document.
         let mut doc = AutoCommit::new();
         VideoDoc::write_project(&mut doc, &p);
-        VideoEditorAction::UpsertClip(data).apply(&mut doc).expect("applies");
+        VideoEditorAction::UpsertClip(data)
+            .apply(&mut doc)
+            .expect("applies");
         assert_eq!(VideoDoc::load_project(&doc).clip(cid).unwrap(), &want);
     }
 
@@ -1456,7 +1542,11 @@ mod tests {
         let sped = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
         let c = sped.clip(cid).unwrap();
         assert_eq!(c.speed.rate(), 2.0);
-        assert_eq!(c.duration(), 15.0, "and the clip is half as long on the timeline");
+        assert_eq!(
+            c.duration(),
+            15.0,
+            "and the clip is half as long on the timeline"
+        );
 
         let back = run(&ctx.project, &spec(&ctx, "toggle-reverse"), None);
         assert!(back.clip(cid).unwrap().speed.reverse);
@@ -1471,7 +1561,10 @@ mod tests {
         assert!(t.pos_x > 0.0 && t.pos_y < 0.0, "top-right: {t:?}");
 
         // With the clip already inset, the palette offers the way back.
-        let ctx2 = VideoResourceCtx { project: inset, ..ctx };
+        let ctx2 = VideoResourceCtx {
+            project: inset,
+            ..ctx
+        };
         let flat = run(&ctx2.project, &spec(&ctx2, "reset-transform"), None);
         assert!(flat.clip(cid).unwrap().transform.is_identity());
     }
@@ -1490,7 +1583,10 @@ mod tests {
         );
 
         // And with a curve present, the palette offers to take it away.
-        let ctx2 = VideoResourceCtx { project: keyed, ..ctx };
+        let ctx2 = VideoResourceCtx {
+            project: keyed,
+            ..ctx
+        };
         let cleared = run(&ctx2.project, &spec(&ctx2, "unkey-opacity"), None);
         assert!(!cleared.clip(cid).unwrap().anim.is_animated(Param::Opacity));
     }
@@ -1503,7 +1599,10 @@ mod tests {
         assert_eq!(marked.markers[0].name, "Act two");
         assert_eq!(marked.markers[0].t, 4.0, "at the playhead");
 
-        let ctx2 = VideoResourceCtx { project: marked, ..ctx };
+        let ctx2 = VideoResourceCtx {
+            project: marked,
+            ..ctx
+        };
         let gone = run(&ctx2.project, &spec(&ctx2, "remove-marker"), None);
         assert!(gone.markers.is_empty());
     }
@@ -1517,15 +1616,32 @@ mod tests {
             .iter()
             .find(|m| m.kind == MediaKind::Text)
             .expect("a title landed in the bin");
-        assert_eq!(t.text.as_ref().map(|t| t.content.as_str()), Some("Chapter One"));
+        assert_eq!(
+            t.text.as_ref().map(|t| t.content.as_str()),
+            Some("Chapter One")
+        );
         assert_eq!(t.name, "Chapter One", "and it is named after its words");
         assert!(t.path.is_empty(), "a title has no bytes to fetch");
 
         // Its words can then be edited from the bin.
-        let ctx2 = VideoResourceCtx { project: with_title, ..ctx };
-        let edited = run(&ctx2.project, &spec(&ctx2, "set-title-text"), Some("Chapter Two"));
-        let t = edited.media.iter().find(|m| m.kind == MediaKind::Text).unwrap();
-        assert_eq!(t.text.as_ref().map(|t| t.content.as_str()), Some("Chapter Two"));
+        let ctx2 = VideoResourceCtx {
+            project: with_title,
+            ..ctx
+        };
+        let edited = run(
+            &ctx2.project,
+            &spec(&ctx2, "set-title-text"),
+            Some("Chapter Two"),
+        );
+        let t = edited
+            .media
+            .iter()
+            .find(|m| m.kind == MediaKind::Text)
+            .unwrap();
+        assert_eq!(
+            t.text.as_ref().map(|t| t.content.as_str()),
+            Some("Chapter Two")
+        );
     }
 
     #[test]
@@ -1622,10 +1738,18 @@ mod tests {
         let proj_actions: Vec<&str> = project.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(proj_actions.contains(&"rename-project"), "{proj_actions:?}");
 
-        let tracks: Vec<_> = project.children.iter().filter(|c| c.kind == "video.track").collect();
+        let tracks: Vec<_> = project
+            .children
+            .iter()
+            .filter(|c| c.kind == "video.track")
+            .collect();
         assert_eq!(tracks.len(), 4, "four sample tracks");
         // The bin's media are also published, each with rename + delete.
-        let media: Vec<_> = project.children.iter().filter(|c| c.kind == "video.media").collect();
+        let media: Vec<_> = project
+            .children
+            .iter()
+            .filter(|c| c.kind == "video.media")
+            .collect();
         assert_eq!(media.len(), 7, "seven sample media items");
         let media_actions: Vec<&str> = media[0].actions.iter().map(|a| a.id.as_str()).collect();
         assert!(media_actions.contains(&"rename-media"), "{media_actions:?}");
@@ -1656,7 +1780,12 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
-        for want in ["Delete clip", "Rename project", "Add title", "Add marker at playhead"] {
+        for want in [
+            "Delete clip",
+            "Rename project",
+            "Add title",
+            "Add marker at playhead",
+        ] {
             palette.set_query(want);
             let labels = palette.result_labels();
             assert!(
@@ -1707,9 +1836,12 @@ mod tests {
             .expect("a track with two clips");
         let _ = track;
 
-        let mut plan = project.clone();
+        let mut plan = project;
         let moved_ids = plan.ripple_delete(id);
-        let moved: Vec<Clip> = moved_ids.iter().filter_map(|m| plan.clip(*m).cloned()).collect();
+        let moved: Vec<Clip> = moved_ids
+            .iter()
+            .filter_map(|m| plan.clip(*m).cloned())
+            .collect();
         let action = ripple_delete_action(&id, &moved);
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
@@ -1737,8 +1869,12 @@ mod tests {
             .find(|m| project.clips.iter().any(|c| c.media == m.id))
             .map(|m| m.id)
             .expect("a placed media");
-        let clip_ids: Vec<Uuid> =
-            project.clips.iter().filter(|c| c.media == mid).map(|c| c.id).collect();
+        let clip_ids: Vec<Uuid> = project
+            .clips
+            .iter()
+            .filter(|c| c.media == mid)
+            .map(|c| c.id)
+            .collect();
         assert!(!clip_ids.is_empty());
 
         let action = remove_media_action(&mid, &clip_ids);
@@ -1748,9 +1884,15 @@ mod tests {
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let after = VideoDoc::load_project(&doc);
-        assert!(after.media(mid).is_none(), "the source is gone from the bin");
+        assert!(
+            after.media(mid).is_none(),
+            "the source is gone from the bin"
+        );
         for cid in &clip_ids {
-            assert!(after.clip(*cid).is_none(), "a clip of the removed media is gone");
+            assert!(
+                after.clip(*cid).is_none(),
+                "a clip of the removed media is gone"
+            );
         }
     }
 
@@ -1764,7 +1906,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // Move a clip: a whole-clip upsert with a new start.
         let project = VideoDoc::load_project(&a);
@@ -1776,8 +1922,14 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
-        assert!((VideoDoc::load_project(&b).clip(clip.id).unwrap().start - clip.start).abs() < 1e-9);
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
+        assert!(
+            (VideoDoc::load_project(&b).clip(clip.id).unwrap().start - clip.start).abs() < 1e-9
+        );
     }
 
     /// Single source of truth: the clip resource's `delete` spec encodes the
@@ -1793,17 +1945,15 @@ mod tests {
             .flat_map(|t| t.children.iter())
             .find(|c| c.kind == "video.clip")
             .unwrap();
-        let cid: Uuid = clip
-            .id
-            .0
-            .trim_start_matches("video.clip:")
-            .parse()
-            .unwrap();
+        let cid: Uuid = clip.id.0.trim_start_matches("video.clip:").parse().unwrap();
         let spec = clip.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&delete_clip_action(&cid));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth"
+        );
     }
 
     /// The prompted brightness spec builds the same whole-clip upsert an
@@ -1818,14 +1968,26 @@ mod tests {
             .flat_map(|t| t.children.iter())
             .find(|c| c.kind == "video.clip")
             .unwrap();
-        let cid: Uuid = clip_res.id.0.trim_start_matches("video.clip:").parse().unwrap();
-        let spec = clip_res.actions.iter().find(|a| a.id == "set-brightness").unwrap();
+        let cid: Uuid = clip_res
+            .id
+            .0
+            .trim_start_matches("video.clip:")
+            .parse()
+            .unwrap();
+        let spec = clip_res
+            .actions
+            .iter()
+            .find(|a| a.id == "set-brightness")
+            .unwrap();
         let from_spec = prompted_encode(spec, "0.9");
 
         let mut expected = VideoDoc::load_project(&doc).clip(cid).unwrap().clone();
         expected.filters.brightness = 0.9;
         let from_builder = encode(&upsert_clip_action(&expected));
-        assert_eq!(from_spec.payload, from_builder.payload, "slider folds into one clip write");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "slider folds into one clip write"
+        );
     }
 
     /// The Ctrl+K "Add effect" prompt appends the named effect to the clip's
@@ -1840,15 +2002,36 @@ mod tests {
             .flat_map(|t| t.children.iter())
             .find(|c| c.kind == "video.clip")
             .unwrap();
-        let cid: Uuid = clip_res.id.0.trim_start_matches("video.clip:").parse().unwrap();
-        let before = VideoDoc::load_project(&doc).clip(cid).unwrap().effects.len();
-        let spec = clip_res.actions.iter().find(|a| a.id == "add-effect").expect("add-effect action");
+        let cid: Uuid = clip_res
+            .id
+            .0
+            .trim_start_matches("video.clip:")
+            .parse()
+            .unwrap();
+        let before = VideoDoc::load_project(&doc)
+            .clip(cid)
+            .unwrap()
+            .effects
+            .len();
+        let spec = clip_res
+            .actions
+            .iter()
+            .find(|a| a.id == "add-effect")
+            .expect("add-effect action");
         let encoded = prompted_encode(spec, "sepia");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        let after = VideoDoc::load_project(&doc).clip(cid).unwrap().effects.clone();
-        assert_eq!(after.len(), before + 1, "the effect was appended to the stack");
+        let after = VideoDoc::load_project(&doc)
+            .clip(cid)
+            .unwrap()
+            .effects
+            .clone();
+        assert_eq!(
+            after.len(),
+            before + 1,
+            "the effect was appended to the stack"
+        );
         assert_eq!(after.last().unwrap().kind, EffectKind::Sepia);
     }
 
@@ -1873,19 +2056,24 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert!(
-            (VideoDoc::load_project(&state.doc).clip(id).unwrap().start - (before_start + 7.0)).abs()
+            (VideoDoc::load_project(&state.doc).clip(id).unwrap().start - (before_start + 7.0))
+                .abs()
                 < 1e-9,
             "the action moved the clip",
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         // Ctrl+Z reverts exactly this action.
         state.undo(None, None).expect("an undo entry to pop");
         assert!(
-            (VideoDoc::load_project(&state.doc).clip(id).unwrap().start - before_start).abs() < 1e-9,
+            (VideoDoc::load_project(&state.doc).clip(id).unwrap().start - before_start).abs()
+                < 1e-9,
             "undo reverted the move and nothing else",
         );
     }

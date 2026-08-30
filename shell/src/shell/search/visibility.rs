@@ -1,58 +1,35 @@
 //! The capability gate for the headless action API.
 //!
-//! [`ActionCatalog`](super::action_api::ActionCatalog) takes an
-//! [`ActionVisibility`] and applies it at build time, so a resource the
-//! gate hides is absent from enumeration *and* selection — you cannot
-//! invoke what you were never shown. Until now the only implementation
-//! was `AllVisible`, which is the honest default for a local human
-//! sitting at the machine but says nothing about a programmatic caller.
+//! [`ActionCatalog`](super::action_api::ActionCatalog) applies an
+//! [`ActionVisibility`] at build time, so a hidden resource is absent from
+//! enumeration *and* selection.
 //!
-//! This module supplies the real one: it maps an exported search
-//! resource to the capability invoking it would require, then asks the
-//! workspace's own capability model.
-//!
-//! ## What is gated, and what is not
-//!
-//! The rule comes from [`crate::shell::actions`] and is not re-decided
-//! here:
-//!
-//! > Showing a resource is non-destructive and needs no permission.
-//! > Taking an action on one requires permission.
-//!
-//! So notes, records, files and folders are **never** hidden. A peer who
-//! may see a document is still shown it; what disappears for a caller
-//! who cannot act is the *affordance*, not the content. Concretely:
-//! opening an overlay is showing, and stays visible to everyone;
-//! spawning a terminal, duplicating a tab, launching an app or minting
-//! an invite are acts, and are gated.
-//!
-//! Anything this module cannot classify is treated as an act requiring
-//! [`Verb::Write`] rather than waved through. A new provider that lands
-//! without a mapping should become invisible to a restricted caller, not
-//! silently reachable by one.
+//! The rule, from [`crate::shell::actions`] and not re-decided here: showing a
+//! resource needs no permission, taking an action on one does. So notes,
+//! records, files and folders are **never** hidden — what disappears for a
+//! caller who cannot act is the *affordance*, not the content. Opening an
+//! overlay is showing; spawning a terminal, launching an app, or minting an
+//! invite are acts, and are gated. Anything unclassifiable is treated as an act
+//! requiring [`Verb::Write`] rather than waved through.
 
 use crate::shell::state::{Actor, ResourceRef as CapResource, Verb, Workspace};
 
 use super::ResourceKind;
 use super::action_api::{ActionVisibility, ResourceRef};
 
-/// The app id chrome-level actions are attributed to in the capability
-/// model. They are not exported by any packaged app — they are the
-/// shell's own — so they need a stable name to be addressed by.
+/// The app id chrome-level actions are attributed to — not exported by any
+/// packaged app, so they need a stable name to be addressed by.
 pub const SHELL_APP_ID: &str = "shell";
 
-/// What invoking `resource` requires, or `None` when invoking it only
-/// shows something and so needs no capability.
-///
-/// Split out from the [`ActionVisibility`] impl so the policy can be
-/// read, tested and argued about without a live workspace in hand.
+/// What invoking `resource` requires, or `None` when it only shows
+/// something. Split out from the [`ActionVisibility`] impl so the policy
+/// can be read, tested and argued about without a live workspace in hand.
 pub fn required_capability(
     resource: &ResourceRef,
     kind: &ResourceKind,
 ) -> Option<(CapResource, Verb)> {
     match kind {
-        // Showing is free. This is the larger half of the surface —
-        // every note, file, folder and record a caller can already see.
+        // Showing is free — the larger half of the surface.
         ResourceKind::Note
         | ResourceKind::Record
         | ResourceKind::File
@@ -61,9 +38,7 @@ pub fn required_capability(
         | ResourceKind::Video
         | ResourceKind::Playlist => None,
 
-        // Launching an app puts a tab in the workspace, which is a
-        // mutation of the room's contents, so it needs `Write` on the
-        // app being launched.
+        // Launching puts a tab in the workspace — `Write` on that app.
         ResourceKind::Application | ResourceKind::HostApplication => {
             Some((CapResource::App(resource.id.clone()), Verb::Write))
         }
@@ -78,9 +53,7 @@ pub fn required_capability(
             )
         }),
 
-        // A provider minting its own kind has not been classified here.
-        // Treat it as an act: an unmapped action must not be reachable
-        // by a caller who would fail every mapped one.
+        // Unclassified: treat as an act, fail closed.
         ResourceKind::Custom(_) => Some((
             CapResource::Action {
                 app: SHELL_APP_ID.to_string(),
@@ -91,65 +64,49 @@ pub fn required_capability(
     }
 }
 
-/// The verb one of the shell's own chrome actions requires, or `None`
-/// when it only opens a view.
-///
-/// The overlay-opening entries are deliberately ungated: `settings.open`
-/// reveals a panel, it does not change a setting. The action that
-/// changes something is the one inside the panel, and that is gated
-/// where it lives.
+/// The verb a chrome action requires, or `None` when it only opens a view.
+/// Overlay-opening entries are deliberately ungated: `settings.open`
+/// reveals a panel; the setting that changes something is gated where it lives.
 fn chrome_action_verb(id: &str) -> Option<Verb> {
     match id {
         // Showing: reveals a view, mutates nothing.
         "overview.toggle"
         | "settings.open"
         | "quick-settings.open"
+        | "projection.open"
         | "collaborators.open"
         | "room.activity.open" => None,
 
-        // Membership: admitting a peer, or joining someone else's room.
-        "peer.invite" | "peer.connect" => Some(Verb::Invite),
+        // Membership: admitting a peer or agent, or joining a room — all
+        // decide who is in this room, so all gate on the same verb.
+        "peer.invite" | "peer.invite.named" | "peer.connect" | "agent.invite" => Some(Verb::Invite),
 
-        // Acts on the room's contents.
-        "tab.new.terminal.here" | "window.new.terminal" | "tab.duplicate" => Some(Verb::Write),
-
-        // Bringing a record into the room changes what the room holds,
-        // and what a room holds is what its members can reach — so this
-        // is `Write` for the same reason spawning a tab is, and it is
-        // classified here rather than left to the fail-closed default so
-        // the choice is a choice. Note the asymmetry the rest of this
-        // module states: *seeing* which records a room holds is showing
-        // and is never gated; putting one there is an act.
+        // Changes what the room holds — `Write`, same as spawning a tab.
+        // Seeing which records a room holds stays ungated; adding one is an act.
         "record.bring" => Some(Verb::Write),
 
-        // Writing into a document is the plainest case of the rule this
-        // module states: reading the note is showing and is free, and
-        // changing what it says is an act. It is `Write` on the shell's
-        // own action namespace for the same reason spawning a tab is —
-        // the actor is editing the room's contents.
+        // Reading a note is showing and free; changing what it says is an act.
         "text.insert" => Some(Verb::Write),
 
         // Changes a session-wide setting.
         "notifications.dnd.toggle" => Some(Verb::Write),
 
-        // Unknown chrome action — gate it. See the module note on why
-        // the unclassified case fails closed.
+        // Everything else: acts on the room's contents ("tab.new.terminal.here",
+        // "window.new.terminal", "tab.duplicate") and any unknown chrome
+        // action — all fail closed to the same gate as the arms above.
         _ => Some(Verb::Write),
     }
 }
 
 /// An [`ActionVisibility`] backed by a real workspace's capability model.
-///
 /// Fail-closed by construction: [`Workspace::allows`] is
-/// `collab_types::decide_capability`, which denies unless something
-/// explicitly permits.
+/// `collab_types::decide_capability`, denying unless something permits.
 pub struct CapabilityVisibility<'a> {
     workspace: &'a Workspace,
     actor: Actor,
 }
 
 impl<'a> CapabilityVisibility<'a> {
-    /// Gate against `workspace` on behalf of the person `actor`.
     pub fn new(workspace: &'a Workspace, actor: Actor) -> Self {
         Self { workspace, actor }
     }
@@ -159,9 +116,7 @@ impl ActionVisibility for CapabilityVisibility<'_> {
     fn can_see(&self, resource: &ResourceRef, kind: &ResourceKind) -> bool {
         match required_capability(resource, kind) {
             None => true,
-            Some((cap_resource, verb)) => {
-                self.workspace.allows(&self.actor, &cap_resource, verb)
-            }
+            Some((cap_resource, verb)) => self.workspace.allows(&self.actor, &cap_resource, verb),
         }
     }
 }
@@ -175,9 +130,7 @@ mod tests {
         ResourceRef::new(provider, id)
     }
 
-    /// Showing is free: a document-shaped resource is never gated, so a
-    /// caller with no capabilities at all still sees the content it is
-    /// entitled to see.
+    /// A document-shaped resource is never gated.
     #[test]
     fn showing_a_document_requires_no_capability() {
         for kind in [
@@ -194,15 +147,14 @@ mod tests {
         }
     }
 
-    /// Opening an overlay reveals a view and changes nothing, so it is
-    /// not an act. The setting *inside* the panel is gated where it
-    /// lives, not at the door.
+    /// Reveals a view and changes nothing; not an act.
     #[test]
     fn opening_an_overlay_is_showing_not_acting() {
         for id in [
             "overview.toggle",
             "settings.open",
             "quick-settings.open",
+            "projection.open",
             "collaborators.open",
             "room.activity.open",
         ] {
@@ -214,9 +166,7 @@ mod tests {
         }
     }
 
-    /// Acts on the room's contents need `Write`; membership operations
-    /// need `Invite`. These are the entries that actually disappear for
-    /// a restricted caller.
+    /// Acts on the room's contents need `Write`; membership needs `Invite`.
     #[test]
     fn acting_on_the_room_requires_the_matching_verb() {
         let write = [
@@ -231,24 +181,24 @@ mod tests {
             assert_eq!(verb, Verb::Write, "{id}");
         }
 
-        for id in ["peer.invite", "peer.connect"] {
+        for id in [
+            "peer.invite",
+            "peer.invite.named",
+            "peer.connect",
+            "agent.invite",
+        ] {
             let (_, verb) = required_capability(&resource("actions", id), &ResourceKind::Action)
                 .unwrap_or_else(|| panic!("{id} must be gated"));
             assert_eq!(verb, Verb::Invite, "{id}");
         }
     }
 
-    /// Editing a document is an act, so it is gated — and gated on
-    /// `Write`, the same verb spawning a tab needs. The rule this module
-    /// states does not bend for the fact that a document looks like
-    /// content: *reading* it is showing, *changing* it is acting.
+    /// Editing a document is an act, gated on `Write` like spawning a tab.
     #[test]
     fn writing_into_a_document_requires_write() {
-        let (cap, verb) = required_capability(
-            &resource("actions", "text.insert"),
-            &ResourceKind::Action,
-        )
-        .expect("writing into a document must be gated");
+        let (cap, verb) =
+            required_capability(&resource("actions", "text.insert"), &ResourceKind::Action)
+                .expect("writing into a document must be gated");
         assert_eq!(verb, Verb::Write);
         assert_eq!(
             cap,
@@ -259,12 +209,8 @@ mod tests {
         );
     }
 
-    /// …and the gate actually hides it from someone holding nothing,
-    /// while still showing them the document itself. Asserted against a
-    /// real `Workspace`, because this is the property `actions_invoke`
-    /// relies on to refuse an unauthorised edit: a hidden action is
-    /// absent from the catalogue, so `select` finds nothing and the
-    /// invocation is refused rather than performed.
+    /// Hides the edit from someone holding nothing while still showing
+    /// them the document itself, against a real `Workspace`.
     #[test]
     fn an_unauthorised_caller_cannot_see_the_document_edit() {
         let owner: UserId = "owner".to_string();
@@ -304,9 +250,7 @@ mod tests {
         );
     }
 
-    /// An action nobody classified must not be reachable by a caller who
-    /// would fail every classified one. A new provider landing without a
-    /// mapping should go dark for restricted callers, not open.
+    /// A new provider landing without a mapping should go dark, not open.
     #[test]
     fn an_unclassified_action_fails_closed() {
         let (_, verb) = required_capability(
@@ -330,10 +274,8 @@ mod tests {
         assert_eq!(cap, CapResource::App("dev.qos.terminal".to_string()));
     }
 
-    /// The end-to-end shape: a workspace owner sees the gated actions,
-    /// and a member holding nothing does not — while both still see the
-    /// ungated ones. This is the property the action API relies on, so
-    /// it is asserted against a real `Workspace`, not a stub.
+    /// End-to-end: an owner sees gated actions, a member holding nothing
+    /// does not, both still see the ungated ones.
     #[test]
     fn the_gate_hides_acts_from_a_member_without_capabilities() {
         let owner: UserId = "owner".to_string();
@@ -376,10 +318,7 @@ mod tests {
             "granting Write must make the act visible"
         );
         assert!(
-            !granted_view.can_see(
-                &resource("actions", "peer.invite"),
-                &ResourceKind::Action
-            ),
+            !granted_view.can_see(&resource("actions", "peer.invite"), &ResourceKind::Action),
             "Write must not confer Invite"
         );
     }

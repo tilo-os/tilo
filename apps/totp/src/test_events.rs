@@ -6,7 +6,7 @@
 //!
 //! winit's per-platform `KeyEventExtra` is `pub(crate)`, so a `KeyEvent`
 //! can't be built field-by-field off-platform; we zero the struct and set
-//! only the public fields — the same trick the terminal / modal_dialog /
+//! only the public fields — the same trick the terminal / `modal_dialog` /
 //! pdf-viewer tests use.
 
 use vello::kurbo::Point;

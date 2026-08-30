@@ -3,8 +3,7 @@
 //!
 //!     APP_HOST_TIMING=1 cargo test -p app-host --test install_timing --release -- --nocapture
 
-mod common;
-
+use crate::common;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;
 use app_host::store::Store;
@@ -32,8 +31,5 @@ fn install_1mb_qpkg_timing() {
     let avg = sum / iters as u32;
     let min = samples.iter().min().unwrap();
     let max = samples.iter().max().unwrap();
-    eprintln!(
-        "install(1 MB) x{iters}: avg {:?}, min {:?}, max {:?}",
-        avg, min, max
-    );
+    eprintln!("install(1 MB) x{iters}: avg {avg:?}, min {min:?}, max {max:?}");
 }

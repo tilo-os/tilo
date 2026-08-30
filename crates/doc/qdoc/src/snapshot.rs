@@ -4,9 +4,7 @@ use crate::document::MarkSpan;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// A scalar block/style attribute value (heading level, list ordering, style id,
-/// a style's font size, …). `Float` carries fractional values (style sizes /
-/// spacing) that don't fit an integer.
+/// A scalar block/style attribute value (heading level, list ordering, style id, font size, …). `Float` carries fractional values that don't fit an integer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttrVal {
     Int(i64),
@@ -24,102 +22,63 @@ pub struct DocSnapshot {
     /// their `blob` attr as a key here so a renderer can fetch the pixels.
     #[serde(default)]
     pub blobs: BTreeMap<String, Vec<u8>>,
-    /// CRDT-native named styles: `style_id → (property → value)`. Built-ins
-    /// (body/heading1…/quote) plus any user- or import-defined styles. Empty for
-    /// documents authored before the styles container was populated.
+    /// CRDT-native named styles: `style_id → (property → value)`. Built-ins (body/heading1…/quote) plus any user- or import-defined styles.
     #[serde(default)]
     pub styles: BTreeMap<String, BTreeMap<String, AttrVal>>,
-    /// Document properties / metadata (`title`/`author`/`subject`/`keywords`/
-    /// `created`/`modified`/`generator` → value). Round-trips through the `.odt`
-    /// `meta.xml` and `.docx` `docProps/*.xml` parts. Empty for documents with no
-    /// properties set (and absent in snapshots authored before this field existed).
+    /// Document properties / metadata (`title`/`author`/`subject`/`keywords`/`created`/`modified`/`generator` → value). Round-trips through `.odt` `meta.xml` and `.docx` `docProps/*.xml`.
     #[serde(default)]
     pub properties: BTreeMap<String, String>,
-    /// Page-header block sequence (rendered at the top of every page). Empty for
-    /// documents with no header. A `field` mark valued `page-number` (see
-    /// `schema::MARK_FIELD`) over a placeholder character marks a page-number
-    /// field. Round-trips through the `.odt` master-page header and the `.docx`
-    /// `header1.xml` part.
+    /// Page-header block sequence (rendered at the top of every page). A `field` mark valued
+    /// `page-number` over a placeholder character marks a page-number field. Round-trips through the `.odt` master-page header and `.docx` `header1.xml`.
     #[serde(default)]
     pub header: Vec<BlockView>,
-    /// Page-footer block sequence (rendered at the bottom of every page). Mirrors
-    /// `header`; round-trips through the `.odt` master-page footer and `.docx`
-    /// `footer1.xml` part.
+    /// Page-footer block sequence (rendered at the bottom of every page); mirrors `header`.
     #[serde(default)]
     pub footer: Vec<BlockView>,
-    /// Footnotes / endnotes, each a small block sequence keyed by note id. The body
-    /// text references a note via an inline `note-ref` mark (see
-    /// `schema::MARK_NOTE_REF`) over a placeholder character carrying the note id.
-    /// Round-trips through inline `text:note` elements in `.odt` and the
-    /// `word/footnotes.xml` / `word/endnotes.xml` parts in `.docx`. Empty for
-    /// documents with no notes (and absent in snapshots authored before this field).
+    /// Footnotes / endnotes, each a small block sequence keyed by note id, referenced from body text
+    /// by a `note-ref` mark over a placeholder character carrying the note id. Round-trips through inline `text:note` in `.odt` and `word/footnotes.xml`/`endnotes.xml` in `.docx`.
     #[serde(default)]
     pub notes: Vec<NoteView>,
-    /// Comments / annotations, each anchored to a body text range (recovered from
-    /// the `comment` mark — see `schema::MARK_COMMENT`) carrying the comment id, with
-    /// the author / date / content held in the `comments` container keyed by that id.
-    /// Round-trips through `office:annotation`(+`office:annotation-end`) in `.odt`
-    /// and `word/comments.xml` + `commentRangeStart`/`commentRangeEnd`/
-    /// `commentReference` in `.docx`. Empty for documents with no comments (and absent
-    /// in snapshots authored before this field existed).
+    /// Comments / annotations, each anchored to a body text range (recovered from the `comment` mark)
+    /// carrying the comment id, with author/date/content held in the `comments` container. Round-trips
+    /// through `office:annotation`(+`-end`) in `.odt` and `word/comments.xml` + `commentRangeStart`/`-End`/`commentReference` in `.docx`.
     #[serde(default)]
     pub comments: Vec<CommentView>,
-    /// Tracked changes / revision marks, each anchored to a body text range (recovered
-    /// from the `ins`/`del` mark — see `schema::MARK_INS`/`schema::MARK_DEL`) carrying
-    /// the change id, with the author / date / kind held in the `changes` container
-    /// keyed by that id. A tracked **insertion** flags real inserted text; a tracked
-    /// **deletion** flags retained-but-struck text. Round-trips through
-    /// `text:tracked-changes`(+`text:changed-region`) + inline change markers in `.odt`
-    /// and `<w:ins>`/`<w:del>` run wrappers in `.docx`. Empty for documents with no
-    /// tracked changes (and absent in snapshots authored before this field existed).
+    /// Tracked changes / revision marks, each anchored to a body text range (recovered from the
+    /// `ins`/`del` mark) carrying the change id, with author/date/kind held in the `changes`
+    /// container. An insertion flags real inserted text; a deletion flags retained-but-struck text.
+    /// Round-trips through `text:tracked-changes` + inline change markers in `.odt` and `<w:ins>`/`<w:del>` run wrappers in `.docx`.
     #[serde(default)]
     pub changes: Vec<ChangeView>,
-    /// Bookmarks (named anchors), each a `(name, range)` derived from the body
-    /// `bookmark` marks (see `schema::MARK_BOOKMARK`). The mark is the source of
-    /// truth; this is a convenience registry. Round-trips through
-    /// `text:bookmark-start`/`text:bookmark-end` in `.odt` and `w:bookmarkStart`/
-    /// `w:bookmarkEnd` in `.docx`. A cross-reference is an internal `link` mark whose
-    /// value is `#<name>` (or `#<heading derived id>`) — surfaced as an ordinary
-    /// `link` mark on the referencing block, not in a separate list. Empty for
-    /// documents with no bookmarks (and absent in snapshots authored before this
-    /// field existed).
+    /// Bookmarks (named anchors), each a `(name, range)` derived from the body `bookmark` marks — the
+    /// mark is the source of truth, this is a convenience registry. Round-trips through
+    /// `text:bookmark-start`/`-end` in `.odt` and `w:bookmarkStart`/`-End` in `.docx`. A cross-reference
+    /// is an internal `link` mark valued `#<name>`, surfaced as an ordinary `link` mark rather than in a separate list.
     #[serde(default)]
     pub bookmarks: Vec<BookmarkView>,
-    /// Document-wide multi-column section layout: the number of newspaper-style
-    /// columns the body text flows across. `1` (the default) for a single-column
-    /// document; absent in snapshots authored before this field existed (which then
-    /// deserialize as one column). Round-trips through the `.odt` page-layout
-    /// `style:columns` and the `.docx` body `w:sectPr`→`w:cols`.
+    /// Document-wide multi-column section layout: the number of newspaper-style columns the body text
+    /// flows across. `1` (the default) for a single-column document. Round-trips through the `.odt` `style:columns` and `.docx` `w:sectPr`→`w:cols`.
     #[serde(default = "default_columns")]
     pub columns: u32,
-    /// The gutter between columns, in px, or `None` when unspecified (the consumer
-    /// picks a default). Only meaningful when `columns > 1`. Maps onto the `.odt`
-    /// `style:column-gap` and the `.docx` `w:cols w:space`.
+    /// The gutter between columns, in px, or `None` when unspecified (only meaningful when `columns > 1`); maps onto `.odt` `style:column-gap` and `.docx` `w:cols w:space`.
     #[serde(default)]
     pub column_gap: Option<f32>,
-    /// The document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`), or
-    /// `None` when the document declares no default language (the consumer then falls
-    /// back to its own locale). Per-run overrides ride as a `lang` mark on the relevant
-    /// `BlockView`. Round-trips through the `.odt` default-paragraph-style
-    /// `fo:language`/`fo:country` and the `.docx` `docDefaults` `w:lang`. Supports
-    /// spell-check locale selection and accessibility/screen-reader language. Absent in
-    /// snapshots authored before this field existed.
+    /// The document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`), or `None` when the
+    /// document declares none. Per-run overrides ride as a `lang` mark. Round-trips through the `.odt`
+    /// `fo:language`/`fo:country` and `.docx` `docDefaults` `w:lang`; supports spell-check locale and screen-reader language.
     #[serde(default)]
     pub language: Option<String>,
 }
 
-/// The default column count for a [`DocSnapshot`] — a single column. Used both as
-/// the serde fallback for snapshots authored before the `columns` field existed and
-/// as the `Default` value.
+/// The default column count for a [`DocSnapshot`] — a single column. Used both as the serde
+/// fallback for older snapshots and as the `Default` value.
 fn default_columns() -> u32 {
     crate::schema::DEFAULT_COLUMNS
 }
 
 impl Default for DocSnapshot {
     fn default() -> Self {
-        // Hand-rolled (rather than `#[derive(Default)]`) so `columns` defaults to a
-        // single column, not the integer default of zero. Every other field is its
-        // own type's default.
+        // Hand-rolled (rather than `#[derive(Default)]`) so `columns` defaults to a single column, not the integer default of zero.
         DocSnapshot {
             schema: String::default(),
             schema_version: i64::default(),
@@ -140,10 +99,8 @@ impl Default for DocSnapshot {
     }
 }
 
-/// One bookmark (named anchor): its `name` and the anchored body range `[start, end)`
-/// it covers (recovered from the `bookmark` mark). The body text references it by a
-/// `bookmark` mark valued with this `name`. A cross-reference targets it by a `link`
-/// mark valued `#<name>`.
+/// One bookmark (named anchor): its `name` and the anchored body range `[start, end)` it covers
+/// (recovered from the `bookmark` mark). A cross-reference targets it by a `link` mark valued `#<name>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookmarkView {
     pub name: String,
@@ -151,9 +108,7 @@ pub struct BookmarkView {
     pub range: (String, usize, usize),
 }
 
-/// Whether a tracked change is an insertion (proposed-added text) or a deletion
-/// (retained-but-struck text). Stored as the change's `kind` scalar and round-tripped
-/// through the codecs.
+/// Whether a tracked change is an insertion (proposed-added text) or a deletion (retained-but-struck text); stored as the change's `kind` scalar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeKind {
     Ins,
@@ -168,8 +123,7 @@ impl ChangeKind {
             ChangeKind::Del => "del",
         }
     }
-    /// Parse a schema string back into a [`ChangeKind`] (`del` → `Del`, anything else
-    /// → `Ins`, the default).
+    /// Parse a schema string back into a [`ChangeKind`] (`del` → `Del`, anything else → `Ins`, the default).
     pub fn from_str(s: &str) -> Self {
         if s == "del" {
             ChangeKind::Del
@@ -179,42 +133,33 @@ impl ChangeKind {
     }
 }
 
-/// One tracked change / revision mark: its id, kind (insertion/deletion), author, date
-/// string, and the anchored body range `[start, end)` it covers (recovered from the
-/// `ins`/`del` mark; `None` if the anchoring mark is absent). The body text references
-/// it by an `ins`/`del` mark valued with this `id`.
+/// One tracked change / revision mark: its id, kind, author, date string, and the anchored body
+/// range `[start, end)` (recovered from the `ins`/`del` mark; `None` if the mark is absent).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChangeView {
     pub id: String,
     pub kind: ChangeKind,
     pub author: String,
     pub date: String,
-    /// `(block_id, start, end)` of the anchored range in the body, or `None` if the
-    /// anchoring mark is absent.
+    /// `(block_id, start, end)` of the anchored range in the body, or `None` if the anchoring mark is absent.
     #[serde(default)]
     pub range: Option<(String, usize, usize)>,
 }
 
-/// One comment / annotation: its id, author, date string, the block sequence forming
-/// its content, and the anchored body range `[start, end)` it covers (recovered from
-/// the `comment` mark; `None` if the anchoring mark is absent — e.g. the commented
-/// text was deleted). The body text references it by a `comment` mark valued with
-/// this `id`.
+/// One comment / annotation: its id, author, date string, content blocks, and the anchored body
+/// range `[start, end)` (recovered from the `comment` mark; `None` if absent, e.g. the commented text was deleted).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommentView {
     pub id: String,
     pub author: String,
     pub date: String,
     pub blocks: Vec<BlockView>,
-    /// `(block_id, start, end)` of the anchored range in the body, or `None` if the
-    /// anchoring mark is absent.
+    /// `(block_id, start, end)` of the anchored range in the body, or `None` if the anchoring mark is absent.
     #[serde(default)]
     pub range: Option<(String, usize, usize)>,
 }
 
-/// One footnote/endnote: its id, kind (`"footnote"`/`"endnote"`), and the block
-/// sequence forming its content. The body text references it by a `note-ref` mark
-/// valued with this `id`.
+/// One footnote/endnote: its id, kind (`"footnote"`/`"endnote"`), and the block sequence forming its content.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoteView {
     pub id: String,

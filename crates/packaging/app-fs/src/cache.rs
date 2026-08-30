@@ -86,15 +86,15 @@ impl<S: BlobStore> PageCache<S> {
         if offset >= blob_size || len == 0 {
             return Ok(Vec::new());
         }
-        let end = offset.saturating_add(len as u64).min(blob_size);
+        let end = offset.saturating_add(u64::from(len)).min(blob_size);
         let want = (end - offset) as usize;
         let mut out = Vec::with_capacity(want);
 
-        let first_page = offset / PAGE_SIZE as u64;
-        let last_page = (end - 1) / PAGE_SIZE as u64;
+        let first_page = offset / u64::from(PAGE_SIZE);
+        let last_page = (end - 1) / u64::from(PAGE_SIZE);
         for page in first_page..=last_page {
-            let page_start = page * PAGE_SIZE as u64;
-            let page_end = (page_start + PAGE_SIZE as u64).min(blob_size);
+            let page_start = page * u64::from(PAGE_SIZE);
+            let page_end = (page_start + u64::from(PAGE_SIZE)).min(blob_size);
             let page_bytes = self.fetch_page(hash, page, page_start, page_end)?;
             // Slice this page down to the requested window.
             let slice_start = offset.saturating_sub(page_start) as usize;
@@ -181,9 +181,9 @@ mod tests {
             payload.push((i & 0xff) as u8);
         }
         let h = inner.put(&payload);
-        let cache = PageCache::new(inner.clone(), 16);
+        let cache = PageCache::new(inner, 16);
         let got = cache
-            .read(&h, payload.len() as u64, PAGE_SIZE as u64 - 5, 10)
+            .read(&h, payload.len() as u64, u64::from(PAGE_SIZE) - 5, 10)
             .unwrap();
         assert_eq!(got.len(), 10);
         assert_eq!(got, payload[PAGE_SIZE as usize - 5..PAGE_SIZE as usize + 5]);
@@ -193,7 +193,7 @@ mod tests {
     fn read_past_end_returns_short() {
         let inner = MemoryBlobStore::new();
         let h = inner.put(b"hello");
-        let cache = PageCache::new(inner.clone(), 4);
+        let cache = PageCache::new(inner, 4);
         let got = cache.read(&h, 5, 3, 10).unwrap();
         assert_eq!(&got, b"lo");
     }
@@ -216,8 +216,12 @@ mod tests {
         // evicted by page 2, so the second read of page 0 must
         // re-fetch.
         let _ = cache.read(&h, payload.len() as u64, 0, 16).unwrap();
-        let _ = cache.read(&h, payload.len() as u64, PAGE_SIZE as u64, 16).unwrap();
-        let _ = cache.read(&h, payload.len() as u64, 2 * PAGE_SIZE as u64, 16).unwrap();
+        let _ = cache
+            .read(&h, payload.len() as u64, u64::from(PAGE_SIZE), 16)
+            .unwrap();
+        let _ = cache
+            .read(&h, payload.len() as u64, 2 * u64::from(PAGE_SIZE), 16)
+            .unwrap();
         let _ = cache.read(&h, payload.len() as u64, 0, 16).unwrap();
         let snap = counted.snapshot();
         assert_eq!(snap.range_calls, 4);

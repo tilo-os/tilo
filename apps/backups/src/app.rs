@@ -29,9 +29,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{
-    SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget,
-};
+use ui::widget::{SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget};
 use ui::{card_column_width, card_columns};
 
 use crate::actions::{self, BACKUPS_ACTION_TYPE};
@@ -215,8 +213,11 @@ impl BackupsApp {
         delta: i64,
     ) {
         let cur = BackupsDoc::retention(doc, root, field);
-        self.actions
-            .dispatch(doc, BACKUPS_ACTION_TYPE, &actions::bump_retention_action(field, cur, delta));
+        self.actions.dispatch(
+            doc,
+            BACKUPS_ACTION_TYPE,
+            &actions::bump_retention_action(field, cur, delta),
+        );
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -273,9 +274,9 @@ impl BackupsApp {
     }
 
     fn job_progress(&self) -> Option<f64> {
-        self.job.as_ref().map(|j| {
-            (j.started.elapsed().as_secs_f64() / j.dur.as_secs_f64()).clamp(0.0, 1.0)
-        })
+        self.job
+            .as_ref()
+            .map(|j| (j.started.elapsed().as_secs_f64() / j.dur.as_secs_f64()).clamp(0.0, 1.0))
     }
 
     // ---- top-level draw -------------------------------------------------
@@ -292,8 +293,8 @@ impl BackupsApp {
         // Window background.
         paint::fill_rect(scene, t, self.rect, c.surfaces.base);
 
-        // The content spans to the window bottom now that the permanent status
-        // strip is gone (its tally lives in the floating bubble instead).
+        // Content spans to the window bottom; the tally lives in the floating
+        // status bubble, not a permanent bottom strip.
         let content = Rect::new(
             self.rect.x0 + PAD,
             self.rect.y0 + BAR_H + 14.0,
@@ -355,7 +356,12 @@ impl BackupsApp {
 
     fn draw_top_bar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        let bar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + BAR_H);
+        let bar = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + BAR_H,
+        );
         paint::fill_rect(scene, t, bar, c.neutral[0]);
         paint::hline(scene, t, bar.x0, bar.x1, bar.y1, c.border_white_10, 1.0);
 
@@ -388,7 +394,7 @@ impl BackupsApp {
             );
             paint::text(scene, tr, t, &sub, 13.0, c.text_dim, lx, cy - 7.0);
             let (tw, _) = tr.measure(&sub, 13.0, None);
-            lx += tw as f64;
+            lx += f64::from(tw);
         }
         let brand_right = lx;
 
@@ -407,24 +413,71 @@ impl BackupsApp {
         paint::fill_rrect(scene, t, btn, 9.0, fill);
         if let Some(p) = self.job_progress() {
             // Progress sliver along the bottom of the button.
-            let pr = Rect::new(btn.x0 + 3.0, btn.y1 - 6.0, btn.x0 + 3.0 + (btn.width() - 6.0) * p, btn.y1 - 3.0);
+            let pr = Rect::new(
+                btn.x0 + 3.0,
+                btn.y1 - 6.0,
+                btn.x0 + 3.0 + (btn.width() - 6.0) * p,
+                btn.y1 - 3.0,
+            );
             paint::fill_rrect(scene, t, pr, 1.5, theme.accent_primary);
         }
         if narrow {
             // Just the "+" glyph, centred.
             let gc = btn.center();
             if !running {
-                paint::poly(scene, t, &[(gc.x - 5.0, gc.y), (gc.x + 5.0, gc.y)], c.text_primary, 2.0, false);
-                paint::poly(scene, t, &[(gc.x, gc.y - 5.0), (gc.x, gc.y + 5.0)], c.text_primary, 2.0, false);
+                paint::poly(
+                    scene,
+                    t,
+                    &[(gc.x - 5.0, gc.y), (gc.x + 5.0, gc.y)],
+                    c.text_primary,
+                    2.0,
+                    false,
+                );
+                paint::poly(
+                    scene,
+                    t,
+                    &[(gc.x, gc.y - 5.0), (gc.x, gc.y + 5.0)],
+                    c.text_primary,
+                    2.0,
+                    false,
+                );
             }
         } else {
-            let label = if running { "Backing up…" } else { "Back up now" };
+            let label = if running {
+                "Backing up…"
+            } else {
+                "Back up now"
+            };
             let gx = btn.x0 + 16.0;
             if !running {
-                paint::poly(scene, t, &[(gx - 5.0, cy), (gx + 5.0, cy)], c.text_primary, 2.0, false);
-                paint::poly(scene, t, &[(gx, cy - 5.0), (gx, cy + 5.0)], c.text_primary, 2.0, false);
+                paint::poly(
+                    scene,
+                    t,
+                    &[(gx - 5.0, cy), (gx + 5.0, cy)],
+                    c.text_primary,
+                    2.0,
+                    false,
+                );
+                paint::poly(
+                    scene,
+                    t,
+                    &[(gx, cy - 5.0), (gx, cy + 5.0)],
+                    c.text_primary,
+                    2.0,
+                    false,
+                );
             }
-            paint::text_center(scene, tr, t, label, 13.5, c.text_primary, btn.x0 + 16.0, btn.x1 - 6.0, cy - 7.0);
+            paint::text_center(
+                scene,
+                tr,
+                t,
+                label,
+                13.5,
+                c.text_primary,
+                btn.x0 + 16.0,
+                btn.x1 - 6.0,
+                cy - 7.0,
+            );
         }
         self.hits.push((btn, Hit::BackupNow));
 
@@ -436,7 +489,12 @@ impl BackupsApp {
         let tab_w = ((band_x1 - band_x0) / n).clamp(58.0, TAB_W);
         let seg_total = tab_w * n;
         let seg_x0 = (band_x0 + ((band_x1 - band_x0) - seg_total) / 2.0).max(band_x0);
-        let seg = Rect::new(seg_x0, cy - TAB_H / 2.0, seg_x0 + seg_total, cy + TAB_H / 2.0);
+        let seg = Rect::new(
+            seg_x0,
+            cy - TAB_H / 2.0,
+            seg_x0 + seg_total,
+            cy + TAB_H / 2.0,
+        );
         paint::fill_rrect(scene, t, seg, 9.0, c.surfaces.raised);
         paint::stroke_rrect(scene, t, seg, 9.0, c.border_white_10, 1.0);
         // The active tab floats as an inset pill inside the raised track; the
@@ -455,7 +513,12 @@ impl BackupsApp {
                 seg.x0 + (i as f64 + 1.0) * tab_w,
                 seg.y1,
             );
-            pill_rects.push(Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0));
+            pill_rects.push(Rect::new(
+                tab.x0 + 4.0,
+                tab.y0 + 4.0,
+                tab.x1 - 4.0,
+                tab.y1 - 4.0,
+            ));
             labels.push(if narrow_tabs {
                 match v {
                     View::Timeline => "Timeline",
@@ -468,8 +531,13 @@ impl BackupsApp {
             });
             self.hits.push((tab, Hit::Tab(*v)));
         }
-        let selected = View::ALL.iter().position(|v| self.ui.view == *v).unwrap_or(0);
-        let hovered = View::ALL.iter().position(|v| self.hover == Some(Hit::Tab(*v)));
+        let selected = View::ALL
+            .iter()
+            .position(|v| self.ui.view == *v)
+            .unwrap_or(0);
+        let hovered = View::ALL
+            .iter()
+            .position(|v| self.hover == Some(Hit::Tab(*v)));
         ToggleGroup::paint(
             scene,
             t,
@@ -483,9 +551,8 @@ impl BackupsApp {
         );
     }
 
-    /// Compose the bubble's label from the live catalog: the health signal
-    /// (kept as text so the pill needs no bespoke tint) followed by the snapshot
-    /// tally and protected size — the two contextual pieces the old strip showed.
+    /// Health signal (kept as text so the pill needs no bespoke tint) followed
+    /// by the snapshot tally and protected size.
     fn status_label(&self) -> String {
         let failed = self
             .catalog
@@ -505,12 +572,15 @@ impl BackupsApp {
         )
     }
 
-    /// Draw the transient floating status bubble at the window's bottom-right —
-    /// the reclaimed home of the old bottom status strip. It surfaces on a status
-    /// change (a completed job shifts the tally/health) or while the pointer
-    /// hovers the bottom-right corner, then fades. All colours come from the
-    /// theme (via `draw_pill`).
-    fn draw_status_bubble(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    /// Surfaces on a status change (a completed job shifts the tally/health) or
+    /// while the pointer hovers the bottom-right corner, then fades.
+    fn draw_status_bubble(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let now = Instant::now();
         let label = self.status_label();
         // Poke only on a genuine change — draw runs every frame, so an
@@ -537,7 +607,13 @@ impl BackupsApp {
         if alpha <= 0.0 {
             return;
         }
-        scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, t, &rect.inflate(12.0, 14.0));
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            alpha,
+            t,
+            &rect.inflate(12.0, 14.0),
+        );
         ui::status_bubble::draw_pill(scene, t, tr, theme, rect, &label, text_size);
         scene.pop_layer();
     }
@@ -554,24 +630,50 @@ impl BackupsApp {
     /// First-run state: no sources or destinations configured. Renders a
     /// centered prompt so the fresh app reads as ready rather than as a broken
     /// blank dashboard.
-    fn draw_empty_onboarding(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
+    fn draw_empty_onboarding(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
         let c = &theme.tokens.colors;
         let cy = content.y0 + content.height() * 0.36;
         paint::text_center(
-            scene, tr, t,
+            scene,
+            tr,
+            t,
             "No backups configured yet",
-            19.0, c.text_primary, content.x0, content.x1, cy,
+            19.0,
+            c.text_primary,
+            content.x0,
+            content.x1,
+            cy,
         );
         paint::text_center(
-            scene, tr, t,
+            scene,
+            tr,
+            t,
             "Add a source to protect and a destination to store snapshots.",
-            13.0, c.text_dim, content.x0, content.x1, cy + 30.0,
+            13.0,
+            c.text_dim,
+            content.x0,
+            content.x1,
+            cy + 30.0,
         );
     }
 
     // ---- TIMELINE view --------------------------------------------------
 
-    fn draw_timeline_view(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
+    fn draw_timeline_view(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
         // Main column: the drawer's resolved content rect (inset by the docked
         // rail, or full width in overlay). A small gap keeps it off a docked rail.
         let docked_gap = if self.drawer.is_docked() { 18.0 } else { 0.0 };
@@ -591,19 +693,57 @@ impl BackupsApp {
         let c = &theme.tokens.colors;
         let hy = tiles.y1 + 18.0;
         let scope = match &self.ui.sel_source {
-            Some(id) => self.catalog.source(id).map(|s| s.path.clone()).unwrap_or_default(),
+            Some(id) => self
+                .catalog
+                .source(id)
+                .map(|s| s.path.clone())
+                .unwrap_or_default(),
             None => "All sources".to_string(),
         };
-        paint::text_bold(scene, tr, t, "Snapshot timeline", 15.0, c.text_primary, main.x0, hy);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Snapshot timeline",
+            15.0,
+            c.text_primary,
+            main.x0,
+            hy,
+        );
         let (title_w, _) = tr.measure("Snapshot timeline", 15.0, None);
-        paint::text(scene, tr, t, &scope, 12.5, theme.accent_primary, main.x0 + title_w as f64 + 14.0, hy + 1.0);
-        paint::text_right(scene, tr, t, "newest first", 11.5, c.text_dim, main.x1, hy + 2.0);
+        paint::text(
+            scene,
+            tr,
+            t,
+            &scope,
+            12.5,
+            theme.accent_primary,
+            main.x0 + f64::from(title_w) + 14.0,
+            hy + 1.0,
+        );
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            "newest first",
+            11.5,
+            c.text_dim,
+            main.x1,
+            hy + 2.0,
+        );
 
         let list = Rect::new(main.x0, hy + 26.0, main.x1, main.y1);
         self.draw_timeline_list(scene, t, tr, theme, list);
     }
 
-    fn draw_rail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rail: Rect) {
+    fn draw_rail(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+    ) {
         let c = &theme.tokens.colors;
         // Clip every rail pixel so a sliding overlay reveal never spills rows
         // over the snapshot list beside it.
@@ -613,7 +753,14 @@ impl BackupsApp {
         if self.drawer.is_overlay() {
             paint::card(scene, t, rail, 14.0, c.surfaces.raised, c.border_white_20);
         } else {
-            paint::card(scene, t, rail, 14.0, c.surfaces.raised.with_alpha_factor(0.45), c.border_white_10);
+            paint::card(
+                scene,
+                t,
+                rail,
+                14.0,
+                c.surfaces.raised.with_alpha_factor(0.45),
+                c.border_white_10,
+            );
         }
         let pad = 14.0;
         let mut y = rail.y0 + 14.0;
@@ -622,7 +769,12 @@ impl BackupsApp {
         // when the rail is docked-open (the top-bar hamburger only reappears
         // once it's collapsed).
         if self.drawer.is_docked() && self.drawer.is_open() {
-            let cb = Rect::new(rail.x1 - pad - 30.0, rail.y0 + 10.0, rail.x1 - pad, rail.y0 + 40.0);
+            let cb = Rect::new(
+                rail.x1 - pad - 30.0,
+                rail.y0 + 10.0,
+                rail.x1 - pad,
+                rail.y0 + 40.0,
+            );
             let hov = cb.contains(self.last_mouse);
             self.drawer.draw_toggle(scene, t, theme, cb, hov);
             self.hits.push((cb, Hit::ToggleRail));
@@ -639,9 +791,26 @@ impl BackupsApp {
         }
 
         y += 10.0;
-        paint::hline(scene, t, rail.x0 + pad, rail.x1 - pad, y, c.border_white_10, 1.0);
+        paint::hline(
+            scene,
+            t,
+            rail.x0 + pad,
+            rail.x1 - pad,
+            y,
+            c.border_white_10,
+            1.0,
+        );
         y += 14.0;
-        paint::text(scene, tr, t, "DESTINATIONS", 10.5, c.text_dim, rail.x0 + pad, y);
+        paint::text(
+            scene,
+            tr,
+            t,
+            "DESTINATIONS",
+            10.5,
+            c.text_dim,
+            rail.x0 + pad,
+            y,
+        );
         y += 22.0;
         for i in 0..self.catalog.destinations.len() {
             let d = self.catalog.destinations[i].clone();
@@ -651,50 +820,177 @@ impl BackupsApp {
     }
 
     /// Shared row highlight (selected / hovered) used by the rail rows.
-    fn row_bg(&self, scene: &mut Scene, t: Affine, theme: &Theme, row: Rect, selected: bool, hovered: bool) {
+    fn row_bg(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        row: Rect,
+        selected: bool,
+        hovered: bool,
+    ) {
         let c = &theme.tokens.colors;
         if selected {
-            paint::fill_rrect(scene, t, row, 9.0, theme.accent_primary.with_alpha_factor(0.18));
-            paint::stroke_rrect(scene, t, row, 9.0, theme.accent_primary.with_alpha_factor(0.6), 1.0);
+            paint::fill_rrect(
+                scene,
+                t,
+                row,
+                9.0,
+                theme.accent_primary.with_alpha_factor(0.18),
+            );
+            paint::stroke_rrect(
+                scene,
+                t,
+                row,
+                9.0,
+                theme.accent_primary.with_alpha_factor(0.6),
+                1.0,
+            );
         } else if hovered {
             paint::fill_rrect(scene, t, row, 9.0, c.surface_white_5);
         }
     }
 
     /// The "All sources" aggregate row.
-    fn draw_source_row(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rail: Rect, y: &mut f64, _src: Option<&Source>, sel: bool) {
+    // scene/t/tr/theme is the fixed draw-call boilerplate every `draw_*`
+    // method takes; the rest are this row's own content and layout.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_source_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        y: &mut f64,
+        _src: Option<&Source>,
+        sel: bool,
+    ) {
         let c = &theme.tokens.colors;
         let h = 38.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
-        self.row_bg(scene, t, theme, row, sel, self.hover == Some(Hit::Source(None)));
+        self.row_bg(
+            scene,
+            t,
+            theme,
+            row,
+            sel,
+            self.hover == Some(Hit::Source(None)),
+        );
         let cy = row.y0 + h / 2.0;
-        paint::text_bold(scene, tr, t, "All sources", 13.5, c.text_primary, row.x0 + 14.0, cy - 7.0);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "All sources",
+            13.5,
+            c.text_primary,
+            row.x0 + 14.0,
+            cy - 7.0,
+        );
         let count: usize = self.catalog.total_snapshots();
-        paint::text_right(scene, tr, t, &format!("{count}"), 12.0, c.text_dim, row.x1 - 14.0, cy - 7.0);
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &format!("{count}"),
+            12.0,
+            c.text_dim,
+            row.x1 - 14.0,
+            cy - 7.0,
+        );
         self.hits.push((row, Hit::Source(None)));
         *y += h + 6.0;
     }
 
-    fn draw_source_row_real(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rail: Rect, y: &mut f64, src: &Source, sel: bool) {
+    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
+    fn draw_source_row_real(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        y: &mut f64,
+        src: &Source,
+        sel: bool,
+    ) {
         let c = &theme.tokens.colors;
         let h = 50.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
-        self.row_bg(scene, t, theme, row, sel, self.hover == Some(Hit::Source(Some(src.id.clone()))));
+        self.row_bg(
+            scene,
+            t,
+            theme,
+            row,
+            sel,
+            self.hover == Some(Hit::Source(Some(src.id.clone()))),
+        );
         let ix = row.x0 + 22.0;
         let cy = row.y0 + h / 2.0;
-        self.draw_source_icon(scene, t, src.kind, Point::new(ix, cy), 10.0, theme.accent_primary);
-        paint::text(scene, tr, t, &src.path, 13.5, c.text_primary, ix + 18.0, row.y0 + 9.0);
+        self.draw_source_icon(
+            scene,
+            t,
+            src.kind,
+            Point::new(ix, cy),
+            10.0,
+            theme.accent_primary,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &src.path,
+            13.5,
+            c.text_primary,
+            ix + 18.0,
+            row.y0 + 9.0,
+        );
         let count = self.catalog.count_for(&src.id);
         let sub = format!("{} · {} snapshots", src.cadence.label(), count);
-        paint::text(scene, tr, t, &sub, 11.0, c.text_dim, ix + 18.0, row.y0 + 28.0);
+        paint::text(
+            scene,
+            tr,
+            t,
+            &sub,
+            11.0,
+            c.text_dim,
+            ix + 18.0,
+            row.y0 + 28.0,
+        );
         // Right column: protected size + health dot.
-        paint::text_right(scene, tr, t, &ui::format::bytes(self.catalog.protected_bytes(&src.id)), 11.5, c.text_dim, row.x1 - 14.0, row.y0 + 9.0);
-        paint::dot(scene, t, Point::new(row.x1 - 18.0, row.y0 + 33.0), 3.5, Self::health_color(theme, src.health));
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &ui::format::bytes(self.catalog.protected_bytes(&src.id)),
+            11.5,
+            c.text_dim,
+            row.x1 - 14.0,
+            row.y0 + 9.0,
+        );
+        paint::dot(
+            scene,
+            t,
+            Point::new(row.x1 - 18.0, row.y0 + 33.0),
+            3.5,
+            Self::health_color(theme, src.health),
+        );
         self.hits.push((row, Hit::Source(Some(src.id.clone()))));
         *y += h + 4.0;
     }
 
-    fn draw_dest_compact(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rail: Rect, y: &mut f64, d: &Destination) {
+    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
+    fn draw_dest_compact(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        y: &mut f64,
+        d: &Destination,
+    ) {
         let c = &theme.tokens.colors;
         let h = 48.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
@@ -702,19 +998,51 @@ impl BackupsApp {
             paint::fill_rrect(scene, t, row, 9.0, c.surface_white_5);
         }
         let ix = row.x0 + 18.0;
-        self.draw_dest_icon(scene, t, d.kind, Point::new(ix, row.y0 + 12.0), 8.0, Self::health_color(theme, d.health));
-        paint::text(scene, tr, t, &d.name, 12.5, c.text_primary, ix + 16.0, row.y0 + 5.0);
+        self.draw_dest_icon(
+            scene,
+            t,
+            d.kind,
+            Point::new(ix, row.y0 + 12.0),
+            8.0,
+            Self::health_color(theme, d.health),
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &d.name,
+            12.5,
+            c.text_primary,
+            ix + 16.0,
+            row.y0 + 5.0,
+        );
         let frac = d.used_bytes as f64 / d.total_bytes as f64;
         let bar = Rect::new(ix, row.y0 + 26.0, row.x1 - 12.0, row.y0 + 32.0);
-        let barcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
+        let barcol = if frac > 0.85 {
+            c.semantic.warning
+        } else {
+            theme.accent_primary
+        };
         paint::bar(scene, t, bar, frac, barcol, c.neutral[2]);
-        let usage = format!("{} / {}", ui::format::bytes(d.used_bytes), ui::format::bytes(d.total_bytes));
+        let usage = format!(
+            "{} / {}",
+            ui::format::bytes(d.used_bytes),
+            ui::format::bytes(d.total_bytes)
+        );
         paint::text(scene, tr, t, &usage, 10.5, c.text_dim, ix, row.y0 + 35.0);
         self.hits.push((row, Hit::Dest(d.id.clone())));
         *y += h + 2.0;
     }
 
-    fn draw_summary_tiles(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, region: Rect, cols: usize) {
+    fn draw_summary_tiles(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        region: Rect,
+        cols: usize,
+    ) {
         let c = &theme.tokens.colors;
         let gap = 12.0;
         let cols = cols.max(1);
@@ -726,15 +1054,39 @@ impl BackupsApp {
             .sel_source
             .as_ref()
             .and_then(|id| self.catalog.source(id))
-            .map(|s| s.next_run.clone())
-            .unwrap_or_else(|| "In 38 min".to_string());
-        let failed = self.catalog.snapshots.iter().filter(|s| s.status == SnapStatus::Failed).count();
-        let last = if failed == 0 { "OK · 2h ago".to_string() } else { "1 failed".to_string() };
+            .map_or_else(|| "In 38 min".to_string(), |s| s.next_run.clone());
+        let failed = self
+            .catalog
+            .snapshots
+            .iter()
+            .filter(|s| s.status == SnapStatus::Failed)
+            .count();
+        let last = if failed == 0 {
+            "OK · 2h ago".to_string()
+        } else {
+            "1 failed".to_string()
+        };
         let tiles: [(&str, String, Color); 4] = [
-            ("Protected", ui::format::bytes(self.catalog.total_protected()), theme.accent_primary),
-            ("Snapshots", format!("{}", self.catalog.total_snapshots()), c.semantic.info),
+            (
+                "Protected",
+                ui::format::bytes(self.catalog.total_protected()),
+                theme.accent_primary,
+            ),
+            (
+                "Snapshots",
+                format!("{}", self.catalog.total_snapshots()),
+                c.semantic.info,
+            ),
             ("Next run", next_run, c.semantic.success),
-            ("Last backup", last, if failed == 0 { c.semantic.success } else { c.semantic.warning }),
+            (
+                "Last backup",
+                last,
+                if failed == 0 {
+                    c.semantic.success
+                } else {
+                    c.semantic.warning
+                },
+            ),
         ];
         for (i, (label, value, accent)) in tiles.iter().enumerate() {
             let col = i % cols;
@@ -746,13 +1098,38 @@ impl BackupsApp {
             // accent ticker on the left edge
             let tick = Rect::new(tile.x0, tile.y0 + 10.0, tile.x0 + 3.0, tile.y1 - 10.0);
             paint::fill_rrect(scene, t, tick, 1.5, *accent);
-            paint::text(scene, tr, t, label, 11.5, c.text_dim, tile.x0 + 16.0, tile.y0 + 14.0);
+            paint::text(
+                scene,
+                tr,
+                t,
+                label,
+                11.5,
+                c.text_dim,
+                tile.x0 + 16.0,
+                tile.y0 + 14.0,
+            );
             let vsize = if value.len() > 11 { 17.0 } else { 22.0 };
-            paint::text_bold(scene, tr, t, value, vsize, c.text_primary, tile.x0 + 16.0, tile.y0 + 36.0);
+            paint::text_bold(
+                scene,
+                tr,
+                t,
+                value,
+                vsize,
+                c.text_primary,
+                tile.x0 + 16.0,
+                tile.y0 + 36.0,
+            );
         }
     }
 
-    fn draw_timeline_list(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, list: Rect) {
+    fn draw_timeline_list(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        list: Rect,
+    ) {
         let c = &theme.tokens.colors;
         self.timeline_view = list;
         // Group snapshots by day. Clone to owned so we don't hold an
@@ -790,9 +1167,26 @@ impl BackupsApp {
             if last_day != Some(s.day) {
                 // Day header.
                 if y + DAY_H > list.y0 && y < list.y1 {
-                    paint::text_bold(scene, tr, t, &Catalog::day_label(s.day), 12.0, c.text_dim, list.x0 + 2.0, y + 8.0);
+                    paint::text_bold(
+                        scene,
+                        tr,
+                        t,
+                        &Catalog::day_label(s.day),
+                        12.0,
+                        c.text_dim,
+                        list.x0 + 2.0,
+                        y + 8.0,
+                    );
                     let label_w = 96.0;
-                    paint::hline(scene, t, list.x0 + label_w, list.x1, y + 14.0, c.border_white_10, 1.0);
+                    paint::hline(
+                        scene,
+                        t,
+                        list.x0 + label_w,
+                        list.x1,
+                        y + 14.0,
+                        c.border_white_10,
+                        1.0,
+                    );
                 }
                 y += DAY_H;
                 last_day = Some(s.day);
@@ -825,75 +1219,191 @@ impl BackupsApp {
         }
     }
 
-    fn draw_snapshot_row(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, row: Rect, s: &Snapshot, selected: bool, show_source: bool) {
+    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
+    fn draw_snapshot_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        s: &Snapshot,
+        selected: bool,
+        show_source: bool,
+    ) {
         let c = &theme.tokens.colors;
         let hovered = self.hover == Some(Hit::Snap(s.id.clone()));
         if selected {
-            paint::fill_rrect(scene, t, row, 10.0, theme.accent_primary.with_alpha_factor(0.16));
-            paint::stroke_rrect(scene, t, row, 10.0, theme.accent_primary.with_alpha_factor(0.6), 1.0);
+            paint::fill_rrect(
+                scene,
+                t,
+                row,
+                10.0,
+                theme.accent_primary.with_alpha_factor(0.16),
+            );
+            paint::stroke_rrect(
+                scene,
+                t,
+                row,
+                10.0,
+                theme.accent_primary.with_alpha_factor(0.6),
+                1.0,
+            );
         } else if hovered {
             paint::fill_rrect(scene, t, row, 10.0, c.surface_white_5);
         } else {
-            paint::fill_rrect(scene, t, row, 10.0, c.surfaces.raised.with_alpha_factor(0.55));
+            paint::fill_rrect(
+                scene,
+                t,
+                row,
+                10.0,
+                c.surfaces.raised.with_alpha_factor(0.55),
+            );
         }
         let cy = row.y0 + ROW_H / 2.0;
         // Status dot.
-        paint::dot(scene, t, Point::new(row.x0 + 16.0, cy), 4.0, Self::status_color(theme, s.status));
+        paint::dot(
+            scene,
+            t,
+            Point::new(row.x0 + 16.0, cy),
+            4.0,
+            Self::status_color(theme, s.status),
+        );
         // Time.
-        paint::text_bold(scene, tr, t, &s.time, 14.0, c.text_primary, row.x0 + 30.0, cy - 8.0);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            &s.time,
+            14.0,
+            c.text_primary,
+            row.x0 + 30.0,
+            cy - 8.0,
+        );
         // Type + retention pills.
         let mut px = row.x0 + 92.0;
         let (tfg, tbg) = match s.kind {
-            SnapType::Manual => (theme.accent_primary, theme.accent_primary.with_alpha_factor(0.18)),
+            SnapType::Manual => (
+                theme.accent_primary,
+                theme.accent_primary.with_alpha_factor(0.18),
+            ),
             SnapType::Auto => (c.text_dim, c.surface_white_10),
         };
         px += paint::pill(scene, tr, t, px, cy, s.kind.label(), 11.0, tfg, tbg) + 6.0;
         let rc = Self::retention_color(theme, s.retention);
         px += paint::tag_pill(scene, tr, t, px, cy, s.retention.label(), 11.0, rc) + 8.0;
         // Source path (only in "all" mode).
-        if show_source {
-            if let Some(src) = self.catalog.source(&s.source_id) {
-                paint::text(scene, tr, t, &src.path, 12.0, c.text_dim, px, cy - 7.0);
-            }
+        if show_source && let Some(src) = self.catalog.source(&s.source_id) {
+            paint::text(scene, tr, t, &src.path, 12.0, c.text_dim, px, cy - 7.0);
         }
         // Right side: files changed, delta, total.
         let total_x = row.x1 - 16.0;
-        paint::text_right(scene, tr, t, &ui::format::bytes(s.size_bytes), 13.0, c.text_primary, total_x, cy - 8.0);
-        let meta = format!("+{} · {} files", ui::format::bytes(s.delta_bytes), s.files_changed);
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &ui::format::bytes(s.size_bytes),
+            13.0,
+            c.text_primary,
+            total_x,
+            cy - 8.0,
+        );
+        let meta = format!(
+            "+{} · {} files",
+            ui::format::bytes(s.delta_bytes),
+            s.files_changed
+        );
         paint::text_right(scene, tr, t, &meta, 10.5, c.text_dim, total_x, cy + 7.0);
     }
 
-    fn draw_snapshot_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, det: Rect, s: &Snapshot) {
+    fn draw_snapshot_detail(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        det: Rect,
+        s: &Snapshot,
+    ) {
         let c = &theme.tokens.colors;
         paint::fill_rrect(scene, t, det, 10.0, c.neutral[0].with_alpha_factor(0.5));
         let dest = self.catalog.destination(&s.dest_id);
         let dest_name = dest.map(|d| d.name.clone()).unwrap_or_default();
-        let dest_kind = dest.map(|d| d.kind.label()).unwrap_or("");
-        paint::text(scene, tr, t, &format!("Stored on {dest_name}  ·  {dest_kind}"), 12.0, c.text_dim, det.x0 + 16.0, det.y0 + 12.0);
-        let enc = if dest.map(|d| d.encrypted).unwrap_or(false) { "encrypted" } else { "plaintext" };
-        paint::text(scene, tr, t, &format!("{} files · {} changed · {}", s.files_changed, ui::format::bytes(s.delta_bytes), enc), 11.5, c.text_dim, det.x0 + 16.0, det.y0 + 33.0);
+        let dest_kind = dest.map_or("", |d| d.kind.label());
+        paint::text(
+            scene,
+            tr,
+            t,
+            &format!("Stored on {dest_name}  ·  {dest_kind}"),
+            12.0,
+            c.text_dim,
+            det.x0 + 16.0,
+            det.y0 + 12.0,
+        );
+        let enc = if dest.is_some_and(|d| d.encrypted) {
+            "encrypted"
+        } else {
+            "plaintext"
+        };
+        paint::text(
+            scene,
+            tr,
+            t,
+            &format!(
+                "{} files · {} changed · {}",
+                s.files_changed,
+                ui::format::bytes(s.delta_bytes),
+                enc
+            ),
+            11.5,
+            c.text_dim,
+            det.x0 + 16.0,
+            det.y0 + 33.0,
+        );
 
         // Action buttons, right-aligned.
         let btns: [(&str, Hit, Color); 3] = [
             ("Restore…", Hit::Restore, theme.accent_primary),
             ("Verify", Hit::Verify, c.surfaces.raised),
-            ("Delete", Hit::Delete, c.semantic.danger.with_alpha_factor(0.18)),
+            (
+                "Delete",
+                Hit::Delete,
+                c.semantic.danger.with_alpha_factor(0.18),
+            ),
         ];
         let mut bx = det.x1 - 12.0;
         let bh = 32.0;
         let by = det.y0 + (det.height() - bh) / 2.0;
         for (label, hit, fill) in btns.iter().rev() {
             let (tw, _) = tr.measure(label, 12.5, None);
-            let bw = tw as f64 + 28.0;
+            let bw = f64::from(tw) + 28.0;
             let b = Rect::new(bx - bw, by, bx, by + bh);
             let hovered = self.hover.as_ref() == Some(hit);
-            let f = if hovered { fill.with_alpha_factor(0.85) } else { *fill };
+            let f = if hovered {
+                fill.with_alpha_factor(0.85)
+            } else {
+                *fill
+            };
             paint::fill_rrect(scene, t, b, 8.0, f);
             if *hit != Hit::Restore {
                 paint::stroke_rrect(scene, t, b, 8.0, c.border_white_10, 1.0);
             }
-            let fg = if *hit == Hit::Delete { c.semantic.danger } else { c.text_primary };
-            paint::text_center(scene, tr, t, label, 12.5, fg, b.x0, b.x1, by + (bh - 12.5) / 2.0);
+            let fg = if *hit == Hit::Delete {
+                c.semantic.danger
+            } else {
+                c.text_primary
+            };
+            paint::text_center(
+                scene,
+                tr,
+                t,
+                label,
+                12.5,
+                fg,
+                b.x0,
+                b.x1,
+                by + (bh - 12.5) / 2.0,
+            );
             self.hits.push((b, hit.clone()));
             bx -= bw + 8.0;
         }
@@ -901,10 +1411,35 @@ impl BackupsApp {
 
     // ---- SOURCES view ---------------------------------------------------
 
-    fn draw_sources_view(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
+    fn draw_sources_view(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
         let c = &theme.tokens.colors;
-        paint::text_bold(scene, tr, t, "Backup sources", 16.0, c.text_primary, content.x0, content.y0);
-        paint::text(scene, tr, t, "Folders captured on a schedule into your destinations.", 12.5, c.text_dim, content.x0, content.y0 + 24.0);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Backup sources",
+            16.0,
+            c.text_primary,
+            content.x0,
+            content.y0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Folders captured on a schedule into your destinations.",
+            12.5,
+            c.text_dim,
+            content.x0,
+            content.y0 + 24.0,
+        );
 
         // At narrow widths the three inline stat columns collapse to one line
         // beneath the path, so nothing is crushed against the toggle.
@@ -915,18 +1450,47 @@ impl BackupsApp {
             let src = self.catalog.sources[i].clone();
             let card = Rect::new(content.x0, y, content.x1, y + card_h);
             let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
-            let border = if sel { theme.accent_primary.with_alpha_factor(0.6) } else { c.border_white_10 };
+            let border = if sel {
+                theme.accent_primary.with_alpha_factor(0.6)
+            } else {
+                c.border_white_10
+            };
             paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
             let ix = card.x0 + 34.0;
-            self.draw_source_icon(scene, t, src.kind, Point::new(ix, card.y0 + 30.0), 13.0, theme.accent_primary);
-            paint::text_bold(scene, tr, t, &src.path, 17.0, c.text_primary, ix + 28.0, card.y0 + 16.0);
+            self.draw_source_icon(
+                scene,
+                t,
+                src.kind,
+                Point::new(ix, card.y0 + 30.0),
+                13.0,
+                theme.accent_primary,
+            );
+            paint::text_bold(
+                scene,
+                tr,
+                t,
+                &src.path,
+                17.0,
+                c.text_primary,
+                ix + 28.0,
+                card.y0 + 16.0,
+            );
             let kind = match src.kind {
                 SourceKind::Home => "Home directory",
                 SourceKind::System => "System configuration",
                 SourceKind::Workspace => "Collaborative workspace",
                 SourceKind::Custom => "Custom path",
             };
-            paint::text(scene, tr, t, kind, 12.0, c.text_dim, ix + 28.0, card.y0 + 40.0);
+            paint::text(
+                scene,
+                tr,
+                t,
+                kind,
+                12.0,
+                c.text_dim,
+                ix + 28.0,
+                card.y0 + 40.0,
+            );
 
             if narrow {
                 // Single compact stats line.
@@ -936,31 +1500,95 @@ impl BackupsApp {
                     self.catalog.count_for(&src.id),
                     ui::format::bytes(self.catalog.protected_bytes(&src.id)),
                 );
-                paint::text(scene, tr, t, &stats, 12.0, c.text_dim, ix + 28.0, card.y0 + 60.0);
+                paint::text(
+                    scene,
+                    tr,
+                    t,
+                    &stats,
+                    12.0,
+                    c.text_dim,
+                    ix + 28.0,
+                    card.y0 + 60.0,
+                );
             } else {
                 // Stat columns.
-                let stat = |sc: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str, value: &str, col: Color| {
+                let stat = |sc: &mut Scene,
+                            tr: &mut TextRenderer,
+                            x: f64,
+                            label: &str,
+                            value: &str,
+                            col: Color| {
                     paint::text(sc, tr, t, label, 10.5, c.text_dim, x, card.y0 + 16.0);
                     paint::text_bold(sc, tr, t, value, 15.0, col, x, card.y0 + 32.0);
                 };
                 let col0 = card.x0 + card.width() * 0.46;
                 let col1 = card.x0 + card.width() * 0.62;
                 let col2 = card.x0 + card.width() * 0.78;
-                stat(scene, tr, col0, "CADENCE", src.cadence.label(), c.text_primary);
-                stat(scene, tr, col1, "SNAPSHOTS", &format!("{}", self.catalog.count_for(&src.id)), c.semantic.info);
-                stat(scene, tr, col2, "PROTECTED", &ui::format::bytes(self.catalog.protected_bytes(&src.id)), theme.accent_primary);
+                stat(
+                    scene,
+                    tr,
+                    col0,
+                    "CADENCE",
+                    src.cadence.label(),
+                    c.text_primary,
+                );
+                stat(
+                    scene,
+                    tr,
+                    col1,
+                    "SNAPSHOTS",
+                    &format!("{}", self.catalog.count_for(&src.id)),
+                    c.semantic.info,
+                );
+                stat(
+                    scene,
+                    tr,
+                    col2,
+                    "PROTECTED",
+                    &ui::format::bytes(self.catalog.protected_bytes(&src.id)),
+                    theme.accent_primary,
+                );
             }
 
             // Health + next-run + enable toggle.
-            paint::dot(scene, t, Point::new(card.x0 + 16.0, card.y0 + card_h - 18.0), 3.5, Self::health_color(theme, src.health));
-            paint::text(scene, tr, t, &format!("Next run {}", src.next_run), 11.5, c.text_dim, card.x0 + 28.0, card.y0 + card_h - 24.0);
+            paint::dot(
+                scene,
+                t,
+                Point::new(card.x0 + 16.0, card.y0 + card_h - 18.0),
+                3.5,
+                Self::health_color(theme, src.health),
+            );
+            paint::text(
+                scene,
+                tr,
+                t,
+                &format!("Next run {}", src.next_run),
+                11.5,
+                c.text_dim,
+                card.x0 + 28.0,
+                card.y0 + card_h - 24.0,
+            );
 
             // Enable switch (shared Toggle look).
             let tw = 52.0;
-            let tog = Rect::new(card.x1 - 22.0 - tw, card.y0 + card_h - 30.0, card.x1 - 22.0, card.y0 + card_h - 30.0 + 22.0);
+            let tog = Rect::new(
+                card.x1 - 22.0 - tw,
+                card.y0 + card_h - 30.0,
+                card.x1 - 22.0,
+                card.y0 + card_h - 30.0 + 22.0,
+            );
             let on = src.enabled;
             Toggle::paint(scene, t, theme, &ToggleFace::new(tog, on));
-            paint::text_right(scene, tr, t, if on { "Enabled" } else { "Paused" }, 10.5, c.text_dim, tog.x0 - 8.0, tog.center().y - 5.0);
+            paint::text_right(
+                scene,
+                tr,
+                t,
+                if on { "Enabled" } else { "Paused" },
+                10.5,
+                c.text_dim,
+                tog.x0 - 8.0,
+                tog.center().y - 5.0,
+            );
 
             self.hits.push((card, Hit::Source(Some(src.id.clone()))));
             y += card_h + 12.0;
@@ -973,16 +1601,54 @@ impl BackupsApp {
         }
     }
 
-    fn draw_recent_activity(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, region: Rect) {
+    fn draw_recent_activity(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        region: Rect,
+    ) {
         let c = &theme.tokens.colors;
-        paint::card(scene, t, region, 14.0, c.surfaces.raised.with_alpha_factor(0.45), c.border_white_10);
-        paint::text_bold(scene, tr, t, "Recent activity", 13.5, c.text_primary, region.x0 + 18.0, region.y0 + 14.0);
-        paint::text_right(scene, tr, t, "last 7 events", 11.0, c.text_dim, region.x1 - 18.0, region.y0 + 16.0);
+        paint::card(
+            scene,
+            t,
+            region,
+            14.0,
+            c.surfaces.raised.with_alpha_factor(0.45),
+            c.border_white_10,
+        );
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Recent activity",
+            13.5,
+            c.text_primary,
+            region.x0 + 18.0,
+            region.y0 + 14.0,
+        );
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            "last 7 events",
+            11.0,
+            c.text_dim,
+            region.x1 - 18.0,
+            region.y0 + 16.0,
+        );
 
         // Below this the fixed activity columns won't fit; the row folds to two
         // lines (when + size on top, the action beneath).
         let narrow = region.width() < 660.0;
-        let events: Vec<Snapshot> = self.catalog.timeline(None).into_iter().take(7).cloned().collect();
+        let events: Vec<Snapshot> = self
+            .catalog
+            .timeline(None)
+            .into_iter()
+            .take(7)
+            .cloned()
+            .collect();
         let row_h = if narrow { 46.0 } else { 38.0 };
         let y0 = region.y0 + 44.0;
         for (i, s) in events.iter().enumerate() {
@@ -990,41 +1656,166 @@ impl BackupsApp {
             if ry + row_h > region.y1 - 8.0 {
                 break;
             }
-            let path = self.catalog.source(&s.source_id).map(|x| x.path.clone()).unwrap_or_default();
+            let path = self
+                .catalog
+                .source(&s.source_id)
+                .map(|x| x.path.clone())
+                .unwrap_or_default();
             let action = format!("{} snapshot of {}", s.kind.label(), path);
             let when = format!("{} {}", Catalog::day_label(s.day), s.time);
             if narrow {
-                paint::dot(scene, t, Point::new(region.x0 + 22.0, ry + 12.0), 4.0, Self::status_color(theme, s.status));
-                paint::text(scene, tr, t, &when, 12.5, c.text_primary, region.x0 + 36.0, ry + 4.0);
-                paint::text_right(scene, tr, t, &ui::format::bytes(s.delta_bytes), 12.0, c.text_dim, region.x1 - 18.0, ry + 4.0);
-                paint::text(scene, tr, t, &action, 11.5, c.text_dim, region.x0 + 36.0, ry + 24.0);
+                paint::dot(
+                    scene,
+                    t,
+                    Point::new(region.x0 + 22.0, ry + 12.0),
+                    4.0,
+                    Self::status_color(theme, s.status),
+                );
+                paint::text(
+                    scene,
+                    tr,
+                    t,
+                    &when,
+                    12.5,
+                    c.text_primary,
+                    region.x0 + 36.0,
+                    ry + 4.0,
+                );
+                paint::text_right(
+                    scene,
+                    tr,
+                    t,
+                    &ui::format::bytes(s.delta_bytes),
+                    12.0,
+                    c.text_dim,
+                    region.x1 - 18.0,
+                    ry + 4.0,
+                );
+                paint::text(
+                    scene,
+                    tr,
+                    t,
+                    &action,
+                    11.5,
+                    c.text_dim,
+                    region.x0 + 36.0,
+                    ry + 24.0,
+                );
             } else {
                 let cy = ry + row_h / 2.0;
-                paint::dot(scene, t, Point::new(region.x0 + 22.0, cy), 4.0, Self::status_color(theme, s.status));
-                paint::text(scene, tr, t, &when, 12.5, c.text_primary, region.x0 + 36.0, cy - 7.0);
-                paint::text(scene, tr, t, &action, 12.0, c.text_dim, region.x0 + 168.0, cy - 7.0);
-                let dest = self.catalog.destination(&s.dest_id).map(|d| d.name.clone()).unwrap_or_default();
-                paint::text(scene, tr, t, &format!("→ {dest}"), 11.5, Self::dest_color(theme, &s.dest_id), region.x0 + 440.0, cy - 6.0);
+                paint::dot(
+                    scene,
+                    t,
+                    Point::new(region.x0 + 22.0, cy),
+                    4.0,
+                    Self::status_color(theme, s.status),
+                );
+                paint::text(
+                    scene,
+                    tr,
+                    t,
+                    &when,
+                    12.5,
+                    c.text_primary,
+                    region.x0 + 36.0,
+                    cy - 7.0,
+                );
+                paint::text(
+                    scene,
+                    tr,
+                    t,
+                    &action,
+                    12.0,
+                    c.text_dim,
+                    region.x0 + 168.0,
+                    cy - 7.0,
+                );
+                let dest = self
+                    .catalog
+                    .destination(&s.dest_id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_default();
+                paint::text(
+                    scene,
+                    tr,
+                    t,
+                    &format!("→ {dest}"),
+                    11.5,
+                    Self::dest_color(theme, &s.dest_id),
+                    region.x0 + 440.0,
+                    cy - 6.0,
+                );
                 let status = match s.status {
                     SnapStatus::Complete => "completed",
                     SnapStatus::Verifying => "verifying",
                     SnapStatus::Failed => "failed",
                 };
-                paint::text_right(scene, tr, t, status, 11.5, Self::status_color(theme, s.status), region.x1 - 110.0, cy - 6.0);
-                paint::text_right(scene, tr, t, &ui::format::bytes(s.delta_bytes), 12.0, c.text_dim, region.x1 - 18.0, cy - 7.0);
+                paint::text_right(
+                    scene,
+                    tr,
+                    t,
+                    status,
+                    11.5,
+                    Self::status_color(theme, s.status),
+                    region.x1 - 110.0,
+                    cy - 6.0,
+                );
+                paint::text_right(
+                    scene,
+                    tr,
+                    t,
+                    &ui::format::bytes(s.delta_bytes),
+                    12.0,
+                    c.text_dim,
+                    region.x1 - 18.0,
+                    cy - 7.0,
+                );
             }
             if i + 1 < events.len() && ry + row_h * 2.0 <= region.y1 - 8.0 {
-                paint::hline(scene, t, region.x0 + 18.0, region.x1 - 18.0, ry + row_h, c.border_white_10, 1.0);
+                paint::hline(
+                    scene,
+                    t,
+                    region.x0 + 18.0,
+                    region.x1 - 18.0,
+                    ry + row_h,
+                    c.border_white_10,
+                    1.0,
+                );
             }
         }
     }
 
     // ---- DESTINATIONS view ---------------------------------------------
 
-    fn draw_destinations_view(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
+    fn draw_destinations_view(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
         let c = &theme.tokens.colors;
-        paint::text_bold(scene, tr, t, "Destinations", 16.0, c.text_primary, content.x0, content.y0);
-        paint::text(scene, tr, t, "Where snapshots are stored. Capacity is shown per repository.", 12.5, c.text_dim, content.x0, content.y0 + 24.0);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Destinations",
+            16.0,
+            c.text_primary,
+            content.x0,
+            content.y0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Where snapshots are stored. Capacity is shown per repository.",
+            12.5,
+            c.text_dim,
+            content.x0,
+            content.y0 + 24.0,
+        );
 
         // Reflow the repository cards into an aligned grid — tall gauge cards
         // when several fit abreast, compact horizontal cards in a single column
@@ -1057,12 +1848,47 @@ impl BackupsApp {
 
         // Aggregate bar across the bottom.
         let used: u64 = self.catalog.destinations.iter().map(|d| d.used_bytes).sum();
-        let total: u64 = self.catalog.destinations.iter().map(|d| d.total_bytes).sum();
+        let total: u64 = self
+            .catalog
+            .destinations
+            .iter()
+            .map(|d| d.total_bytes)
+            .sum();
         let ay = top + rows_used as f64 * (ch + row_gap) + 10.0;
-        paint::text_bold(scene, tr, t, "Total capacity", 13.5, c.text_primary, content.x0, ay);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Total capacity",
+            13.5,
+            c.text_primary,
+            content.x0,
+            ay,
+        );
         let bar = Rect::new(content.x0, ay + 24.0, content.x1, ay + 38.0);
-        paint::bar(scene, t, bar, used as f64 / total as f64, theme.accent_primary, c.neutral[2]);
-        paint::text(scene, tr, t, &format!("{} used of {} across {} destinations", ui::format::bytes(used), ui::format::bytes(total), self.catalog.destinations.len()), 11.5, c.text_dim, content.x0, ay + 44.0);
+        paint::bar(
+            scene,
+            t,
+            bar,
+            used as f64 / total as f64,
+            theme.accent_primary,
+            c.neutral[2],
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &format!(
+                "{} used of {} across {} destinations",
+                ui::format::bytes(used),
+                ui::format::bytes(total),
+                self.catalog.destinations.len()
+            ),
+            11.5,
+            c.text_dim,
+            content.x0,
+            ay + 44.0,
+        );
 
         // Distribution: where the snapshots actually live.
         self.draw_dest_distribution(scene, t, tr, theme, content, ay + 76.0);
@@ -1080,81 +1906,301 @@ impl BackupsApp {
 
     /// The full repository card: a big capacity ring plus used/free figures.
     #[allow(clippy::too_many_arguments)]
-    fn draw_dest_card_tall(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, card: Rect, d: &Destination, sel: bool) {
+    fn draw_dest_card_tall(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        d: &Destination,
+        sel: bool,
+    ) {
         let c = &theme.tokens.colors;
-        let border = if sel { theme.accent_primary.with_alpha_factor(0.6) } else { c.border_white_10 };
+        let border = if sel {
+            theme.accent_primary.with_alpha_factor(0.6)
+        } else {
+            c.border_white_10
+        };
         paint::card(scene, t, card, 16.0, c.surfaces.raised, border);
 
-        self.draw_dest_icon(scene, t, d.kind, Point::new(card.x0 + 24.0, card.y0 + 26.0), 9.0, Self::health_color(theme, d.health));
-        paint::text_bold(scene, tr, t, &d.name, 16.0, c.text_primary, card.x0 + 40.0, card.y0 + 18.0);
-        paint::text(scene, tr, t, d.kind.label(), 11.5, c.text_dim, card.x0 + 24.0, card.y0 + 44.0);
+        self.draw_dest_icon(
+            scene,
+            t,
+            d.kind,
+            Point::new(card.x0 + 24.0, card.y0 + 26.0),
+            9.0,
+            Self::health_color(theme, d.health),
+        );
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            &d.name,
+            16.0,
+            c.text_primary,
+            card.x0 + 40.0,
+            card.y0 + 18.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            d.kind.label(),
+            11.5,
+            c.text_dim,
+            card.x0 + 24.0,
+            card.y0 + 44.0,
+        );
 
         // Capacity ring.
         let frac = d.used_bytes as f64 / d.total_bytes as f64;
         let center = Point::new(card.center().x, card.y0 + 120.0);
-        let ringcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
+        let ringcol = if frac > 0.85 {
+            c.semantic.warning
+        } else {
+            theme.accent_primary
+        };
         paint::ring(scene, t, center, 44.0, 11.0, frac, ringcol, c.neutral[2]);
-        paint::text_center(scene, tr, t, &format!("{:.0}%", frac * 100.0), 20.0, c.text_primary, center.x - 40.0, center.x + 40.0, center.y - 16.0);
-        paint::text_center(scene, tr, t, "used", 10.5, c.text_dim, center.x - 40.0, center.x + 40.0, center.y + 8.0);
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            &format!("{:.0}%", frac * 100.0),
+            20.0,
+            c.text_primary,
+            center.x - 40.0,
+            center.x + 40.0,
+            center.y - 16.0,
+        );
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            "used",
+            10.5,
+            c.text_dim,
+            center.x - 40.0,
+            center.x + 40.0,
+            center.y + 8.0,
+        );
 
         // Used / free figures.
         let fy = card.y0 + 184.0;
         paint::text(scene, tr, t, "Used", 11.0, c.text_dim, card.x0 + 24.0, fy);
-        paint::text_right(scene, tr, t, &ui::format::bytes(d.used_bytes), 12.5, c.text_primary, card.x1 - 24.0, fy);
-        paint::text(scene, tr, t, "Free", 11.0, c.text_dim, card.x0 + 24.0, fy + 18.0);
-        paint::text_right(scene, tr, t, &ui::format::bytes(d.total_bytes - d.used_bytes), 12.5, c.semantic.success, card.x1 - 24.0, fy + 18.0);
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &ui::format::bytes(d.used_bytes),
+            12.5,
+            c.text_primary,
+            card.x1 - 24.0,
+            fy,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Free",
+            11.0,
+            c.text_dim,
+            card.x0 + 24.0,
+            fy + 18.0,
+        );
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &ui::format::bytes(d.total_bytes - d.used_bytes),
+            12.5,
+            c.semantic.success,
+            card.x1 - 24.0,
+            fy + 18.0,
+        );
 
         // Footer chips: encryption + last sync.
         let mut chx = card.x0 + 24.0;
         if d.encrypted {
-            chx += paint::tag_pill(scene, tr, t, chx, card.y1 - 20.0, "encrypted", 10.0, c.semantic.success) + 6.0;
+            chx += paint::tag_pill(
+                scene,
+                tr,
+                t,
+                chx,
+                card.y1 - 20.0,
+                "encrypted",
+                10.0,
+                c.semantic.success,
+            ) + 6.0;
         }
-        paint::tag_pill(scene, tr, t, chx, card.y1 - 20.0, &format!("sync {}", d.last_sync), 10.0, c.semantic.info);
+        paint::tag_pill(
+            scene,
+            tr,
+            t,
+            chx,
+            card.y1 - 20.0,
+            &format!("sync {}", d.last_sync),
+            10.0,
+            c.semantic.info,
+        );
     }
 
     /// The compact repository card for a single-column (narrow) layout: name +
     /// percent on top, a capacity bar and figures beneath — no crushed ring.
     #[allow(clippy::too_many_arguments)]
-    fn draw_dest_card_compact(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, card: Rect, d: &Destination, sel: bool) {
+    fn draw_dest_card_compact(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        d: &Destination,
+        sel: bool,
+    ) {
         let c = &theme.tokens.colors;
-        let border = if sel { theme.accent_primary.with_alpha_factor(0.6) } else { c.border_white_10 };
+        let border = if sel {
+            theme.accent_primary.with_alpha_factor(0.6)
+        } else {
+            c.border_white_10
+        };
         paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
 
-        self.draw_dest_icon(scene, t, d.kind, Point::new(card.x0 + 22.0, card.y0 + 24.0), 9.0, Self::health_color(theme, d.health));
-        paint::text_bold(scene, tr, t, &d.name, 15.0, c.text_primary, card.x0 + 40.0, card.y0 + 14.0);
-        paint::text(scene, tr, t, d.kind.label(), 11.0, c.text_dim, card.x0 + 40.0, card.y0 + 34.0);
+        self.draw_dest_icon(
+            scene,
+            t,
+            d.kind,
+            Point::new(card.x0 + 22.0, card.y0 + 24.0),
+            9.0,
+            Self::health_color(theme, d.health),
+        );
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            &d.name,
+            15.0,
+            c.text_primary,
+            card.x0 + 40.0,
+            card.y0 + 14.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            d.kind.label(),
+            11.0,
+            c.text_dim,
+            card.x0 + 40.0,
+            card.y0 + 34.0,
+        );
 
         let frac = d.used_bytes as f64 / d.total_bytes as f64;
-        let pctcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
-        paint::text_right(scene, tr, t, &format!("{:.0}%", frac * 100.0), 20.0, pctcol, card.x1 - 20.0, card.y0 + 18.0);
+        let pctcol = if frac > 0.85 {
+            c.semantic.warning
+        } else {
+            theme.accent_primary
+        };
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &format!("{:.0}%", frac * 100.0),
+            20.0,
+            pctcol,
+            card.x1 - 20.0,
+            card.y0 + 18.0,
+        );
 
         // Capacity bar + used/free figures.
-        let bar = Rect::new(card.x0 + 22.0, card.y0 + 60.0, card.x1 - 22.0, card.y0 + 70.0);
-        let barcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
+        let bar = Rect::new(
+            card.x0 + 22.0,
+            card.y0 + 60.0,
+            card.x1 - 22.0,
+            card.y0 + 70.0,
+        );
+        let barcol = if frac > 0.85 {
+            c.semantic.warning
+        } else {
+            theme.accent_primary
+        };
         paint::bar(scene, t, bar, frac, barcol, c.neutral[2]);
-        paint::text(scene, tr, t, &format!("{} of {}", ui::format::bytes(d.used_bytes), ui::format::bytes(d.total_bytes)), 11.5, c.text_dim, card.x0 + 22.0, card.y0 + 80.0);
+        paint::text(
+            scene,
+            tr,
+            t,
+            &format!(
+                "{} of {}",
+                ui::format::bytes(d.used_bytes),
+                ui::format::bytes(d.total_bytes)
+            ),
+            11.5,
+            c.text_dim,
+            card.x0 + 22.0,
+            card.y0 + 80.0,
+        );
         let mut chx = card.x1 - 22.0;
         // Trailing chips, laid right-to-left.
         let sync = format!("sync {}", d.last_sync);
         let (sw, _) = tr.measure(&sync, 10.0, None);
-        chx -= sw as f64 + 20.0;
-        paint::tag_pill(scene, tr, t, chx, card.y0 + 86.0, &sync, 10.0, c.semantic.info);
+        chx -= f64::from(sw) + 20.0;
+        paint::tag_pill(
+            scene,
+            tr,
+            t,
+            chx,
+            card.y0 + 86.0,
+            &sync,
+            10.0,
+            c.semantic.info,
+        );
         if d.encrypted {
             let (ew, _) = tr.measure("encrypted", 10.0, None);
-            chx -= ew as f64 + 26.0;
-            paint::tag_pill(scene, tr, t, chx, card.y0 + 86.0, "encrypted", 10.0, c.semantic.success);
+            chx -= f64::from(ew) + 26.0;
+            paint::tag_pill(
+                scene,
+                tr,
+                t,
+                chx,
+                card.y0 + 86.0,
+                "encrypted",
+                10.0,
+                c.semantic.success,
+            );
         }
     }
 
-    fn draw_dest_distribution(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect, y0: f64) {
+    fn draw_dest_distribution(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        y0: f64,
+    ) {
         let c = &theme.tokens.colors;
-        paint::text_bold(scene, tr, t, "Snapshots stored per destination", 13.5, c.text_primary, content.x0, y0);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Snapshots stored per destination",
+            13.5,
+            c.text_primary,
+            content.x0,
+            y0,
+        );
         let counts: Vec<(String, String, usize)> = self
             .catalog
             .destinations
             .iter()
             .map(|d| {
-                let n = self.catalog.snapshots.iter().filter(|s| s.dest_id == d.id).count();
+                let n = self
+                    .catalog
+                    .snapshots
+                    .iter()
+                    .filter(|s| s.dest_id == d.id)
+                    .count();
                 (d.id.clone(), d.name.clone(), n)
             })
             .collect();
@@ -1179,12 +2225,18 @@ impl BackupsApp {
         for (id, name, n) in &counts {
             let label = format!("{name}  ·  {n} snapshots");
             let (w, _) = tr.measure(&label, 12.0, None);
-            let item_w = 16.0 + w as f64 + 28.0;
+            let item_w = 16.0 + f64::from(w) + 28.0;
             if lx + item_w > content.x1 && lx > content.x0 + 0.5 {
                 lx = content.x0;
                 ly += 24.0;
             }
-            paint::dot(scene, t, Point::new(lx + 5.0, ly + 6.0), 5.0, Self::dest_color(theme, id));
+            paint::dot(
+                scene,
+                t,
+                Point::new(lx + 5.0, ly + 6.0),
+                5.0,
+                Self::dest_color(theme, id),
+            );
             paint::text(scene, tr, t, &label, 12.0, c.text_dim, lx + 16.0, ly);
             lx += item_w + 20.0;
         }
@@ -1192,20 +2244,54 @@ impl BackupsApp {
 
     // ---- SCHEDULES view -------------------------------------------------
 
-    fn draw_schedules_view(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
+    fn draw_schedules_view(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
         let c = &theme.tokens.colors;
         // Below this the editor + summary stack vertically instead of a 60/40 split.
         let stacked = content.width() < 660.0;
-        paint::text_bold(scene, tr, t, "Retention policy", 16.0, c.text_primary, content.x0, content.y0);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Retention policy",
+            16.0,
+            c.text_primary,
+            content.x0,
+            content.y0,
+        );
         let desc = if stacked {
             "Snapshots kept per class before pruning."
         } else {
             "How many snapshots to keep in each class before pruning. Applies to every source."
         };
-        paint::text(scene, tr, t, desc, 12.5, c.text_dim, content.x0, content.y0 + 24.0);
+        paint::text(
+            scene,
+            tr,
+            t,
+            desc,
+            12.5,
+            c.text_dim,
+            content.x0,
+            content.y0 + 24.0,
+        );
 
-        let panel_w = if stacked { content.width() } else { content.width() * 0.6 };
-        let panel = Rect::new(content.x0, content.y0 + 52.0, content.x0 + panel_w, content.y0 + 52.0 + 4.0 * 64.0 + 16.0);
+        let panel_w = if stacked {
+            content.width()
+        } else {
+            content.width() * 0.6
+        };
+        let panel = Rect::new(
+            content.x0,
+            content.y0 + 52.0,
+            content.x0 + panel_w,
+            content.y0 + 52.0 + 4.0 * 64.0 + 16.0,
+        );
         paint::card(scene, t, panel, 16.0, c.surfaces.raised, c.border_white_10);
 
         let p = self.ui.policy;
@@ -1215,18 +2301,52 @@ impl BackupsApp {
             let row = Rect::new(panel.x0 + 12.0, ry, panel.x1 - 12.0, ry + 56.0);
             let focused = self.policy_focus == i;
             if focused {
-                paint::fill_rrect(scene, t, row, 10.0, theme.accent_primary.with_alpha_factor(0.12));
-                paint::stroke_rrect(scene, t, row, 10.0, theme.accent_primary.with_alpha_factor(0.5), 1.0);
+                paint::fill_rrect(
+                    scene,
+                    t,
+                    row,
+                    10.0,
+                    theme.accent_primary.with_alpha_factor(0.12),
+                );
+                paint::stroke_rrect(
+                    scene,
+                    t,
+                    row,
+                    10.0,
+                    theme.accent_primary.with_alpha_factor(0.5),
+                    1.0,
+                );
             }
-            let rc = Self::retention_color(theme, match field {
-                PolicyField::Hourly => Retention::Hourly,
-                PolicyField::Daily => Retention::Daily,
-                PolicyField::Weekly => Retention::Weekly,
-                PolicyField::Monthly => Retention::Monthly,
-            });
+            let rc = Self::retention_color(
+                theme,
+                match field {
+                    PolicyField::Hourly => Retention::Hourly,
+                    PolicyField::Daily => Retention::Daily,
+                    PolicyField::Weekly => Retention::Weekly,
+                    PolicyField::Monthly => Retention::Monthly,
+                },
+            );
             paint::dot(scene, t, Point::new(row.x0 + 18.0, row.center().y), 5.0, rc);
-            paint::text_bold(scene, tr, t, field.label(), 14.5, c.text_primary, row.x0 + 34.0, row.y0 + 12.0);
-            paint::text(scene, tr, t, &format!("keep over the {}", field.unit()), 11.0, c.text_dim, row.x0 + 34.0, row.y0 + 32.0);
+            paint::text_bold(
+                scene,
+                tr,
+                t,
+                field.label(),
+                14.5,
+                c.text_primary,
+                row.x0 + 34.0,
+                row.y0 + 12.0,
+            );
+            paint::text(
+                scene,
+                tr,
+                t,
+                &format!("keep over the {}", field.unit()),
+                11.0,
+                c.text_dim,
+                row.x0 + 34.0,
+                row.y0 + 32.0,
+            );
 
             // Stepper: [-]  value  [+]
             let cy = row.center().y;
@@ -1235,18 +2355,49 @@ impl BackupsApp {
             let minus = Rect::new(valx0 - 44.0, cy - 18.0, valx0 - 8.0, cy + 18.0);
             self.draw_stepper(scene, t, tr, theme, minus, "–", Hit::Policy(*field, -1));
             self.draw_stepper(scene, t, tr, theme, plus, "+", Hit::Policy(*field, 1));
-            paint::text_center(scene, tr, t, &format!("{}", vals[i]), 20.0, c.text_primary, valx0 - 8.0, plus.x0, cy - 12.0);
+            paint::text_center(
+                scene,
+                tr,
+                t,
+                &format!("{}", vals[i]),
+                20.0,
+                c.text_primary,
+                valx0 - 8.0,
+                plus.x0,
+                cy - 12.0,
+            );
         }
 
         // Summary of effective retention — beside the editor when wide, stacked
         // beneath it when narrow.
         let side = if stacked {
-            Rect::new(content.x0, panel.y1 + 16.0, content.x1, panel.y1 + 16.0 + 210.0)
+            Rect::new(
+                content.x0,
+                panel.y1 + 16.0,
+                content.x1,
+                panel.y1 + 16.0 + 210.0,
+            )
         } else {
             Rect::new(panel.x1 + 18.0, content.y0 + 52.0, content.x1, panel.y1)
         };
-        paint::card(scene, t, side, 16.0, c.surfaces.raised.with_alpha_factor(0.5), c.border_white_10);
-        paint::text_bold(scene, tr, t, "Effective window", 13.5, c.text_primary, side.x0 + 16.0, side.y0 + 14.0);
+        paint::card(
+            scene,
+            t,
+            side,
+            16.0,
+            c.surfaces.raised.with_alpha_factor(0.5),
+            c.border_white_10,
+        );
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Effective window",
+            13.5,
+            c.text_primary,
+            side.x0 + 16.0,
+            side.y0 + 14.0,
+        );
         let total = p.hourly + p.daily + p.weekly + p.monthly;
         let lines = [
             format!("{} hourly  →  last {} hours", p.hourly, p.hourly),
@@ -1255,11 +2406,46 @@ impl BackupsApp {
             format!("{} monthly →  last {} months", p.monthly, p.monthly),
         ];
         for (i, l) in lines.iter().enumerate() {
-            paint::text(scene, tr, t, l, 12.0, c.text_dim, side.x0 + 16.0, side.y0 + 44.0 + i as f64 * 24.0);
+            paint::text(
+                scene,
+                tr,
+                t,
+                l,
+                12.0,
+                c.text_dim,
+                side.x0 + 16.0,
+                side.y0 + 44.0 + i as f64 * 24.0,
+            );
         }
-        paint::hline(scene, t, side.x0 + 16.0, side.x1 - 16.0, side.y0 + 150.0, c.border_white_10, 1.0);
-        paint::text(scene, tr, t, "Snapshots retained", 11.5, c.text_dim, side.x0 + 16.0, side.y0 + 162.0);
-        paint::text_bold(scene, tr, t, &format!("up to {total}"), 20.0, theme.accent_primary, side.x0 + 16.0, side.y0 + 180.0);
+        paint::hline(
+            scene,
+            t,
+            side.x0 + 16.0,
+            side.x1 - 16.0,
+            side.y0 + 150.0,
+            c.border_white_10,
+            1.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Snapshots retained",
+            11.5,
+            c.text_dim,
+            side.x0 + 16.0,
+            side.y0 + 162.0,
+        );
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            &format!("up to {total}"),
+            20.0,
+            theme.accent_primary,
+            side.x0 + 16.0,
+            side.y0 + 180.0,
+        );
 
         // Retention ruler — one lane per class, dots = snapshots kept. Sits
         // below whichever of {editor, stacked summary} is lowest.
@@ -1270,11 +2456,44 @@ impl BackupsApp {
         }
     }
 
-    fn draw_retention_ruler(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, region: Rect, p: RetentionPolicy) {
+    fn draw_retention_ruler(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        region: Rect,
+        p: RetentionPolicy,
+    ) {
         let c = &theme.tokens.colors;
-        paint::card(scene, t, region, 16.0, c.surfaces.raised.with_alpha_factor(0.4), c.border_white_10);
-        paint::text_bold(scene, tr, t, "Retention at a glance", 13.5, c.text_primary, region.x0 + 18.0, region.y0 + 14.0);
-        paint::text(scene, tr, t, "Each dot is a snapshot the policy keeps; older ones are pruned to make room.", 11.5, c.text_dim, region.x0 + 18.0, region.y0 + 34.0);
+        paint::card(
+            scene,
+            t,
+            region,
+            16.0,
+            c.surfaces.raised.with_alpha_factor(0.4),
+            c.border_white_10,
+        );
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Retention at a glance",
+            13.5,
+            c.text_primary,
+            region.x0 + 18.0,
+            region.y0 + 14.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Each dot is a snapshot the policy keeps; older ones are pruned to make room.",
+            11.5,
+            c.text_dim,
+            region.x0 + 18.0,
+            region.y0 + 34.0,
+        );
 
         let lanes: [(Retention, &str, u32); 4] = [
             (Retention::Hourly, "Hourly", p.hourly),
@@ -1290,40 +2509,99 @@ impl BackupsApp {
             let ly = top + i as f64 * lane_h;
             let cy = ly + lane_h / 2.0;
             let col = Self::retention_color(theme, *ret);
-            paint::text(scene, tr, t, label, 12.5, c.text_primary, region.x0 + 18.0, cy - 7.0);
+            paint::text(
+                scene,
+                tr,
+                t,
+                label,
+                12.5,
+                c.text_primary,
+                region.x0 + 18.0,
+                cy - 7.0,
+            );
             // Lay out `count` dots across the lane, capped so they always fit.
             let n = (*count).max(1);
             let span = dots_x1 - dots_x0;
-            let step = (span / n as f64).min(20.0);
+            let step = (span / f64::from(n)).min(20.0);
             let r = (step * 0.32).clamp(2.5, 5.0);
             for k in 0..n {
-                let dx = dots_x0 + r + k as f64 * step;
+                let dx = dots_x0 + r + f64::from(k) * step;
                 if dx > dots_x1 {
                     break;
                 }
-                paint::dot(scene, t, Point::new(dx, cy), r, col.with_alpha_factor(if k == 0 { 1.0 } else { 0.55 }));
+                paint::dot(
+                    scene,
+                    t,
+                    Point::new(dx, cy),
+                    r,
+                    col.with_alpha_factor(if k == 0 { 1.0 } else { 0.55 }),
+                );
             }
-            paint::text_right(scene, tr, t, &format!("keep {count}"), 12.0, col, region.x1 - 18.0, cy - 7.0);
+            paint::text_right(
+                scene,
+                tr,
+                t,
+                &format!("keep {count}"),
+                12.0,
+                col,
+                region.x1 - 18.0,
+                cy - 7.0,
+            );
         }
     }
 
-    fn draw_stepper(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, b: Rect, glyph: &str, hit: Hit) {
+    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
+    fn draw_stepper(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        b: Rect,
+        glyph: &str,
+        hit: Hit,
+    ) {
         let c = &theme.tokens.colors;
         let hovered = self.hover.as_ref() == Some(&hit);
-        let fill = if hovered { theme.accent_primary } else { c.neutral[2] };
+        let fill = if hovered {
+            theme.accent_primary
+        } else {
+            c.neutral[2]
+        };
         paint::fill_rrect(scene, t, b, 8.0, fill);
         paint::stroke_rrect(scene, t, b, 8.0, c.border_white_10, 1.0);
-        paint::text_center(scene, tr, t, glyph, 18.0, c.text_primary, b.x0, b.x1, b.center().y - 11.0);
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            glyph,
+            18.0,
+            c.text_primary,
+            b.x0,
+            b.x1,
+            b.center().y - 11.0,
+        );
         self.hits.push((b, hit));
     }
 
     // ---- restore modal --------------------------------------------------
 
-    fn draw_restore_modal(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_restore_modal(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
         // Scrim.
         paint::fill_rect(scene, t, self.rect, c.surfaces.overlay);
-        let snap = self.ui.sel_snapshot.as_ref().and_then(|id| self.catalog.snapshot(id)).cloned();
+        let snap = self
+            .ui
+            .sel_snapshot
+            .as_ref()
+            .and_then(|id| self.catalog.snapshot(id))
+            .cloned();
         let Some(snap) = snap else { return };
         let src = self.catalog.source(&snap.source_id);
         // Clamp the modal to the window so it never overflows a small screen.
@@ -1347,8 +2625,26 @@ impl BackupsApp {
             Catalog::day_label(snap.day),
             snap.time
         );
-        paint::text_bold(scene, tr, t, &title, 17.0, c.text_primary, m.x0 + 24.0, m.y0 + 20.0);
-        paint::text(scene, tr, t, "Choose files to recover, then confirm. Restores never overwrite without asking.", 12.0, c.text_dim, m.x0 + 24.0, m.y0 + 46.0);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            &title,
+            17.0,
+            c.text_primary,
+            m.x0 + 24.0,
+            m.y0 + 20.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Choose files to recover, then confirm. Restores never overwrite without asking.",
+            12.0,
+            c.text_dim,
+            m.x0 + 24.0,
+            m.y0 + 46.0,
+        );
 
         // File browser + options: side by side when wide, stacked (tree over
         // options) when the modal is too narrow for two readable columns.
@@ -1369,8 +2665,24 @@ impl BackupsApp {
                 Rect::new(split + 12.0, body_y, m.x1 - 24.0, body_bottom),
             )
         };
-        paint::card(scene, t, tree, 12.0, c.neutral[0].with_alpha_factor(0.5), c.border_white_10);
-        paint::text(scene, tr, t, "Snapshot contents", 11.0, c.text_dim, tree.x0 + 14.0, tree.y0 + 10.0);
+        paint::card(
+            scene,
+            t,
+            tree,
+            12.0,
+            c.neutral[0].with_alpha_factor(0.5),
+            c.border_white_10,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Snapshot contents",
+            11.0,
+            c.text_dim,
+            tree.x0 + 14.0,
+            tree.y0 + 10.0,
+        );
 
         let files = &snap.files;
         let row_h = 30.0;
@@ -1399,29 +2711,72 @@ impl BackupsApp {
             let row = Rect::new(tree.x0 + 6.0, ry, tree.x1 - 6.0, ry + row_h - 2.0);
             let sel = self.file_sel == i;
             if sel {
-                paint::fill_rrect(scene, t, row, 7.0, theme.accent_primary.with_alpha_factor(0.18));
+                paint::fill_rrect(
+                    scene,
+                    t,
+                    row,
+                    7.0,
+                    theme.accent_primary.with_alpha_factor(0.18),
+                );
             } else if self.hover == Some(Hit::FileRow(i)) {
                 paint::fill_rrect(scene, t, row, 7.0, c.surface_white_5);
             }
             let ix = row.x0 + 10.0 + f.depth as f64 * 18.0;
-            let icol = if f.is_dir { theme.accent_primary } else { c.text_dim };
+            let icol = if f.is_dir {
+                theme.accent_primary
+            } else {
+                c.text_dim
+            };
             if f.is_dir {
                 // folder glyph
                 let fr = Rect::new(ix, row.center().y - 5.0, ix + 13.0, row.center().y + 5.0);
                 paint::fill_rrect(scene, t, fr, 2.0, icol.with_alpha_factor(0.8));
             } else {
-                let fr = Rect::new(ix + 1.0, row.center().y - 6.0, ix + 11.0, row.center().y + 6.0);
+                let fr = Rect::new(
+                    ix + 1.0,
+                    row.center().y - 6.0,
+                    ix + 11.0,
+                    row.center().y + 6.0,
+                );
                 paint::stroke_rrect(scene, t, fr, 2.0, icol, 1.3);
             }
-            paint::text_vc(scene, tr, t, &f.name, 12.5, c.text_primary, ix + 20.0, row.y0, row_h - 2.0);
+            paint::text_vc(
+                scene,
+                tr,
+                t,
+                &f.name,
+                12.5,
+                c.text_primary,
+                ix + 20.0,
+                row.y0,
+                row_h - 2.0,
+            );
             if !f.size.is_empty() {
-                paint::text_right(scene, tr, t, &f.size, 11.0, c.text_dim, row.x1 - 10.0, row.center().y - 6.0);
+                paint::text_right(
+                    scene,
+                    tr,
+                    t,
+                    &f.size,
+                    11.0,
+                    c.text_dim,
+                    row.x1 - 10.0,
+                    row.center().y - 6.0,
+                );
             }
             self.hits.push((row, Hit::FileRow(i)));
         }
 
         // Options column (laid out above).
-        paint::text_bold(scene, tr, t, "Restore options", 13.5, c.text_primary, opt.x0, opt.y0 + 8.0);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Restore options",
+            13.5,
+            c.text_primary,
+            opt.x0,
+            opt.y0 + 8.0,
+        );
         let opts = [
             ("Restore to original location", true),
             ("Restore to a new folder", false),
@@ -1431,100 +2786,312 @@ impl BackupsApp {
         for (i, (label, on)) in opts.iter().enumerate() {
             let oy = opt.y0 + 40.0 + i as f64 * 38.0;
             let box_r = Rect::new(opt.x0, oy, opt.x0 + 18.0, oy + 18.0);
-            paint::fill_rrect(scene, t, box_r, 5.0, if *on { theme.accent_primary } else { c.neutral[2] });
+            paint::fill_rrect(
+                scene,
+                t,
+                box_r,
+                5.0,
+                if *on {
+                    theme.accent_primary
+                } else {
+                    c.neutral[2]
+                },
+            );
             paint::stroke_rrect(scene, t, box_r, 5.0, c.border_white_10, 1.0);
             if *on {
-                paint::poly(scene, t, &[(box_r.x0 + 4.0, box_r.center().y), (box_r.x0 + 7.5, box_r.y1 - 5.0), (box_r.x1 - 4.0, box_r.y0 + 5.0)], c.text_primary, 2.0, false);
+                paint::poly(
+                    scene,
+                    t,
+                    &[
+                        (box_r.x0 + 4.0, box_r.center().y),
+                        (box_r.x0 + 7.5, box_r.y1 - 5.0),
+                        (box_r.x1 - 4.0, box_r.y0 + 5.0),
+                    ],
+                    c.text_primary,
+                    2.0,
+                    false,
+                );
             }
-            paint::text(scene, tr, t, label, 12.5, c.text_primary, box_r.x1 + 12.0, oy + 2.0);
+            paint::text(
+                scene,
+                tr,
+                t,
+                label,
+                12.5,
+                c.text_primary,
+                box_r.x1 + 12.0,
+                oy + 2.0,
+            );
         }
         // Size summary.
-        paint::hline(scene, t, opt.x0, opt.x1, opt.y1 - 40.0, c.border_white_10, 1.0);
-        paint::text(scene, tr, t, "Estimated restore", 11.0, c.text_dim, opt.x0, opt.y1 - 30.0);
-        paint::text_right(scene, tr, t, &ui::format::bytes(snap.size_bytes), 14.0, c.text_primary, opt.x1, opt.y1 - 32.0);
+        paint::hline(
+            scene,
+            t,
+            opt.x0,
+            opt.x1,
+            opt.y1 - 40.0,
+            c.border_white_10,
+            1.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Estimated restore",
+            11.0,
+            c.text_dim,
+            opt.x0,
+            opt.y1 - 30.0,
+        );
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &ui::format::bytes(snap.size_bytes),
+            14.0,
+            c.text_primary,
+            opt.x1,
+            opt.y1 - 32.0,
+        );
 
         // Footer buttons.
         let by = m.y1 - 56.0;
         let bh = 38.0;
         let confirm = Rect::new(m.x1 - 24.0 - 170.0, by, m.x1 - 24.0, by + bh);
         let hovered = self.hover == Some(Hit::RestoreConfirm);
-        paint::fill_rrect(scene, t, confirm, 9.0, if hovered { theme.accent_hover } else { theme.accent_primary });
-        paint::text_center(scene, tr, t, "Restore selected", 14.0, c.text_primary, confirm.x0, confirm.x1, by + (bh - 14.0) / 2.0);
+        paint::fill_rrect(
+            scene,
+            t,
+            confirm,
+            9.0,
+            if hovered {
+                theme.accent_hover
+            } else {
+                theme.accent_primary
+            },
+        );
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            "Restore selected",
+            14.0,
+            c.text_primary,
+            confirm.x0,
+            confirm.x1,
+            by + (bh - 14.0) / 2.0,
+        );
         self.hits.push((confirm, Hit::RestoreConfirm));
 
         let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + bh);
         paint::fill_rrect(scene, t, cancel, 9.0, c.surfaces.raised);
         paint::stroke_rrect(scene, t, cancel, 9.0, c.border_white_10, 1.0);
-        paint::text_center(scene, tr, t, "Cancel", 14.0, c.text_dim, cancel.x0, cancel.x1, by + (bh - 14.0) / 2.0);
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            "Cancel",
+            14.0,
+            c.text_dim,
+            cancel.x0,
+            cancel.x1,
+            by + (bh - 14.0) / 2.0,
+        );
         self.hits.push((cancel, Hit::RestoreCancel));
     }
 
     fn draw_toast(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some((msg, when)) = self.toast.clone() else { return };
+        let Some((msg, when)) = self.toast.clone() else {
+            return;
+        };
         let age = when.elapsed().as_secs_f64();
         if age > 3.5 {
             self.toast = None;
             return;
         }
         let c = &theme.tokens.colors;
-        let alpha = if age > 2.5 { (1.0 - (age - 2.5)) as f32 } else { 1.0 };
+        let alpha = if age > 2.5 {
+            (1.0 - (age - 2.5)) as f32
+        } else {
+            1.0
+        };
         let (tw, _) = tr.measure(&msg, 13.0, None);
-        let w = tw as f64 + 56.0;
+        let w = f64::from(tw) + 56.0;
         let toast = Rect::new(
             self.rect.center().x - w / 2.0,
             self.rect.y1 - 56.0,
             self.rect.center().x + w / 2.0,
             self.rect.y1 - 20.0,
         );
-        paint::fill_rrect(scene, t, toast, 10.0, c.neutral[0].with_alpha_factor(0.92 * alpha));
-        paint::stroke_rrect(scene, t, toast, 10.0, theme.accent_primary.with_alpha_factor(0.6 * alpha), 1.0);
-        paint::dot(scene, t, Point::new(toast.x0 + 22.0, toast.center().y), 4.0, c.semantic.success.with_alpha_factor(alpha));
-        paint::text_vc(scene, tr, t, &msg, 13.0, c.text_primary.with_alpha_factor(alpha), toast.x0 + 36.0, toast.y0, toast.height());
+        paint::fill_rrect(
+            scene,
+            t,
+            toast,
+            10.0,
+            c.neutral[0].with_alpha_factor(0.92 * alpha),
+        );
+        paint::stroke_rrect(
+            scene,
+            t,
+            toast,
+            10.0,
+            theme.accent_primary.with_alpha_factor(0.6 * alpha),
+            1.0,
+        );
+        paint::dot(
+            scene,
+            t,
+            Point::new(toast.x0 + 22.0, toast.center().y),
+            4.0,
+            c.semantic.success.with_alpha_factor(alpha),
+        );
+        paint::text_vc(
+            scene,
+            tr,
+            t,
+            &msg,
+            13.0,
+            c.text_primary.with_alpha_factor(alpha),
+            toast.x0 + 36.0,
+            toast.y0,
+            toast.height(),
+        );
     }
 
     // ---- little vector icons -------------------------------------------
 
-
-    fn draw_source_icon(&self, scene: &mut Scene, t: Affine, kind: SourceKind, center: Point, r: f64, color: Color) {
+    fn draw_source_icon(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        kind: SourceKind,
+        center: Point,
+        r: f64,
+        color: Color,
+    ) {
         let (x, y) = (center.x, center.y);
         match kind {
             SourceKind::Home => {
-                paint::poly(scene, t, &[(x - r, y + r * 0.2), (x, y - r), (x + r, y + r * 0.2)], color, 2.0, false);
-                paint::poly(scene, t, &[(x - r * 0.7, y), (x - r * 0.7, y + r), (x + r * 0.7, y + r), (x + r * 0.7, y)], color, 2.0, false);
+                paint::poly(
+                    scene,
+                    t,
+                    &[(x - r, y + r * 0.2), (x, y - r), (x + r, y + r * 0.2)],
+                    color,
+                    2.0,
+                    false,
+                );
+                paint::poly(
+                    scene,
+                    t,
+                    &[
+                        (x - r * 0.7, y),
+                        (x - r * 0.7, y + r),
+                        (x + r * 0.7, y + r),
+                        (x + r * 0.7, y),
+                    ],
+                    color,
+                    2.0,
+                    false,
+                );
             }
             SourceKind::System => {
-                scene.stroke(&vello::kurbo::Stroke::new(2.0), t, color, None, &vello::kurbo::Circle::new(center, r * 0.55));
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(2.0),
+                    t,
+                    color,
+                    None,
+                    &vello::kurbo::Circle::new(center, r * 0.55),
+                );
                 for k in 0..8 {
-                    let a = k as f64 * std::f64::consts::TAU / 8.0;
+                    let a = f64::from(k) * std::f64::consts::TAU / 8.0;
                     let (dx, dy) = (a.cos(), a.sin());
-                    paint::poly(scene, t, &[(x + dx * r * 0.6, y + dy * r * 0.6), (x + dx * r, y + dy * r)], color, 2.0, false);
+                    paint::poly(
+                        scene,
+                        t,
+                        &[
+                            (x + dx * r * 0.6, y + dy * r * 0.6),
+                            (x + dx * r, y + dy * r),
+                        ],
+                        color,
+                        2.0,
+                        false,
+                    );
                 }
             }
             SourceKind::Workspace => {
-                paint::stroke_rrect(scene, t, Rect::new(x - r, y - r * 0.7, x + r, y + r * 0.7), 2.0, color, 2.0);
-                paint::poly(scene, t, &[(x - r * 0.5, y + r), (x + r * 0.5, y + r)], color, 2.0, false);
+                paint::stroke_rrect(
+                    scene,
+                    t,
+                    Rect::new(x - r, y - r * 0.7, x + r, y + r * 0.7),
+                    2.0,
+                    color,
+                    2.0,
+                );
+                paint::poly(
+                    scene,
+                    t,
+                    &[(x - r * 0.5, y + r), (x + r * 0.5, y + r)],
+                    color,
+                    2.0,
+                    false,
+                );
             }
             SourceKind::Custom => {
-                paint::stroke_rrect(scene, t, Rect::new(x - r, y - r, x + r, y + r), 3.0, color, 2.0);
+                paint::stroke_rrect(
+                    scene,
+                    t,
+                    Rect::new(x - r, y - r, x + r, y + r),
+                    3.0,
+                    color,
+                    2.0,
+                );
             }
         }
     }
 
-    fn draw_dest_icon(&self, scene: &mut Scene, t: Affine, kind: DestKind, center: Point, r: f64, color: Color) {
+    fn draw_dest_icon(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        kind: DestKind,
+        center: Point,
+        r: f64,
+        color: Color,
+    ) {
         let (x, y) = (center.x, center.y);
         match kind {
             DestKind::LocalBtrfs => {
                 for k in 0..3 {
-                    let yy = y - r + k as f64 * r;
-                    paint::stroke_rrect(scene, t, Rect::new(x - r, yy, x + r, yy + r * 0.7), 1.5, color, 1.6);
+                    let yy = y - r + f64::from(k) * r;
+                    paint::stroke_rrect(
+                        scene,
+                        t,
+                        Rect::new(x - r, yy, x + r, yy + r * 0.7),
+                        1.5,
+                        color,
+                        1.6,
+                    );
                 }
             }
             DestKind::External => {
-                paint::stroke_rrect(scene, t, Rect::new(x - r, y - r * 0.6, x + r, y + r * 0.6), 2.0, color, 1.8);
+                paint::stroke_rrect(
+                    scene,
+                    t,
+                    Rect::new(x - r, y - r * 0.6, x + r, y + r * 0.6),
+                    2.0,
+                    color,
+                    1.8,
+                );
                 paint::dot(scene, t, Point::new(x + r * 0.5, y), 1.6, color);
             }
             DestKind::RemoteRestic => {
-                scene.stroke(&vello::kurbo::Stroke::new(1.8), t, color, None, &vello::kurbo::Circle::new(center, r));
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.8),
+                    t,
+                    color,
+                    None,
+                    &vello::kurbo::Circle::new(center, r),
+                );
                 paint::poly(scene, t, &[(x - r, y), (x + r, y)], color, 1.6, false);
                 paint::poly(scene, t, &[(x, y - r), (x, y + r)], color, 1.6, false);
             }
@@ -1535,7 +3102,11 @@ impl BackupsApp {
 
     fn hit_at(&self, p: Point) -> Option<Hit> {
         // Last pushed wins (topmost), so iterate in reverse.
-        self.hits.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, h)| h.clone())
+        self.hits
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(p))
+            .map(|(_, h)| h.clone())
     }
 
     fn dispatch(&mut self, hit: Hit, doc: &mut AutoCommit, root: &ObjId) {
@@ -1584,7 +3155,10 @@ impl BackupsApp {
             }
             Hit::Policy(field, delta) => {
                 self.bump_retention(doc, root, field, delta);
-                self.policy_focus = PolicyField::ALL.iter().position(|f| *f == field).unwrap_or(0);
+                self.policy_focus = PolicyField::ALL
+                    .iter()
+                    .position(|f| *f == field)
+                    .unwrap_or(0);
             }
             Hit::FileRow(i) => self.file_sel = i,
             // The Timeline source-rail collapse / summon toggle.
@@ -1599,8 +3173,16 @@ impl BackupsApp {
         if self.job.is_some() {
             return;
         }
-        let source = self.ui.sel_source.clone().unwrap_or_else(|| "home".to_string());
-        self.job = Some(Job { source, started: Instant::now(), dur: Duration::from_millis(2600) });
+        let source = self
+            .ui
+            .sel_source
+            .clone()
+            .unwrap_or_else(|| "home".to_string());
+        self.job = Some(Job {
+            source,
+            started: Instant::now(),
+            dur: Duration::from_millis(2600),
+        });
         self.toast_now("Snapshot started");
     }
 
@@ -1613,8 +3195,8 @@ impl BackupsApp {
         self.catalog.snapshots.insert(
             0,
             Snapshot {
-                id: id.clone(),
-                source_id: job.source.clone(),
+                id,
+                source_id: job.source,
                 dest_id: dest,
                 day: 0,
                 time: "now".into(),
@@ -1633,7 +3215,10 @@ impl BackupsApp {
     }
 
     fn cycle_view(&mut self, dir: i32, doc: &mut AutoCommit, root: &ObjId) {
-        let idx = View::ALL.iter().position(|v| *v == self.ui.view).unwrap_or(0) as i32;
+        let idx = View::ALL
+            .iter()
+            .position(|v| *v == self.ui.view)
+            .unwrap_or(0) as i32;
         let n = View::ALL.len() as i32;
         let next = ((idx + dir) % n + n) % n;
         BackupsDoc::set_view(doc, root, View::ALL[next as usize]);
@@ -1652,7 +3237,13 @@ impl BackupsApp {
             .and_then(|id| snaps.iter().position(|s| s.id == id));
         let next = match cur {
             Some(i) => ((i as i32 + dir).rem_euclid(snaps.len() as i32)) as usize,
-            None => if dir >= 0 { 0 } else { snaps.len() - 1 },
+            None => {
+                if dir >= 0 {
+                    0
+                } else {
+                    snaps.len() - 1
+                }
+            }
         };
         let id = snaps[next].id.clone();
         BackupsDoc::set_selected_snapshot(doc, root, Some(&id));
@@ -1689,10 +3280,22 @@ impl Widget for BackupsApp {
         // `BACKUPS_VIEW=destinations … --shots`.
         if let Ok(v) = std::env::var("BACKUPS_VIEW") {
             match v.as_str() {
-                "sources" => { BackupsDoc::set_view(state, path, View::Sources); self.ui.view = View::Sources; }
-                "destinations" => { BackupsDoc::set_view(state, path, View::Destinations); self.ui.view = View::Destinations; }
-                "schedules" => { BackupsDoc::set_view(state, path, View::Schedules); self.ui.view = View::Schedules; }
-                "restore" => { BackupsDoc::set_restore_open(state, path, true); self.ui.restore_open = true; }
+                "sources" => {
+                    BackupsDoc::set_view(state, path, View::Sources);
+                    self.ui.view = View::Sources;
+                }
+                "destinations" => {
+                    BackupsDoc::set_view(state, path, View::Destinations);
+                    self.ui.view = View::Destinations;
+                }
+                "schedules" => {
+                    BackupsDoc::set_view(state, path, View::Schedules);
+                    self.ui.view = View::Schedules;
+                }
+                "restore" => {
+                    BackupsDoc::set_restore_open(state, path, true);
+                    self.ui.restore_open = true;
+                }
                 _ => {}
             }
         }
@@ -1704,28 +3307,42 @@ impl Widget for BackupsApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only fails on tree-internal bookkeeping errors, never on
+        // caller input; there is none to report here.
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `node` was created by `build_layout` in this same tree, so a lookup
+        // miss would mean the frame cycle called these out of order.
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
         self.render(scene, transform, text_renderer, theme);
     }
 
@@ -1763,7 +3380,11 @@ impl Widget for BackupsApp {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 // A click outside the modal closes it.
                 if self.ui.restore_open {
                     if let Some(hit) = self.hit_at(self.last_mouse) {
@@ -1783,7 +3404,7 @@ impl Widget for BackupsApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.ui.view == View::Timeline && self.timeline_view.contains(self.last_mouse) {
                     let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => -(*y as f64) * 48.0,
+                        MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
                         MouseScrollDelta::PixelDelta(p) => -p.y,
                     };
                     let max = (self.timeline_content_h - self.timeline_view.height()).max(0.0);
@@ -1791,7 +3412,9 @@ impl Widget for BackupsApp {
                     *handled = true;
                 }
             }
-            WindowEvent::KeyboardInput { event: key_event, .. } => {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
                 if key_event.state != ElementState::Pressed {
                     return;
                 }
@@ -1801,7 +3424,7 @@ impl Widget for BackupsApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BackupsApp"
     }
 
@@ -1852,7 +3475,8 @@ impl BackupsApp {
             }
             Key::Named(NamedKey::ArrowUp) => {
                 if self.ui.view == View::Schedules {
-                    self.policy_focus = (self.policy_focus + PolicyField::ALL.len() - 1) % PolicyField::ALL.len();
+                    self.policy_focus =
+                        (self.policy_focus + PolicyField::ALL.len() - 1) % PolicyField::ALL.len();
                 } else {
                     self.move_snapshot_selection(-1, doc, root);
                 }
@@ -1894,30 +3518,43 @@ impl BackupsApp {
                     *handled = true;
                 }
             }
-            Key::Character(s) => {
-                match s.as_str() {
-                    "1" => { BackupsDoc::set_view(doc, root, View::Timeline); self.load_cache(doc, root); *handled = true; }
-                    "2" => { BackupsDoc::set_view(doc, root, View::Sources); self.load_cache(doc, root); *handled = true; }
-                    "3" => { BackupsDoc::set_view(doc, root, View::Destinations); self.load_cache(doc, root); *handled = true; }
-                    "4" => { BackupsDoc::set_view(doc, root, View::Schedules); self.load_cache(doc, root); *handled = true; }
-                    "n" | "N" => { self.start_job(); *handled = true; }
-                    "+" | "=" => {
-                        if self.ui.view == View::Schedules {
-                            self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], 1);
-                            self.load_cache(doc, root);
-                            *handled = true;
-                        }
-                    }
-                    "-" | "_" => {
-                        if self.ui.view == View::Schedules {
-                            self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], -1);
-                            self.load_cache(doc, root);
-                            *handled = true;
-                        }
-                    }
-                    _ => {}
+            Key::Character(s) => match s.as_str() {
+                "1" => {
+                    BackupsDoc::set_view(doc, root, View::Timeline);
+                    self.load_cache(doc, root);
+                    *handled = true;
                 }
-            }
+                "2" => {
+                    BackupsDoc::set_view(doc, root, View::Sources);
+                    self.load_cache(doc, root);
+                    *handled = true;
+                }
+                "3" => {
+                    BackupsDoc::set_view(doc, root, View::Destinations);
+                    self.load_cache(doc, root);
+                    *handled = true;
+                }
+                "4" => {
+                    BackupsDoc::set_view(doc, root, View::Schedules);
+                    self.load_cache(doc, root);
+                    *handled = true;
+                }
+                "n" | "N" => {
+                    self.start_job();
+                    *handled = true;
+                }
+                "+" | "=" if self.ui.view == View::Schedules => {
+                    self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], 1);
+                    self.load_cache(doc, root);
+                    *handled = true;
+                }
+                "-" | "_" if self.ui.view == View::Schedules => {
+                    self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], -1);
+                    self.load_cache(doc, root);
+                    *handled = true;
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -1933,7 +3570,10 @@ mod tests {
         let app = BackupsApp::new();
         assert!(app.catalog.sources.is_empty(), "no fabricated sources");
         assert!(app.catalog.snapshots.is_empty(), "no fabricated snapshots");
-        assert!(app.catalog.destinations.is_empty(), "no fabricated destinations");
+        assert!(
+            app.catalog.destinations.is_empty(),
+            "no fabricated destinations"
+        );
     }
 
     #[test]
@@ -1942,7 +3582,10 @@ mod tests {
         let app = BackupsApp::new_demo();
         assert!(!app.catalog.sources.is_empty(), "demo has sources");
         assert!(!app.catalog.snapshots.is_empty(), "demo has snapshots");
-        assert!(!app.catalog.destinations.is_empty(), "demo has destinations");
+        assert!(
+            !app.catalog.destinations.is_empty(),
+            "demo has destinations"
+        );
     }
 
     /// A headless harness that drives the **production** widget path: it draws a

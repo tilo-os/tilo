@@ -1,14 +1,12 @@
 //! Debounced background writing for a [`DocStore`].
 //!
-//! Typing a character must not cost an `fsync`. [`Autosave`] takes the
-//! document's delta on the UI thread — cheap, no I/O — hands it to a worker,
-//! and the worker coalesces a burst of edits into a single write once the
-//! user pauses.
+//! Typing a character must not cost an `fsync`. [`Autosave`] takes the document's delta on
+//! the UI thread — cheap, no I/O — hands it to a worker, and the worker coalesces a burst of
+//! edits into a single write once the user pauses.
 //!
-//! Growth is bounded without paying a full rewrite per edit: the handle
-//! appends `save_after(persisted_heads)` until the appended volume exceeds
-//! the compacted base, then sends one full `save()` and resets. Total bytes
-//! written stay linear in document size, amortised.
+//! Growth is bounded without paying a full rewrite per edit: the handle appends
+//! `save_after(persisted_heads)` until the appended volume exceeds the compacted base, then
+//! sends one full `save()` and resets — total bytes written stay linear in document size.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -20,13 +18,12 @@ use automerge::{AutoCommit, ChangeHash};
 
 use crate::{DocStore, StoreError};
 
-/// Debounce window apps get by default. Long enough to swallow a burst of
-/// keystrokes, short enough that a `kill` a moment later still finds the
-/// edit on disk.
+/// Debounce window apps get by default. Long enough to swallow a burst of keystrokes, short
+/// enough that a `kill` a moment later still finds the edit on disk.
 pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(400);
 
-/// Below this, compaction isn't worth it — a small document rewrites in
-/// microseconds and the append bookkeeping would dominate.
+/// Below this, compaction isn't worth it — a small document rewrites in microseconds and the
+/// append bookkeeping would dominate.
 const MIN_COMPACT_BYTES: usize = 64 * 1024;
 
 enum Msg {
@@ -39,12 +36,11 @@ enum Msg {
     Stop,
 }
 
-/// Handle to the background writer. Dropping it flushes and joins, so an
-/// app that keeps the `Autosave` alive for the length of `main` cannot exit
-/// with an unwritten edit.
+/// Handle to the background writer. Dropping it flushes and joins, so an app that keeps the
+/// `Autosave` alive for the length of `main` cannot exit with an unwritten edit.
 pub struct Autosave {
-    /// `None` for a [`Autosave::disabled`] handle — there is no worker to
-    /// talk to and every `request` is a no-op.
+    /// `None` for a [`Autosave::disabled`] handle — there is no worker to talk to and every
+    /// `request` is a no-op.
     tx: Option<Sender<Msg>>,
     join: Option<thread::JoinHandle<()>>,
     document: PathBuf,
@@ -55,10 +51,9 @@ pub struct Autosave {
     appended: usize,
     /// Size of the last full write.
     base: usize,
-    /// How many times [`Autosave::request`] chose a full rewrite, and how
-    /// many times it chose an append. Exposed so a test can assert on the
-    /// decision itself rather than inferring it from file size, which for a
-    /// small document is nearly identical either way.
+    /// How many times [`Autosave::request`] chose a full rewrite, and how many times it chose an
+    /// append. Exposed so a test can assert on the decision itself, not infer it from file size
+    /// (nearly identical either way for a small document).
     full_writes: usize,
     appends: usize,
     last_error: Arc<Mutex<Option<String>>>,
@@ -90,10 +85,9 @@ impl Autosave {
         }
     }
 
-    /// A handle that persists nothing, carrying `reason` as its permanent
-    /// error. Used when the state directory cannot be opened at all: the app
-    /// still runs, and `is_enabled` / `last_error` make the degraded state
-    /// visible instead of silently pretending writes are landing.
+    /// A handle that persists nothing, carrying `reason` as its permanent error. Used when the
+    /// state directory cannot be opened at all — the app still runs, and `is_enabled` /
+    /// `last_error` make the degraded state visible instead of silently pretending writes land.
     pub fn disabled(reason: impl Into<String>) -> Self {
         Self {
             tx: None,
@@ -124,24 +118,20 @@ impl Autosave {
         &self.package_id
     }
 
-    /// Adopt `heads` as already on disk. Call this right after loading, so
-    /// the first `request` only ships what the user has changed since.
+    /// Adopt `heads` as already on disk. Call this right after loading, so the first `request`
+    /// only ships what the user has changed since.
     pub fn seed(&mut self, doc: &mut AutoCommit) {
         if self.tx.is_none() {
             return;
         }
         self.sent = doc.get_heads();
-        self.base = std::fs::metadata(&self.document)
-            .map(|m| m.len() as usize)
-            .unwrap_or(0);
+        self.base = std::fs::metadata(&self.document).map_or(0, |m| m.len() as usize);
         self.appended = 0;
     }
 
-    /// Note that `doc` may have changed and schedule a write.
-    ///
-    /// Cheap and idempotent: when the document has not moved since the last
-    /// call this compares two head vectors and returns. Safe to call every
-    /// frame.
+    /// Note that `doc` may have changed and schedule a write. Cheap and idempotent: when the
+    /// document hasn't moved since the last call this compares two head vectors and returns.
+    /// Safe to call every frame.
     pub fn request(&mut self, doc: &mut AutoCommit) {
         let Some(tx) = self.tx.as_ref() else {
             return;
@@ -168,9 +158,8 @@ impl Autosave {
         self.sent = heads;
     }
 
-    /// Write everything pending and wait for it to hit the disk.
-    ///
-    /// Used on exit and by tests; a plain `request` is fire-and-forget.
+    /// Write everything pending and wait for it to hit the disk. Used on exit and by tests; a
+    /// plain `request` is fire-and-forget.
     pub fn flush(&self) {
         let Some(tx) = self.tx.as_ref() else {
             return;
@@ -191,9 +180,8 @@ impl Autosave {
         self.appends
     }
 
-    /// The most recent write failure, if any. `None` means every write so
-    /// far succeeded. Surfaced rather than only logged so a caller can tell
-    /// "nothing to save" from "the save failed".
+    /// The most recent write failure, if any. `None` means every write so far succeeded.
+    /// Surfaced rather than only logged so a caller can tell "nothing to save" from "the save failed".
     pub fn last_error(&self) -> Option<String> {
         self.last_error.lock().ok().and_then(|g| g.clone())
     }
@@ -245,7 +233,7 @@ fn writer_loop(
     loop {
         let timeout = match deadline {
             Some(d) => d.saturating_duration_since(Instant::now()),
-            None => Duration::from_secs(3600),
+            None => Duration::from_hours(1),
         };
         match rx.recv_timeout(timeout) {
             Ok(Msg::Full(bytes)) => {
@@ -254,8 +242,7 @@ fn writer_loop(
             }
             Ok(Msg::Append(bytes)) => {
                 match pending.take() {
-                    // A full save followed by change chunks *is* the file
-                    // format, so the two coalesce into one write.
+                    // A full save followed by change chunks *is* the file format, so the two coalesce into one write.
                     Some(Pending::Full(mut base)) => {
                         base.extend_from_slice(&bytes);
                         pending = Some(Pending::Full(base));
@@ -335,7 +322,7 @@ mod tests {
         let mut store = DocStore::open_for("dev.qos.autosave-drop").unwrap();
         let mut doc = store.new_document();
         {
-            let mut saver = Autosave::spawn(store, Duration::from_secs(600));
+            let mut saver = Autosave::spawn(store, Duration::from_mins(10));
             saver.seed(&mut doc);
             doc.put(&ROOT, "k", "v").unwrap();
             saver.request(&mut doc);
@@ -347,10 +334,9 @@ mod tests {
         assert!(matches!(loaded.get(&ROOT, "k"), Ok(Some(_))));
     }
 
-    /// A steady stream of edits must not rewrite the whole document each
-    /// time — that is the O(n²) shape this store exists to avoid. Asserted on
-    /// the decision the writer actually makes, because for a small document a
-    /// rewrite and an append produce almost the same file size.
+    /// A steady stream of edits must not rewrite the whole document each time — the O(n²) shape
+    /// this store exists to avoid. Asserted on the decision the writer actually makes, since a
+    /// rewrite and an append produce almost the same file size for a small document.
     #[test]
     #[serial_test::serial]
     fn steady_edits_append_rather_than_rewrite() {
@@ -387,12 +373,14 @@ mod tests {
         let mut reopened = DocStore::open_for("dev.qos.autosave-growth").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
-        assert_eq!(loaded.text(&body).unwrap(), format!("seed{}", "y".repeat(50)));
+        assert_eq!(
+            loaded.text(&body).unwrap(),
+            format!("seed{}", "y".repeat(50))
+        );
     }
 
-    /// Once the appended volume outgrows the compacted base, the writer must
-    /// fold everything back into one document chunk instead of growing the
-    /// append log forever.
+    /// Once the appended volume outgrows the compacted base, the writer must fold everything
+    /// back into one document chunk instead of growing the append log forever.
     #[test]
     #[serial_test::serial]
     fn the_append_log_is_eventually_compacted() {
@@ -405,9 +393,8 @@ mod tests {
 
         let mut saver = Autosave::spawn(store, Duration::from_millis(5));
         saver.seed(&mut doc);
-        // MIN_COMPACT_BYTES is 64 KiB and each single-character change chunk
-        // is on the order of a hundred bytes, so this is comfortably past the
-        // threshold.
+        // MIN_COMPACT_BYTES is 64 KiB and each single-character change chunk is about a hundred
+        // bytes, comfortably past the threshold.
         for i in 0..1200 {
             doc.splice_text(&body, 4 + i, 0, "z").unwrap();
             saver.request(&mut doc);

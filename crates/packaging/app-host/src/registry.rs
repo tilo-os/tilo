@@ -96,12 +96,10 @@ impl Registry {
     pub fn load(path: &Path) -> Result<Self, RegistryError> {
         match fs::read(path) {
             Ok(bytes) => {
-                let s = std::str::from_utf8(&bytes).map_err(|e| {
-                    RegistryError::BadUtf8(format!("{}: {e}", path.display()))
-                })?;
-                let file: RegistryFile = toml::from_str(s).map_err(|e| {
-                    RegistryError::Toml(format!("{}: {e}", path.display()))
-                })?;
+                let s = std::str::from_utf8(&bytes)
+                    .map_err(|e| RegistryError::BadUtf8(format!("{}: {e}", path.display())))?;
+                let file: RegistryFile = toml::from_str(s)
+                    .map_err(|e| RegistryError::Toml(format!("{}: {e}", path.display())))?;
                 let mut entries = BTreeMap::new();
                 for e in file.entry {
                     entries.insert(*e.id.as_bytes(), e);
@@ -132,8 +130,7 @@ impl Registry {
                 .cmp(&b.installed_at_unix)
                 .then_with(|| a.id.as_bytes().cmp(b.id.as_bytes()))
         });
-        let text = toml::to_string_pretty(&file)
-            .map_err(|e| RegistryError::Toml(e.to_string()))?;
+        let text = toml::to_string_pretty(&file).map_err(|e| RegistryError::Toml(e.to_string()))?;
         atomic_file::write(path, text.as_bytes())?;
         Ok(())
     }
@@ -210,8 +207,7 @@ pub enum RegistryError {
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]
@@ -260,7 +256,7 @@ mod tests {
             fake_id(2),
             Pinning::Tried,
             dir.path().into(),
-            "".into(),
+            String::new(),
         ));
         r.save(&path).unwrap();
         let tmp = path.with_extension("toml.tmp");

@@ -9,5 +9,5 @@
 pub mod card;
 pub mod chips;
 
-pub use card::{store_card, CARD_HEIGHT};
-pub use chips::{filter_chip_row, FilterChipSelection};
+pub use card::{CARD_HEIGHT, store_card};
+pub use chips::{FilterChipSelection, filter_chip_row};

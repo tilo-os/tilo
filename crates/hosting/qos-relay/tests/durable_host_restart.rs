@@ -17,16 +17,14 @@
 //! genuine Automerge document, so "converge" means identical heads,
 //! not byte-equality of an opaque blob.
 
-mod common;
-
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, spawn_relay_on};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {
@@ -39,13 +37,11 @@ fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
 }
 
 fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(dir).map_or(0, |rd| {
+        rd.flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+            .count()
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -79,13 +75,21 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     )
     .await
     .expect("A connect");
-    a_client.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
+    a_client
+        .send(Envelope::Subscribe { workspace_id: WS })
+        .unwrap();
     // Drain Ready(WS, 0).
     let ready = tokio::time::timeout(Duration::from_secs(2), a_client.recv())
         .await
         .expect("A Ready timeout")
         .expect("A Ready closed");
-    assert!(matches!(ready, Envelope::Ready { workspace_id: WS, pending_deltas: 0 }));
+    assert!(matches!(
+        ready,
+        Envelope::Ready {
+            workspace_id: WS,
+            pending_deltas: 0
+        }
+    ));
 
     let mut doc_a = AutoCommit::new();
     doc_a.put(ROOT, "note", "durable").unwrap();
@@ -149,7 +153,9 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     )
     .await
     .expect("B connect after restart");
-    b_client.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
+    b_client
+        .send(Envelope::Subscribe { workspace_id: WS })
+        .unwrap();
 
     // B receives both the queued delta and a Ready(pending=1). The
     // host writes Ready inline while the drained delta travels the
@@ -168,12 +174,21 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
             .expect("B catch-up timeout")
             .expect("B channel closed");
         match env {
-            Envelope::Delta { workspace_id, delta, .. } => {
+            Envelope::Delta {
+                workspace_id,
+                delta,
+                ..
+            } => {
                 assert_eq!(workspace_id, WS);
-                doc_b.load_incremental(&delta).expect("B applies queued delta");
+                doc_b
+                    .load_incremental(&delta)
+                    .expect("B applies queued delta");
                 got_delta = true;
             }
-            Envelope::Ready { workspace_id, pending_deltas } => {
+            Envelope::Ready {
+                workspace_id,
+                pending_deltas,
+            } => {
                 assert_eq!(workspace_id, WS);
                 assert_eq!(pending_deltas, 1, "host reports the one queued delta");
                 got_ready = true;
@@ -190,7 +205,11 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
         doc_b.get_heads(),
         "B converges with A across a host restart, never having been online together"
     );
-    assert_eq!(pending_count(&pending_dir), 0, "queue drains after delivery");
+    assert_eq!(
+        pending_count(&pending_dir),
+        0,
+        "queue drains after delivery"
+    );
 
     drop(host2);
 }

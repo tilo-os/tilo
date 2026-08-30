@@ -128,10 +128,10 @@ pub fn load_registries() -> RegistriesFile {
         return RegistriesFile::seeded();
     };
     let path = dir.join("registries.toml");
-    if let Ok(text) = fs::read_to_string(&path) {
-        if let Ok(parsed) = toml::from_str::<RegistriesFile>(&text) {
-            return parsed;
-        }
+    if let Ok(text) = fs::read_to_string(&path)
+        && let Ok(parsed) = toml::from_str::<RegistriesFile>(&text)
+    {
+        return parsed;
     }
     let seeded = RegistriesFile::seeded();
     if let Ok(text) = toml::to_string_pretty(&seeded) {
@@ -153,7 +153,7 @@ mod tests {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     struct Guard<'a> {
@@ -202,7 +202,11 @@ enabled = false
         assert_eq!(regs.registries.len(), 1);
         assert_eq!(regs.registries[0].name, "my mirror");
         assert!(!regs.registries[0].enabled);
-        assert_eq!(regs.enabled().count(), 0, "a disabled registry is not consulted");
+        assert_eq!(
+            regs.enabled().count(),
+            0,
+            "a disabled registry is not consulted"
+        );
     }
 
     /// The compositor's read must not materialise a config file — a
@@ -213,7 +217,10 @@ enabled = false
         let td = TempDir::new().unwrap();
         let _g = scoped_dir(&td);
         let regs = load_registries_no_seed();
-        assert!(regs.registries.is_empty(), "nothing configured means nothing available");
+        assert!(
+            regs.registries.is_empty(),
+            "nothing configured means nothing available"
+        );
         assert!(
             !td.path().join("registries.toml").exists(),
             "the no-seed read must leave the config dir untouched"

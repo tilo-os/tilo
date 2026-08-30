@@ -31,6 +31,22 @@
 //! app starts genuinely blank; `--shots` / `--demo` seed sample content so the
 //! screenshot is deterministic offline.
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 pub mod actions;
 pub mod app;
 pub mod customize;
@@ -57,6 +73,7 @@ pub fn app_root() -> Box<dyn Widget> {
 /// the offscreen renderer can walk them and the gallery reads top-to-bottom.
 pub const SHOT_SCENARIOS: &[&str] = &[
     "source",
+    "source-empty",
     "drive",
     "drive-empty",
     "drive-internal",
@@ -95,10 +112,19 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
         return;
     }
 
+    // The Source step as the live app actually opens it: nothing browsed yet,
+    // no release known to be on this machine. This is the state a real run
+    // starts in, so it is the one worth looking at.
+    if scenario == "source-empty" {
+        ImagerDoc::seed(doc, &[]);
+        ImagerDoc::set_step(doc, Step::Source);
+        return;
+    }
+
     // Internal-disks-revealed: a USB stick plus the *system* disk, shown with
     // the guard active (the system disk locked, both acknowledgements visible).
     if scenario == "drive-internal" {
-        use crate::model::{sample_source, TargetDrive, TargetKind, TargetPartition};
+        use crate::model::{TargetDrive, TargetKind, TargetPartition, sample_source};
         let targets = vec![
             crate::model::sample_targets().remove(0), // the USB stick
             TargetDrive {
@@ -110,8 +136,18 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
                 removable: false,
                 is_system: true, // the running OS boots from this disk
                 partitions: vec![
-                    TargetPartition { name: "nvme0n1p1".into(), size: 536_870_912, fstype: Some("vfat".into()), label: Some("EFI".into()) },
-                    TargetPartition { name: "nvme0n1p2".into(), size: 999_650_000_000, fstype: Some("btrfs".into()), label: Some("qos-root".into()) },
+                    TargetPartition {
+                        name: "nvme0n1p1".into(),
+                        size: 536_870_912,
+                        fstype: Some("vfat".into()),
+                        label: Some("EFI".into()),
+                    },
+                    TargetPartition {
+                        name: "nvme0n1p2".into(),
+                        size: 999_650_000_000,
+                        fstype: Some("btrfs".into()),
+                        label: Some("qos-root".into()),
+                    },
                 ],
             },
         ];
@@ -153,7 +189,12 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Write);
             ImagerDoc::set_progress(
                 doc,
-                &Progress { phase: JobPhase::Writing, write_frac: 0.62, verify_frac: 0.0, rate_bps: 176_000_000 },
+                &Progress {
+                    phase: JobPhase::Writing,
+                    write_frac: 0.62,
+                    verify_frac: 0.0,
+                    rate_bps: 176_000_000,
+                },
             );
             ImagerDoc::set_status(doc, "Writing qOS 1.0 → /dev/sdb");
         }
@@ -162,7 +203,12 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Done);
             ImagerDoc::set_progress(
                 doc,
-                &Progress { phase: JobPhase::Success, write_frac: 1.0, verify_frac: 1.0, rate_bps: 0 },
+                &Progress {
+                    phase: JobPhase::Success,
+                    write_frac: 1.0,
+                    verify_frac: 1.0,
+                    rate_bps: 0,
+                },
             );
             ImagerDoc::set_status(doc, "Done — qOS 1.0 written and verified");
         }
@@ -171,7 +217,12 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Done);
             ImagerDoc::set_progress(
                 doc,
-                &Progress { phase: JobPhase::Failed, write_frac: 0.4, verify_frac: 0.0, rate_bps: 0 },
+                &Progress {
+                    phase: JobPhase::Failed,
+                    write_frac: 0.4,
+                    verify_frac: 0.0,
+                    rate_bps: 0,
+                },
             );
             ImagerDoc::set_status(doc, "Write failed — device disappeared mid-write");
         }

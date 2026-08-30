@@ -1,19 +1,7 @@
-//! Tonemap shader spot-check.
-//!
-//! Two tracks:
-//!
-//! 1. **CPU reference** — the CPU implementation of the tone-mapper
-//!    handles a solid mid-gray PQ 300-nit input and produces a
-//!    plausible SDR sRGB output (mid-gray-ish, alpha full, neutral
-//!    chroma preserved).
-//! 2. **GPU shader** — the WGSL kernel compiles cleanly against a
-//!    fresh wgpu adapter. We don't run the full compute pipeline
-//!    (fetching an adapter costs the OffscreenRenderer bring-up) —
-//!    but we DO parse + validate the shader through naga to catch
-//!    syntax / type errors at test time.
-//!
-//! Both paths use the same PQ math, so shader validity + CPU-side
-//! spot-check together prove the pipeline.
+//! Tonemap shader spot-check: a CPU reference pass plus shader validation
+//! via naga (parse + type/binding check) rather than a real GPU dispatch,
+//! since fetching an adapter costs the `OffscreenRenderer` bring-up. Both
+//! paths use the same PQ math.
 
 use shell::collab::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
@@ -25,13 +13,11 @@ fn p010(code: u16) -> u16 {
     code << 6
 }
 
-/// Build a 4×4 P010 luma plane at the given 10-bit code with neutral
-/// chroma. Returns (y, uv).
+/// A 4×4 P010 luma plane at the given 10-bit code with neutral chroma.
 fn solid_p010(luma_code: u16, width: u32, height: u32) -> (Vec<u16>, Vec<u16>) {
     let y = vec![p010(luma_code); (width * height) as usize];
-    // Neutral chroma at 512 (10-bit mid). UV plane is interleaved,
-    // 4:2:0 subsampled → width/2 * height/2 pixel-pairs, 2 samples
-    // per pair.
+    // Neutral chroma at 512 (10-bit mid); UV is interleaved and 4:2:0
+    // subsampled → width/2 * height/2 pairs, 2 samples per pair.
     let uv = vec![p010(512); ((width / 2) * (height / 2) * 2) as usize];
     (y, uv)
 }
@@ -68,18 +54,18 @@ fn cpu_tonemap_mid_gray_pq_produces_plausible_sdr_gray() {
         cfg,
     );
 
-    // Basic shape.
     assert_eq!(rgba.len() as u32, width * height * 4);
     for (i, chunk) in rgba.chunks_exact(4).enumerate() {
         assert_eq!(chunk[3], 0xFF, "alpha for pixel {i} not full");
     }
 
-    // The first pixel should be near-gray (R ≈ G ≈ B) because chroma
-    // is neutral.
+    // First pixel should be near-gray (R ≈ G ≈ B) since chroma is neutral.
     let r = rgba[0];
     let g = rgba[1];
     let b = rgba[2];
-    let max_delta = (r as i32 - g as i32).abs().max((g as i32 - b as i32).abs());
+    let max_delta = (i32::from(r) - i32::from(g))
+        .abs()
+        .max((i32::from(g) - i32::from(b)).abs());
     assert!(
         max_delta <= 8,
         "neutral chroma should produce near-gray, got ({r}, {g}, {b})",
@@ -151,21 +137,15 @@ fn cpu_tonemap_peak_saturates_toward_white() {
         },
     );
     let r = rgba[0];
-    // Peak PQ (~10 000 nits) tone-mapped down to 100-nit peak
-    // saturates hard toward white after the Hable curve.
+    // Peak PQ (~10 000 nits) mapped to a 100-nit peak saturates toward white.
     assert!(r > 200, "PQ peak should saturate near white, got R={r}");
 }
 
 #[test]
 fn wgsl_shader_parses_and_validates() {
-    // Parse the shader source and validate it — catches syntax /
-    // type errors at test time so a shader edit doesn't break
-    // production silently.
     let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("WGSL shader parses");
 
-    // Full validation catches variable / binding / type errors that
-    // parsing alone doesn't. Use the default validator config
-    // (matches wgpu's own defaults).
+    // Default validator config matches wgpu's own defaults.
     let mut validator = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::default(),

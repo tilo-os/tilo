@@ -35,21 +35,21 @@
 //! The editor is not a master-detail list, so there is no push navigation —
 //! the single primary sidebar simply docks or overlays per the breakpoint.
 
-use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ReadDoc};
-use ui::color_compat::ColorCompat;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{FlapState, SplitLayout, TabBar, TabDescriptor, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::Fill;
+use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
@@ -62,11 +62,10 @@ use crate::editor_view::{EditorView, LspAsk};
 use crate::file_tree::{FileTree, TreeEvent};
 use crate::find::{FindBar, FindEvent};
 use crate::lint;
-use crate::model::{NodeId as TreeId, NodeKind, Project, Session};
+use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
 use crate::sample_project;
 use crate::search;
 use crate::status_bar::{StatusModel, StatusState};
-use crate::tab_bar::{TabBar, TabEvent, TabItem};
 
 const SIDEBAR_WIDTH: f64 = 240.0;
 const SIDEBAR_MIN: f64 = 160.0;
@@ -97,10 +96,34 @@ fn themes() -> Vec<Theme> {
     ]
 }
 
+/// A tab's accent by the language of the buffer it holds, read entirely off
+/// theme tokens so it re-tints with every theme instead of a fixed palette
+/// of its own.
+fn lang_accent(language: Language, theme: &Theme) -> Color {
+    let c = &theme.tokens.colors;
+    match language {
+        Language::Rust => c.semantic.warning,
+        Language::Python => c.semantic.info,
+        Language::JavaScript | Language::TypeScript => c.semantic.warning,
+        Language::Toml | Language::Yaml => c.accent[5],
+        Language::Json => c.semantic.success,
+        Language::Markdown => c.text_dim,
+        Language::Shell => c.semantic.success,
+        Language::Html | Language::Css => c.semantic.danger,
+        Language::C | Language::Cpp | Language::Go => c.semantic.info,
+        Language::PlainText => c.text_dim,
+    }
+}
+
 pub struct CodeApp {
     session: Session,
     sidebar: FileTree,
     tabs: TabBar,
+    /// Sweep timer for a pill's close-fade, keyed by tab id (== node id).
+    /// `TabBar::start_closing` runs the fade on its own clock; this is only
+    /// so `reconcile_tabs` knows when to call `finalize_close` and free the
+    /// widget's bookkeeping, the same job `WindowGroup::closing_hosts` does.
+    closing_since: HashMap<u64, Instant>,
     editor: EditorView,
     /// The caret / language / diagnostics readout, surfaced as a transient
     /// floating bubble (see `draw_status_bubble`) instead of a permanent bottom
@@ -445,10 +468,17 @@ impl CodeApp {
         sidebar.set_project(&session.project);
         sidebar.set_active(default);
 
+        let mut tabs = TabBar::new("code-editor", Vec::new(), 0);
+        // Tabs here are document buffers, not windows — there is nothing for
+        // a maximize chip to do, and a chip that appears under the pointer
+        // and then does nothing is worse than no chip.
+        tabs.set_show_maximize(false);
+
         CodeApp {
             session,
             sidebar,
-            tabs: TabBar::new(),
+            tabs,
+            closing_since: HashMap::new(),
             editor: EditorView::new(),
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
@@ -637,7 +667,11 @@ impl CodeApp {
         let cx = rect.x0 + rect.width() / 2.0;
         let cy = rect.y0 + rect.height() / 2.0;
         let half = 8.0;
-        let line_color = if self.sidebar_open() { c.text_primary } else { c.neutral[8] };
+        let line_color = if self.sidebar_open() {
+            c.text_primary
+        } else {
+            c.neutral[8]
+        };
         let stroke = Stroke::new(1.6);
         for dy in [-5.0, 0.0, 5.0] {
             scene.stroke(
@@ -645,7 +679,10 @@ impl CodeApp {
                 transform,
                 line_color,
                 None,
-                &Line::new(Point::new(cx - half, cy + dy), Point::new(cx + half, cy + dy)),
+                &Line::new(
+                    Point::new(cx - half, cy + dy),
+                    Point::new(cx + half, cy + dy),
+                ),
             );
         }
     }
@@ -733,11 +770,11 @@ impl CodeApp {
         let active = self.session.active_buffer().map(|b| (b.node, b.language));
         match active {
             Some((node, lang)) => {
-                if self.bound_node != Some(node) || !self.editor.is_bound() {
-                    if let Some(text) = EditorDoc::buffer_text(doc, node) {
-                        self.editor.bind(text, lang);
-                        self.bound_node = Some(node);
-                    }
+                if (self.bound_node != Some(node) || !self.editor.is_bound())
+                    && let Some(text) = EditorDoc::buffer_text(doc, node)
+                {
+                    self.editor.bind(text, lang);
+                    self.bound_node = Some(node);
                 }
             }
             None => {
@@ -749,19 +786,79 @@ impl CodeApp {
         }
     }
 
-    /// Push the current tab set into the tab bar.
-    fn refresh_tabs(&mut self) {
-        let items: Vec<TabItem> = self
-            .session
-            .open
+    /// Reconcile the shared tab bar's pills against `session.open`, by node
+    /// id: insert what's new, fade out what closed by some path other than
+    /// its own pill (Ctrl+W, the file tree), and keep title + the
+    /// unsaved-changes marker in step. A pill mid close-fade is left alone —
+    /// it reappears once the fade finishes if the buffer is still open (a
+    /// cancelled close). Idempotent: safe to call more than once a frame.
+    fn reconcile_tabs(&mut self) {
+        self.sweep_closing_tabs();
+
+        let live: HashSet<u64> = self.session.open.iter().map(|b| b.node as u64).collect();
+        let stale: Vec<u64> = self
+            .tabs
+            .tabs()
             .iter()
-            .map(|b| TabItem {
-                name: b.name.clone(),
-                language: b.language,
-                dirty: b.dirty,
-            })
+            .map(|t| t.id)
+            .filter(|id| !live.contains(id) && !self.tabs.is_closing(*id))
             .collect();
-        self.tabs.set_tabs(items, self.session.active);
+        for id in stale {
+            self.tabs.start_closing(id);
+            self.closing_since.entry(id).or_insert_with(Instant::now);
+        }
+
+        for (i, buf) in self.session.open.iter().enumerate() {
+            let id = buf.node as u64;
+            if self.tabs.is_closing(id) || self.tabs.tabs().iter().any(|t| t.id == id) {
+                continue;
+            }
+            let idx = i.min(self.tabs.tabs().len());
+            self.tabs
+                .insert_tab(idx, TabDescriptor::new(id, buf.name.clone()));
+        }
+
+        for buf in &self.session.open {
+            let id = buf.node as u64;
+            self.tabs.set_modified(id, buf.dirty);
+            if let Some(t) = self.tabs.tabs_mut().iter_mut().find(|t| t.id == id)
+                && t.title != buf.name
+            {
+                t.title.clone_from(&buf.name);
+            }
+        }
+
+        if let Some(buf) = self.session.active_buffer() {
+            self.tabs.set_active(buf.node as u64);
+        }
+    }
+
+    /// Tint each pill by its buffer's language, read off the theme in use —
+    /// only `draw` has one, so this runs there rather than from
+    /// `reconcile_tabs`.
+    fn sync_tab_accents(&mut self, theme: &Theme) {
+        for buf in &self.session.open {
+            let id = buf.node as u64;
+            self.tabs.set_accent(id, lang_accent(buf.language, theme));
+        }
+    }
+
+    /// Frees a faded pill's bookkeeping once `CLOSE_FADE_MS` has actually
+    /// elapsed — `TabBar` stops painting it on its own, but only
+    /// `finalize_close` drops the entry and lets `needs_animation_frame` go
+    /// quiet. Mirrors `WindowGroup`'s own sweep of `closing_hosts`.
+    fn sweep_closing_tabs(&mut self) {
+        let window = Duration::from_millis(ui::widget::tabs::CLOSE_FADE_MS as u64);
+        let expired: Vec<u64> = self
+            .closing_since
+            .iter()
+            .filter(|(_, t)| t.elapsed() >= window)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            self.closing_since.remove(&id);
+            self.tabs.finalize_close(id);
+        }
     }
 
     /// Recompute diagnostics over the active buffer and push to the panel +
@@ -797,9 +894,9 @@ impl CodeApp {
             None => Vec::new(),
         };
         if let Some(lsp) = lsp_for_buffer {
-            diagnostics.extend(lsp.iter().map(|d| d.to_panel()));
+            diagnostics.extend(lsp.iter().map(super::lsp::LspDiagnostic::to_panel));
         }
-        diagnostics.sort_by(|a, b| (a.line, a.col).cmp(&(b.line, b.col)));
+        diagnostics.sort_by_key(|a| (a.line, a.col));
         self.panel.set_problems(diagnostics);
         self.panel.set_analysis(self.lsp_status.analysis_note());
     }
@@ -834,7 +931,7 @@ impl CodeApp {
             lsp_working: self.lsp_status.is_working(),
             notice: notice.text,
             notice_is_error: notice.is_error,
-            dirty: self.session.active_buffer().map(|b| b.dirty).unwrap_or(false),
+            dirty: self.session.active_buffer().is_some_and(|b| b.dirty),
         });
         // Surface the floating status bubble only on a real change to the label
         // (a caret move, a save flip, an indexing tick) — refresh_status runs
@@ -902,15 +999,14 @@ impl CodeApp {
     fn refresh_palette_entries(&mut self) {
         let mut entries: Vec<Entry> = Vec::new();
         // Files.
-        for (id, node) in self.session.project.nodes.iter() {
+        for (id, node) in &self.session.project.nodes {
             if let NodeKind::File { .. } = node.kind {
                 let detail = self
                     .session
                     .project
                     .path_of(*id)
-                    .rsplitn(2, '/')
-                    .nth(1)
-                    .unwrap_or("")
+                    .rsplit_once('/')
+                    .map_or("", |x| x.0)
                     .to_string();
                 entries.push(Entry {
                     label: node.name.clone(),
@@ -979,7 +1075,7 @@ impl CodeApp {
                 let name = self.session.open[idx].name.clone();
                 self.session.open[idx].mark_saved(text, Some(stamp));
                 self.note(format!("Saved {name}"), false);
-                self.refresh_tabs();
+                self.reconcile_tabs();
                 // Tell the language server the file is on disk now; rustc-based
                 // diagnostics only refresh on save.
                 if let (Some(c), Some(uri)) = (self.lsp.as_mut(), self.lsp_uri.clone()) {
@@ -1051,13 +1147,13 @@ impl CodeApp {
                 // Replace the buffer's whole text through the CRDT so the edit
                 // is one undoable action and peers converge on it.
                 if let Some(obj) = EditorDoc::buffer_text(doc, node) {
-                    let old_len = doc.text(&obj).map(|t| t.chars().count()).unwrap_or(0);
+                    let old_len = doc.text(&obj).map_or(0, |t| t.chars().count());
                     EditorDoc::splice(doc, &obj, 0, old_len, &text);
                 }
                 self.session.open[idx].mark_saved(text, stamp);
                 self.note(format!("Reloaded {name} from disk"), false);
                 self.bound_node = None;
-                self.refresh_tabs();
+                self.reconcile_tabs();
             }
             Err(e) => {
                 let name = self.session.open[idx].name.clone();
@@ -1069,7 +1165,7 @@ impl CodeApp {
     /// Notice files that changed on disk since we read them, so a tab can warn
     /// before the user tries to save over someone else's work.
     fn check_disk_staleness(&mut self) {
-        for buf in self.session.open.iter_mut() {
+        for buf in &mut self.session.open {
             let (Some(path), Some(stamp)) = (buf.path.as_ref(), buf.stamp.as_ref()) else {
                 continue;
             };
@@ -1173,9 +1269,21 @@ impl CodeApp {
         let by = y0 + h - 20.0 - bh;
         let mut bx = x0 + w - 20.0 - bw;
         for (choice, label, style) in [
-            (ConflictChoice::Reload, "Reload", ui::widget::ButtonStyle::Primary),
-            (ConflictChoice::Overwrite, "Overwrite", ui::widget::ButtonStyle::Danger),
-            (ConflictChoice::Cancel, "Cancel", ui::widget::ButtonStyle::Neutral),
+            (
+                ConflictChoice::Reload,
+                "Reload",
+                ui::widget::ButtonStyle::Primary,
+            ),
+            (
+                ConflictChoice::Overwrite,
+                "Overwrite",
+                ui::widget::ButtonStyle::Danger,
+            ),
+            (
+                ConflictChoice::Cancel,
+                "Cancel",
+                ui::widget::ButtonStyle::Neutral,
+            ),
         ] {
             let rect = Rect::new(bx, by, bx + bw, by + bh);
             let face = ui::widget::ButtonFace::new(rect, label)
@@ -1191,7 +1299,7 @@ impl CodeApp {
 
     /// Ask the host desktop for a folder to open as the project.
     ///
-    /// This goes through the XDG FileChooser portal rather than any in-app
+    /// This goes through the XDG `FileChooser` portal rather than any in-app
     /// browser: under app-state confinement the editor has exactly one writable
     /// directory of its own and no manifest field can add more, so a path the
     /// user picked in the portal — which is where the sandbox's file-access
@@ -1222,8 +1330,7 @@ impl CodeApp {
         let suggested = self
             .session
             .buffer_of(node)
-            .map(|b| b.name.clone())
-            .unwrap_or_else(|| "untitled.txt".to_string());
+            .map_or_else(|| "untitled.txt".to_string(), |b| b.name.clone());
         self.portal_intent = Some(PortalIntent::SaveAs(node));
         self.portal = Some(
             ui::portal::PickRequest::save("Save file as", "Save", &suggested)
@@ -1275,10 +1382,10 @@ impl CodeApp {
             Some(PortalIntent::OpenFolder) => self.open_project_dir(&path),
             Some(PortalIntent::OpenFile) => self.open_disk_file(&path),
             Some(PortalIntent::SaveAs(node)) => {
-                let name = path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "untitled".to_string());
+                let name = path.file_name().map_or_else(
+                    || "untitled".to_string(),
+                    |s| s.to_string_lossy().to_string(),
+                );
                 self.session.project.set_file_path(node, &path, &name);
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.path = Some(path.clone());
@@ -1308,7 +1415,7 @@ impl CodeApp {
                 self.editor.unbind();
                 self.reset_language_server();
                 self.clear_search();
-                self.refresh_tabs();
+                self.reconcile_tabs();
                 self.refresh_palette_entries();
                 self.note(format!("Opened {name}"), false);
             }
@@ -1355,7 +1462,7 @@ impl CodeApp {
         self.session.open_file(node);
         self.sidebar.set_active(Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
-        self.refresh_tabs();
+        self.reconcile_tabs();
     }
 
     /// The node of the file in the active tab, if any. Lets a test observe
@@ -1405,43 +1512,89 @@ impl CodeApp {
         }
     }
 
-    /// Apply a tab event (select / close).
-    fn apply_tab_event(&mut self, ev: TabEvent) {
-        match ev {
-            TabEvent::Select(i) => {
-                self.session.active = Some(i);
-                self.bound_node = None;
-            }
-            TabEvent::Close(i) => {
-                // A buffer with unsaved edits is not closed out from under the
-                // user — closing would silently discard their work, so ask
-                // first. A clean buffer closes immediately.
-                if let Some(buf) = self.session.open.get(i) {
-                    if buf.dirty {
-                        self.close_prompt = Some(ClosePrompt {
-                            node: buf.node,
-                            name: buf.name.clone(),
-                        });
-                        return;
-                    }
-                }
-                self.session.close_tab(i);
-                self.bound_node = None;
-            }
+    /// Close the tab at session index `idx` — immediately if it is clean, or
+    /// by raising the unsaved-changes prompt if it has edits (closing would
+    /// silently discard them). The one entry point every close path funnels
+    /// through — a pill's ×, Ctrl+W, the file tree — so they all read the
+    /// same and none skips the prompt.
+    fn request_close_tab(&mut self, idx: usize) {
+        let Some(buf) = self.session.open.get(idx) else {
+            return;
+        };
+        if buf.dirty {
+            self.close_prompt = Some(ClosePrompt {
+                node: buf.node,
+                name: buf.name.clone(),
+            });
+            return;
         }
-        self.sidebar
-            .set_active(self.session.active_buffer().map(|b| b.node));
-        self.refresh_tabs();
+        let node = buf.node;
+        self.close_node_tab(node);
     }
 
-    /// Close the tab holding `node`, if it is still open.
+    /// Close the tab holding `node`, if it is still open — the low-level
+    /// removal used once a close is actually decided: already clean, a
+    /// discarded prompt, or a save that landed. Starts the pill's fade if
+    /// nothing already did — a pill's own × starts it before the app even
+    /// learns of the close; every other path has to ask here.
     fn close_node_tab(&mut self, node: TreeId) {
         if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
             self.session.close_tab(idx);
             self.bound_node = None;
+            let id = node as u64;
+            if !self.tabs.is_closing(id) {
+                self.tabs.start_closing(id);
+            }
+            self.closing_since.entry(id).or_insert_with(Instant::now);
             self.sidebar
                 .set_active(self.session.active_buffer().map(|b| b.node));
-            self.refresh_tabs();
+            self.reconcile_tabs();
+        }
+    }
+
+    /// Read back everything the shared tab bar did with the pointer this
+    /// frame: which pill is selected (the bar already moved its own
+    /// `active_id` on press — this mirrors it into the session), a
+    /// drag-reorder, a close, and the per-tab search chip — routed to Find,
+    /// this app's equivalent of "search within this tab".
+    fn drain_tab_bar(&mut self, doc: &AutoCommit) {
+        let selected = self.tabs.active_id();
+        if let Some(idx) = self
+            .session
+            .open
+            .iter()
+            .position(|b| b.node as u64 == selected)
+            && self.session.active != Some(idx)
+        {
+            self.session.active = Some(idx);
+            self.bound_node = None;
+            self.sidebar
+                .set_active(self.session.active_buffer().map(|b| b.node));
+        }
+
+        if let Some((from, to)) = self.tabs.take_reorder() {
+            self.session.reorder_tab(from, to);
+        }
+
+        if let Some(id) = self.tabs.take_close() {
+            // Always start the sweep, even if this ends up only raising a
+            // prompt: `TabBar::start_closing` has already faded the pill
+            // regardless of what the app decides, so this id must still get
+            // `finalize_close`d once the fade elapses, or a cancelled close
+            // would leave it permanently marked "closing" and never come
+            // back — see `TabBar::is_closing`.
+            self.closing_since.entry(id).or_insert_with(Instant::now);
+            if let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id) {
+                self.request_close_tab(idx);
+            }
+        }
+
+        if let Some(id) = self.tabs.take_search()
+            && let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id)
+        {
+            self.session.active = Some(idx);
+            self.bound_node = None;
+            self.open_find(false, doc);
         }
     }
 
@@ -1455,8 +1608,7 @@ impl CodeApp {
                 let has_path = self
                     .session
                     .buffer_of(prompt.node)
-                    .map(|b| b.path.is_some())
-                    .unwrap_or(false);
+                    .is_some_and(|b| b.path.is_some());
                 if has_path {
                     // Save synchronously; close only if it actually landed. A
                     // save that hits a disk conflict leaves the tab open so the
@@ -1547,8 +1699,16 @@ impl CodeApp {
         let mut bx = x0 + w - 20.0 - bw;
         for (choice, label, style) in [
             (CloseChoice::Save, "Save", ui::widget::ButtonStyle::Primary),
-            (CloseChoice::Discard, "Don't Save", ui::widget::ButtonStyle::Danger),
-            (CloseChoice::Cancel, "Cancel", ui::widget::ButtonStyle::Neutral),
+            (
+                CloseChoice::Discard,
+                "Don't Save",
+                ui::widget::ButtonStyle::Danger,
+            ),
+            (
+                CloseChoice::Cancel,
+                "Cancel",
+                ui::widget::ButtonStyle::Neutral,
+            ),
         ] {
             let rect = Rect::new(bx, by, bx + bw, by + bh);
             let face = ui::widget::ButtonFace::new(rect, label)
@@ -1630,7 +1790,7 @@ impl CodeApp {
             }
             Command::CloseTab => {
                 if let Some(i) = self.session.active {
-                    self.apply_tab_event(TabEvent::Close(i));
+                    self.request_close_tab(i);
                 }
             }
             Command::ToggleBottomPanel => {
@@ -1641,7 +1801,7 @@ impl CodeApp {
             }
             Command::NextTheme => {
                 let n = themes().len();
-                self.theme_index = Some(self.theme_index.map(|i| (i + 1) % n).unwrap_or(1));
+                self.theme_index = Some(self.theme_index.map_or(1, |i| (i + 1) % n));
             }
             Command::GoToProblems => {
                 self.panel_visible = true;
@@ -1663,10 +1823,7 @@ impl CodeApp {
         for ev in tree_events {
             self.apply_tree_event(ev);
         }
-        let tab_events = self.tabs.take_events();
-        for ev in tab_events {
-            self.apply_tab_event(ev);
-        }
+        self.drain_tab_bar(doc);
         if let Some(kind) = self.palette.take_chosen() {
             match kind {
                 PaletteKind::File(id) => self.open_node(id),
@@ -1729,7 +1886,11 @@ impl CodeApp {
         let Some(node) = self.session.active_buffer().map(|b| b.node) else {
             return;
         };
-        let Some(m) = self.find_current.and_then(|i| self.find_matches.get(i)).copied() else {
+        let Some(m) = self
+            .find_current
+            .and_then(|i| self.find_matches.get(i))
+            .copied()
+        else {
             return;
         };
         let Some(obj) = EditorDoc::buffer_text(doc, node) else {
@@ -1741,7 +1902,8 @@ impl CodeApp {
         };
         let replacement = self.find.replacement().to_string();
         EditorDoc::splice(doc, &obj, at, m.len, &replacement);
-        self.editor.move_caret_to(m.line, m.col + replacement.chars().count());
+        self.editor
+            .move_caret_to(m.line, m.col + replacement.chars().count());
         self.refresh_find(doc);
         let (line, col) = self.editor.primary_caret();
         self.focus_match(crate::find::next_from(&self.find_matches, line, col));
@@ -1793,8 +1955,7 @@ impl CodeApp {
                     let from = self
                         .find_current
                         .and_then(|i| self.find_matches.get(i))
-                        .map(|m| (m.line, m.col + 1))
-                        .unwrap_or((line, col));
+                        .map_or((line, col), |m| (m.line, m.col + 1));
                     self.focus_match(crate::find::next_from(&self.find_matches, from.0, from.1));
                 }
                 FindEvent::Prev => {
@@ -1802,8 +1963,7 @@ impl CodeApp {
                     let from = self
                         .find_current
                         .and_then(|i| self.find_matches.get(i))
-                        .map(|m| (m.line, m.col))
-                        .unwrap_or((line, col));
+                        .map_or((line, col), |m| (m.line, m.col));
                     self.focus_match(crate::find::prev_from(&self.find_matches, from.0, from.1));
                 }
                 FindEvent::ReplaceCurrent => self.replace_current(doc),
@@ -1831,7 +1991,9 @@ impl CodeApp {
             self.note("Open a file to jump to a line", true);
             return;
         }
-        let target = line_1based.saturating_sub(1).min(self.editor.line_count().saturating_sub(1));
+        let target = line_1based
+            .saturating_sub(1)
+            .min(self.editor.line_count().saturating_sub(1));
         self.editor.move_caret_to(target, 0);
     }
 
@@ -1877,7 +2039,11 @@ impl CodeApp {
                 search::Msg::Done { truncated, .. } => self.search_truncated = truncated,
             }
         }
-        if self.search_job.as_ref().map(|j| j.is_finished()).unwrap_or(false) {
+        if self
+            .search_job
+            .as_ref()
+            .is_some_and(super::search::Job::is_finished)
+        {
             self.search_job = None;
         }
         self.push_search_state();
@@ -1885,11 +2051,10 @@ impl CodeApp {
 
     /// Mirror the search state into the panel.
     fn push_search_state(&mut self) {
-        let query = self
-            .search_job
-            .as_ref()
-            .map(|j| j.query().needle.clone())
-            .unwrap_or_else(|| self.last_search_needle.clone());
+        let query = self.search_job.as_ref().map_or_else(
+            || self.last_search_needle.clone(),
+            |j| j.query().needle.clone(),
+        );
         self.panel.set_search(SearchState {
             query,
             rows: self
@@ -1979,7 +2144,10 @@ impl CodeApp {
 
     /// LSP `languageId` string for a language (the server's expected token).
     fn language_id(lang: crate::model::Language) -> &'static str {
-        use crate::model::Language::*;
+        use crate::model::Language::{
+            C, Cpp, Css, Go, Html, JavaScript, Json, Markdown, PlainText, Python, Rust, Shell,
+            Toml, TypeScript, Yaml,
+        };
         match lang {
             Rust => "rust",
             Python => "python",
@@ -2009,7 +2177,7 @@ impl CodeApp {
     fn lsp_enabled(&self) -> bool {
         if matches!(
             std::env::var("QOS_CODE_LSP").as_deref(),
-            Ok("0") | Ok("off") | Ok("false")
+            Ok("0" | "off" | "false")
         ) {
             return false;
         }
@@ -2120,7 +2288,11 @@ impl CodeApp {
                 crate::lsp::LspEvent::Initialized => {
                     // Only claim ready if nothing is still in flight; the
                     // initialize response usually lands before indexing starts.
-                    if !self.lsp.as_ref().map(|c| c.is_busy()).unwrap_or(false) {
+                    if !self
+                        .lsp
+                        .as_ref()
+                        .is_some_and(super::lsp::LspClient::is_busy)
+                    {
                         self.lsp_status = LspStatus::Ready {
                             server: self.lsp_server_name(),
                         };
@@ -2137,10 +2309,10 @@ impl CodeApp {
     }
 
     fn lsp_server_name(&self) -> String {
-        self.lsp
-            .as_ref()
-            .map(|c| c.server_name().to_string())
-            .unwrap_or_else(|| "Language server".to_string())
+        self.lsp.as_ref().map_or_else(
+            || "Language server".to_string(),
+            |c| c.server_name().to_string(),
+        )
     }
 
     /// Push the active buffer's LSP diagnostics into the editor's inline model
@@ -2180,7 +2352,10 @@ impl CodeApp {
             return;
         };
         let Some(path) = ui::portal::to_local_path(&url) else {
-            self.note(format!("Definition is outside this machine: {}", loc.uri), true);
+            self.note(
+                format!("Definition is outside this machine: {}", loc.uri),
+                true,
+            );
             return;
         };
         self.open_disk_file(&path);
@@ -2244,7 +2419,9 @@ impl CodeApp {
     /// failed to spawn). Used by `--shots` staging and the embed tests to read
     /// the live shell session without a GPU scene.
     pub fn shots_terminal_grid_text(&self) -> Option<String> {
-        self.terminal.as_ref().map(|t| t.grid_text())
+        self.terminal
+            .as_ref()
+            .map(terminal::TerminalWidget::grid_text)
     }
 
     /// Stage the find bar over the active buffer with a real query, so the shot
@@ -2258,7 +2435,11 @@ impl CodeApp {
         self.drain_find_events(&mut doc.clone());
         self.refresh_find(doc);
         // Land on the first match so the current-match fill is visible.
-        self.focus_match(if self.find_matches.is_empty() { None } else { Some(0) });
+        self.focus_match(if self.find_matches.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
     }
 
     /// Run a real project-wide search and wait for it, so a single offscreen
@@ -2323,12 +2504,13 @@ impl CodeApp {
     /// Open the first file the tree found, so a shot of a real project shows a
     /// real buffer instead of the empty state.
     pub fn shots_open_first_file(&mut self) {
-        let first = self
-            .session
-            .project
-            .visible_rows()
-            .into_iter()
-            .find(|id| !self.session.project.get(*id).map(|n| n.is_folder()).unwrap_or(true));
+        let first = self.session.project.visible_rows().into_iter().find(|id| {
+            !self
+                .session
+                .project
+                .get(*id)
+                .is_none_or(super::model::TreeNode::is_folder)
+        });
         if let Some(id) = first {
             self.open_node(id);
         }
@@ -2455,7 +2637,7 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
     let byte = text.find(needle)?;
     let prefix = &text[..byte];
     let line = prefix.matches('\n').count();
-    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
     let start_col = text[line_start..byte].chars().count();
     let end_col = start_col + needle.chars().count();
     Some((line, start_col, end_col))
@@ -2478,11 +2660,11 @@ impl Widget for CodeApp {
 
         // A jump queued by a search hit or a cross-file definition lands once
         // the target buffer is actually bound.
-        if let Some((line, col)) = self.pending_jump {
-            if self.editor.is_bound() {
-                self.editor.move_caret_to(line, col);
-                self.pending_jump = None;
-            }
+        if let Some((line, col)) = self.pending_jump
+            && self.editor.is_bound()
+        {
+            self.editor.move_caret_to(line, col);
+            self.pending_jump = None;
         }
 
         // Pump the embedded terminal: its `sync` drains the PTY reader and
@@ -2498,29 +2680,28 @@ impl Widget for CodeApp {
         // Language server: start on demand (opt-in), stream edits out as
         // `didChange`, and drain diagnostics/completions/hover back in.
         self.maybe_start_lsp(state);
-        if self.lsp.is_some() {
-            if let Some((node, uri)) = self
+        if self.lsp.is_some()
+            && let Some((node, uri)) = self
                 .session
                 .active_buffer()
                 .map(|b| b.node)
                 .zip(self.lsp_uri.clone())
-            {
-                let text = EditorDoc::read_buffer(state, node).unwrap_or_default();
-                if text != self.lsp_sent_text {
-                    self.lsp_version += 1;
-                    let version = self.lsp_version;
-                    if let Some(c) = self.lsp.as_mut() {
-                        c.did_change(&uri, version, &text);
-                    }
-                    self.lsp_sent_text = text;
+        {
+            let text = EditorDoc::read_buffer(state, node).unwrap_or_default();
+            if text != self.lsp_sent_text {
+                self.lsp_version += 1;
+                let version = self.lsp_version;
+                if let Some(c) = self.lsp.as_mut() {
+                    c.did_change(&uri, version, &text);
                 }
+                self.lsp_sent_text = text;
             }
         }
         self.poll_lsp();
 
         self.check_disk_staleness();
         self.refresh_find(state);
-        self.refresh_tabs();
+        self.reconcile_tabs();
         self.refresh_diagnostics(state);
         self.refresh_status();
     }
@@ -2631,7 +2812,10 @@ impl Widget for CodeApp {
                     },
                     flex_grow: 1.0,
                     flex_basis: Dimension::length(0.0),
-                    gap: Size { width: length(0.0), height: length(0.0) },
+                    gap: Size {
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
+                    },
                     ..Default::default()
                 },
                 &[sidebar_node, editor_col],
@@ -2652,23 +2836,26 @@ impl Widget for CodeApp {
                         width: Dimension::percent(1.0),
                         height: Dimension::percent(1.0),
                     },
-                    gap: Size { width: length(0.0), height: length(0.0) },
+                    gap: Size {
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
+                    },
                     ..Default::default()
                 },
                 &[content_node],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
@@ -2684,8 +2871,8 @@ impl Widget for CodeApp {
         if let Some(content_node) = self.content_node {
             let content_layout = taffy.layout(content_node).unwrap();
             let content_origin = Point::new(
-                new_origin.x + content_layout.location.x as f64,
-                new_origin.y + content_layout.location.y as f64,
+                new_origin.x + f64::from(content_layout.location.x),
+                new_origin.y + f64::from(content_layout.location.y),
             );
             if let Some(n) = self.sidebar_node {
                 self.sidebar.apply_layout(taffy, n, content_origin);
@@ -2694,8 +2881,8 @@ impl Widget for CodeApp {
             if let Some(col) = self.editor_col_node {
                 let col_layout = taffy.layout(col).unwrap();
                 let col_origin = Point::new(
-                    content_origin.x + col_layout.location.x as f64,
-                    content_origin.y + col_layout.location.y as f64,
+                    content_origin.x + f64::from(col_layout.location.x),
+                    content_origin.y + f64::from(col_layout.location.y),
                 );
                 if let Some(n) = self.tabs_node {
                     self.tabs.apply_layout(taffy, n, col_origin);
@@ -2729,6 +2916,8 @@ impl Widget for CodeApp {
     ) {
         let active = self.active_theme(theme);
         let theme = active.as_ref();
+        // Only `draw` has a `Theme` to read the accent colours off of.
+        self.sync_tab_accents(theme);
 
         // Advance the flap easing (frame-rate independent) before computing
         // geometry, so the slide + scrim fade animate while the host keeps
@@ -2755,23 +2944,32 @@ impl Widget for CodeApp {
                 self.overlay_sidebar_rect = Rect::ZERO;
                 self.hamburger_rect = Rect::ZERO;
                 if self.flap.reveal() > 0.001 {
-                    self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+                    self.sidebar
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
-                self.tabs.draw(scene, transform, text_renderer, theme, presence);
-                self.find.draw(scene, transform, text_renderer, theme, presence);
-                self.editor.draw(scene, transform, text_renderer, theme, presence);
+                self.tabs
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.find
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.editor
+                    .draw(scene, transform, text_renderer, theme, presence);
                 if self.panel_visible {
-                    self.panel.draw(scene, transform, text_renderer, theme, presence);
+                    self.panel
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
             }
             SplitLayout::Overlay => {
                 // Content spans the full width and is drawn first; the sidebar
                 // slides in over it behind a scrim.
-                self.tabs.draw(scene, transform, text_renderer, theme, presence);
-                self.find.draw(scene, transform, text_renderer, theme, presence);
-                self.editor.draw(scene, transform, text_renderer, theme, presence);
+                self.tabs
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.find
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.editor
+                    .draw(scene, transform, text_renderer, theme, presence);
                 if self.panel_visible {
-                    self.panel.draw(scene, transform, text_renderer, theme, presence);
+                    self.panel
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
                 // Scrim: opacity tracks the reveal (Adwaita-style dimming).
                 let reveal = self.flap.reveal();
@@ -2802,7 +3000,8 @@ impl Widget for CodeApp {
                 self.overlay_sidebar_rect = sidebar_rect;
                 if reveal > 0.001 {
                     self.sidebar.place_at(sidebar_rect);
-                    self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+                    self.sidebar
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
                 // The hamburger toggle sits at the tab bar's left edge.
                 self.draw_hamburger(scene, transform, theme);
@@ -2823,7 +3022,8 @@ impl Widget for CodeApp {
         // permanent bottom status strip.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
         // Palette floats on top.
-        self.palette.draw_overlay(scene, transform, text_renderer, theme);
+        self.palette
+            .draw_overlay(scene, transform, text_renderer, theme);
         // …and a conflict prompt above even that: it is a question that must be
         // answered before anything else can be done to the file.
         self.draw_conflict(scene, transform, text_renderer, theme);
@@ -2857,14 +3057,13 @@ impl Widget for CodeApp {
         taffy: &TaffyTree<()>,
     ) {
         // The palette, when open, owns all keyboard input.
-        if self.palette.is_visible() {
-            if let WindowEvent::KeyboardInput { .. } = event {
-                if self.palette.handle_key(event) {
-                    *handled = true;
-                    self.drain_child_events(state);
-                    return;
-                }
-            }
+        if self.palette.is_visible()
+            && let WindowEvent::KeyboardInput { .. } = event
+            && self.palette.handle_key(event)
+        {
+            *handled = true;
+            self.drain_child_events(state);
+            return;
         }
 
         // Track the cursor (MouseInput carries no coords) so the hamburger and
@@ -2890,15 +3089,13 @@ impl Widget for CodeApp {
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                if let Some((choice, _)) = self
+                && let Some((choice, _)) = self
                     .close_prompt_buttons
                     .iter()
                     .find(|(_, r)| r.contains(self.last_cursor))
                     .copied()
-                {
-                    self.resolve_close_prompt(state, choice);
-                }
+            {
+                self.resolve_close_prompt(state, choice);
             }
             *handled = true;
             return;
@@ -2907,8 +3104,9 @@ impl Widget for CodeApp {
         let overlay = self.sidebar_layout() == SplitLayout::Overlay;
 
         // Esc dismisses an open overlay flap before anything else sees it.
-        if overlay && self.sidebar_open() {
-            if let WindowEvent::KeyboardInput {
+        if overlay
+            && self.sidebar_open()
+            && let WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key: Key::Named(winit::keyboard::NamedKey::Escape),
@@ -2917,11 +3115,10 @@ impl Widget for CodeApp {
                     },
                 ..
             } = event
-            {
-                self.flap.close();
-                *handled = true;
-                return;
-            }
+        {
+            self.flap.close();
+            *handled = true;
+            return;
         }
 
         // Left-click routing for the overlay-specific affordances.
@@ -2932,7 +3129,8 @@ impl Widget for CodeApp {
         } = event
         {
             // The hamburger toggle (drawn only in overlay mode).
-            if overlay && self.hamburger_rect.width() > 0.0
+            if overlay
+                && self.hamburger_rect.width() > 0.0
                 && self.hamburger_rect.contains(self.last_cursor)
             {
                 self.toggle_sidebar();
@@ -3014,15 +3212,13 @@ impl Widget for CodeApp {
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                if let Some((choice, _)) = self
+                && let Some((choice, _)) = self
                     .conflict_buttons
                     .iter()
                     .find(|(_, r)| r.contains(self.last_cursor))
                     .copied()
-                {
-                    self.resolve_conflict(state, choice);
-                }
+            {
+                self.resolve_conflict(state, choice);
             }
             *handled = true;
             return;
@@ -3030,16 +3226,24 @@ impl Widget for CodeApp {
 
         // The find bar takes keyboard input while it is open (its fields own
         // typing; Enter and Escape are its transport).
-        if self.find.is_visible() {
-            if let Some(n) = self.find_node {
-                let before = *handled;
-                self.find.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
-                );
-                self.drain_find_events(state);
-                if *handled && !before {
-                    return;
-                }
+        if self.find.is_visible()
+            && let Some(n) = self.find_node
+        {
+            let before = *handled;
+            self.find.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            self.drain_find_events(state);
+            if *handled && !before {
+                return;
             }
         }
 
@@ -3063,8 +3267,15 @@ impl Widget for CodeApp {
                 let mut th = false;
                 let mut tf = None;
                 t.handle_event(
-                    event, scale_factor, modifiers, state, &tr, &mut th, &mut tf,
-                    NodeId::new(0), taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    &tr,
+                    &mut th,
+                    &mut tf,
+                    NodeId::new(0),
+                    taffy,
                 );
                 if th {
                     *handled = true;
@@ -3093,46 +3304,75 @@ impl Widget for CodeApp {
             SplitLayout::Docked => self.flap.reveal() > 0.001,
             SplitLayout::Overlay => self.sidebar_open(),
         };
-        if sidebar_active {
-            if let Some(n) = self.sidebar_node {
-                self.sidebar.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
-                );
-            }
+        if sidebar_active && let Some(n) = self.sidebar_node {
+            self.sidebar.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
         }
 
         // While the overlay sidebar is open, it captures pointer presses over
         // its area so clicks don't leak to the content behind it (the tree only
         // self-marks `handled` on a row hit — empty rows would otherwise fall
         // through). The scrim outside it was already handled above.
-        if overlay && self.sidebar_open() {
-            if let WindowEvent::MouseInput {
+        if overlay
+            && self.sidebar_open()
+            && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                if self.overlay_sidebar_rect.contains(self.last_cursor) {
-                    *handled = true;
-                }
-            }
+            && self.overlay_sidebar_rect.contains(self.last_cursor)
+        {
+            *handled = true;
         }
 
         if let Some(n) = self.tabs_node {
             self.tabs.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
             );
         }
-        if self.panel_visible {
-            if let Some(n) = self.panel_node {
-                self.panel.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
-                );
-            }
+        if self.panel_visible
+            && let Some(n) = self.panel_node
+        {
+            self.panel.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
         }
         if let Some(n) = self.editor_node {
             self.editor.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
             );
         }
 
@@ -3156,7 +3396,7 @@ impl Widget for CodeApp {
         let _ = self.panel.take_tab_changed();
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CodeApp"
     }
 
@@ -3212,7 +3452,9 @@ impl Widget for CodeApp {
     /// each findable there by name or path, alongside the actions the app
     /// exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::FileSearchProvider::new(&self.session))]
+        vec![Box::new(crate::search_provider::FileSearchProvider::new(
+            &self.session,
+        ))]
     }
 
     /// Open / focus the file a chosen palette row identifies. The row carries
@@ -3322,11 +3564,11 @@ mod tests {
         let mut found = false;
         for _ in 0..300 {
             app.sync(&mut state.doc, &state.root);
-            if let Some(t) = app.shots_terminal_grid_text() {
-                if t.contains("IDE_TERM_OK") {
-                    found = true;
-                    break;
-                }
+            if let Some(t) = app.shots_terminal_grid_text()
+                && t.contains("IDE_TERM_OK")
+            {
+                found = true;
+                break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -3362,6 +3604,149 @@ mod tests {
         app.open_node(prime);
         assert_eq!(app.session.open.len(), 2);
         assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
+    }
+
+    /// Every open buffer's node id, cast the same way `reconcile_tabs` casts
+    /// it, so a test can compare against `app.tabs.tabs()` ids without
+    /// duplicating the cast at every call site.
+    fn open_ids(app: &CodeApp) -> Vec<u64> {
+        app.session.open.iter().map(|b| b.node as u64).collect()
+    }
+
+    #[test]
+    fn reconcile_tabs_keys_pills_to_open_buffers_by_node_id() {
+        let mut app = CodeApp::with_sample();
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|n| n.name == "prime.rs")
+            .unwrap()
+            .id;
+        app.open_node(prime); // open_node already reconciles.
+
+        let pill_ids: Vec<u64> = app.tabs.tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            pill_ids,
+            open_ids(&app),
+            "the bar's pills must be exactly the session's open buffers, in \
+             the same order, keyed by node id"
+        );
+    }
+
+    #[test]
+    fn reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark() {
+        let (mut app, mut doc) = synced_sample();
+        let id = app.session.active_buffer().unwrap().node as u64;
+        assert!(
+            !app.tabs.is_modified(id),
+            "a freshly-opened buffer is clean"
+        );
+
+        app.editor.insert_for_test(&mut doc, "X");
+        app.ensure_buffers(&mut doc);
+        app.reconcile_tabs();
+        assert!(
+            app.tabs.is_modified(id),
+            "an edited buffer's pill must pick up the unsaved-changes mark"
+        );
+    }
+
+    #[test]
+    fn sync_tab_accents_tints_each_pill_by_its_buffers_language() {
+        // `with_sample` opens main.rs, a Rust file.
+        let mut app = CodeApp::with_sample();
+        let theme = Theme::dark();
+        let id = app.session.active_buffer().unwrap().node as u64;
+
+        app.sync_tab_accents(&theme);
+
+        assert_eq!(
+            app.tabs.accent(id),
+            Some(lang_accent(Language::Rust, &theme)),
+            "a Rust buffer's pill must carry the theme's Rust accent"
+        );
+    }
+
+    #[test]
+    fn closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position() {
+        // The whole point of reconciling by node id rather than position: the
+        // pill the user clicked × on must be the buffer that closes — even
+        // one that is neither at index 0 nor the active tab, which is the
+        // one case "close index 0" or "close whatever's active" would also
+        // get right by accident.
+        let mut app = CodeApp::with_sample();
+        let names = ["prime.rs", "greeter.rs"];
+        let ids: Vec<crate::model::NodeId> = names
+            .iter()
+            .map(|name| {
+                app.session
+                    .project
+                    .nodes
+                    .values()
+                    .find(|n| n.name == *name)
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        for id in ids {
+            app.open_node(id);
+        }
+        // [main.rs, prime.rs, greeter.rs], active = greeter.rs (index 2).
+        assert_eq!(app.session.open.len(), 3);
+        app.session.active = Some(0); // main.rs is active; prime.rs is neither.
+
+        let prime_id = app.session.open[1].node as u64;
+        // Stand-in for the user clicking prime.rs's own × — the widget fades
+        // it and publishes the id via `take_close`, independent of position.
+        app.tabs.start_closing(prime_id);
+
+        let mut doc = AutoCommit::new();
+        app.drain_child_events(&mut doc);
+
+        let remaining: Vec<&str> = app.session.open.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(
+            remaining,
+            vec!["main.rs", "greeter.rs"],
+            "closing prime.rs's pill must close prime.rs specifically, not \
+             index 0 or whatever happens to be active"
+        );
+    }
+
+    #[test]
+    fn selecting_a_different_pill_is_read_back_via_active_id() {
+        let mut app = CodeApp::with_sample();
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|n| n.name == "prime.rs")
+            .unwrap()
+            .id;
+        app.open_node(prime); // active is now prime.rs
+        let main_node = app.session.open[0].node;
+        assert_eq!(app.session.active, Some(1));
+
+        // A press on the bar already moved its own `active_id` (see
+        // `TabBar::handle_event`); this stands in for that click landing on
+        // main.rs's pill instead.
+        app.tabs.set_active(main_node as u64);
+        app.bound_node = Some(main_node.wrapping_add(1)); // sentinel, must be cleared
+
+        let mut doc = AutoCommit::new();
+        app.drain_child_events(&mut doc);
+
+        assert_eq!(
+            app.session.active,
+            Some(0),
+            "the session must follow the bar's active_id back to main.rs"
+        );
+        assert_eq!(
+            app.bound_node, None,
+            "switching which buffer is selected must force the editor to re-bind"
+        );
     }
 
     #[test]
@@ -3497,7 +3882,10 @@ mod tests {
             .id;
         app.apply_tree_event(TreeEvent::OpenFile(prime));
         assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
-        assert!(!app.sidebar_open(), "opening a file dismisses the overlay flap");
+        assert!(
+            !app.sidebar_open(),
+            "opening a file dismisses the overlay flap"
+        );
     }
 
     #[test]
@@ -3520,7 +3908,7 @@ mod tests {
     /// Overwrite a buffer's whole text through the CRDT, the way an edit does.
     fn replace_buffer_text(doc: &mut AutoCommit, node: crate::model::NodeId, text: &str) {
         let obj = EditorDoc::ensure_buffer(doc, node, "");
-        let len = doc.text(&obj).map(|t| t.chars().count()).unwrap_or(0);
+        let len = doc.text(&obj).map_or(0, |t| t.chars().count());
         EditorDoc::splice(doc, &obj, 0, len, text);
     }
 
@@ -3552,8 +3940,13 @@ mod tests {
             detail: None,
             percentage: Some(37),
         };
-        let note = busy.analysis_note().expect("a working server explains itself");
-        assert!(note.contains("rust-analyzer"), "it names the server: {note}");
+        let note = busy
+            .analysis_note()
+            .expect("a working server explains itself");
+        assert!(
+            note.contains("rust-analyzer"),
+            "it names the server: {note}"
+        );
         assert!(note.contains("indexing"), "it names the task: {note}");
         assert!(note.contains("37%"), "it carries the progress: {note}");
         assert!(
@@ -3687,20 +4080,33 @@ mod tests {
 
         app.refresh_diagnostics(&doc);
         assert!(
-            app.panel.problems().iter().any(|d| d.message.contains("Unclosed")),
+            app.panel
+                .problems()
+                .iter()
+                .any(|d| d.message.contains("Unclosed")),
             "with nothing better answering, the scan reports the unbalanced bracket"
         );
 
         // Now let a server publish for this buffer — even an empty publish is
         // an answer, and it is the answer that counts.
-        let uri = app.lsp_uri.clone().unwrap_or_else(|| "file:///probe.rs".to_string());
+        let uri = app
+            .lsp_uri
+            .clone()
+            .unwrap_or_else(|| "file:///probe.rs".to_string());
         app.lsp_uri = Some(uri.clone());
         app.lsp_diagnostics.insert(uri, Vec::new());
         app.refresh_diagnostics(&doc);
         assert!(
-            !app.panel.problems().iter().any(|d| d.message.contains("Unclosed")),
+            !app.panel
+                .problems()
+                .iter()
+                .any(|d| d.message.contains("Unclosed")),
             "the scanner's guess yields to the compiler's answer: {:?}",
-            app.panel.problems().iter().map(|d| &d.message).collect::<Vec<_>>()
+            app.panel
+                .problems()
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3911,7 +4317,7 @@ mod tests {
 
         let before = app.session.open.len();
         let active = app.session.active.unwrap();
-        app.apply_tab_event(TabEvent::Close(active));
+        app.request_close_tab(active);
         assert_eq!(
             app.session.open.len(),
             before,
@@ -3930,7 +4336,7 @@ mod tests {
         let (mut app, _doc) = synced_sample();
         let before = app.session.open.len();
         let active = app.session.active.unwrap();
-        app.apply_tab_event(TabEvent::Close(active));
+        app.request_close_tab(active);
         assert!(
             app.close_prompt.is_none(),
             "a saved tab closes without a prompt"

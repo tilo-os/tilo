@@ -1,42 +1,41 @@
-//! PoToken — the swappable "proof-of-origin token" module.
+//! `PoToken` — the swappable "proof-of-origin token" module.
 //!
-//! YouTube gates video *streams* (and increasingly the player response itself)
-//! behind a **PoToken** minted by its BotGuard challenge, and behind SABR
-//! streaming. The research brief calls this "the make-or-break gotcha" and asks
-//! for it to be a *swappable module* — so the rest of the live backend never
+//! `YouTube` gates video *streams* (and increasingly the player response itself)
+//! behind a **`PoToken`** minted by its `BotGuard` challenge, and behind SABR
+//! streaming — a *swappable module* so the rest of the live backend never
 //! hard-codes how a token is obtained.
 //!
 //! This module is that seam. A [`PoTokenProvider`] mints tokens; the live
 //! rustypipe backend asks the configured provider for one when it resolves a
-//! player / stream URL. Swapping the provider (BotGuard today, a remote token
+//! player / stream URL. Swapping the provider (`BotGuard` today, a remote token
 //! service, a cached token, or [`NullPoToken`] for metadata-only browsing)
 //! never touches the backend.
 //!
 //! ## Providers
 //!
 //! * [`NullPoToken`] — the default. Mints nothing. Search / channel / trending
-//!   / related / video *metadata* all work without a PoToken; only stream URL
+//!   / related / video *metadata* all work without a `PoToken`; only stream URL
 //!   resolution needs one, so a metadata-only client is fully useful with this.
 //!   This is also the only provider compiled into the offline / `--shots`
 //!   build (it has zero deps).
 //! * `BotGuardPoToken` (`live` feature) — wraps `rustypipe-botguard`, which
-//!   solves the BotGuard challenge in-process (no external browser, no
+//!   solves the `BotGuard` challenge in-process (no external browser, no
 //!   yt-dlp/ffmpeg). Lives in [`crate::backend::live`] so the heavy dep only
 //!   compiles under `--features live`.
 //!
 //! ## Why a context, not just a string
 //!
-//! BotGuard binds a token to a *visitor/identifier context*; [`PoTokenContext`]
+//! `BotGuard` binds a token to a *visitor/identifier context*; [`PoTokenContext`]
 //! carries that so a provider can mint the right token kind (a "player" token
 //! vs a "streaming" token are different). Today only the video id and a
 //! visitor-data string are needed; the struct leaves room to grow without
 //! changing the trait.
 
-/// What a token is being minted for. BotGuard issues distinct tokens for the
+/// What a token is being minted for. `BotGuard` issues distinct tokens for the
 /// player request vs the media (streaming) request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoTokenKind {
-    /// Token bound into the `/player` InnerTube request.
+    /// Token bound into the `/player` `InnerTube` request.
     Player,
     /// Token appended to the media (googlevideo) stream URL.
     Streaming,
@@ -45,10 +44,10 @@ pub enum PoTokenKind {
 /// The context a provider needs to mint a token.
 #[derive(Clone, Debug, Default)]
 pub struct PoTokenContext {
-    /// Video being resolved (the identifier BotGuard binds the token to for a
+    /// Video being resolved (the identifier `BotGuard` binds the token to for a
     /// streaming token).
     pub video_id: String,
-    /// InnerTube `visitorData` for this session, if one has been issued. The
+    /// `InnerTube` `visitorData` for this session, if one has been issued. The
     /// player token is bound to this rather than to a video id.
     pub visitor_data: Option<String>,
 }
@@ -63,7 +62,7 @@ pub struct PoToken {
     pub ttl_secs: Option<u64>,
 }
 
-/// The swappable seam. A provider mints PoTokens for the live backend.
+/// The swappable seam. A provider mints `PoTokens` for the live backend.
 ///
 /// `Send + Sync` so it can live behind the backend on the worker thread. Minting
 /// may be expensive (it can run a JS/BotGuard challenge), so callers should
@@ -90,7 +89,7 @@ pub trait PoTokenProvider: Send + Sync {
 pub struct NullPoToken;
 
 impl PoTokenProvider for NullPoToken {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "null (metadata-only)"
     }
 
@@ -113,7 +112,10 @@ mod tests {
     #[test]
     fn null_provider_mints_nothing_and_cannot_stream() {
         let p = NullPoToken;
-        let ctx = PoTokenContext { video_id: "abc".into(), visitor_data: None };
+        let ctx = PoTokenContext {
+            video_id: "abc".into(),
+            visitor_data: None,
+        };
         assert!(p.mint(PoTokenKind::Streaming, &ctx).is_none());
         assert!(!p.can_stream());
     }

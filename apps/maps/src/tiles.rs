@@ -31,8 +31,7 @@ use std::time::{Duration, Instant};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage,
-    ImageFormat as Format,
+    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
 };
 
 use ui::theme::Theme;
@@ -53,7 +52,7 @@ const MEM_CACHE_CAP: usize = 512;
 const FAIL_BACKOFF_MIN: Duration = Duration::from_secs(2);
 /// Ceiling for the failed-tile backoff. A tile server that is persistently
 /// unreachable is retried at most this often, never per-frame.
-const FAIL_BACKOFF_MAX: Duration = Duration::from_secs(300);
+const FAIL_BACKOFF_MAX: Duration = Duration::from_mins(5);
 /// Cap on the negative-cache size so a long pan across an unreachable region
 /// can't grow it without bound.
 const FAIL_CACHE_CAP: usize = 4096;
@@ -107,8 +106,12 @@ impl TileStyle {
     /// high-contrast tracks), not just the two built-ins.
     pub fn from_theme(theme: &Theme) -> Self {
         let c = theme.tokens.colors.surfaces.base.to_rgba8();
-        let lum = 0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64;
-        if lum < 128.0 { TileStyle::Dark } else { TileStyle::Light }
+        let lum = 0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b);
+        if lum < 128.0 {
+            TileStyle::Dark
+        } else {
+            TileStyle::Light
+        }
     }
 }
 
@@ -193,7 +196,7 @@ impl DownloadProgress {
         if self.total == 0 {
             0.0
         } else {
-            self.done as f64 / self.total as f64
+            f64::from(self.done) / f64::from(self.total)
         }
     }
 }
@@ -382,12 +385,12 @@ impl TileLayer {
     ) -> Vec<(TileId, Rect)> {
         let z = Self::tile_zoom(map_zoom);
         // Scale between the integer tile pyramid and the fractional view.
-        let scale = 2f64.powf(map_zoom - z as f64);
+        let scale = 2f64.powf(map_zoom - f64::from(z));
         let tile_screen = TILE_PX * scale;
         let n = TileId::n(z);
 
         // World-pixel position of the viewport centre at integer zoom z.
-        let (cwx, cwy) = geo::lonlat_to_world(center, z as f64);
+        let (cwx, cwy) = geo::lonlat_to_world(center, f64::from(z));
         // Top-left of the viewport in world-pixel space (scaled).
         let left_world = cwx - (view_center.x - viewport.x0) / scale;
         let top_world = cwy - (view_center.y - viewport.y0) / scale;
@@ -401,10 +404,10 @@ impl TileLayer {
         for ty in first_y..first_y + rows {
             for tx in first_x..first_x + cols {
                 // Wrap X around the antimeridian; clamp Y (no vertical wrap).
-                if ty < 0 || ty >= n as i64 {
+                if ty < 0 || ty >= i64::from(n) {
                     continue;
                 }
-                let wx = tx.rem_euclid(n as i64) as u32;
+                let wx = tx.rem_euclid(i64::from(n)) as u32;
                 let id = TileId::new(z, wx, ty as u32);
                 // Screen rect of this tile: its world origin minus camera, /scale.
                 let world_x = tx as f64 * TILE_PX;
@@ -428,7 +431,7 @@ impl TileLayer {
             loop {
                 match rx.try_recv() {
                     Ok(msg) => finished.push(msg),
-                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                 }
             }
         }
@@ -498,15 +501,15 @@ impl TileLayer {
         // tile would spin the loop (it never idles while `has_inflight`) and
         // hammer the tile server. The entry is kept until a later fetch
         // succeeds, so repeated failures keep doubling the delay.
-        if let Some(f) = self.failed.get(&id) {
-            if Instant::now() < f.retry_at {
-                return;
-            }
+        if let Some(f) = self.failed.get(&id)
+            && Instant::now() < f.retry_at
+        {
+            return;
         }
-        if let Some(tx) = &self.job_tx {
-            if tx.send(Job::Fetch(id)).is_ok() {
-                self.inflight.insert(id);
-            }
+        if let Some(tx) = &self.job_tx
+            && tx.send(Job::Fetch(id)).is_ok()
+        {
+            self.inflight.insert(id);
         }
     }
 
@@ -543,7 +546,7 @@ impl TileLayer {
     /// that were resident at the previous, deeper zoom.
     pub fn has_descendants(&self, parent: TileId, max_depth: u8) -> bool {
         for depth in 1..=max_depth {
-            let cz = parent.z as u32 + depth as u32;
+            let cz = u32::from(parent.z) + u32::from(depth);
             if cz > 19 {
                 break;
             }
@@ -553,7 +556,10 @@ impl TileLayer {
             let base_y = parent.y << depth;
             for j in 0..span {
                 for i in 0..span {
-                    if self.mem.contains_key(&TileId::new(cz, base_x + i, base_y + j)) {
+                    if self
+                        .mem
+                        .contains_key(&TileId::new(cz, base_x + i, base_y + j))
+                    {
                         return true;
                     }
                 }
@@ -619,7 +625,10 @@ impl TileLayer {
         self.inflight.clear();
         self.failed.clear();
         self.progress = DownloadProgress::default();
-        let target = self.cache_root.clone().unwrap_or_else(|| self.cache_dir.clone());
+        let target = self
+            .cache_root
+            .clone()
+            .unwrap_or_else(|| self.cache_dir.clone());
         let freed = dir_size(&target);
         let _ = std::fs::remove_dir_all(&target);
         freed
@@ -711,8 +720,7 @@ impl TileLayer {
     fn is_backing_off(&self, id: TileId) -> bool {
         self.failed
             .get(&id)
-            .map(|f| Instant::now() < f.retry_at)
-            .unwrap_or(false)
+            .is_some_and(|f| Instant::now() < f.retry_at)
     }
 }
 
@@ -759,15 +767,15 @@ impl GeoBounds {
 
 /// Tile column/row containing a coordinate at integer zoom `z`.
 fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
-    let n = TileId::n(z) as f64;
+    let n = f64::from(TileId::n(z));
     let x = ((lon + 180.0) / 360.0 * n).floor();
     let lat_rad = lat.clamp(-85.05112878, 85.05112878).to_radians();
     let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n)
         .floor();
     let nm = TileId::n(z).saturating_sub(1);
     (
-        (x as i64).clamp(0, nm as i64) as u32,
-        (y as i64).clamp(0, nm as i64) as u32,
+        (x as i64).clamp(0, i64::from(nm)) as u32,
+        (y as i64).clamp(0, i64::from(nm)) as u32,
     )
 }
 
@@ -822,10 +830,10 @@ fn load_tile(
     id: TileId,
 ) -> Option<(Vec<u8>, u32, u32)> {
     let path = cache_dir.join(id.cache_rel());
-    if let Ok(bytes) = std::fs::read(&path) {
-        if let Ok(t) = decode_png(&bytes) {
-            return Some(t);
-        }
+    if let Ok(bytes) = std::fs::read(&path)
+        && let Ok(t) = decode_png(&bytes)
+    {
+        return Some(t);
     }
     let client = client.as_ref()?;
     let resp = client.get(id.url(base_url)).send().ok()?;
@@ -849,7 +857,11 @@ fn fetch_to_disk(
         return false;
     };
     let path = cache_dir.join(id.cache_rel());
-    match client.get(id.url(base_url)).send().and_then(|r| r.bytes()) {
+    match client
+        .get(id.url(base_url))
+        .send()
+        .and_then(reqwest::blocking::Response::bytes)
+    {
         Ok(bytes) if decode_png(&bytes).is_ok() => {
             write_cache(&path, &bytes);
             true
@@ -930,15 +942,15 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
 /// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to the
 /// bootc-friendly `/var/cache/qos-maps` location and finally a temp dir.
 fn default_cache_dir() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("qos-maps/tiles");
-        }
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
+        && !xdg.is_empty()
+    {
+        return PathBuf::from(xdg).join("qos-maps/tiles");
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home).join(".cache/qos-maps/tiles");
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        return PathBuf::from(home).join(".cache/qos-maps/tiles");
     }
     std::env::temp_dir().join("qos-maps/tiles")
 }
@@ -968,14 +980,19 @@ pub fn paint_tile(scene: &mut Scene, transform: Affine, img: &PenikoImage, dst: 
     if dst.width() <= 0.0 || dst.height() <= 0.0 {
         return;
     }
-    let iw = img.width.max(1) as f64;
-    let ih = img.height.max(1) as f64;
+    let iw = f64::from(img.width.max(1));
+    let ih = f64::from(img.height.max(1));
     let sx = dst.width() / iw;
     let sy = dst.height() / ih;
-    let brush_transform =
-        Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(sx, sy);
+    let brush_transform = Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(sx, sy);
     let brush = ImageBrush::new(img.clone());
-    scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &dst);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        &dst,
+    );
 }
 
 /// Paint only the sub-quadrant of an ancestor `img` that corresponds to the
@@ -994,15 +1011,15 @@ pub fn paint_ancestor(
         paint_tile(scene, transform, img, dst);
         return;
     }
-    let scale = (1u32 << levels) as f64;
+    let scale = f64::from(1u32 << levels);
     // Which sub-cell of the ancestor does `child` fall into?
     let span = 1u32 << levels;
     let cell_x = child.x - ancestor.x * span;
     let cell_y = child.y - ancestor.y * span;
-    let src_w = img.width as f64 / scale;
-    let src_h = img.height as f64 / scale;
-    let src_x = cell_x as f64 * src_w;
-    let src_y = cell_y as f64 * src_h;
+    let src_w = f64::from(img.width) / scale;
+    let src_h = f64::from(img.height) / scale;
+    let src_x = f64::from(cell_x) * src_w;
+    let src_y = f64::from(cell_y) * src_h;
 
     // Brush transform maps dst-space → image-space: place src origin at dst.
     let sx = dst.width() / src_w;
@@ -1016,7 +1033,13 @@ pub fn paint_ancestor(
     // fresh zoom-in fills *every* visible tile from an ancestor, so dropping the
     // per-tile push/pop_layer removes a clip layer per tile from the hottest
     // frames (the whole tile pass is already clipped to the viewport upstream).
-    scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &dst);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        &dst,
+    );
 }
 
 /// Fill a zoom-out hole from *cached descendant* (higher-z, sharper) tiles.
@@ -1043,14 +1066,14 @@ pub fn paint_descendants(
         return false;
     }
     for depth in 1..=max_depth {
-        let cz = parent.z as u32 + depth as u32;
+        let cz = u32::from(parent.z) + u32::from(depth);
         if cz > 19 {
             break;
         }
         let cz = cz as u8;
         let span = 1u32 << depth; // children per axis at this depth
-        let cw = dst.width() / span as f64;
-        let ch = dst.height() / span as f64;
+        let cw = dst.width() / f64::from(span);
+        let ch = dst.height() / f64::from(span);
         let base_x = parent.x << depth;
         let base_y = parent.y << depth;
         let mut painted = false;
@@ -1058,8 +1081,8 @@ pub fn paint_descendants(
             for i in 0..span {
                 let cid = TileId::new(cz, base_x + i, base_y + j);
                 if let Some(img) = layer.get(cid).cloned() {
-                    let sx = dst.x0 + i as f64 * cw;
-                    let sy = dst.y0 + j as f64 * ch;
+                    let sx = dst.x0 + f64::from(i) * cw;
+                    let sy = dst.y0 + f64::from(j) * ch;
                     paint_tile(scene, transform, &img, Rect::new(sx, sy, sx + cw, sy + ch));
                     painted = true;
                 }
@@ -1299,7 +1322,11 @@ mod tests {
         }
         assert!(layer.mem_len() <= MEM_CACHE_CAP);
         // The most-recently-inserted tile must still be resident.
-        assert!(layer.mem.contains_key(&TileId::new(14, MEM_CACHE_CAP as u32 + 49, 0)));
+        assert!(
+            layer
+                .mem
+                .contains_key(&TileId::new(14, MEM_CACHE_CAP as u32 + 49, 0))
+        );
     }
 
     /// Starting an offline download enqueues exactly the estimated number of
@@ -1378,9 +1405,15 @@ mod tests {
             layer.drain();
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(!layer.is_inflight(id), "a failed fetch must clear in-flight");
+        assert!(
+            !layer.is_inflight(id),
+            "a failed fetch must clear in-flight"
+        );
         assert!(layer.get(id).is_none(), "a failed tile is not resident");
-        assert!(layer.is_backing_off(id), "a failed tile must be negative-cached");
+        assert!(
+            layer.is_backing_off(id),
+            "a failed tile must be negative-cached"
+        );
         assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
 
         // The decisive assertion: re-requesting the doomed tile is a no-op while
@@ -1419,7 +1452,10 @@ mod tests {
         layer.failed.remove(&id);
         let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
         layer.insert(id, DecodedTile { image: img });
-        assert!(layer.failed_delay(id).is_none(), "success clears the backoff");
+        assert!(
+            layer.failed_delay(id).is_none(),
+            "success clears the backoff"
+        );
         assert!(!layer.is_backing_off(id));
     }
 
@@ -1430,7 +1466,7 @@ mod tests {
     /// silent-TLS-failure shipped.
     ///
     /// Ignored by default so hermetic CI stays offline; run it explicitly with:
-    ///   cargo test -p maps --lib -- --ignored live_tile_fetch_real_network
+    ///   cargo test -p maps --lib -- --ignored `live_tile_fetch_real_network`
     /// It uses `.expect()` on `send()` so a TLS/provider failure surfaces as the
     /// actual error message rather than a swallowed `None`.
     #[test]
@@ -1512,7 +1548,11 @@ mod tests {
         // A well-formed z/x/y URL is produced for a sample tile.
         let id = TileId::new(14, 8800, 5680);
         let url = TileStyle::Dark.base_url();
-        assert!(id.url(url).ends_with("/14/8800/5680.png"), "{}", id.url(url));
+        assert!(
+            id.url(url).ends_with("/14/8800/5680.png"),
+            "{}",
+            id.url(url)
+        );
     }
 
     /// The basemap style tracks the theme: a dark chrome theme resolves to the
@@ -1552,7 +1592,7 @@ mod tests {
     /// The decisive offline-download real-path test: `start_download` must
     /// actually **fetch tiles over HTTP and persist the PNGs to the on-disk
     /// cache** (not just count). Runs the full production path —
-    /// start_download → worker → HTTP GET → decode → write_cache → drain — and
+    /// `start_download` → worker → HTTP GET → decode → `write_cache` → drain — and
     /// then asserts the exact `z/x/y.png` files exist on disk.
     #[test]
     fn download_fetches_and_persists_tiles_to_disk() {
@@ -1582,7 +1622,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(layer.progress().done, queued, "download did not complete");
-        assert_eq!(layer.progress().failed, 0, "the mock server serves every tile");
+        assert_eq!(
+            layer.progress().failed,
+            0,
+            "the mock server serves every tile"
+        );
 
         // Every queued tile is now a real PNG on disk — that is what makes the
         // region available offline.
@@ -1647,8 +1691,14 @@ mod tests {
 
         let freed = layer.delete_tiles(&[doomed]);
         assert!(freed > 0, "deleting a real tile frees its bytes");
-        assert!(!cache.join(doomed.cache_rel()).exists(), "the tile is gone from disk");
-        assert!(cache.join(kept.cache_rel()).exists(), "an untouched tile is kept");
+        assert!(
+            !cache.join(doomed.cache_rel()).exists(),
+            "the tile is gone from disk"
+        );
+        assert!(
+            cache.join(kept.cache_rel()).exists(),
+            "an untouched tile is kept"
+        );
 
         let _ = std::fs::remove_dir_all(&cache);
     }

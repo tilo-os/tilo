@@ -72,12 +72,18 @@ pub fn parse_lrc(body: &str) -> Lyrics {
         }
         if let Some((ts, text)) = parse_lrc_timestamp(line) {
             synced = true;
-            lines.push(LyricsLine { at_ms: Some(ts), text: text.to_string() });
+            lines.push(LyricsLine {
+                at_ms: Some(ts),
+                text: text.to_string(),
+            });
         } else if line.starts_with('[') && line.contains(':') && line.ends_with(']') {
             // A metadata tag like [ar:Artist] — skip.
             continue;
         } else {
-            lines.push(LyricsLine { at_ms: None, text: line.to_string() });
+            lines.push(LyricsLine {
+                at_ms: None,
+                text: line.to_string(),
+            });
         }
     }
     Lyrics { lines, synced }
@@ -103,9 +109,15 @@ pub fn plain(body: &str) -> Lyrics {
     let lines = body
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| LyricsLine { at_ms: None, text: l.trim().to_string() })
+        .map(|l| LyricsLine {
+            at_ms: None,
+            text: l.trim().to_string(),
+        })
         .collect();
-    Lyrics { lines, synced: false }
+    Lyrics {
+        lines,
+        synced: false,
+    }
 }
 
 /// Metadata needed to resolve lyrics for a track from a remote source.
@@ -145,20 +157,18 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 /// available (`lyrics` or the `live` build), so `--features live,audio` fetches
 /// real lyrics for the playing track.
 ///
-/// Robustness (the reasons "Finding lyrics…" used to hang or miss a track that
-/// clearly has lyrics):
-///   * **normalisation** — YouTube titles/artists carry noise (`(Official Music
-///     Video)`, `… - Topic`, `feat. …`) that never matches LRCLIB's clean
-///     metadata. [`lrclib_url`] / [`lrclib_search_url`] normalise both before
-///     querying, so `Californication (Official Music Video)` by
-///     `Red Hot Chili Peppers - Topic` actually resolves.
-///   * **retry + backoff + timeout** — a transient network blip or an LRCLIB
-///     rate-limit (429 / 5xx) is retried a couple of times with backoff behind
-///     an 8 s per-request timeout, instead of giving up on the first hiccup.
-///   * **cache** — a resolved result (hit *or* miss) is memoised by normalised
-///     identity, so a revisit / prefetch is instant and never re-hammers LRCLIB.
-///   * **fallback** — an exact `/api/get` miss (YouTube durations rarely match
-///     to the second) falls back to `/api/search`.
+/// - **normalisation** — `YouTube` titles/artists carry noise (`(Official Music
+///   Video)`, `… - Topic`, `feat. …`) that never matches LRCLIB's clean
+///   metadata. [`lrclib_url`] / [`lrclib_search_url`] normalise both before
+///   querying, so `Californication (Official Music Video)` by
+///   `Red Hot Chili Peppers - Topic` actually resolves.
+/// - **retry + backoff + timeout** — a transient network blip or an LRCLIB
+///   rate-limit (429 / 5xx) is retried a couple of times with backoff behind
+///   an 8 s per-request timeout.
+/// - **cache** — a resolved result (hit *or* miss) is memoised by normalised
+///   identity, so a revisit / prefetch is instant and never re-hammers LRCLIB.
+/// - **fallback** — an exact `/api/get` miss (`YouTube` durations rarely match
+///   to the second) falls back to `/api/search`.
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let key = cache_key(meta);
@@ -238,7 +248,11 @@ fn lrclib_from_search(client: &reqwest::blocking::Client, meta: &TrackMeta) -> O
     let list = arr.as_array()?;
     // Prefer the first candidate carrying synced lyrics; else the first plain.
     for rec in list {
-        if rec.get("syncedLyrics").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        if rec
+            .get("syncedLyrics")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty())
+        {
             return lyrics_from_record(rec);
         }
     }
@@ -253,15 +267,15 @@ fn lrclib_from_search(client: &reqwest::blocking::Client, meta: &TrackMeta) -> O
 /// Extract synced-then-plain lyrics from one LRCLIB JSON record.
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
-    if let Some(synced) = json.get("syncedLyrics").and_then(|v| v.as_str()) {
-        if !synced.trim().is_empty() {
-            return Some(parse_lrc(synced));
-        }
+    if let Some(synced) = json.get("syncedLyrics").and_then(|v| v.as_str())
+        && !synced.trim().is_empty()
+    {
+        return Some(parse_lrc(synced));
     }
-    if let Some(p) = json.get("plainLyrics").and_then(|v| v.as_str()) {
-        if !p.trim().is_empty() {
-            return Some(plain(p));
-        }
+    if let Some(p) = json.get("plainLyrics").and_then(|v| v.as_str())
+        && !p.trim().is_empty()
+    {
+        return Some(plain(p));
     }
     None
 }
@@ -272,7 +286,7 @@ fn enc(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push_str("%20"),
             _ => out.push_str(&format!("%{b:02X}")),
@@ -290,14 +304,32 @@ fn collapse_ws(s: &str) -> String {
 /// note) rather than part of the actual song name — so it's dropped from the
 /// LRCLIB query. Genuine parentheticals like `(Acoustic)` are kept.
 const TITLE_TAG_KEYWORDS: &[&str] = &[
-    "official", "video", "audio", "lyric", "lyrics", "visualizer", "visualiser",
-    "remaster", "remastered", "explicit", "hd", "hq", "4k", "mv", "m/v",
-    "feat", "ft", "featuring",
+    "official",
+    "video",
+    "audio",
+    "lyric",
+    "lyrics",
+    "visualizer",
+    "visualiser",
+    "remaster",
+    "remastered",
+    "explicit",
+    "hd",
+    "hq",
+    "4k",
+    "mv",
+    "m/v",
+    "feat",
+    "ft",
+    "featuring",
 ];
 
 fn segment_is_tag(seg: &str) -> bool {
     let low = seg.to_ascii_lowercase();
-    TITLE_TAG_KEYWORDS.iter().any(|k| low.split(|c: char| !c.is_ascii_alphanumeric() && c != '/').any(|w| w == *k))
+    TITLE_TAG_KEYWORDS.iter().any(|k| {
+        low.split(|c: char| !c.is_ascii_alphanumeric() && c != '/')
+            .any(|w| w == *k)
+    })
 }
 
 /// Cut a trailing `feat.` / `ft.` / `featuring` credit off a title (LRCLIB keys
@@ -312,7 +344,7 @@ fn strip_feat(s: &str) -> String {
     s.to_string()
 }
 
-/// Normalise a (YouTube) track title for an LRCLIB lookup: drop bracketed tag
+/// Normalise a (`YouTube`) track title for an LRCLIB lookup: drop bracketed tag
 /// segments (`(Official Music Video)`, `[Remastered 2011]`, …) and any trailing
 /// `feat.` credit, then collapse whitespace. Idempotent on already-clean titles,
 /// so a plain `Neon Mileage` is returned unchanged.
@@ -350,7 +382,7 @@ pub fn normalize_title(raw: &str) -> String {
     collapse_ws(&strip_feat(&out))
 }
 
-/// Normalise a (YouTube Music) artist name for an LRCLIB lookup: strip the
+/// Normalise a (`YouTube` Music) artist name for an LRCLIB lookup: strip the
 /// auto-generated `… - Topic` channel suffix and collapse whitespace.
 pub fn normalize_artist(raw: &str) -> String {
     let mut s = collapse_ws(raw);
@@ -444,7 +476,10 @@ impl LyricsWorker {
                 }
             })
             .ok();
-        Self { tx: req_tx, rx: res_rx }
+        Self {
+            tx: req_tx,
+            rx: res_rx,
+        }
     }
 
     /// Request lyrics for a track. Non-blocking; the result arrives via
@@ -468,7 +503,7 @@ impl Default for LyricsWorker {
 /// The bundled offline sample lyrics keyed by seed track id. Synced where it
 /// makes a more interesting screenshot; plain otherwise.
 pub mod bundled {
-    use super::*;
+    use super::{Lyrics, parse_lrc, plain};
 
     /// Look up bundled lyrics for a seed track id, if any.
     pub fn for_track(track_id: &str) -> Option<Lyrics> {
@@ -480,7 +515,11 @@ pub mod bundled {
             "tk_p1" => PAPER_BOATS_LRC,
             _ => return None,
         };
-        Some(if lrc.contains('[') { parse_lrc(lrc) } else { plain(lrc) })
+        Some(if lrc.contains('[') {
+            parse_lrc(lrc)
+        } else {
+            plain(lrc)
+        })
     }
 
     const GLASSLIGHT_LRC: &str = "\
@@ -602,27 +641,51 @@ mod tests {
 
     #[test]
     fn normalize_title_strips_youtube_tags_but_keeps_real_parentheticals() {
-        assert_eq!(normalize_title("Californication (Official Music Video)"), "Californication");
+        assert_eq!(
+            normalize_title("Californication (Official Music Video)"),
+            "Californication"
+        );
         assert_eq!(normalize_title("Otherside [Remastered 2011]"), "Otherside");
-        assert_eq!(normalize_title("Scar Tissue (Official Audio)"), "Scar Tissue");
-        assert_eq!(normalize_title("Say It Right feat. Nelly Furtado"), "Say It Right");
-        assert_eq!(normalize_title("Under the Bridge (feat. Someone)"), "Under the Bridge");
+        assert_eq!(
+            normalize_title("Scar Tissue (Official Audio)"),
+            "Scar Tissue"
+        );
+        assert_eq!(
+            normalize_title("Say It Right feat. Nelly Furtado"),
+            "Say It Right"
+        );
+        assert_eq!(
+            normalize_title("Under the Bridge (feat. Someone)"),
+            "Under the Bridge"
+        );
         // A genuine version parenthetical is preserved.
-        assert_eq!(normalize_title("Californication (Acoustic)"), "Californication (Acoustic)");
+        assert_eq!(
+            normalize_title("Californication (Acoustic)"),
+            "Californication (Acoustic)"
+        );
         // Already clean → unchanged (idempotent).
         assert_eq!(normalize_title("Neon Mileage"), "Neon Mileage");
     }
 
     #[test]
     fn normalize_artist_strips_topic_suffix() {
-        assert_eq!(normalize_artist("Red Hot Chili Peppers - Topic"), "Red Hot Chili Peppers");
-        assert_eq!(normalize_artist("Red Hot Chili Peppers"), "Red Hot Chili Peppers");
-        assert_eq!(normalize_artist("  Midnight   Transit  "), "Midnight Transit");
+        assert_eq!(
+            normalize_artist("Red Hot Chili Peppers - Topic"),
+            "Red Hot Chili Peppers"
+        );
+        assert_eq!(
+            normalize_artist("Red Hot Chili Peppers"),
+            "Red Hot Chili Peppers"
+        );
+        assert_eq!(
+            normalize_artist("  Midnight   Transit  "),
+            "Midnight Transit"
+        );
     }
 
-    /// The Californication-by-RHCP case the user reported: a YouTube-flavoured
-    /// title + a `… - Topic` artist must produce a *well-formed, normalised*
-    /// LRCLIB query (the reason the exact `/api/get` lookup used to miss).
+    /// A YouTube-flavoured title + a `… - Topic` artist must produce a
+    /// well-formed, normalised LRCLIB query, not one that carries the raw
+    /// noise through and misses on `/api/get`.
     #[test]
     fn lrclib_query_normalizes_youtube_metadata() {
         let meta = TrackMeta {
@@ -634,9 +697,18 @@ mod tests {
         };
         let url = lrclib_url(&meta);
         assert!(url.starts_with("https://lrclib.net/api/get?"));
-        assert!(url.contains("track_name=Californication&"), "title tag stripped: {url}");
-        assert!(url.contains("artist_name=Red%20Hot%20Chili%20Peppers&"), "topic suffix stripped: {url}");
-        assert!(url.contains("album_name=Californication&"), "album tag stripped: {url}");
+        assert!(
+            url.contains("track_name=Californication&"),
+            "title tag stripped: {url}"
+        );
+        assert!(
+            url.contains("artist_name=Red%20Hot%20Chili%20Peppers&"),
+            "topic suffix stripped: {url}"
+        );
+        assert!(
+            url.contains("album_name=Californication&"),
+            "album tag stripped: {url}"
+        );
         assert!(url.ends_with("duration=329"), "{url}");
     }
 
@@ -653,12 +725,18 @@ mod tests {
         let url = lrclib_search_url(&meta);
         assert!(url.starts_with("https://lrclib.net/api/search?"));
         assert!(url.contains("track_name=Californication"), "{url}");
-        assert!(url.contains("artist_name=Red%20Hot%20Chili%20Peppers"), "{url}");
+        assert!(
+            url.contains("artist_name=Red%20Hot%20Chili%20Peppers"),
+            "{url}"
+        );
     }
 
     #[test]
     fn resolve_prefers_bundled() {
-        let meta = TrackMeta { track_id: "tk_g1".into(), ..Default::default() };
+        let meta = TrackMeta {
+            track_id: "tk_g1".into(),
+            ..Default::default()
+        };
         let lr = resolve(&meta).expect("bundled resolves offline");
         assert!(lr.synced);
     }
@@ -666,7 +744,10 @@ mod tests {
     #[test]
     fn worker_delivers_bundled_lyrics() {
         let w = LyricsWorker::new();
-        w.request(TrackMeta { track_id: "tk_g1".into(), ..Default::default() });
+        w.request(TrackMeta {
+            track_id: "tk_g1".into(),
+            ..Default::default()
+        });
         // Poll briefly for the worker thread to resolve + deliver.
         let mut got = None;
         for _ in 0..200 {

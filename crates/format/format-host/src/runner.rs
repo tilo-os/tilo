@@ -29,7 +29,7 @@ pub const MAX_WALLCLOCK: Duration = Duration::from_secs(10);
 /// resolution on the wallclock budget.
 pub const EPOCH_TICK: Duration = Duration::from_secs(1);
 /// Ticks-ahead deadline corresponding to [`MAX_WALLCLOCK`].
-pub const MAX_TICKS: u64 = (MAX_WALLCLOCK.as_secs() / EPOCH_TICK.as_secs()) as u64;
+pub const MAX_TICKS: u64 = MAX_WALLCLOCK.as_secs() / EPOCH_TICK.as_secs();
 
 // Generate host-side Component Model bindings from the WIT package shipped by
 // `format-provider-wit`. The host imports the generated `Provider`

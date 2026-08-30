@@ -101,11 +101,17 @@ pub fn encode(action: &CameraAction) -> EncodedAction {
 // ===========================================================================
 
 pub fn set_favorite_action(id: &str, on: bool) -> CameraAction {
-    CameraAction::SetFavorite { id: id.to_string(), on }
+    CameraAction::SetFavorite {
+        id: id.to_string(),
+        on,
+    }
 }
 
 pub fn record_scan_action(raw: &str, ts: i64) -> CameraAction {
-    CameraAction::RecordScan { raw: raw.to_string(), ts }
+    CameraAction::RecordScan {
+        raw: raw.to_string(),
+        ts,
+    }
 }
 
 // ===========================================================================
@@ -153,7 +159,11 @@ fn item_label(it: &GalleryItem) -> String {
 pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("camera.gallery", "camera.gallery", "Gallery");
     for it in &ctx.items {
-        let kind = if it.is_video { "camera.video" } else { "camera.photo" };
+        let kind = if it.is_video {
+            "camera.video"
+        } else {
+            "camera.photo"
+        };
         // Explicit set toward the opposite of the current state: favoriting an
         // unstarred shot, unfavoriting a starred one.
         let (label, on) = if it.favorite {
@@ -161,8 +171,9 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         } else {
             ("Favorite", true)
         };
-        let child = Resource::new(format!("{kind}:{}", it.id), kind, item_label(it))
-            .with_action(immediate_spec("favorite", label, &set_favorite_action(&it.id, on)));
+        let child = Resource::new(format!("{kind}:{}", it.id), kind, item_label(it)).with_action(
+            immediate_spec("favorite", label, &set_favorite_action(&it.id, on)),
+        );
         root = root.with_child(child);
     }
     vec![root]
@@ -233,7 +244,9 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(
-            labels.iter().any(|l| l.contains("Favorite") || l.contains("Unfavorite")),
+            labels
+                .iter()
+                .any(|l| l.contains("Favorite") || l.contains("Unfavorite")),
             "{labels:?}"
         );
     }
@@ -257,26 +270,18 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert!(
             doc::read_favorites(&state.doc, &ROOT).contains(id),
             "the action favorited the shot"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert!(
             !doc::read_favorites(&state.doc, &ROOT).contains(id),
             "undo reverted the favorite and nothing else"
@@ -293,14 +298,22 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = set_favorite_action("c5", true);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert!(
             doc::read_favorites(&b, &ROOT).contains("c5"),
             "the favorite landed on the peer too"
@@ -316,7 +329,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = record_scan_action("https://qos.example/hello", 1234);
         let encoded = encode(&action);
@@ -342,7 +359,11 @@ mod tests {
         // The gallery's first shot and the palette spec built for its *current*
         // favorite state.
         let resources = Widget::resources(&app, &doc);
-        let item = resources[0].children.first().expect("a gallery item").clone();
+        let item = resources[0]
+            .children
+            .first()
+            .expect("a gallery item")
+            .clone();
         let id = item.id.as_str().rsplit(':').next().unwrap().to_string();
         let spec = item.actions.iter().find(|a| a.id == "favorite").unwrap();
         let from_spec = immediate_encode(spec);
@@ -350,9 +371,14 @@ mod tests {
         // Drive the real favorite affordance and capture what it dispatched.
         app.test_select(&id);
         app.test_toggle_favorite(&mut doc);
-        let from_button = app.test_last_dispatched().expect("the button dispatched an action");
+        let from_button = app
+            .test_last_dispatched()
+            .expect("the button dispatched an action");
 
         assert_eq!(from_spec.type_id, from_button.type_id);
-        assert_eq!(from_spec.payload, from_button.payload, "one source of truth");
+        assert_eq!(
+            from_spec.payload, from_button.payload,
+            "one source of truth"
+        );
     }
 }

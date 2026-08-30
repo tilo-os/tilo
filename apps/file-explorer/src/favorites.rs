@@ -109,10 +109,10 @@ fn describe(path: &Path, home: &Path, dirs: &UserDirs) -> (String, bool, FavKind
     if kind == FavKind::Home {
         return ("Home".to_string(), true, kind);
     }
-    let label = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string());
+    let label = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     (label, false, kind)
 }
 
@@ -131,7 +131,12 @@ pub fn defaults(home: &Path, dirs: &UserDirs) -> Vec<Favorite> {
     // folder names via the shared helper (a German desktop yields
     // Dokumente / Bilder / Musik).
     for (dir, label, path) in dirs.content_places(home) {
-        favs.push(Favorite { label, path, is_home: false, kind: FavKind::from_user_dir(dir) });
+        favs.push(Favorite {
+            label,
+            path,
+            is_home: false,
+            kind: FavKind::from_user_dir(dir),
+        });
     }
     favs
 }
@@ -150,10 +155,19 @@ pub fn load(dir: &Path, home: &Path, dirs: &UserDirs) -> Vec<Favorite> {
                 .map(|l| {
                     let p = PathBuf::from(l);
                     let (label, is_home, kind) = describe(&p, home, dirs);
-                    Favorite { label, path: p, is_home, kind }
+                    Favorite {
+                        label,
+                        path: p,
+                        is_home,
+                        kind,
+                    }
                 })
                 .collect();
-            if favs.is_empty() { defaults(home, dirs) } else { favs }
+            if favs.is_empty() {
+                defaults(home, dirs)
+            } else {
+                favs
+            }
         }
         Err(_) => defaults(home, dirs),
     }
@@ -188,7 +202,12 @@ pub fn add(favs: &mut Vec<Favorite>, path: PathBuf, home: &Path, dirs: &UserDirs
         return false;
     }
     let (label, is_home, kind) = describe(&path, home, dirs);
-    favs.push(Favorite { label, path, is_home, kind });
+    favs.push(Favorite {
+        label,
+        path,
+        is_home,
+        kind,
+    });
     true
 }
 
@@ -225,7 +244,17 @@ mod tests {
         assert!(favs[0].is_home);
         assert_eq!(favs[0].label, "Home");
         let labels: Vec<&str> = favs.iter().map(|f| f.label.as_str()).collect();
-        assert_eq!(labels, ["Home", "Documents", "Downloads", "Pictures", "Music", "Videos"]);
+        assert_eq!(
+            labels,
+            [
+                "Home",
+                "Documents",
+                "Downloads",
+                "Pictures",
+                "Music",
+                "Videos"
+            ]
+        );
     }
 
     #[test]
@@ -236,7 +265,17 @@ mod tests {
         let home = Path::new("/home/u");
         let favs = defaults(home, &german_dirs());
         let labels: Vec<&str> = favs.iter().map(|f| f.label.as_str()).collect();
-        assert_eq!(labels, ["Home", "Dokumente", "Downloads", "Bilder", "Musik", "Videos"]);
+        assert_eq!(
+            labels,
+            [
+                "Home",
+                "Dokumente",
+                "Downloads",
+                "Bilder",
+                "Musik",
+                "Videos"
+            ]
+        );
         // The Documents favourite points at the localized directory.
         let docs = favs.iter().find(|f| f.kind == FavKind::Documents).unwrap();
         assert_eq!(docs.path, PathBuf::from("/home/u/Dokumente"));
@@ -256,8 +295,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         save(d.path(), &defaults(home, &dirs));
         let reloaded = load(d.path(), home, &dirs);
-        let docs = reloaded.iter().find(|f| f.path == PathBuf::from("/home/u/Dokumente")).unwrap();
-        assert_eq!(docs.kind, FavKind::Documents, "localized documents keeps its kind on reload");
+        let docs = reloaded
+            .iter()
+            .find(|f| f.path == *"/home/u/Dokumente")
+            .unwrap();
+        assert_eq!(
+            docs.kind,
+            FavKind::Documents,
+            "localized documents keeps its kind on reload"
+        );
         assert_eq!(docs.label, "Dokumente");
         assert_eq!(docs.icon(), Icon::FileText);
     }
@@ -290,13 +336,33 @@ mod tests {
         // Move "Videos" (index 5) to the top-after-home position (index 1).
         reorder(&mut favs, 5, 1);
         let labels: Vec<&str> = favs.iter().map(|f| f.label.as_str()).collect();
-        assert_eq!(labels, ["Home", "Videos", "Documents", "Downloads", "Pictures", "Music"]);
+        assert_eq!(
+            labels,
+            [
+                "Home",
+                "Videos",
+                "Documents",
+                "Downloads",
+                "Pictures",
+                "Music"
+            ]
+        );
         save(d.path(), &favs);
 
         // Reloading yields the reordered list, not the defaults.
         let reloaded = load(d.path(), home, &dirs);
         let reloaded_labels: Vec<&str> = reloaded.iter().map(|f| f.label.as_str()).collect();
-        assert_eq!(reloaded_labels, ["Home", "Videos", "Documents", "Downloads", "Pictures", "Music"]);
+        assert_eq!(
+            reloaded_labels,
+            [
+                "Home",
+                "Videos",
+                "Documents",
+                "Downloads",
+                "Pictures",
+                "Music"
+            ]
+        );
         assert!(reloaded[0].is_home, "home is recognised on reload");
     }
 

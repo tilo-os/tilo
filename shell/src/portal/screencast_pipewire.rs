@@ -1,44 +1,21 @@
 //! Pipewire stream provisioning for the `ScreenCast` portal backend.
 //!
-//! Sandbox Phase 4.3 follow-up: previously, `ScreenCast.Start` returned
-//! `streams: vec![]` on Allow. This module supplies the abstraction
-//! the portal calls into to actually allocate a Pipewire node and
-//! return its id + properties to the frontend.
+//! [`ScreenCastStreamProvisioner`] is the surface the portal calls into to
+//! allocate a Pipewire node and return its id + properties to the
+//! frontend. [`MockScreenCastProvisioner`] is the default implementor,
+//! used by tests and the `pipewire`-feature-disabled build, returning a
+//! synthetic node id without touching the system daemon.
+//! `RealPipewireProvisioner` (behind the `pipewire` Cargo feature) opens
+//! a connection to the system daemon, creates a video stream of the
+//! workspace's composed scene at the negotiated dimensions, and returns
+//! the real node id, which the compositor's frame loop pushes buffers into.
 //!
-//! ## Architecture
+//! Pipewire is a C-library system dep not guaranteed on every build host
+//! (CI, distrobox, dev laptops), so the crate is optional and the mock
+//! ships by default; production OS builds turn the feature on.
 //!
-//! The trait [`ScreenCastStreamProvisioner`] is the surface the
-//! portal interacts with. Two implementors are imagined:
-//!
-//! - [`MockScreenCastProvisioner`] — used by tests and by the
-//!   `pipewire`-feature-disabled build. Returns a synthetic node id
-//!   so the portal response shape is correct without touching the
-//!   system Pipewire daemon.
-//! - `RealPipewireProvisioner` (gated behind the `pipewire` crate
-//!   feature in `Cargo.toml`) — opens a connection to the system
-//!   Pipewire daemon, creates a video stream of the workspace's
-//!   composed scene at the negotiated dimensions, and returns the
-//!   real node id. Stream content delivery is a v1 step: the
-//!   provisioner just sets up the node; the compositor's frame loop
-//!   pushes buffers into it.
-//!
-//! ## Why mock is the default
-//!
-//! Pipewire is a C-library system dep. We can't assume it's
-//! available on every build host (Cargo's `cargo test -p
-//! quick-desktop --lib` runs in CI, distrobox, dev laptops). The
-//! `pipewire` crate is therefore an optional dep in `Cargo.toml`,
-//! and the `MockScreenCastProvisioner` is the default that ships
-//! when the feature is off. Production OS builds turn the feature
-//! on; the resulting binary links against `libpipewire-0.3`.
-//!
-//! ## v1 limitation: owner's-scene-only
-//!
-//! The first-pass ScreenCast stream carries the workspace owner's
-//! own composed scene — the same surface their wgpu renderer paints
-//! into the offscreen output buffer. Multi-surface composition
-//! (peers, overlay layer, etc.) is a v2 follow-up; the same shape
-//! the Phase 4 peer-sync code takes.
+//! The current stream carries only the workspace owner's own composed
+//! scene; compositing in peers or the overlay layer is future work.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -50,27 +27,20 @@ use super::PortalCaller;
 /// What the provisioner needs to spin up a stream.
 #[derive(Clone, Debug)]
 pub struct PipewireStreamRequest {
-    /// Identity of the requesting app — used for `pw.client.app.name`
-    /// on the stream's property dict.
+    /// Identity of the requesting app — used for `pw.client.app.name` on the stream's property dict.
     pub caller: PortalCaller,
-    /// Width in pixels of the stream's video frames. Negotiated with
-    /// the frontend during `SelectSources`.
+    /// Width in pixels of the stream's video frames, negotiated with the frontend during `SelectSources`.
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
-    /// Target framerate. v1 hard-codes to 30 unless the frontend
-    /// asked for a specific rate.
+    /// Target framerate; v1 hard-codes to 30 unless the frontend asked for a specific rate.
     pub framerate: u32,
-    /// The source type this stream captures: `1` monitor, `2` window,
-    /// `4` virtual (see `ScreenCast.AvailableSourceTypes`). Chosen from
-    /// the user's `SelectSources` selection; the provisioner echoes it
-    /// back on the resulting [`PipewireStreamInfo`] so the frontend
-    /// knows what it's attached to.
+    /// The source type this stream captures: `1` monitor, `2` window, `4`
+    /// virtual (see `ScreenCast.AvailableSourceTypes`), chosen from the
+    /// user's `SelectSources` selection and echoed back on [`PipewireStreamInfo`].
     pub source_type: u32,
-    /// Cursor embedding mode: `1` hidden, `2` embedded, `4` metadata
-    /// (see `ScreenCast.AvailableCursorModes`). The real provisioner
-    /// uses this to decide whether to composite the cursor into the
-    /// captured frames or ship it as separate metadata.
+    /// Cursor embedding mode: `1` hidden, `2` embedded, `4` metadata (see
+    /// `ScreenCast.AvailableCursorModes`) — the real provisioner uses this to decide whether to composite the cursor or ship it as metadata.
     pub cursor_mode: u32,
 }
 
@@ -90,30 +60,24 @@ impl Default for PipewireStreamRequest {
 /// Production-shape description of a provisioned Pipewire stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PipewireStreamInfo {
-    /// Pipewire node id (uint32) — the frontend uses this with
-    /// `pipewire-stream-1.0` to attach to the producer side.
+    /// Pipewire node id (uint32) — the frontend uses this with `pipewire-stream-1.0` to attach to the producer side.
     pub node_id: u32,
-    /// Pipewire `source_type`: 1 = monitor, 2 = window, 4 = virtual.
-    /// v1 always emits 1 (monitor) — we're sharing the workspace's
-    /// rendered output as a single "monitor" surface.
+    /// Pipewire `source_type`: 1 = monitor, 2 = window, 4 = virtual. v1
+    /// always emits 1 — sharing the workspace's rendered output as a single "monitor" surface.
     pub source_type: u32,
-    /// `id` field — opaque, used by the frontend to disambiguate
-    /// multiple streams from the same node. v1 always 0.
+    /// `id` field — opaque, disambiguates multiple streams from the same node for the frontend. v1 always 0.
     pub id: u32,
     /// `(width, height)` of the stream's video frames.
     pub size: (u32, u32),
-    /// `(x, y)` position in the compositor coordinate space. Per the
-    /// ScreenCast spec this is **only** meaningful for monitor sources;
-    /// [`Self::into_stream_tuple`] omits it for window / virtual streams.
+    /// `(x, y)` position in the compositor coordinate space; per the
+    /// `ScreenCast` spec **only** meaningful for monitor sources — [`Self::into_stream_tuple`] omits it otherwise.
     pub position: (i32, i32),
 }
 
 impl PipewireStreamInfo {
-    /// Serialise into the `(node_id, properties_dict)` pair the
-    /// `streams` field of `ScreenCast.Start`'s response expects.
-    ///
-    /// `properties_dict` carries `id`, `size`, `source_type`, and — for
-    /// monitor sources — `position`, per the xdg-desktop-portal spec.
+    /// Serialise into the `(node_id, properties_dict)` pair
+    /// `ScreenCast.Start`'s `streams` field expects: `id`, `size`,
+    /// `source_type`, and — for monitor sources — `position`.
     pub fn into_stream_tuple(self) -> (u32, HashMap<String, OwnedValue>) {
         let mut props: HashMap<String, OwnedValue> = HashMap::new();
         if let Ok(v) = OwnedValue::try_from(Value::U32(self.id)) {
@@ -137,47 +101,37 @@ impl PipewireStreamInfo {
     }
 }
 
-/// Recoverable errors from the provisioner. The portal layer turns
-/// these into `response=2` (other error) per the freedesktop.org
-/// portal contract.
+/// Recoverable errors from the provisioner. The portal layer turns these into `response=2` (other error) per the freedesktop.org portal contract.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ProvisioningError {
-    /// The Pipewire daemon couldn't be reached. Production: log +
-    /// fall through to deny; the user sees the consent dialog
-    /// succeed and the streaming session fail with a clear error.
+    /// The Pipewire daemon couldn't be reached. Production logs and falls
+    /// through to deny — the consent dialog succeeds but streaming fails with a clear error.
     #[error("pipewire daemon unreachable: {0}")]
     DaemonUnreachable(String),
-    /// Stream creation failed mid-handshake — usually a format
-    /// rejection by the daemon.
+    /// Stream creation failed mid-handshake — usually a format rejection by the daemon.
     #[error("pipewire stream setup failed: {0}")]
     StreamSetup(String),
-    /// Generic "provisioner not available" — used when the
-    /// `pipewire` feature isn't compiled in. Falls through to a
-    /// synthetic stream id from the mock provisioner.
+    /// Generic "provisioner not available" — used when the `pipewire`
+    /// feature isn't compiled in; falls through to a synthetic id from the mock provisioner.
     #[error("provisioner not implemented")]
     NotImplemented,
 }
 
 /// Host-side contract: provision a Pipewire stream the frontend can
-/// attach to. Synchronous because the Pipewire C API itself is.
-/// Production callers run this from inside a tokio-blocking task or
-/// on the dedicated compositor thread.
+/// attach to. Synchronous because the Pipewire C API is; production runs this from a tokio-blocking task or the compositor thread.
 pub trait ScreenCastStreamProvisioner: Send + Sync {
     fn provision_stream(
         &self,
         req: &PipewireStreamRequest,
     ) -> Result<PipewireStreamInfo, ProvisioningError>;
 
-    /// Open a PipeWire remote connection and hand back its fd.
+    /// Open a `PipeWire` remote connection and hand back its fd.
     ///
-    /// This is what `ScreenCast.OpenPipeWireRemote` returns to the
-    /// application: a file descriptor the app passes to
-    /// `pw_context_connect_fd` so it can attach to the nodes provisioned
-    /// by [`Self::provision_stream`]. The real provisioner returns the fd
-    /// from the compositor's own PipeWire daemon connection (scoped so the
-    /// app can only see the nodes it was granted). The mock returns a real
-    /// but inert OS fd so the D-Bus fd-passing path is exercised end to end
-    /// without a PipeWire daemon.
+    /// This is what `ScreenCast.OpenPipeWireRemote` returns to the app: a fd
+    /// passed to `pw_context_connect_fd` to attach to the nodes provisioned
+    /// by [`Self::provision_stream`]. The real provisioner scopes it to the
+    /// compositor's own connection; the mock returns a real but inert OS fd
+    /// so the D-Bus fd-passing path is exercised without a daemon.
     fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError>;
 }
 
@@ -199,25 +153,22 @@ impl ScreenCastStreamProvisionerHandle {
         self.inner.provision_stream(req)
     }
 
-    /// Open a PipeWire remote fd for `ScreenCast.OpenPipeWireRemote`.
+    /// Open a `PipeWire` remote fd for `ScreenCast.OpenPipeWireRemote`.
     pub fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError> {
         self.inner.open_remote_fd()
     }
 }
 
-/// Mock provisioner — returns a fixed node id. Used by the
-/// `pipewire`-disabled build and by all tests.
+/// Mock provisioner — returns a fixed node id, used by the `pipewire`-disabled build and by all tests.
 pub struct MockScreenCastProvisioner {
     next_node: Mutex<u32>,
-    /// Tracks the requests seen so tests can assert on the caller +
-    /// dimensions the backend forwarded.
+    /// Tracks the requests seen so tests can assert on the caller + dimensions the backend forwarded.
     seen: Mutex<Vec<PipewireStreamRequest>>,
     name_hint: String,
 }
 
 impl MockScreenCastProvisioner {
-    /// Build a mock whose first response carries `start_node_id`.
-    /// Subsequent responses increment by 1.
+    /// Build a mock whose first response carries `start_node_id`; subsequent responses increment by 1.
     pub fn new_with_node(start_node_id: u32, name_hint: &str) -> Self {
         Self {
             next_node: Mutex::new(start_node_id),
@@ -231,9 +182,8 @@ impl MockScreenCastProvisioner {
         self.seen.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
-    /// Read-only access to the descriptive label set at construction
-    /// time. Used by tests asserting the mock's wiring without
-    /// duplicating the name in the test body.
+    /// Read-only access to the descriptive label set at construction time —
+    /// used by tests asserting the mock's wiring without duplicating the name.
     pub fn name_hint(&self) -> &str {
         &self.name_hint
     }
@@ -256,8 +206,7 @@ impl ScreenCastStreamProvisioner for MockScreenCastProvisioner {
         Ok(PipewireStreamInfo {
             node_id,
             // Echo the requested source type so a window/virtual selection
-            // round-trips through the stream props rather than being
-            // silently downgraded to monitor.
+            // round-trips through the stream props instead of being silently downgraded to monitor.
             source_type: req.source_type,
             id: 0,
             size: (req.width, req.height),
@@ -266,10 +215,8 @@ impl ScreenCastStreamProvisioner for MockScreenCastProvisioner {
     }
 
     fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError> {
-        // A real but inert fd (`/dev/null`) so the `OpenPipeWireRemote`
-        // D-Bus method actually passes a usable descriptor over the wire.
-        // The production provisioner returns the fd of the compositor's
-        // scoped PipeWire daemon connection instead.
+        // A real but inert fd (`/dev/null`) so `OpenPipeWireRemote` actually
+        // passes a usable descriptor; production returns the compositor's scoped daemon connection fd instead.
         let file = std::fs::File::open("/dev/null")
             .map_err(|e| ProvisioningError::DaemonUnreachable(e.to_string()))?;
         Ok(std::os::fd::OwnedFd::from(file))
@@ -332,9 +279,8 @@ mod tests {
         };
         let (node_id, props) = info.into_stream_tuple();
         assert_eq!(node_id, 42);
-        // The freedesktop ScreenCast spec requires `size` to be present;
-        // `id` and `source_type` are optional but xdg-desktop-portal's
-        // frontends consume them.
+        // The freedesktop ScreenCast spec requires `size`; `id`/`source_type`
+        // are optional but xdg-desktop-portal's frontends consume them.
         assert!(props.contains_key("size"));
         assert!(props.contains_key("source_type"));
         assert!(props.contains_key("id"));
@@ -344,8 +290,7 @@ mod tests {
 
     #[test]
     fn stream_info_omits_position_for_window_source() {
-        // Window (2) / virtual (4) sources have no compositor-space
-        // position; the spec says `position` is monitor-only.
+        // Window (2) / virtual (4) sources have no compositor-space position; the spec says `position` is monitor-only.
         let info = PipewireStreamInfo {
             node_id: 9,
             source_type: 2,

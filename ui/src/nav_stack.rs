@@ -1,25 +1,12 @@
-//! A reusable, app-agnostic **navigation stack** with a back action and an
+//! A reusable, app-agnostic navigation stack with a back action and an
 //! edge-swipe back-gesture hook.
 //!
-//! Apps that model their UI as a series of views (search → results → watch …)
-//! need three things the toolkit can own once, rather than each app
-//! reinventing: a **history** of views with push/pop, a first-class **back**
-//! action, and a **gesture entry point** so an edge-swipe can drive the same
-//! back action later without touching the app. This module provides all three:
+//! Apps that model UI as a series of views need three things the toolkit can
+//! own once: a history with push/pop ([`NavStack<T>`]), a single back intent
+//! ([`NavAction`]) that gesture/key/button all resolve to, and a gesture
+//! entry point ([`EdgeSwipeBack`]) so an edge-swipe drives the same action.
 //!
-//! * [`NavStack<T>`] — a generic history of view descriptors (`T` is whatever
-//!   an app uses to name a view, e.g. its route enum). `push` records a new
-//!   view; [`NavStack::back`] pops to the previous one; [`NavStack::current`]
-//!   is the view on screen.
-//! * [`NavAction`] — the single navigation intent (`Back`) a gesture / key /
-//!   button all resolve to, so an app has one place to handle "go back".
-//! * [`EdgeSwipeBack`] — a minimal, real left-edge-swipe recognizer that emits
-//!   [`NavAction::Back`]. It is deliberately small (a threshold recognizer, no
-//!   velocity/animation yet) but the **plumbing is complete**: an app feeds it
-//!   pointer positions and acts on the returned action, so richer swipe-nav can
-//!   be added here later with zero app changes.
-//!
-//! The stack stores *cloneable descriptors*, never widgets — it is pure state,
+//! The stack stores cloneable descriptors, never widgets — pure state,
 //! unit-tested without a render pass.
 
 use vello::kurbo::Point;
@@ -29,7 +16,6 @@ use vello::kurbo::Point;
 /// intents (forward, home, jump-to-root) slot in without changing call sites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavAction {
-    /// Pop the current view and return to the previous one.
     Back,
 }
 
@@ -46,7 +32,9 @@ pub struct NavStack<T> {
 impl<T: Clone + PartialEq> NavStack<T> {
     /// A stack rooted at `root` (the first, un-poppable view).
     pub fn new(root: T) -> Self {
-        Self { entries: vec![root] }
+        Self {
+            entries: vec![root],
+        }
     }
 
     /// The view currently on screen (the top of the stack). Never `None` — the
@@ -75,7 +63,6 @@ impl<T: Clone + PartialEq> NavStack<T> {
         }
     }
 
-    /// Whether there is a previous view to return to.
     pub fn can_go_back(&self) -> bool {
         self.entries.len() > 1
     }
@@ -103,22 +90,16 @@ impl<T: Clone + PartialEq> NavStack<T> {
         self.entries.len()
     }
 
-    /// Reset the whole history to a single root view.
     pub fn reset(&mut self, root: T) {
         self.entries.clear();
         self.entries.push(root);
     }
 }
 
-/// A minimal left-edge-swipe **back-gesture** recognizer.
-///
-/// The recognizer arms when a pointer press starts within `edge_width` logical
-/// px of the left edge, then fires [`NavAction::Back`] once the pointer has
-/// travelled more than `trigger_distance` px to the right (a mostly-horizontal
-/// drag). It is intentionally simple — no velocity, no live-tracking animation —
-/// but it is a *real* recognizer with a complete pointer-event contract, so an
-/// app wires it in once and a richer implementation (rubber-banding, fling)
-/// drops in here later without any app change.
+/// Arms when a press starts within `edge_width` of the left edge, fires
+/// [`NavAction::Back`] once the pointer travels `trigger_distance` px right
+/// in a mostly-horizontal drag. No velocity/animation, but a complete
+/// pointer-event contract a richer recognizer can later drop into.
 #[derive(Clone, Debug)]
 pub struct EdgeSwipeBack {
     edge_width: f64,
@@ -165,7 +146,6 @@ impl EdgeSwipeBack {
         let origin = self.origin?;
         let dx = p.x - origin.x;
         let dy = (p.y - origin.y).abs();
-        // Predominantly-horizontal, rightward travel past the threshold.
         if dx >= self.trigger_distance && dx > dy {
             self.fired = true;
             return Some(NavAction::Back);
@@ -224,10 +204,18 @@ mod tests {
     fn duplicate_push_is_a_noop() {
         let mut s = NavStack::new("home");
         s.push("home");
-        assert_eq!(s.depth(), 1, "pushing the current view does not grow history");
+        assert_eq!(
+            s.depth(),
+            1,
+            "pushing the current view does not grow history"
+        );
         s.push("results");
         s.push("results");
-        assert_eq!(s.depth(), 2, "a repeated push of the same new view is ignored");
+        assert_eq!(
+            s.depth(),
+            2,
+            "a repeated push of the same new view is ignored"
+        );
     }
 
     #[test]
@@ -251,9 +239,13 @@ mod tests {
     #[test]
     fn edge_swipe_fires_back_once_on_rightward_drag_from_edge() {
         let mut g = EdgeSwipeBack::new(24.0, 80.0);
-        g.pointer_down(Point::new(8.0, 400.0)); // inside the edge zone
+        g.pointer_down(Point::new(8.0, 400.0));
         assert!(g.is_armed());
-        assert_eq!(g.pointer_move(Point::new(40.0, 402.0)), None, "short drag: not yet");
+        assert_eq!(
+            g.pointer_move(Point::new(40.0, 402.0)),
+            None,
+            "short drag: not yet"
+        );
         assert_eq!(
             g.pointer_move(Point::new(100.0, 404.0)),
             Some(NavAction::Back),
@@ -271,19 +263,22 @@ mod tests {
     #[test]
     fn edge_swipe_ignores_presses_away_from_edge() {
         let mut g = EdgeSwipeBack::new(24.0, 80.0);
-        g.pointer_down(Point::new(300.0, 400.0)); // not near the edge
+        g.pointer_down(Point::new(300.0, 400.0));
         assert!(!g.is_armed());
-        assert_eq!(g.pointer_move(Point::new(500.0, 400.0)), None, "no arm → no fire");
+        assert_eq!(
+            g.pointer_move(Point::new(500.0, 400.0)),
+            None,
+            "no arm → no fire"
+        );
     }
 
     #[test]
     fn edge_swipe_ignores_mostly_vertical_drag() {
         let mut g = EdgeSwipeBack::new(24.0, 80.0);
         g.pointer_down(Point::new(6.0, 100.0));
-        // Large vertical component with sub-threshold horizontal: a scroll, not a
-        // back swipe.
+        // Sub-threshold horizontal with a large vertical: a scroll.
         assert_eq!(g.pointer_move(Point::new(50.0, 400.0)), None);
-        // Even past the horizontal threshold, a bigger vertical delta is a scroll.
+        // Past the horizontal threshold too, but vertical delta is bigger.
         assert_eq!(g.pointer_move(Point::new(90.0, 500.0)), None);
     }
 }

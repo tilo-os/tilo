@@ -332,7 +332,11 @@ mod tests {
         let mut names = HashSet::new();
         for l in LAYOUTS {
             assert!(ids.insert(l.id), "duplicate id {}", l.id);
-            assert!(names.insert(l.display_name), "duplicate name {}", l.display_name);
+            assert!(
+                names.insert(l.display_name),
+                "duplicate name {}",
+                l.display_name
+            );
         }
     }
 
@@ -340,7 +344,11 @@ mod tests {
     fn apply_metadata_is_present() {
         for l in LAYOUTS {
             assert!(!l.xkb_layout.is_empty(), "{} has empty xkb_layout", l.id);
-            assert!(!l.display_name.is_empty(), "{} has empty display_name", l.id);
+            assert!(
+                !l.display_name.is_empty(),
+                "{} has empty display_name",
+                l.id
+            );
             if let Some(v) = l.xkb_variant {
                 assert!(!v.is_empty(), "{} has empty (Some) xkb_variant", l.id);
             }
@@ -392,7 +400,10 @@ mod tests {
     fn remapped_layouts_actually_differ_from_us() {
         // Sanity: the visual data encodes the famous remaps.
         let de = by_display_name("German (QWERTZ)").unwrap();
-        assert_eq!(de.rows[1][5], "z", "QWERTZ swaps y/z (position 6 of top row)");
+        assert_eq!(
+            de.rows[1][5], "z",
+            "QWERTZ swaps y/z (position 6 of top row)"
+        );
         assert_eq!(de.rows[3][0], "y", "QWERTZ bottom row starts with y");
         let fr = by_display_name("French (AZERTY)").unwrap();
         assert_eq!(fr.rows[1][0], "a", "AZERTY top row starts with a");

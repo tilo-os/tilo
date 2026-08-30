@@ -4,7 +4,7 @@
 //! Run with:
 //!
 //! ```bash
-//! cargo run -p ui --example channel_browser
+//! cargo run -p ui --example ui-lab -- channel_browser
 //! ```
 //!
 //! Notes:
@@ -17,9 +17,9 @@
 
 use std::time::{Duration, SystemTime};
 
+use collab_types::ChannelId;
 use ui::widget::channel_browser::{ChannelBrowser, ChannelEntry};
 use ui::{App, State};
-use collab_types::ChannelId;
 
 fn ch(
     name: &str,
@@ -42,7 +42,7 @@ fn ch(
     }
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     // Mocked entries — two spaces, a mix of roles, pins, and unread
     // counts. Matches the shape the shell will produce in Phase 5
     // once the wheel-disc auto-promote algorithm runs.
@@ -55,7 +55,15 @@ fn main() {
         ch("journal", "Personal", 30.0, 60, 0, true, None),
         ch("recipes", "Personal", 30.0, 720, 0, false, None),
         ch("reading-list", "Personal", 30.0, 1440, 5, false, None),
-        ch("side-project", "Side hustles", 130.0, 180, 2, false, Some("Owner")),
+        ch(
+            "side-project",
+            "Side hustles",
+            130.0,
+            180,
+            2,
+            false,
+            Some("Owner"),
+        ),
     ];
 
     let state = State::new();

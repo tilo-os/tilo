@@ -3,34 +3,24 @@
 //! While the session is locked ([`crate::compositor::idle::SessionManager::is_locked`]),
 //! the compositor routes **all** keyboard input into this controller instead
 //! of to apps/chrome — that redirection is the input half of the lock's
-//! security boundary. The controller accumulates a password, and only a
-//! credential the [`PasswordVerifier`] accepts produces
-//! [`UnlockOutcome::Unlocked`]. Nothing else — no key, no client message —
-//! can return `Unlocked`, so the session cannot be bypassed: the only path
-//! out is a correct password.
+//! security boundary. Only a credential the [`PasswordVerifier`] accepts
+//! produces [`UnlockOutcome::Unlocked`]; nothing else can, so the session
+//! cannot be bypassed.
 //!
 //! # Asynchronous verification
 //!
-//! Verifying a credential can be slow — the in-session path spawns a PAM
-//! helper subprocess ([`crate::compositor::lock_auth::HelperVerifier`]), and
-//! biometrics later will be slower still. Running that on the compositor's
-//! run loop would freeze the whole desktop for the duration. So [`submit`]
-//! never verifies inline: it hands `(username, password)` to a **worker
-//! thread** and returns immediately, leaving the session locked. The run loop
-//! polls [`poll_verification`] each tick; the session unlocks **only** when
-//! that poll observes the worker's success. A wrong/failed result surfaces a
-//! non-leaky error and stays locked. While a verify is in flight the field is
-//! frozen (further keys are swallowed) and [`is_verifying`] is `true` so the
-//! overlay can show a "Verifying…" state.
+//! Verifying a credential can be slow (a PAM helper subprocess today,
+//! biometrics later), and running that on the compositor's run loop would
+//! freeze the whole desktop for the duration. So [`submit`] never verifies
+//! inline: it hands `(username, password)` to a worker thread and returns
+//! immediately, leaving the session locked. The run loop polls
+//! [`poll_verification`] each tick; the session unlocks **only** when that
+//! poll observes the worker's success. While a verify is in flight the
+//! field is frozen and [`is_verifying`] is `true`.
 //!
 //! [`submit`]: LockController::submit
 //! [`poll_verification`]: LockController::poll_verification
 //! [`is_verifying`]: LockController::is_verifying
-//!
-//! The controller stays I/O-light on its own thread: the only blocking work
-//! (the `verify` call) is on the worker, so the whole lock/unlock flow is
-//! unit-testable on the real code path with a fake verifier — see
-//! [`crate::compositor::lock_auth`].
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -471,8 +461,7 @@ mod tests {
 
     #[test]
     fn async_wrong_password_stays_locked_with_nonleaky_error() {
-        let (v, gate) =
-            GateVerifier::new(Err("Incorrect username or password".to_string()));
+        let (v, gate) = GateVerifier::new(Err("Incorrect username or password".to_string()));
         let mut c = LockController::new(Arc::new(v), "alice");
         c.push_str("wrong");
         assert_eq!(c.submit(), UnlockOutcome::StillLocked);
@@ -499,7 +488,10 @@ mod tests {
         );
         assert_eq!(c.buffer_len(), 0, "text is swallowed while verifying");
         assert_eq!(c.handle_key(LockKey::Submit), UnlockOutcome::StillLocked);
-        assert!(c.is_verifying(), "a second submit does not replace the verify");
+        assert!(
+            c.is_verifying(),
+            "a second submit does not replace the verify"
+        );
         release(&gate);
         assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
     }

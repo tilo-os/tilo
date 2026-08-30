@@ -9,7 +9,7 @@
 
 use crate::geo::{haversine_m, polyline_length_m};
 use crate::model::{
-    Category, DownloadedRegion, LatLon, MapModel, Maneuver, Panel, Place, Poi, Route, RouteStep,
+    Category, DownloadedRegion, LatLon, Maneuver, MapModel, Panel, Place, Poi, Route, RouteStep,
     TransitJourney, TransitLeg, TransitMode, TravelMode,
 };
 
@@ -166,7 +166,7 @@ pub fn basemap() -> Basemap {
     let mut river = Vec::new();
     let base_x = 8.5;
     for i in -NY..=NY {
-        let t = i as f64;
+        let t = f64::from(i);
         let wobble = (t * 0.55).sin() * 1.4 + (t * 0.21).cos() * 0.6;
         river.push(cell(base_x + wobble, t));
     }
@@ -207,8 +207,8 @@ pub fn basemap() -> Basemap {
     // --- Building fills: a subset of grid cells get a raised block.
     for ix in -NX..NX {
         for iy in -NY..NY {
-            let cx = ix as f64 + 0.5;
-            let cy = iy as f64 + 0.5;
+            let cx = f64::from(ix) + 0.5;
+            let cy = f64::from(iy) + 0.5;
             if near_park(cx, cy) || near_river(cx, cy) {
                 continue;
             }
@@ -218,29 +218,24 @@ pub fn basemap() -> Basemap {
             let inset = rng.range(0.16, 0.30);
             let jx = rng.range(-0.05, 0.05);
             let jy = rng.range(-0.05, 0.05);
-            let x0 = ix as f64 + inset + jx;
-            let x1 = (ix as f64 + 1.0) - inset + jx;
-            let y0 = iy as f64 + inset + jy;
-            let y1 = (iy as f64 + 1.0) - inset + jy;
+            let x0 = f64::from(ix) + inset + jx;
+            let x1 = (f64::from(ix) + 1.0) - inset + jx;
+            let y0 = f64::from(iy) + inset + jy;
+            let y1 = (f64::from(iy) + 1.0) - inset + jy;
             areas.push(Area {
                 kind: AreaKind::Building,
-                ring: vec![
-                    cell(x0, y0),
-                    cell(x1, y0),
-                    cell(x1, y1),
-                    cell(x0, y1),
-                ],
+                ring: vec![cell(x0, y0), cell(x1, y0), cell(x1, y1), cell(x0, y1)],
             });
         }
     }
 
     // --- Street grid: residential roads on every grid line.
     for ix in -NX..=NX {
-        let x = ix as f64;
+        let x = f64::from(ix);
         let mut pts = Vec::new();
         for iy in -NY..=NY {
             let j = rng.range(-0.04, 0.04);
-            pts.push(cell(x + j, iy as f64));
+            pts.push(cell(x + j, f64::from(iy)));
         }
         roads.push(Road {
             class: RoadClass::Residential,
@@ -248,11 +243,11 @@ pub fn basemap() -> Basemap {
         });
     }
     for iy in -NY..=NY {
-        let y = iy as f64;
+        let y = f64::from(iy);
         let mut pts = Vec::new();
         for ix in -NX..=NX {
             let j = rng.range(-0.04, 0.04);
-            pts.push(cell(ix as f64, y + j));
+            pts.push(cell(f64::from(ix), y + j));
         }
         roads.push(Road {
             class: RoadClass::Residential,
@@ -263,16 +258,18 @@ pub fn basemap() -> Basemap {
     // --- A few primary avenues (thicker) crossing the grid.
     roads.push(Road {
         class: RoadClass::Primary,
-        pts: (-NX..=NX).map(|ix| cell(ix as f64, 0.0)).collect(),
+        pts: (-NX..=NX).map(|ix| cell(f64::from(ix), 0.0)).collect(),
     });
     roads.push(Road {
         class: RoadClass::Primary,
-        pts: (-NY..=NY).map(|iy| cell(0.0, iy as f64)).collect(),
+        pts: (-NY..=NY).map(|iy| cell(0.0, f64::from(iy))).collect(),
     });
     // A diagonal secondary boulevard.
     roads.push(Road {
         class: RoadClass::Secondary,
-        pts: (-NY..=NY).map(|iy| cell(iy as f64 * 0.8 - 3.0, iy as f64)).collect(),
+        pts: (-NY..=NY)
+            .map(|iy| cell(f64::from(iy) * 0.8 - 3.0, f64::from(iy)))
+            .collect(),
     });
     // A ring-ish secondary.
     roads.push(Road {
@@ -432,7 +429,13 @@ pub fn pois() -> Vec<Poi> {
             address: "Sparkassenstraße 2, München".to_string(),
             opening_hours: Some("11:00–23:30".to_string()),
             kind: Some("bavarian".to_string()),
-            ..mk("osm-node-202", "Ratskeller", Category::Restaurant, -0.8, 0.6)
+            ..mk(
+                "osm-node-202",
+                "Ratskeller",
+                Category::Restaurant,
+                -0.8,
+                0.6,
+            )
         },
         Poi {
             address: "Am Platzl 9, München".to_string(),
@@ -444,16 +447,34 @@ pub fn pois() -> Vec<Poi> {
         Poi {
             address: "St.-Jakobs-Platz 1".to_string(),
             opening_hours: Some("Tu–Su 10:00–18:00".to_string()),
-            ..mk("osm-way-204", "Jüdisches Museum", Category::Museum, -2.0, -1.0)
+            ..mk(
+                "osm-way-204",
+                "Jüdisches Museum",
+                Category::Museum,
+                -2.0,
+                -1.0,
+            )
         },
         Poi {
             opening_hours: Some("24/7".to_string()),
-            ..mk("osm-node-205", "Marienplatz (U/S)", Category::Transit, 0.2, -0.3)
+            ..mk(
+                "osm-node-205",
+                "Marienplatz (U/S)",
+                Category::Transit,
+                0.2,
+                -0.3,
+            )
         },
         Poi {
             kind: Some("bakery".to_string()),
             opening_hours: Some("06:00–19:00".to_string()),
-            ..mk("osm-node-206", "Rischart Backhaus", Category::Shop, 0.6, -0.9)
+            ..mk(
+                "osm-node-206",
+                "Rischart Backhaus",
+                Category::Shop,
+                0.6,
+                -0.9,
+            )
         },
         Poi {
             address: "Neuhauser Str. 2".to_string(),
@@ -466,7 +487,13 @@ pub fn pois() -> Vec<Poi> {
         Poi {
             address: "Sendlinger Str. 44".to_string(),
             phone: Some("+49 89 5525 570".to_string()),
-            ..mk("osm-node-209", "Hotel Blauer Bock", Category::Hotel, 3.8, -4.0)
+            ..mk(
+                "osm-node-209",
+                "Hotel Blauer Bock",
+                Category::Hotel,
+                3.8,
+                -4.0,
+            )
         },
         Poi {
             kind: Some("park".to_string()),
@@ -558,14 +585,24 @@ pub fn fallback_route(from: LatLon, to: LatLon, mode: TravelMode) -> Route {
     let bearing_east = to.lon >= from.lon;
     let steps = vec![
         RouteStep {
-            instruction: format!("Head {} to start", if bearing_east { "east" } else { "west" }),
+            instruction: format!(
+                "Head {} to start",
+                if bearing_east { "east" } else { "west" }
+            ),
             distance_m: haversine_m(from, corner),
             maneuver: Maneuver::Depart,
         },
         RouteStep {
-            instruction: format!("Turn {} toward destination", if to.lat >= from.lat { "left" } else { "right" }),
+            instruction: format!(
+                "Turn {} toward destination",
+                if to.lat >= from.lat { "left" } else { "right" }
+            ),
             distance_m: haversine_m(corner, to),
-            maneuver: if to.lat >= from.lat { Maneuver::Left } else { Maneuver::Right },
+            maneuver: if to.lat >= from.lat {
+                Maneuver::Left
+            } else {
+                Maneuver::Right
+            },
         },
         RouteStep {
             instruction: "Arrive at destination".to_string(),
@@ -619,7 +656,14 @@ pub fn sample_transit() -> Vec<TransitJourney> {
             duration_min: 14,
             transfers: 0,
             legs: vec![
-                walk("Your location", "Goetheplatz", 12, 16, 4, grid_path((-6.5, -6.0), (-5.0, -5.0))),
+                walk(
+                    "Your location",
+                    "Goetheplatz",
+                    12,
+                    16,
+                    4,
+                    grid_path((-6.5, -6.0), (-5.0, -5.0)),
+                ),
                 TransitLeg {
                     mode: TransitMode::Subway,
                     line: "U3".to_string(),
@@ -636,7 +680,14 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     agency: "MVG".to_string(),
                     realtime: true,
                 },
-                walk("Marienplatz", "Marienplatz", 24, 26, 2, grid_path((0.0, 0.0), (0.2, -0.2))),
+                walk(
+                    "Marienplatz",
+                    "Marienplatz",
+                    24,
+                    26,
+                    2,
+                    grid_path((0.0, 0.0), (0.2, -0.2)),
+                ),
             ],
         },
         TransitJourney {
@@ -645,7 +696,14 @@ pub fn sample_transit() -> Vec<TransitJourney> {
             duration_min: 19,
             transfers: 1,
             legs: vec![
-                walk("Your location", "Sendlinger Tor", 8, 11, 3, grid_path((-6.5, -6.0), (-4.0, -4.0))),
+                walk(
+                    "Your location",
+                    "Sendlinger Tor",
+                    8,
+                    11,
+                    3,
+                    grid_path((-6.5, -6.0), (-4.0, -4.0)),
+                ),
                 TransitLeg {
                     mode: TransitMode::Tram,
                     line: "17".to_string(),
@@ -678,7 +736,14 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     agency: "MVG".to_string(),
                     realtime: false,
                 },
-                walk("Marienplatz", "Marienplatz", 25, 27, 2, grid_path((0.0, 0.0), (0.2, -0.2))),
+                walk(
+                    "Marienplatz",
+                    "Marienplatz",
+                    25,
+                    27,
+                    2,
+                    grid_path((0.0, 0.0), (0.2, -0.2)),
+                ),
             ],
         },
         TransitJourney {
@@ -687,7 +752,14 @@ pub fn sample_transit() -> Vec<TransitJourney> {
             duration_min: 24,
             transfers: 1,
             legs: vec![
-                walk("Your location", "Poccistraße", 5, 10, 5, grid_path((-6.5, -6.0), (-6.0, -4.5))),
+                walk(
+                    "Your location",
+                    "Poccistraße",
+                    5,
+                    10,
+                    5,
+                    grid_path((-6.5, -6.0), (-6.0, -4.5)),
+                ),
                 TransitLeg {
                     mode: TransitMode::Subway,
                     line: "U3/U6".to_string(),
@@ -720,7 +792,14 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     agency: "DB Regio AG S-Bahn München".to_string(),
                     realtime: true,
                 },
-                walk("Marienplatz", "Marienplatz", 27, 29, 2, grid_path((0.0, 0.0), (0.2, -0.2))),
+                walk(
+                    "Marienplatz",
+                    "Marienplatz",
+                    27,
+                    29,
+                    2,
+                    grid_path((0.0, 0.0), (0.2, -0.2)),
+                ),
             ],
         },
     ]
@@ -802,7 +881,11 @@ mod tests {
     #[test]
     fn basemap_is_populated() {
         let b = basemap();
-        assert!(b.roads.len() > 30, "expected a dense grid, got {}", b.roads.len());
+        assert!(
+            b.roads.len() > 30,
+            "expected a dense grid, got {}",
+            b.roads.len()
+        );
         assert!(b.areas.iter().any(|a| a.kind == AreaKind::Park));
         assert!(b.areas.iter().any(|a| a.kind == AreaKind::Building));
         assert!(b.river.len() > 5);
@@ -841,7 +924,8 @@ mod tests {
                 let g = &leg.geometry;
                 assert!(g.len() >= 2, "a drawn leg has a real polyline, not a point");
                 for seg in g.windows(2) {
-                    let axis_aligned = approx(seg[0].lat, seg[1].lat) || approx(seg[0].lon, seg[1].lon);
+                    let axis_aligned =
+                        approx(seg[0].lat, seg[1].lat) || approx(seg[0].lon, seg[1].lon);
                     assert!(
                         axis_aligned,
                         "leg segment cuts a diagonal across blocks: {:?} -> {:?}",
@@ -857,7 +941,10 @@ mod tests {
                 }
             }
         }
-        assert!(exercised_ride, "at least one non-walk transit leg was checked");
+        assert!(
+            exercised_ride,
+            "at least one non-walk transit leg was checked"
+        );
     }
 
     /// `grid_path` never emits a diagonal segment and keeps the exact endpoints
@@ -869,8 +956,8 @@ mod tests {
         assert_eq!(p.last().copied(), Some(cell(0.0, 0.0)));
         assert!(p.len() >= 3, "a two-axis path bends through the grid");
         for seg in p.windows(2) {
-            let aligned = (seg[0].lat - seg[1].lat).abs() < 1e-9
-                || (seg[0].lon - seg[1].lon).abs() < 1e-9;
+            let aligned =
+                (seg[0].lat - seg[1].lat).abs() < 1e-9 || (seg[0].lon - seg[1].lon).abs() < 1e-9;
             assert!(aligned, "grid_path emitted a diagonal segment");
         }
     }
@@ -882,10 +969,22 @@ mod tests {
         let base_hh = format!("{:02}", DEMO_CLOCK_BASE_MIN / 60);
         let journeys = sample_transit();
         for j in &journeys {
-            assert!(j.dep.starts_with(&base_hh), "journey departs the base hour: {}", j.dep);
-            assert!(j.arr.starts_with(&base_hh), "journey arrives the base hour: {}", j.arr);
+            assert!(
+                j.dep.starts_with(&base_hh),
+                "journey departs the base hour: {}",
+                j.dep
+            );
+            assert!(
+                j.arr.starts_with(&base_hh),
+                "journey arrives the base hour: {}",
+                j.arr
+            );
             for leg in &j.legs {
-                assert!(leg.dep.starts_with(&base_hh), "leg departs the base hour: {}", leg.dep);
+                assert!(
+                    leg.dep.starts_with(&base_hh),
+                    "leg departs the base hour: {}",
+                    leg.dep
+                );
             }
         }
         // The concrete base instant reads the same wall clock.

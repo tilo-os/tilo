@@ -113,9 +113,7 @@ impl MapsAction {
             MapsAction::AddRegion(region) => {
                 // Same footprint (bounds + zoom range) → update in place rather
                 // than stack a duplicate row.
-                model
-                    .regions
-                    .retain(|r| !same_footprint(r, region));
+                model.regions.retain(|r| !same_footprint(r, region));
                 model.regions.push(region.clone());
             }
             MapsAction::DeleteRegion { id } => {
@@ -194,14 +192,17 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
 
     // Workspace-level: save the selected place, only offered when one is
     // selected and not already saved.
-    if let Some(sel) = model.selected_place() {
-        if !sel.saved {
-            root = root.with_action(immediate(
-                "save-place",
-                format!("Save {}", sel.name),
-                &MapsAction::SetPlaceSaved { id: sel.id.clone(), saved: true },
-            ));
-        }
+    if let Some(sel) = model.selected_place()
+        && !sel.saved
+    {
+        root = root.with_action(immediate(
+            "save-place",
+            format!("Save {}", sel.name),
+            &MapsAction::SetPlaceSaved {
+                id: sel.id.clone(),
+                saved: true,
+            },
+        ));
     }
 
     // Workspace-level: clear every offline area, only when some exist.
@@ -220,7 +221,10 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 .with_action(immediate(
                     "unsave",
                     "Remove from saved",
-                    &MapsAction::SetPlaceSaved { id: p.id.clone(), saved: false },
+                    &MapsAction::SetPlaceSaved {
+                        id: p.id.clone(),
+                        saved: false,
+                    },
                 )),
         );
     }
@@ -236,12 +240,16 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     // Offline regions → a resource each, exporting the delete action.
     for r in &model.regions {
         root = root.with_child(
-            Resource::new(format!("maps.region:{}", r.id), "maps.region", region_label(r))
-                .with_action(immediate(
-                    "delete",
-                    "Delete region",
-                    &MapsAction::DeleteRegion { id: r.id.clone() },
-                )),
+            Resource::new(
+                format!("maps.region:{}", r.id),
+                "maps.region",
+                region_label(r),
+            )
+            .with_action(immediate(
+                "delete",
+                "Delete region",
+                &MapsAction::DeleteRegion { id: r.id.clone() },
+            )),
         );
     }
 
@@ -289,7 +297,13 @@ mod tests {
     /// — enough to exercise every resource kind and every action variant.
     fn full_model() -> MapModel {
         let mut m = MapModel::default();
-        let mut p = Place::new("marienplatz", "Marienplatz", Category::Landmark, "", LatLon::new(48.137, 11.575));
+        let mut p = Place::new(
+            "marienplatz",
+            "Marienplatz",
+            Category::Landmark,
+            "",
+            LatLon::new(48.137, 11.575),
+        );
         p.saved = true;
         m.places.push(p);
         m.selected = Some("marienplatz".to_string());
@@ -322,7 +336,13 @@ mod tests {
         // A selected-but-unsaved place so the workspace exports "Save".
         let mut model = full_model();
         model.places.push({
-            let mut p = Place::new("viktualienmarkt", "Viktualienmarkt", Category::Shop, "", LatLon::new(48.135, 11.576));
+            let mut p = Place::new(
+                "viktualienmarkt",
+                "Viktualienmarkt",
+                Category::Shop,
+                "",
+                LatLon::new(48.135, 11.576),
+            );
             p.saved = false;
             p
         });
@@ -338,20 +358,47 @@ mod tests {
         assert!(root_actions.contains(&"save-place"), "{root_actions:?}");
         assert!(root_actions.contains(&"clear-regions"), "{root_actions:?}");
 
-        let place = root.children.iter().find(|r| r.kind == "maps.place").expect("a saved-place resource");
-        assert!(place.actions.iter().any(|a| a.id == "unsave"), "saved place exports un-save");
-        let route = root.children.iter().find(|r| r.kind == "maps.route").expect("a route resource");
-        assert!(route.actions.iter().any(|a| a.id == "clear"), "route exports clear");
-        let reg = root.children.iter().find(|r| r.kind == "maps.region").expect("a region resource");
-        assert!(reg.actions.iter().any(|a| a.id == "delete"), "region exports delete");
+        let place = root
+            .children
+            .iter()
+            .find(|r| r.kind == "maps.place")
+            .expect("a saved-place resource");
+        assert!(
+            place.actions.iter().any(|a| a.id == "unsave"),
+            "saved place exports un-save"
+        );
+        let route = root
+            .children
+            .iter()
+            .find(|r| r.kind == "maps.route")
+            .expect("a route resource");
+        assert!(
+            route.actions.iter().any(|a| a.id == "clear"),
+            "route exports clear"
+        );
+        let reg = root
+            .children
+            .iter()
+            .find(|r| r.kind == "maps.region")
+            .expect("a region resource");
+        assert!(
+            reg.actions.iter().any(|a| a.id == "delete"),
+            "region exports delete"
+        );
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Delete region")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Clear route")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Delete region")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Clear route")),
+            "{labels:?}"
+        );
     }
 
     /// An unseeded document publishes nothing (no fabricated tree).
@@ -372,37 +419,43 @@ mod tests {
         // that follows lands in its own change bracketed by these heads.
         let before_heads = state.doc.get_heads();
         assert!(
-            MapsDoc::load(&state.doc).unwrap().regions.iter().any(|r| r.id == "r1"),
+            MapsDoc::load(&state.doc)
+                .unwrap()
+                .regions
+                .iter()
+                .any(|r| r.id == "r1"),
             "precondition: the region is present"
         );
 
-        let action = MapsAction::DeleteRegion { id: "r1".to_string() };
+        let action = MapsAction::DeleteRegion {
+            id: "r1".to_string(),
+        };
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert!(
-            !MapsDoc::load(&state.doc).unwrap().regions.iter().any(|r| r.id == "r1"),
+            !MapsDoc::load(&state.doc)
+                .unwrap()
+                .regions
+                .iter()
+                .any(|r| r.id == "r1"),
             "the action deleted the region"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
-
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
         assert!(
-            MapsDoc::load(&state.doc).unwrap().regions.iter().any(|r| r.id == "r1"),
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
+
+        state.undo(None, None).expect("an undo entry to pop");
+        assert!(
+            MapsDoc::load(&state.doc)
+                .unwrap()
+                .regions
+                .iter()
+                .any(|r| r.id == "r1"),
             "undo restored the region and nothing else"
         );
     }
@@ -416,21 +469,40 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
-        let action = MapsAction::SetPlaceSaved { id: "marienplatz".to_string(), saved: false };
+        let action = MapsAction::SetPlaceSaved {
+            id: "marienplatz".to_string(),
+            saved: false,
+        };
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert!(
-            !MapsDoc::load(&a).unwrap().place("marienplatz").unwrap().saved,
+            !MapsDoc::load(&a)
+                .unwrap()
+                .place("marienplatz")
+                .unwrap()
+                .saved,
             "the un-save landed on the origin"
         );
         assert!(
-            !MapsDoc::load(&b).unwrap().place("marienplatz").unwrap().saved,
+            !MapsDoc::load(&b)
+                .unwrap()
+                .place("marienplatz")
+                .unwrap()
+                .saved,
             "and on the replica"
         );
     }
@@ -450,7 +522,13 @@ mod tests {
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "add replayed identically");
-        assert!(MapsDoc::load(&b).unwrap().regions.iter().any(|r| r.id == "r2"));
+        assert!(
+            MapsDoc::load(&b)
+                .unwrap()
+                .regions
+                .iter()
+                .any(|r| r.id == "r2")
+        );
     }
 
     /// Single source of truth: the palette's "Delete region" spec and the builder
@@ -461,20 +539,37 @@ mod tests {
         let resources = provide_resources(&doc);
         let root = &resources[0];
 
-        let reg = root.children.iter().find(|r| r.kind == "maps.region").unwrap();
+        let reg = root
+            .children
+            .iter()
+            .find(|r| r.kind == "maps.region")
+            .unwrap();
         let id = reg.id.as_str().trim_start_matches("maps.region:");
         let spec = reg.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&MapsAction::DeleteRegion { id: id.to_string() });
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         // And a saved place's un-save spec matches its builder.
-        let place = root.children.iter().find(|r| r.kind == "maps.place").unwrap();
+        let place = root
+            .children
+            .iter()
+            .find(|r| r.kind == "maps.place")
+            .unwrap();
         let pid = place.id.as_str().trim_start_matches("maps.place:");
         let unsave = place.actions.iter().find(|a| a.id == "unsave").unwrap();
         let from_spec = immediate_encode(unsave);
-        let from_builder = encode(&MapsAction::SetPlaceSaved { id: pid.to_string(), saved: false });
-        assert_eq!(from_spec.payload, from_builder.payload, "un-save is one source of truth");
+        let from_builder = encode(&MapsAction::SetPlaceSaved {
+            id: pid.to_string(),
+            saved: false,
+        });
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "un-save is one source of truth"
+        );
     }
 }

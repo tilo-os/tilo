@@ -169,7 +169,11 @@ impl EncoderSpec {
 
     /// The `property=value` fragment for a `gst-launch` description.
     pub fn bitrate_arg(&self, bits_per_second: u64) -> String {
-        format!("{}={}", self.bitrate_property, self.bitrate_value(bits_per_second))
+        format!(
+            "{}={}",
+            self.bitrate_property,
+            self.bitrate_value(bits_per_second)
+        )
     }
 }
 
@@ -270,7 +274,10 @@ const fn bits(element: &'static str, kind: EncoderKind) -> EncoderSpec {
 /// [`bits`], for an encoder measured not to track the rate it is given —
 /// see [`EncoderSpec::ignores_bitrate`].
 const fn bits_untracked(element: &'static str, kind: EncoderKind) -> EncoderSpec {
-    EncoderSpec { ignores_bitrate: true, ..bits(element, kind) }
+    EncoderSpec {
+        ignores_bitrate: true,
+        ..bits(element, kind)
+    }
 }
 
 /// A candidate whose bitrate property is `bitrate`, in kilobits per second.
@@ -453,7 +460,11 @@ impl Selection {
             "{} ({}, {})",
             self.spec.element,
             self.spec.kind.as_str(),
-            if self.spec.kind.is_hardware() { "hardware" } else { "software" },
+            if self.spec.kind.is_hardware() {
+                "hardware"
+            } else {
+                "software"
+            },
         )
     }
 }
@@ -489,18 +500,28 @@ fn select(
 ) -> Selection {
     // Stable sort by policy tier keeps the declared preference order inside
     // each tier, so `Auto` walks the table exactly as written.
-    let mut order: Vec<&'static EncoderSpec> =
-        candidates.iter().filter(|s| policy.admits(s.kind)).collect();
+    let mut order: Vec<&'static EncoderSpec> = candidates
+        .iter()
+        .filter(|s| policy.admits(s.kind))
+        .collect();
     order.sort_by_key(|s| policy.tier(s.kind));
 
     let mut passed_over = Vec::new();
     for spec in order {
         if available(spec.element) {
-            return Selection { spec, confirmed: true, passed_over };
+            return Selection {
+                spec,
+                confirmed: true,
+                passed_over,
+            };
         }
         passed_over.push(spec.element);
     }
-    Selection { spec: baseline, confirmed: false, passed_over }
+    Selection {
+        spec: baseline,
+        confirmed: false,
+        passed_over,
+    }
 }
 
 /// Which encoders an export actually selected. The encode-side counterpart of
@@ -515,7 +536,10 @@ pub struct EncodeReport {
 impl EncodeReport {
     /// Whether the *video* encode runs on hardware. False when unknown.
     pub fn is_hardware(&self) -> bool {
-        self.video.as_ref().map(Selection::is_hardware).unwrap_or(false)
+        self.video
+            .as_ref()
+            .map(Selection::is_hardware)
+            .unwrap_or(false)
     }
 
     /// A one-line summary for a log or a test failure message.
@@ -575,17 +599,45 @@ mod tests {
         // the only way to prove the hardware branch is to hand the selector a
         // registry that has one.
         for (present, want, family) in [
-            (&["vah264enc", "x264enc", "openh264enc"][..], "vah264enc", EncoderKind::Va),
-            (&["nvh264enc", "x264enc", "openh264enc"][..], "nvh264enc", EncoderKind::NvCodec),
-            (&["qsvh264enc", "openh264enc"][..], "qsvh264enc", EncoderKind::Qsv),
-            (&["vah264lpenc", "openh264enc"][..], "vah264lpenc", EncoderKind::Va),
-            (&["vaapih264enc", "openh264enc"][..], "vaapih264enc", EncoderKind::Va),
+            (
+                &["vah264enc", "x264enc", "openh264enc"][..],
+                "vah264enc",
+                EncoderKind::Va,
+            ),
+            (
+                &["nvh264enc", "x264enc", "openh264enc"][..],
+                "nvh264enc",
+                EncoderKind::NvCodec,
+            ),
+            (
+                &["qsvh264enc", "openh264enc"][..],
+                "qsvh264enc",
+                EncoderKind::Qsv,
+            ),
+            (
+                &["vah264lpenc", "openh264enc"][..],
+                "vah264lpenc",
+                EncoderKind::Va,
+            ),
+            (
+                &["vaapih264enc", "openh264enc"][..],
+                "vaapih264enc",
+                EncoderKind::Va,
+            ),
         ] {
             let sel = select_video(VideoCodec::H264, HwEncPolicy::Auto, registry(present));
             assert_eq!(sel.spec.element, want, "with {present:?} installed");
             assert_eq!(sel.spec.kind, family);
-            assert!(sel.confirmed, "the registry confirmed it: {}", sel.describe());
-            assert!(sel.is_hardware(), "{want} is a hardware encoder: {}", sel.describe());
+            assert!(
+                sel.confirmed,
+                "the registry confirmed it: {}",
+                sel.describe()
+            );
+            assert!(
+                sel.is_hardware(),
+                "{want} is a hardware encoder: {}",
+                sel.describe()
+            );
         }
     }
 
@@ -609,7 +661,11 @@ mod tests {
 
         // And openh264enc when that is genuinely all there is — the situation
         // on the machine this was written on.
-        let sel = select_video(VideoCodec::H264, HwEncPolicy::Auto, registry(&["openh264enc"]));
+        let sel = select_video(
+            VideoCodec::H264,
+            HwEncPolicy::Auto,
+            registry(&["openh264enc"]),
+        );
         assert_eq!(sel.spec.element, "openh264enc", "{}", sel.describe());
         assert!(!sel.is_hardware());
     }
@@ -619,8 +675,14 @@ mod tests {
         // The state that must not be mistaken for a yes: nothing was found.
         let sel = select_video(VideoCodec::H264, HwEncPolicy::Auto, |_| false);
         assert!(!sel.confirmed, "nothing was confirmed");
-        assert!(!sel.is_hardware(), "an unobserved selection is not a hardware claim");
-        assert_eq!(sel.spec.element, "openh264enc", "it falls back to the baseline");
+        assert!(
+            !sel.is_hardware(),
+            "an unobserved selection is not a hardware claim"
+        );
+        assert_eq!(
+            sel.spec.element, "openh264enc",
+            "it falls back to the baseline"
+        );
         assert!(
             sel.describe().contains("nothing observed"),
             "the description says it never looked: {}",
@@ -634,7 +696,10 @@ mod tests {
             confirmed: false,
             passed_over: Vec::new(),
         };
-        assert!(unconfirmed.spec.kind.is_hardware(), "vah264enc is a hardware element");
+        assert!(
+            unconfirmed.spec.kind.is_hardware(),
+            "vah264enc is a hardware element"
+        );
         assert!(
             !unconfirmed.is_hardware(),
             "unconfirmed outranks the family: {}",
@@ -646,7 +711,11 @@ mod tests {
     fn policy_off_refuses_hardware_even_when_it_is_installed() {
         let full = registry(&["vah264enc", "nvh264enc", "x264enc", "openh264enc"]);
         let auto = select_video(VideoCodec::H264, HwEncPolicy::Auto, &full);
-        assert!(auto.is_hardware(), "auto takes the GPU: {}", auto.describe());
+        assert!(
+            auto.is_hardware(),
+            "auto takes the GPU: {}",
+            auto.describe()
+        );
 
         let off = select_video(VideoCodec::H264, HwEncPolicy::Off, &full);
         assert_eq!(off.spec.element, "x264enc", "{}", off.describe());
@@ -656,8 +725,17 @@ mod tests {
     #[test]
     fn a_forced_family_outranks_other_hardware_but_falls_back_to_software() {
         let both = registry(&["vah264enc", "nvh264enc", "openh264enc"]);
-        let forced = select_video(VideoCodec::H264, HwEncPolicy::Force(EncoderKind::NvCodec), &both);
-        assert_eq!(forced.spec.element, "nvh264enc", "forced family wins: {}", forced.describe());
+        let forced = select_video(
+            VideoCodec::H264,
+            HwEncPolicy::Force(EncoderKind::NvCodec),
+            &both,
+        );
+        assert_eq!(
+            forced.spec.element,
+            "nvh264enc",
+            "forced family wins: {}",
+            forced.describe()
+        );
 
         // A forced family that cannot be found drops to software rather than
         // silently using the other GPU vendor's encoder.
@@ -668,7 +746,8 @@ mod tests {
             &only_va,
         );
         assert_eq!(
-            forced.spec.element, "openh264enc",
+            forced.spec.element,
+            "openh264enc",
             "software before another vendor's hardware: {}",
             forced.describe(),
         );
@@ -677,7 +756,12 @@ mod tests {
 
     #[test]
     fn every_codecs_hardware_candidates_precede_its_software_ones() {
-        for codec in [VideoCodec::H264, VideoCodec::Vp8, VideoCodec::Vp9, VideoCodec::Av1] {
+        for codec in [
+            VideoCodec::H264,
+            VideoCodec::Vp8,
+            VideoCodec::Vp9,
+            VideoCodec::Av1,
+        ] {
             let c = codec.candidates();
             assert!(!c.is_empty(), "{codec:?} has candidates");
             let first_sw = c.iter().position(|s| !s.kind.is_hardware());
@@ -710,7 +794,11 @@ mod tests {
         );
 
         let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
-        assert_eq!(va.bitrate_arg(target), "bitrate=16000", "VA-API counts in kilobits");
+        assert_eq!(
+            va.bitrate_arg(target),
+            "bitrate=16000",
+            "VA-API counts in kilobits"
+        );
 
         let vp8 = VP8.iter().find(|s| s.element == "vp8enc").unwrap();
         assert_eq!(
@@ -746,20 +834,39 @@ mod tests {
         assert_eq!(HwEncPolicy::parse(""), HwEncPolicy::Auto);
         assert_eq!(HwEncPolicy::parse("off"), HwEncPolicy::Off);
         assert_eq!(HwEncPolicy::parse(" OFF "), HwEncPolicy::Off);
-        assert_eq!(HwEncPolicy::parse("va"), HwEncPolicy::Force(EncoderKind::Va));
-        assert_eq!(HwEncPolicy::parse("nvenc"), HwEncPolicy::Force(EncoderKind::NvCodec));
-        assert_eq!(HwEncPolicy::parse("qsv"), HwEncPolicy::Force(EncoderKind::Qsv));
+        assert_eq!(
+            HwEncPolicy::parse("va"),
+            HwEncPolicy::Force(EncoderKind::Va)
+        );
+        assert_eq!(
+            HwEncPolicy::parse("nvenc"),
+            HwEncPolicy::Force(EncoderKind::NvCodec)
+        );
+        assert_eq!(
+            HwEncPolicy::parse("qsv"),
+            HwEncPolicy::Force(EncoderKind::Qsv)
+        );
         // A typo must not read as "off" — that would silently disable the GPU.
         assert_eq!(HwEncPolicy::parse("vaapii"), HwEncPolicy::Auto);
     }
 
     #[test]
     fn the_audio_choice_prefers_the_better_aac_encoder_and_still_lands_somewhere() {
-        let both = select_audio(AudioCodec::Aac, HwEncPolicy::Auto, registry(&["fdkaacenc", "avenc_aac"]));
-        assert_eq!(both.spec.element, "fdkaacenc", "Fraunhofer is the better AAC encoder");
+        let both = select_audio(
+            AudioCodec::Aac,
+            HwEncPolicy::Auto,
+            registry(&["fdkaacenc", "avenc_aac"]),
+        );
+        assert_eq!(
+            both.spec.element, "fdkaacenc",
+            "Fraunhofer is the better AAC encoder"
+        );
 
         let libav = select_audio(AudioCodec::Aac, HwEncPolicy::Auto, registry(&["avenc_aac"]));
-        assert_eq!(libav.spec.element, "avenc_aac", "and libav's is the fallback");
+        assert_eq!(
+            libav.spec.element, "avenc_aac",
+            "and libav's is the fallback"
+        );
         assert!(libav.confirmed);
 
         let opus = select_audio(AudioCodec::Opus, HwEncPolicy::Auto, registry(&["opusenc"]));
@@ -814,12 +921,14 @@ mod tests {
             let Ok(element) = factory.create().build() else {
                 continue; // Present but not instantiable (no device, no licence).
             };
-            let pspec = element.find_property(spec.bitrate_property).unwrap_or_else(|| {
-                panic!(
-                    "{} has no property {:?} — the export pipeline would fail to build",
-                    spec.element, spec.bitrate_property,
-                )
-            });
+            let pspec = element
+                .find_property(spec.bitrate_property)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} has no property {:?} — the export pipeline would fail to build",
+                        spec.element, spec.bitrate_property,
+                    )
+                });
             checked_property.push(spec.element);
 
             // GStreamer property blurbs state the unit in words. Classify only
@@ -970,8 +1079,14 @@ mod tests {
     fn a_size_is_only_predictable_from_a_confirmed_rate_controlling_encoder() {
         let tracking = H264.iter().find(|s| s.element == "x264enc").unwrap();
         let untracked = H264.iter().find(|s| s.element == "openh264enc").unwrap();
-        assert!(untracked.ignores_bitrate, "openh264enc is the measured exception");
-        assert!(!tracking.ignores_bitrate, "nothing has been observed about x264enc");
+        assert!(
+            untracked.ignores_bitrate,
+            "openh264enc is the measured exception"
+        );
+        assert!(
+            !tracking.ignores_bitrate,
+            "nothing has been observed about x264enc"
+        );
 
         let sel = |spec: &'static EncoderSpec, confirmed: bool| Selection {
             spec,
@@ -1064,9 +1179,14 @@ mod tests {
                 out = out.display(),
             );
             let Ok(pipeline) = gstreamer::parse::launch(&desc) else {
-                panic!("{} is installed but its pipeline would not build: {desc}", spec.element);
+                panic!(
+                    "{} is installed but its pipeline would not build: {desc}",
+                    spec.element
+                );
             };
-            let pipeline = pipeline.downcast::<gstreamer::Pipeline>().expect("a pipeline");
+            let pipeline = pipeline
+                .downcast::<gstreamer::Pipeline>()
+                .expect("a pipeline");
             pipeline
                 .set_state(gstreamer::State::Playing)
                 .unwrap_or_else(|e| panic!("{} is installed, so it must run: {e}", spec.element));

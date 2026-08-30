@@ -28,15 +28,42 @@ pub fn stroke_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f6
 }
 
 pub fn circle(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &Circle::new(Point::new(cx, cy), r));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &Circle::new(Point::new(cx, cy), r),
+    );
 }
 
 pub fn circle_stroke(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, color: Color, w: f64) {
-    scene.stroke(&Stroke::new(w), t, color, None, &Circle::new(Point::new(cx, cy), r));
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        color,
+        None,
+        &Circle::new(Point::new(cx, cy), r),
+    );
 }
 
-pub fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, color: Color, w: f64) {
-    scene.stroke(&Stroke::new(w), t, color, None, &Line::new(Point::new(x0, y0), Point::new(x1, y1)));
+pub fn line(
+    scene: &mut Scene,
+    t: Affine,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    color: Color,
+    w: f64,
+) {
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        color,
+        None,
+        &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
+    );
 }
 
 /// A rounded-rect clip layer. Pair every call with [`pop`].
@@ -83,9 +110,9 @@ pub fn mix(a: Color, b: Color, t: f32) -> Color {
     let a = a.to_rgba8();
     let b = b.to_rgba8();
     Color::from_rgba8(
-        (a.r as f32 * (1.0 - t) + b.r as f32 * t) as u8,
-        (a.g as f32 * (1.0 - t) + b.g as f32 * t) as u8,
-        (a.b as f32 * (1.0 - t) + b.b as f32 * t) as u8,
+        (f32::from(a.r) * (1.0 - t) + f32::from(b.r) * t) as u8,
+        (f32::from(a.g) * (1.0 - t) + f32::from(b.g) * t) as u8,
+        (f32::from(a.b) * (1.0 - t) + f32::from(b.b) * t) as u8,
         255,
     )
 }
@@ -97,25 +124,70 @@ pub fn text_w(tr: &mut TextRenderer, s: &str, size: f32) -> f32 {
 }
 
 /// Draw left-aligned text with its top-left at (x, y).
-pub fn text(scene: &mut Scene, tr: &mut TextRenderer, x: f64, y: f64, s: &str, size: f32, color: Color) {
+pub fn text(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    x: f64,
+    y: f64,
+    s: &str,
+    size: f32,
+    color: Color,
+) {
     tr.draw_text(scene, s, size, color, Affine::translate((x, y)), None);
 }
 
 /// Draw text centered horizontally on `cx`, top at `y`.
-pub fn text_center(scene: &mut Scene, tr: &mut TextRenderer, cx: f64, y: f64, s: &str, size: f32, color: Color) {
-    let w = text_w(tr, s, size) as f64;
-    tr.draw_text(scene, s, size, color, Affine::translate((cx - w / 2.0, y)), None);
+pub fn text_center(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    cx: f64,
+    y: f64,
+    s: &str,
+    size: f32,
+    color: Color,
+) {
+    let w = f64::from(text_w(tr, s, size));
+    tr.draw_text(
+        scene,
+        s,
+        size,
+        color,
+        Affine::translate((cx - w / 2.0, y)),
+        None,
+    );
 }
 
 /// Draw text right-aligned to `x_right`, top at `y`.
-pub fn text_right(scene: &mut Scene, tr: &mut TextRenderer, x_right: f64, y: f64, s: &str, size: f32, color: Color) {
-    let w = text_w(tr, s, size) as f64;
-    tr.draw_text(scene, s, size, color, Affine::translate((x_right - w, y)), None);
+pub fn text_right(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    x_right: f64,
+    y: f64,
+    s: &str,
+    size: f32,
+    color: Color,
+) {
+    let w = f64::from(text_w(tr, s, size));
+    tr.draw_text(
+        scene,
+        s,
+        size,
+        color,
+        Affine::translate((x_right - w, y)),
+        None,
+    );
 }
 
 /// Vertically + horizontally center text in a rect.
-pub fn text_in(scene: &mut Scene, tr: &mut TextRenderer, rect: Rect, s: &str, size: f32, color: Color) {
-    let y = rect.y0 + (rect.height() - size as f64 * 1.2) / 2.0;
+pub fn text_in(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    rect: Rect,
+    s: &str,
+    size: f32,
+    color: Color,
+) {
+    let y = rect.y0 + (rect.height() - f64::from(size) * 1.2) / 2.0;
     text_center(scene, tr, rect.center().x, y, s, size, color);
 }
 
@@ -145,8 +217,20 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             for &(sx, sy) in &[(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
                 let ox = cx + sx * b;
                 let oy = cy + sy * b;
-                scene.stroke(&stroke, t, color, None, &Line::new(Point::new(ox, oy), Point::new(ox - sx * len, oy)));
-                scene.stroke(&stroke, t, color, None, &Line::new(Point::new(ox, oy), Point::new(ox, oy - sy * len)));
+                scene.stroke(
+                    &stroke,
+                    t,
+                    color,
+                    None,
+                    &Line::new(Point::new(ox, oy), Point::new(ox - sx * len, oy)),
+                );
+                scene.stroke(
+                    &stroke,
+                    t,
+                    color,
+                    None,
+                    &Line::new(Point::new(ox, oy), Point::new(ox, oy - sy * len)),
+                );
             }
             line(scene, t, cx - b * 0.78, cy, cx + b * 0.78, cy, color, w);
         }
@@ -187,19 +271,87 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
         "timer" => {
             circle_stroke(scene, t, cx, cy + h * 0.1, h * 0.78, color, w);
             line(scene, t, cx, cy + h * 0.1, cx, cy - h * 0.4, color, w);
-            line(scene, t, cx, cy + h * 0.1, cx + h * 0.35, cy + h * 0.3, color, w);
-            line(scene, t, cx - h * 0.4, cy - h, cx + h * 0.4, cy - h, color, w);
+            line(
+                scene,
+                t,
+                cx,
+                cy + h * 0.1,
+                cx + h * 0.35,
+                cy + h * 0.3,
+                color,
+                w,
+            );
+            line(
+                scene,
+                t,
+                cx - h * 0.4,
+                cy - h,
+                cx + h * 0.4,
+                cy - h,
+                color,
+                w,
+            );
         }
         "grid" => {
             let b = h * 0.92;
-            stroke_round(scene, t, Rect::new(cx - b, cy - b, cx + b, cy + b), 2.0, color, w);
-            line(scene, t, cx - b / 3.0, cy - b, cx - b / 3.0, cy + b, color, w * 0.8);
-            line(scene, t, cx + b / 3.0, cy - b, cx + b / 3.0, cy + b, color, w * 0.8);
-            line(scene, t, cx - b, cy - b / 3.0, cx + b, cy - b / 3.0, color, w * 0.8);
-            line(scene, t, cx - b, cy + b / 3.0, cx + b, cy + b / 3.0, color, w * 0.8);
+            stroke_round(
+                scene,
+                t,
+                Rect::new(cx - b, cy - b, cx + b, cy + b),
+                2.0,
+                color,
+                w,
+            );
+            line(
+                scene,
+                t,
+                cx - b / 3.0,
+                cy - b,
+                cx - b / 3.0,
+                cy + b,
+                color,
+                w * 0.8,
+            );
+            line(
+                scene,
+                t,
+                cx + b / 3.0,
+                cy - b,
+                cx + b / 3.0,
+                cy + b,
+                color,
+                w * 0.8,
+            );
+            line(
+                scene,
+                t,
+                cx - b,
+                cy - b / 3.0,
+                cx + b,
+                cy - b / 3.0,
+                color,
+                w * 0.8,
+            );
+            line(
+                scene,
+                t,
+                cx - b,
+                cy + b / 3.0,
+                cx + b,
+                cy + b / 3.0,
+                color,
+                w * 0.8,
+            );
         }
         "hdr" => {
-            stroke_round(scene, t, Rect::new(cx - h, cy - h * 0.6, cx + h, cy + h * 0.6), h * 0.25, color, w);
+            stroke_round(
+                scene,
+                t,
+                Rect::new(cx - h, cy - h * 0.6, cx + h, cy + h * 0.6),
+                h * 0.25,
+                color,
+                w,
+            );
         }
         "star" => {
             star(scene, t, cx, cy, h * 0.95, color, true, w);
@@ -208,13 +360,52 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             star(scene, t, cx, cy, h * 0.95, color, false, w);
         }
         "trash" => {
-            line(scene, t, cx - h * 0.8, cy - h * 0.6, cx + h * 0.8, cy - h * 0.6, color, w);
-            stroke_round(scene, t, Rect::new(cx - h * 0.6, cy - h * 0.6, cx + h * 0.6, cy + h * 0.85), 2.0, color, w);
-            line(scene, t, cx - h * 0.25, cy - h, cx + h * 0.25, cy - h, color, w);
+            line(
+                scene,
+                t,
+                cx - h * 0.8,
+                cy - h * 0.6,
+                cx + h * 0.8,
+                cy - h * 0.6,
+                color,
+                w,
+            );
+            stroke_round(
+                scene,
+                t,
+                Rect::new(cx - h * 0.6, cy - h * 0.6, cx + h * 0.6, cy + h * 0.85),
+                2.0,
+                color,
+                w,
+            );
+            line(
+                scene,
+                t,
+                cx - h * 0.25,
+                cy - h,
+                cx + h * 0.25,
+                cy - h,
+                color,
+                w,
+            );
         }
         "copy" => {
-            stroke_round(scene, t, Rect::new(cx - h * 0.75, cy - h * 0.75, cx + h * 0.35, cy + h * 0.45), 2.0, color, w);
-            stroke_round(scene, t, Rect::new(cx - h * 0.35, cy - h * 0.4, cx + h * 0.75, cy + h * 0.85), 2.0, color, w);
+            stroke_round(
+                scene,
+                t,
+                Rect::new(cx - h * 0.75, cy - h * 0.75, cx + h * 0.35, cy + h * 0.45),
+                2.0,
+                color,
+                w,
+            );
+            stroke_round(
+                scene,
+                t,
+                Rect::new(cx - h * 0.35, cy - h * 0.4, cx + h * 0.75, cy + h * 0.85),
+                2.0,
+                color,
+                w,
+            );
         }
         "link" => {
             circle_stroke(scene, t, cx - h * 0.35, cy + h * 0.35, h * 0.5, color, w);
@@ -222,7 +413,15 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
         }
         "wifi" => {
             for (i, r) in [0.95f64, 0.62, 0.32].iter().enumerate() {
-                arc_up(scene, t, cx, cy + h * 0.55, h * r, color, w * (1.0 + i as f64 * 0.0));
+                arc_up(
+                    scene,
+                    t,
+                    cx,
+                    cy + h * 0.55,
+                    h * r,
+                    color,
+                    w * (1.0 + i as f64 * 0.0),
+                );
             }
             circle(scene, t, cx, cy + h * 0.55, w, color);
         }
@@ -239,10 +438,46 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             // two curved arrows forming a flip
             arc_up(scene, t, cx, cy + h * 0.2, h * 0.75, color, w);
             arc_up(scene, t, cx, cy + h * 0.2, h * 0.75, color, w); // reinforce
-            line(scene, t, cx + h * 0.75, cy + h * 0.2, cx + h * 0.45, cy - h * 0.1, color, w);
-            line(scene, t, cx + h * 0.75, cy + h * 0.2, cx + h * 0.95, cy - h * 0.15, color, w);
-            line(scene, t, cx - h * 0.75, cy + h * 0.2, cx - h * 0.45, cy + h * 0.5, color, w);
-            line(scene, t, cx - h * 0.75, cy + h * 0.2, cx - h * 0.95, cy + h * 0.5, color, w);
+            line(
+                scene,
+                t,
+                cx + h * 0.75,
+                cy + h * 0.2,
+                cx + h * 0.45,
+                cy - h * 0.1,
+                color,
+                w,
+            );
+            line(
+                scene,
+                t,
+                cx + h * 0.75,
+                cy + h * 0.2,
+                cx + h * 0.95,
+                cy - h * 0.15,
+                color,
+                w,
+            );
+            line(
+                scene,
+                t,
+                cx - h * 0.75,
+                cy + h * 0.2,
+                cx - h * 0.45,
+                cy + h * 0.5,
+                color,
+                w,
+            );
+            line(
+                scene,
+                t,
+                cx - h * 0.75,
+                cy + h * 0.2,
+                cx - h * 0.95,
+                cy + h * 0.5,
+                color,
+                w,
+            );
         }
         "play" => {
             let mut p = BezPath::new();
@@ -261,14 +496,41 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
         }
         "search" => {
             circle_stroke(scene, t, cx - h * 0.15, cy - h * 0.15, h * 0.55, color, w);
-            line(scene, t, cx + h * 0.3, cy + h * 0.3, cx + h * 0.8, cy + h * 0.8, color, w);
+            line(
+                scene,
+                t,
+                cx + h * 0.3,
+                cy + h * 0.3,
+                cx + h * 0.8,
+                cy + h * 0.8,
+                color,
+                w,
+            );
         }
         "share" => {
             circle(scene, t, cx - h * 0.55, cy, w * 1.6, color);
             circle(scene, t, cx + h * 0.5, cy - h * 0.6, w * 1.6, color);
             circle(scene, t, cx + h * 0.5, cy + h * 0.6, w * 1.6, color);
-            line(scene, t, cx - h * 0.55, cy, cx + h * 0.5, cy - h * 0.6, color, w * 0.8);
-            line(scene, t, cx - h * 0.55, cy, cx + h * 0.5, cy + h * 0.6, color, w * 0.8);
+            line(
+                scene,
+                t,
+                cx - h * 0.55,
+                cy,
+                cx + h * 0.5,
+                cy - h * 0.6,
+                color,
+                w * 0.8,
+            );
+            line(
+                scene,
+                t,
+                cx - h * 0.55,
+                cy,
+                cx + h * 0.5,
+                cy + h * 0.6,
+                color,
+                w * 0.8,
+            );
         }
         "phone" => {
             let mut p = BezPath::new();
@@ -311,8 +573,26 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             scene.stroke(&stroke, t, color, None, &p);
         }
         "close" => {
-            line(scene, t, cx - h * 0.6, cy - h * 0.6, cx + h * 0.6, cy + h * 0.6, color, w);
-            line(scene, t, cx + h * 0.6, cy - h * 0.6, cx - h * 0.6, cy + h * 0.6, color, w);
+            line(
+                scene,
+                t,
+                cx - h * 0.6,
+                cy - h * 0.6,
+                cx + h * 0.6,
+                cy + h * 0.6,
+                color,
+                w,
+            );
+            line(
+                scene,
+                t,
+                cx + h * 0.6,
+                cy - h * 0.6,
+                cx - h * 0.6,
+                cy + h * 0.6,
+                color,
+                w,
+            );
         }
         "aperture" => {
             // Camera iris: a ring with six blade spokes struck from points on
@@ -320,7 +600,7 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             let r = h * 0.92;
             circle_stroke(scene, t, cx, cy, r, color, w);
             for k in 0..6 {
-                let a = k as f64 * std::f64::consts::PI / 3.0 + 0.35;
+                let a = f64::from(k) * std::f64::consts::PI / 3.0 + 0.35;
                 let a2 = a + 2.0 * std::f64::consts::PI / 3.0;
                 let x0 = cx + r * a.cos();
                 let y0 = cy + r * a.sin();
@@ -351,7 +631,7 @@ fn arc_up(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, color: Color, 
     let mut p = BezPath::new();
     let steps = 14;
     for i in 0..=steps {
-        let frac = i as f64 / steps as f64;
+        let frac = f64::from(i) / f64::from(steps);
         let ang = std::f64::consts::PI * (1.0 + frac); // pi..2pi (upper half)
         let x = cx + r * ang.cos();
         let y = cy + r * ang.sin();
@@ -364,10 +644,19 @@ fn arc_up(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, color: Color, 
     scene.stroke(&Stroke::new(w), t, color, None, &p);
 }
 
-fn star(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, color: Color, filled: bool, w: f64) {
+fn star(
+    scene: &mut Scene,
+    t: Affine,
+    cx: f64,
+    cy: f64,
+    r: f64,
+    color: Color,
+    filled: bool,
+    w: f64,
+) {
     let mut p = BezPath::new();
     for i in 0..10 {
-        let ang = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::PI / 5.0;
+        let ang = -std::f64::consts::FRAC_PI_2 + f64::from(i) * std::f64::consts::PI / 5.0;
         let rr = if i % 2 == 0 { r } else { r * 0.45 };
         let x = cx + rr * ang.cos();
         let y = cy + rr * ang.sin();

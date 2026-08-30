@@ -4,7 +4,7 @@
 //! apply_layout → draw) on live CRDT documents seeded with Automerge native
 //! marks (bold / italic / underline) and block styles.
 //!
-//! Run:  cargo run -p ui --example rich_text_editor_shots
+//! Run:  cargo run -p ui --example ui-shots -- rich_text_editor_shots
 //! Out:  $RTE_SHOTS_OUT (default /tmp/rte_shots) — rte-dark.png, rte-light.png
 
 use std::collections::HashMap;
@@ -35,13 +35,19 @@ fn seeded(
     style: &str,
     marks: &[(&str, usize, usize)],
 ) -> RichTextEditor {
-    let field = state.doc.put_object(&state.root, key, ObjType::Map).unwrap();
+    let field = state
+        .doc
+        .put_object(&state.root, key, ObjType::Map)
+        .unwrap();
     let tid = state.doc.put_object(&field, "text", ObjType::Text).unwrap();
     state.doc.splice_text(&tid, 0, 0, text).unwrap();
     state.doc.put(&field, "style", style).unwrap();
     for (name, s, e) in marks {
         let m = automerge::marks::Mark::new(name.to_string(), true, *s, *e);
-        state.doc.mark(&tid, m, automerge::marks::ExpandMark::None).unwrap();
+        state
+            .doc
+            .mark(&tid, m, automerge::marks::ExpandMark::None)
+            .unwrap();
     }
     let mut ed = RichTextEditor::new(key);
     ed.sync(&mut state.doc, &state.root);
@@ -65,9 +71,14 @@ fn place_and_draw(
     taffy
         .compute_layout_with_measure(
             node,
-            Size { width: AvailableSpace::Definite(width), height: AvailableSpace::MaxContent },
+            Size {
+                width: AvailableSpace::Definite(width),
+                height: AvailableSpace::MaxContent,
+            },
             |known, available, nid, _, _| {
-                nm.get(&nid).map(|&p| unsafe { (*p).measure(known, available, tr) }).unwrap_or(Size::ZERO)
+                nm.get(&nid)
+                    .map(|&p| unsafe { (*p).measure(known, available, tr) })
+                    .unwrap_or(Size::ZERO)
             },
         )
         .unwrap();
@@ -90,12 +101,36 @@ fn shoot(theme: &Theme, out: PathBuf) {
         // "quick" bold, "brown fox" italic, "lazy dog" underlined.
         &[("bold", 4, 9), ("italic", 10, 19), ("underline", 35, 43)],
     );
-    let mut bullet1 = seeded(&mut state, "l1", "Caret, selection & word motion", "bullet", &[]);
-    let mut bullet2 = seeded(&mut state, "l2", "Bold / italic / underline runs", "bullet", &[("bold", 0, 4)]);
-    let mut sub = seeded(&mut state, "s", "Backed by one CRDT document", "subheading", &[]);
+    let mut bullet1 = seeded(
+        &mut state,
+        "l1",
+        "Caret, selection & word motion",
+        "bullet",
+        &[],
+    );
+    let mut bullet2 = seeded(
+        &mut state,
+        "l2",
+        "Bold / italic / underline runs",
+        "bullet",
+        &[("bold", 0, 4)],
+    );
+    let mut sub = seeded(
+        &mut state,
+        "s",
+        "Backed by one CRDT document",
+        "subheading",
+        &[],
+    );
     let mut empty = RichTextEditor::new("e").with_placeholder("Start writing…");
     empty.sync(&mut state.doc, &state.root);
-    let mut focused = seeded(&mut state, "f", "A focused body field shows its caret", "body", &[]);
+    let mut focused = seeded(
+        &mut state,
+        "f",
+        "A focused body field shows its caret",
+        "body",
+        &[],
+    );
     focused.set_focus(true);
 
     let mut tr = TextRenderer::new();
@@ -131,7 +166,7 @@ fn shoot(theme: &Theme, out: PathBuf) {
     println!("wrote {}", out.display());
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let dir = std::env::var("RTE_SHOTS_OUT").unwrap_or_else(|_| "/tmp/rte_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     shoot(&Theme::dark(), PathBuf::from(&dir).join("rte-dark.png"));

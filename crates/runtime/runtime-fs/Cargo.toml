@@ -20,7 +20,9 @@ capnp.workspace = true
 capnp-rpc.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
 tokio-util.workspace = true
-thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+
+[lints]
+workspace = true

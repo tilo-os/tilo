@@ -18,12 +18,10 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 
 # --- Feed reading stack ---------------------------------------------------
 # Real RSS/Atom/JSON-feed parsing; pure-Rust TLS so we don't drag in a
@@ -39,3 +37,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", 
 chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 # Raw TLS for the gemini:// fetcher (TOFU, accepts self-signed certs).
 tokio-rustls.workspace = true
+
+[lints]
+workspace = true

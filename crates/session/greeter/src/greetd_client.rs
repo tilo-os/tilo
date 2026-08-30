@@ -11,7 +11,7 @@
 //!      * `Info`    → an informational line (e.g. fprintd "Place your
 //!                    finger on the reader"); surfaced to the UI and
 //!                    answered with `None` so the conversation advances.
-//!      * `Error`   → a PAM_ERROR_MSG conversation message (e.g. fprintd
+//!      * `Error`   → a `PAM_ERROR_MSG` conversation message (e.g. fprintd
 //!                    "swipe didn't match, try again"). This is *not* a
 //!                    terminal failure — the authoritative result is a
 //!                    top-level [`Response::Error`]/[`Response::Success`].
@@ -110,19 +110,28 @@ fn map_error(error_type: ErrorType, description: String) -> AuthError {
 /// to `on_prompt`. On success this **never returns** — it
 /// `process::exit(0)`s so greetd takes over the VT. On failure it returns
 /// a mapped [`AuthError`] for the status line.
-pub fn authenticate_and_start<F: FnMut(AuthPrompt)>(
+pub fn authenticate_and_start<F: FnMut(AuthPrompt), G: FnMut()>(
     sock_path: &str,
     username: &str,
     password: &str,
     cmd: &[String],
     env: &[String],
     on_prompt: F,
+    on_accepted: G,
 ) -> Result<(), AuthError> {
     let mut stream = UnixStream::connect(sock_path).map_err(|e| {
         AuthError::Transport(format!("cannot connect to greetd ({sock_path}): {e}"))
     })?;
 
-    run_exchange(&mut stream, username, password, cmd, env, on_prompt)?;
+    run_exchange_with(
+        &mut stream,
+        username,
+        password,
+        cmd,
+        env,
+        on_prompt,
+        on_accepted,
+    )?;
 
     // Session accepted — hand the VT to greetd. The greeter must exit so
     // greetd can reparent the started session.
@@ -140,7 +149,26 @@ pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
     password: &str,
     cmd: &[String],
     env: &[String],
+    on_prompt: F,
+) -> Result<(), AuthError> {
+    run_exchange_with(stream, username, password, cmd, env, on_prompt, || {})
+}
+
+/// [`run_exchange`] plus an `on_accepted` hook, fired the moment greetd
+/// reports the credentials good and *before* `StartSession` is issued.
+///
+/// It exists so the UI can resolve its in-flight state into a visible
+/// success frame. Without it the only observable outcomes are "failed" and
+/// "the process vanished", so a successful login looks, for the moment it
+/// takes greetd to hand over the VT, exactly like a greeter that has hung.
+pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
+    stream: &mut S,
+    username: &str,
+    password: &str,
+    cmd: &[String],
+    env: &[String],
     mut on_prompt: F,
+    mut on_accepted: G,
 ) -> Result<(), AuthError> {
     Request::CreateSession {
         username: username.to_string(),
@@ -186,7 +214,11 @@ pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
                     .map_err(|e| AuthError::Transport(format!("PostAuthMessageResponse: {e}")))?;
             }
             Response::Success => {
-                // Authentication complete — request the session start.
+                // Authentication complete. Tell the caller before issuing
+                // StartSession, so the UI can show that the attempt
+                // succeeded rather than sitting on a spinner until the
+                // process exits.
+                on_accepted();
                 Request::StartSession {
                     cmd: cmd.to_vec(),
                     env: env.to_vec(),
@@ -232,7 +264,7 @@ pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
 /// (session-lock), as opposed to *login* ([`run_exchange`], which launches
 /// the session on success).
 ///
-/// The CreateSession + auth-message answering is identical to
+/// The `CreateSession` + auth-message answering is identical to
 /// [`run_exchange`], but on the authoritative [`Response::Success`] this
 /// sends `CancelSession` (tearing down greetd's transient session slot) and
 /// returns `Ok(())` — it never sends `StartSession`, so no session is
@@ -356,7 +388,9 @@ mod tests {
 
             // 5. StartSession with our argv.
             let req = Request::read_from(&mut server).unwrap();
-            assert!(matches!(req, Request::StartSession { cmd, .. } if cmd == vec!["/usr/bin/shell".to_string(), "--backend".to_string(), "drm".to_string()]));
+            assert!(
+                matches!(req, Request::StartSession { cmd, .. } if cmd == vec!["/usr/bin/shell".to_string(), "--backend".to_string(), "drm".to_string()])
+            );
 
             // 6. Session accepted.
             Response::Success.write_to(&mut server).unwrap();
@@ -517,7 +551,10 @@ mod tests {
         let result = run_exchange(&mut client, "alice", "pw", &[], &[], ignore_prompts);
         server_thread.join().unwrap();
 
-        assert_eq!(result, Err(AuthError::Greetd("session slot busy".to_string())));
+        assert_eq!(
+            result,
+            Err(AuthError::Greetd("session slot busy".to_string()))
+        );
         let err = result.unwrap_err();
         assert_eq!(err.user_message(), "Could not start the session");
         assert_eq!(err.detail(), Some("session slot busy".to_string()));

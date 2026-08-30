@@ -1,12 +1,5 @@
 //! Percent-decoding for URIs, with the `+` question answered once.
 //!
-//! # Why this module exists
-//!
-//! Percent-decoding was hand-rolled in four places, and they did not agree
-//! about `+`. Two mapped `+` to a space; two left it alone. The same file name
-//! therefore came out differently depending on which app opened it: `my+song.mp3`
-//! played correctly in one and was looked up as `my song.mp3` in another.
-//!
 //! Both answers are right — for different inputs, which is exactly why a single
 //! blanket rule would have been wrong:
 //!
@@ -55,8 +48,8 @@ mod tests {
 
     #[test]
     fn rfc3986_decode_keeps_plus_literal() {
-        // The divergence this module ends: a `+` in a path or a non-form query
-        // is a plus, and treating it as a space corrupts real names.
+        // A `+` in a path or a non-form query is a literal plus; treating it
+        // as a space corrupts real names.
         assert_eq!(decode("my+song.mp3"), "my+song.mp3");
         assert_eq!(decode("Google+"), "Google+");
         assert_eq!(decode("C++"), "C++");
@@ -86,7 +79,10 @@ mod tests {
         // `+`, so an OAuth `state` really does mean a space here.
         assert_eq!(
             parse_form_query("code=abc+def&state=x+y"),
-            vec![("code".into(), "abc def".into()), ("state".into(), "x y".into())]
+            vec![
+                ("code".into(), "abc def".into()),
+                ("state".into(), "x y".into())
+            ]
         );
     }
 

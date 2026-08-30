@@ -6,14 +6,14 @@
 //! live, then two frames are rendered:
 //!   1. `data_table-top.png`    — `scroll_y = 0`: the thumb sits at the top.
 //!   2. `data_table-bottom.png` — `scroll_y = max`: the thumb sits at the
-//!                                 bottom, proving it tracks the offset.
+//!      bottom, proving it tracks the offset.
 //!
 //! The example also *asserts* the thumb rect matches the offset (top thumb
 //! at the track top, bottom thumb at the track bottom) so it doubles as a
 //! self-checking geometry probe — a green run means "the thumb is where the
 //! offset says".
 //!
-//! Run:  cargo run -p ui --example data_table
+//! Run:  cargo run -p ui --example ui-shots -- data_table
 //! Out:  $DATA_TABLE_SHOTS_OUT (default /tmp/data_table_shots)
 
 use std::collections::HashMap;
@@ -153,17 +153,25 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: PathBuf) -> Rect {
     let clip = Rect::new(0.0, 0.0, WIDTH as f64, h as f64);
 
     let mut scene = Scene::new();
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, Affine::IDENTITY, &clip);
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &clip,
+    );
     table.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     scene.pop_layer();
 
     let mut r = OffscreenRenderer::new(WIDTH, h);
     r.render_png(&scene, theme.bg_app, &out);
     println!("wrote {}", out.display());
-    table.scrollbar_thumb().expect("bar live in internal-scroll mode")
+    table
+        .scrollbar_thumb()
+        .expect("bar live in internal-scroll mode")
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let dir = std::env::var("DATA_TABLE_SHOTS_OUT")
         .unwrap_or_else(|_| "/tmp/data_table_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
@@ -188,7 +196,11 @@ fn main() {
     );
     let track_top = HEADER_H as f64 + 2.0; // rect.y0(0) + HEADER + BAR_MARGIN
     let track_bottom = HEADER_H as f64 + BODY_VP as f64 - 2.0;
-    assert!((top.y0 - track_top).abs() < 1.0, "top thumb at track top: {}", top.y0);
+    assert!(
+        (top.y0 - track_top).abs() < 1.0,
+        "top thumb at track top: {}",
+        top.y0
+    );
     assert!(
         (bottom.y1 - track_bottom).abs() < 1.0,
         "bottom thumb at track bottom: {}",

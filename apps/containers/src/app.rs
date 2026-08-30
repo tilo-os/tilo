@@ -18,16 +18,16 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
+use std::cell::Cell;
+use std::rc::Rc;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{FlapState, ModalDialog, PromptBody, SearchField, SplitLayout, Text, Widget};
-use std::cell::Cell;
-use std::rc::Rc;
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::Key;
 
@@ -55,9 +55,15 @@ pub(crate) enum Hit {
     NewContainer,
     SelectContainer(String),
     SelectImage(usize),
-    Action { id: String, action: Action },
+    Action {
+        id: String,
+        action: Action,
+    },
     /// An image lifecycle action (remove / pull-again), keyed by reference.
-    ImageAct { reference: String, action: ImageAction },
+    ImageAct {
+        reference: String,
+        action: ImageAction,
+    },
     /// Pull the image reference under the cursor (re-pull / update).
     PullImage(String),
     /// Pull the reference currently typed into the create-form image field.
@@ -192,7 +198,7 @@ pub struct ContainersApp {
     prompt_dialog: Option<PromptDlg>,
     /// Whether the create-container modal is open.
     pub(crate) create_open: bool,
-    /// Which create field has keyboard focus (index into CreateField::ALL).
+    /// Which create field has keyboard focus (index into `CreateField::ALL`).
     pub(crate) create_focus: usize,
     /// State of the typeable image combobox inside the create modal.
     pub(crate) combo: ComboState,
@@ -282,7 +288,11 @@ impl ContainersApp {
     }
 
     pub(crate) fn show_toast(&mut self, message: impl Into<String>, error: bool) {
-        self.toast = Some(Toast { message: message.into(), error, born: Instant::now() });
+        self.toast = Some(Toast {
+            message: message.into(),
+            error,
+            born: Instant::now(),
+        });
     }
 
     /// Kick a background podman re-probe so stats stay fresh without blocking
@@ -317,19 +327,18 @@ impl ContainersApp {
         if let Some(mut fresh) = latest {
             // Carry over the selected container's hydrated detail so the
             // detail tabs don't flicker empty between probes.
-            if let Some(sel) = ViewDoc::selected(doc) {
-                if let Some(old) = self.engine.find(&sel).cloned() {
-                    if let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel) {
-                        if newc.logs.is_empty() {
-                            newc.logs = old.logs;
-                        }
-                        if newc.env.is_empty() {
-                            newc.env = old.env;
-                        }
-                        if newc.mounts.is_empty() {
-                            newc.mounts = old.mounts;
-                        }
-                    }
+            if let Some(sel) = ViewDoc::selected(doc)
+                && let Some(old) = self.engine.find(&sel).cloned()
+                && let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel)
+            {
+                if newc.logs.is_empty() {
+                    newc.logs = old.logs;
+                }
+                if newc.env.is_empty() {
+                    newc.env = old.env;
+                }
+                if newc.mounts.is_empty() {
+                    newc.mounts = old.mounts;
                 }
             }
             self.engine = fresh;
@@ -338,14 +347,15 @@ impl ContainersApp {
 
     /// Hydrate the selected container's detail (logs + inspect) on demand.
     fn hydrate_selection(&mut self, doc: &mut AutoCommit) {
-        let Some(sel) = ViewDoc::selected(doc) else { return };
+        let Some(sel) = ViewDoc::selected(doc) else {
+            return;
+        };
         let needs = self
             .engine
             .containers
             .iter()
             .find(|c| c.id == sel)
-            .map(|c| c.logs.is_empty() && c.env.is_empty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.logs.is_empty() && c.env.is_empty());
         if !needs || !self.live {
             return;
         }
@@ -364,8 +374,7 @@ impl ContainersApp {
         let name = self
             .engine
             .find(id)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| id.to_string());
+            .map_or_else(|| id.to_string(), |c| c.name.clone());
         if self.live {
             match podman::run_action(action, id) {
                 Ok(()) => self.show_toast(format!("{} {}", action.label(), name), false),
@@ -602,8 +611,12 @@ impl ContainersApp {
 
     /// Filtered containers for the current search query, sorted running-first.
     pub(crate) fn visible_containers(&self, query: &str) -> Vec<&Container> {
-        let mut v: Vec<&Container> =
-            self.engine.containers.iter().filter(|c| c.matches(query)).collect();
+        let mut v: Vec<&Container> = self
+            .engine
+            .containers
+            .iter()
+            .filter(|c| c.matches(query))
+            .collect();
         v.sort_by(|a, b| {
             b.status
                 .is_running()
@@ -625,8 +638,11 @@ impl ContainersApp {
             .containers
             .iter()
             .map(|ct| {
-                CommandEntry::new(ct.id.clone(), ct.name.clone())
-                    .description(format!("{} · {}", ct.status.label(), ct.image))
+                CommandEntry::new(ct.id.clone(), ct.name.clone()).description(format!(
+                    "{} · {}",
+                    ct.status.label(),
+                    ct.image
+                ))
             })
             .collect();
         self.palette.set_entries(entries);
@@ -652,7 +668,14 @@ impl ContainersApp {
         let dummy_node = dummy_taffy.new_leaf(Style::default()).unwrap();
         let mut ignored = false;
         self.search_field.handle_event(
-            event, scale_factor, modifiers, doc, path, &mut ignored, focus_target, dummy_node,
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            &mut ignored,
+            focus_target,
+            dummy_node,
             &dummy_taffy,
         );
     }
@@ -690,7 +713,11 @@ impl ContainersApp {
                 let c = cancel.clone();
                 move || c.set(true)
             });
-        Some(ConfirmDlg { dialog, confirm: ok, cancel })
+        Some(ConfirmDlg {
+            dialog,
+            confirm: ok,
+            cancel,
+        })
     }
 
     /// Build the text-prompt dialog from the current `prompt` metadata. The
@@ -721,7 +748,11 @@ impl ContainersApp {
                 let c = cancel.clone();
                 move || c.set(true)
             });
-        Some(PromptDlg { dialog, submit, cancel })
+        Some(PromptDlg {
+            dialog,
+            submit,
+            cancel,
+        })
     }
 
     fn ensure_confirm_dialog(&mut self) {
@@ -776,7 +807,9 @@ impl ContainersApp {
         self.ensure_confirm_dialog();
         self.layout_confirm_dialog();
         let (ok, cancel) = {
-            let Some(cd) = self.confirm_dialog.as_mut() else { return };
+            let Some(cd) = self.confirm_dialog.as_mut() else {
+                return;
+            };
             route_event_into(&mut cd.dialog, event, scale_factor, modifiers, doc, handled);
             (cd.confirm.replace(false), cd.cancel.replace(false))
         };
@@ -808,7 +841,9 @@ impl ContainersApp {
         self.ensure_prompt_dialog();
         self.layout_prompt_dialog();
         let (submit, cancel) = {
-            let Some(pd) = self.prompt_dialog.as_mut() else { return };
+            let Some(pd) = self.prompt_dialog.as_mut() else {
+                return;
+            };
             route_event_into(&mut pd.dialog, event, scale_factor, modifiers, doc, handled);
             (pd.submit.replace(false), pd.cancel.replace(false))
         };
@@ -844,16 +879,17 @@ impl ContainersApp {
     pub fn seed_shot(&mut self, scenario: &str) {
         match scenario {
             "confirm" => {
-                let (name, id) = self
-                    .engine
-                    .containers
-                    .first()
-                    .map(|c| (c.name.clone(), c.id.clone()))
-                    .unwrap_or_else(|| ("web".to_string(), "web".to_string()));
+                let (name, id) = self.engine.containers.first().map_or_else(
+                    || ("web".to_string(), "web".to_string()),
+                    |c| (c.name.clone(), c.id.clone()),
+                );
                 self.confirm = Some(Confirm {
                     name,
                     verb: "Remove container".into(),
-                    target: ConfirmTarget::Container { id, action: Action::Remove },
+                    target: ConfirmTarget::Container {
+                        id,
+                        action: Action::Remove,
+                    },
                 });
             }
             "prompt" => {
@@ -927,7 +963,15 @@ fn route_event_into<C: Widget + 'static>(
     let mut focus_target = None;
     let root = automerge::ROOT;
     dialog.handle_event(
-        event, scale_factor, modifiers, doc, &root, handled, &mut focus_target, node, &taffy,
+        event,
+        scale_factor,
+        modifiers,
+        doc,
+        &root,
+        handled,
+        &mut focus_target,
+        node,
+        &taffy,
     );
 }
 
@@ -967,7 +1011,11 @@ impl Widget for ContainersApp {
                     ViewDoc::set_create_field(doc, CreateField::Image, "nginx");
                     ViewDoc::set_create_field(doc, CreateField::Ports, "8080:80, 8443:443");
                     ViewDoc::set_create_field(doc, CreateField::Env, "TZ=UTC");
-                    ViewDoc::set_create_field(doc, CreateField::Volumes, "site:/usr/share/nginx/html");
+                    ViewDoc::set_create_field(
+                        doc,
+                        CreateField::Volumes,
+                        "site:/usr/share/nginx/html",
+                    );
                     if scene == "combo" {
                         // Open the image suggestion dropdown for the shot.
                         self.combo.open = true;
@@ -980,7 +1028,8 @@ impl Widget for ContainersApp {
                         lines: vec![
                             "Trying to pull docker.io/library/alpine:3.20...".into(),
                             "Getting image source signatures".into(),
-                            "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB".into(),
+                            "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB"
+                                .into(),
                             "Copying config sha256:1a2b3c4d5e6f done".into(),
                         ],
                         done: false,
@@ -1008,19 +1057,18 @@ impl Widget for ContainersApp {
                 "terminal" => DetailTab::Terminal,
                 _ => DetailTab::Logs,
             };
-            let list_scene =
-                matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
-            if !list_scene && ViewDoc::selected(doc).is_none() {
-                if let Some(first) = self
+            let list_scene = matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
+            if !list_scene
+                && ViewDoc::selected(doc).is_none()
+                && let Some(first) = self
                     .engine
                     .containers
                     .iter()
                     .find(|c| c.status.is_running())
                     .or_else(|| self.engine.containers.first())
-                {
-                    ViewDoc::set_selected(doc, Some(&first.id));
-                    ViewDoc::set_tab(doc, tab);
-                }
+            {
+                ViewDoc::set_selected(doc, Some(&first.id));
+                ViewDoc::set_tab(doc, tab);
             }
         }
         // Periodically re-probe the engine for fresh stats / state.
@@ -1035,7 +1083,12 @@ impl Widget for ContainersApp {
         // Keep syncing while live so the background poller's snapshots and
         // the toast timeout are picked up without needing input. A running
         // pull also streams in via the bg channel.
-        self.live || self.toast.is_some() || self.pull.as_ref().is_some_and(|p| !p.done && p.failed.is_none())
+        self.live
+            || self.toast.is_some()
+            || self
+                .pull
+                .as_ref()
+                .is_some_and(|p| !p.done && p.failed.is_none())
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1043,7 +1096,10 @@ impl Widget for ContainersApp {
         // keep the host pumping frames.
         self.toast.is_some()
             || self.sidebar_flap.is_animating(SplitLayout::Docked)
-            || self.pull.as_ref().is_some_and(|p| !p.done && p.failed.is_none())
+            || self
+                .pull
+                .as_ref()
+                .is_some_and(|p| !p.done && p.failed.is_none())
     }
 
     fn build_layout(
@@ -1056,21 +1112,24 @@ impl Widget for ContainersApp {
         // single full-bleed leaf node.
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: percent(1.0), height: percent(1.0) },
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
+                },
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -1092,10 +1151,10 @@ impl Widget for ContainersApp {
         // Advance the sidebar collapse slide off a real per-frame delta.
         self.tick_sidebar();
         // Expire the toast.
-        if let Some(t) = &self.toast {
-            if t.born.elapsed().as_millis() > TOAST_MS {
-                self.toast = None;
-            }
+        if let Some(t) = &self.toast
+            && t.born.elapsed().as_millis() > TOAST_MS
+        {
+            self.toast = None;
         }
         self.hits.clear();
         let r = self.rect;
@@ -1188,7 +1247,14 @@ impl Widget for ContainersApp {
             let mut dummy_taffy: TaffyTree<()> = TaffyTree::new();
             let dummy_node = dummy_taffy.new_leaf(Style::default()).unwrap();
             self.palette.handle_event(
-                event, scale_factor, modifiers, doc, _path, handled, focus_target, dummy_node,
+                event,
+                scale_factor,
+                modifiers,
+                doc,
+                _path,
+                handled,
+                focus_target,
+                dummy_node,
                 &dummy_taffy,
             );
             if let Some(outcome) = self.palette.take_outcome() {
@@ -1205,16 +1271,17 @@ impl Widget for ContainersApp {
 
         // Ctrl+K opens the app-scoped palette — the same chord as the shell's
         // global search, here seeded with this app's resources.
-        if let WindowEvent::KeyboardInput { event: key_event, .. } = event {
-            if key_event.state == ElementState::Pressed
-                && modifiers.state().control_key()
-                && matches!(&key_event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k"))
-            {
-                self.open_container_palette();
-                *handled = true;
-                self.refresh_view(doc);
-                return;
-            }
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = event
+            && key_event.state == ElementState::Pressed
+            && modifiers.state().control_key()
+            && matches!(&key_event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k"))
+        {
+            self.open_container_palette();
+            *handled = true;
+            self.refresh_view(doc);
+            return;
         }
 
         // A destructive-confirm or text-prompt dialog is modal: while it's up
@@ -1241,7 +1308,7 @@ impl Widget for ContainersApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (*y as f64) * 48.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 // Scroll the panel under the cursor.
@@ -1252,7 +1319,11 @@ impl Widget for ContainersApp {
                 }
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 // A click on the search launcher opens the palette instead of
                 // running a list hit.
                 self.route_to_launcher(event, scale_factor, modifiers, doc, _path, focus_target);
@@ -1263,7 +1334,9 @@ impl Widget for ContainersApp {
                     self.on_click(doc, handled);
                 }
             }
-            WindowEvent::KeyboardInput { event: key_event, .. } => {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
                 self.on_key(doc, key_event, modifiers, handled);
             }
             _ => {}
@@ -1273,7 +1346,7 @@ impl Widget for ContainersApp {
         self.refresh_view(doc);
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ContainersApp"
     }
 
@@ -1396,8 +1469,7 @@ impl ContainersApp {
         let now = Instant::now();
         let dt = self
             .sidebar_tick
-            .map(|t| now.duration_since(t).as_secs_f64().min(0.1))
-            .unwrap_or(0.0);
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
         self.sidebar_tick = Some(now);
         self.sidebar_flap.tick(SplitLayout::Docked, dt);
     }
@@ -1414,8 +1486,7 @@ mod palette_launcher_tests {
     fn key_press(logical_key: Key) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1446,8 +1517,12 @@ mod palette_launcher_tests {
         app.open_container_palette();
         assert!(app.palette_open, "the launcher opens the shared palette");
 
-        let rows: Vec<String> =
-            app.palette.visible_entries().iter().map(|e| e.label.clone()).collect();
+        let rows: Vec<String> = app
+            .palette
+            .visible_entries()
+            .iter()
+            .map(|e| e.label.clone())
+            .collect();
         assert_eq!(rows.len(), count, "one palette row per container");
         assert!(
             app.engine
@@ -1511,8 +1586,7 @@ mod palette_launcher_tests {
     fn char_press(ch: &str) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(ch.into());
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1528,8 +1602,15 @@ mod palette_launcher_tests {
         let mut handled = false;
         let mut focus = None;
         app.handle_event(
-            ev, 1.0, &winit::event::Modifiers::default(), doc, root, &mut handled, &mut focus,
-            node, &taffy,
+            ev,
+            1.0,
+            &winit::event::Modifiers::default(),
+            doc,
+            root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
     }
 
@@ -1547,16 +1628,30 @@ mod palette_launcher_tests {
         app.confirm = Some(Confirm {
             name: reference.clone(),
             verb: "Remove image".into(),
-            target: ConfirmTarget::Image { reference: reference.clone() },
+            target: ConfirmTarget::Image {
+                reference: reference,
+            },
         });
         // A cursor move builds + lays out the dialog so its primary rect resolves.
-        dispatch(&mut app, &mut doc, &root, &cursor_at(Point::new(10.0, 10.0)));
+        dispatch(
+            &mut app,
+            &mut doc,
+            &root,
+            &cursor_at(Point::new(10.0, 10.0)),
+        );
         let primary = app.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
         dispatch(&mut app, &mut doc, &root, &cursor_at(primary.center()));
         dispatch(&mut app, &mut doc, &root, &left_press());
-        assert!(app.confirm.is_none(), "confirm closed after the primary click");
+        assert!(
+            app.confirm.is_none(),
+            "confirm closed after the primary click"
+        );
         assert!(app.confirm_dialog.is_none());
-        assert_eq!(app.engine.images.len(), before - 1, "the image was removed on confirm");
+        assert_eq!(
+            app.engine.images.len(),
+            before - 1,
+            "the image was removed on confirm"
+        );
 
         let mut b = ContainersApp::new(false);
         b.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
@@ -1567,7 +1662,12 @@ mod palette_launcher_tests {
             verb: "Remove image".into(),
             target: ConfirmTarget::Image { reference: refb },
         });
-        dispatch(&mut b, &mut doc, &root, &key_press(Key::Named(NamedKey::Escape)));
+        dispatch(
+            &mut b,
+            &mut doc,
+            &root,
+            &key_press(Key::Named(NamedKey::Escape)),
+        );
         assert!(b.confirm.is_none(), "Escape cancelled the confirm");
         assert_eq!(b.engine.images.len(), beforeb, "Escape removed nothing");
     }
@@ -1589,7 +1689,12 @@ mod palette_launcher_tests {
             value: String::new(),
             context: String::new(),
         });
-        dispatch(&mut app, &mut doc, &root, &cursor_at(Point::new(10.0, 10.0)));
+        dispatch(
+            &mut app,
+            &mut doc,
+            &root,
+            &cursor_at(Point::new(10.0, 10.0)),
+        );
         for ch in ["d", "a", "t", "a"] {
             dispatch(&mut app, &mut doc, &root, &char_press(ch));
         }

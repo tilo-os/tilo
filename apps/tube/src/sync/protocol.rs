@@ -9,7 +9,7 @@
 //!
 //! ## Licensing
 //!
-//! Grayjay's app code is FUTO Source-First (non-commercial) and the YouTube
+//! Grayjay's app code is FUTO Source-First (non-commercial) and the `YouTube`
 //! plugin is AGPL-3.0. What lives here is our own Rust: the *facts* of an
 //! interoperable wire protocol (opcode integers, Noise pattern strings, framing
 //! layout, JSON field names). None of Grayjay's source is copied.
@@ -169,7 +169,10 @@ impl std::fmt::Display for FrameError {
         match self {
             FrameError::TooShort => write!(f, "packet shorter than header ({HEADER_SIZE} bytes)"),
             FrameError::SizeMismatch { declared, actual } => {
-                write!(f, "incomplete packet: size field {declared} != actual {actual}")
+                write!(
+                    f,
+                    "incomplete packet: size field {declared} != actual {actual}"
+                )
             }
         }
     }
@@ -202,7 +205,10 @@ pub fn decode_frame(buf: &[u8]) -> Result<Frame, FrameError> {
     }
     let declared = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
     if declared as usize != buf.len() - 4 {
-        return Err(FrameError::SizeMismatch { declared, actual: buf.len() - 4 });
+        return Err(FrameError::SizeMismatch {
+            declared,
+            actual: buf.len() - 4,
+        });
     }
     Ok(Frame {
         opcode: buf[4],
@@ -241,7 +247,11 @@ fn epoch_min() -> i64 {
 impl SyncSessionData {
     /// Ask the peer for the complete state (both timestamps at the sentinel).
     pub fn request_all(public_key: impl Into<String>) -> Self {
-        Self { public_key: public_key.into(), last_history: -1, last_subscription: -1 }
+        Self {
+            public_key: public_key.into(),
+            last_history: -1,
+            last_subscription: -1,
+        }
     }
 }
 
@@ -390,7 +400,12 @@ mod tests {
     #[test]
     fn frame_round_trips_and_validates_size() {
         let payload = b"hello grayjay";
-        let bytes = encode_frame(opcode::DATA, sync_opcode::SYNC_SUBSCRIPTIONS, content_encoding::GZIP, payload);
+        let bytes = encode_frame(
+            opcode::DATA,
+            sync_opcode::SYNC_SUBSCRIPTIONS,
+            content_encoding::GZIP,
+            payload,
+        );
         // size field == payload + 3 (opcode+sub+ce), matching handleData's `size == len-4`.
         let declared = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         assert_eq!(declared as usize, payload.len() + 3);
@@ -407,7 +422,10 @@ mod tests {
     fn decode_rejects_corrupt_size() {
         let mut bytes = encode_frame(opcode::PING, 0, content_encoding::RAW, b"");
         bytes[0] = 0xFF; // corrupt the declared size
-        assert!(matches!(decode_frame(&bytes), Err(FrameError::SizeMismatch { .. })));
+        assert!(matches!(
+            decode_frame(&bytes),
+            Err(FrameError::SizeMismatch { .. })
+        ));
         assert_eq!(decode_frame(&[0u8; 3]), Err(FrameError::TooShort));
     }
 
@@ -437,10 +455,17 @@ mod tests {
         }"#;
         let pkg: SyncSubscriptionsPackage = serde_json::from_str(json).unwrap();
         assert_eq!(pkg.subscriptions.len(), 1);
-        assert_eq!(pkg.subscriptions[0].channel.url, "https://youtube.com/channel/UC123");
+        assert_eq!(
+            pkg.subscriptions[0].channel.url,
+            "https://youtube.com/channel/UC123"
+        );
         assert_eq!(pkg.subscriptions[0].creation_time, 1_700_000_000);
         // Extra Grayjay fields (doNotifications/playbackSeconds) are ignored.
-        assert_eq!(pkg.subscription_removals.get("https://youtube.com/channel/UCgone"), Some(&1_699_999_999));
+        assert_eq!(
+            pkg.subscription_removals
+                .get("https://youtube.com/channel/UCgone"),
+            Some(&1_699_999_999)
+        );
 
         // And our own serialization round-trips.
         let reencoded = serde_json::to_string(&pkg).unwrap();

@@ -1,22 +1,20 @@
-//! Exercises the eight-step inbound-op validation pipeline.
+//! Exercises the eight-step inbound-op validation pipeline: each step
+//! has a negative test driving the validator to the corresponding
+//! `ValidationError` variant, plus one happy-path test running all eight
+//! green.
 //!
-//! For each numbered step there is at least one negative test that
-//! drives the validator to the corresponding `ValidationError`
-//! variant, plus one happy-path test that runs all eight green.
-//!
-//! The test fixture builds a minimal channel: one owner-signer, one
-//! Editor attestation underwriting an author, one Note artifact, no
-//! clearance gate by default. Individual tests mutate the fixture
-//! to trip the desired step.
+//! Fixture: one owner-signer, one Editor attestation underwriting an
+//! author, one Note artifact, no clearance gate by default; individual
+//! tests mutate it to trip the desired step.
 
 use std::time::{Duration, SystemTime};
 
-use ed25519_dalek::SigningKey;
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
     Clearance, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
     ValidationError, generate_keypair, sign_event, sign_op, validate_inbound_op,
 };
+use ed25519_dalek::SigningKey;
 
 fn t(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
@@ -103,12 +101,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn build_op(
-    f: &Fixture,
-    op_class: OpClass,
-    timestamp: SystemTime,
-    seq: u64,
-) -> SignedOp {
+fn build_op(f: &Fixture, op_class: OpClass, timestamp: SystemTime, seq: u64) -> SignedOp {
     let mut op = SignedOp::new_unsigned(
         b"payload".to_vec(),
         f.artifact,
@@ -131,14 +124,17 @@ fn happy_path_all_eight_pass() {
     let r = validate_inbound_op(&op, &mut f.state);
     assert!(r.is_ok(), "expected Ok, got {r:?}");
     // Seq map updated.
-    assert_eq!(f.state.last_seq_per_author.get(&f.author_pk).copied(), Some(1));
+    assert_eq!(
+        f.state.last_seq_per_author.get(&f.author_pk).copied(),
+        Some(1)
+    );
 }
 
 #[test]
 fn happy_path_with_clearance_gate() {
     let mut f = fixture();
-    // Stamp a ClearedAt(Confidential) identity attestation issued
-    // by a trust root that the channel accepts.
+    // Stamp a ClearedAt(Confidential) identity attestation issued by a
+    // trust root the channel accepts.
     let (org_sk, org_pk) = generate_keypair();
     f.state.accepted_trust_roots.push(org_pk);
     let cleared = {
@@ -196,8 +192,8 @@ fn step1_unknown_attestation_id() {
 #[test]
 fn step2_attestation_issuer_not_in_authorised_signers() {
     let mut f = fixture();
-    // Wipe the channel's authorised signers. The attestation in the
-    // store was issued by `owner_pk`, which no longer qualifies.
+    // Wipe the channel's authorised signers — the stored attestation was
+    // issued by `owner_pk`, which no longer qualifies.
     f.state.authorised_signers.clear();
     let op = build_op(&f, OpClass::Splice, t(10), 1);
     match validate_inbound_op(&op, &mut f.state) {
@@ -252,9 +248,8 @@ fn step3_op_payload_tampered_post_signing() {
 #[test]
 fn step4_author_does_not_match_subject() {
     let mut f = fixture();
-    // Forge an op whose author is *not* the attestation's subject.
-    // To get past step 3 (op signature check) we sign with a
-    // matching key.
+    // Forge an op whose author is *not* the attestation's subject; sign
+    // with a matching key to get past the step-3 signature check.
     let (forger_sk, forger_pk) = generate_keypair();
     let mut op = SignedOp::new_unsigned(
         b"x".to_vec(),
@@ -420,8 +415,8 @@ fn step7_smaller_seq_rejected() {
 #[test]
 fn step8_insufficient_clearance_no_claim_at_all() {
     let mut f = fixture();
-    // Set artifact classification to Confidential without giving
-    // the author any clearance.
+    // Set artifact classification to Confidential without giving the
+    // author any clearance.
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
@@ -475,8 +470,8 @@ fn step8_insufficient_clearance_too_low() {
 #[test]
 fn step8_untrusted_clearance_issuer() {
     let mut f = fixture();
-    // Give the author a Confidential clearance but issued by a key
-    // that the channel does NOT accept as a trust root.
+    // Give the author a Confidential clearance issued by a key the
+    // channel does NOT accept as a trust root.
     let (rogue_sk, rogue_pk) = generate_keypair();
     let mut a = Attestation {
         id: AttestationId::new(),
@@ -512,7 +507,7 @@ fn step8_untrusted_clearance_issuer() {
 fn step8_channel_min_clearance_floor() {
     let mut f = fixture();
     // Set channel-level min_clearance to Restricted; artifact-level
-    // classification is unset. The validator must still enforce.
+    // classification unset — the validator must still enforce.
     f.state.channel_min_clearance = Some(Clearance::RESTRICTED);
     let op = build_op(&f, OpClass::Splice, t(10), 1);
     match validate_inbound_op(&op, &mut f.state) {
@@ -525,8 +520,8 @@ fn step8_channel_min_clearance_floor() {
 
 #[test]
 fn step8_effective_clearance_takes_max() {
-    // Channel = Internal, artifact = Restricted. Author has
-    // Confidential. Should fail (Confidential < Restricted).
+    // Channel = Internal, artifact = Restricted, author has Confidential
+    // — fails (Confidential < Restricted).
     let mut f = fixture();
     f.state.channel_min_clearance = Some(Clearance::INTERNAL);
     f.state

@@ -143,8 +143,7 @@ pub fn register(registry: &mut ActionRegistry) {
 /// affordances both dispatch — the single point that turns a Remote action into
 /// a replayable envelope.
 pub fn encode(action: &RemoteAction) -> EncodedAction {
-    EncodedAction::encode(REMOTE_ACTION_TYPE, action)
-        .expect("RemoteAction is always serializable")
+    EncodedAction::encode(REMOTE_ACTION_TYPE, action).expect("RemoteAction is always serializable")
 }
 
 /// Build the "add/edit this connection" action from the fields the form owns —
@@ -177,7 +176,10 @@ pub fn delete_action(id: ConnectionId) -> RemoteAction {
 
 /// Build the "rename this connection" action from a new name.
 pub fn rename_action(id: ConnectionId, name: &str) -> RemoteAction {
-    RemoteAction::RenameConnection { id, name: name.to_string() }
+    RemoteAction::RenameConnection {
+        id,
+        name: name.to_string(),
+    }
 }
 
 // ===========================================================================
@@ -299,7 +301,10 @@ mod tests {
         assert_eq!(back[0].id, id);
         assert_eq!(back[0].name, "Build Box");
         assert_eq!(back[0].host, "10.0.0.9");
-        assert_eq!(back[0].last_used, "Never", "a fresh connection seeds last-used");
+        assert_eq!(
+            back[0].last_used, "Never",
+            "a fresh connection seeds last-used"
+        );
     }
 
     #[test]
@@ -383,8 +388,14 @@ mod tests {
             let back = RemoteDoc::list(&doc);
             assert_eq!(back.len(), 1, "{action:?} must not add a connection");
             assert_eq!(back[0].id, real);
-            assert_eq!(back[0].name, "Real Box", "{action:?} left the real record intact");
-            assert!(back[0].favorite, "{action:?} left the real favourite flag intact");
+            assert_eq!(
+                back[0].name, "Real Box",
+                "{action:?} left the real record intact"
+            );
+            assert!(
+                back[0].favorite,
+                "{action:?} left the real favourite flag intact"
+            );
         }
     }
 
@@ -411,7 +422,10 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("Rename")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("favourites")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("favourites")),
+            "{labels:?}"
+        );
         assert!(labels.iter().any(|l| l.contains("Delete")), "{labels:?}");
     }
 
@@ -426,7 +440,11 @@ mod tests {
         RemoteDoc::upsert(&mut doc, &c);
 
         let resources = provide_resources(&doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "favorite").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "favorite")
+            .unwrap();
         assert_eq!(spec.label, "Remove from favourites");
         assert_eq!(
             immediate_encode(spec),
@@ -452,23 +470,18 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
+        state.record_committed_action(before_heads, None, None);
+
+        assert!(
+            RemoteDoc::list(&state.doc)[0].favorite,
+            "the action set the flag"
+        );
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
         );
 
-        assert!(RemoteDoc::list(&state.doc)[0].favorite, "the action set the flag");
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
-
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert!(
             !RemoteDoc::list(&state.doc)[0].favorite,
             "undo reverted the favourite change and nothing else",
@@ -486,14 +499,22 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = rename_action(id, "Renamed");
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(RemoteDoc::list(&b)[0].name, "Renamed");
     }
 

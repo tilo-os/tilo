@@ -4,7 +4,7 @@
 //! setup, both in the live window and in headless `--shots` rendering.
 //!
 //! The schema deliberately exercises every feature of the UI: primary keys,
-//! foreign keys, secondary indexes, NULLable columns, a view, and a mix of
+//! foreign keys, secondary indexes, `NULLable` columns, a view, and a mix of
 //! integer / text / real / datetime types so the type icons and NULL styling
 //! have something to show.
 
@@ -18,7 +18,7 @@ pub fn seed(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-const SCHEMA_SQL: &str = r#"
+const SCHEMA_SQL: &str = r"
 CREATE TABLE artists (
     artist_id   INTEGER PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -84,9 +84,9 @@ FROM tracks t
 LEFT JOIN albums al ON al.album_id = t.album_id
 LEFT JOIN artists ar ON ar.artist_id = al.artist_id
 LEFT JOIN genres g ON g.genre_id = t.genre_id;
-"#;
+";
 
-const DATA_SQL: &str = r#"
+const DATA_SQL: &str = r"
 INSERT INTO genres (genre_id, name) VALUES
  (1,'Rock'),(2,'Jazz'),(3,'Electronic'),(4,'Classical'),(5,'Hip-Hop'),(6,'Ambient');
 
@@ -142,7 +142,7 @@ INSERT INTO invoices (invoice_id, customer_id, invoice_date, total) VALUES
  (5,4,'2023-07-19 12:40:00',0.79),
  (6,5,'2023-08-05 16:05:00',2.28),
  (7,2,'2023-08-30 13:00:00',1.49);
-"#;
+";
 
 /// A few starter queries surfaced in the editor's "snippets" menu so a
 /// first-time user can run something interesting immediately.
@@ -172,5 +172,4 @@ pub fn starter_queries() -> &'static [(&'static str, &'static str)] {
 }
 
 /// The query the editor opens with on first launch.
-pub const DEFAULT_QUERY: &str =
-    "SELECT al.title AS album, ar.name AS artist, al.rating, al.release_date\nFROM albums al\nJOIN artists ar ON ar.artist_id = al.artist_id\nORDER BY al.rating DESC;";
+pub const DEFAULT_QUERY: &str = "SELECT al.title AS album, ar.name AS artist, al.rating, al.release_date\nFROM albums al\nJOIN artists ar ON ar.artist_id = al.artist_id\nORDER BY al.rating DESC;";

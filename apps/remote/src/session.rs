@@ -61,7 +61,11 @@ pub struct Cell {
 
 impl Cell {
     pub fn blank() -> Self {
-        Self { ch: ' ', color: None, bold: false }
+        Self {
+            ch: ' ',
+            color: None,
+            bold: false,
+        }
     }
 }
 

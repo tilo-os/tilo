@@ -1,29 +1,20 @@
 //! `org.freedesktop.impl.portal.FileChooser` backend.
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.FileChooser.xml`.
-//! Plan: Sandbox Phase 4.3, lines 335-353.
 //!
-//! Three methods:
+//! Three methods, same shape: `OpenFile`/`SaveFile`/`SaveFiles(handle,
+//! app_id, parent_window, title, options) → (response, results)`.
+//! `response` is the portal response code (0 = success, 1 = user
+//! cancelled, 2 = other error); `results` is `a{sv}`, with `uris`
+//! mandatory on success.
 //!
-//! - `OpenFile(handle, app_id, parent_window, title, options) → (response, results)`
-//! - `SaveFile(...)` — same shape
-//! - `SaveFiles(...)` — same shape
-//!
-//! `response` is the portal response code (0 = success, 1 = user cancelled,
-//! 2 = other error). `results` is `a{sv}`; for FileChooser the `uris` key
-//! is mandatory on success.
-//!
-//! Every method:
-//! 1. Resolves the caller's [`PortalCaller`] via the [`CallerMap`] using
-//!    the D-Bus connection's unique-name.
-//! 2. Delegates to [`flow::resolve`] with `CapabilityKind::FilesystemRead`
-//!    (or `FilesystemReadWrite` for `SaveFile`/`SaveFiles`).
-//! 3. On `Allow*`, calls into [`FilePickerSpawner::spawn`] to surface a
-//!    real file-picker dialog. The dialog reply (`Option<Vec<PathBuf>>`)
-//!    is converted into a `uris` array (`file://...`) for the response.
-//!    `None` (user closed the dialog without picking) is treated as
-//!    `response=1` (user cancelled).
-//! 4. On `Deny`, returns response=1 + an empty results dict.
+//! Every method resolves the caller's [`PortalCaller`] via
+//! [`CallerMap`], delegates to [`flow::resolve`] with
+//! `CapabilityKind::FilesystemRead` (or `FilesystemReadWrite` for
+//! `SaveFile`/`SaveFiles`), and on `Allow*` calls
+//! [`FilePickerSpawner::spawn`] to surface a real dialog — the reply
+//! (`Option<Vec<PathBuf>>`) becomes a `uris` array, with `None` treated
+//! as `response=1` (cancelled). On `Deny`, returns response=1 with an empty results dict.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -37,8 +28,7 @@ use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
 
 use super::{FilePickerOptions, PortalCaller, PortalContext, WorkspaceId};
 
-/// D-Bus interface impl. One instance per [`super::serve`] call; held
-/// by the zbus `ObjectServer` for the lifetime of the connection.
+/// D-Bus interface impl. One instance per [`super::serve`] call, held by the zbus `ObjectServer` for the connection's lifetime.
 pub struct FileChooserBackend {
     ctx: PortalContext,
 }
@@ -48,16 +38,12 @@ impl FileChooserBackend {
         Self { ctx }
     }
 
-    /// Resolve the caller to a [`PortalCaller`]. Falls back to a stub
-    /// caller when no connection peer-credentials are available (e.g.
-    /// in-process p2p test bus) — production wires the bridge accept
-    /// path's PID lookup into [`CallerMap`].
+    /// Resolve the caller to a [`PortalCaller`]. Falls back to a stub caller
+    /// when no connection peer-credentials are available (e.g. in-process
+    /// p2p test bus) — production wires the bridge accept path's PID lookup into [`CallerMap`].
     ///
-    /// Note that [`CallerMap::lookup`] also honours the
-    /// `force_caller_for_tests` override regardless of `sender` —
-    /// `None` sender + forced caller still resolves correctly. We
-    /// therefore always consult the map (with an empty-string key on
-    /// the missing-sender branch) before falling back to the synth.
+    /// [`CallerMap::lookup`] honours `force_caller_for_tests` regardless of
+    /// `sender`, so the map is always consulted (empty-string key on the missing-sender branch) before falling back to the synth.
     pub(super) fn resolve_caller(
         ctx: &PortalContext,
         sender: Option<&OwnedUniqueName>,
@@ -67,11 +53,9 @@ impl FileChooserBackend {
         if let Some(c) = ctx.caller_map.lookup(&key) {
             return c;
         }
-        // Fallback: synthesise from the app-id alone, with a zero
-        // workspace. Tests poke a real entry into the caller map ahead
-        // of the call; production reaches the production-only bridge
-        // accept path, which populates the map before any portal request
-        // can be issued.
+        // Fallback: synthesise from the app-id alone, with a zero workspace.
+        // Tests poke a real entry into the caller map ahead of the call;
+        // production reaches the bridge accept path, which populates the map before any portal request can be issued.
         PortalCaller::new(WorkspaceId(0), app_id)
     }
 }
@@ -151,31 +135,14 @@ impl FileChooserBackend {
 }
 
 impl FileChooserBackend {
-    /// Raise the dialog, and turn what the user picked into both a
-    /// grant and a response.
+    /// Raise the dialog, and turn what the user picked into both a grant and a response.
     ///
-    /// ## The dialog is the prompt
-    ///
-    /// There used to be a permission prompt in front of this: a
-    /// `flow::resolve` on a `Capability::Filesystem { path: "/" }`
-    /// sentinel, asking "may this app read the filesystem?", and only
-    /// then a dialog asking which file. Two things were wrong with it.
-    ///
-    /// The first is that it asks the user a question they cannot
-    /// answer. "May Notes read your files?" has no good answer in the
-    /// abstract; "open which file?" does, and it is the same decision
-    /// with the ambiguity removed.
-    ///
-    /// The second is what the answer meant. Answering *Always* stored a
-    /// capability on `"/"`, and `Scope::FsPath` covers its whole
-    /// subtree — so one Always click on one Open dialog granted that app
-    /// the entire filesystem, permanently, and every later `OpenFile`
-    /// took `flow::resolve`'s fast path and never showed a dialog again.
-    ///
-    /// So the consent is the pick. The user browsing a
-    /// compositor-owned dialog and choosing a file is an act of
-    /// authorisation that names exactly one path, and that path is what
-    /// gets granted — nothing wider, and nothing the app chose.
+    /// **The dialog is the prompt.** There is deliberately no separate "may
+    /// this app read the filesystem?" prompt in front of this — that
+    /// question has no good abstract answer, unlike "open which file?", and
+    /// a blanket capability on `"/"` is not what the user is consenting to.
+    /// Browsing a compositor-owned dialog and choosing a file is the act of
+    /// authorisation, naming exactly one path — nothing wider, nothing the app chose.
     async fn pick_and_grant(
         &self,
         opts: FilePickerOptions,
@@ -187,10 +154,8 @@ impl FileChooserBackend {
         let picked = match rx.await {
             Ok(p) => p,
             Err(_) => {
-                // Spawner dropped the reply — treat as cancel. Same
-                // defensive posture as `flow::resolve`'s
-                // "channel-closed-without-reply ≡ deny" branch: a
-                // request nobody answered is not an approved one.
+                // Spawner dropped the reply — treat as cancel, the same defensive
+                // posture as `flow::resolve`'s "channel-closed-without-reply ≡ deny": a request nobody answered is not an approved one.
                 None
             }
         };
@@ -198,11 +163,9 @@ impl FileChooserBackend {
             return (1, HashMap::new());
         };
 
-        // Record what the user just authorised, per path. This is what
-        // survives into `Workspace::capabilities`, what the launcher
-        // turns into a bind on the app's next start, and what the
-        // workspace's Permissions tab shows the user so they can take it
-        // back.
+        // Record what the user just authorised, per path — this is what
+        // survives into `Workspace::capabilities`, becomes a bind on the app's
+        // next launch, and shows in the Permissions tab so the user can revoke it.
         for path in &paths {
             self.ctx.grants.insert(
                 &caller,
@@ -214,11 +177,9 @@ impl FileChooserBackend {
             );
         }
 
-        // Publish each path into the caller's document store, so the
-        // running app can actually reach it. For an app that is already
-        // confined the grant above is not enough on its own — its mount
-        // namespace was fixed at launch — so the store is what turns a
-        // recorded grant into a readable path *now*.
+        // Publish each path into the caller's document store, so the running
+        // app can actually reach it now: an already-confined app's mount
+        // namespace was fixed at launch, so the grant alone isn't enough.
         let published = self.ctx.documents.publish(&caller, &paths, mode);
         paths_to_open_response(Some(published), save)
     }
@@ -226,10 +187,8 @@ impl FileChooserBackend {
 
 /// Decode the portal's `filters` option: `a(sa(us))`.
 ///
-/// A malformed entry is skipped rather than failing the call — the
-/// filters are a display convenience, and refusing to open a dialog
-/// because one filter did not decode would turn a cosmetic problem into
-/// an unusable Open menu.
+/// A malformed entry is skipped rather than failing the call — filters
+/// are a display convenience, and refusing to open a dialog over one bad filter would turn a cosmetic problem into an unusable Open menu.
 pub(super) fn filters_from_options(
     options: &HashMap<String, OwnedValue>,
 ) -> Vec<super::PickerFilter> {
@@ -256,13 +215,11 @@ fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String
 }
 
 /// Translate a real user-selected path list into the
-/// `(response_code, results)` pair the FileChooser frontend expects.
+/// `(response_code, results)` pair the `FileChooser` frontend expects.
 ///
-/// `response_code` matches the freedesktop.org Request convention:
-///   0 = OK (with results), 1 = user cancelled, 2 = other failure.
-///
-/// `None` (the dialog was dismissed / closed without picking) is
-/// treated as cancel — response=1.
+/// `response_code` follows the freedesktop.org Request convention: 0 =
+/// OK (with results), 1 = user cancelled, 2 = other failure. `None`
+/// (dialog dismissed without picking) is treated as cancel.
 pub(super) fn paths_to_open_response(
     paths: Option<Vec<PathBuf>>,
     save: bool,
@@ -277,11 +234,9 @@ pub(super) fn paths_to_open_response(
     let uris: Vec<String> = paths
         .iter()
         .map(|p| {
-            // Naive `file://` formatter — good enough for ASCII paths
-            // and matches the path representation our compositor uses
-            // internally. Spec-compliant percent-encoding for binary
-            // path bytes lands when we plumb in `url::form_urlencoded`
-            // (deferred — most desktop apps only get ASCII paths).
+            // Naive `file://` formatter — good enough for ASCII paths, matching the
+            // path representation our compositor uses internally. Spec-compliant
+            // percent-encoding for binary path bytes is deferred (most desktop apps only get ASCII paths).
             format!("file://{}", p.display())
         })
         .collect();
@@ -289,10 +244,8 @@ pub(super) fn paths_to_open_response(
     if let Ok(owned) = OwnedValue::try_from(uris_value) {
         results.insert("uris".to_string(), owned);
     }
-    if save {
-        if let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
-            results.insert("writable".to_string(), w);
-        }
+    if save && let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
+        results.insert("writable".to_string(), w);
     }
     (0, results)
 }
@@ -306,7 +259,7 @@ mod tests {
         ScreenCastStreamProvisionerHandle,
     };
     use crate::shell::state::Workspace;
-    use std::collections::HashMap;
+
     use std::sync::Arc;
 
     fn empty_ws(id: u64) -> Workspace {
@@ -353,8 +306,7 @@ mod tests {
 
     #[test]
     fn paths_empty_returns_response_one() {
-        // Empty list ≡ cancel — keeps the contract symmetric with
-        // `None` (the spawner uses an empty Vec ≡ cancel internally).
+        // Empty list ≡ cancel — keeps the contract symmetric with `None` (the spawner uses an empty Vec ≡ cancel internally).
         let (code, results) = paths_to_open_response(Some(vec![]), /*save=*/ false);
         assert_eq!(code, 1);
         assert!(results.is_empty());
@@ -387,9 +339,8 @@ mod tests {
         };
         let caller = FileChooserBackend::resolve_caller(&ctx, None, "org.example");
         assert_eq!(caller.app_id, "org.example");
-        // Zero workspace id flags "no bridge match" — production-side
-        // grant lookup will return None and fall through to the prompt
-        // path (which is the conservative posture).
+        // Zero workspace id flags "no bridge match" — production-side grant
+        // lookup returns None and falls through to the prompt path (the conservative posture).
         assert_eq!(caller.workspace_id, WorkspaceId(0));
     }
 
@@ -416,11 +367,8 @@ mod tests {
         assert_eq!(caller.workspace_id, ws_id);
     }
 
-    /// Required test from the Sandbox 4.3 follow-up brief —
-    /// `open_file_returns_user_selected_uri`. Wires a
-    /// `MockFilePickerSpawner` returning `/tmp/test.txt`, calls the
-    /// backend's response builder, and asserts the FileChooser
-    /// response contains `file:///tmp/test.txt`.
+    /// Wires a `MockFilePickerSpawner` returning `/tmp/test.txt`, calls the
+    /// backend's response builder, and asserts the response contains `file:///tmp/test.txt`.
     #[test]
     fn open_file_returns_user_selected_uri() {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(33));
@@ -449,7 +397,7 @@ mod tests {
             .build()
             .unwrap();
         let (code, results) = rt.block_on(backend.pick_and_grant(
-            FilePickerOptions::new(caller.clone(), "Open file", /*save=*/ false),
+            FilePickerOptions::new(caller, "Open file", /*save=*/ false),
             FsMode::Read,
         ));
         assert_eq!(code, 0);
@@ -457,26 +405,16 @@ mod tests {
         let cloned: OwnedValue = uris_v.try_clone().expect("clone OwnedValue");
         let uris: Vec<String> = Vec::<String>::try_from(cloned).expect("Vec<String>");
         assert_eq!(uris, vec!["file:///tmp/test.txt".to_string()]);
-        // The mock saw exactly one request — and the title + save flag
-        // were forwarded correctly.
         let seen = mock.requests();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].1, "Open file");
         assert!(!seen[0].2);
     }
 
-    /// The regression this whole change exists for.
-    ///
-    /// The backend used to raise a permission prompt on a
-    /// `Capability::Filesystem { path: "/" }` sentinel and persist it
-    /// verbatim on Session/Always. `Scope::FsPath` covers its subtree,
-    /// and the launcher turns a read grant into `--ro-bind-try <p> <p>`,
-    /// so one Always click read-only mounted the whole host filesystem
-    /// into the app at its next launch — while the file the user
-    /// actually chose was never granted at all.
-    ///
-    /// Asserted on the production path (`pick_and_grant` is what every
-    /// FileChooser method calls), against the real grant store.
+    /// A grant on `"/"` would cover the launcher's whole `--ro-bind-try <p>
+    /// <p>` subtree, read-only mounting the entire host filesystem at the
+    /// app's next launch — so this asserts the grant names only the picked
+    /// path, on the production path (`pick_and_grant`), against the real grant store.
     #[test]
     fn the_grant_names_the_picked_path_and_never_the_filesystem_root() {
         use crate::shell::state::Capability;
@@ -511,8 +449,7 @@ mod tests {
         ));
         assert_eq!(code, 0);
 
-        // Read the capabilities back out of the workspace the store
-        // wrote to, not out of anything this test built.
+        // Read the capabilities back out of the workspace the store wrote to, not out of anything this test built.
         let tree = store.tree_handle();
         let guard = tree.read();
         let ws = guard
@@ -617,10 +554,9 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (code, results) = rt.block_on(backend.pick_and_grant(
-            FilePickerOptions::new(caller, "Open", false),
-            FsMode::Read,
-        ));
+        let (code, results) = rt.block_on(
+            backend.pick_and_grant(FilePickerOptions::new(caller, "Open", false), FsMode::Read),
+        );
         assert_eq!(code, 1);
         assert!(results.is_empty());
     }
@@ -635,9 +571,10 @@ mod tests {
         ] {
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(38));
             let picked = PathBuf::from("/tmp/target.txt");
-            let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(
-                vec![picked.clone()],
-            )));
+            let fp =
+                FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
+                    picked.clone(),
+                ])));
             let sc = ScreenCastStreamProvisionerHandle::new(Arc::new(
                 MockScreenCastProvisioner::new_with_node(1, "t"),
             ));
@@ -657,10 +594,9 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            let (code, _) = rt.block_on(backend.pick_and_grant(
-                FilePickerOptions::new(caller.clone(), "t", save),
-                mode,
-            ));
+            let (code, _) = rt.block_on(
+                backend.pick_and_grant(FilePickerOptions::new(caller.clone(), "t", save), mode),
+            );
             assert_eq!(code, 0);
 
             let tree = store.tree_handle();

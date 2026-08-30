@@ -4,15 +4,14 @@
 //! These tests start the real thing under `bwrap`, through the same
 //! `run_with_captured` path the launcher uses, and assert on what a
 //! syscall answered inside the sandbox. **They deliberately do not
-//! assert on the argv.** A test that checks a bind list passes while
-//! the app still opens the file: the argv is the launcher's intention,
-//! and the intention is not the boundary.
+//! assert on the argv** — a bind-list check can pass while the app
+//! still opens the file; the argv is the launcher's intention, not the
+//! boundary.
 //!
-//! They are not `#[ignore]`d. Every other live-bwrap test in this crate
-//! is, on the grounds that bwrap might not be installed — but bwrap is
-//! how a qOS app runs at all, so a machine that cannot run these cannot
-//! run the product, and a boundary whose proof is opt-in is a boundary
-//! nobody checks.
+//! Not `#[ignore]`d, unlike other live-bwrap tests here: bwrap is how a
+//! qOS app runs at all, so a machine that can't run these can't run the
+//! product, and a boundary whose proof is opt-in is a boundary nobody
+//! checks.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,9 +22,8 @@ use launcher::run::{RunError, RunOptions, run_with_captured};
 
 const PACKAGE: &str = "dev.qos.roomtest";
 
-/// Build the fixture with `rustc` directly — it lives outside the
-/// workspace, and a single-shot build keeps it out of the workspace
-/// target dir.
+/// Build the fixture with `rustc` directly, outside the workspace, so
+/// a single-shot build doesn't dirty the workspace target dir.
 fn build_fixture(out_dir: &Path) -> PathBuf {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/roomtest/src/main.rs");
     let bin = out_dir.join("bin").join("roomtest");
@@ -38,7 +36,10 @@ fn build_fixture(out_dir: &Path) -> PathBuf {
         .arg(&bin)
         .status()
         .expect("invoke rustc");
-    assert!(status.success(), "rustc failed to build the roomtest fixture");
+    assert!(
+        status.success(),
+        "rustc failed to build the roomtest fixture"
+    );
     bin
 }
 
@@ -49,9 +50,9 @@ fn manifest() -> MinimalManifest {
         category: None,
         icon: None,
         version: "0.0.0".to_string(),
-        // Confinement is a property of every package the launcher runs,
-        // but this fixture is deliberately the kind a user opens: an app
-        // is the case where a writable directory is expected at all.
+        // Confinement is a property of every package the launcher runs, but
+        // this fixture is the kind a user opens: a writable directory is
+        // expected at all.
         kind: "app".to_string(),
         runtime: None,
         entrypoint: Entrypoint {
@@ -68,9 +69,9 @@ fn manifest() -> MinimalManifest {
             fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
-            // Inherit the shipped syscall-filter default rather than
-            // naming one here: a confinement fixture that pins its own
-            // profile stops tracking what an installed app actually gets.
+            // Inherit the shipped syscall-filter default rather than naming one
+            // here, or a confinement fixture pinning its own profile stops
+            // tracking what an installed app actually gets.
             ..Sandbox::default()
         },
         cli_commands: Vec::new(),
@@ -97,7 +98,7 @@ fn run_in_room(payload: &Path, room: Option<&str>, argv: &[&str]) -> String {
         workspace_id: room.map(str::to_string),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
-            passthrough_argv: argv.iter().map(|s| s.to_string()).collect(),
+            passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
         },
         ..RunOptions::default()
     };
@@ -110,8 +111,8 @@ fn run_in_room(payload: &Path, room: Option<&str>, argv: &[&str]) -> String {
     text
 }
 
-/// `XDG_DATA_HOME` is process-global and the launcher reads it to decide
-/// where the rooms tree lives, so these tests take turns.
+/// `XDG_DATA_HOME` is process-global and the launcher reads it to
+/// decide where the rooms tree lives, so these tests take turns.
 struct DataHome {
     _dir: tempfile::TempDir,
     path: PathBuf,
@@ -125,7 +126,11 @@ impl DataHome {
         let previous = std::env::var_os("XDG_DATA_HOME");
         // SAFETY: every caller is in the `process_env` serial group.
         unsafe { std::env::set_var("XDG_DATA_HOME", &path) };
-        Self { _dir: dir, path, previous }
+        Self {
+            _dir: dir,
+            path,
+            previous,
+        }
     }
 }
 
@@ -144,11 +149,10 @@ impl Drop for DataHome {
 /// The claim in `plan/rooms.md` — "an app opened in a room starts
 /// empty" — as observable behaviour rather than a design statement.
 ///
-/// One app, two rooms. It writes a record in room A; in room B the same
-/// app, same package id, same binary, cannot read it. Both halves
-/// matter: without the second read succeeding in room A, "not found in
-/// B" would be equally consistent with a fixture that never wrote
-/// anything.
+/// One app, two rooms: it writes a record in room A, and the same app
+/// in room B cannot read it. Both halves matter — without the read
+/// succeeding in room A, "not found in B" would be equally consistent
+/// with a fixture that never wrote anything.
 #[test]
 #[serial_test::serial(process_env)]
 fn an_app_cannot_read_across_rooms() {
@@ -156,7 +160,11 @@ fn an_app_cannot_read_across_rooms() {
     let payload = tempfile::tempdir().unwrap();
     build_fixture(payload.path());
 
-    let wrote = run_in_room(payload.path(), Some("room-a"), &["write", "record.txt", "room-A-secret"]);
+    let wrote = run_in_room(
+        payload.path(),
+        Some("room-a"),
+        &["write", "record.txt", "room-A-secret"],
+    );
     assert!(
         wrote.starts_with("WROTE "),
         "the app must be able to write in its own directory: {wrote}"
@@ -218,7 +226,7 @@ fn an_app_cannot_read_across_rooms() {
     );
 }
 
-/// The personal room is a room, not a bypass. An app launched into a
+/// The personal room is a room, not a bypass — an app launched into a
 /// workspace must not reach it either.
 #[test]
 #[serial_test::serial(process_env)]
@@ -242,8 +250,8 @@ fn a_workspace_cannot_read_the_personal_room() {
 
 /// Everything the app writes with no thought about where — `$HOME`,
 /// `$XDG_DATA_HOME`, `$XDG_CONFIG_HOME` — has to land in the directory
-/// it was given, or the confinement above is true of one path and false
-/// of the paths apps actually use.
+/// it was given, or the confinement above is true of one path and
+/// false of the paths apps actually use.
 #[test]
 #[serial_test::serial(process_env)]
 fn home_and_the_xdg_variables_all_point_into_the_one_directory() {
@@ -295,8 +303,8 @@ fn home_and_the_xdg_variables_all_point_into_the_one_directory() {
     );
 }
 
-/// The read profile is a ceiling, not a floor. A path outside it is not
-/// in the namespace at all, and a path inside it cannot be written.
+/// The read profile is a ceiling, not a floor: a path outside it isn't
+/// in the namespace at all, and a path inside it can't be written.
 #[test]
 #[serial_test::serial(process_env)]
 fn the_read_profile_is_all_there_is_and_it_is_read_only() {
@@ -305,13 +313,11 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
     build_fixture(payload.path());
 
     // Outside the profile: the user's own files, the shadow file, the
-    // collaborative mount, the host's programs.
-    // `/home` and the invoking user's own home directory are named
-    // explicitly. The cross-room tests run with `XDG_DATA_HOME` in a
-    // tempdir under `/tmp`, which the sandbox covers with a tmpfs — so
-    // on their own they would leave open the reading that the only
-    // thing proven is that `/tmp` is a tmpfs. This closes it: the
-    // user's home is not in the namespace either.
+    // collaborative mount, the host's programs. `/home` and the invoking
+    // user's home are named explicitly since the cross-room tests run with
+    // `XDG_DATA_HOME` in a tempdir under `/tmp` (which the sandbox covers
+    // with a tmpfs) — this closes the reading that would otherwise only
+    // prove `/tmp` is a tmpfs.
     let real_home = std::env::var("HOME").expect("HOME is set for the test process");
     let outside_the_profile: Vec<String> = [
         "/etc/shadow".to_string(),
@@ -334,17 +340,20 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
     }
 
     // Inside the profile: readable.
-    let read = run_in_room(payload.path(), Some("room-a"), &["readdir", "/usr/share/fonts"]);
+    let read = run_in_room(
+        payload.path(),
+        Some("room-a"),
+        &["readdir", "/usr/share/fonts"],
+    );
     assert!(
         read.starts_with("OK "),
         "the profile must actually deliver fonts: {read}"
     );
 
-    // And not writable. An app that could rewrite `/etc/ld.so.cache`
-    // would choose what every later launch loads, and one that could
-    // drop a font file could do it for every other app on the machine.
-    // Asserted by attempting the write, not by reading the bind flag
-    // back out of an argv.
+    // And not writable: an app that could rewrite `/etc/ld.so.cache` would
+    // choose what every later launch loads, and one that could drop a font
+    // file could do it for every other app on the machine. Asserted by
+    // attempting the write, not by reading the bind flag back out of an argv.
     for target in [
         "/usr/share/fonts/qos-confinement-probe",
         "/etc/ld.so.cache",
@@ -362,14 +371,13 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
         assert!(
             !std::path::Path::new(target)
                 .metadata()
-                .map(|m| m.len() == 5)
-                .unwrap_or(false),
+                .is_ok_and(|m| m.len() == 5),
             "{target} was actually modified on the host"
         );
     }
 
     // The app's own directory is writable, so the failures above are the
-    // read-only mount rather than a fixture that cannot write at all.
+    // read-only mount, not a fixture that can't write at all.
     let ok = run_in_room(
         payload.path(),
         Some("room-a"),
@@ -381,8 +389,8 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
     );
 }
 
-/// One app's directory is not another's. Two packages in one room are
-/// two directories, so a package cannot read the state of the app whose
+/// One app's directory is not another's: two packages in one room are
+/// two directories, so a package can't read the state of the app whose
 /// id it happens to know.
 #[test]
 #[serial_test::serial(process_env)]
@@ -417,7 +425,7 @@ fn one_app_cannot_read_another_apps_directory() {
 }
 
 /// The launch-time half of the refusal, on the real `run` path: a
-/// manifest that names a path is refused before bwrap is spawned, and
+/// manifest naming a path is refused before bwrap is spawned, and
 /// nothing it named is created.
 #[test]
 #[serial_test::serial(process_env)]

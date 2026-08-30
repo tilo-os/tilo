@@ -33,7 +33,10 @@ pub struct ChannelSearchProvider {
 impl ChannelSearchProvider {
     /// Snapshot the current channels + workspaces into a provider.
     pub fn new(channels: &[Channel], workspaces: &[Workspace]) -> Self {
-        Self { channels: channels.to_vec(), workspaces: workspaces.to_vec() }
+        Self {
+            channels: channels.to_vec(),
+            workspaces: workspaces.to_vec(),
+        }
     }
 
     /// The `action_id` for a channel — what a chosen row hands back.
@@ -43,12 +46,18 @@ impl ChannelSearchProvider {
 
     /// Resolve an `action_id` produced by this provider back into a channel id.
     pub fn parse_action_id(action_id: &str) -> Option<Id> {
-        action_id.strip_prefix(ACTION_PREFIX).filter(|s| !s.is_empty()).map(|s| s.to_string())
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string)
     }
 
     /// The workspace name a channel belongs to, for its subtitle.
     fn workspace_name(&self, workspace_id: &str) -> Option<&str> {
-        self.workspaces.iter().find(|w| w.id == workspace_id).map(|w| w.name.as_str())
+        self.workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .map(|w| w.name.as_str())
     }
 }
 
@@ -72,8 +81,9 @@ impl SearchProvider for ChannelSearchProvider {
                     (None, "") => String::new(),
                     (None, topic) => topic.to_string(),
                 };
-                let mut r = SearchResult::new(CHANNEL_KIND, format!("#{}", c.name), Self::action_id(&c.id))
-                    .with_icon(Icon::Mail);
+                let mut r =
+                    SearchResult::new(CHANNEL_KIND, format!("#{}", c.name), Self::action_id(&c.id))
+                        .with_icon(Icon::Mail);
                 if !subtitle.is_empty() {
                     r = r.with_subtitle(subtitle);
                 }
@@ -103,7 +113,10 @@ mod tests {
         let (app, _doc) = seeded();
         let provider = ChannelSearchProvider::new(&app.channels, &app.workspaces);
         let hits = provider.search("frontend");
-        assert!(hits.iter().any(|r| r.title == "#frontend"), "the provider surfaces the channel");
+        assert!(
+            hits.iter().any(|r| r.title == "#frontend"),
+            "the provider surfaces the channel"
+        );
         assert!(hits.iter().all(|r| r.kind == CHANNEL_KIND));
     }
 
@@ -112,8 +125,11 @@ mod tests {
         let (app, _doc) = seeded();
         let provider = ChannelSearchProvider::new(&app.channels, &app.workspaces);
         let hits = provider.search("");
-        let expected =
-            app.channels.iter().filter(|c| c.kind == ChannelKind::Text && !c.archived).count();
+        let expected = app
+            .channels
+            .iter()
+            .filter(|c| c.kind == ChannelKind::Text && !c.archived)
+            .count();
         assert_eq!(hits.len(), expected);
         assert!(hits.iter().all(|r| r.title.starts_with('#')));
     }
@@ -122,14 +138,20 @@ mod tests {
     fn action_id_round_trips_to_a_channel() {
         let (app, _doc) = seeded();
         let mut registry = SearchRegistry::new();
-        registry.register(Box::new(ChannelSearchProvider::new(&app.channels, &app.workspaces)));
+        registry.register(Box::new(ChannelSearchProvider::new(
+            &app.channels,
+            &app.workspaces,
+        )));
         let hit = registry
             .query("frontend")
             .into_iter()
             .find(|r| r.title == "#frontend")
             .expect("frontend is findable through the registry");
         let id = ChannelSearchProvider::parse_action_id(&hit.action_id).unwrap();
-        assert!(app.channel(&id).is_some(), "the id resolves to a real stored channel");
+        assert!(
+            app.channel(&id).is_some(),
+            "the id resolves to a real stored channel"
+        );
     }
 
     #[test]
@@ -160,7 +182,13 @@ mod tests {
         let ws = app.channel(&id).unwrap().workspace.clone();
 
         app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(app.active_channel, id, "activation opened the chosen channel");
-        assert_eq!(app.active_ws, ws, "activation switched to the channel's workspace");
+        assert_eq!(
+            app.active_channel, id,
+            "activation opened the chosen channel"
+        );
+        assert_eq!(
+            app.active_ws, ws,
+            "activation switched to the channel's workspace"
+        );
     }
 }

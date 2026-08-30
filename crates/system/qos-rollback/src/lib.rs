@@ -1,121 +1,68 @@
-//! Bounded rollback protection for the sealed root filesystem.
+//! Bounded rollback protection for the sealed root filesystem: the last few OS generations
+//! may unseal the disk, older ones may not. Two independent mechanisms enforce this together.
 //!
-//! The last few OS generations may unseal the disk. Older ones may not. That is
-//! the whole feature, and the interesting part is why it takes two independent
-//! mechanisms rather than one.
+//! # Why not a single "counter >= G" policy
 //!
-//! # The naive design, and why it is not built here
+//! Sealing to `NV_counter >= G` and bumping the counter to `N` on install gives *zero*
+//! rollback, not bounded rollback: the moment the counter reaches `N`, generation `N-1` can
+//! no longer unseal, destroying the fallback a broken update needs.
 //!
-//! The obvious shape is: seal the unlock secret to a policy requiring
-//! `NV_counter >= G`, and bump the counter to `N` when installing generation
-//! `N`. That is not bounded rollback, it is *zero* rollback — the moment the
-//! counter reaches `N`, generation `N-1`'s secret can no longer be released,
-//! so a broken update leaves nothing to fall back to. The very first thing you
-//! need after a bad update is the thing that design destroys.
+//! # Mechanism 1: the counter holds the FLOOR
 //!
-//! # The shape that works: the counter holds the FLOOR
+//! * Each image carries its own generation `G` on the UKI command line, inside the image
+//!   signature and boot measurements — not independently editable (see [`generation`]).
+//! * A TPM2 NV monotonic counter holds the *oldest permitted* generation (the floor, not
+//!   the ceiling). The unseal policy requires `floor <= G` via `TPM2_PolicyNV`, with `G`
+//!   fixed in each generation's sealed policy digest at seal time.
+//! * Confirming generation `N` raises the floor to `N - retained + 1`. NV counters only
+//!   increment, so the floor can never move backwards — not by `TPM2_NV_UndefineSpace` plus
+//!   redefine (a fresh counter starts at the highest value any counter on that TPM ever
+//!   held), and not by restoring an old disk image.
 //!
-//! * Each image carries its own generation number `G`, on the UKI command line
-//!   and therefore inside the image signature and the boot measurements. An
-//!   attacker cannot relabel an old image with a higher generation, because the
-//!   command line is not an independently editable file (see [`generation`]).
-//! * A TPM2 NV **monotonic counter** holds the *oldest permitted* generation —
-//!   the floor, not the ceiling.
-//! * The unseal policy requires `floor <= G` via `TPM2_PolicyNV`, with `G`
-//!   fixed inside the policy digest at seal time, so each generation's sealed
-//!   object carries its own bound.
-//! * Confirming generation `N` raises the floor to `N - retained + 1`, leaving
-//!   the newest `retained` generations able to unseal. NV counters only ever
-//!   increment, so the floor can never move backwards — not by software, not by
-//!   `TPM2_NV_UndefineSpace` followed by a redefine (a newly defined counter is
-//!   initialised to the highest value any counter on that TPM has ever held,
-//!   precisely to stop that trick), and not by restoring an old disk image.
+//! The floor advances at *confirmation* time, not install time — stage `N` → boot `N` →
+//! health check passes → *then* raise the floor — so the previous generation stays able to
+//! unseal until `N` is proven to boot. An update may also declare a floor higher than
+//! `N - retained + 1` to jump past a known-vulnerable generation; the effective floor is the
+//! max of window/declared/current floor, and is refused if it would exceed the generation
+//! being confirmed (that would lock out the running machine).
 //!
-//! ## When the floor advances is the load-bearing decision
+//! # Mechanism 2: retained keyslots
 //!
-//! **Not at install time. At confirmation time.** Installing generation `N` and
-//! immediately raising the floor would destroy the fallback before anyone knows
-//! whether `N` boots. The sequence is: stage `N` → boot `N` → health check
-//! passes → *then* raise the floor. Until that last step the previous
-//! generation is still fully able to unseal, which is what makes an automatic
-//! rollback survivable.
+//! `retained` sealed LUKS2 tokens are kept, one per retained generation, oldest dropped as
+//! new ones arrive (see [`retention`]). Alone this is weak: the tokens live in plaintext
+//! LUKS2 header metadata, so a `luksHeaderBackup`/`luksHeaderRestore` around an update
+//! resurrects every pruned token (verified in `tests/mechanism.rs`). The NV counter defeats
+//! that, since it lives in the TPM and header surgery can't touch it. Conversely the counter
+//! alone can't unseal anything without a surviving keyslot, and pruning is what keeps the
+//! header from growing one slot per update forever (LUKS2 has 32 slots). So both are
+//! required: unlock needs the running generation's token present *and* the NV policy to pass.
 //!
-//! An update may also declare a floor *higher* than `N - retained + 1`, so a
-//! security update can jump the floor past a known-vulnerable generation
-//! instead of leaving it reachable inside the window. The effective floor is
-//! the maximum of the window floor, the declared floor, and the current floor —
-//! and it is refused outright if it would exceed the generation that is being
-//! confirmed, because that would lock out the machine that is running.
+//! # Why the generation must appear in the policy reference
 //!
-//! # Second, independent mechanism: retained keyslots
+//! The subtle part, and getting it wrong silently voids the whole feature. The seal binds to
+//! *signed* PCR policy (via `TPM2_PolicyAuthorize`) rather than literal measurements, so a
+//! legitimate update ships a new signature instead of breaking the policy — but
+//! `PolicyAuthorize` discards the PCR-derived digest and replaces it with
+//! `H(0 || TPM_CC_PolicyAuthorize || keyName || policyRef)`, independent of PCR values. With
+//! an empty `policyRef`, a sealed object would accept *any* prediction the authority ever
+//! signed for *any* generation — an old image could satisfy `PolicyAuthorize` with its own
+//! stale prediction and then satisfy `PolicyNV` using the newest token's floor, silently
+//! defeating rollback protection while every mechanism looks correct in isolation. The fix:
+//! the authority signs `H(approvedPolicy || G)`, and token `G` carries
+//! `PolicyAuthorize(keyName, policyRef = G)`, so it unseals only while generation `G` is
+//! actually running and `floor <= G`.
 //!
-//! We keep `retained` sealed LUKS2 tokens, one per retained generation, and drop
-//! the oldest as new ones arrive (see [`retention`]).
+//! # SAFETY-CRITICAL invariants (marked `SAFETY-CRITICAL` in code)
 //!
-//! On its own this is weak. The tokens live in the LUKS2 header, which is
-//! plaintext metadata on the disk: an attacker with physical access can
-//! `luksHeaderBackup` before an update and `luksHeaderRestore` afterwards,
-//! resurrecting every token that was ever pruned. Verified — see
-//! `tests/mechanism.rs`, which performs exactly that attack.
-//!
-//! The NV counter defeats it, because the counter lives in the TPM and no
-//! amount of disk-header surgery moves it.
-//!
-//! Conversely the counter alone is not enough either: it bounds *how far back*
-//! a generation may be, but something still has to exist for a genuine
-//! rollback to unseal with, and pruning is what keeps the header from
-//! accumulating one keyslot per update forever (LUKS2 has 32 slots).
-//!
-//! **So both are required.** Unlock succeeds only when the token for the
-//! running generation is present in the header *and* the NV policy passes. A
-//! header-restore attack reinstates the token and still cannot unseal below the
-//! floor. A missing token cannot be conjured from a passing NV policy.
-//!
-//! # Why the generation has to appear in the policy reference
-//!
-//! This is the subtle part, and getting it wrong silently voids the whole
-//! feature.
-//!
-//! The seal is bound to *signed* PCR policy rather than to literal measurement
-//! values, so that a legitimate firmware or kernel update ships a new signature
-//! and re-satisfies the existing policy instead of breaking it.
-//! `TPM2_PolicyAuthorize` implements that, but it **discards** the
-//! session digest it validated and replaces it with
-//! `H(0 || TPM_CC_PolicyAuthorize || keyName || policyRef)` — a value that does
-//! not depend on the PCR values at all.
-//!
-//! So if `policyRef` were empty, a sealed object would accept *any* prediction
-//! the authority ever signed, for any generation. Booting a five-generations-old
-//! image would satisfy `PolicyAuthorize` using that old image's own published
-//! prediction, and then satisfy `PolicyNV(floor <= G)` using the *newest*
-//! retained token's `G`. Rollback protection: gone, while every individual
-//! mechanism still looks correct in isolation.
-//!
-//! The fix is to put the generation in `policyRef`: the authority signs
-//! `H(approvedPolicy || G)` for generation `G`'s predicted measurements, and
-//! the token for `G` carries `PolicyAuthorize(keyName, policyRef = G)`. Token
-//! `G` then unseals only while generation `G` is actually running, and only
-//! while `floor <= G`. That is what makes the two mechanisms compose into
-//! "the last `retained` generations, and nothing older".
-//!
-//! # Where a mistake costs a user their data
-//!
-//! Marked in the code with `SAFETY-CRITICAL`. The invariants:
-//!
-//! 1. The recovery key is a working, independent unlock path at every step.
-//!    Nothing here ever touches its keyslot, and every operation that mutates
-//!    the header re-verifies it afterwards.
-//! 2. No keyslot is killed until the replacement slot has been proven to unlock
-//!    the device ([`retention::prune_is_safe`] refuses to prune without a
-//!    verified survivor and a verified recovery key).
-//! 3. The floor is never raised until a token at or above the target floor has
-//!    been proven to unseal *now*.
-//! 4. A declared floor above the running generation is refused, not clamped
-//!    silently, because silently clamping hides an authoring mistake that would
-//!    otherwise be caught before it ships.
-//! 5. The counter cannot be incremented by anything that does not hold a signed,
-//!    single-use approval bound to one specific target value ([`approval`]). An
-//!    unreachable authority freezes the floor; it never stops the disk unlocking.
+//! 1. The recovery key is always a working, independent unlock path; nothing here touches
+//!    its keyslot, and every header mutation re-verifies it afterwards.
+//! 2. No keyslot is killed until the replacement has been proven to unlock the device
+//!    ([`retention::prune_is_safe`]).
+//! 3. The floor is never raised until a token at or above the target has been proven to
+//!    unseal *now*.
+//! 4. A declared floor above the running generation is refused, not silently clamped.
+//! 5. The counter can only be incremented with a signed, single-use approval bound to one
+//!    target value ([`approval`]); an unreachable authority freezes the floor, never the disk.
 
 pub mod approval;
 pub mod certify;
@@ -135,41 +82,31 @@ pub mod tpm_policy;
 pub struct Config {
     /// NV index holding the rollback floor.
     pub nv_index: u32,
-    /// How many generations keep a sealed keyslot, counting the current one.
-    /// 3 means "this generation plus the two before it".
+    /// How many generations keep a sealed keyslot, counting the current one (3 = this
+    /// generation plus the two before it).
     ///
-    /// Raising this costs **disk on the ESP**, not just keyslots: every
-    /// generation in the window has to stay bootable, and on the sealed layout
-    /// each one's kernel is a ~134 MB Unified Kernel Image on the ESP —
-    /// `retained_generations` of them plus up to
-    /// [`retention::RETAINED_NEWER_GENERATIONS`] staged ahead. The default 2 GiB
-    /// ESP (`ESP_SIZE` in `os/dev/disk-image.sh`) holds a window of 10; past that
-    /// an update would fail for want of space on a machine already in the field.
-    /// `os/tests/esp_capacity.sh` asserts the two agree, and the disk-image step
-    /// refuses a combination that does not fit.
+    /// Costs disk on the ESP, not just keyslots: each generation's kernel is a ~134 MB UKI,
+    /// and the default 2 GiB ESP (`ESP_SIZE` in `os/dev/disk-image.sh`) holds a window of 10
+    /// (`retained_generations` plus [`retention::RETAINED_NEWER_GENERATIONS`] staged ahead);
+    /// past that an update fails for want of space. `os/tests/esp_capacity.sh` asserts the two
+    /// agree.
     pub retained_generations: u32,
     /// PCR bank and selection the prediction authority signs over.
     pub pcr_bank: String,
     pub pcrs: Vec<u32>,
     /// Public half of the PCR-prediction signing key.
     pub pcr_public_key: String,
-    /// Public half of the key that authorises floor advances.
-    ///
-    /// Defaults to the PCR-prediction key because both are the same trust domain —
-    /// the authority that publishes an image. Production custody should separate
-    /// them: a prediction signature only says "these are the expected
-    /// measurements", while a floor approval permanently narrows what a machine
-    /// will boot, so they warrant different handling.
+    /// Public half of the key that authorises floor advances. Defaults to the PCR-prediction
+    /// key (same trust domain — the image publisher), but production custody should separate
+    /// them: a prediction only claims expected measurements, while a floor approval permanently
+    /// narrows what a machine will boot.
     pub floor_authority_key: String,
     /// Where the device keeps the signed floor-advance approvals it holds.
     pub approval_dir: String,
-    /// Override the key-derivation cost of the keyslots this crate creates.
-    ///
-    /// `None` in production, which means cryptsetup's own defaults (argon2id,
-    /// benchmarked). It exists because the mechanism tests add and remove a
-    /// dozen keyslots and argon2id at default cost turns a five-second test into
-    /// a minute of CPU and a gigabyte of RAM. Setting it weakens the keyslot, so
-    /// nothing but a test should ever set it.
+    /// Override the key-derivation cost of keyslots this crate creates. `None` in production
+    /// (cryptsetup's benchmarked argon2id defaults); exists because the mechanism tests add and
+    /// remove a dozen keyslots, and default-cost argon2id turns a five-second test into a minute
+    /// of CPU. Setting it weakens the keyslot — only tests should ever do so.
     pub pbkdf: Option<Pbkdf>,
 }
 
@@ -187,9 +124,8 @@ impl Default for Config {
             retained_generations: 3,
             pcr_bank: "sha256".into(),
             // 7  — Secure Boot state and the enrolled keys.
-            // 11 — systemd-stub's UKI measurements (kernel, initrd, cmdline,
-            //      os-release), which is what makes the generation number and
-            //      the root digest transitively measured.
+            // 11 — systemd-stub's UKI measurements (kernel, initrd, cmdline, os-release), which
+            //      transitively measures the generation number and root digest.
             pcrs: vec![7, 11],
             pcr_public_key: "/usr/share/qos/tpm2-pcr-signing.public.pem".into(),
             floor_authority_key: "/usr/share/qos/tpm2-pcr-signing.public.pem".into(),

@@ -1,43 +1,25 @@
 //! `color-management-v1` staging protocol — server-side dispatch.
 //!
-//! smithay 0.7 ships no ready-made handler for the freedesktop
-//! `color-management-v1` staging protocol, so we implement the whole
-//! thing manually with `wayland-server` `Dispatch` / `GlobalDispatch`
-//! traits and register the protocol via `delegate_dispatch!` /
-//! `delegate_global_dispatch!` at the bottom of this module.
+//! smithay 0.7 ships no ready-made handler for this freedesktop staging
+//! protocol, so the whole thing is implemented manually with
+//! `wayland-server` `Dispatch` / `GlobalDispatch`, registered via
+//! `delegate_dispatch!` / `delegate_global_dispatch!` at the bottom.
 //!
-//! # Scope of the v1 implementation
+//! Advertises the *parametric* creator path only — primaries, transfer
+//! function, optional mastering-display/luminance hints, then `create`
+//! for an immutable `wp_image_description_v1` attached via
+//! `wp_color_management_surface_v1`. Deliberately unimplemented: ICC
+//! creators and Windows-scRGB (`unsupported_feature` error — the
+//! parametric path already unblocks HDR clients like `mpv --hdr`), and
+//! `get_information` on our own descriptions (`no_information` — they're
+//! surface-attach-only, not for round-tripping; feedback-surface
+//! descriptions do get info).
 //!
-//! The compositor advertises the *parametric* creator path only — a
-//! client builds an image description by naming a set of primaries, a
-//! transfer function, optional mastering-display and luminance
-//! hints, and finally calls `create` to get back an immutable
-//! `wp_image_description_v1`. That description then attaches to a
-//! `wl_surface` through `wp_color_management_surface_v1`.
-//!
-//! What is deliberately *not* implemented in v1:
-//!
-//! - ICC-based image descriptions (`create_icc_creator`) — the request
-//!   is answered with the `unsupported_feature` protocol error. Adding
-//!   it means parsing an ICC profile blob; the parametric path is
-//!   enough to unblock HDR clients like `mpv --hdr` and the browsers.
-//! - Windows-scRGB (`create_windows_scrgb`) — same treatment.
-//! - `get_information` on any of our own image descriptions — we
-//!   raise `no_information` because the descriptions we hand out are
-//!   only used for the surface-attach path, not for round-tripping
-//!   through the client. Feedback-surface descriptions do get info.
-//!
-//! # Per-surface state
-//!
-//! Attaching an image description to a surface is a double-buffered
-//! operation per the spec — `wp_color_management_surface_v1.set_image_description`
-//! marks the pending state, `wl_surface.commit` applies it. To keep
-//! the change surface-local rather than smuggled through the compositor
-//! state, we stash the pending + current values inside
-//! `SurfaceData::data_map` under [`ColorManagementSurfaceData`]. The
-//! commit hook in [`crate::compositor::state::State`] flips pending
-//! → current; the flatpak-share encoder + the wgpu/vello backend
-//! read the current value.
+//! Per-surface attach is double-buffered per spec (pending on
+//! `set_image_description`, applied on `wl_surface.commit`); the pending
+//! + current values live in `SurfaceData::data_map` under
+//! [`ColorManagementSurfaceData`], flipped by the commit hook in
+//! [`crate::compositor::state::State`].
 
 use std::sync::{Arc, Mutex};
 
@@ -80,10 +62,10 @@ const MAX_VERSION: u32 = 1;
 #[derive(Debug, Clone)]
 pub struct ColorManagerState {
     /// Supported primaries (`wp_color_manager_v1::primaries` enum values,
-    /// NOT CICP): srgb=1, bt2020=6, display_p3=9, …
+    /// NOT CICP): srgb=1, bt2020=6, `display_p3=9`, …
     pub supported_primaries: Vec<u32>,
     /// Supported named transfer functions (`wp_color_manager_v1::transfer_function`
-    /// enum values, NOT CICP): bt1886=1, gamma22=2, st2084_pq=11, hlg=13, …
+    /// enum values, NOT CICP): bt1886=1, gamma22=2, `st2084_pq=11`, hlg=13, …
     pub supported_transfers: Vec<u32>,
     /// Matrix hint used by the compositor for parametric image
     /// descriptions. `wp_color_manager_v1` does NOT itself have a
@@ -94,8 +76,8 @@ pub struct ColorManagerState {
     /// `color-management-v1`. See `wp_color_manager_v1.xml`.
     pub supported_matrixes: Vec<u32>,
     /// Advertised features (`wp_color_manager_v1::feature`): parametric=1,
-    /// set_primaries=2, set_tf_power=3, set_luminances=4,
-    /// set_mastering_display_primaries=5, ...
+    /// `set_primaries=2`, `set_tf_power=3`, `set_luminances=4`,
+    /// `set_mastering_display_primaries=5`, ...
     pub supported_features: Vec<u32>,
     /// Advertised render intents. Perceptual (0) is mandatory per spec.
     pub supported_render_intents: Vec<u32>,
@@ -186,19 +168,19 @@ pub struct ParametricBuilder {
 struct ParametricBuilderInner {
     primaries_named: Option<Primaries>,
     /// Explicit CIE 1931 xy primaries (R, G, B, W) — each i32 is
-    /// x/y × 1_000_000 per the protocol wire encoding.
+    /// x/y × `1_000_000` per the protocol wire encoding.
     primaries_custom: Option<CustomPrimaries>,
     tf_named: Option<TransferFunction>,
-    /// Pure-power transfer exponent × 10_000. Mutually exclusive with
+    /// Pure-power transfer exponent × `10_000`. Mutually exclusive with
     /// `tf_named` per the protocol's "set exactly once" rule.
     tf_power_eexp: Option<u32>,
-    /// Primary color volume luminance range: (min_lum × 10_000,
-    /// max_lum, reference_lum) — cd/m².
+    /// Primary color volume luminance range: (`min_lum` × `10_000`,
+    /// `max_lum`, `reference_lum`) — cd/m².
     luminances: Option<(u32, u32, u32)>,
     /// Mastering display primaries in the same wire encoding as
     /// `primaries_custom`.
     mastering_primaries: Option<CustomPrimaries>,
-    /// Mastering luminance range (min × 10_000, max) — cd/m².
+    /// Mastering luminance range (min × `10_000`, max) — cd/m².
     mastering_luminance: Option<(u32, u32)>,
     /// Max content light level — cd/m².
     max_cll: Option<u32>,
@@ -255,9 +237,9 @@ impl ParametricBuilder {
 
         // Optional HDR10 metadata from mastering primaries + luminances.
         let hdr = if transfer.is_hdr() {
-            let mastering = inner
-                .mastering_primaries
-                .map(|m| MasteringDisplayColorVolume {
+            let mastering = inner.mastering_primaries.map_or_else(
+                MasteringDisplayColorVolume::hdr10_reference,
+                |m| MasteringDisplayColorVolume {
                     display_primaries: [
                         (chrom_micro_to_st2086(m.r.0), chrom_micro_to_st2086(m.r.1)),
                         (chrom_micro_to_st2086(m.g.0), chrom_micro_to_st2086(m.g.1)),
@@ -266,23 +248,19 @@ impl ParametricBuilder {
                     white_point: (chrom_micro_to_st2086(m.w.0), chrom_micro_to_st2086(m.w.1)),
                     max_display_mastering_luminance: inner
                         .mastering_luminance
-                        .map(|(_, max)| max.saturating_mul(10_000))
-                        .unwrap_or(10_000_000),
+                        .map_or(10_000_000, |(_, max)| max.saturating_mul(10_000)),
                     min_display_mastering_luminance: inner
                         .mastering_luminance
-                        .map(|(min, _)| min)
-                        .unwrap_or(500),
-                })
-                .unwrap_or_else(MasteringDisplayColorVolume::hdr10_reference);
+                        .map_or(500, |(min, _)| min),
+                },
+            );
             let light = ContentLightLevel {
                 max_content_light_level: inner
                     .max_cll
-                    .map(|v| v.min(u16::MAX as u32) as u16)
-                    .unwrap_or(0),
+                    .map_or(0, |v| v.min(u32::from(u16::MAX)) as u16),
                 max_frame_average_light_level: inner
                     .max_fall
-                    .map(|v| v.min(u16::MAX as u32) as u16)
-                    .unwrap_or(0),
+                    .map_or(0, |v| v.min(u32::from(u16::MAX)) as u16),
             };
             Some(Hdr10Metadata { mastering, light })
         } else {
@@ -340,12 +318,12 @@ fn guess_primaries_from_custom(c: CustomPrimaries) -> ColorPrimaries {
     }
 }
 
-/// Wayland ships CIE 1931 xy as x × 1_000_000; SMPTE ST 2086 wants
-/// x × 50_000. Divide by 20, saturating so a rogue negative from the
+/// Wayland ships CIE 1931 xy as x × `1_000_000`; SMPTE ST 2086 wants
+/// x × `50_000`. Divide by 20, saturating so a rogue negative from the
 /// wire doesn't sign-flip.
 fn chrom_micro_to_st2086(micro: i32) -> u16 {
     let clamped = micro.max(0) as u32;
-    ((clamped + 10) / 20).min(u16::MAX as u32) as u16
+    ((clamped + 10) / 20).min(u32::from(u16::MAX)) as u16
 }
 
 /// Monotonic image-description identity counter. Never recycled per
@@ -447,7 +425,7 @@ pub fn surface_current_colorimetry(
         states
             .data_map
             .get::<ColorManagementSurfaceData>()
-            .and_then(|d| d.current_colorimetry())
+            .and_then(ColorManagementSurfaceData::current_colorimetry)
     })
 }
 
@@ -457,11 +435,8 @@ pub fn surface_current_colorimetry(
 /// colorimetry.
 #[derive(Debug, Clone)]
 pub struct ColorManagementOutputData {
-    // Retained, not yet read: the compositor still answers
-    // `get_image_description` from a synthesised profile. Reading the
-    // real panel needs `wayland::edid::parse_hdr_display_info` on the
-    // DRM connector, which is where the resource this handle names
-    // becomes the input.
+    // Retained, not yet read: `get_image_description` still answers from
+    // a synthesised profile pending `wayland::edid::parse_hdr_display_info`.
     #[allow(dead_code)]
     output: WlOutput,
     /// Colorimetry the compositor tells clients this output actually
@@ -494,7 +469,7 @@ impl ColorManagementOutputData {
 
     fn snapshot(&self) -> ImageDescriptionData {
         let color = self.color.lock().map(|c| *c).unwrap_or_default();
-        let hdr = self.hdr.lock().map(|h| *h).unwrap_or(None);
+        let hdr = self.hdr.lock().map_or(None, |h| *h);
         ImageDescriptionData {
             colorimetry: color,
             hdr,
@@ -508,11 +483,8 @@ impl ColorManagementOutputData {
 /// which surface to mutate.
 #[derive(Debug, Clone)]
 pub struct ColorManagementSurfaceUserData {
-    // Retained, not yet read: the compositor still answers
-    // `get_image_description` from a synthesised profile. Reading the
-    // real panel needs `wayland::edid::parse_hdr_display_info` on the
-    // DRM connector, which is where the resource this handle names
-    // becomes the input.
+    // Retained, not yet read: `get_image_description` still answers from
+    // a synthesised profile pending `wayland::edid::parse_hdr_display_info`.
     #[allow(dead_code)]
     surface: WlSurface,
 }
@@ -528,11 +500,8 @@ impl ColorManagementSurfaceUserData {
 /// back the compositor's preferred description.
 #[derive(Debug, Clone)]
 pub struct ColorManagementSurfaceFeedbackData {
-    // Retained, not yet read: the compositor still answers
-    // `get_image_description` from a synthesised profile. Reading the
-    // real panel needs `wayland::edid::parse_hdr_display_info` on the
-    // DRM connector, which is where the resource this handle names
-    // becomes the input.
+    // Retained, not yet read: `get_image_description` still answers from
+    // a synthesised profile pending `wayland::edid::parse_hdr_display_info`.
     #[allow(dead_code)]
     surface: WlSurface,
 }
@@ -574,25 +543,25 @@ where
         let cfg = state.as_ref().clone();
         for intent in cfg.supported_render_intents {
             if let Ok(ri) = RenderIntent::try_from(intent) {
-                let _ = manager.supported_intent(ri);
+                let () = manager.supported_intent(ri);
             }
         }
         for feat in cfg.supported_features {
             if let Ok(f) = Feature::try_from(feat) {
-                let _ = manager.supported_feature(f);
+                let () = manager.supported_feature(f);
             }
         }
         for prim in cfg.supported_primaries {
             if let Ok(p) = Primaries::try_from(prim) {
-                let _ = manager.supported_primaries_named(p);
+                let () = manager.supported_primaries_named(p);
             }
         }
         for tf in cfg.supported_transfers {
             if let Ok(t) = TransferFunction::try_from(tf) {
-                let _ = manager.supported_tf_named(t);
+                let () = manager.supported_tf_named(t);
             }
         }
-        let _ = manager.done();
+        let () = manager.done();
     }
 }
 
@@ -690,7 +659,7 @@ where
                     identity: 0,
                 };
                 let inited = data_init.init(image_description, desc);
-                let _ = inited.failed(
+                let () = inited.failed(
                     ImageCause::Unsupported,
                     "image_description references are unsupported".into(),
                 );
@@ -754,7 +723,7 @@ where
                         // Advertise the modern `ready2` identity + the
                         // legacy `ready` identity so v1 clients also
                         // observe the object as usable.
-                        let _ = obj.ready2((identity >> 32) as u32, identity as u32);
+                        let () = obj.ready2((identity >> 32) as u32, identity as u32);
                         builder.mark_consumed();
                     }
                     None => {
@@ -766,15 +735,14 @@ where
                 }
             }
             wp_image_description_creator_params_v1::Request::SetTfNamed { tf } => {
-                let tf = match tf.into_result() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        creator.post_error(
-                            wp_image_description_creator_params_v1::Error::InvalidTf,
-                            "unknown transfer_function enum value",
-                        );
-                        return;
-                    }
+                let tf = if let Ok(v) = tf.into_result() {
+                    v
+                } else {
+                    creator.post_error(
+                        wp_image_description_creator_params_v1::Error::InvalidTf,
+                        "unknown transfer_function enum value",
+                    );
+                    return;
                 };
                 set_once!(tf_named = tf, "transfer function already set");
             }
@@ -782,15 +750,14 @@ where
                 set_once!(tf_power_eexp = eexp, "transfer function already set");
             }
             wp_image_description_creator_params_v1::Request::SetPrimariesNamed { primaries } => {
-                let primaries = match primaries.into_result() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        creator.post_error(
-                            wp_image_description_creator_params_v1::Error::InvalidPrimariesNamed,
-                            "unknown primaries enum value",
-                        );
-                        return;
-                    }
+                let primaries = if let Ok(v) = primaries.into_result() {
+                    v
+                } else {
+                    creator.post_error(
+                        wp_image_description_creator_params_v1::Error::InvalidPrimariesNamed,
+                        "unknown primaries enum value",
+                    );
+                    return;
                 };
                 set_once!(primaries_named = primaries, "primaries already set");
             }
@@ -918,16 +885,14 @@ where
     ) {
         // If the wl_surface was destroyed the object is inert.
         if !data.surface.is_alive() {
-            match request {
-                wp_color_management_surface_v1::Request::Destroy => return,
-                _ => {
-                    obj.post_error(
-                        wp_color_management_surface_v1::Error::Inert,
-                        "surface has been destroyed",
-                    );
-                    return;
-                }
+            if let wp_color_management_surface_v1::Request::Destroy = request {
+                return;
             }
+            obj.post_error(
+                wp_color_management_surface_v1::Error::Inert,
+                "surface has been destroyed",
+            );
+            return;
         }
 
         match request {
@@ -982,10 +947,10 @@ where
     ) {
         if data.surface.is_alive() {
             wl_compositor::with_states(&data.surface, |states| {
-                if let Some(d) = states.data_map.get::<ColorManagementSurfaceData>() {
-                    if let Ok(mut inner) = d.inner.lock() {
-                        inner.manager_attached = false;
-                    }
+                if let Some(d) = states.data_map.get::<ColorManagementSurfaceData>()
+                    && let Ok(mut inner) = d.inner.lock()
+                {
+                    inner.manager_attached = false;
                 }
             });
         }
@@ -1024,7 +989,7 @@ where
                 let identity_hi = desc.identity_hi();
                 let identity_lo = desc.identity_lo();
                 let obj = data_init.init(image_description, desc);
-                let _ = obj.ready2(identity_hi, identity_lo);
+                let () = obj.ready2(identity_hi, identity_lo);
             }
             _ => {}
         }
@@ -1053,7 +1018,7 @@ where
                 let identity_hi = desc.identity_hi();
                 let identity_lo = desc.identity_lo();
                 let obj = data_init.init(image_description, desc);
-                let _ = obj.ready2(identity_hi, identity_lo);
+                let () = obj.ready2(identity_hi, identity_lo);
             }
             _ => {}
         }

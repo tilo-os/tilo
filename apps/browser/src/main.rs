@@ -1,3 +1,19 @@
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 // Thin binary entry point — all logic lives in the library.
 //
 // Supports three modes:
@@ -16,16 +32,15 @@
 use std::collections::HashMap;
 
 use browser::BrowserWidget;
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 /// Default offscreen viewport for `--shots`. Wide enough to show the
 /// toolbar row + a sizeable page area.
@@ -53,8 +68,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_arg_value(&args, "--shots-live") {
-        let url = parse_arg_value(&args, "--url")
-            .unwrap_or_else(|| "https://example.org".to_string());
+        let url =
+            parse_arg_value(&args, "--url").unwrap_or_else(|| "https://example.org".to_string());
         // `--size WxH` renders at an arbitrary viewport — used to inspect
         // narrow / mobile widths headlessly.
         let size = parse_arg_value(&args, "--size")
@@ -76,9 +91,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         use browser::history::HistoryEntry;
         let mut widget = BrowserWidget::new_headless();
         widget.debug_force_suggestions(vec![
-            HistoryEntry { url: "https://github.com/qos/qos".into(), title: "qOS on code.podesta.ai".into(), last_visit: 3, visit_count: 12 },
-            HistoryEntry { url: "https://en.wikipedia.org/wiki/Git".into(), title: "Git - Wikipedia".into(), last_visit: 2, visit_count: 4 },
-            HistoryEntry { url: "https://gitlab.com".into(), title: "GitLab".into(), last_visit: 1, visit_count: 2 },
+            HistoryEntry {
+                url: "https://github.com/qos/qos".into(),
+                title: "qOS on code.podesta.ai".into(),
+                last_visit: 3,
+                visit_count: 12,
+            },
+            HistoryEntry {
+                url: "https://en.wikipedia.org/wiki/Git".into(),
+                title: "Git - Wikipedia".into(),
+                last_visit: 2,
+                visit_count: 4,
+            },
+            HistoryEntry {
+                url: "https://gitlab.com".into(),
+                title: "GitLab".into(),
+                last_visit: 1,
+                visit_count: 2,
+            },
         ]);
         render_shot_to_png(Box::new(widget), (1000, 650), std::path::Path::new(&out))?;
         return Ok(());
@@ -147,15 +177,36 @@ fn render_suggestions_shot(out: &std::path::Path) -> Result<(), Box<dyn std::err
 
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
-        HistoryEntry { url: "https://github.com/qos/qos".into(), title: "qOS — code.podesta.ai".into(), last_visit: 3, visit_count: 12 },
-        HistoryEntry { url: "https://en.wikipedia.org/wiki/Web_browser".into(), title: "Web browser - Wikipedia".into(), last_visit: 2, visit_count: 5 },
-        HistoryEntry { url: "https://duckduckgo.com/?q=rust".into(), title: "rust at DuckDuckGo".into(), last_visit: 1, visit_count: 3 },
+        HistoryEntry {
+            url: "https://github.com/qos/qos".into(),
+            title: "qOS — code.podesta.ai".into(),
+            last_visit: 3,
+            visit_count: 12,
+        },
+        HistoryEntry {
+            url: "https://en.wikipedia.org/wiki/Web_browser".into(),
+            title: "Web browser - Wikipedia".into(),
+            last_visit: 2,
+            visit_count: 5,
+        },
+        HistoryEntry {
+            url: "https://duckduckgo.com/?q=rust".into(),
+            title: "rust at DuckDuckGo".into(),
+            last_visit: 1,
+            visit_count: 3,
+        },
     ]);
     overlay.move_selection(1); // highlight the 2nd row
     overlay.set_anchor(Point::new(24.0, 24.0), (w as f32) - 48.0);
 
     let mut scene = Scene::new();
-    overlay.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
+    overlay.draw_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -389,7 +440,13 @@ fn render_shot_to_png(
         &permission,
     );
     // Overlay pass (dropdowns, floating panels), as the live App runs it.
-    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
+    widget.draw_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

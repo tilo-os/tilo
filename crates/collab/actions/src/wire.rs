@@ -40,7 +40,7 @@ use crate::action::{ActionId, EncodedAction, ExecutionLocus};
 use crate::envelope::ActionEnvelope;
 use crate::executor::{ActionTransport, HostDecision};
 use crate::params::{ActionParam, ArgError, ArgValue};
-use crate::resource::{flatten, ActionSpec, Resource, KEY_SEP};
+use crate::resource::{ActionSpec, KEY_SEP, Resource, flatten};
 
 /// The serializable shadow of one [`ActionSpec`]: everything about it except
 /// the closure.
@@ -147,7 +147,9 @@ pub fn resolve<'a>(resources: &'a [Resource], key: &str) -> Option<&'a ActionSpe
         }
         r.children.iter().find_map(|c| walk(c, rid, aid))
     }
-    resources.iter().find_map(|r| walk(r, resource_id, action_id))
+    resources
+        .iter()
+        .find_map(|r| walk(r, resource_id, action_id))
 }
 
 /// Why an invocation addressed from a projection did not produce an action.
@@ -335,9 +337,7 @@ impl<W: Write, R: BufRead> ActionTransport for IoTransport<W, R> {
         }
         self.sent.push(env.clone());
         match read_message(&mut self.inp) {
-            Ok(Some(WireMessage::Decision { id, accepted }))
-                if id == env.id && accepted =>
-            {
+            Ok(Some(WireMessage::Decision { id, accepted })) if id == env.id && accepted => {
                 HostDecision::AcceptedByHost
             }
             Ok(_) => HostDecision::NoHostFallbackLocal,

@@ -25,20 +25,20 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::accounts::{
     AccountConfig, AccountDirectory, AccountKind, AccountView, DavStore, NextcloudStore,
 };
 use crate::widgets::{
-    card, card_with_action, caption, hgap, icon_button, rows, setting_row, status_pill, El,
+    El, caption, card, card_with_action, hgap, icon_button, rows, setting_row, status_pill,
 };
 
 /// Key the "Add" button on the Email card writes to open the form.
@@ -166,7 +166,11 @@ impl AccountsPane {
     }
 
     fn mail_card(&self) -> El {
-        let title = format!("{}  {}", AccountKind::Mail.glyph(), AccountKind::Mail.label());
+        let title = format!(
+            "{}  {}",
+            AccountKind::Mail.glyph(),
+            AccountKind::Mail.label()
+        );
         let add_btn: El = Box::new(Button::new(
             "settings.accounts.add.mail",
             "\u{f0415}  Add",
@@ -339,7 +343,10 @@ impl AccountsPane {
         // now persists, encrypted, instead of being dropped on the floor.
         if !password.trim().is_empty() {
             let mut vault = accounts::SecretVault::open();
-            vault.put(&id, &accounts::Secret::password(password.trim().to_string()));
+            vault.put(
+                &id,
+                &accounts::Secret::password(password.trim().to_string()),
+            );
             vault.save();
         }
         true
@@ -359,7 +366,7 @@ impl AccountsPane {
                 if vault.remove(&account_id) {
                     vault.save();
                 }
-                saved.map(|_| ())
+                saved
             }
             AccountKind::WebDav => {
                 let mut s = DavStore::load_from(DavStore::files_path());
@@ -403,7 +410,11 @@ impl Widget for AccountsPane {
         }
         // Cancel the form.
         if read_bool(state, root, FORM_CANCEL_KEY) {
-            let _ = state.put(root, FORM_CANCEL_KEY, automerge::ScalarValue::Boolean(false));
+            let _ = state.put(
+                root,
+                FORM_CANCEL_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
             if self.form_open {
                 self.form_open = false;
                 clear_form(state, root);
@@ -481,24 +492,23 @@ impl Widget for AccountsPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -527,22 +537,21 @@ impl Widget for AccountsPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -562,7 +571,7 @@ impl Widget for AccountsPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AccountsPane"
     }
 
@@ -575,8 +584,7 @@ impl Widget for AccountsPane {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -600,8 +608,12 @@ fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
 }
 
 /// The form's four editable text keys, in field order.
-const FORM_FIELD_KEYS: [&str; 4] =
-    [FORM_NAME_KEY, FORM_EMAIL_KEY, FORM_USER_KEY, FORM_PASSWORD_KEY];
+const FORM_FIELD_KEYS: [&str; 4] = [
+    FORM_NAME_KEY,
+    FORM_EMAIL_KEY,
+    FORM_USER_KEY,
+    FORM_PASSWORD_KEY,
+];
 
 /// Seed the form's bound `Text` objects so the fields can actually be typed
 /// into (a `TextInput` persists edits only through an existing Text object).
@@ -629,7 +641,7 @@ mod tests {
     use ui::Theme;
 
     fn count_named(w: &dyn Widget, name: &str) -> usize {
-        let mut n = if w.name() == name { 1 } else { 0 };
+        let mut n = usize::from(w.name() == name);
         for c in w.children() {
             n += count_named(c, name);
         }
@@ -675,7 +687,10 @@ mod tests {
         let _ = doc.put(&root, ADD_MAIL_KEY, true);
         pane.sync(&mut doc, &root);
         assert!(pane.form_open(), "Add opens the form");
-        assert!(pane.take_structure_dirty(), "opening the form requests a rebuild");
+        assert!(
+            pane.take_structure_dirty(),
+            "opening the form requests a rebuild"
+        );
         // Cancel closes it.
         let _ = doc.put(&root, FORM_CANCEL_KEY, true);
         pane.sync(&mut doc, &root);
@@ -696,8 +711,16 @@ mod tests {
             "an empty store renders empty — no fabricated ada@example.com rows"
         );
         // And no account of any kind leaked in from the sample.
-        for kind in [AccountKind::Mail, AccountKind::CalDav, AccountKind::WebDav, AccountKind::Nextcloud] {
-            assert!(pane.directory().views_of(kind).is_empty(), "{kind:?} must be empty");
+        for kind in [
+            AccountKind::Mail,
+            AccountKind::CalDav,
+            AccountKind::WebDav,
+            AccountKind::Nextcloud,
+        ] {
+            assert!(
+                pane.directory().views_of(kind).is_empty(),
+                "{kind:?} must be empty"
+            );
         }
     }
 
@@ -706,6 +729,11 @@ mod tests {
         // Guard: saving a blank address must not create an account (and must
         // not touch disk). We assert the pure guard directly.
         let mut pane = AccountsPane::from_dir(AccountDirectory::default(), false);
-        assert!(!pane.save_mail_account("Nobody".into(), "  ".into(), "".into(), "".into()));
+        assert!(!pane.save_mail_account(
+            "Nobody".into(),
+            "  ".into(),
+            String::new(),
+            String::new()
+        ));
     }
 }

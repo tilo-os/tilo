@@ -13,7 +13,6 @@ pub struct Size {
     pub height: f32,
 }
 
-// Local Rectangle definition
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
 pub struct Rectangle {
     pub x: f32,
@@ -94,6 +93,12 @@ pub struct WorkspaceState {
     pub is_overview: bool,
     pub is_help_open: bool,
     pub is_sidebar_open: bool,
+}
+
+impl Default for WorkspaceState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WorkspaceState {

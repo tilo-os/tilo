@@ -49,7 +49,7 @@ The heading above is fine; only the font and the variable are wrong.
 /// The starter document a fresh install opens with when the user has no saved
 /// `.typ` files yet. Deliberately short and neutral — a blank page to edit,
 /// not a brochure.
-pub const STARTER: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
+pub const STARTER: &str = r"#set page(width: 16cm, height: auto, margin: 1.6cm)
 #set text(size: 11pt)
 
 = Untitled
@@ -58,7 +58,7 @@ Start writing here. The document on the right updates as you type.
 
 - A dash makes a bullet
 - `Ctrl+S` saves, `Ctrl+Enter` recompiles
-"#;
+";
 
 const WELCOME: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
 #set text(font: "Libertinus Serif", size: 11pt)

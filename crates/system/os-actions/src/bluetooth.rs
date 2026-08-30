@@ -104,10 +104,10 @@ fn parse_bluetoothctl_info(stdout: &str) -> (bool, u8) {
             // parens is what we want.
             if let Some(open) = rest.find('(') {
                 let after = &rest[open + 1..];
-                if let Some(close) = after.find(')') {
-                    if let Ok(n) = after[..close].trim().parse::<u8>() {
-                        battery = n;
-                    }
+                if let Some(close) = after.find(')')
+                    && let Ok(n) = after[..close].trim().parse::<u8>()
+                {
+                    battery = n;
                 }
             }
         }
@@ -122,13 +122,13 @@ mod tests {
     #[test]
     fn parse_bluetoothctl_power_yes() {
         let s = "Controller AA:BB\n\tName: Foo\n\tPowered: yes\n\tDiscoverable: no";
-        assert_eq!(parse_bluetoothctl_power(s).unwrap(), true);
+        assert!(parse_bluetoothctl_power(s).unwrap());
     }
 
     #[test]
     fn parse_bluetoothctl_power_no() {
         let s = "\tPowered: no";
-        assert_eq!(parse_bluetoothctl_power(s).unwrap(), false);
+        assert!(!parse_bluetoothctl_power(s).unwrap());
     }
 
     #[test]

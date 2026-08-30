@@ -1,54 +1,26 @@
-//! End-to-end integration test for the DMABUF-direct encode path.
+//! End-to-end integration test for the DMABUF-direct encode path:
+//! verifies `FrameInput::DmabufFd` reaches the VA-API backend with plane/
+//! stride/modifier/fourcc metadata intact, that `av_hwframe_map` is
+//! actually called (not a silent CPU-upload fallback), and that
+//! `dmabuf_direct_count` reflects a real zero-copy transit.
 //!
-//! Verifies that `FrameInput::DmabufFd` reaches the VA-API backend
-//! with the plane / stride / modifier / fourcc metadata intact, that
-//! `av_hwframe_map` is actually called (rather than the encoder
-//! silently falling back to CPU upload), and that the tracker's
-//! `dmabuf_direct_count` counter reflects a real end-to-end
-//! zero-copy transit.
-//!
-//! # Self-skipping
-//!
-//! The test is `#[ignore]`d by default and self-skips at run-time
-//! whenever `VaApiBackend::probe()` reports unavailable. Reasons the
-//! probe can report unavailable on a well-provisioned developer
-//! machine:
-//!
-//! - No `/dev/dri/renderD*` node (typical on CI runners).
-//! - libavcodec built without VA-API support (`--features vaapi`
-//!   isn't set at cargo test time).
-//! - The render node's driver doesn't support H.264 encode. The AMD
-//!   Radeon 780M on the current workstation ships JPEG + AV1 encode
-//!   but no H.264 — the probe catches this at `avcodec_open2` and
-//!   reports unavailable; the test self-skips.
-//!
-//! Enable with:
-//!
+//! `#[ignore]`d by default; self-skips when `VaApiBackend::probe()`
+//! reports unavailable — no `/dev/dri/renderD*` (typical on CI), no
+//! `--features vaapi`, or a driver without H.264 encode (the AMD Radeon
+//! 780M dev workstation has JPEG+AV1 but no H.264, caught at
+//! `avcodec_open2`). Enable with:
 //! ```text
 //! cargo test -p shell --test dmabuf_encode_path_integration --features vaapi -- --include-ignored
 //! ```
 //!
-//! # DMABUF source
-//!
-//! `smithay::backend::allocator::dumb::DumbAllocator` needs a
-//! primary DRM node (KMS) with master privileges — not something an
-//! `--include-ignored` test run can assume. And `GbmAllocator` needs
-//! an EGL initialisation the test runner doesn't have either.
-//!
-//! Instead we synthesise the DMABUF descriptor from a `memfd_create`
-//! fd. A memfd isn't a real DRM PRIME fd — most VA-API drivers will
-//! refuse it at `av_hwframe_map` with a negative errno, which
-//! surfaces as `EncoderError::EncodeFailed { detail: "dmabuf-direct
-//! not supported ..." }`. That's the sad-path the code is *designed*
-//! to fall back on cleanly, and this test asserts the fall-through
-//! error carries the expected marker text so the compositor's SHM
-//! fallback fires reliably.
-//!
-//! On the (rare) driver that accepts a memfd we assert bytes come
-//! back and the counter increments — but the primary value of the
-//! test is proving the fallback path fires without a panic. Real
-//! DRM-PRIME-backed testing lives in the flatpak_share_e2e VM path
-//! (deferred until CI runners get GPU access).
+//! `DumbAllocator` needs KMS master privileges and `GbmAllocator` needs
+//! EGL init, neither assumable here, so the DMABUF descriptor is
+//! synthesised from a `memfd_create` fd. A memfd isn't a real DRM PRIME
+//! fd — most VA-API drivers refuse it at `av_hwframe_map`, surfacing as
+//! `EncoderError::EncodeFailed { detail: "dmabuf-direct not supported
+//! ..." }`. Asserting that marker text is the primary value here: it is
+//! what keeps the compositor's SHM fallback firing. Real DRM-PRIME
+//! testing lives in the flatpak_share_e2e VM path.
 
 #![cfg(feature = "vaapi")]
 
@@ -61,10 +33,9 @@ use shell::compositor::surface_readback::{CapturePath, SurfaceTracker};
 /// clients render into. Encoded as ASCII bytes: `'A' 'R' '2' '4'`.
 const DRM_FORMAT_ARGB8888: u32 = 0x3432_3241;
 
-/// Allocate a real anonymous fd via `memfd_create` and fill it with
-/// solid-red BGRA pixels. Not a valid DMABUF descriptor — but a real
-/// fd with real bytes, so any driver that tries to `mmap` it (as
-/// part of an EGL image import fallback path) gets valid content.
+/// Real anonymous fd via `memfd_create`, filled with solid-red BGRA —
+/// not a valid DMABUF descriptor, but real bytes so a driver that
+/// `mmap`s it (EGL image import fallback) gets valid content.
 fn make_red_memfd(width: u32, height: u32) -> std::os::fd::OwnedFd {
     use std::os::fd::FromRawFd;
     // memfd_create("dmabuf-test", MFD_CLOEXEC=1)
@@ -81,21 +52,18 @@ fn make_red_memfd(width: u32, height: u32) -> std::os::fd::OwnedFd {
     let stride = (width * 4) as usize;
     let size = stride * height as usize;
     let mut buf = vec![0u8; size];
-    // BGRA layout — R=0xFF, G=0x00, B=0x00, A=0xFF for each pixel.
     for chunk in buf.chunks_exact_mut(4) {
         chunk[0] = 0x00; // B
         chunk[1] = 0x00; // G
         chunk[2] = 0xFF; // R
         chunk[3] = 0xFF; // A
     }
-    // Grow the memfd to `size` and write the pattern.
     use std::io::Write;
     use std::os::fd::AsRawFd;
     // SAFETY: ftruncate + write on our own fd; error → assert.
     let rc = unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) };
     assert!(rc == 0, "ftruncate failed");
-    // Convert to std::fs::File to use Write (won't take ownership —
-    // dup then wrap).
+    // dup then wrap, so the File doesn't take ownership of the fd.
     let dup_raw = unsafe { libc::dup(fd.as_raw_fd()) };
     assert!(dup_raw >= 0, "dup failed");
     let mut file = unsafe { std::fs::File::from_raw_fd(dup_raw) };
@@ -122,9 +90,8 @@ fn dmabuf_direct_encode_path_end_to_end() {
     let init = EncoderInit::sdr_h264(W, H, 30, 2000, 1);
     let mut backend = VaApiBackend::new(init).expect("vaapi backend construct");
 
-    // Synthesise a "dmabuf" — a memfd with red pixels. Most drivers
-    // will refuse this at `av_hwframe_map` (memfd isn't a real
-    // DRM_PRIME fd) which is the expected fallback path.
+    // Most drivers refuse a memfd at `av_hwframe_map` (not a real DRM_PRIME
+    // fd), which is the expected fallback path.
     use std::os::fd::AsRawFd;
     let owned_fd = make_red_memfd(W, H);
     let raw_fd = owned_fd.as_raw_fd();
@@ -144,9 +111,8 @@ fn dmabuf_direct_encode_path_end_to_end() {
     let mut out = Vec::new();
     match backend.encode(input, &mut out) {
         Ok(stats) => {
-            // A driver that accepted our synthetic memfd (unlikely
-            // but not impossible — some Mesa builds map anything
-            // with fstat()-able size). Assert we got Annex-B bytes.
+            // Some Mesa builds map anything with an fstat()-able size, so a driver
+            // may accept the synthetic memfd — then assert we got Annex-B bytes.
             assert!(
                 !out.is_empty(),
                 "encode reported success but produced no bytes"
@@ -162,12 +128,9 @@ fn dmabuf_direct_encode_path_end_to_end() {
                 &out[..out.len().min(8)]
             );
 
-            // Production wiring: the compositor's
-            // `tick_share_session_for_surface` bumps
-            // `dmabuf_direct_count` after a successful DMABUF
-            // encode. Exercise the same code path here so the
-            // counter increment is asserted through the real
-            // production API.
+            // `tick_share_session_for_surface` is what bumps `dmabuf_direct_count`
+            // in production; go through it so the increment is asserted on the real
+            // path.
             let mut tracker = SurfaceTracker::new();
             tracker.note_capture_path(42, CapturePath::DmabufDirect);
             assert_eq!(
@@ -179,21 +142,16 @@ fn dmabuf_direct_encode_path_end_to_end() {
         Err(EncoderError::EncodeFailed { detail, .. })
             if detail.contains("dmabuf-direct not supported") =>
         {
-            // Expected on the AMD Radeon 780M host + on any driver
-            // that rejects a memfd-backed DRM_PRIME fd. The compositor
-            // catches this exact detail and falls back to
-            // `FrameInput::Rgba` on the next commit. Verify the
-            // marker text stays stable so the compositor's match arm
-            // keeps firing.
+            // Expected on the AMD Radeon 780M host and any driver that rejects a
+            // memfd-backed DRM_PRIME fd. The compositor matches on this exact detail
+            // to fall back to `FrameInput::Rgba`, so the marker text must stay stable.
             eprintln!(
                 "dmabuf-direct path exercised; driver rejected map (expected on non-Intel): {}",
                 detail
             );
-            // Counter must NOT be bumped — the metrics roll-up rule
-            // is "count only successful zero-copy transits".
-            // Simulate the compositor's on_commit_with_path_detection
-            // branch: it *doesn't* bump the counter until the encoder
-            // succeeds. Nothing else touches the counter, so the
+            // Counter must NOT be bumped — the metrics rule is "count only
+            // successful zero-copy transits", mirroring the compositor's
+            // on_commit_with_path_detection branch. Nothing else touches it, so the
             // baseline is 0.
             let tracker = SurfaceTracker::new();
             assert_eq!(

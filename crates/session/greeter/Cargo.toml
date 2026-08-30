@@ -28,3 +28,6 @@ tracing-subscriber.workspace = true
 greetd_ipc = { version = "0.10", features = ["sync-codec"] }
 
 [dev-dependencies]
+
+[lints]
+workspace = true

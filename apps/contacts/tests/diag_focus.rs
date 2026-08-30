@@ -9,8 +9,6 @@
 //! contacts form. If a refactor ever leaked the form's inputs into the App
 //! tree, the App would start handling Tab itself and this would fail.
 
-use ui::widget::Widget;
-
 #[test]
 fn contacts_root_owns_focus_and_registers_none_with_the_app() {
     let state = ui::State::new();

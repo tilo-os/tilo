@@ -75,7 +75,7 @@ impl SourceEditor {
     }
 
     pub fn line_height(&self) -> f64 {
-        self.code.line_height().max(FONT_SIZE as f64)
+        self.code.line_height().max(f64::from(FONT_SIZE))
     }
 
     /// Bind the editor to the Automerge `Text` object holding the source and
@@ -117,7 +117,11 @@ impl SourceEditor {
         let text = self.code.value().to_string();
         let start = byte_of_line_col(&text, 1, 0);
         let end = byte_of_line_col(&text, 3, 0).min(text.len());
-        let (a, b) = if end > start { (start, end) } else { (0, text.len().min(24)) };
+        let (a, b) = if end > start {
+            (start, end)
+        } else {
+            (0, text.len().min(24))
+        };
         self.code.set_selection(a, b);
         self.focused = true;
     }
@@ -133,7 +137,7 @@ impl SourceEditor {
     /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
     /// only scrolls vertically.
     pub fn scroll_by(&mut self, _dx: f32, dy: f32, _text: &str) {
-        self.code.scroll_by(dy as f64);
+        self.code.scroll_by(f64::from(dy));
     }
 
     /// Scroll the caret into view. The shared widget follows the caret after
@@ -199,7 +203,15 @@ impl SourceEditor {
         // `text_id` is the object the widget was bound to; pass it as the root so
         // the resolve falls back to it even if the binding were ever cleared.
         self.code.handle_event(
-            event, 1.0, modifiers, doc, text_id, &mut handled, &mut focus_target, node, &taffy,
+            event,
+            1.0,
+            modifiers,
+            doc,
+            text_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
         );
         handled
     }
@@ -226,23 +238,27 @@ impl SourceEditor {
 
         // Diagnostics overlay, drawn on top using the widget's geometry, clipped
         // to the pane so squiggles/markers never spill past it.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &self.rect);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &self.rect,
+        );
         self.draw_diagnostics(scene, transform, tr, theme, diags);
         scene.pop_layer();
 
         // Hover tooltip for a diagnostic squiggle — drawn last and outside the
         // clip so it floats above the source and can overflow the pane.
-        if let Some(hp) = self.hover {
-            if self.rect.contains(hp) {
-                let byte = self.code.byte_at_point(hp);
-                let text = self.code.value().to_string();
-                if let Some(d) = diags.iter().find(|d| {
-                    diag_byte_span(d, &text)
-                        .map(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
-                        .unwrap_or(false)
-                }) {
-                    self.draw_tooltip(scene, transform, tr, theme, hp, d);
-                }
+        if let Some(hp) = self.hover
+            && self.rect.contains(hp)
+        {
+            let byte = self.code.byte_at_point(hp);
+            let text = self.code.value().to_string();
+            if let Some(d) = diags.iter().find(|d| {
+                diag_byte_span(d, &text).is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
+            }) {
+                self.draw_tooltip(scene, transform, tr, theme, hp, d);
             }
         }
     }
@@ -320,8 +336,8 @@ impl SourceEditor {
         let mut heights = Vec::with_capacity(lines.len());
         for (s, _) in &lines {
             let (tw, th) = tr.measure(s, font, Some(max_text_w as f32));
-            w = w.max(tw as f64);
-            let h = (th as f64).max(font as f64 * 1.2);
+            w = w.max(f64::from(tw));
+            let h = f64::from(th).max(f64::from(font) * 1.2);
             heights.push(h);
             total_h += h + gap;
         }
@@ -344,7 +360,13 @@ impl SourceEditor {
             None,
             &RoundedRect::from_rect(card.inflate(2.0, 2.0), 8.0),
         );
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &RoundedRect::from_rect(card, 7.0));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, 7.0),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -406,11 +428,7 @@ fn byte_of_line_col(text: &str, line0: usize, col0: usize) -> usize {
     let mut byte = 0usize;
     for (i, l) in text.split('\n').enumerate() {
         if i == line0 {
-            let add = l
-                .char_indices()
-                .nth(col0)
-                .map(|(o, _)| o)
-                .unwrap_or(l.len());
+            let add = l.char_indices().nth(col0).map_or(l.len(), |(o, _)| o);
             return byte + add;
         }
         byte += l.len() + 1; // + '\n'
@@ -428,12 +446,21 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
         d.end_col.unwrap_or(d.col? + 1).saturating_sub(1),
     );
     let b0 = byte_of_line_col(text, sl, sc);
-    let b1 = byte_of_line_col(text, el, ec).max(b0 + 1).min(text.len().max(b0 + 1));
+    let b1 = byte_of_line_col(text, el, ec)
+        .max(b0 + 1)
+        .min(text.len().max(b0 + 1));
     Some((b0, b1.min(text.len())))
 }
 
 /// Stroke a wavy underline (a squiggle) between `x0` and `x1` at baseline `y`.
-fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64, color: vello::peniko::Color) {
+fn draw_squiggle(
+    scene: &mut Scene,
+    transform: Affine,
+    x0: f64,
+    x1: f64,
+    y: f64,
+    color: vello::peniko::Color,
+) {
     if x1 <= x0 {
         return;
     }
@@ -456,7 +483,7 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64,
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ObjType, ReadDoc, ROOT};
+    use automerge::{ObjType, ROOT, ReadDoc};
 
     fn doc_with(text: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
@@ -504,7 +531,10 @@ mod tests {
             hints: vec![],
         };
         let (b0, b1) = diag_byte_span(&d, t).unwrap();
-        assert!(b1 > b0, "a zero-width span still underlines at least one byte");
+        assert!(
+            b1 > b0,
+            "a zero-width span still underlines at least one byte"
+        );
     }
 
     #[test]

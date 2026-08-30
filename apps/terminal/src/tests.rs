@@ -1,25 +1,39 @@
 #[cfg(test)]
 mod tests {
-    use crate::{TerminalWidget, TerminalPerformer, Attr, GridPos, Selection};
-    use ui::State;
-    use ui::widget::Widget as _;
-    use automerge::{AutoCommit, ROOT, ObjType, ReadDoc, transaction::Transactable};
+    use crate::{Attr, GridPos, Selection, TerminalPerformer, TerminalWidget};
+    use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
+    use portable_pty::{MasterPty, PtySize};
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
-    use portable_pty::{MasterPty, PtySize};
-    use vte::Perform;
+    use ui::State;
+    use ui::widget::Widget as _;
     use vello::kurbo::Rect;
+    use vte::Perform;
 
     /// Shared mock PTY master used by the selection / clipboard tests.
     struct MockMasterShared;
     impl MasterPty for MockMasterShared {
-        fn get_size(&self) -> Result<PtySize, anyhow::Error> { Ok(PtySize::default()) }
-        fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> { Ok(()) }
-        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> { Ok(Box::new(std::io::sink())) }
-        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> { Ok(Box::new(std::io::empty())) }
-        fn process_group_leader(&self) -> Option<i32> { None }
-        fn as_raw_fd(&self) -> Option<i32> { None }
-        fn tty_name(&self) -> Option<std::path::PathBuf> { None }
+        fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+            Ok(PtySize::default())
+        }
+        fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+            Ok(Box::new(std::io::sink()))
+        }
+        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+            Ok(Box::new(std::io::empty()))
+        }
+        fn process_group_leader(&self) -> Option<i32> {
+            None
+        }
+        fn as_raw_fd(&self) -> Option<i32> {
+            None
+        }
+        fn tty_name(&self) -> Option<std::path::PathBuf> {
+            None
+        }
     }
 
     /// `DeviceId::dummy()` is gated behind a winit unstable feature; the
@@ -40,7 +54,9 @@ mod tests {
                 let _ = self.0.send(buf.to_vec());
                 Ok(buf.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
         let (_pty_out_tx, pty_out_rx) = crossbeam_channel::unbounded();
@@ -68,7 +84,9 @@ mod tests {
                 let _ = self.0.send(buf.to_vec());
                 Ok(buf.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
         let (pty_out_tx, pty_out_rx) = crossbeam_channel::unbounded();
@@ -83,13 +101,15 @@ mod tests {
     /// Drain and concatenate everything the PTY-write channel has buffered.
     fn drain_writes(rx: &crossbeam_channel::Receiver<Vec<u8>>) -> Vec<u8> {
         let mut out = Vec::new();
-        while let Ok(b) = rx.try_recv() { out.extend_from_slice(&b); }
+        while let Ok(b) = rx.try_recv() {
+            out.extend_from_slice(&b);
+        }
         out
     }
 
     fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-        use winit::event::{WindowEvent, MouseButton, ElementState, Modifiers};
         use ui::widget::Widget;
+        use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
         let mut handled = false;
         let mut focus = None;
         let modifiers = Modifiers::default();
@@ -100,12 +120,22 @@ mod tests {
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        widget.handle_event(
+            &ev,
+            1.0,
+            &modifiers,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-        use winit::event::{WindowEvent, MouseButton, ElementState, Modifiers};
         use ui::widget::Widget;
+        use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
         let mut handled = false;
         let mut focus = None;
         let modifiers = Modifiers::default();
@@ -116,13 +146,23 @@ mod tests {
             state: ElementState::Released,
             button: MouseButton::Left,
         };
-        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        widget.handle_event(
+            &ev,
+            1.0,
+            &modifiers,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y: f64) {
-        use winit::event::{WindowEvent, Modifiers};
-        use winit::dpi::PhysicalPosition;
         use ui::widget::Widget;
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{Modifiers, WindowEvent};
         let mut handled = false;
         let mut focus = None;
         let modifiers = Modifiers::default();
@@ -132,22 +172,51 @@ mod tests {
             device_id: fake_device_id(),
             position: PhysicalPosition::new(x, y),
         };
-        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        widget.handle_event(
+            &ev,
+            1.0,
+            &modifiers,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
-    fn send_key(widget: &mut TerminalWidget, doc: &mut AutoCommit, key: winit::keyboard::Key, ctrl: bool, shift: bool) {
+    fn send_key(
+        widget: &mut TerminalWidget,
+        doc: &mut AutoCommit,
+        key: winit::keyboard::Key,
+        ctrl: bool,
+        shift: bool,
+    ) {
         send_key_mods(widget, doc, key, ctrl, shift, false);
     }
 
-    fn send_key_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, key: winit::keyboard::Key, ctrl: bool, shift: bool, alt: bool) {
-        use winit::event::{WindowEvent, ElementState, KeyEvent, Modifiers};
-        use winit::keyboard::{ModifiersState, PhysicalKey, KeyLocation};
+    fn send_key_mods(
+        widget: &mut TerminalWidget,
+        doc: &mut AutoCommit,
+        key: winit::keyboard::Key,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    ) {
         use ui::widget::Widget;
+        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+        use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
 
         let mut state = ModifiersState::empty();
-        if ctrl { state |= ModifiersState::CONTROL; }
-        if shift { state |= ModifiersState::SHIFT; }
-        if alt { state |= ModifiersState::ALT; }
+        if ctrl {
+            state |= ModifiersState::CONTROL;
+        }
+        if shift {
+            state |= ModifiersState::SHIFT;
+        }
+        if alt {
+            state |= ModifiersState::ALT;
+        }
         let modifiers: Modifiers = state.into();
 
         let mut handled = false;
@@ -177,7 +246,17 @@ mod tests {
             event: ev,
             is_synthetic: false,
         };
-        widget.handle_event(&win_ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        widget.handle_event(
+            &win_ev,
+            1.0,
+            &modifiers,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     #[test]
@@ -186,28 +265,42 @@ mod tests {
         let mut doc = state.doc;
         let (_output_tx, _output_rx) = crossbeam_channel::unbounded();
         let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
-        
+
         struct MockMaster;
         impl MasterPty for MockMaster {
-            fn get_size(&self) -> Result<PtySize, anyhow::Error> { Ok(PtySize::default()) }
-            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> { Ok(()) }
-            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> { Ok(Box::new(std::io::sink())) }
-            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> { Ok(Box::new(std::io::empty())) }
-            fn process_group_leader(&self) -> Option<i32> { None }
-            fn as_raw_fd(&self) -> Option<i32> { None }
+            fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+                Ok(PtySize::default())
+            }
+            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+                Ok(())
+            }
+            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+                Ok(Box::new(std::io::sink()))
+            }
+            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+                Ok(Box::new(std::io::empty()))
+            }
+            fn process_group_leader(&self) -> Option<i32> {
+                None
+            }
+            fn as_raw_fd(&self) -> Option<i32> {
+                None
+            }
             // portable-pty 0.9 added a `tty_name` accessor. Test mock has no
             // real TTY behind it, so return None.
-            fn tty_name(&self) -> Option<std::path::PathBuf> { None }
+            fn tty_name(&self) -> Option<std::path::PathBuf> {
+                None
+            }
         }
 
         let mut widget = TerminalWidget::new(
             Arc::new(Mutex::new(writer)),
             Arc::new(Mutex::new(Box::new(MockMaster))),
-            _output_rx
+            _output_rx,
         );
 
         widget.init_crdt(&mut doc, &ROOT);
-        
+
         let grid_id = doc.get(ROOT, "terminal_grid").unwrap().unwrap().1;
         assert_eq!(doc.length(&grid_id), 24);
     }
@@ -229,7 +322,11 @@ mod tests {
         let grid_id = doc.get(ROOT, "terminal_grid").unwrap().unwrap().1;
         let line0 = doc.get(&grid_id, 0usize).unwrap().unwrap().1;
         let text0 = doc.get(&line0, "text").unwrap().unwrap().1;
-        assert_eq!(doc.text(&text0).unwrap().len(), 0, "blank lines are seeded empty");
+        assert_eq!(
+            doc.text(&text0).unwrap().len(),
+            0,
+            "blank lines are seeded empty"
+        );
 
         // CSI 1;11 H → row 1, col 11 (1-based); print 'X' at 0-based col 10
         // on the still-empty first line — this exercises the pad path.
@@ -265,7 +362,9 @@ mod tests {
     fn test_terminal_performer_print() {
         use crate::TermModes;
         let mut doc = AutoCommit::new();
-        let grid_id = doc.put_object(ROOT, "terminal_grid", ObjType::List).unwrap();
+        let grid_id = doc
+            .put_object(ROOT, "terminal_grid", ObjType::List)
+            .unwrap();
         let line_id = doc.insert_object(&grid_id, 0, ObjType::Map).unwrap();
         let text_id = doc.put_object(&line_id, "text", ObjType::Text).unwrap();
         doc.splice_text(&text_id, 0, 0, &" ".repeat(80)).unwrap();
@@ -274,8 +373,12 @@ mod tests {
         doc.put(&line_id, "attrs", attr_bytes).unwrap();
 
         // The performer also needs a (possibly empty) alternate buffer list.
-        let alt_grid_id = doc.put_object(ROOT, "terminal_grid_alt", ObjType::List).unwrap();
-        let links_id = doc.put_object(ROOT, "terminal_links", ObjType::Map).unwrap();
+        let alt_grid_id = doc
+            .put_object(ROOT, "terminal_grid_alt", ObjType::List)
+            .unwrap();
+        let links_id = doc
+            .put_object(ROOT, "terminal_links", ObjType::Map)
+            .unwrap();
 
         let cursor_id = doc.put_object(ROOT, "cursor", ObjType::Map).unwrap();
         doc.put(&cursor_id, "x", 0u64).unwrap();
@@ -365,8 +468,11 @@ mod tests {
         // not hard-code a string. This test asserts the presence of a
         // `font_mono` accessor on Theme::tokens (added by Plan 1) and that the
         // terminal records the last-drawn font for inspection.
-        let mono = theme.tokens.font_mono.clone();
-        assert!(!mono.family.is_empty(), "theme must expose mono font tokens");
+        let mono = theme.tokens.font_mono;
+        assert!(
+            !mono.family.is_empty(),
+            "theme must expose mono font tokens"
+        );
         // This is a compile-time + minimal-runtime assertion that the terminal
         // pulls from tokens rather than hard-coded strings.
         // Full rendering regression is covered by the existing unit tests.
@@ -397,7 +503,7 @@ mod tests {
         let fg_a = crate::inner::map_ansi_256(1, &palette_a);
         let fg_b = crate::inner::map_ansi_256(1, &palette_b);
         assert_ne!(
-            format!("{:?}", fg_a),
+            format!("{fg_a:?}"),
             format!("{:?}", fg_b),
             "palette swap must change ANSI 1 lookup"
         );
@@ -407,7 +513,7 @@ mod tests {
         let cursor_a = crate::inner::cursor_from_palette(&palette_a);
         let cursor_b = crate::inner::cursor_from_palette(&palette_b);
         assert_ne!(
-            format!("{:?}", cursor_a),
+            format!("{cursor_a:?}"),
             format!("{:?}", cursor_b),
             "palette swap must change cursor color"
         );
@@ -417,7 +523,7 @@ mod tests {
         let cube_a = crate::inner::map_ansi_256(42, &palette_a);
         let cube_b = crate::inner::map_ansi_256(42, &palette_b);
         assert_eq!(
-            format!("{:?}", cube_a),
+            format!("{cube_a:?}"),
             format!("{:?}", cube_b),
             "6x6x6 ANSI cube is spec-defined and must not move with the theme"
         );
@@ -436,15 +542,29 @@ mod tests {
 
         struct MockMaster;
         impl MasterPty for MockMaster {
-            fn get_size(&self) -> Result<PtySize, anyhow::Error> { Ok(PtySize::default()) }
-            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> { Ok(()) }
-            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> { Ok(Box::new(std::io::sink())) }
-            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> { Ok(Box::new(std::io::empty())) }
-            fn process_group_leader(&self) -> Option<i32> { None }
-            fn as_raw_fd(&self) -> Option<i32> { None }
+            fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+                Ok(PtySize::default())
+            }
+            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+                Ok(())
+            }
+            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+                Ok(Box::new(std::io::sink()))
+            }
+            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+                Ok(Box::new(std::io::empty()))
+            }
+            fn process_group_leader(&self) -> Option<i32> {
+                None
+            }
+            fn as_raw_fd(&self) -> Option<i32> {
+                None
+            }
             // portable-pty 0.9 added a `tty_name` accessor. Test mock has no
             // real TTY behind it, so return None.
-            fn tty_name(&self) -> Option<std::path::PathBuf> { None }
+            fn tty_name(&self) -> Option<std::path::PathBuf> {
+                None
+            }
         }
 
         let widget = TerminalWidget::new(
@@ -456,7 +576,7 @@ mod tests {
         // Before any draw, accessors return the sentinel transparent value.
         let pre = widget.last_fg_default();
         assert_eq!(
-            format!("{:?}", pre),
+            format!("{pre:?}"),
             format!("{:?}", Color::from_rgba8(0, 0, 0, 0)),
             "before first draw the cached fg must be the sentinel"
         );
@@ -469,7 +589,7 @@ mod tests {
         let cursor = crate::inner::cursor_from_palette(&palette);
         let default_cursor = crate::inner::cursor_from_palette(&TerminalPalette::dark());
         assert_ne!(
-            format!("{:?}", cursor),
+            format!("{cursor:?}"),
             format!("{:?}", default_cursor),
             "cursor must follow the palette's fg_default"
         );
@@ -494,7 +614,10 @@ mod tests {
         assert!(widget.selection().is_some());
         send_left_release(&mut widget, &mut doc);
         // …and is cleared once the mouse comes back up with no drag.
-        assert!(widget.selection().is_none(), "lone click must clear selection on release");
+        assert!(
+            widget.selection().is_none(),
+            "lone click must clear selection on release"
+        );
         assert!(!widget.is_dragging());
     }
 
@@ -509,16 +632,32 @@ mod tests {
 
         // Padding is 4px → col k occupies x ∈ [4 + k*10, 4 + (k+1)*10).
         // Press at col 5, row 2.
-        send_cursor_move(&mut widget, &mut doc, 4.0 + 5.0 * 10.0 + 1.0, 2.0 * 20.0 + 1.0);
+        send_cursor_move(
+            &mut widget,
+            &mut doc,
+            4.0 + 5.0 * 10.0 + 1.0,
+            2.0 * 20.0 + 1.0,
+        );
         send_left_press(&mut widget, &mut doc);
         let sel0 = widget.selection().expect("selection present after press");
         assert_eq!(sel0.anchor, GridPos { row: 2, col: 5 });
         assert_eq!(sel0.cursor, GridPos { row: 2, col: 5 });
 
         // Drag to col 20, row 6.
-        send_cursor_move(&mut widget, &mut doc, 4.0 + 20.0 * 10.0 + 1.0, 6.0 * 20.0 + 1.0);
-        let sel1 = widget.selection().expect("selection still present mid-drag");
-        assert_eq!(sel1.anchor, GridPos { row: 2, col: 5 }, "anchor must NOT move during drag");
+        send_cursor_move(
+            &mut widget,
+            &mut doc,
+            4.0 + 20.0 * 10.0 + 1.0,
+            6.0 * 20.0 + 1.0,
+        );
+        let sel1 = widget
+            .selection()
+            .expect("selection still present mid-drag");
+        assert_eq!(
+            sel1.anchor,
+            GridPos { row: 2, col: 5 },
+            "anchor must NOT move during drag"
+        );
         assert_eq!(sel1.cursor, GridPos { row: 6, col: 20 });
 
         // Release: drag ends, but selection survives.
@@ -552,9 +691,9 @@ mod tests {
         assert_eq!(
             spans,
             vec![
-                (2, 5, 80),   // first: start..cols
-                (3, 0, 80),   // middle: all cols
-                (4, 0, 3),    // last: 0..end
+                (2, 5, 80), // first: start..cols
+                (3, 0, 80), // middle: all cols
+                (4, 0, 3),  // last: 0..end
             ]
         );
     }
@@ -587,7 +726,9 @@ mod tests {
             anchor: GridPos { row: 0, col: 0 },
             cursor: GridPos { row: 1, col: 28 },
         }));
-        let text = widget.test_selected_text().expect("selection produces text");
+        let text = widget
+            .test_selected_text()
+            .expect("selection produces text");
         assert_eq!(text, "hello world\nsecond line trailing space");
     }
 
@@ -601,7 +742,13 @@ mod tests {
         let mut doc = AutoCommit::new();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        send_key(&mut widget, &mut doc, Key::Character(SmolStr::new_static("c")), /*ctrl=*/ true, /*shift=*/ false);
+        send_key(
+            &mut widget,
+            &mut doc,
+            Key::Character(SmolStr::new_static("c")),
+            /*ctrl=*/ true,
+            /*shift=*/ false,
+        );
 
         let bytes = write_rx.try_recv().expect("Ctrl+C must write bytes to PTY");
         assert_eq!(bytes, vec![0x03], "Ctrl+C must send ETX (0x03) to the PTY");
@@ -621,7 +768,13 @@ mod tests {
             cursor: GridPos { row: 0, col: 5 },
         }));
 
-        send_key(&mut widget, &mut doc, Key::Character(SmolStr::new_static("c")), /*ctrl=*/ true, /*shift=*/ false);
+        send_key(
+            &mut widget,
+            &mut doc,
+            Key::Character(SmolStr::new_static("c")),
+            /*ctrl=*/ true,
+            /*shift=*/ false,
+        );
 
         let bytes = write_rx.try_recv().expect("Ctrl+C must still write to PTY");
         assert_eq!(bytes, vec![0x03]);
@@ -656,7 +809,13 @@ mod tests {
             cursor: GridPos { row: 1, col: 12 },
         }));
 
-        send_key(&mut widget, &mut doc, Key::Character(SmolStr::new_static("C")), /*ctrl=*/ true, /*shift=*/ true);
+        send_key(
+            &mut widget,
+            &mut doc,
+            Key::Character(SmolStr::new_static("C")),
+            /*ctrl=*/ true,
+            /*shift=*/ true,
+        );
 
         assert_eq!(
             ui::text_selection::clipboard_paste().as_deref(),
@@ -679,22 +838,34 @@ mod tests {
 
         let mut payload = Vec::new();
         for i in 0..60 {
-            payload.extend_from_slice(format!("LINE{:03}\r\n", i).as_bytes());
+            payload.extend_from_slice(format!("LINE{i:03}\r\n").as_bytes());
         }
         w.feed(&mut doc, &automerge::ROOT, &payload);
         w.sync(&mut doc, &automerge::ROOT);
 
         // Pinned to the bottom: newest lines visible, oldest not.
         let bottom = w.visible_lines();
-        assert!(bottom.iter().any(|l| l.contains("LINE059")), "bottom shows newest: {:?}", bottom);
-        assert!(!bottom.iter().any(|l| l.contains("LINE000")), "bottom hides oldest");
+        assert!(
+            bottom.iter().any(|l| l.contains("LINE059")),
+            "bottom shows newest: {bottom:?}"
+        );
+        assert!(
+            !bottom.iter().any(|l| l.contains("LINE000")),
+            "bottom hides oldest"
+        );
         assert_eq!(w.scroll_offset(), 0);
 
         // Scroll to the very top: oldest lines visible, newest not.
         w.scroll_to_top();
         let top = w.visible_lines();
-        assert!(top.iter().any(|l| l.contains("LINE000")), "top shows oldest: {:?}", top);
-        assert!(!top.iter().any(|l| l.contains("LINE059")), "top hides newest");
+        assert!(
+            top.iter().any(|l| l.contains("LINE000")),
+            "top shows oldest: {top:?}"
+        );
+        assert!(
+            !top.iter().any(|l| l.contains("LINE059")),
+            "top hides newest"
+        );
         assert!(w.scroll_offset() > 0);
 
         // Fresh PTY output must snap the viewport back to the bottom. Push it
@@ -703,7 +874,70 @@ mod tests {
         w.sync(&mut doc, &automerge::ROOT);
         assert_eq!(w.scroll_offset(), 0, "new output snaps to the live bottom");
         let after = w.visible_lines();
-        assert!(after.iter().any(|l| l.contains("LINE060")), "bottom shows freshest: {:?}", after);
+        assert!(
+            after.iter().any(|l| l.contains("LINE060")),
+            "bottom shows freshest: {after:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Scrollbar honesty — the gutter only claims travel that exists.
+    // `scrollbar_visible` is the predicate `draw_scrollbar` gates on, so
+    // these assert the production decision rather than a stand-in.
+    // ---------------------------------------------------------------
+
+    /// A session that has printed nothing draws no scrollbar, even though
+    /// its buffer is longer than the window showing it.
+    ///
+    /// This is the empty-terminal case on the desktop: a widget allocates a
+    /// full screen of blank rows the moment it exists, so `grid.len()`
+    /// exceeds the drawn viewport before a single byte of output has
+    /// arrived — and the old `grid.len() > visible_rows` test alone drew a
+    /// track and a thumb whose entire travel was blank rows.
+    #[test]
+    fn a_blank_buffer_taller_than_the_window_draws_no_scrollbar() {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+        // 20 never-written rows behind a 12-row viewport.
+        w.force_grid(vec![" ".repeat(80); 20]);
+        assert!(
+            !w.scrollbar_visible(12),
+            "20 blank rows behind a 12-row window is nothing to scroll to",
+        );
+    }
+
+    /// Once there is output above the viewport the bar comes back — the
+    /// guard must not have simply disabled the scrollbar.
+    #[test]
+    fn output_past_the_viewport_draws_a_scrollbar() {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+        w.force_grid((0..20).map(|i| format!("LINE{i:03}")).collect());
+        assert!(
+            w.scrollbar_visible(12),
+            "20 written rows behind a 12-row window is 8 rows of real travel",
+        );
+    }
+
+    /// Blank rows *below* the last output are not travel either: the screen
+    /// a session holds open under a short command is padding, not history.
+    #[test]
+    fn blank_rows_below_the_last_output_are_not_scrollable() {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+        let mut grid = vec![" ".repeat(80); 30];
+        for (i, row) in grid.iter_mut().take(4).enumerate() {
+            *row = format!("LINE{i:03}");
+        }
+        w.force_grid(grid);
+        assert!(
+            !w.scrollbar_visible(12),
+            "4 written rows in a 12-row window fit — the 26 blank rows \
+             behind them are not history",
+        );
     }
 
     /// Bulk output must stay linear. `print` batches a run of cells into one
@@ -770,7 +1004,9 @@ mod tests {
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
 
         let mut payload = Vec::new();
-        for i in 0..60 { payload.extend_from_slice(format!("L{:03}\r\n", i).as_bytes()); }
+        for i in 0..60 {
+            payload.extend_from_slice(format!("L{i:03}\r\n").as_bytes());
+        }
         w.feed(&mut doc, &automerge::ROOT, &payload);
         w.sync(&mut doc, &automerge::ROOT);
 
@@ -778,7 +1014,13 @@ mod tests {
         assert!(w.scroll_offset() > 0);
 
         // Typing a key that reaches the PTY must snap to the bottom.
-        send_key(&mut w, &mut doc, Key::Character(SmolStr::new_static("x")), false, false);
+        send_key(
+            &mut w,
+            &mut doc,
+            Key::Character(SmolStr::new_static("x")),
+            false,
+            false,
+        );
         assert_eq!(w.scroll_offset(), 0, "keystroke snaps to bottom");
     }
 
@@ -805,7 +1047,10 @@ mod tests {
         assert!(w.modes().bracketed_paste);
         w.paste("data");
         let got = drain_writes(&write_rx);
-        assert_eq!(got, b"\x1b[200~data\x1b[201~", "bracketed paste wraps the payload");
+        assert_eq!(
+            got, b"\x1b[200~data\x1b[201~",
+            "bracketed paste wraps the payload"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -831,8 +1076,15 @@ mod tests {
         w.sync(&mut doc, &automerge::ROOT);
         assert!(w.is_alt_screen(), "?1049h enters the alternate screen");
         // The alt buffer holds the redraw, and the main content is not in it.
-        assert!(w.grid_row(2).contains("TUI REDRAW"), "row 2 (1-based row 3): {:?}", w.grid_row(2));
-        assert!(!w.grid_row(0).contains("MAIN CONTENT"), "alt buffer is fresh");
+        assert!(
+            w.grid_row(2).contains("TUI REDRAW"),
+            "row 2 (1-based row 3): {:?}",
+            w.grid_row(2)
+        );
+        assert!(
+            !w.grid_row(0).contains("MAIN CONTENT"),
+            "alt buffer is fresh"
+        );
 
         // Leave the alternate screen — the main buffer must return intact.
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1049l");
@@ -843,7 +1095,10 @@ mod tests {
             "main content restored: {:?}",
             w.grid_row(0)
         );
-        assert!(!w.grid_row(2).contains("TUI REDRAW"), "alt redraw did not leak into main");
+        assert!(
+            !w.grid_row(2).contains("TUI REDRAW"),
+            "alt redraw did not leak into main"
+        );
     }
 
     #[test]
@@ -860,7 +1115,10 @@ mod tests {
 
         // Mouse reporting is parsed (not crashing) into the mode flags.
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1000h\x1b[?1006h");
-        assert!(w.modes().mouse_report && w.modes().mouse_sgr, "mouse modes stubbed but tracked");
+        assert!(
+            w.modes().mouse_report && w.modes().mouse_sgr,
+            "mouse modes stubbed but tracked"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -878,22 +1136,38 @@ mod tests {
         // Semicolon truecolor foreground.
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[38;2;10;20;30mA");
         w.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(w.cell_attr(0, 0).fg, CellColor::Rgb(10, 20, 30), "38;2 truecolor fg");
+        assert_eq!(
+            w.cell_attr(0, 0).fg,
+            CellColor::Rgb(10, 20, 30),
+            "38;2 truecolor fg"
+        );
 
         // Semicolon 256-indexed foreground.
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[38;5;196mB");
         w.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(w.cell_attr(0, 0).fg, CellColor::Indexed(196), "38;5 indexed fg");
+        assert_eq!(
+            w.cell_attr(0, 0).fg,
+            CellColor::Indexed(196),
+            "38;5 indexed fg"
+        );
 
         // Colon-subparam 256-indexed foreground (the xterm form apps emit).
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[38:5:214mC");
         w.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(w.cell_attr(0, 0).fg, CellColor::Indexed(214), "38:5 colon-form indexed fg");
+        assert_eq!(
+            w.cell_attr(0, 0).fg,
+            CellColor::Indexed(214),
+            "38:5 colon-form indexed fg"
+        );
 
         // Truecolor background.
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[48;2;5;6;7mD");
         w.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(w.cell_attr(0, 0).bg, CellColor::Rgb(5, 6, 7), "48;2 truecolor bg");
+        assert_eq!(
+            w.cell_attr(0, 0).bg,
+            CellColor::Rgb(5, 6, 7),
+            "48;2 truecolor bg"
+        );
     }
 
     #[test]
@@ -908,14 +1182,20 @@ mod tests {
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[1;3;4;7mW");
         w.sync(&mut doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
-        assert!(a.bold && a.italic && a.underline && a.reverse, "combined SGR style bits: {:?}", a);
+        assert!(
+            a.bold && a.italic && a.underline && a.reverse,
+            "combined SGR style bits: {a:?}"
+        );
 
         // A reset clears everything back to the default attribute.
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[0mN");
         w.sync(&mut doc, &automerge::ROOT);
         let b = w.cell_attr(0, 0);
         assert_eq!(b.fg, CellColor::Default);
-        assert!(!b.bold && !b.italic && !b.underline && !b.reverse, "SGR 0 resets style: {:?}", b);
+        assert!(
+            !b.bold && !b.italic && !b.underline && !b.reverse,
+            "SGR 0 resets style: {b:?}"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1001,15 +1281,19 @@ mod tests {
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[2;9mX");
         w.sync(&mut doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
-        assert!(a.dim, "SGR 2 sets faint: {:?}", a);
-        assert!(a.strike, "SGR 9 sets crossed-out: {:?}", a);
+        assert!(a.dim, "SGR 2 sets faint: {a:?}");
+        assert!(a.strike, "SGR 9 sets crossed-out: {a:?}");
 
         // SGR 22 clears both bold and faint; SGR 29 clears crossed-out.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[1;2;9mY\x1b[22;29mZ");
+        w.feed(
+            &mut doc,
+            &automerge::ROOT,
+            b"\x1b[H\x1b[1;2;9mY\x1b[22;29mZ",
+        );
         w.sync(&mut doc, &automerge::ROOT);
         let z = w.cell_attr(0, 1);
-        assert!(!z.dim && !z.bold, "SGR 22 clears bold+faint: {:?}", z);
-        assert!(!z.strike, "SGR 29 clears crossed-out: {:?}", z);
+        assert!(!z.dim && !z.bold, "SGR 22 clears bold+faint: {z:?}");
+        assert!(!z.strike, "SGR 29 clears crossed-out: {z:?}");
     }
 
     // ---------------------------------------------------------------
@@ -1018,91 +1302,194 @@ mod tests {
 
     #[test]
     fn ctrl_arrow_sends_modified_csi_for_word_motion() {
-        use winit::keyboard::{Key, NamedKey};
         use vello::kurbo::Rect;
+        use winit::keyboard::{Key, NamedKey};
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         w.feed(&mut doc, &automerge::ROOT, b""); // init modes
 
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowLeft), true, false, false);
-        assert_eq!(drain_writes(&rx), b"\x1b[1;5D", "Ctrl+Left = CSI 1;5D (word-left)");
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::ArrowLeft),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(
+            drain_writes(&rx),
+            b"\x1b[1;5D",
+            "Ctrl+Left = CSI 1;5D (word-left)"
+        );
 
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowRight), true, false, false);
-        assert_eq!(drain_writes(&rx), b"\x1b[1;5C", "Ctrl+Right = CSI 1;5C (word-right)");
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::ArrowRight),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(
+            drain_writes(&rx),
+            b"\x1b[1;5C",
+            "Ctrl+Right = CSI 1;5C (word-right)"
+        );
 
         // Shift+arrow (in-app selection) uses modifier param 2.
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowUp), false, true, false);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::ArrowUp),
+            false,
+            true,
+            false,
+        );
         assert_eq!(drain_writes(&rx), b"\x1b[1;2A", "Shift+Up = CSI 1;2A");
     }
 
     #[test]
     fn unmodified_arrow_respects_decckm_app_cursor_keys() {
-        use winit::keyboard::{Key, NamedKey};
         use vello::kurbo::Rect;
+        use winit::keyboard::{Key, NamedKey};
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Default (normal cursor keys) → CSI form.
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowUp), false, false, false);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::ArrowUp),
+            false,
+            false,
+            false,
+        );
         assert_eq!(drain_writes(&rx), b"\x1b[A", "default arrow = CSI A");
 
         // App turns on DECCKM; unmodified arrows now use SS3.
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1h");
         assert!(w.modes().app_cursor_keys);
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::ArrowUp), false, false, false);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::ArrowUp),
+            false,
+            false,
+            false,
+        );
         assert_eq!(drain_writes(&rx), b"\x1bOA", "DECCKM arrow = SS3 A");
     }
 
     #[test]
     fn function_keys_send_expected_sequences() {
-        use winit::keyboard::{Key, NamedKey};
         use vello::kurbo::Rect;
+        use winit::keyboard::{Key, NamedKey};
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::F1), false, false, false);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::F1),
+            false,
+            false,
+            false,
+        );
         assert_eq!(drain_writes(&rx), b"\x1bOP", "F1 = SS3 P");
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::F5), false, false, false);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::F5),
+            false,
+            false,
+            false,
+        );
         assert_eq!(drain_writes(&rx), b"\x1b[15~", "F5 = CSI 15~");
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::F10), false, false, false);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::F10),
+            false,
+            false,
+            false,
+        );
         assert_eq!(drain_writes(&rx), b"\x1b[21~", "F10 = CSI 21~");
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::F12), false, false, false);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::F12),
+            false,
+            false,
+            false,
+        );
         assert_eq!(drain_writes(&rx), b"\x1b[24~", "F12 = CSI 24~");
     }
 
     #[test]
     fn shift_tab_sends_back_tab() {
-        use winit::keyboard::{Key, NamedKey};
         use vello::kurbo::Rect;
+        use winit::keyboard::{Key, NamedKey};
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::Tab), false, false, false);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::Tab),
+            false,
+            false,
+            false,
+        );
         assert_eq!(drain_writes(&rx), b"\t", "plain Tab = HT");
-        send_key_mods(&mut w, &mut doc, Key::Named(NamedKey::Tab), false, true, false);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Named(NamedKey::Tab),
+            false,
+            true,
+            false,
+        );
         assert_eq!(drain_writes(&rx), b"\x1b[Z", "Shift+Tab = CSI Z (back-tab)");
     }
 
     #[test]
     fn alt_letter_sends_meta_escape_but_altgr_symbols_pass_through() {
-        use winit::keyboard::{Key, SmolStr};
         use vello::kurbo::Rect;
+        use winit::keyboard::{Key, SmolStr};
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Alt+f → ESC f (readline forward-word).
-        send_key_mods(&mut w, &mut doc, Key::Character(SmolStr::new_static("f")), false, false, true);
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Character(SmolStr::new_static("f")),
+            false,
+            false,
+            true,
+        );
         assert_eq!(drain_writes(&rx), b"\x1bf", "Alt+f = ESC f (Meta)");
 
         // AltGr on a German layout yields a composed *symbol* as the logical
         // key (e.g. '@'); Meta must NOT poach it — the symbol itself is sent.
-        send_key_mods(&mut w, &mut doc, Key::Character(SmolStr::new_static("@")), false, false, true);
-        assert_eq!(drain_writes(&rx), b"@", "AltGr-composed '@' passes through verbatim");
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Character(SmolStr::new_static("@")),
+            false,
+            false,
+            true,
+        );
+        assert_eq!(
+            drain_writes(&rx),
+            b"@",
+            "AltGr-composed '@' passes through verbatim"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1125,7 +1512,7 @@ mod tests {
         for _chunk in 0..3 {
             let mut payload = Vec::new();
             for _ in 0..50 {
-                payload.extend_from_slice(format!("ROW{:04}\r\n", emitted).as_bytes());
+                payload.extend_from_slice(format!("ROW{emitted:04}\r\n").as_bytes());
                 emitted += 1;
             }
             w.feed(&mut doc, &automerge::ROOT, &payload);
@@ -1165,17 +1552,24 @@ mod tests {
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
 
         let mut payload = Vec::new();
-        for i in 0..40 { payload.extend_from_slice(format!("BASE{:03}\r\n", i).as_bytes()); }
+        for i in 0..40 {
+            payload.extend_from_slice(format!("BASE{i:03}\r\n").as_bytes());
+        }
         w.feed(&mut doc, &automerge::ROOT, &payload);
         w.sync(&mut doc, &automerge::ROOT);
         assert!(w.grid_text().contains("BASE000"), "base content mirrored");
 
         // Edit line 0's text object directly (external mutation, no feed).
-        let grid_id = doc.get(&automerge::ROOT, "terminal_grid").unwrap().unwrap().1;
+        let grid_id = doc
+            .get(&automerge::ROOT, "terminal_grid")
+            .unwrap()
+            .unwrap()
+            .1;
         let line0 = doc.get(&grid_id, 0).unwrap().unwrap().1;
         let (_, text_id) = doc.get(&line0, "text").unwrap().unwrap();
         let len = doc.length(&text_id);
-        doc.splice_text(&text_id, 0, len as isize, "REMOTE_EDIT").unwrap();
+        doc.splice_text(&text_id, 0, len as isize, "REMOTE_EDIT")
+            .unwrap();
 
         w.sync(&mut doc, &automerge::ROOT);
         assert!(
@@ -1191,13 +1585,15 @@ mod tests {
 
     /// Send a left press with explicit modifiers (for shift-extend).
     fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift: bool) {
-        use winit::event::{WindowEvent, MouseButton, ElementState, Modifiers};
-        use winit::keyboard::ModifiersState;
         use ui::widget::Widget;
+        use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+        use winit::keyboard::ModifiersState;
         let mut handled = false;
         let mut focus = None;
         let mut state = ModifiersState::empty();
-        if shift { state |= ModifiersState::SHIFT; }
+        if shift {
+            state |= ModifiersState::SHIFT;
+        }
         let modifiers: Modifiers = state.into();
         let taffy = taffy::TaffyTree::<()>::new();
         let node = taffy::NodeId::new(0);
@@ -1206,13 +1602,23 @@ mod tests {
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        widget.handle_event(
+            &ev,
+            1.0,
+            &modifiers,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     /// Send a middle-button press (primary-selection paste).
     fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-        use winit::event::{WindowEvent, MouseButton, ElementState, Modifiers};
         use ui::widget::Widget;
+        use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
         let mut handled = false;
         let mut focus = None;
         let modifiers = Modifiers::default();
@@ -1223,12 +1629,24 @@ mod tests {
             state: ElementState::Pressed,
             button: MouseButton::Middle,
         };
-        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        widget.handle_event(
+            &ev,
+            1.0,
+            &modifiers,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     /// Logical x for the centre of grid column `col` given `char_w=10`,
     /// `padding=4` (the widget's default gutter).
-    fn col_center_x(col: usize) -> f64 { 4.0 + col as f64 * 10.0 + 5.0 }
+    fn col_center_x(col: usize) -> f64 {
+        4.0 + col as f64 * 10.0 + 5.0
+    }
 
     #[test]
     #[serial_test::serial]
@@ -1295,7 +1713,11 @@ mod tests {
         send_left_press(&mut w, &mut doc);
         send_cursor_move(&mut w, &mut doc, col_center_x(5), 10.0);
         send_left_release(&mut w, &mut doc);
-        assert_eq!(w.test_selected_text().as_deref(), Some("llo"), "initial drag selection");
+        assert_eq!(
+            w.test_selected_text().as_deref(),
+            Some("llo"),
+            "initial drag selection"
+        );
 
         // Shift+click at col 10 extends the caret, anchor pinned at col 2.
         send_cursor_move(&mut w, &mut doc, col_center_x(10), 10.0);
@@ -1319,7 +1741,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0); // 12 visible rows
         // A deterministic 20-row buffer; row 5 carries a distinctive word.
-        let mut grid: Vec<String> = (0..20).map(|i| format!("row{:02} filler text", i)).collect();
+        let mut grid: Vec<String> = (0..20).map(|i| format!("row{i:02} filler text")).collect();
         grid[5] = "alpha bravo charlie".to_string();
         w.force_grid(grid);
         // Simulate the draw having scrolled so row 5 is the top visible row.
@@ -1331,12 +1753,19 @@ mod tests {
         send_left_press(&mut w, &mut doc);
         send_left_release(&mut w, &mut doc);
         send_left_press(&mut w, &mut doc); // word
-        assert_eq!(w.test_selected_text().as_deref(), Some("bravo"), "selected the right word");
+        assert_eq!(
+            w.test_selected_text().as_deref(),
+            Some("bravo"),
+            "selected the right word"
+        );
         send_left_release(&mut w, &mut doc); // finish → primary (+ clipboard: select_to_copy)
 
         // The selection lives on absolute row 5.
         let sel = w.selection().expect("selection present");
-        assert_eq!(sel.anchor.row, 5, "selection anchored to absolute buffer row 5");
+        assert_eq!(
+            sel.anchor.row, 5,
+            "selection anchored to absolute buffer row 5"
+        );
 
         // "Scroll": move the viewport elsewhere. The selected text must not move.
         w.force_viewport_start(0);
@@ -1377,7 +1806,9 @@ mod tests {
         // when unavailable so headless CI doesn't flake.
         ui::clipboard_copy_primary("PASTED");
         if ui::clipboard_paste_primary().as_deref() != Some("PASTED") {
-            eprintln!("middle_click_pastes_primary_selection: no primary selection backend, skipping");
+            eprintln!(
+                "middle_click_pastes_primary_selection: no primary selection backend, skipping"
+            );
             return;
         }
         let (mut w, write_rx) = build_test_widget();
@@ -1387,7 +1818,10 @@ mod tests {
         send_cursor_move(&mut w, &mut doc, 100.0, 100.0);
         send_middle_press(&mut w, &mut doc);
         let got = drain_writes(&write_rx);
-        assert_eq!(got, b"PASTED", "middle-click pastes the primary selection to the PTY");
+        assert_eq!(
+            got, b"PASTED",
+            "middle-click pastes the primary selection to the PTY"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1428,7 +1862,10 @@ mod tests {
         a.feed(&mut doc_a, &automerge::ROOT, b"peer-a-line-two\r\n");
         a.sync(&mut doc_a, &automerge::ROOT);
         let delta = doc_a.save_incremental();
-        assert!(!delta.is_empty(), "A produced an incremental change to share");
+        assert!(
+            !delta.is_empty(),
+            "A produced an incremental change to share"
+        );
         doc_b.load_incremental(&delta).unwrap();
         b.sync(&mut doc_b, &automerge::ROOT);
         assert!(
@@ -1461,12 +1898,15 @@ mod tests {
 
         let ka = a.presence_key().expect("A presence key");
         let kb = b.presence_key().expect("B presence key");
-        assert_eq!(ka, kb, "both peers scope presence under the same shared pane id");
+        assert_eq!(
+            ka, kb,
+            "both peers scope presence under the same shared pane id"
+        );
         match ka {
             PresenceKey::App { app, .. } => {
                 assert_eq!(app, ui::permissions::AppKind::Terminal);
             }
-            other => panic!("expected App presence key, got {:?}", other),
+            other => panic!("expected App presence key, got {other:?}"),
         }
     }
 
@@ -1490,13 +1930,16 @@ mod tests {
             PresencePayload::Selection { start, end } => {
                 assert_eq!((start, end), (2, 5), "selection linearised to cell columns");
             }
-            other => panic!("expected Selection payload, got {:?}", other),
+            other => panic!("expected Selection payload, got {other:?}"),
         }
 
         // Without a selection, the payload is a Caret at the cursor.
         w.force_selection(None);
         let (_key, payload) = w.presence_payload().expect("payload with cursor");
-        assert!(matches!(payload, PresencePayload::Caret { .. }), "cursor payload");
+        assert!(
+            matches!(payload, PresencePayload::Caret { .. }),
+            "cursor payload"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1511,7 +1954,11 @@ mod tests {
         // OSC 2 ; <title> BEL
         w.feed(&mut doc, &automerge::ROOT, b"\x1b]2;my session\x07");
         assert_eq!(w.title(), "my session", "OSC 2 sets the window title");
-        assert_eq!(w.app_title(), "my session", "app_title reflects the OSC title");
+        assert_eq!(
+            w.app_title(),
+            "my session",
+            "app_title reflects the OSC title"
+        );
 
         // OSC 0 (icon + title) also sets it; ST-terminated form.
         w.feed(&mut doc, &automerge::ROOT, b"\x1b]0;another\x1b\\");
@@ -1522,7 +1969,11 @@ mod tests {
         let (mut peer, _) = build_test_widget();
         let mut peer_doc = AutoCommit::load(&doc.save()).unwrap();
         peer.sync(&mut peer_doc, &automerge::ROOT);
-        assert_eq!(peer.title(), "another", "a collaborator sees the same title");
+        assert_eq!(
+            peer.title(),
+            "another",
+            "a collaborator sees the same title"
+        );
     }
 
     #[test]
@@ -1573,7 +2024,11 @@ mod tests {
             Some("https://qos.example/docs"),
             "last link cell resolves to the URL"
         );
-        assert_eq!(w.hyperlink_at(0, 10), None, "cells outside the link have no URL");
+        assert_eq!(
+            w.hyperlink_at(0, 10),
+            None,
+            "cells outside the link have no URL"
+        );
 
         // A peer on the same doc resolves the same hyperlink.
         let (mut peer, _) = build_test_widget();
@@ -1605,7 +2060,10 @@ mod tests {
         let gr = w.grid_rect();
         assert!(gr.y0 > 0.0, "grid top inset by body padding: {gr:?}");
         assert!(gr.x0 > 0.0, "grid left inset by body padding: {gr:?}");
-        assert!(gr.x1 < 1000.0, "grid right inset by padding + scrollbar gutter: {gr:?}");
+        assert!(
+            gr.x1 < 1000.0,
+            "grid right inset by padding + scrollbar gutter: {gr:?}"
+        );
         assert!(gr.y1 < 640.0, "grid bottom inset by body padding: {gr:?}");
         // The top+bottom padding genuinely reduces the usable rows vs. a
         // full-rect fit.
@@ -1647,7 +2105,9 @@ mod tests {
         let gr = w.grid_rect();
         send_cursor_move(&mut w, &mut doc, gr.x0 + 30.0, gr.y0 + 20.0);
         send_left_press(&mut w, &mut doc);
-        let sel = w.selection().expect("press inside the grid begins a selection");
+        let sel = w
+            .selection()
+            .expect("press inside the grid begins a selection");
         let (cols, _rows) = w.grid_size();
         assert!(sel.anchor.col < cols, "mapped column within grid width");
         assert!(
@@ -1683,7 +2143,11 @@ mod tests {
         let (mut w, write_rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[0c");
-        assert_eq!(drain_writes(&write_rx), b"\x1b[?62;22c", "CSI 0 c is DA1 too");
+        assert_eq!(
+            drain_writes(&write_rx),
+            b"\x1b[?62;22c",
+            "CSI 0 c is DA1 too"
+        );
     }
 
     #[test]
@@ -1691,7 +2155,11 @@ mod tests {
         let (mut w, write_rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.feed(&mut doc, &automerge::ROOT, b"\x1bZ");
-        assert_eq!(drain_writes(&write_rx), b"\x1b[?62;22c", "ESC Z (DECID) is a DA1 request");
+        assert_eq!(
+            drain_writes(&write_rx),
+            b"\x1b[?62;22c",
+            "ESC Z (DECID) is a DA1 request"
+        );
     }
 
     #[test]
@@ -1751,7 +2219,11 @@ mod tests {
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[>0q");
         let got = drain_writes(&write_rx);
         let expected = format!("\x1bP>|qos-terminal({})\x1b\\", env!("CARGO_PKG_VERSION"));
-        assert_eq!(got, expected.as_bytes(), "XTVERSION (CSI > 0 q) names + versions the terminal");
+        assert_eq!(
+            got,
+            expected.as_bytes(),
+            "XTVERSION (CSI > 0 q) names + versions the terminal"
+        );
     }
 
     #[test]
@@ -1831,7 +2303,10 @@ mod tests {
     #[test]
     fn resolve_login_shell_prefers_shell_env() {
         assert_eq!(
-            crate::inner::resolve_login_shell_with(Some("/usr/bin/fish".into()), Some("/bin/bash".into())),
+            crate::inner::resolve_login_shell_with(
+                Some("/usr/bin/fish".into()),
+                Some("/bin/bash".into())
+            ),
             "/usr/bin/fish",
             "$SHELL wins when it is set and non-empty"
         );
@@ -1846,7 +2321,10 @@ mod tests {
         );
         // An empty $SHELL is treated as unset and also falls through to passwd.
         assert_eq!(
-            crate::inner::resolve_login_shell_with(Some(String::new()), Some("/usr/bin/zsh".into())),
+            crate::inner::resolve_login_shell_with(
+                Some(String::new()),
+                Some("/usr/bin/zsh".into())
+            ),
             "/usr/bin/zsh",
         );
     }
@@ -1878,20 +2356,23 @@ mod tests {
         // The real resolver: when $SHELL is set (as it is in an interactive
         // session), spawn_default launches exactly that shell. We assert on the
         // resolver the spawn path calls, not a reimplementation.
-        if let Ok(shell) = std::env::var("SHELL") {
-            if !shell.is_empty() {
-                assert_eq!(
-                    crate::inner::resolve_login_shell(),
-                    shell,
-                    "spawn_default's shell resolution must honour $SHELL"
-                );
-                return;
-            }
+        if let Ok(shell) = std::env::var("SHELL")
+            && !shell.is_empty()
+        {
+            assert_eq!(
+                crate::inner::resolve_login_shell(),
+                shell,
+                "spawn_default's shell resolution must honour $SHELL"
+            );
+            return;
         }
         // No $SHELL in this environment: the resolver must still yield an
         // absolute shell path from passwd (or /bin/sh), never an empty string.
         let resolved = crate::inner::resolve_login_shell();
-        assert!(resolved.starts_with('/'), "resolved shell must be absolute, got {resolved:?}");
+        assert!(
+            resolved.starts_with('/'),
+            "resolved shell must be absolute, got {resolved:?}"
+        );
     }
 
     #[test]
@@ -1996,12 +2477,15 @@ mod tests {
         // of the inputs an app could influence (a present runtime, a host that
         // *could* self-host) can force best-effort. On qOS the service is what
         // the launcher provides, so this is "best-effort can't be forced on qOS".
-        use crate::inner::{decide_route, ConfineRoute};
+        use crate::inner::{ConfineRoute, decide_route};
         use std::path::PathBuf;
         let bin = PathBuf::from("/usr/libexec/qos-ush");
         assert_eq!(decide_route(true, false, None), ConfineRoute::Service);
         assert_eq!(decide_route(true, true, None), ConfineRoute::Service);
-        assert_eq!(decide_route(true, false, Some(bin.clone())), ConfineRoute::Service);
+        assert_eq!(
+            decide_route(true, false, Some(bin.clone())),
+            ConfineRoute::Service
+        );
         assert_eq!(decide_route(true, true, Some(bin)), ConfineRoute::Service);
     }
 
@@ -2011,11 +2495,14 @@ mod tests {
         // isn't available: no runtime, OR a runtime that could only fail because
         // this host can't build a namespace. The latter is the fix for the wall
         // of ush errors — we don't launch the runtime where it can't succeed.
-        use crate::inner::{decide_route, ConfineRoute};
+        use crate::inner::{ConfineRoute, decide_route};
         use std::path::PathBuf;
         let bin = PathBuf::from("/usr/libexec/qos-ush");
         // Can't self-host → best-effort even though the runtime is installed.
-        assert_eq!(decide_route(false, false, Some(bin.clone())), ConfineRoute::BestEffort);
+        assert_eq!(
+            decide_route(false, false, Some(bin.clone())),
+            ConfineRoute::BestEffort
+        );
         // No runtime at all → best-effort (the plain-distro case).
         assert_eq!(decide_route(false, false, None), ConfineRoute::BestEffort);
         assert_eq!(decide_route(false, true, None), ConfineRoute::BestEffort);
@@ -2037,18 +2524,24 @@ mod tests {
 
         let mut fds = [0i32; 2];
         // SAFETY: standard socketpair FFI; `fds` is written on success.
-        let rc = unsafe {
-            libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr())
-        };
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
         assert_eq!(rc, 0, "socketpair for a live test fd");
 
         // SAFETY (env): serialised via `#[serial]`; no other thread reads this
         // var concurrently. `set_var`/`remove_var` are `unsafe` in edition 2024.
         unsafe { std::env::set_var("QOS_SVC_USH_FD", fds[0].to_string()) };
-        assert_eq!(ush_service_fd(), Some(fds[0]), "an open descriptor is the service");
+        assert_eq!(
+            ush_service_fd(),
+            Some(fds[0]),
+            "an open descriptor is the service"
+        );
 
         unsafe { std::env::set_var("QOS_SVC_USH_FD", "999999") };
-        assert_eq!(ush_service_fd(), None, "a closed descriptor is not the service");
+        assert_eq!(
+            ush_service_fd(),
+            None,
+            "a closed descriptor is not the service"
+        );
 
         unsafe { std::env::set_var("QOS_SVC_USH_FD", "not-a-number") };
         assert_eq!(ush_service_fd(), None, "garbage is not the service");
@@ -2071,8 +2564,8 @@ mod tests {
     #[serial_test::serial]
     fn selection_highlight_is_produced_synchronously_on_drag() {
         use ui::widget::Widget;
-        use winit::event::{Modifiers, WindowEvent};
         use winit::dpi::PhysicalPosition;
+        use winit::event::{Modifiers, WindowEvent};
 
         let (mut widget, _) = build_test_widget();
         let mut doc = AutoCommit::new();
@@ -2096,8 +2589,15 @@ mod tests {
             position: PhysicalPosition::new(4.0 + 20.0 * 10.0 + 1.0, 20.0 + 1.0),
         };
         widget.handle_event(
-            &ev, 1.0, &modifiers, &mut doc, &automerge::ROOT,
-            &mut handled, &mut focus, node, &taffy,
+            &ev,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
 
         // The highlight span exists in the SAME event that moved the pointer —
@@ -2121,8 +2621,8 @@ mod tests {
         // may now skip the full `doc.save()` + broadcast when nothing changed.
         // This proves the signal it keys on — an empty transaction reports no
         // change; a real edit reports one.
+        use automerge::{ROOT, transaction::Transactable};
         use ui::State;
-        use automerge::{transaction::Transactable, ROOT};
 
         let mut state = State::new();
         // Flush any ops the constructor might have left pending, so the sequence
@@ -2150,26 +2650,46 @@ mod tests {
 
     #[test]
     fn terminal_palette_tracks_the_theme_not_a_hardcoded_green_on_black() {
-        use ui::theme::Theme;
         use ui::ColorCompat;
+        use ui::theme::Theme;
         let rgb = |c: vello::peniko::Color| (c.r(), c.g(), c.b());
 
         // Default dark theme: graphite ground, near-white text — never the old
         // pure-black / green-400 scheme.
         let dark = Theme::dark();
         let p = &dark.tokens.terminal_palette;
-        assert_eq!(rgb(p.bg_default), rgb(dark.bg_app), "terminal bg is the theme ground");
-        assert_eq!(rgb(p.fg_default), rgb(dark.text_primary), "terminal fg is the theme text");
-        assert_ne!(rgb(p.bg_default), (0, 0, 0), "bg must not be the old pure black");
-        assert_ne!(rgb(p.fg_default), (0x4a, 0xde, 0x80), "fg must not be the old green-400");
+        assert_eq!(
+            rgb(p.bg_default),
+            rgb(dark.bg_app),
+            "terminal bg is the theme ground"
+        );
+        assert_eq!(
+            rgb(p.fg_default),
+            rgb(dark.text_primary),
+            "terminal fg is the theme text"
+        );
+        assert_ne!(
+            rgb(p.bg_default),
+            (0, 0, 0),
+            "bg must not be the old pure black"
+        );
+        assert_ne!(
+            rgb(p.fg_default),
+            (0x4a, 0xde, 0x80),
+            "fg must not be the old green-400"
+        );
 
         // Light theme: fg/bg follow that theme's (much lighter) ground.
         let light = Theme::light();
         let lp = &light.tokens.terminal_palette;
-        assert_eq!(rgb(lp.bg_default), rgb(light.bg_app), "light terminal bg is that theme's ground");
+        assert_eq!(
+            rgb(lp.bg_default),
+            rgb(light.bg_app),
+            "light terminal bg is that theme's ground"
+        );
         let (r, g, b) = rgb(lp.bg_default);
         assert!(
-            r as u32 + g as u32 + b as u32 > 360,
+            u32::from(r) + u32::from(g) + u32::from(b) > 360,
             "the light terminal ground must actually be light, got {:?}",
             (r, g, b)
         );
@@ -2177,9 +2697,25 @@ mod tests {
         // The ANSI ramp is anchored to the theme's own colours, and stays
         // internally distinct (blue and cyan must not collapse together).
         let c = &dark.tokens.colors;
-        assert_eq!(rgb(p.ansi[1]), rgb(c.semantic.danger), "ANSI red = theme danger");
-        assert_eq!(rgb(p.ansi[2]), rgb(c.semantic.success), "ANSI green = theme success");
-        assert_eq!(rgb(p.ansi[3]), rgb(c.semantic.warning), "ANSI yellow = theme warning");
-        assert_ne!(rgb(p.ansi[4]), rgb(p.ansi[6]), "blue and cyan stay distinct");
+        assert_eq!(
+            rgb(p.ansi[1]),
+            rgb(c.semantic.danger),
+            "ANSI red = theme danger"
+        );
+        assert_eq!(
+            rgb(p.ansi[2]),
+            rgb(c.semantic.success),
+            "ANSI green = theme success"
+        );
+        assert_eq!(
+            rgb(p.ansi[3]),
+            rgb(c.semantic.warning),
+            "ANSI yellow = theme warning"
+        );
+        assert_ne!(
+            rgb(p.ansi[4]),
+            rgb(p.ansi[6]),
+            "blue and cyan stay distinct"
+        );
     }
 }

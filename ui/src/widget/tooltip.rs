@@ -1,26 +1,7 @@
 //! `Tooltip` primitive — a small label revealed after a short hover delay.
 //!
-//! Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` — Phase A
-//! step 15 (`ContextMenu`, `Tooltip`, `Toast` primitives landed with their
-//! first shell consumer). See also the interaction summary under *Hover →
-//! tooltip, with a small reveal delay*.
-//!
-//! This landing (plan task **T8**) provides the primitive's timing contract
-//! only — input routing (hit-test against an anchor rect, dismiss-on-leave
-//! from the pointer layer) is wired alongside the first shell consumer.
-//!
-//! The primitive exposes:
-//! - `Tooltip::new(label)` with the default 600ms reveal delay.
-//! - `with_delay(Duration)` to override the delay (e.g. tighter feedback in
-//!   quickly-explored surfaces such as the topbar).
-//! - `on_hover_enter(Duration)` / `on_hover_leave()` — pointer lifecycle.
-//! - `tick(Duration)` — advance time; flip visibility once the accumulated
-//!   hover duration crosses the delay.
-//! - `is_visible()` — current visibility state for the renderer / consumer.
-//!
-//! The `Widget` impl draws the label inside a raised-surface popover with a
-//! standard border, using `Theme::tokens` (no hard-coded styling). The
-//! widget hides itself when `!is_visible()`.
+//! `on_hover_enter`/`on_hover_leave`/`tick` drive the timing state so the
+//! primitive is unit-testable without a winit event loop or a real clock.
 
 use automerge::{AutoCommit, ObjId};
 use std::time::{Duration, Instant};
@@ -31,46 +12,31 @@ use vello::peniko::Color;
 use winit::event::WindowEvent;
 
 use crate::color_compat::ColorCompat;
+use crate::widget::TaffyTreeExt;
 
-/// Recommended hover-dwell before a tooltip reveals itself. Sits in the
-/// middle of the 400–600 ms comfort band so a deliberate hover shows help
-/// promptly while a pointer merely passing over a control does not.
+/// Middle of the 400-600ms comfort band: shows help promptly on a
+/// deliberate hover without firing on a pointer merely passing through.
 pub const HOVER_DWELL: Duration = Duration::from_millis(500);
 
-// Chip geometry. The chip sizes to its label rather than a fixed width, so a
-// one-word tooltip ("Search") is a tight pill and a longer one ("View
-// options") still fits without truncation.
 const CHIP_PAD_X: f64 = 9.0;
 const CHIP_PAD_Y: f64 = 5.0;
 const CHIP_MIN_H: f64 = 24.0;
-/// Gap between the anchored control and the chip.
 const CHIP_GAP: f64 = 6.0;
-/// Keep-away margin from the viewport edges when clamping.
 const CHIP_MARGIN: f64 = 6.0;
 /// Hard cap so a pathological label can't paint a chip wider than the window.
 const CHIP_MAX_W: f64 = 320.0;
 
-/// Measure the chip box (outer width, height) for `label` at `text_size`.
-/// The width is the measured text plus horizontal padding, capped at
-/// [`CHIP_MAX_W`]; the height is the text plus vertical padding, floored at a
-/// comfortable minimum so a single-line chip never looks pinched.
 pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, text_size: f32) -> (f64, f64) {
     let (tw, _th) = text_renderer.measure(label, text_size, None);
-    let w = (tw as f64 + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
-    let h = (text_size as f64 + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
+    let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
+    let h = (f64::from(text_size) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
     (w, h)
 }
 
-/// Position a chip of `size` near `anchor`, kept inside `viewport`.
-///
-/// Preferred placement is centred just below the anchor. If that would spill
-/// past the bottom edge the chip flips above the anchor; if neither side has
-/// room it clamps to the bottom edge. Horizontally the chip is clamped into
-/// `[viewport.x0 + margin, viewport.x1 - margin]`, so a control at the far
-/// right edge gets a chip that hugs the edge instead of painting off-screen.
-///
-/// Pure geometry — no theme, no clock — so the flip/clamp behaviour is unit
-/// tested directly against explicit bounds.
+/// Preferred placement is centred just below the anchor; flips above if
+/// that would spill past the bottom edge, and clamps to the bottom edge if
+/// neither side has room. Clamped horizontally too, so a control at the
+/// far edge gets a chip that hugs it instead of painting off-screen.
 pub fn chip_rect(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
     let (w, h) = size;
     // Horizontal: centre under the anchor, then clamp within the viewport.
@@ -93,13 +59,8 @@ pub fn chip_rect(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
-/// Paint the tooltip chip: a soft drop shadow, an opaque themed surface, a
-/// hairline border and the label. `rect` is the already-positioned chip box
-/// (see [`chip_rect`]); `label` is the resolved, display-ready text.
-///
-/// The surface is `surfaces.overlay` — the same opaque tier the context menu
-/// and dropdown use — so the chip never bleeds the content beneath it, in
-/// either theme. All colours come from the `Theme`; nothing is hard-coded.
+/// `surfaces.overlay` — the same opaque tier the context menu and dropdown
+/// use — so the chip never bleeds the content beneath it, in either theme.
 pub fn draw_chip(
     scene: &mut Scene,
     transform: Affine,
@@ -108,15 +69,14 @@ pub fn draw_chip(
     rect: Rect,
     label: &str,
 ) {
-    let radius = theme.tokens.radii.sm as f64;
+    let radius = f64::from(theme.tokens.radii.sm);
 
-    // Soft drop shadow. Vello has no blur primitive on this path, so two
-    // stacked translucent copies offset downward fake a soft shadow, tinted
-    // from the elevation token so it tracks light/dark.
+    // Vello has no blur primitive on this path, so two stacked translucent
+    // copies offset downward fake a soft shadow.
     let elev = &theme.tokens.elevation.e2;
     let base = elev.color;
     for (inflate, dy, alpha_scale) in [(3.0_f64, 5.0_f64, 0.5_f32), (1.0, 2.0, 1.0)] {
-        let a = (base.a() as f32 * alpha_scale).round() as u8;
+        let a = (f32::from(base.a()) * alpha_scale).round() as u8;
         let col = Color::from_rgba8(base.r(), base.g(), base.b(), a);
         let sr = Rect::new(
             rect.x0 - inflate,
@@ -150,7 +110,7 @@ pub fn draw_chip(
     );
 
     let text_size = theme.tokens.typography.scale.sm;
-    let text_y = rect.y0 + (rect.height() - text_size as f64) / 2.0;
+    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -161,10 +121,8 @@ pub fn draw_chip(
     );
 }
 
-/// Measure, position (flip/clamp inside `viewport`) and paint a hover tooltip
-/// for `label` anchored to `anchor`. This is the one call the central
-/// [`TooltipHost`] (and any consumer holding an anchor rect) uses to render a
-/// tooltip; it composes [`chip_size`], [`chip_rect`] and [`draw_chip`].
+/// Composes [`chip_size`], [`chip_rect`] and [`draw_chip`] — the one call
+/// [`TooltipHost`] uses to render a tooltip.
 pub fn draw_hover_tooltip(
     scene: &mut Scene,
     transform: Affine,
@@ -185,33 +143,20 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// Default delay before a hovered tooltip reveals itself.
 pub const DEFAULT_DELAY: Duration = Duration::from_millis(600);
 
-/// Hover-revealed label with a configurable reveal delay.
-///
-/// Owns only its label, timing state and rendered rect. Pointer routing is
-/// driven by the caller via [`Tooltip::on_hover_enter`], [`Tooltip::tick`]
-/// and [`Tooltip::on_hover_leave`] so the primitive is unit-testable without
-/// a winit event loop or a real clock.
 pub struct Tooltip {
     label: String,
     delay: Duration,
     /// `Some(accumulated)` while a hover is in progress, `None` when the
-    /// pointer is not over the anchor. Accumulated hover time is measured
-    /// in elapsed `tick` durations plus the initial `on_hover_enter`
-    /// seed (usually zero).
+    /// pointer is not over the anchor.
     elapsed: Option<Duration>,
     is_visible: bool,
     rect: Rect,
-    /// Anchor rect the pointer must be over to trigger the tooltip. When
-    /// set, `handle_event` self-routes hover enter/leave and positions the
-    /// popover beside the anchor. `Rect::ZERO` leaves the widget driven
-    /// purely by the explicit `on_hover_*`/`tick` API (the test path).
+    /// When set, `handle_event` self-routes hover enter/leave. `Rect::ZERO`
+    /// leaves the widget driven purely by the explicit `on_hover_*`/`tick`
+    /// API (the test path).
     anchor: Rect,
-    /// Wall-clock hover start, used so the reveal works in a live event
-    /// loop without an external `tick` pump (frames are kept coming via
-    /// `needs_animation_frame`).
     hover_since: Option<Instant>,
 }
 
@@ -227,7 +172,6 @@ impl std::fmt::Debug for Tooltip {
 }
 
 impl Tooltip {
-    /// Build a tooltip with the given label and the default 600ms delay.
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -240,52 +184,49 @@ impl Tooltip {
         }
     }
 
-    /// Override the reveal delay.
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = delay;
         self
     }
 
-    /// Set the anchor rect the pointer must hover to reveal the tooltip.
     /// Enables self-routing in `handle_event`.
     pub fn with_anchor(mut self, anchor: Rect) -> Self {
         self.anchor = anchor;
         self
     }
 
-    /// Update the anchor rect (e.g. each frame as the anchored widget moves).
     pub fn set_anchor(&mut self, anchor: Rect) {
         self.anchor = anchor;
     }
 
-    /// The current label shown when visible.
-    pub fn label(&self) -> &str { &self.label }
+    pub fn label(&self) -> &str {
+        &self.label
+    }
 
-    /// The configured reveal delay.
-    pub fn delay(&self) -> Duration { self.delay }
+    pub fn delay(&self) -> Duration {
+        self.delay
+    }
 
-    /// `true` once the hover has persisted longer than the configured delay.
-    pub fn is_visible(&self) -> bool { self.is_visible }
+    pub fn is_visible(&self) -> bool {
+        self.is_visible
+    }
 
-    /// Begin (or restart) a hover. `initial` seeds the accumulator so a
-    /// pointer that has already been hovering for some time can be resumed
-    /// without losing that elapsed duration (tests pass `Duration::ZERO`).
+    /// `initial` seeds the accumulator so a pointer already hovering can be
+    /// resumed without losing that elapsed duration (tests pass `Duration::ZERO`).
     pub fn on_hover_enter(&mut self, initial: Duration) {
         self.elapsed = Some(initial);
         self.is_visible = initial >= self.delay;
     }
 
-    /// End a hover. Hides the tooltip and clears the accumulator.
     pub fn on_hover_leave(&mut self) {
         self.elapsed = None;
         self.is_visible = false;
     }
 
-    /// Advance time. Does nothing when no hover is in progress.
-    /// Flips `is_visible` to `true` once the accumulated hover crosses the
-    /// delay threshold.
     pub fn tick(&mut self, dt: Duration) {
-        let Some(e) = self.elapsed.as_mut() else { return };
+        let Some(e) = self.elapsed.as_mut() else {
+            return;
+        };
         *e = e.saturating_add(dt);
         if *e >= self.delay {
             self.is_visible = true;
@@ -310,26 +251,24 @@ impl Widget for Tooltip {
         } else {
             (0.0, 0.0)
         };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(w),
+                height: Dimension::length(h),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -341,20 +280,20 @@ impl Widget for Tooltip {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Wall-clock reveal: once the hover outlasts the delay, show it.
-        if let Some(since) = self.hover_since {
-            if !self.is_visible && since.elapsed() >= self.delay {
-                self.is_visible = true;
-            }
+        if let Some(since) = self.hover_since
+            && !self.is_visible
+            && since.elapsed() >= self.delay
+        {
+            self.is_visible = true;
         }
-        if !self.is_visible { return; }
+        if !self.is_visible {
+            return;
+        }
 
         let text_size = theme.tokens.typography.scale.sm;
         let size = chip_size(&self.label, text_renderer, text_size);
-        // When anchored, float the chip near the anchor, flipped/clamped to
-        // stay on-screen. The viewport is the active draw viewport when one is
-        // set (the App pushes the window bounds), else a generous fallback so
-        // the unclamped chip still renders in bare test harnesses.
+        // Generous fallback so an unclamped chip still renders in bare test
+        // harnesses that never push a viewport.
         let viewport = presence
             .viewport
             .get()
@@ -362,7 +301,14 @@ impl Widget for Tooltip {
         if self.anchor != Rect::ZERO {
             self.rect = chip_rect(self.anchor, size, viewport);
         }
-        draw_chip(scene, transform, text_renderer, theme, self.rect, &self.label);
+        draw_chip(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            &self.label,
+        );
     }
 
     fn handle_event(
@@ -377,8 +323,8 @@ impl Widget for Tooltip {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // Self-route hover from the anchor rect when one is set. Without an
-        // anchor the widget stays driven by the explicit on_hover_*/tick API.
+        // Without an anchor the widget stays driven by the explicit
+        // on_hover_*/tick API.
         if self.anchor == Rect::ZERO {
             return;
         }
@@ -394,36 +340,35 @@ impl Widget for Tooltip {
                     self.hover_since = None;
                 }
             }
-            // A click, scroll or keypress dismisses the tooltip immediately —
-            // the user has moved on from "what is this?" to acting, and a
-            // lingering chip would obscure the result.
+            // A click, scroll or keypress dismisses immediately — the user
+            // has moved on to acting, and a lingering chip would obscure it.
             WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. }
-            | WindowEvent::KeyboardInput { .. } => {
-                if self.hover_since.is_some() {
-                    self.on_hover_leave();
-                    self.hover_since = None;
-                }
+            | WindowEvent::KeyboardInput { .. }
+                if self.hover_since.is_some() =>
+            {
+                self.on_hover_leave();
+                self.hover_since = None;
             }
             _ => {}
         }
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming during the reveal delay so the wall-clock
-        // path can flip `is_visible` in `draw` without an external tick.
         self.hover_since.is_some() && !self.is_visible
     }
 
-    fn name(&self) -> &str { "Tooltip" }
+    fn name(&self) -> &'static str {
+        "Tooltip"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The label is the tooltip's accessible name. While the reveal delay
-        // hasn't elapsed the tooltip is not on screen, so mark it hidden so it
-        // collapses out of the AT tree.
+        // Not on screen until the reveal delay elapses, so hidden until then.
         Some(
             AccessNode::new(Role::Tooltip)
                 .with_name(self.label.clone())
@@ -435,31 +380,19 @@ impl Widget for Tooltip {
     }
 }
 
-/// A tooltip-bearing region the pointer is currently over.
 #[derive(Clone, Debug)]
 struct HoverTarget {
-    /// The (possibly fluent-key) label the region exposes via
-    /// [`crate::widget::Widget::tooltip`].
+    /// May be a fluent key, resolved by the caller of [`TooltipHost::visible`].
     label: String,
-    /// The region's rect, in the same logical space the chip is drawn in.
     anchor: Rect,
-    /// When the current hover began — the dwell is measured from here.
     since: Instant,
 }
 
-/// Central hover-tooltip controller owned by [`crate::app::App`].
-///
-/// The App feeds it the tooltip-bearing region under the pointer on every
-/// move ([`on_pointer`](Self::on_pointer)), dismisses it on click / scroll /
-/// key ([`dismiss`](Self::dismiss)), and once per frame ticks the clock and
-/// renders the single revealed chip. Keeping one controller in the App — not
-/// one tooltip widget per control — is what makes tooltips a primitive that
-/// works for *every* widget exposing [`Widget::tooltip`](crate::widget::Widget::tooltip)
-/// with zero per-app wiring, and guarantees at most one chip on screen.
-///
-/// All timing is wall-clock through an injected `now: Instant`, so the
-/// dwell / reveal / dismiss behaviour is unit-testable without an event loop
-/// or a real GPU.
+/// One controller owned by [`crate::app::App`] — not one tooltip widget per
+/// control — is what makes tooltips work for every widget exposing
+/// [`Widget::tooltip`](crate::widget::Widget::tooltip) with zero per-app
+/// wiring, and guarantees at most one chip on screen. Timing is wall-clock
+/// through an injected `now: Instant`, so it's unit-testable.
 pub struct TooltipHost {
     dwell: Duration,
     target: Option<HoverTarget>,
@@ -483,7 +416,6 @@ impl std::fmt::Debug for TooltipHost {
 }
 
 impl TooltipHost {
-    /// A host with the default [`HOVER_DWELL`].
     pub fn new() -> Self {
         Self {
             dwell: HOVER_DWELL,
@@ -492,60 +424,56 @@ impl TooltipHost {
         }
     }
 
-    /// Override the dwell delay.
     pub fn with_dwell(mut self, dwell: Duration) -> Self {
         self.dwell = dwell;
         self
     }
 
     fn recompute_visible(&mut self, now: Instant) {
-        if !self.visible {
-            if let Some(t) = &self.target {
-                if now.saturating_duration_since(t.since) >= self.dwell {
-                    self.visible = true;
-                }
-            }
+        if !self.visible
+            && let Some(t) = &self.target
+            && now.saturating_duration_since(t.since) >= self.dwell
+        {
+            self.visible = true;
         }
     }
 
-    /// Point the host at the tooltip region under the cursor, or `None` when
-    /// the pointer is over nothing tooltip-bearing. Re-hovering the *same*
-    /// region keeps the accumulated dwell (so a jittering pointer still
-    /// reveals); moving to a different region restarts it. Returns `true`
-    /// when the host changed state, i.e. the caller should request a redraw.
+    /// Re-hovering the *same* region keeps the accumulated dwell (so a
+    /// jittering pointer still reveals); moving to a different region
+    /// restarts it. Returns `true` when the caller should request a redraw.
     pub fn on_pointer(&mut self, target: Option<(Rect, String)>, now: Instant) -> bool {
-        match target {
-            Some((anchor, label)) => {
-                let same = self
-                    .target
-                    .as_ref()
-                    .is_some_and(|t| t.label == label && t.anchor == anchor);
-                if same {
-                    let was = self.visible;
-                    self.recompute_visible(now);
-                    self.visible != was
-                } else {
-                    self.target = Some(HoverTarget { label, anchor, since: now });
-                    let was = self.visible;
-                    self.visible = false;
-                    self.recompute_visible(now);
-                    // A new target always warrants a redraw: it may clear a
-                    // previously-shown chip and it (re)starts the dwell pump.
-                    true || self.visible != was
-                }
-            }
-            None => {
-                let had = self.target.is_some() || self.visible;
-                self.target = None;
+        if let Some((anchor, label)) = target {
+            let same = self
+                .target
+                .as_ref()
+                .is_some_and(|t| t.label == label && t.anchor == anchor);
+            if same {
+                let was = self.visible;
+                self.recompute_visible(now);
+                self.visible != was
+            } else {
+                self.target = Some(HoverTarget {
+                    label,
+                    anchor,
+                    since: now,
+                });
+                let was = self.visible;
                 self.visible = false;
-                had
+                self.recompute_visible(now);
+                // A new target always warrants a redraw: it may clear a
+                // previously-shown chip.
+                true || self.visible != was
             }
+        } else {
+            let had = self.target.is_some() || self.visible;
+            self.target = None;
+            self.visible = false;
+            had
         }
     }
 
-    /// Dismiss the tooltip immediately — a click, scroll or keypress happened.
-    /// Returns whether anything was showing / pending (so the caller can
-    /// request a redraw to clear the chip).
+    /// Returns whether anything was showing/pending, so the caller can
+    /// request a redraw to clear the chip.
     pub fn dismiss(&mut self) -> bool {
         let had = self.target.is_some() || self.visible;
         self.target = None;
@@ -553,7 +481,6 @@ impl TooltipHost {
         had
     }
 
-    /// Advance the wall clock; flips to visible once the dwell elapses.
     /// Returns `true` on the tick it *becomes* visible.
     pub fn tick(&mut self, now: Instant) -> bool {
         let was = self.visible;
@@ -561,9 +488,8 @@ impl TooltipHost {
         self.visible && !was
     }
 
-    /// The currently-revealed tooltip `(label, anchor)`, or `None`. The label
-    /// is the raw string the region exposed; the caller resolves i18n and
-    /// renders via [`draw_hover_tooltip`].
+    /// The label is the raw string the region exposed; the caller resolves
+    /// i18n and renders via [`draw_hover_tooltip`].
     pub fn visible(&self) -> Option<(&str, Rect)> {
         if self.visible {
             self.target.as_ref().map(|t| (t.label.as_str(), t.anchor))
@@ -572,8 +498,6 @@ impl TooltipHost {
         }
     }
 
-    /// Whether a reveal is pending (hovering a region, dwell not yet elapsed),
-    /// so the host wants the event loop to keep pumping frames until it fires.
     pub fn needs_frame(&self) -> bool {
         self.target.is_some() && !self.visible
     }
@@ -653,8 +577,10 @@ mod host_tests {
         // as it jitters — the accumulated dwell must not reset.
         h.on_pointer(tip("Search"), t0 + Duration::from_millis(200));
         h.on_pointer(tip("Search"), t0 + Duration::from_millis(400));
-        assert!(h.on_pointer(tip("Search"), t0 + Duration::from_millis(550)),
-            "crossing the threshold on a jitter move flips to visible");
+        assert!(
+            h.on_pointer(tip("Search"), t0 + Duration::from_millis(550)),
+            "crossing the threshold on a jitter move flips to visible"
+        );
         assert_eq!(h.visible().map(|(l, _)| l), Some("Search"));
     }
 
@@ -667,24 +593,36 @@ mod host_tests {
         // Anchor near the bottom edge → the chip flips above the anchor.
         let bottom_anchor = Rect::new(400.0, 580.0, 440.0, 596.0);
         let r = chip_rect(bottom_anchor, size, vp);
-        assert!(r.y1 <= bottom_anchor.y0, "flips above when it would overflow the bottom");
+        assert!(
+            r.y1 <= bottom_anchor.y0,
+            "flips above when it would overflow the bottom"
+        );
 
         // Anchor at the far right → the chip is clamped inside the viewport.
         let right_anchor = Rect::new(790.0, 10.0, 800.0, 30.0);
         let r = chip_rect(right_anchor, size, vp);
-        assert!(r.x1 <= vp.x1 - CHIP_MARGIN + 0.01, "clamped to the right edge");
+        assert!(
+            r.x1 <= vp.x1 - CHIP_MARGIN + 0.01,
+            "clamped to the right edge"
+        );
         assert!(r.x0 >= vp.x0, "never off the left edge");
 
         // Anchor at the far left → clamped to the left margin.
         let left_anchor = Rect::new(0.0, 10.0, 10.0, 30.0);
         let r = chip_rect(left_anchor, size, vp);
-        assert!(r.x0 >= vp.x0 + CHIP_MARGIN - 0.01, "clamped to the left margin");
+        assert!(
+            r.x0 >= vp.x0 + CHIP_MARGIN - 0.01,
+            "clamped to the left margin"
+        );
 
         // A roomy central anchor keeps the chip below and centred.
         let center = Rect::new(390.0, 100.0, 410.0, 120.0);
         let r = chip_rect(center, size, vp);
         assert!(r.y0 >= center.y1, "placed below when there is room");
-        assert!((r.center().x - center.center().x).abs() < 0.5, "centred under the anchor");
+        assert!(
+            (r.center().x - center.center().x).abs() < 0.5,
+            "centred under the anchor"
+        );
     }
 }
 
@@ -694,7 +632,7 @@ mod tests {
 
     fn feed(t: &mut Tooltip, p: Point) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();
@@ -703,7 +641,17 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             position: (p.x, p.y).into(),
         };
-        t.handle_event(&ev, 1.0, &Default::default(), &mut doc, &root, &mut handled, &mut focus, node, &tree);
+        t.handle_event(
+            &ev,
+            1.0,
+            &Default::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
     }
 
     #[test]
@@ -745,7 +693,10 @@ mod tests {
         t.on_hover_enter(Duration::ZERO);
         assert!(t.is_visible());
         let node = Widget::accessibility(&t).unwrap();
-        assert!(!node.state.hidden, "a revealed tooltip is visible to the AT");
+        assert!(
+            !node.state.hidden,
+            "a revealed tooltip is visible to the AT"
+        );
     }
 
     #[test]

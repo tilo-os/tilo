@@ -25,11 +25,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
-/// Where `unlock` leaves the secret it used, for `confirm` to reuse.
-///
-/// `/run` is a tmpfs, so this does not survive a reboot and never touches the
-/// disk. It holds a working disk passphrase, so it is written 0600 and the
-/// directory is 0700.
+/// Where `unlock` leaves the secret it used, for `confirm` to reuse. `/run` is a tmpfs (no
+/// reboot survival, never touches disk); written 0600 in a 0700 directory since it holds a
+/// working disk passphrase.
 const PROOF_FILE: &str = "/run/qos-rollback/proof.key";
 
 #[derive(Parser)]
@@ -38,9 +36,8 @@ const PROOF_FILE: &str = "/run/qos-rollback/proof.key";
     about = "Bounded rollback protection: the last few OS generations may unseal the disk, older ones may not"
 )]
 struct Cli {
-    /// TPM2 TCTI. Omit for the tools' default, which is the kernel resource
-    /// manager at /dev/tpmrm0. Set it to reach an emulator, e.g.
-    /// `swtpm:host=127.0.0.1,port=2321`.
+    /// TPM2 TCTI. Omit for the default kernel resource manager at /dev/tpmrm0; set to reach an
+    /// emulator, e.g. `swtpm:host=127.0.0.1,port=2321`.
     #[arg(long, global = true)]
     tcti: Option<String>,
 
@@ -89,8 +86,7 @@ enum Cmd {
     },
     /// Set the dictionary-attack reset authorisation and tighten the parameters.
     Harden {
-        /// Where to record the generated reset authorisation. Must be on the
-        /// encrypted root.
+        /// Where to record the generated reset authorisation. Must be on the encrypted root.
         #[arg(long, default_value = "/var/lib/qos/rollback/lockout-auth")]
         auth_file: PathBuf,
         #[arg(long, default_value_t = 8)]
@@ -99,28 +95,23 @@ enum Cmd {
         recovery_time: u32,
         #[arg(long, default_value_t = 86400)]
         lockout_recovery: u32,
-        /// Proceed even though no recovery key has been confirmed. Refused by
-        /// default, because a set reset authorisation plus a forgotten PIN and no
-        /// recovery key is unrecoverable data loss.
+        /// Proceed even though no recovery key has been confirmed. Refused by default — a set reset
+        /// authorisation plus a forgotten PIN and no recovery key means unrecoverable data loss.
         #[arg(long)]
         i_have_a_recovery_key: bool,
     },
-    /// Seal a generation's keyslot. Used both for first-time enrollment and, at
-    /// update-staging time, for the generation that is about to boot.
+    /// Seal a generation's keyslot. Used both for first-time enrollment and, at update-staging
+    /// time, for the generation that is about to boot.
     Enroll {
         #[arg(long)]
         device: PathBuf,
-        /// Generation to enroll. Defaults to the running one.
-        ///
-        /// A generation that is not the running one is sealed to *its* signed
-        /// prediction, which cannot be satisfied until that image boots. That is
-        /// the point: staging an update has to enroll the incoming generation's
-        /// keyslot before the reboot, or its first boot has nothing to unseal
-        /// with and lands on the recovery key.
+        /// Generation to enroll. Defaults to the running one. A generation that is not the running
+        /// one is sealed to *its* signed prediction, unsatisfiable until that image boots — the
+        /// point: staging an update must enroll the incoming generation's keyslot before reboot, or
+        /// its first boot has nothing to unseal with and lands on the recovery key.
         #[arg(long)]
         generation: Option<u64>,
-        /// Read the authorising passphrase (normally the recovery key) from this
-        /// file. `-` reads stdin.
+        /// Read the authorising passphrase (normally the recovery key) from this file. `-` reads stdin.
         #[arg(long)]
         recovery_key_file: PathBuf,
         /// Read the unlock PIN from this file.
@@ -131,15 +122,14 @@ enum Cmd {
     Unlock {
         #[arg(long)]
         device: PathBuf,
-        /// Write the passphrase here instead of stdout. The intended target is
-        /// `/run/cryptsetup-keys.d/<volume>.key`, which `systemd-cryptsetup`
-        /// picks up as an implicit key file.
+        /// Write the passphrase here instead of stdout — intended target is
+        /// `/run/cryptsetup-keys.d/<volume>.key`, which `systemd-cryptsetup` picks up as a key file.
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long)]
         pin_file: Option<PathBuf>,
-        /// Also keep the unsealed secret here for `confirm` to reuse later in the
-        /// boot. Must be on a tmpfs; it holds a working disk passphrase.
+        /// Also keep the unsealed secret here for `confirm` to reuse later in the boot. Must be on a
+        /// tmpfs; it holds a working disk passphrase.
         #[arg(long, default_value = PROOF_FILE)]
         proof_file: PathBuf,
         /// Do not write the proof file.
@@ -155,9 +145,9 @@ enum Cmd {
         /// Recovery key, for an operator-driven confirmation.
         #[arg(long)]
         recovery_key_file: Option<PathBuf>,
-        /// Unattended: instead of verifying the recovery key, require that the
-        /// keyslots recorded as independent unlock paths at enrollment are still
-        /// present. Weaker, and the only thing possible after an unattended boot.
+        /// Unattended: instead of verifying the recovery key, require that the keyslots recorded as
+        /// independent unlock paths at enrollment are still present. Weaker, and the only option
+        /// after an unattended boot.
         #[arg(long)]
         unattended: bool,
         /// Secret that already opens the device — what `unlock` left in /run.
@@ -165,8 +155,8 @@ enum Cmd {
         proof_file: PathBuf,
         #[arg(long)]
         pin_file: Option<PathBuf>,
-        /// Raise the floor to at least this generation, so a security update can
-        /// jump past a vulnerable one instead of leaving it inside the window.
+        /// Raise the floor to at least this generation, so a security update can jump past a
+        /// vulnerable one instead of leaving it inside the window.
         #[arg(long)]
         floor_at_least: Option<u64>,
         /// Report what would happen and change nothing.
@@ -189,10 +179,8 @@ enum Cmd {
         #[arg(long)]
         out_dir: PathBuf,
     },
-    /// Emit the request an authority needs in order to issue floor approvals.
-    ///
-    /// Contains nothing secret: the NV index Name, the counter value, and which
-    /// generations have keyslots.
+    /// Emit the request an authority needs in order to issue floor approvals. Contains nothing
+    /// secret: the NV index Name, the counter value, and which generations have keyslots.
     FloorRequest {
         #[arg(long)]
         device: PathBuf,
@@ -207,14 +195,14 @@ enum Cmd {
         /// The request file, or `-` for stdin.
         #[arg(long)]
         request: PathBuf,
-        /// Highest floor generation to approve. Defaults to the safe bound the
-        /// request reports: the newest generation that has a sealed keyslot.
+        /// Highest floor generation to approve. Defaults to the safe bound the request reports: the
+        /// newest generation that has a sealed keyslot.
         #[arg(long)]
         up_to_floor: Option<u64>,
         #[arg(long)]
         out_dir: PathBuf,
-        /// Issue approvals past the safe bound. This can leave the machine unable
-        /// to unseal any generation and dependent on its recovery key.
+        /// Issue approvals past the safe bound. This can leave the machine unable to unseal any
+        /// generation and dependent on its recovery key.
         #[arg(long)]
         i_accept_stranding_this_machine: bool,
     },
@@ -222,8 +210,8 @@ enum Cmd {
     SignPrediction {
         #[arg(long)]
         private_key: PathBuf,
-        /// `tpm2_pcrread -o` blob of the predicted measurements. Omit to predict
-        /// the machine's current state.
+        /// `tpm2_pcrread -o` blob of the predicted measurements. Omit to predict the machine's
+        /// current state.
         #[arg(long)]
         pcr_values: Option<PathBuf>,
         #[arg(long)]
@@ -251,9 +239,8 @@ fn read_secret(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)
         .with_context(|| format!("reading {}", path.display()))?;
-    // A trailing newline is near-universal in a file a human made, and a
-    // passphrase that differs by one byte fails in a way that looks like data
-    // loss. Strip it.
+    // A trailing newline is near-universal in a human-made file, and a passphrase differing by
+    // one byte fails in a way that looks like data loss. Strip it.
     while buf.last() == Some(&b'\n') || buf.last() == Some(&b'\r') {
         buf.pop();
     }
@@ -289,8 +276,8 @@ fn config(cli: &Cli) -> Result<Config> {
     }
     if let Some(p) = &cli.pcr_public_key {
         cfg.pcr_public_key = p.display().to_string();
-        // The floor authority defaults to the prediction key, so an explicit
-        // prediction key moves both unless the floor key is named separately.
+        // The floor authority defaults to the prediction key, so an explicit prediction key moves
+        // both unless the floor key is named separately.
         cfg.floor_authority_key = p.display().to_string();
     }
     if let Some(p) = &cli.floor_authority_key {
@@ -379,7 +366,11 @@ fn run() -> Result<()> {
             device,
             output.as_deref(),
             pin_file.as_deref(),
-            if *no_proof_file { None } else { Some(proof_file) },
+            if *no_proof_file {
+                None
+            } else {
+                Some(proof_file)
+            },
         ),
         Cmd::Confirm {
             device,
@@ -414,9 +405,15 @@ fn run() -> Result<()> {
             device.as_deref(),
             *json,
         ),
-        Cmd::Certify { nonce, out_dir } => {
-            cmd_certify(&runner, &ws, &cfg, &state_path, scratch.path(), nonce, out_dir)
-        }
+        Cmd::Certify { nonce, out_dir } => cmd_certify(
+            &runner,
+            &ws,
+            &cfg,
+            &state_path,
+            scratch.path(),
+            nonce,
+            out_dir,
+        ),
         Cmd::FloorRequest { device, out } => cmd_floor_request(
             &runner,
             &ws,
@@ -487,7 +484,11 @@ fn cmd_tpm_status(runner: &dyn exec::Runner, json: bool) -> Result<()> {
     println!("  failure counter     {}", params.counter);
     println!(
         "  reset authorisation {}",
-        if params.lockout_auth_set { "set" } else { "EMPTY" }
+        if params.lockout_auth_set {
+            "set"
+        } else {
+            "EMPTY"
+        }
     );
     println!("  in lockout          {}", params.in_lockout);
     for c in &a.critical {
@@ -516,7 +517,11 @@ fn cmd_harden(
         before.max_tries,
         before.recovery_time,
         before.lockout_recovery,
-        if before.lockout_auth_set { "set" } else { "empty" }
+        if before.lockout_auth_set {
+            "set"
+        } else {
+            "empty"
+        }
     );
 
     if !before.lockout_auth_set && !have_recovery_key {
@@ -529,7 +534,9 @@ fn cmd_harden(
         );
     }
 
-    if !before.lockout_auth_set {
+    if before.lockout_auth_set {
+        println!("reset authorisation already set; leaving it alone");
+    } else {
         let auth = lockout::new_reset_auth()?;
         // SAFETY-CRITICAL: record it BEFORE setting it. Dying between the two
         // leaves a TPM whose DA counter can never be reset by anyone.
@@ -548,14 +555,15 @@ fn cmd_harden(
             std::fs::set_permissions(auth_file, std::fs::Permissions::from_mode(0o600))?;
         }
         lockout::set_reset_auth(runner, &auth, None)?;
-        println!("reset authorisation set; recorded in {}", auth_file.display());
+        println!(
+            "reset authorisation set; recorded in {}",
+            auth_file.display()
+        );
         println!(
             "note: that file lives on the encrypted root, which is what keeps it away from an \
              attacker holding a powered-off machine — and also means a TPM lockout cannot be \
              cleared until the disk is open. The recovery key is the way out of that."
         );
-    } else {
-        println!("reset authorisation already set; leaving it alone");
     }
 
     let auth = read_secret(auth_file).ok();
@@ -597,8 +605,7 @@ fn cmd_enroll(
     let recovery = read_secret(recovery_key_file)?;
     let pin = pin_file.map(read_secret).transpose()?;
 
-    // SAFETY-CRITICAL: the independent unlock path has to work before we touch
-    // anything at all.
+    // SAFETY-CRITICAL: the independent unlock path has to work before we touch anything at all.
     if !keyslots::verify_recovery(runner, ws, device, &recovery)? {
         bail!(
             "the supplied recovery key does not open {} — refusing to enroll, because every \
@@ -625,19 +632,18 @@ fn cmd_enroll(
     counter::define(runner, cfg.nv_index, &nv_auth_policy, ws)?;
     let existing = keyslots::list_tokens(runner, device)?;
     let base = confirm::load_base(confirm::load_state(state_path)?.as_ref(), &existing)?;
-    let floor = match base {
-        Some(b) => {
-            let c = counter::read(runner, cfg.nv_index, scratch)?
-                .context("the rollback floor counter exists but has never been incremented")?;
-            counter::FloorState { counter: c, base: b }
+    let floor = if let Some(b) = base {
+        let c = counter::read(runner, cfg.nv_index, scratch)?
+            .context("the rollback floor counter exists but has never been incremented")?;
+        counter::FloorState {
+            counter: c,
+            base: b,
         }
-        None => {
-            // First enrollment starts the floor at the bottom of the window, not
-            // at this generation: an immediate floor of `gen_num` would mean the very
-            // first update had nothing to fall back to.
-            let initial = gen_num.saturating_sub(u64::from(cfg.retained_generations - 1));
-            counter::materialise(runner, ws, cfg.nv_index, scratch, initial, &authority_name)?
-        }
+    } else {
+        // First enrollment starts the floor at the bottom of the window, not at this generation —
+        // an immediate floor of `gen_num` would leave the very first update nothing to fall back to.
+        let initial = gen_num.saturating_sub(u64::from(cfg.retained_generations - 1));
+        counter::materialise(runner, ws, cfg.nv_index, scratch, initial, &authority_name)?
     };
     println!(
         "rollback floor counter {} (base {}, floor generation {})",
@@ -659,18 +665,13 @@ fn cmd_enroll(
     )?;
     println!("generation {gen_num}: keyslot {slot}, token {token_id}");
 
-    // SAFETY-CRITICAL: prove as much of the seal as is provable right now.
-    //
-    // For the generation that is *running*, the whole round-trip is provable: the
-    // live measurements are the ones the prediction covers, so the TPM should
-    // release the secret and it should open the keyslot.
-    //
-    // For a generation that is not running — staging an update — it is not
-    // provable, and no amount of care makes it so: the seal is bound to that
-    // image's measurements, which will not exist until it boots. What is provable
-    // is that the keyslot works (`enroll_generation` verified it) and that the
-    // current generation's own token is untouched, so a first boot that cannot
-    // unseal falls back rather than failing.
+    // SAFETY-CRITICAL: prove as much of the seal as is provable right now. For the *running*
+    // generation the whole round-trip is provable (live measurements match the prediction, so
+    // the TPM should release the secret and open the keyslot). For a generation that is not
+    // running — staging an update — it can't be proven: the seal is bound to measurements that
+    // won't exist until it boots. What is provable is that the keyslot works
+    // (`enroll_generation` verified it) and the current generation's token is untouched, so a
+    // first boot that can't unseal falls back rather than failing.
     let tokens = keyslots::list_tokens(runner, device)?;
     let (_, t) = tokens
         .iter()
@@ -705,7 +706,7 @@ fn cmd_enroll(
              exercised until that image boots. Its keyslot is verified; the running generation's \
              keyslot and the rollback floor are untouched, so a first boot that cannot unseal falls \
              back instead of failing.",
-            running.map(|g| g.to_string()).unwrap_or_else(|| "unknown".into())
+            running.map_or_else(|| "unknown".into(), |g| g.to_string())
         );
     }
 
@@ -767,7 +768,7 @@ fn cmd_unlock(
     output: Option<&Path>,
     pin_file: Option<&Path>,
     proof_file: Option<&Path>,
-) -> Result<()>  {
+) -> Result<()> {
     let pin = pin_file.map(read_secret).transpose()?;
     let tokens = keyslots::list_tokens(runner, device)?;
     if tokens.is_empty() {
@@ -783,22 +784,18 @@ fn cmd_unlock(
             pin.as_deref().map(|v| &v[..]),
         ) {
             Ok(Some(secret)) => {
-                match output {
-                    Some(p) => {
-                        write_private(p, &secret)?;
-                        eprintln!(
-                            "qos-rollback: generation {} unsealed to {}",
-                            t.generation,
-                            p.display()
-                        );
-                    }
-                    None => {
-                        use std::io::Write;
-                        std::io::stdout().write_all(&secret)?;
-                    }
+                if let Some(p) = output {
+                    write_private(p, &secret)?;
+                    eprintln!(
+                        "qos-rollback: generation {} unsealed to {}",
+                        t.generation,
+                        p.display()
+                    );
+                } else {
+                    use std::io::Write;
+                    std::io::stdout().write_all(&secret)?;
                 }
-                // Keep it for `confirm`, which runs later in the same boot and
-                // cannot re-unseal without the PIN.
+                // Keep it for `confirm`, which runs later in the same boot and cannot re-unseal without the PIN.
                 if let Some(pf) = proof_file {
                     write_private(pf, &secret)?;
                 }
@@ -806,7 +803,7 @@ fn cmd_unlock(
             }
             Ok(None) => continue,
             Err(e) => {
-                floor_refusals.push(format!("token {id} (generation {}): {e:#}", t.generation))
+                floor_refusals.push(format!("token {id} (generation {}): {e:#}", t.generation));
             }
         }
     }
@@ -919,7 +916,11 @@ fn cmd_confirm(
     );
     println!(
         "independent unlock path re-checked ({}).",
-        if unattended { "keyslots present" } else { "recovery key verified" }
+        if unattended {
+            "keyslots present"
+        } else {
+            "recovery key verified"
+        }
     );
     Ok(())
 }
@@ -940,7 +941,10 @@ fn cmd_status(
     let base = confirm::load_base(state.as_ref(), &tokens)?;
     let counter_value = counter::read(runner, cfg.nv_index, scratch).ok().flatten();
     let floor = match (base, counter_value) {
-        (Some(b), Some(c)) => Some(counter::FloorState { counter: c, base: b }),
+        (Some(b), Some(c)) => Some(counter::FloorState {
+            counter: c,
+            base: b,
+        }),
         _ => None,
     };
     let gens: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
@@ -1142,14 +1146,7 @@ fn cmd_approve_floor(
     let req: approval::Request =
         serde_json::from_str(&text).context("parsing the floor request")?;
     let up_to = up_to_floor.unwrap_or(req.safe_target_floor);
-    let approvals = approval::issue(
-        runner,
-        ws,
-        &req,
-        private_key,
-        up_to,
-        allow_past_safe_bound,
-    )?;
+    let approvals = approval::issue(runner, ws, &req, private_key, up_to, allow_past_safe_bound)?;
     if approvals.is_empty() {
         println!(
             "nothing to approve: the floor is already at generation {}",

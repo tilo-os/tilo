@@ -131,9 +131,15 @@ impl RowGeometry {
         // `draw_text` treats the translate as the top-left of a line box of
         // height `size * LINE_HEIGHT_RATIO`; centre that box in the row so the
         // glyphs sit on the pill's optical centre.
-        let line_box = ROW_TEXT_SIZE as f64 * LINE_HEIGHT_RATIO;
+        let line_box = f64::from(ROW_TEXT_SIZE) * LINE_HEIGHT_RATIO;
         let text_y = rect.y0 + (rect.height() - line_box) / 2.0;
-        Self { pill, content_left, icon_x, label_x, text_y }
+        Self {
+            pill,
+            content_left,
+            icon_x,
+            label_x,
+            text_y,
+        }
     }
 }
 
@@ -188,17 +194,17 @@ impl Widget for SidebarRow {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -215,12 +221,12 @@ impl Widget for SidebarRow {
         // surface. The pill is inset from the panel edges and given a little
         // vertical breathing room so the highlight reads as a deliberate
         // selection chip rather than a full-bleed band.
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let glyph = self.category.glyph();
         let (glyph_w, _) = text_renderer.measure(glyph, ROW_TEXT_SIZE, None);
         // All positions come from one geometry pass so the drawn layout and the
         // alignment test read the exact same math.
-        let geo = RowGeometry::compute(self.rect, glyph_w as f64);
+        let geo = RowGeometry::compute(self.rect, f64::from(glyph_w));
 
         let highlight = if self.active {
             Some(theme.accent_primary)
@@ -311,7 +317,7 @@ impl Widget for SidebarRow {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SidebarRow"
     }
 
@@ -326,7 +332,11 @@ impl Widget for SidebarRow {
     /// `Widget::get_state` channel (ephemeral, non-persisted) is the natural
     /// place for this read-only snapshot.
     fn get_state(&self) -> Option<String> {
-        Some(if self.active { "active".into() } else { "inactive".into() })
+        Some(if self.active {
+            "active".into()
+        } else {
+            "inactive".into()
+        })
     }
 
     fn get_rect(&self) -> Rect {
@@ -378,10 +388,15 @@ pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
         // "RESULTS" header, or an honest empty state.
         col = col.push(section_header("Results"));
         col = col.push(vgap(SECTION_GAP_BELOW));
-        let matches: Vec<Category> =
-            Category::ALL.iter().copied().filter(|c| c.matches(trimmed)).collect();
+        let matches: Vec<Category> = Category::ALL
+            .iter()
+            .copied()
+            .filter(|c| c.matches(trimmed))
+            .collect();
         if matches.is_empty() {
-            col = col.push(caption(&format!("No settings match \u{201c}{trimmed}\u{201d}")));
+            col = col.push(caption(&format!(
+                "No settings match \u{201c}{trimmed}\u{201d}"
+            )));
         } else {
             for category in matches {
                 col = col.push(Box::new(SidebarRow::new(category, category == selected)));
@@ -417,7 +432,7 @@ mod tests {
     use super::*;
 
     fn count_rows(w: &dyn Widget) -> usize {
-        let mut n = if w.name() == "SidebarRow" { 1 } else { 0 };
+        let mut n = usize::from(w.name() == "SidebarRow");
         for c in w.children() {
             n += count_rows(c);
         }
@@ -440,13 +455,20 @@ mod tests {
         let sb = build(Category::Displays, "night");
         let expected = Category::ALL.iter().filter(|c| c.matches("night")).count();
         assert_eq!(count_rows(sb.as_ref()), expected);
-        assert!(expected >= 1 && expected < Category::ALL.len(), "genuinely filtered");
+        assert!(
+            expected >= 1 && expected < Category::ALL.len(),
+            "genuinely filtered"
+        );
     }
 
     #[test]
     fn no_match_query_shows_no_rows() {
         let sb = build(Category::Network, "zzzznope");
-        assert_eq!(count_rows(sb.as_ref()), 0, "an empty result set lists no rows");
+        assert_eq!(
+            count_rows(sb.as_ref()),
+            0,
+            "an empty result set lists no rows"
+        );
     }
 
     #[test]
@@ -458,7 +480,7 @@ mod tests {
     #[test]
     fn row_geometry_aligns_icon_and_label_inside_the_pill() {
         // A representative row rect (full sidebar width, one ROW_HEIGHT tall).
-        let rect = Rect::new(0.0, 100.0, SIDEBAR_WIDTH, 100.0 + ROW_HEIGHT as f64);
+        let rect = Rect::new(0.0, 100.0, SIDEBAR_WIDTH, 100.0 + f64::from(ROW_HEIGHT));
         // A glyph narrower than the icon column — the common case.
         let glyph_w = 13.0;
         let g = RowGeometry::compute(rect, glyph_w);
@@ -472,7 +494,10 @@ mod tests {
         // Content starts one gutter inside the pill's left edge (even left
         // padding), and both icon and label sit inside the pill.
         assert!((g.content_left - (g.pill.x0 + ROW_CONTENT_GUTTER)).abs() < f64::EPSILON);
-        assert!(g.icon_x >= g.pill.x0, "icon must not spill past the pill's left");
+        assert!(
+            g.icon_x >= g.pill.x0,
+            "icon must not spill past the pill's left"
+        );
         let label_right = g.label_x; // label starts here; its ink extends right
         assert!(label_right < g.pill.x1, "label must start within the pill");
 
@@ -494,7 +519,7 @@ mod tests {
 
         // The text line box is vertically centred in the row (equal top/bottom
         // slack), so the content sits on the pill's optical centre.
-        let line_box = ROW_TEXT_SIZE as f64 * LINE_HEIGHT_RATIO;
+        let line_box = f64::from(ROW_TEXT_SIZE) * LINE_HEIGHT_RATIO;
         let top_slack = g.text_y - rect.y0;
         let bottom_slack = rect.y1 - (g.text_y + line_box);
         assert!(
@@ -507,7 +532,7 @@ mod tests {
     fn row_geometry_label_start_is_glyph_width_independent() {
         // Two rows whose icon glyphs measure differently must still align their
         // labels to the same x — the point of the fixed icon column.
-        let rect = Rect::new(0.0, 0.0, SIDEBAR_WIDTH, ROW_HEIGHT as f64);
+        let rect = Rect::new(0.0, 0.0, SIDEBAR_WIDTH, f64::from(ROW_HEIGHT));
         let narrow = RowGeometry::compute(rect, 8.0);
         let wide = RowGeometry::compute(rect, 18.0);
         assert!(
@@ -542,7 +567,17 @@ mod tests {
         for ev in [&press, &release] {
             let mut handled = false;
             let mut focus = None;
-            row.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+            row.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         }
 
         use automerge::{ReadDoc, Value};

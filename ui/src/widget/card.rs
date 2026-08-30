@@ -1,33 +1,14 @@
 //! `Card` + `CardGrid` — the canonical grouped-content primitives.
 //!
-//! # Why this module exists
+//! Promotes two shapes every app was hand-rolling, badly and inconsistently:
+//! a grouped "card" surface (per-app radii, often literal numbers not theme
+//! tokens, so no two cards matched), and a responsive grid of equal cards
+//! reflowing by width (every app re-copied the column formula
+//! `cols = floor((w + gap) / (card + gap))` with different magic numbers, so
+//! cards didn't line up). [`card_columns`]/[`card_column_width`] expose the
+//! pure reflow math so even immediate-mode callers share one correct formula.
 //!
-//! The HIG's rule of thumb: *if an app can express a bad-UX layout without
-//! effort, that is a toolkit bug.* Across the app suite two recurring shapes
-//! were each hand-rolled — badly and inconsistently:
-//!
-//! 1. **A grouped "card" surface** (a rounded, themed panel holding a titled
-//!    group of rows). Apps drew their own `Container::with_background()` +
-//!    title-row + body scaffolding, with per-app radii (often *literal*
-//!    numbers, not theme tokens) so no two cards matched.
-//! 2. **A responsive grid of equal cards** that reflows by width (a gallery, a
-//!    store listing, a dashboard of tiles). Every app re-copied the column
-//!    formula `cols = floor((w + gap) / (card + gap))` with different magic
-//!    numbers and hand-placed each card, so cards **didn't line up**.
-//!
-//! This module promotes both into `ui`:
-//!
-//! * [`Card`] — a themed grouped surface (radius, border, padding, and fill all
-//!   from the [`Theme`]), optionally titled, that stretches to its column's
-//!   width so a stack of cards shares edges and lines up.
-//! * [`CardGrid`] — a responsive grid that reflows arbitrary card children into
-//!   **equal, aligned columns**, snapping every card to the same grid.
-//! * [`card_columns`] / [`card_column_width`] — the pure reflow math, exposed so
-//!   even immediate-mode apps (which draw straight to a `Scene`) can share one
-//!   correct, aligned formula instead of re-deriving it.
-//!
-//! Every colour, radius, and gap is read from the [`Theme`], so cards look the
-//! same across every system app and track the OS palette (HIG §"Theming").
+//! Every colour, radius, and gap is read from the [`Theme`].
 
 use std::collections::HashMap;
 
@@ -39,6 +20,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Column, Container, Element, Row, Spacer, Text, Widget};
 
 /// Default minimum card width (logical px) a [`CardGrid`] column will hold
@@ -55,13 +37,8 @@ const CARD_TITLE_SIZE: f32 = 15.0;
 // Pure reflow geometry — shared by CardGrid and immediate-mode callers.
 // ---------------------------------------------------------------------------
 
-/// How many equal columns of at least `min_card_w` (with `gap` between them)
-/// fit in `avail_w`. Always returns **at least 1** so a too-narrow area still
-/// shows a single column.
-///
-/// This is the one canonical reflow formula — promoted from the copy every
-/// gallery/store/dashboard used to carry. `avail_w + gap` because the last
-/// column needs no trailing gap.
+/// Always returns **at least 1** so a too-narrow area still shows a single
+/// column. `avail_w + gap` because the last column needs no trailing gap.
 pub fn card_columns(avail_w: f64, min_card_w: f64, gap: f64) -> usize {
     let stride = min_card_w + gap;
     if stride <= 0.0 || avail_w <= 0.0 {
@@ -70,10 +47,8 @@ pub fn card_columns(avail_w: f64, min_card_w: f64, gap: f64) -> usize {
     (((avail_w + gap) / stride).floor() as usize).max(1)
 }
 
-/// The width each of `cols` equal columns gets when `avail_w` is divided into
-/// `cols` columns separated by `gap`. Never negative. Combined with
-/// [`card_columns`] this snaps every card to the same aligned column so a grid
-/// of cards lines up exactly.
+/// Never negative. Combined with [`card_columns`] this snaps every card to
+/// the same aligned column so a grid of cards lines up exactly.
 pub fn card_column_width(avail_w: f64, cols: usize, gap: f64) -> f64 {
     let cols = cols.max(1);
     let total_gap = (cols - 1) as f64 * gap;
@@ -84,51 +59,37 @@ pub fn card_column_width(avail_w: f64, cols: usize, gap: f64) -> f64 {
 // Card — a themed grouped surface.
 // ---------------------------------------------------------------------------
 
-/// A grouped "card": a rounded, themed surface (fill, radius, border, and
-/// padding all from the [`Theme`]) holding a body, optionally under a title
-/// row. It stretches to fill its column's width, so a stack of cards shares
+/// A rounded, themed surface holding a body, optionally under a title row.
+/// It stretches to fill its column's width, so a stack of cards shares
 /// left/right edges and lines up.
-///
-/// Replaces the per-app `Container::with_background()` + hand-assembled title
-/// scaffolding. A [`Card`] is composed once from the shared `ui` widgets, so
-/// every card in the OS reads identically.
 pub struct Card {
     inner: Element,
 }
 
 impl Card {
-    /// A plain surfaced card holding `body` (no title).
     pub fn new(body: Element) -> Self {
         Self {
             inner: surface(None, None, body),
         }
     }
 
-    /// A titled card: `title` as a heading row above `body`, all on one themed
-    /// surface.
     pub fn titled(title: impl Into<String>, body: Element) -> Self {
         Self {
             inner: surface(Some(title.into()), None, body),
         }
     }
 
-    /// A titled card whose title row also carries a trailing `action` element
-    /// (e.g. an "Add" button or a count badge) on the same line as the title.
-    pub fn titled_with_action(
-        title: impl Into<String>,
-        action: Element,
-        body: Element,
-    ) -> Self {
+    /// `action` (e.g. an "Add" button or a count badge) sits on the same
+    /// line as the title.
+    pub fn titled_with_action(title: impl Into<String>, action: Element, body: Element) -> Self {
         Self {
             inner: surface(Some(title.into()), Some(action), body),
         }
     }
 }
 
-/// Build the composed card tree: a background [`Container`] (theme fill +
-/// radius + border + padding) wrapping a `Column` of an optional title row and
-/// the body. The title sits *inside* the surface, above the body, so the group
-/// reads as one cohesive card.
+/// The title sits *inside* the surface, above the body, so the group reads
+/// as one cohesive card.
 fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Element {
     let inner: Element = if let Some(title) = title {
         let mut title_row = Row::new().push(Box::new(Text::new(&title).with_size(CARD_TITLE_SIZE)));
@@ -149,9 +110,8 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
     Box::new(Container::new().with_background().with_child(inner))
 }
 
-/// A fixed-height empty box injecting deliberate vertical space. An
-/// intrinsic-height `Column` lays out as a block stack that ignores the taffy
-/// `gap`, so explicit spacers are how per-gap spacing is expressed there.
+/// An intrinsic-height `Column` lays out as a block stack that ignores the
+/// taffy `gap`, so explicit spacers are how per-gap spacing is expressed there.
 fn vgap(px: f32) -> Element {
     Box::new(Container::new().with_no_padding().with_height(px))
 }
@@ -191,7 +151,8 @@ impl Widget for Card {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.inner.draw(scene, transform, text_renderer, theme, presence);
+        self.inner
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_with_presence(
@@ -203,8 +164,14 @@ impl Widget for Card {
         presence: &PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        self.inner
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        self.inner.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
     }
 
     fn handle_event(
@@ -244,7 +211,7 @@ impl Widget for Card {
         self.inner.get_rect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Card"
     }
 
@@ -269,17 +236,12 @@ impl Widget for Card {
 // CardGrid — a responsive grid of equal, aligned cards.
 // ---------------------------------------------------------------------------
 
-/// A responsive grid that reflows its card children into **equal, aligned
-/// columns** by width. Every card gets the same column width and snaps to the
-/// same grid, so cards line up exactly — the shared answer to the "rounded
-/// cards that don't line up" problem.
-///
-/// Cards share a fixed row height ([`with_card_height`]); the column count is
-/// derived from the allocated width via [`card_columns`]. Children are laid out
-/// in an isolated inner tree (mirroring [`crate::widget::NavShell`]), so their
-/// content still measures and draws while the grid owns the placement.
-///
-/// [`with_card_height`]: CardGrid::with_card_height
+/// Reflows its card children into **equal, aligned columns** by width. Cards
+/// share a fixed row height ([`with_card_height`](CardGrid::with_card_height));
+/// the column count is derived from the allocated width via [`card_columns`].
+/// Children are laid out in an isolated inner tree (mirroring
+/// [`crate::widget::NavShell`]), so their content still measures and draws
+/// while the grid owns the placement.
 pub struct CardGrid {
     cards: Vec<Element>,
     min_card_w: f64,
@@ -315,30 +277,26 @@ impl CardGrid {
         }
     }
 
-    /// Minimum column width (logical px) before the grid drops a column.
     pub fn with_min_card_width(mut self, px: f64) -> Self {
         self.min_card_w = px.max(1.0);
         self
     }
 
-    /// Fixed row height (logical px) of every card cell.
     pub fn with_card_height(mut self, px: f64) -> Self {
         self.card_h = px.max(1.0);
         self
     }
 
-    /// Override the inter-card gap (logical px). Defaults to the theme gap.
+    /// Defaults to the theme gap.
     pub fn with_gap(mut self, px: f64) -> Self {
         self.gap_override = Some(px.max(0.0));
         self
     }
 
-    /// How many columns fit in `width` at the current metrics (always >= 1).
     pub fn columns_for_width(&self, width: f64) -> usize {
         card_columns(width, self.min_card_w, self.gap)
     }
 
-    /// Total content height for `columns` columns of the current cards.
     fn content_height(&self, columns: usize) -> f64 {
         let n = self.cards.len();
         if n == 0 {
@@ -348,7 +306,6 @@ impl CardGrid {
         rows as f64 * self.card_h + (rows.saturating_sub(1)) as f64 * self.gap
     }
 
-    /// Top-left origin of cell `i` within `self.rect`.
     fn cell_origin(&self, i: usize) -> Point {
         let cols = self.columns.max(1);
         let col = i % cols;
@@ -359,22 +316,19 @@ impl CardGrid {
         )
     }
 
-    /// The rect of cell `i`.
     fn cell_rect(&self, i: usize) -> Rect {
         let o = self.cell_origin(i);
         Rect::new(o.x, o.y, o.x + self.cell_w, o.y + self.card_h)
     }
 
-    /// Resolve the column count + column width from the allocated width.
     fn resolve_columns(&mut self) {
         let w = self.rect.width();
         self.columns = self.columns_for_width(w);
         self.cell_w = card_column_width(w, self.columns, self.gap);
     }
 
-    /// Build the inner tree for the cards at their resolved cell rects so they
-    /// lay out, draw, and receive events. Called from `draw` (which has the
-    /// theme + text renderer), mirroring `NavShell`.
+    /// Called from `draw` (which has the theme + text renderer), mirroring
+    /// `NavShell`.
     fn place_children(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let mut taffy = TaffyTree::<()>::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -407,12 +361,7 @@ impl CardGrid {
         }
 
         let rects: Vec<Rect> = (0..self.cards.len()).map(|i| self.cell_rect(i)).collect();
-        for ((card, &node), cell) in self
-            .cards
-            .iter_mut()
-            .zip(nodes.iter())
-            .zip(rects.iter())
-        {
+        for ((card, &node), cell) in self.cards.iter_mut().zip(nodes.iter()).zip(rects.iter()) {
             card.apply_layout(&taffy, node, Point::new(cell.x0, cell.y0));
         }
 
@@ -434,11 +383,11 @@ impl Widget for CardGrid {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Resolve the gap now that we have a theme; the cards are laid out in
-        // an inner tree during draw, so this node is a measured leaf.
-        self.gap = self.gap_override.unwrap_or(theme.gap_standard as f64);
-        let node = _taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        // The cards are laid out in an inner tree during draw, so this node
+        // is a measured leaf.
+        self.gap = self.gap_override.unwrap_or(f64::from(theme.gap_standard));
+        let node = _taffy.leaf_node(Style::default());
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -448,10 +397,13 @@ impl Widget for CardGrid {
         available: taffy::Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let width = known.width.map(|w| w as f64).unwrap_or(match available.width {
-            taffy::AvailableSpace::Definite(w) => w as f64,
-            _ => self.min_card_w,
-        });
+        let width = known.width.map_or(
+            match available.width {
+                taffy::AvailableSpace::Definite(w) => f64::from(w),
+                _ => self.min_card_w,
+            },
+            f64::from,
+        );
         let columns = self.columns_for_width(width);
         let height = self.content_height(columns);
         taffy::Size {
@@ -461,12 +413,12 @@ impl Widget for CardGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.resolve_columns();
     }
@@ -528,7 +480,7 @@ impl Widget for CardGrid {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.cards.iter().map(|c| c.as_ref()).collect()
+        self.cards.iter().map(std::convert::AsRef::as_ref).collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -542,7 +494,7 @@ impl Widget for CardGrid {
         self.rect
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CardGrid"
     }
 
@@ -573,7 +525,6 @@ mod tests {
 
     #[test]
     fn columns_reflow_by_width() {
-        // 260px min + 16 gap: one column under a stride, more as width grows.
         assert_eq!(card_columns(200.0, 260.0, 16.0), 1, "too narrow → 1 col");
         assert_eq!(card_columns(260.0, 260.0, 16.0), 1);
         // 2 cols need 260+16+260 = 536; +16 slack in the formula.
@@ -595,7 +546,10 @@ mod tests {
         assert!((w - 262.6667).abs() < 0.01, "got {w}");
         // The columns + gaps exactly refill the width (they line up edge-to-edge).
         let total = 3.0 * w + 2.0 * 16.0;
-        assert!((total - 820.0).abs() < 0.01, "columns must refill width, got {total}");
+        assert!(
+            (total - 820.0).abs() < 0.01,
+            "columns must refill width, got {total}"
+        );
     }
 
     #[test]
@@ -643,30 +597,47 @@ mod tests {
     #[test]
     fn grid_resolves_columns_from_allocated_width() {
         let g = lay_out_grid(
-            CardGrid::new(dummy_cards(6)).with_min_card_width(260.0).with_gap(16.0),
+            CardGrid::new(dummy_cards(6))
+                .with_min_card_width(260.0)
+                .with_gap(16.0),
             900.0,
             2000.0,
         );
         // 900px → 3 columns of ~(900-32)/3 = 289.3px each.
         assert_eq!(g.columns, 3, "900px / 260-min → 3 columns");
-        assert!((g.cell_w - 289.333).abs() < 0.1, "equal column width, got {}", g.cell_w);
+        assert!(
+            (g.cell_w - 289.333).abs() < 0.1,
+            "equal column width, got {}",
+            g.cell_w
+        );
     }
 
     #[test]
     fn grid_cells_align_to_shared_columns() {
         let g = lay_out_grid(
-            CardGrid::new(dummy_cards(6)).with_min_card_width(260.0).with_gap(16.0),
+            CardGrid::new(dummy_cards(6))
+                .with_min_card_width(260.0)
+                .with_gap(16.0),
             900.0,
             2000.0,
         );
         // Card 0 and card 3 are in the same (first) column → identical x0.
-        assert!((g.cell_rect(0).x0 - g.cell_rect(3).x0).abs() < 0.01, "column 0 x aligns across rows");
+        assert!(
+            (g.cell_rect(0).x0 - g.cell_rect(3).x0).abs() < 0.01,
+            "column 0 x aligns across rows"
+        );
         // Card 0 and card 1 are in adjacent columns → x1 vs x2 separated by one gap.
         let gap_between = g.cell_rect(1).x0 - g.cell_rect(0).x1;
-        assert!((gap_between - 16.0).abs() < 0.5, "adjacent cards separated by one gap, got {gap_between}");
+        assert!(
+            (gap_between - 16.0).abs() < 0.5,
+            "adjacent cards separated by one gap, got {gap_between}"
+        );
         // Every cell has the same width → they line up.
         for i in 0..6 {
-            assert!((g.cell_rect(i).width() - g.cell_w).abs() < 0.01, "cell {i} width matches column");
+            assert!(
+                (g.cell_rect(i).width() - g.cell_w).abs() < 0.01,
+                "cell {i} width matches column"
+            );
         }
     }
 
@@ -687,12 +658,17 @@ mod tests {
     #[test]
     fn grid_narrow_falls_to_single_column() {
         let g = lay_out_grid(
-            CardGrid::new(dummy_cards(4)).with_min_card_width(260.0).with_gap(16.0),
+            CardGrid::new(dummy_cards(4))
+                .with_min_card_width(260.0)
+                .with_gap(16.0),
             300.0,
             2000.0,
         );
         assert_eq!(g.columns, 1, "300px < 2-col stride → single column");
-        assert!((g.cell_w - 300.0).abs() < 0.5, "single column spans full width");
+        assert!(
+            (g.cell_w - 300.0).abs() < 0.5,
+            "single column spans full width"
+        );
     }
 
     // ---- Card surface ----
@@ -719,7 +695,11 @@ mod tests {
     fn card_stretches_to_column_width() {
         // A card with no pinned width fills its column so a stack lines up.
         let rect = lay_out_card(Card::new(Box::new(Text::new("hi"))));
-        assert!((rect.width() - 600.0).abs() < 0.5, "card fills width, got {}", rect.width());
+        assert!(
+            (rect.width() - 600.0).abs() < 0.5,
+            "card fills width, got {}",
+            rect.width()
+        );
     }
 
     #[test]

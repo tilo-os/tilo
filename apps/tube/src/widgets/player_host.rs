@@ -3,7 +3,7 @@
 //!
 //! Tube rebuilds its whole widget tree on every structural change (the
 //! `RebuildHarness` pattern in [`crate::app`]). A `VideoPlayer` owns a live
-//! [`media::MediaEngine`] (a running GStreamer pipeline with real audio), so it
+//! [`media::MediaEngine`] (a running `GStreamer` pipeline with real audio), so it
 //! must **survive** those rebuilds — recreating it every notice/like/navigation
 //! would restart the video. The player therefore lives in [`crate::app::TubeApp`]
 //! behind an `Rc<RefCell<_>>`; each rebuilt watch tree gets a fresh, cheap
@@ -52,7 +52,12 @@ pub struct PlayerHost {
 
 impl PlayerHost {
     pub fn new(player: SharedPlayer, player_h: f32) -> Self {
-        Self { player, player_h, rect: Rect::ZERO, node: None }
+        Self {
+            player,
+            player_h,
+            rect: Rect::ZERO,
+            node: None,
+        }
     }
 }
 
@@ -72,26 +77,24 @@ impl Widget for PlayerHost {
         // The host (not the inner player) is registered in `node_map`, so events
         // route here and delegate — the inner player is never aliased by a raw
         // pointer.
-        let node = taffy
-            .new_leaf(Style {
-                size: taffy::Size { width: percent(1.0), height: length(self.player_h) },
+        let node = super::leaf_node(
+            taffy,
+            Style {
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: length(self.player_h),
+                },
                 flex_shrink: 0.0,
                 ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+            },
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
-        );
+        self.rect = super::layout_rect(taffy, node, origin);
         // Drive the shared player's rect from this host's node.
         self.player.borrow_mut().apply_layout(taffy, node, origin);
     }
@@ -104,7 +107,9 @@ impl Widget for PlayerHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.player.borrow_mut().draw(scene, transform, text_renderer, theme, presence);
+        self.player
+            .borrow_mut()
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -120,11 +125,19 @@ impl Widget for PlayerHost {
         taffy: &TaffyTree<()>,
     ) {
         self.player.borrow_mut().handle_event(
-            event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
         );
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PlayerHost"
     }
 

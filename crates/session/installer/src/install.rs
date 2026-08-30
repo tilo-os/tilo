@@ -228,10 +228,10 @@ pub fn stream_command<F: FnMut(String)>(
                 }
                 Ok(())
             };
-            if let Err(e) = feed() {
-                if e.kind() != std::io::ErrorKind::BrokenPipe {
-                    return Err(e);
-                }
+            if let Err(e) = feed()
+                && e.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(e);
             }
         }
     }
@@ -245,13 +245,13 @@ pub fn stream_command<F: FnMut(String)>(
 
     let status = child.wait()?;
 
-    if !status.success() {
-        if let Some(stderr) = child.stderr.take() {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                if !line.trim().is_empty() {
-                    on_line(format!("error: {line}"));
-                }
+    if !status.success()
+        && let Some(stderr) = child.stderr.take()
+    {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            if !line.trim().is_empty() {
+                on_line(format!("error: {line}"));
             }
         }
     }
@@ -344,8 +344,19 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
-                "qos", "--keymap", "us", "--keyvariant", "dvorak", "--yes",
+                "--disk",
+                "/dev/vda",
+                "--user",
+                "qq",
+                "--filesystem",
+                "btrfs",
+                "--hostname",
+                "qos",
+                "--keymap",
+                "us",
+                "--keyvariant",
+                "dvorak",
+                "--yes",
             ]
         );
     }
@@ -367,13 +378,20 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
-                "qos", "--yes",
+                "--disk",
+                "/dev/vda",
+                "--user",
+                "qq",
+                "--filesystem",
+                "btrfs",
+                "--hostname",
+                "qos",
+                "--yes",
             ]
         );
-        assert!(!args.iter().any(|a| *a == "--timezone"));
-        assert!(!args.iter().any(|a| *a == "--keymap"));
-        assert!(!args.iter().any(|a| *a == "--keyvariant"));
+        assert!(!args.contains(&"--timezone"));
+        assert!(!args.contains(&"--keymap"));
+        assert!(!args.contains(&"--keyvariant"));
     }
 
     #[test]
@@ -391,8 +409,8 @@ mod tests {
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(!args.iter().any(|a| *a == "--keyvariant"));
-        assert!(!args.iter().any(|a| *a == "--keymap"));
+        assert!(!args.contains(&"--keyvariant"));
+        assert!(!args.contains(&"--keymap"));
     }
 
     #[test]
@@ -414,8 +432,18 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
-                "qos", "--keymap", "us", "--encrypt", "--yes",
+                "--disk",
+                "/dev/vda",
+                "--user",
+                "qq",
+                "--filesystem",
+                "btrfs",
+                "--hostname",
+                "qos",
+                "--keymap",
+                "us",
+                "--encrypt",
+                "--yes",
             ]
         );
         // `--encrypt` is a bare flag (no value) and precedes `--yes`.
@@ -423,8 +451,8 @@ mod tests {
         let yes = args.iter().position(|a| *a == "--yes").unwrap();
         assert!(enc < yes, "--encrypt must precede --yes");
         // No PIN / FIDO2 requested → those flags are absent.
-        assert!(!args.iter().any(|a| *a == "--pin"));
-        assert!(!args.iter().any(|a| *a == "--fido2"));
+        assert!(!args.contains(&"--pin"));
+        assert!(!args.contains(&"--fido2"));
     }
 
     #[test]
@@ -448,13 +476,25 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
-                "qos", "--keymap", "us", "--encrypt", "--pin", "--fido2", "--yes",
+                "--disk",
+                "/dev/vda",
+                "--user",
+                "qq",
+                "--filesystem",
+                "btrfs",
+                "--hostname",
+                "qos",
+                "--keymap",
+                "us",
+                "--encrypt",
+                "--pin",
+                "--fido2",
+                "--yes",
             ]
         );
         // The PIN secret must never appear in the argv.
         assert!(
-            !args.iter().any(|a| *a == "1234"),
+            !args.contains(&"1234"),
             "the PIN value must not leak onto the command line"
         );
     }
@@ -476,9 +516,9 @@ mod tests {
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(!args.iter().any(|a| *a == "--encrypt"));
-        assert!(!args.iter().any(|a| *a == "--pin"));
-        assert!(!args.iter().any(|a| *a == "--fido2"));
+        assert!(!args.contains(&"--encrypt"));
+        assert!(!args.contains(&"--pin"));
+        assert!(!args.contains(&"--fido2"));
     }
 
     #[test]
@@ -496,9 +536,9 @@ mod tests {
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(args.iter().any(|a| *a == "--encrypt"));
-        assert!(args.iter().any(|a| *a == "--fido2"));
-        assert!(!args.iter().any(|a| *a == "--pin"));
+        assert!(args.contains(&"--encrypt"));
+        assert!(args.contains(&"--fido2"));
+        assert!(!args.contains(&"--pin"));
     }
 
     #[test]
@@ -507,7 +547,7 @@ mod tests {
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
         assert!(
-            !args.iter().any(|a| *a == "--encrypt"),
+            !args.contains(&"--encrypt"),
             "default options must not request encryption"
         );
     }
@@ -612,7 +652,10 @@ mod tests {
         let mut lines = Vec::new();
         let ok = stream_command(cmd, "x", &[], |l| lines.push(l)).unwrap();
         assert!(!ok, "non-zero exit should map to failure");
-        assert!(lines.iter().any(|l| l.contains("working")), "stdout relayed");
+        assert!(
+            lines.iter().any(|l| l.contains("working")),
+            "stdout relayed"
+        );
         assert!(
             lines.iter().any(|l| l.contains("boom")),
             "stderr relayed on failure"

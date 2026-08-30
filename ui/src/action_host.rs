@@ -1,13 +1,9 @@
 //! Framework-owned action dispatch every app gets by default.
 //!
 //! Adopting the qOS [action model](qos_actions) used to mean each app
-//! copy-pasting the *same* four pieces of plumbing: a slot to bracket the undo
-//! boundary before the first action of an event, the encode-and-dispatch call
-//! itself, a record of the last action so a test can prove an affordance and its
-//! Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the identical action, and
-//! a no-op transport for the on-screen affordance path. That boilerplate is
-//! hoisted here so an app declares only its own domain — its `Action` enum and
-//! resource tree — and embeds one [`ActionHost`] field.
+//! copy-pasting the same undo-bracket, encode-and-dispatch,
+//! last-dispatched, and no-op-transport plumbing. Hoisted here so an app
+//! declares only its own domain and embeds one [`ActionHost`] field.
 //!
 //! ```ignore
 //! struct MyApp { actions: ui::ActionHost, /* … */ }
@@ -48,55 +44,39 @@ use qos_actions::{
     Resource,
 };
 
-/// Framework-owned action dispatch an app embeds as a single field, replacing the
-/// hand-rolled `perform_action` method, the per-app `DiscardTransport`, and the
-/// `action_commit_before` / `last_dispatched` fields every migrated app used to
-/// copy-paste verbatim.
+/// Framework-owned action dispatch an app embeds as a single field, in
+/// place of hand-rolled `perform_action`/`DiscardTransport`/
+/// `last_dispatched` boilerplate.
 ///
-/// [`dispatch`](Self::dispatch) is `perform_action`, once, for everyone: it
-/// brackets the undo boundary, encodes the action, remembers it, and dispatches
-/// it through the toolkit's default local transport (applied via the executor so
-/// it replays byte-identically on peers). The host ([`crate::app::App`]) drains
-/// [`take_committed`](Self::take_committed) after each event — wired through
-/// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
-/// — and records exactly one undo boundary bracketing the event, the same
-/// `record_committed_action` path a Ctrl+K palette dispatch takes.
+/// The undo boundary this brackets carries no author: what crosses this
+/// seam is heads, not identity. It's still reachable by interactive Ctrl+Z
+/// because an author-scoped undo claims unattributed entries too — see
+/// `UndoLog::claimable_by`.
 #[derive(Default)]
 pub struct ActionHost {
-    /// The document heads captured just before the first action of the current
-    /// event was dispatched. The host drains this via
+    /// Drained via
     /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
     /// to record exactly one undo boundary bracketing the action(s).
     commit_before: Option<Vec<ChangeHash>>,
-    /// The last [`EncodedAction`] dispatched. Lets a test prove an affordance and
-    /// the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical
-    /// action — one source of truth, not two code paths.
+    /// Lets a test prove an affordance and the Ctrl+K
+    /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical
+    /// action.
     last_dispatched: Option<EncodedAction>,
 }
 
 impl ActionHost {
-    /// A fresh host with nothing bracketed or dispatched yet.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Dispatch one domain `action` against `doc` under `type_id`. This IS
-    /// `perform_action`, once, for every app:
-    ///
-    /// * **Brackets the undo boundary** — captures `doc.get_heads()` into
-    ///   `commit_before` on the *first* action of the event only. `get_heads`
-    ///   flushes any pending app writes, so the bracket covers only the action's
-    ///   own change; the host reads it back via [`take_committed`](Self::take_committed).
-    /// * **Encodes** the action under `type_id` and remembers it as
-    ///   [`last_dispatched`](Self::last_dispatched).
-    /// * **Dispatches** it through the toolkit's default
-    ///   [`LocalTransport`](qos_actions::LocalTransport) (applied via the executor
-    ///   with a pinned actor + committed change, so it replays byte-identically on
-    ///   peers). Peers receive the resulting change through ordinary CRDT sync, so
-    ///   this local affordance path has nothing extra to replicate.
-    ///
-    /// A dispatch error is logged at WARN and otherwise swallowed, exactly as the
-    /// per-app `perform_action` did — an affordance never panics the app.
+    /// Brackets the undo boundary on the *first* action of the event only
+    /// (`get_heads` flushes pending app writes, so the bracket covers only
+    /// the action's own change), encodes + remembers it as
+    /// [`last_dispatched`](Self::last_dispatched), then dispatches through
+    /// the default [`LocalTransport`](qos_actions::LocalTransport) — applied
+    /// via the executor with a pinned actor, so it replays byte-identically
+    /// on peers. A dispatch error is logged at WARN and swallowed; an
+    /// affordance never panics the app.
     pub fn dispatch<A>(&mut self, doc: &mut AutoCommit, type_id: &str, action: &A)
     where
         A: Action + serde::Serialize,
@@ -242,18 +222,13 @@ impl ActionHost {
             .map_err(|e| InvokeError::Refused(e.to_string()))
     }
 
-    /// Hand the host the heads captured before this event's first action, so it
-    /// records one undo boundary bracketing them. Rising-edge: reading clears it,
-    /// so it returns `Some` once per dispatched batch, then `None`. Wire this
-    /// straight to
+    /// Rising-edge: reading clears it, so it returns `Some` once per
+    /// dispatched batch, then `None`. Wire this straight to
     /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action).
     pub fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
         self.commit_before.take()
     }
 
-    /// The last action dispatched, for `affordance == ActionSpec` covenant tests:
-    /// an app's own control and its Ctrl+K entry must build the byte-identical
-    /// [`EncodedAction`].
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.last_dispatched.as_ref()
     }
@@ -263,12 +238,11 @@ impl ActionHost {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ReadDoc, ScalarValue, ROOT};
+    use automerge::{ROOT, ReadDoc, ScalarValue};
     use qos_actions::{ActionError, Doc, ExecutionLocus};
     use serde::{Deserialize, Serialize};
 
-    /// A minimal real action: set a scalar under a key. Deterministic, no
-    /// wall-clock / RNG — the executor's contract.
+    /// Deterministic, no wall-clock / RNG — the executor's contract.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Put {
         key: String,
@@ -291,27 +265,57 @@ mod tests {
     fn dispatch_applies_the_action_to_the_doc() {
         let mut doc = AutoCommit::new();
         let mut host = ActionHost::new();
-        host.dispatch(&mut doc, PUT_TYPE, &Put { key: "score".into(), value: 42 });
-        assert_eq!(doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(), Some(42));
+        host.dispatch(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "score".into(),
+                value: 42,
+            },
+        );
+        assert_eq!(
+            doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(),
+            Some(42)
+        );
     }
 
     #[test]
     fn brackets_one_undo_boundary_across_several_actions() {
         let mut doc = AutoCommit::new();
         // A pre-existing app write; the bracket must start *after* it.
-        doc.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
+        doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+            .unwrap();
         let heads_before_actions = doc.get_heads();
 
         let mut host = ActionHost::new();
-        host.dispatch(&mut doc, PUT_TYPE, &Put { key: "a".into(), value: 1 });
-        host.dispatch(&mut doc, PUT_TYPE, &Put { key: "b".into(), value: 2 });
+        host.dispatch(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "a".into(),
+                value: 1,
+            },
+        );
+        host.dispatch(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "b".into(),
+                value: 2,
+            },
+        );
 
-        // Only the first action of the event captures the boundary, and it is the
-        // heads as of just before that first action (the flushed app write).
-        let committed = host.take_committed().expect("first dispatch armed the boundary");
-        assert_eq!(committed, heads_before_actions, "bracket covers only the actions");
-        // Rising-edge: a second read yields nothing.
-        assert!(host.take_committed().is_none(), "reading clears the boundary");
+        let committed = host
+            .take_committed()
+            .expect("first dispatch armed the boundary");
+        assert_eq!(
+            committed, heads_before_actions,
+            "bracket covers only the actions"
+        );
+        assert!(
+            host.take_committed().is_none(),
+            "reading clears the boundary"
+        );
     }
 
     #[test]
@@ -319,9 +323,14 @@ mod tests {
         let mut doc = AutoCommit::new();
         let mut host = ActionHost::new();
         assert!(host.last_dispatched().is_none());
-        let action = Put { key: "k".into(), value: 7 };
+        let action = Put {
+            key: "k".into(),
+            value: 7,
+        };
         host.dispatch(&mut doc, PUT_TYPE, &action);
-        let enc = host.last_dispatched().expect("dispatch recorded the action");
+        let enc = host
+            .last_dispatched()
+            .expect("dispatch recorded the action");
         assert_eq!(enc, &EncodedAction::encode(PUT_TYPE, &action).unwrap());
     }
 
@@ -340,34 +349,42 @@ mod tests {
     /// enumerates.
     fn resources() -> Vec<Resource> {
         use qos_actions::{ActionArgs, ActionParam, ActionSpec, ParamType};
-        vec![Resource::new("test.doc:1", "test.doc", "A document")
-            .with_action(
-                ActionSpec::immediate(
-                    "reset",
-                    "Reset score",
-                    PUT_TYPE,
-                    &Put { key: "score".into(), value: 0 },
-                )
-                .unwrap(),
-            )
-            .with_action(ActionSpec::typed(
-                "set-score",
-                "Set score",
-                "42",
-                ExecutionLocus::ClientLocal,
-                vec![ActionParam::required(
-                    "value",
-                    ParamType::Integer,
-                    "The score to record.",
-                )],
-                |args: &ActionArgs| {
-                    EncodedAction::encode(
+        vec![
+            Resource::new("test.doc:1", "test.doc", "A document")
+                .with_action(
+                    ActionSpec::immediate(
+                        "reset",
+                        "Reset score",
                         PUT_TYPE,
-                        &Put { key: "score".into(), value: args.integer("value").unwrap_or(0) },
+                        &Put {
+                            key: "score".into(),
+                            value: 0,
+                        },
                     )
-                    .unwrap()
-                },
-            ))]
+                    .unwrap(),
+                )
+                .with_action(ActionSpec::typed(
+                    "set-score",
+                    "Set score",
+                    "42",
+                    ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required(
+                        "value",
+                        ParamType::Integer,
+                        "The score to record.",
+                    )],
+                    |args: &ActionArgs| {
+                        EncodedAction::encode(
+                            PUT_TYPE,
+                            &Put {
+                                key: "score".into(),
+                                value: args.integer("value").unwrap_or(0),
+                            },
+                        )
+                        .unwrap()
+                    },
+                )),
+        ]
     }
 
     fn key(action: &str) -> String {
@@ -389,7 +406,10 @@ mod tests {
     /// revert something older.
     #[test]
     fn an_externally_invoked_action_brackets_undo_exactly_as_a_local_one() {
-        let action = Put { key: "score".into(), value: 42 };
+        let action = Put {
+            key: "score".into(),
+            value: 42,
+        };
         let encoded = EncodedAction::encode(PUT_TYPE, &action).unwrap();
 
         // Two replicas of the *same* document, so their heads are comparable.
@@ -397,7 +417,8 @@ mod tests {
         // and hash the identical write differently, which would make a
         // cross-document comparison meaningless rather than strict.)
         let mut base = AutoCommit::new();
-        base.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
+        base.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+            .unwrap();
         base.commit();
         let seed_heads = base.get_heads();
         let mut local_doc = AutoCommit::load(&base.save()).unwrap();
@@ -414,7 +435,9 @@ mod tests {
         ext_host
             .dispatch_encoded(&mut ext_doc, encoded, &registry())
             .expect("the external dispatch ran");
-        let ext_bracket = ext_host.take_committed().expect("external armed a boundary");
+        let ext_bracket = ext_host
+            .take_committed()
+            .expect("external armed a boundary");
 
         assert_eq!(
             local_bracket, seed_heads,
@@ -442,13 +465,21 @@ mod tests {
     #[test]
     fn several_external_actions_in_one_event_share_one_boundary() {
         let mut doc = AutoCommit::new();
-        doc.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
+        doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+            .unwrap();
         let before = doc.get_heads();
         let mut host = ActionHost::new();
         let reg = registry();
 
         for (k, v) in [("a", 1), ("b", 2), ("c", 3)] {
-            let enc = EncodedAction::encode(PUT_TYPE, &Put { key: k.into(), value: v }).unwrap();
+            let enc = EncodedAction::encode(
+                PUT_TYPE,
+                &Put {
+                    key: k.into(),
+                    value: v,
+                },
+            )
+            .unwrap();
             host.dispatch_encoded(&mut doc, enc, &reg).unwrap();
         }
 
@@ -463,11 +494,15 @@ mod tests {
     #[test]
     fn an_unknown_action_type_is_refused_without_arming_a_bracket() {
         let mut doc = AutoCommit::new();
-        doc.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
+        doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+            .unwrap();
         let before = doc.get_heads();
         let mut host = ActionHost::new();
 
-        let bogus = EncodedAction { type_id: "nope".into(), payload: b"{}".to_vec() };
+        let bogus = EncodedAction {
+            type_id: "nope".into(),
+            payload: b"{}".to_vec(),
+        };
         let err = host
             .dispatch_encoded(&mut doc, bogus, &registry())
             .expect_err("no decoder is registered for `nope`");
@@ -489,12 +524,17 @@ mod tests {
     fn a_replayed_peer_envelope_does_not_arm_the_local_undo_bracket() {
         // Two replicas at the same state.
         let mut origin = AutoCommit::new();
-        origin.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
+        origin
+            .put(&ROOT, "seed", ScalarValue::Str("s".into()))
+            .unwrap();
         origin.commit();
         let mut peer = AutoCommit::load(&origin.save()).unwrap();
 
         // The origin dispatches; its envelope crosses to the peer.
-        let action = Put { key: "score".into(), value: 9 };
+        let action = Put {
+            key: "score".into(),
+            value: 9,
+        };
         let env = qos_actions::apply_local(
             &mut origin,
             &action,
@@ -503,7 +543,9 @@ mod tests {
         .unwrap();
 
         let mut peer_host = ActionHost::new();
-        peer_host.apply_remote(&mut peer, &env, &registry()).unwrap();
+        peer_host
+            .apply_remote(&mut peer, &env, &registry())
+            .unwrap();
 
         assert_eq!(
             origin.get_heads(),
@@ -553,7 +595,10 @@ mod tests {
             &from_affordance,
             "the headless call dispatched the affordance's exact action"
         );
-        assert_eq!(doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(), Some(42));
+        assert_eq!(
+            doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(),
+            Some(42)
+        );
     }
 
     /// Bad arguments are refused before the document is touched *and* before a
@@ -563,7 +608,8 @@ mod tests {
     fn a_projected_invocation_with_bad_arguments_changes_nothing() {
         let resources = resources();
         let mut doc = AutoCommit::new();
-        doc.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
+        doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+            .unwrap();
         let before = doc.get_heads();
         let mut host = ActionHost::new();
 
@@ -600,7 +646,10 @@ mod tests {
         )
         .expect("reset takes nothing");
 
-        assert_eq!(doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(), Some(0));
+        assert_eq!(
+            doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(),
+            Some(0)
+        );
     }
 
     /// A stale address is refused as an address problem, distinct from an

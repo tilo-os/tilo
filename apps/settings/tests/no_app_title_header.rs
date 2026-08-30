@@ -11,8 +11,8 @@
 
 use std::collections::HashMap;
 
-use settings::categories::Category;
 use settings::SettingsApp;
+use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
 use ui::text_render::TextRenderer;
 use ui::widget::Widget;
@@ -68,10 +68,10 @@ fn lay_out(app: &mut SettingsApp) {
 /// Every accessible name rendered anywhere in the composed tree.
 fn rendered_names(app: &SettingsApp) -> Vec<String> {
     fn walk(w: &dyn Widget, out: &mut Vec<String>) {
-        if let Some(node) = w.accessibility() {
-            if let Some(name) = node.name {
-                out.push(name);
-            }
+        if let Some(node) = w.accessibility()
+            && let Some(name) = node.name
+        {
+            out.push(name);
         }
         for c in w.children() {
             walk(c, out);

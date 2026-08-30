@@ -16,13 +16,13 @@ use iroh_base::{EndpointAddr, PublicKey};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 
-use qos_user_identity::{DeviceCert, RevocationList};
+use qos_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 
 use crate::auth::{self, Hello, HelloAck2, PeerRole};
 use crate::client::RelayClient;
 use crate::config::{PeerRelayConfig, RelayConfig};
 use crate::metrics::Metrics;
-use crate::peer::{WorkspaceRegistry, now_ns, run_peer};
+use crate::peer::{WorkspaceAutobind, WorkspaceRegistry, now_ns, run_peer};
 use crate::policy::TrustPolicy;
 use crate::store::load_or_create_iroh_secret;
 use crate::transport::{ALPN, Envelope, MAX_FRAME_BYTES};
@@ -48,8 +48,9 @@ pub enum RelayError {
     Identity(String),
 }
 
-/// A running relay. Dropping the handle stops the daemon (and every
-/// federation dial task with it).
+/// A running relay. Prefer [`Relay::shutdown`]; dropping the handle also
+/// stops the daemon and every federation dial task, but leaves peers to
+/// notice by timeout.
 pub struct Relay {
     /// Iroh endpoint the daemon accepts on.
     pub endpoint: Endpoint,
@@ -77,6 +78,25 @@ struct AbortOnDrop(JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+impl Drop for Relay {
+    fn drop(&mut self) {
+        // Stop reconnect loops before closing the shared endpoint.  An
+        // explicit close also tells connected peers about a host shutdown
+        // immediately instead of making them wait for QUIC's idle timeout.
+        if let Ok(mut tasks) = self.peer_relay_tasks.lock() {
+            tasks.clear();
+        }
+        // `Relay` is normally dropped inside Tokio, but Drop must remain safe
+        // in synchronous teardown and after a runtime has already stopped.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let endpoint = self.endpoint.clone();
+            runtime.spawn(async move {
+                endpoint.close().await;
+            });
+        }
     }
 }
 
@@ -113,12 +133,15 @@ impl Relay {
     /// handshake + dispatches to `run_peer` for every inbound
     /// connection.
     pub async fn start(cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
+        validate_relay_identity(&identity)?;
         std::fs::create_dir_all(&cfg.state_root)?;
         let secret_bytes = load_or_create_iroh_secret(&cfg.state_root)?;
         let secret = iroh::SecretKey::from_bytes(&secret_bytes);
 
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(secret)
+            .bind_addr(cfg.iroh_listen)
+            .map_err(|e| RelayError::Iroh(format!("invalid iroh listen address: {e}")))?
             .bind()
             .await
             .map_err(|e| RelayError::Iroh(e.to_string()))?;
@@ -126,26 +149,33 @@ impl Relay {
         // Build workspace registry.
         let mut wsmap: HashMap<u64, SharedWorkspace> = HashMap::new();
         for binding in &cfg.workspaces {
-            let rt = WorkspaceRuntime::open(
+            let mut rt = WorkspaceRuntime::open(
                 &cfg.state_root,
                 binding.id,
                 binding.pin,
                 Membership::default(),
             )?;
+            rt.admit_authenticated = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
             wsmap.insert(binding.id, Arc::new(AsyncMutex::new(rt)));
         }
         let workspaces: WorkspaceRegistry = Arc::new(AsyncMutex::new(wsmap));
 
         let metrics = Arc::new(Metrics::default());
 
+        let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
         let handler = RelayProtocol {
             workspaces: workspaces.clone(),
             trust_policy: cfg.trust_policy.clone(),
-            revocations: Arc::new(std::sync::RwLock::new(identity.revocations.clone())),
+            revocations: revocations.clone(),
             own_user_pk: identity.user_public_key,
             own_cert: identity.device_cert.clone(),
             own_sk: identity.device_signing_key.clone(),
             metrics: metrics.clone(),
+            autobind: matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser).then(|| {
+                WorkspaceAutobind {
+                    state_root: cfg.state_root.clone(),
+                }
+            }),
         };
         let router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
@@ -158,6 +188,50 @@ impl Relay {
         // local `WorkspaceRuntime::fanout_delta` — no new fan-out.
         let peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let state_root = cfg.state_root.clone();
+            let base_revocations = identity.revocations.clone();
+            let live_revocations = revocations;
+            let task = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let Ok(entries) = crate::store::load_revocations(&state_root) else {
+                        continue;
+                    };
+                    let mut next = base_revocations.clone();
+                    let mut valid = true;
+                    for entry in entries {
+                        if next.insert(entry).is_err() {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if valid && let Ok(mut current) = live_revocations.write() {
+                        *current = next;
+                    }
+                }
+            });
+            peer_relay_tasks.lock().unwrap().push(AbortOnDrop(task));
+        }
+        {
+            let state_root = cfg.state_root.clone();
+            let live_metrics = metrics.clone();
+            let task = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    if let Err(error) =
+                        crate::store::save_metrics(&state_root, &live_metrics.snapshot())
+                    {
+                        tracing::warn!(%error, "could not persist relay metrics snapshot");
+                    }
+                }
+            });
+            peer_relay_tasks.lock().unwrap().push(AbortOnDrop(task));
+        }
         for peer_cfg in cfg.peer_relays.iter().cloned() {
             let task = spawn_peer_relay_dial(
                 peer_cfg,
@@ -184,16 +258,48 @@ impl Relay {
         })
     }
 
+    /// Whether this relay currently counts `device` as subscribed to
+    /// `workspace_id`.
+    ///
+    /// This is the relay's own belief, which is what routing acts on: a
+    /// device is here from the moment its `Subscribe` is accepted until
+    /// the connection closes, and a delta published in between is fanned
+    /// out to it rather than queued. There is no way to learn a peer has
+    /// gone before its close arrives, so anything that depends on the
+    /// departure having been noticed has to ask.
+    pub async fn is_subscribed(&self, workspace_id: u64, device: &[u8; 32]) -> bool {
+        let ws = self.workspaces.lock().await.get(&workspace_id).cloned();
+        match ws {
+            Some(ws) => ws.lock().await.has_subscriber(device),
+            None => false,
+        }
+    }
+
+    /// Stop the relay and tell every peer it has gone.
+    ///
+    /// Dropping the handle also stops it, but abandons the QUIC
+    /// connections rather than closing them: each peer keeps this relay
+    /// as a live subscriber until its own idle timeout, and for that
+    /// whole window fans out to a connection nobody reads instead of
+    /// queueing for store-and-forward. Deltas in that window are neither
+    /// delivered nor queued. Closing the endpoint sends `CONNECTION_CLOSE`
+    /// straight away, so peers drop the subscription and queue instead.
+    pub async fn shutdown(self) {
+        // Stop reconnecting first: the dial loop would otherwise open a
+        // fresh connection while the endpoint is closing.
+        self.peer_relay_tasks.lock().unwrap().clear();
+        self.endpoint.close().await;
+    }
+
     /// Add a peer relay after startup — used by tests + the eventual
     /// admin CLI. Same reconnect-with-backoff loop as the config-time
     /// path.
     pub fn add_peer_relay(&self, peer: PeerRelayConfig) {
-        let node_id = match parse_iroh_node_id(&peer.iroh_node_id) {
-            Some(id) => id,
-            None => {
-                tracing::warn!(?peer.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
-                return;
-            }
+        let node_id = if let Some(id) = parse_iroh_node_id(&peer.iroh_node_id) {
+            id
+        } else {
+            tracing::warn!(?peer.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
+            return;
         };
         self.add_peer_relay_at(EndpointAddr::new(node_id), peer.label, peer.priority);
     }
@@ -246,11 +352,17 @@ impl Relay {
     ) -> Result<(), RelayError> {
         let mut map = self.workspaces.lock().await;
         if let Some(existing) = map.get(&workspace_id).cloned() {
-            existing.lock().await.membership.set(members);
+            let mut existing = existing.lock().await;
+            existing.membership.set(members);
+            existing
+                .store
+                .save_membership(&existing.membership.devices)?;
             return Ok(());
         }
-        let mut rt = WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
+        let mut rt =
+            WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
         rt.membership.set(members);
+        rt.store.save_membership(&rt.membership.devices)?;
         map.insert(workspace_id, Arc::new(AsyncMutex::new(rt)));
         Ok(())
     }
@@ -259,6 +371,37 @@ impl Relay {
     pub fn own_user_public_key(&self) -> [u8; 32] {
         self.own_user_public_key
     }
+}
+
+fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
+    verify_device_cert_at(&identity.device_cert, now_ns())
+        .map_err(|error| RelayError::Identity(format!("invalid host certificate: {error}")))?;
+    if identity.device_cert.user_public_key != identity.user_public_key {
+        return Err(RelayError::Identity(
+            "host certificate does not chain to the configured user public key".into(),
+        ));
+    }
+    if identity.device_cert.device_public_key
+        != identity.device_signing_key.verifying_key().to_bytes()
+    {
+        return Err(RelayError::Identity(
+            "host certificate does not match the configured device signing key".into(),
+        ));
+    }
+    if !identity.device_cert.capabilities.can_act_as_host {
+        return Err(RelayError::Identity(
+            "device certificate is not host-capable".into(),
+        ));
+    }
+    if identity
+        .revocations
+        .is_revoked(&identity.device_cert.device_public_key)
+    {
+        return Err(RelayError::Identity(
+            "host device certificate is revoked".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The `ProtocolHandler` iroh wires to the ALPN.
@@ -271,6 +414,7 @@ struct RelayProtocol {
     own_cert: DeviceCert,
     own_sk: ed25519_dalek::SigningKey,
     metrics: Arc<Metrics>,
+    autobind: Option<WorkspaceAutobind>,
 }
 
 impl std::fmt::Debug for RelayProtocol {
@@ -310,22 +454,28 @@ async fn handle_conn(
         .map_err(|e| RelayError::Iroh(format!("decode hello: {e}")))?;
     let now_ns = crate::peer::now_ns();
     let revs = ctx.revocations.read().unwrap().clone();
-    let client_peer = match auth::accept_hello(&hello, &ctx.own_user_pk, &ctx.trust_policy, &revs, now_ns) {
-        Ok(p) => p,
-        Err(e) => {
-            ctx.metrics.inc_auth_rejected();
-            return Err(RelayError::Iroh(format!("auth reject: {e}")));
-        }
-    };
+    let client_peer =
+        match auth::accept_hello(&hello, &ctx.own_user_pk, &ctx.trust_policy, &revs, now_ns) {
+            Ok(p) => p,
+            Err(e) => {
+                ctx.metrics.inc_auth_rejected();
+                return Err(RelayError::Iroh(format!("auth reject: {e}")));
+            }
+        };
     // 2. Reply with HelloAck.
     let mut server_nonce = [0u8; 32];
     {
         use rand::RngCore;
         rand::thread_rng().fill_bytes(&mut server_nonce);
     }
-    let ack = auth::build_hello_ack(ctx.own_cert.clone(), &ctx.own_sk, server_nonce, &hello.client_nonce);
-    let ack_bytes = postcard::to_allocvec(&ack)
-        .map_err(|e| RelayError::Iroh(format!("encode ack: {e}")))?;
+    let ack = auth::build_hello_ack(
+        ctx.own_cert.clone(),
+        &ctx.own_sk,
+        server_nonce,
+        &hello.client_nonce,
+    );
+    let ack_bytes =
+        postcard::to_allocvec(&ack).map_err(|e| RelayError::Iroh(format!("encode ack: {e}")))?;
     write_frame(&mut send, &ack_bytes)
         .await
         .map_err(|e| RelayError::Iroh(format!("write ack: {e}")))?;
@@ -344,30 +494,42 @@ async fn handle_conn(
 
     // 4. Hand off to the peer loop.
     let workspaces = ctx.workspaces.clone();
-    let res = run_peer(client_peer, recv, send, workspaces).await;
-    connection.closed().await;
+    let res = run_peer(
+        client_peer,
+        connection.clone(),
+        recv,
+        send,
+        workspaces,
+        ctx.autobind,
+        ctx.revocations,
+        ctx.own_user_pk,
+        ctx.metrics,
+    )
+    .await;
     if let Err(e) = res {
         tracing::debug!("peer session ended with error: {e}");
     }
+    connection.close(0u32.into(), b"relay session ended");
     Ok(())
 }
 
 /// Read a 4-byte-LE-prefix framed message from `recv`.
-pub async fn read_frame(
-    recv: &mut RecvStream,
-    max: usize,
-) -> Result<Vec<u8>, std::io::Error> {
+pub async fn read_frame(recv: &mut RecvStream, max: usize) -> Result<Vec<u8>, std::io::Error> {
     let mut prefix = [0u8; 4];
-    recv.read_exact(&mut prefix).await.map_err(std::io::Error::other)?;
+    recv.read_exact(&mut prefix)
+        .await
+        .map_err(std::io::Error::other)?;
     let n = u32::from_le_bytes(prefix) as usize;
     if n == 0 || n > max {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("frame size {} out of range", n),
+            format!("frame size {n} out of range"),
         ));
     }
     let mut buf = vec![0u8; n];
-    recv.read_exact(&mut buf).await.map_err(std::io::Error::other)?;
+    recv.read_exact(&mut buf)
+        .await
+        .map_err(std::io::Error::other)?;
     Ok(buf)
 }
 
@@ -397,17 +559,24 @@ fn spawn_peer_relay_dial(
     let label = peer_cfg.label.clone();
     let priority = peer_cfg.priority;
     tokio::spawn(async move {
-        let node_id = match node_id {
-            Some(id) => id,
-            None => {
-                tracing::warn!(?peer_cfg.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
-                return;
-            }
+        let node_id = if let Some(id) = node_id {
+            id
+        } else {
+            tracing::warn!(?peer_cfg.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
+            return;
         };
         let addr = EndpointAddr::new(node_id);
         peer_relay_dial_loop(
-            addr, label, priority, endpoint, own_user_pk, own_cert, own_sk,
-            revocations, workspaces, metrics,
+            addr,
+            label,
+            priority,
+            endpoint,
+            own_user_pk,
+            own_cert,
+            own_sk,
+            revocations,
+            workspaces,
+            metrics,
         )
         .await;
     })
@@ -436,8 +605,16 @@ fn spawn_peer_relay_dial_at(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         peer_relay_dial_loop(
-            addr, label, priority, endpoint, own_user_pk, own_cert, own_sk,
-            revocations, workspaces, metrics,
+            addr,
+            label,
+            priority,
+            endpoint,
+            own_user_pk,
+            own_cert,
+            own_sk,
+            revocations,
+            workspaces,
+            metrics,
         )
         .await;
     })
@@ -661,11 +838,7 @@ async fn run_peer_relay_session(
 /// Advertise our local materialized heads for `ws_id` to the upstream
 /// peer relay via a [`Envelope::SyncRequest`]. Best-effort: a workspace
 /// we don't host, or a closed outbound, is silently skipped.
-async fn send_sync_request_for(
-    client: &RelayClient,
-    workspaces: &WorkspaceRegistry,
-    ws_id: u64,
-) {
+async fn send_sync_request_for(client: &RelayClient, workspaces: &WorkspaceRegistry, ws_id: u64) {
     let have_heads = {
         let map = workspaces.lock().await;
         match map.get(&ws_id) {
@@ -689,4 +862,50 @@ fn parse_iroh_node_id(hex_id: &str) -> Option<PublicKey> {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     PublicKey::from_bytes(&arr).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qos_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};
+
+    fn identity(capabilities: DeviceCapabilities) -> RelayIdentity {
+        let (root, user) = UserIdentity::generate("test user", 1);
+        let (device_signing_key, device) = DeviceIdentity::generate("test host", 2);
+        let mut device_cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: device.public_key,
+            device_label: device.label,
+            capabilities,
+            issued_at_ns: 3,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut device_cert, &root).unwrap();
+        RelayIdentity {
+            user_public_key: user.public_key,
+            device_signing_key,
+            device_cert,
+            revocations: RevocationList::new(),
+        }
+    }
+
+    #[test]
+    fn valid_host_identity_passes_startup_validation() {
+        validate_relay_identity(&identity(DeviceCapabilities::host())).unwrap();
+    }
+
+    #[test]
+    fn ordinary_device_cannot_start_a_relay() {
+        let error = validate_relay_identity(&identity(DeviceCapabilities::member())).unwrap_err();
+        assert!(error.to_string().contains("not host-capable"));
+    }
+
+    #[test]
+    fn mismatched_device_key_is_rejected_at_startup() {
+        let mut relay = identity(DeviceCapabilities::host());
+        relay.device_signing_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let error = validate_relay_identity(&relay).unwrap_err();
+        assert!(error.to_string().contains("does not match"));
+    }
 }

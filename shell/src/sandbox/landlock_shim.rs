@@ -1,40 +1,22 @@
 //! Landlock launcher shim — in-kernel per-capability FS/net enforcement
-//! layered *on top of* the bwrap + seccomp + netns sandbox
-//! (`plan/security.md` §7.1 "Landlock").
+//! layered on top of the bwrap + seccomp + netns sandbox.
 //!
-//! ## Why a shim
+//! `bwrap` needs broad filesystem access to build the sandbox (mount, bind,
+//! `pivot_root`), so it can't be Landlocked itself. Landlock is path-based
+//! and irrevocable for a process and its descendants, so it has to apply
+//! to the *app* process after bwrap has finished setting up the mount
+//! namespace — hence bwrap execs this shim (via the hidden
+//! `shell __sandbox-exec` subcommand) instead of the app directly, and the
+//! shim execs the app itself once restricted.
 //!
-//! `bwrap` itself needs broad filesystem access to *build* the sandbox
-//! (mount, bind, pivot_root), so we cannot Landlock the `bwrap` process.
-//! Landlock is path-based and irrevocable for a process and all of its
-//! descendants — so it must be applied to the *app* process, after bwrap
-//! has finished setting up the mount namespace. We achieve that by making
-//! bwrap exec a tiny shim (this module, reached via the hidden
-//! `shell __sandbox-exec` subcommand) instead of the app directly. The
-//! shim:
+//! Landlock is never allowed to fail a launch: the ruleset is built
+//! best-effort, and if Landlock is missing or any step errors, the shim
+//! logs and still execs the app — bwrap + seccomp + netns remain in force
+//! regardless.
 //!
-//! 1. parses the resolved FS rule set + net policy from its argv,
-//! 2. builds a Landlock ruleset granting *exactly* those rights
-//!    (read+exec for `--ro` paths, read+write+create for `--rw` paths),
-//!    plus — when `--net-restricted` is present and the kernel ABI
-//!    supports it (ABI ≥ 4) — a deny-all-TCP-bind/connect rule,
-//! 3. calls `restrict_self()`, then
-//! 4. `execvp`s the real app argv (which inherits the restriction).
-//!
-//! ## Graceful degradation
-//!
-//! Landlock is *never* allowed to fail a launch. The ruleset is built in
-//! best-effort mode (`Ruleset::default()` downgrades unsupported access
-//! rights on older kernels). If Landlock is missing entirely, or any
-//! step errors, the shim logs and still execs the app — the bwrap mount
-//! namespace, the seccomp-bpf deny-list, and (when isolated) the empty
-//! network namespace remain in force. Landlock is strictly additive
-//! defence-in-depth.
-//!
-//! The Landlock paths are the *sandbox-side* (destination) paths of the
-//! profile binds, because the shim runs *inside* bwrap's mount namespace
-//! where `/work`, `/usr`, etc. are what actually exist — not the host
-//! source paths.
+//! Paths here are the sandbox-side (destination) paths of the profile
+//! binds: the shim runs inside bwrap's mount namespace, where those are
+//! what actually exist, not the host source paths.
 
 use std::ffi::CString;
 use std::path::PathBuf;
@@ -54,7 +36,7 @@ pub const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
 ///
 /// * V4 is the ABI that introduces network (TCP bind/connect) control,
 ///   which is the highest right we actively *use* here.
-/// * Capping below the IoctlDev right (V5) means device ioctls stay
+/// * Capping below the `IoctlDev` right (V5) means device ioctls stay
 ///   unrestricted, so granted hardware (`/dev/video*`, `/dev/snd`) keeps
 ///   working without us having to special-case `VIDIOC_*`/ALSA ioctls.
 ///
@@ -144,7 +126,6 @@ impl ShimArgs {
                     }
                     i += 1;
                 }
-                // Forward-compat: ignore unknown flags rather than abort.
                 _ => {}
             }
             i += 1;
@@ -180,7 +161,6 @@ pub enum LandlockOutcome {
 }
 
 impl LandlockOutcome {
-    /// Human-readable one-liner for the launch log.
     pub fn describe(self) -> &'static str {
         match self {
             LandlockOutcome::FullyEnforced => "landlock: fully enforced",
@@ -248,26 +228,20 @@ pub fn access_plan(ro: &[PathBuf], rw: &[PathBuf], abi: ABI) -> Vec<FsRule> {
     plan
 }
 
-/// Build the Landlock ruleset from `args` and apply it to the current
-/// process via `restrict_self()`. Best-effort: unsupported rights are
-/// downgraded by the crate. Returns the kernel's restriction status.
+/// Applies the Landlock ruleset described by `args` to the current process.
+/// Best-effort: unsupported rights are downgraded by the crate.
 ///
-/// This is the only function here that performs Landlock syscalls and
-/// permanently restricts the calling process — it must therefore never be
-/// invoked from a unit test (it would lock down the test runner). The
-/// pure pieces it composes ([`access_plan`], [`outcome_from_status`],
-/// [`ShimArgs::parse`]) carry the headless-testable logic.
+/// The only function here that performs Landlock syscalls and permanently
+/// restricts the calling process — never call this from a unit test (it
+/// would lock down the test runner). The pure pieces it composes
+/// ([`access_plan`], [`outcome_from_status`], [`ShimArgs::parse`]) carry
+/// the testable logic.
 fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError> {
     let abi = TARGET_ABI;
 
-    // Handle the FS access space. `Ruleset::default()` is best-effort, so
-    // rights newer than the running kernel are silently dropped instead
-    // of erroring.
     let mut ruleset = Ruleset::default().handle_access(AccessFs::from_all(abi))?;
 
-    // Network: handle the TCP bind/connect access space only when the
-    // workspace is net-restricted. On ABI < 4 `AccessNet::from_all` is
-    // the empty set, so this becomes a no-op — the documented degrade.
+    // ABI < 4 makes AccessNet::from_all empty, so this is a no-op there.
     if args.net_restricted {
         ruleset = ruleset.handle_access(AccessNet::from_all(abi))?;
     }
@@ -291,16 +265,14 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError
         }
     }
 
-    // Note: we add NO `NetPort` rules. Having handled the net access
-    // space (above) with an empty rule set means *all* TCP bind/connect
-    // are denied — exactly the "net restricted" policy.
+    // No `NetPort` rules added: handling the net access space (above)
+    // with an empty rule set denies all TCP bind/connect on its own.
 
     created.restrict_self()
 }
 
-/// Apply the Landlock policy described by `args`, returning the outcome
-/// for logging. Never panics; on any error returns
-/// [`LandlockOutcome::Errored`] after logging.
+/// Never panics; on any error returns [`LandlockOutcome::Errored`] after
+/// logging.
 pub fn apply(args: &ShimArgs) -> LandlockOutcome {
     match build_and_restrict(args) {
         Ok(status) => outcome_from_status(status.ruleset),
@@ -311,13 +283,8 @@ pub fn apply(args: &ShimArgs) -> LandlockOutcome {
     }
 }
 
-/// Entry point for the `shell __sandbox-exec …` hidden subcommand.
-///
-/// Parses the shim argv, applies the Landlock ruleset (best-effort), then
-/// `execvp`s the real app. Diverges: it either replaces the process image
-/// via `execvp` or exits.
-///
-/// `args` is the slice *after* the `__sandbox-exec` token.
+/// Entry point for the `shell __sandbox-exec …` hidden subcommand. `args`
+/// is the slice after the `__sandbox-exec` token itself.
 pub fn run_sandbox_exec(args: &[String]) -> ! {
     let parsed = match ShimArgs::parse(args) {
         Ok(p) => p,
@@ -358,27 +325,24 @@ fn exec_real_command(command: &[String]) -> ! {
         std::process::exit(2);
     };
 
-    let cprogram = match CString::new(program.as_bytes()) {
-        Ok(c) => c,
-        Err(_) => {
-            eprintln!("qos-sandbox-exec: program path contains an interior NUL");
-            std::process::exit(2);
-        }
+    let cprogram = if let Ok(c) = CString::new(program.as_bytes()) {
+        c
+    } else {
+        eprintln!("qos-sandbox-exec: program path contains an interior NUL");
+        std::process::exit(2);
     };
 
-    let cargs: Vec<CString> = match command
+    let cargs: Vec<CString> = if let Ok(v) = command
         .iter()
         .map(|a| CString::new(a.as_bytes()))
         .collect::<Result<_, _>>()
     {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("qos-sandbox-exec: argument contains an interior NUL");
-            std::process::exit(2);
-        }
+        v
+    } else {
+        eprintln!("qos-sandbox-exec: argument contains an interior NUL");
+        std::process::exit(2);
     };
 
-    // Build the NULL-terminated argv pointer array.
     let mut argv_ptrs: Vec<*const libc::c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
     argv_ptrs.push(std::ptr::null());
 
@@ -398,7 +362,7 @@ mod tests {
     use super::*;
 
     fn s(v: &[&str]) -> Vec<String> {
-        v.iter().map(|x| x.to_string()).collect()
+        v.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]
@@ -463,7 +427,6 @@ mod tests {
 
     #[test]
     fn parse_ignores_unknown_flags_before_separator() {
-        // Forward-compat: an unknown `--future-thing` must not abort.
         let args = s(&["--future-thing", "--rw", "/work", "--", "/bin/true"]);
         let parsed = ShimArgs::parse(&args).expect("parse");
         assert_eq!(parsed.rw, vec![PathBuf::from("/work")]);
@@ -472,13 +435,10 @@ mod tests {
 
     #[test]
     fn parse_preserves_command_args_including_double_dash_lookalikes() {
-        // Everything after the first `--` is the command, verbatim.
         let args = s(&["--rw", "/work", "--", "/bin/sh", "-c", "echo --ro"]);
         let parsed = ShimArgs::parse(&args).expect("parse");
         assert_eq!(parsed.command, s(&["/bin/sh", "-c", "echo --ro"]));
     }
-
-    // --- Rule-set construction (ro→read, rw→read+write) -------------
 
     #[test]
     fn access_plan_maps_ro_to_read_and_rw_to_readwrite() {
@@ -488,23 +448,14 @@ mod tests {
         let plan = access_plan(&ro, &rw, abi);
         assert_eq!(plan.len(), 2);
 
-        // ro rule: read access set, must NOT include WriteFile.
-        let ro_rule = plan
-            .iter()
-            .find(|r| r.path == PathBuf::from("/usr"))
-            .unwrap();
+        let ro_rule = plan.iter().find(|r| r.path == *"/usr").unwrap();
         assert_eq!(ro_rule.access, AccessFs::from_read(abi));
         assert!(
             !ro_rule.access.contains(AccessFs::WriteFile),
             "read-only rule must not grant WriteFile"
         );
 
-        // rw rule: full access set, must include WriteFile + MakeReg
-        // (the "write + create" part of "read+write+create").
-        let rw_rule = plan
-            .iter()
-            .find(|r| r.path == PathBuf::from("/work"))
-            .unwrap();
+        let rw_rule = plan.iter().find(|r| r.path == *"/work").unwrap();
         assert_eq!(rw_rule.access, AccessFs::from_all(abi));
         assert!(
             rw_rule.access.contains(AccessFs::WriteFile),
@@ -514,7 +465,6 @@ mod tests {
             rw_rule.access.contains(AccessFs::MakeReg),
             "read-write rule must grant create (MakeReg)"
         );
-        // The rw set is a strict superset of the ro set.
         assert!(
             rw_rule.access.contains(ro_rule.access),
             "read-write access must be a superset of read-only access"
@@ -537,14 +487,8 @@ mod tests {
         );
     }
 
-    // --- Best-effort / degrade path --------------------------------
-
     #[test]
     fn net_access_is_present_at_abi_v4_and_empty_below() {
-        // The documented degrade: on a pre-V4 kernel the network access
-        // space is empty, so `--net-restricted` handling becomes a no-op
-        // (the `handle_access` of an empty set adds nothing) and the
-        // launch is never blocked on it.
         assert!(
             AccessNet::from_all(ABI::V4).contains(AccessNet::ConnectTcp),
             "ABI V4 must expose TCP connect control"
@@ -562,8 +506,7 @@ mod tests {
     #[test]
     fn fs_access_degrades_monotonically_with_abi() {
         // Best-effort relies on newer ABIs being supersets of older ones,
-        // so capping at TARGET_ABI and downgrading on old kernels never
-        // *adds* a right the kernel can't honour.
+        // so downgrading on old kernels never *adds* an unhonourable right.
         assert!(
             AccessFs::from_all(ABI::V4).contains(AccessFs::from_all(ABI::V1)),
             "V4 FS access must be a superset of V1"
@@ -622,8 +565,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_nanos())
         ));
         let ro_dir = base.join("ro");
         std::fs::create_dir_all(&ro_dir).unwrap();
@@ -653,7 +595,6 @@ mod tests {
                 unsafe { libc::_exit(42) };
             }
 
-            // (a) Reading a granted file must still work.
             let read_path =
                 CString::new(ro_dir.join("readable.txt").as_os_str().as_bytes()).unwrap();
             let rfd = unsafe { libc::open(read_path.as_ptr(), libc::O_RDONLY) };
@@ -662,7 +603,6 @@ mod tests {
             }
             unsafe { libc::close(rfd) };
 
-            // (b) Creating/writing a NEW file in the ro dir must fail.
             let write_path = CString::new(ro_dir.join("nope.txt").as_os_str().as_bytes()).unwrap();
             let wfd =
                 unsafe { libc::open(write_path.as_ptr(), libc::O_WRONLY | libc::O_CREAT, 0o600) };
@@ -676,7 +616,7 @@ mod tests {
 
         // Parent: reap and assert.
         let mut status: libc::c_int = 0;
-        unsafe { libc::waitpid(pid, &mut status, 0) };
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
         let _ = std::fs::remove_dir_all(&base);
 
         assert!(libc::WIFEXITED(status), "child did not exit normally");

@@ -55,7 +55,7 @@ Toolkit exception: `browser` embeds Servo for page rendering.
 | `settings` | OS settings hub; owns the shared external-accounts and region/format stores consumed by Mail/Calendar/Sheets/Weather; drives hardware via the `os-actions` crate. |
 | `permissions` | qOS's OS-wide permission model (roles / members / contexts / registered `PermissionDef`s) — both a reusable library and a standalone role/permission editor. |
 | `themes` | Theme studio: browse presets, edit the OS token set live, duplicate/export themes. |
-| `software_store` | App store for the bootc OS ("Software"): Flatpak / OCI apps via the flatpak CLI + Flathub API v2. |
+| `store` | Unified qOS app store: verified registry packages plus Flatpak/Flathub search, details, remotes, install, update, launch, and removal. |
 | `containers` | Rootless-podman + distrobox manager; mirrors live `podman` engine state with lifecycle actions and Logs/Stats/Inspect/Terminal tabs. |
 | `disks` | Disk utility: `lsblk` + `smartctl` topology, proportional partition map, SMART health summary. |
 | `backups` | Snapshot/backup manager: sources, snapshot timeline, storage gauges, retention policy, restore sheet. |

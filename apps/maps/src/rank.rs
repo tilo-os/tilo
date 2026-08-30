@@ -172,11 +172,17 @@ mod tests {
         ];
         let far_km = haversine_m(anchor, places[0].pos) / 1000.0;
         let near_km = haversine_m(anchor, places[1].pos) / 1000.0;
-        assert!(far_km > 400.0 && near_km < 5.0, "fixture: far {far_km:.0}km, near {near_km:.1}km");
+        assert!(
+            far_km > 400.0 && near_km < 5.0,
+            "fixture: far {far_km:.0}km, near {near_km:.1}km"
+        );
 
         rank(&mut places, anchor, "Sankt Nikolai");
 
-        assert_eq!(places[0].id, "near", "the nearer same-named place ranks first");
+        assert_eq!(
+            places[0].id, "near",
+            "the nearer same-named place ranks first"
+        );
         assert_eq!(places[1].id, "far", "the distant namesake follows");
     }
 
@@ -190,7 +196,10 @@ mod tests {
             place("exact", "Munich", LatLon::new(48.30, 11.70)),
         ];
         rank(&mut places, anchor, "munich");
-        assert_eq!(places[0].id, "exact", "exact name match ranks above a prefix match");
+        assert_eq!(
+            places[0].id, "exact",
+            "exact name match ranks above a prefix match"
+        );
     }
 
     /// A duplicate of the same place (same name, ~same point) collapses; a
@@ -205,7 +214,11 @@ mod tests {
         ];
         rank(&mut places, anchor, "Marienplatz");
         let ids: Vec<_> = places.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, vec!["a", "elsewhere"], "co-located dup dropped, namesake kept");
+        assert_eq!(
+            ids,
+            vec!["a", "elsewhere"],
+            "co-located dup dropped, namesake kept"
+        );
     }
 
     /// Accent- and case-insensitive matching: "munchen" matches "München".

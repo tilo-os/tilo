@@ -3,7 +3,7 @@
 //! pipeline (sync → build_layout → compute_layout → apply_layout → draw) on
 //! the same widget tree the interactive `gallery` example builds.
 //!
-//! Run:  cargo run -p ui --example gallery_shots
+//! Run:  cargo run -p ui --example ui-shots -- gallery_shots
 //! Out:  $GALLERY_SHOTS_OUT (default /tmp/gallery_shots) — gallery-dark.png,
 //!       gallery-light.png
 //!
@@ -38,11 +38,10 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-#[path = "common/gallery_scene.rs"]
-mod gallery_scene;
+use super::gallery_scene;
 
 const WIDTH: u32 = 1200;
-const HEIGHT: u32 = 1940;
+const HEIGHT: u32 = 2300;
 
 fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
     let mut state = State::new();
@@ -111,9 +110,10 @@ fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
     println!("wrote {} ({phys_w}x{phys_h} px @ {scale}x)", out.display());
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
-    let dir = std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string());
+    let dir =
+        std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
 
@@ -132,7 +132,13 @@ fn main() {
                     .unwrap_or_else(|| panic!("unknown theme {name:?} — see Theme::ALL"));
                 let slug: String = name
                     .chars()
-                    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() {
+                            c.to_ascii_lowercase()
+                        } else {
+                            '-'
+                        }
+                    })
                     .collect();
                 shoot(&theme, dir.join(format!("gallery-{slug}.png")), scale);
             }

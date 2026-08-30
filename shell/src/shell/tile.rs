@@ -1,45 +1,31 @@
 //! Runtime tile/workspace tree for the nirios shell.
 //!
 //! The serializable, JSON-persisted shape lives in [`crate::shell::state`]:
-//! it carries only symbolic placeholders (`TileContent::AppPlaceholder`,
-//! `TileContent::Stub`) because live `Box<dyn AppWidget>` instances are not
-//! serializable. At boot, the shell hydrates the persisted tree into the
-//! runtime tree defined here, constructing the concrete `AppWidget` for each
-//! `AppPlaceholder` and preserving `Stub` fallbacks verbatim.
-//!
-//! Introduced in Plan 3 Task 15 to wire real `quick-terminal` and
-//! `file-explorer` widgets into the default demo workspace. The runtime tree
-//! mirrors the field layout of [`crate::shell::state::WorkspaceTree`] so the
-//! shell UI (chrome, strips, tabs) can treat both uniformly when it
-//! introspects structure — only the `tile` variant differs.
+//! it carries only symbolic placeholders, since live `Box<dyn AppWidget>`
+//! instances aren't serializable. At boot the shell hydrates the persisted
+//! tree into the runtime tree defined here, constructing the concrete
+//! `AppWidget` for each placeholder. The two mirror each other's field
+//! layout so shell UI can treat them uniformly — only `tile` differs.
 
 use ui::widget::{AppKind as UiAppKind, AppWidget};
 
 use crate::shell::state::{GroupId, StripId, TabId, WindowWidth, WorkspaceId};
 
-/// Content hosted inside a single tab's tile at runtime. Unlike the persisted
-/// [`crate::shell::state::TileContent`], this enum carries live
-/// `Box<dyn AppWidget>` handles for apps that have been successfully
-/// constructed at boot.
-///
-/// Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` §5.
+/// Content hosted inside a single tab's tile at runtime. Unlike the
+/// persisted [`crate::shell::state::TileContent`], this carries live
+/// `Box<dyn AppWidget>` handles for apps constructed at boot.
 pub enum TileContent {
-    /// A live in-process app hosted inside the tile. The trait object's
-    /// `app_kind`/`app_title`/`app_icon` drive presentation and permission
-    /// gating; the underlying `Widget` handles layout/draw/input.
+    /// A live in-process app; `app_kind`/`app_title`/`app_icon` drive
+    /// presentation and permission gating, the `Widget` handles the rest.
     App(Box<dyn AppWidget>),
-    /// A static placeholder rendered as a card — used both for "coming
-    /// soon" apps (e.g. the browser) and as a fallback when an
-    /// `AppWidget::new`/`spawn_default` call fails (spec §9a).
+    /// A static placeholder card — "coming soon" apps (the browser), or a
+    /// fallback when `AppWidget::new`/`spawn_default` fails.
     Stub { kind: UiAppKind, label: String },
 }
 
 impl TileContent {
-    /// The UI-level app kind for this tile. For `App` variants this comes
-    /// from the live `AppWidget`; for `Stub` variants it mirrors the
-    /// placeholder's declared kind. Exposed so the shell chrome can filter
-    /// tabs by kind without having to match on the variant at every call
-    /// site.
+    /// The UI-level app kind, so chrome can filter tabs by kind without
+    /// matching on the variant at every call site.
     pub fn kind(&self) -> UiAppKind {
         match self {
             TileContent::App(w) => w.app_kind(),
@@ -65,9 +51,9 @@ impl std::fmt::Debug for TileContent {
     }
 }
 
-/// A single tab inside a window-group. Carries the live
-/// [`TileContent`] plus the identifiers used by the persisted state layer
-/// so hydration and re-serialisation can reconcile runtime and disk forms.
+/// A single tab inside a window-group: the live [`TileContent`] plus the
+/// identifiers the persisted state layer uses to reconcile runtime and
+/// disk forms.
 pub struct Tab {
     pub id: TabId,
     pub title: String,
@@ -75,11 +61,11 @@ pub struct Tab {
 }
 
 impl Tab {
-    pub fn new(title: impl Into<String>, tile: TileContent) -> Self {
+    pub fn new(title: impl Into<String>, tile_content: TileContent) -> Self {
         Self {
             id: next_runtime_id(),
             title: title.into(),
-            tile,
+            tile: tile_content,
         }
     }
 }
@@ -93,7 +79,7 @@ pub struct WindowGroup {
 
 impl WindowGroup {
     pub fn with_tabs(tabs: Vec<Tab>, width: WindowWidth) -> Self {
-        let active_tab = tabs.first().map(|t| t.id).unwrap_or(0);
+        let active_tab = tabs.first().map_or(0, |t| t.id);
         Self {
             id: next_runtime_id(),
             tabs,
@@ -142,18 +128,13 @@ pub struct WorkspaceTree {
 
 impl WorkspaceTree {
     pub fn new(workspaces: Vec<Workspace>) -> Self {
-        let active = workspaces
-            .first()
-            .map(|w| w.id)
-            .unwrap_or_else(WorkspaceId::new);
+        let active = workspaces.first().map(|w| w.id).unwrap_or_default();
         Self { workspaces, active }
     }
 }
 
-/// Runtime-only id counter for tabs/groups. Starts at a high offset so it
-/// never clashes with ids minted by `crate::shell::state::next_id` during
-/// the same process lifetime (state's counter starts at 1; an offset well
-/// above any realistic persisted value keeps them disjoint).
+/// Runtime-only id counter for tabs/groups, starting at a high offset so
+/// it never clashes with `crate::shell::state::next_id` (which starts at 1).
 fn next_runtime_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(1 << 32);

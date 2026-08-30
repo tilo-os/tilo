@@ -36,7 +36,6 @@ blake3.workspace = true
 # In-memory LRU in front of the on-disk cache.
 moka = { version = "0.12.15", features = ["sync"] }
 hex.workspace = true
-anyhow.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 # Optional decoders — see [features] above.
@@ -46,3 +45,6 @@ media = { path = "../media", optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+
+[lints]
+workspace = true

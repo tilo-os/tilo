@@ -12,17 +12,21 @@
 
 use automerge::transaction::Transactable;
 
-use ui::State;
 use ui::icons::Icon;
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::table;
 use ui::widget::toggle_group::Segment;
 use ui::widget::toolbar::Orientation;
 use ui::widget::{
-    Avatar, Badge, Banner, Breadcrumb, Button, Chart, Checkbox, Chip, Column, Container,
-    Divider, Dropdown, EmptyState, NumberInput, ProgressBar, RingGauge, BarGauge, Row, SearchField,
-    Series, Slider, Spacer, Sparkline, StatTile, TabBar, TabDescriptor, Table, Text, TextInput,
-    Toggle, ToggleGroup, Toolbar, Trend, Widget,
+    Avatar, Badge, Banner, BarGauge, Breadcrumb, Button, Chart, Checkbox, Chip, Column, Container,
+    Divider, Dropdown, EmptyState, NumberInput, ProgressBar, RingGauge, Row, SearchField, Series,
+    Slider, Spacer, Sparkline, StatTile, TabBar, TabDescriptor, Table, Text, TextInput, Toggle,
+    ToggleGroup, Toolbar, Trend, Widget,
+};
+use ui::{
+    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
+    State, TextStyle, TextWeight,
 };
 
 const CARD_W: f32 = 560.0;
@@ -48,7 +52,9 @@ fn card(width: Option<f32>, heading: &str, body: Box<dyn Widget>) -> Box<dyn Wid
         .push(Box::new(Text::new(heading).with_size(15.0)))
         .push(Box::new(Divider::horizontal()))
         .push(body);
-    let mut c = Container::new().with_background().with_child(Box::new(inner));
+    let mut c = Container::new()
+        .with_background()
+        .with_child(Box::new(inner));
     if let Some(w) = width {
         c = c.with_width(w);
     }
@@ -56,7 +62,271 @@ fn card(width: Option<f32>, heading: &str, body: Box<dyn Widget>) -> Box<dyn Wid
 }
 
 fn col(gap: f32) -> Column {
-    Column::new().with_no_padding().with_intrinsic_height().with_gap(gap)
+    Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(gap)
+}
+
+fn specimen_cell(caption: &str, specimen: Text, theme: &Theme, width: f32) -> Box<dyn Widget> {
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_width(width)
+            .with_child(Box::new(
+                col(4.0).push(dim(caption, theme)).push(Box::new(specimen)),
+            )),
+    )
+}
+
+fn specimen_pair(
+    theme: &Theme,
+    before_caption: &str,
+    before: Text,
+    after_caption: &str,
+    after: Text,
+) -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .push(specimen_cell(before_caption, before, theme, 520.0))
+            .push(specimen_cell(after_caption, after, theme, 520.0)),
+    )
+}
+
+/// The gallery's canonical multilingual typography review corpus.
+///
+/// Kept as its own builder so the offscreen regression test renders exactly
+/// the same widget developers inspect in the full component gallery.
+pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
+    card(
+        None,
+        "Typography & Scripts",
+        Box::new(
+            col(9.0)
+                .push(Box::new(
+                    Text::new("A clear hierarchy makes dense interfaces feel calm.")
+                        .with_role(TextRole::Heading, theme),
+                ))
+                .push(Box::new(
+                    Text::new("A quiet page gives every letter room to speak.").with_style(
+                        TextStyle::new(28.0)
+                            .with_line_height(1.25)
+                            .with_weight(TextWeight::Semibold)
+                            .with_family(FontChoice::Serif),
+                    ),
+                ))
+                .push(Box::new(
+                    Text::new(
+                        "Serif specimen — AVATAR · WAVE · To · Ta · Yo · office · affinity · ffi · naïve café.",
+                    )
+                    .with_style(
+                        TextStyle::new(18.0)
+                            .with_line_height(1.5)
+                            .with_family(FontChoice::Serif),
+                    ),
+                ))
+                .push(Box::new(
+                    Text::new(
+                        "Italic serif — Typography should feel composed, never merely typeset.",
+                    )
+                    .with_style(
+                        TextStyle::new(17.0)
+                            .with_line_height(1.5)
+                            .with_italic(true)
+                            .with_family(FontChoice::Serif),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · kerning disabled",
+                    Text::new("AVATAR  WAVE  To Ta Yo").with_style(
+                        TextStyle::new(25.0)
+                            .with_family(FontChoice::Serif)
+                            .with_kerning(false),
+                    ),
+                    "AFTER · kerning enabled",
+                    Text::new("AVATAR  WAVE  To Ta Yo").with_style(
+                        TextStyle::new(25.0)
+                            .with_family(FontChoice::Serif)
+                            .with_kerning(true),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · standard forms",
+                    Text::new("office · affinity · historic 1847").with_style(
+                        TextStyle::new(20.0).with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · discretionary ligatures + small caps",
+                    Text::new("office · affinity · historic 1847").with_style(
+                        TextStyle::new(20.0)
+                            .with_family(FontChoice::Serif)
+                            .with_discretionary_ligatures(true)
+                            .with_small_caps(true),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · proportional lining figures",
+                    Text::new("1847  2026  €12,408.50").with_style(
+                        TextStyle::new(20.0)
+                            .with_family(FontChoice::Serif)
+                            .with_numeric_style(NumericStyle::ProportionalLining),
+                    ),
+                    "AFTER · tabular old-style figures",
+                    Text::new("1847  2026  €12,408.50").with_style(
+                        TextStyle::new(20.0)
+                            .with_family(FontChoice::Serif)
+                            .with_numeric_style(NumericStyle::TabularOldstyle),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · default spacing",
+                    Text::new("A WELL-SPACED HEADING").with_style(
+                        TextStyle::new(18.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · +0.075em tracking",
+                    Text::new("A WELL-SPACED HEADING").with_style(
+                        TextStyle::new(18.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_family(FontChoice::Serif)
+                            .with_tracking(0.075),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · Adwaita Sans wght 300 · opsz 14",
+                    Text::new("Variable fonts adapt continuously").with_style(
+                        TextStyle::new(23.0)
+                            .with_family(FontChoice::Named("Adwaita Sans".into()))
+                            .with_font_variation(OpenTypeTag::WEIGHT, 300.0)
+                            .with_optical_sizing(OpticalSizing::Value(14.0)),
+                    ),
+                    "AFTER · Adwaita Sans wght 720 · optical sizing auto",
+                    Text::new("Variable fonts adapt continuously").with_style(
+                        TextStyle::new(23.0)
+                            .with_family(FontChoice::Named("Adwaita Sans".into()))
+                            .with_font_variation(OpenTypeTag::WEIGHT, 720.0)
+                            .with_optical_sizing(OpticalSizing::Auto),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · ordinary wrapping",
+                    Text::new(
+                        "A balanced heading wraps its thought into lines of comparable visual weight.",
+                    )
+                    .with_style(
+                        TextStyle::new(21.0)
+                            .with_line_height(1.25)
+                            .with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · balanced wrapping",
+                    Text::new(
+                        "A balanced heading wraps its thought into lines of comparable visual weight.",
+                    )
+                    .with_style(
+                        TextStyle::new(21.0)
+                            .with_line_height(1.25)
+                            .with_family(FontChoice::Serif),
+                    )
+                    .with_balanced_wrap(),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · ragged start",
+                    Text::new(
+                        "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+                    )
+                    .with_style(
+                        TextStyle::new(16.0)
+                            .with_line_height(1.5)
+                            .with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · full justification",
+                    Text::new(
+                        "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+                    )
+                    .with_style(
+                        TextStyle::new(16.0)
+                            .with_line_height(1.5)
+                            .with_family(FontChoice::Serif)
+                            .with_align(ParagraphAlign::Justified),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · punctuation inside the measure",
+                    Text::new("“A composed edge,” she wrote, “lets the words lead.”").with_style(
+                        TextStyle::new(20.0)
+                            .with_line_height(1.4)
+                            .with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · opening and closing punctuation hangs",
+                    Text::new("“A composed edge,” she wrote, “lets the words lead.”").with_style(
+                        TextStyle::new(20.0)
+                            .with_line_height(1.4)
+                            .with_family(FontChoice::Serif)
+                            .with_hanging_punctuation(HangingPunctuation::BOTH),
+                    ),
+                ))
+                .push(dim(
+                    "PAGINATION · RichTextLayout enforces configurable 2-line widow/orphan minima at page and column breaks.",
+                    theme,
+                ))
+                .push(Box::new(
+                    Text::new("const greeting = \"Hello, 世界\";")
+                        .with_role(TextRole::Code, theme),
+                ))
+                .push(Box::new(
+                    Text::new("العربية — مرحبًا بالعالم").with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new("עברית — שלום עולם").with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new("हिन्दी — नमस्ते दुनिया  ·  বাংলা — নমস্কার বিশ্ব")
+                        .with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new("ไทย — สวัสดีชาวโลก  ·  日本語 東京  ·  简体中文 上海")
+                        .with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new(
+                        "Thai dictionary wrap (no spaces): ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์",
+                    )
+                    .with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    col(4.0)
+                        .push(Box::new(
+                            Text::new("English auto hyphenation:")
+                                .with_role(TextRole::Body, theme),
+                        ))
+                        .push(Box::new(
+                            Container::new().with_no_padding().with_width(190.0).with_child(
+                                Box::new(
+                                    Text::new("Internationalization demonstrates typography.")
+                                        .with_role(TextRole::Reading, theme)
+                                        .with_auto_hyphenation("en-US"),
+                                ),
+                            ),
+                        )),
+                ))
+                .push(Box::new(
+                    Text::new("Mixed BiDi: Invoice 123 — חשבון ٤٥٦ — total €78")
+                        .with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new("Emoji clusters: 👩🏽‍💻  👨‍👩‍👧‍👦  🏳️‍🌈  🇪🇺")
+                        .with_role(TextRole::Body, theme),
+                )),
+        ),
+    )
 }
 
 /// Build the whole showcase, seeding `state.doc`. `theme` selects dimmed-text
@@ -69,7 +339,10 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     let _ = state.doc.put(&root, "cb_updates", true);
     let _ = state.doc.put(&root, "sld_vol", 0.65);
     let _ = state.doc.put(&root, "dd_quality", "High");
-    let ti = state.doc.put_object(&root, "ti_name", automerge::ObjType::Text).unwrap();
+    let ti = state
+        .doc
+        .put_object(&root, "ti_name", automerge::ObjType::Text)
+        .unwrap();
     let _ = state.doc.splice_text(&ti, 0, 0, "Ada Lovelace");
 
     // Editable table model (lives directly under root, like the old gallery).
@@ -95,9 +368,10 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     let accent = theme.accent_primary;
 
     // ---- Header -----------------------------------------------------------
-    let header = col(4.0)
-        .push(title("qOS UI Toolkit"))
-        .push(dim("Component gallery — one showcase of every general-purpose widget, light & dark", theme));
+    let header = col(4.0).push(title("qOS UI Toolkit")).push(dim(
+        "Component gallery — one showcase of every general-purpose widget, light & dark",
+        theme,
+    ));
 
     // ---- Row 1: controls | inputs -----------------------------------------
     let controls = card(
@@ -126,7 +400,11 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Volume", theme))
                 .push(Box::new(Slider::new("sld_vol", "sld_vol")))
                 .push(Box::new(ToggleGroup::new(
-                    vec![Segment::new("Day"), Segment::new("Week"), Segment::new("Month")],
+                    vec![
+                        Segment::new("Day"),
+                        Segment::new("Week"),
+                        Segment::new("Month"),
+                    ],
                     1,
                 ))),
         ),
@@ -138,9 +416,15 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         Box::new(
             col(12.0)
                 .push(dim("Text field", theme))
-                .push(Box::new(TextInput::new(vec![]).with_id("g_name").with_on_change_path("ti_name")))
+                .push(Box::new(
+                    TextInput::new(vec![])
+                        .with_id("g_name")
+                        .with_on_change_path("ti_name"),
+                ))
                 .push(dim("Search field", theme))
-                .push(Box::new(SearchField::new().with_placeholder("Search components")))
+                .push(Box::new(
+                    SearchField::new().with_placeholder("Search components"),
+                ))
                 .push(dim("Dropdown", theme))
                 .push(Box::new(
                     Dropdown::new(
@@ -150,7 +434,11 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                     .with_placeholder("Quality"),
                 ))
                 .push(dim("Stepper & breadcrumb", theme))
-                .push(Box::new(NumberInput::new(12.0).with_range(0.0, 100.0).with_suffix(" px")))
+                .push(Box::new(
+                    NumberInput::new(12.0)
+                        .with_range(0.0, 100.0)
+                        .with_suffix(" px"),
+                ))
                 .push(Box::new(Breadcrumb::new(vec![
                     "Home".into(),
                     "Projects".into(),
@@ -178,7 +466,9 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Chips — plain, selected, selectable, removable", theme))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Chip::new("Design").with_dot(theme.tokens.colors.semantic.info)))
+                        .push(Box::new(
+                            Chip::new("Design").with_dot(theme.tokens.colors.semantic.info),
+                        ))
                         .push(Box::new(Chip::new("Rust").selected(true)))
                         .push(Box::new(Chip::new("Filter").selectable()))
                         .push(Box::new(Chip::new("alice@example.com").removable())),
@@ -200,7 +490,9 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         Box::new(
             col(14.0)
                 .push(dim("Determinate progress", theme))
-                .push(Box::new(ProgressBar::new(0.65).with_label("Downloading update")))
+                .push(Box::new(
+                    ProgressBar::new(0.65).with_label("Downloading update"),
+                ))
                 .push(dim("Indeterminate progress", theme))
                 .push(Box::new(ProgressBar::indeterminate()))
                 .push(dim("Spinner", theme))
@@ -219,10 +511,27 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         Box::new(
             Row::new()
                 .no_wrap()
-                .push(Box::new(StatTile::new("Requests", "1,284").with_icon(Icon::BarChart).with_delta("12%", Trend::Up)))
-                .push(Box::new(StatTile::new("Errors", "3").with_icon(Icon::Ban).with_value_color(theme.tokens.colors.semantic.danger).with_delta("2", Trend::Down)))
-                .push(Box::new(StatTile::new("Latency", "48 ms").with_icon(Icon::Refresh).with_delta("0%", Trend::Flat)))
-                .push(Box::new(StatTile::new("Uptime", "99.9%").with_icon(Icon::Check).with_value_color(theme.tokens.colors.semantic.success))),
+                .push(Box::new(
+                    StatTile::new("Requests", "1,284")
+                        .with_icon(Icon::BarChart)
+                        .with_delta("12%", Trend::Up),
+                ))
+                .push(Box::new(
+                    StatTile::new("Errors", "3")
+                        .with_icon(Icon::Ban)
+                        .with_value_color(theme.tokens.colors.semantic.danger)
+                        .with_delta("2", Trend::Down),
+                ))
+                .push(Box::new(
+                    StatTile::new("Latency", "48 ms")
+                        .with_icon(Icon::Refresh)
+                        .with_delta("0%", Trend::Flat),
+                ))
+                .push(Box::new(
+                    StatTile::new("Uptime", "99.9%")
+                        .with_icon(Icon::Check)
+                        .with_value_color(theme.tokens.colors.semantic.success),
+                )),
         ),
     );
 
@@ -234,14 +543,19 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
             col(12.0)
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(RingGauge::new(0.72).with_label("72%", "CPU").with_size(110.0)))
                         .push(Box::new(
-                            col(8.0)
-                                .push(dim("Throughput", theme))
-                                .push(Box::new(Sparkline::new(
+                            RingGauge::new(0.72)
+                                .with_label("72%", "CPU")
+                                .with_size(110.0),
+                        ))
+                        .push(Box::new(
+                            col(8.0).push(dim("Throughput", theme)).push(Box::new(
+                                Sparkline::new(
                                     vec![4.0, 7.0, 3.0, 8.0, 6.0, 9.0, 5.0, 11.0, 8.0, 12.0],
                                     accent,
-                                ).with_size(200.0, 52.0))),
+                                )
+                                .with_size(200.0, 52.0),
+                            )),
                         )),
                 ))
                 .push(Box::new(BarGauge::new(0.4).with_label("Disk", "40%")))
@@ -289,24 +603,44 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         "Inline Banners",
         Box::new(
             col(10.0)
-                .push(Box::new(Banner::info("A new version of qOS is available.").with_message("Restart to finish updating.")))
+                .push(Box::new(
+                    Banner::info("A new version of qOS is available.")
+                        .with_message("Restart to finish updating."),
+                ))
                 .push(Box::new(Banner::success("Your changes were saved.")))
-                .push(Box::new(Banner::warning("You're offline.").with_message("Edits will sync when you reconnect.").dismissible()))
-                .push(Box::new(Banner::error("Upload failed.").with_message("Check your connection and try again.").dismissible())),
+                .push(Box::new(
+                    Banner::warning("You're offline.")
+                        .with_message("Edits will sync when you reconnect.")
+                        .dismissible(),
+                ))
+                .push(Box::new(
+                    Banner::error("Upload failed.")
+                        .with_message("Check your connection and try again.")
+                        .dismissible(),
+                )),
         ),
     );
+
+    // ---- Typography conformance (full width) -----------------------------
+    // Keep the multilingual corpus visible in the ordinary gallery so font
+    // policy, fallback, shaping, metrics and BiDi regressions are reviewable
+    // in the same light/dark screenshots as every other component.
+    let typography = build_typography_showcase(theme);
 
     // ---- Empty state (full width, fixed height) ---------------------------
     let empty = card(
         None,
         "Empty State",
         Box::new(
-            Container::new().with_no_padding().with_height(210.0).with_child(Box::new(
-                EmptyState::new("No messages yet")
-                    .with_icon(Icon::Inbox)
-                    .with_message("When you receive mail, it will show up here.")
-                    .with_action("Compose"),
-            )),
+            Container::new()
+                .with_no_padding()
+                .with_height(210.0)
+                .with_child(Box::new(
+                    EmptyState::new("No messages yet")
+                        .with_icon(Icon::Inbox)
+                        .with_message("When you receive mail, it will show up here.")
+                        .with_action("Compose"),
+                )),
         ),
     );
 
@@ -326,6 +660,7 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
             .push(Box::new(Row::new().push(tags).push(feedback)))
             .push(metrics)
             .push(Box::new(Row::new().push(charts).push(navigation)))
+            .push(typography)
             .push(banners)
             .push(empty)
             .push(table_card),

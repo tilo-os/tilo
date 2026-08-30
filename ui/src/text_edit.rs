@@ -18,8 +18,9 @@
 //! [`TextInput`]: crate::widget::TextInput
 
 use crate::text_selection::{
-    Selection, line_boundaries, next_char_boundary, next_word_boundary, prev_char_boundary,
-    prev_word_boundary, word_boundaries,
+    Selection, TextAffinity, TextPosition, grapheme_boundary_at_or_before, line_boundaries,
+    next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
+    word_boundaries,
 };
 
 /// A horizontal / range caret motion. Vertical motion (Up/Down) is the host's
@@ -45,11 +46,8 @@ pub enum Motion {
 /// for `AutoCommit::splice_text` (Automerge `Text` is char-addressed).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Edit {
-    /// Byte offset where the splice begins.
     pub at: usize,
-    /// Number of bytes removed at `at`.
     pub removed: usize,
-    /// Text inserted at `at`.
     pub inserted: String,
 }
 
@@ -69,16 +67,23 @@ impl Edit {
 #[derive(Clone, Debug, Default)]
 pub struct EditCore {
     sel: Selection,
+    affinity: TextAffinity,
 }
 
 impl EditCore {
     /// A collapsed caret at the start.
     pub fn new() -> Self {
-        Self { sel: Selection::collapsed(0) }
+        Self {
+            sel: Selection::collapsed(0),
+            affinity: TextAffinity::Before,
+        }
     }
     /// A collapsed caret at byte `pos`.
     pub fn at(pos: usize) -> Self {
-        Self { sel: Selection::collapsed(pos) }
+        Self {
+            sel: Selection::collapsed(pos),
+            affinity: TextAffinity::Before,
+        }
     }
 
     /// The full selection (anchor + cursor).
@@ -88,6 +93,10 @@ impl EditCore {
     /// Live caret byte offset.
     pub fn caret(&self) -> usize {
         self.sel.cursor
+    }
+    /// Live caret offset plus its visual side at an ambiguous boundary.
+    pub fn caret_position(&self) -> TextPosition {
+        TextPosition::with_affinity(self.sel.cursor, self.affinity)
     }
     /// Whether any characters are selected.
     pub fn has_selection(&self) -> bool {
@@ -101,37 +110,41 @@ impl EditCore {
     /// Move the caret to `byte`, collapsing the selection.
     pub fn set_caret(&mut self, byte: usize) {
         self.sel.move_to(byte);
+        self.affinity = TextAffinity::Before;
+    }
+    /// Move to an exact shaped position, collapsing the selection.
+    pub fn set_caret_position(&mut self, position: TextPosition) {
+        self.sel.move_to(position.byte);
+        self.affinity = position.affinity;
     }
     /// Set both endpoints explicitly.
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
         self.sel = Selection { anchor, cursor };
+        self.affinity = TextAffinity::Before;
     }
     /// Collapse the selection onto the cursor.
     pub fn collapse(&mut self) {
         self.sel.collapse_to_cursor();
     }
 
-    /// Clamp both endpoints into `[0, len]` and onto char boundaries. Call after
+    /// Clamp both endpoints into `[0, len]` and onto grapheme boundaries. Call after
     /// the bound text changed underneath the caret (a remote / external edit) so
     /// motion never slices a code point.
     pub fn clamp_to(&mut self, text: &str) {
-        let clamp = |b: usize| {
-            let mut i = b.min(text.len());
-            while i > 0 && !text.is_char_boundary(i) {
-                i -= 1;
-            }
-            i
-        };
+        let clamp = |b: usize| grapheme_boundary_at_or_before(text, b);
         self.sel.anchor = clamp(self.sel.anchor);
         self.sel.cursor = clamp(self.sel.cursor);
     }
 
     /// Select the entire buffer.
     pub fn select_all(&mut self, text: &str) {
-        self.sel = Selection { anchor: 0, cursor: text.len() };
+        self.sel = Selection {
+            anchor: 0,
+            cursor: text.len(),
+        };
+        self.affinity = TextAffinity::Before;
     }
 
-    /// Byte target for `m` from the current cursor.
     fn target(&self, text: &str, m: Motion) -> usize {
         let c = self.sel.cursor.min(text.len());
         match m {
@@ -151,8 +164,13 @@ impl EditCore {
     /// edge rather than stepping past it — the native editor behaviour.
     pub fn motion(&mut self, text: &str, m: Motion, extend: bool) {
         if !extend && self.has_selection() && matches!(m, Motion::Left | Motion::Right) {
-            let edge = if m == Motion::Left { self.sel.min() } else { self.sel.max() };
+            let edge = if m == Motion::Left {
+                self.sel.min()
+            } else {
+                self.sel.max()
+            };
             self.sel.move_to(edge);
+            self.affinity = TextAffinity::Before;
             return;
         }
         let t = self.target(text, m);
@@ -161,27 +179,42 @@ impl EditCore {
         } else {
             self.sel.move_to(t);
         }
+        self.affinity = TextAffinity::Before;
     }
 
     /// Seat the caret from a click at byte `byte`; `extend` (shift-click) keeps
     /// the anchor so the selection grows.
     pub fn place(&mut self, byte: usize, extend: bool) {
+        self.place_position(TextPosition::new(byte), extend);
+    }
+
+    /// Seat the caret from an exact shaped position.
+    pub fn place_position(&mut self, position: TextPosition, extend: bool) {
         if extend {
-            self.sel.extend_to(byte);
+            self.sel.extend_to(position.byte);
         } else {
-            self.sel.move_to(byte);
+            self.sel.move_to(position.byte);
         }
+        self.affinity = position.affinity;
     }
 
     /// Select the word under `byte` (double-click) and anchor to it.
     pub fn select_word(&mut self, text: &str, byte: usize) {
         let (s, e) = word_boundaries(text, byte);
-        self.sel = Selection { anchor: s, cursor: e };
+        self.sel = Selection {
+            anchor: s,
+            cursor: e,
+        };
+        self.affinity = TextAffinity::Before;
     }
     /// Select the `\n`-delimited line under `byte` (triple-click).
     pub fn select_line(&mut self, text: &str, byte: usize) {
         let (s, e) = line_boundaries(text, byte);
-        self.sel = Selection { anchor: s, cursor: e };
+        self.sel = Selection {
+            anchor: s,
+            cursor: e,
+        };
+        self.affinity = TextAffinity::Before;
     }
 
     /// Insert `s`, replacing any selection. Returns the byte-space [`Edit`] and
@@ -192,8 +225,13 @@ impl EditCore {
         } else {
             (self.sel.cursor, 0)
         };
-        let edit = Edit { at, removed, inserted: s.to_string() };
+        let edit = Edit {
+            at,
+            removed,
+            inserted: s.to_string(),
+        };
         self.sel.move_to(edit.caret_after());
+        self.affinity = TextAffinity::Before;
         edit
     }
 
@@ -204,7 +242,12 @@ impl EditCore {
             let at = self.sel.min();
             let removed = self.sel.max() - at;
             self.sel.move_to(at);
-            return Edit { at, removed, inserted: String::new() };
+            self.affinity = TextAffinity::Before;
+            return Edit {
+                at,
+                removed,
+                inserted: String::new(),
+            };
         }
         let c = self.sel.cursor.min(text.len());
         if c == 0 {
@@ -216,7 +259,12 @@ impl EditCore {
             prev_char_boundary(text, c)
         };
         self.sel.move_to(from);
-        Edit { at: from, removed: c - from, inserted: String::new() }
+        self.affinity = TextAffinity::Before;
+        Edit {
+            at: from,
+            removed: c - from,
+            inserted: String::new(),
+        }
     }
 
     /// Delete forward (Delete key): the selection, else the char (or word) after
@@ -226,7 +274,12 @@ impl EditCore {
             let at = self.sel.min();
             let removed = self.sel.max() - at;
             self.sel.move_to(at);
-            return Edit { at, removed, inserted: String::new() };
+            self.affinity = TextAffinity::Before;
+            return Edit {
+                at,
+                removed,
+                inserted: String::new(),
+            };
         }
         let c = self.sel.cursor.min(text.len());
         if c >= text.len() {
@@ -238,7 +291,12 @@ impl EditCore {
             next_char_boundary(text, c)
         };
         self.sel.move_to(c);
-        Edit { at: c, removed: to - c, inserted: String::new() }
+        self.affinity = TextAffinity::Before;
+        Edit {
+            at: c,
+            removed: to - c,
+            inserted: String::new(),
+        }
     }
 }
 
@@ -306,7 +364,11 @@ mod tests {
         // A plain Left collapses to the LEFT edge of the selection, not 3.
         c.motion(t, Motion::Left, false);
         assert!(!c.has_selection());
-        assert_eq!(c.caret(), 2, "plain left collapses to the selection's near edge");
+        assert_eq!(
+            c.caret(),
+            2,
+            "plain left collapses to the selection's near edge"
+        );
     }
 
     #[test]
@@ -324,7 +386,14 @@ mod tests {
         let t = "abc";
         let mut c = EditCore::at(1);
         let e = c.insert("XY");
-        assert_eq!(e, Edit { at: 1, removed: 0, inserted: "XY".into() });
+        assert_eq!(
+            e,
+            Edit {
+                at: 1,
+                removed: 0,
+                inserted: "XY".into()
+            }
+        );
         assert_eq!(apply(t, &e), "aXYbc");
         assert_eq!(c.caret(), 3, "caret sits after the insert");
 
@@ -377,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn clamp_after_external_shrink_keeps_char_boundaries() {
+    fn clamp_after_external_shrink_keeps_grapheme_boundaries() {
         // "café" — é is two bytes (3..5). Caret past a shrunk text must land on a
         // char boundary, never inside the é.
         let mut c = EditCore::at(20);
@@ -385,6 +454,28 @@ mod tests {
         assert_eq!(c.caret(), "café".len());
         c.set_caret(4); // mid-é byte
         c.clamp_to("café");
-        assert!("café".is_char_boundary(c.caret()), "clamp lands on a char boundary");
+        assert!(
+            "café".is_char_boundary(c.caret()),
+            "clamp lands on a char boundary"
+        );
+
+        let combining = "a\u{301}b";
+        c.set_caret(1); // between the base and combining mark
+        c.clamp_to(combining);
+        assert_eq!(c.caret(), 0, "clamp never lands inside a grapheme");
+    }
+
+    #[test]
+    fn delete_treats_emoji_sequence_as_one_character() {
+        let text = "A👩‍👩‍👧‍👦B";
+        let after_emoji = text.len() - 1;
+        let mut backward = EditCore::at(after_emoji);
+        let edit = backward.delete_backward(text, false);
+        assert_eq!(apply(text, &edit), "AB");
+        assert_eq!(backward.caret(), 1);
+
+        let mut forward = EditCore::at(1);
+        let edit = forward.delete_forward(text, false);
+        assert_eq!(apply(text, &edit), "AB");
     }
 }

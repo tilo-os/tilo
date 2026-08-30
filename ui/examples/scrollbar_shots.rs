@@ -4,7 +4,7 @@
 //! apply_layout → draw) plus a real `CursorMoved` event to exercise the
 //! hovered/active thumb state.
 //!
-//! Run:  cargo run -p ui --example scrollbar_shots
+//! Run:  cargo run -p ui --example ui-shots -- scrollbar_shots
 //! Out:  $SCROLLBAR_SHOTS_OUT (default /tmp/scrollbar_shots) —
 //!       scrollbar-{dark,light}-{idle,active,both}.png
 //!
@@ -62,7 +62,11 @@ fn cursor_at(p: Point) -> winit::event::WindowEvent {
 
 fn shoot(theme: &Theme, out: PathBuf, active: bool, both: bool) {
     let mut state = State::new();
-    let axis = if both { ScrollAxis::Both } else { ScrollAxis::Vertical };
+    let axis = if both {
+        ScrollAxis::Both
+    } else {
+        ScrollAxis::Vertical
+    };
     let mut scroll = Scrollable::new(axis)
         .with_child(long_list(both))
         .with_height(HEIGHT as f32);
@@ -130,16 +134,31 @@ fn shoot(theme: &Theme, out: PathBuf, active: bool, both: bool) {
     println!("wrote {}", out.display());
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
-    let dir = std::env::var("SCROLLBAR_SHOTS_OUT")
-        .unwrap_or_else(|_| "/tmp/scrollbar_shots".to_string());
+    let dir =
+        std::env::var("SCROLLBAR_SHOTS_OUT").unwrap_or_else(|_| "/tmp/scrollbar_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
 
     for (theme, tag) in [(Theme::dark(), "dark"), (Theme::light(), "light")] {
-        shoot(&theme, dir.join(format!("scrollbar-{tag}-idle.png")), false, false);
-        shoot(&theme, dir.join(format!("scrollbar-{tag}-active.png")), true, false);
-        shoot(&theme, dir.join(format!("scrollbar-{tag}-both.png")), true, true);
+        shoot(
+            &theme,
+            dir.join(format!("scrollbar-{tag}-idle.png")),
+            false,
+            false,
+        );
+        shoot(
+            &theme,
+            dir.join(format!("scrollbar-{tag}-active.png")),
+            true,
+            false,
+        );
+        shoot(
+            &theme,
+            dir.join(format!("scrollbar-{tag}-both.png")),
+            true,
+            true,
+        );
     }
 }

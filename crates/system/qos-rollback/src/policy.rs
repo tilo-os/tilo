@@ -1,38 +1,32 @@
 //! Building and satisfying the unseal policy.
 //!
-//! The policy is a three-part `AND`, applied to a policy session in this order —
-//! the order is not cosmetic, because a policy digest is a running hash and
-//! `TPM2_PolicyAuthorize` *resets* it:
+//! The policy is a three-part `AND`, applied in this order — order matters because a policy
+//! digest is a running hash and `TPM2_PolicyAuthorize` *resets* it:
 //!
-//! 1. `TPM2_PolicyPCR` over the signed prediction's PCR set. In a policy session
-//!    this reads the *live* PCRs, so it only produces the expected digest when
-//!    the machine really is in the predicted state.
+//! 1. `TPM2_PolicyPCR` over the signed prediction's PCR set — in a policy session this reads
+//!    the *live* PCRs, so it only produces the expected digest when the machine really is in
+//!    the predicted state.
 //! 2. `TPM2_PolicyAuthorize` with the prediction authority's public key and
-//!    `policyRef = generation`. This checks step 1 produced exactly the digest
-//!    the authority signed, then replaces the session digest with a value
-//!    derived only from the key name and the policy reference. That replacement
-//!    is what lets a firmware update ship a new signature instead of forcing a
-//!    re-seal — and it is also why the generation has to be in `policyRef`, see
-//!    the crate-level notes.
-//! 3. `TPM2_PolicyNV`, asserting `counter <= base + generation`, i.e. the
-//!    rollback floor is at or below this generation.
-//! 4. `TPM2_PolicyAuthValue` when a PIN is in use, so the PIN is checked by the
-//!    TPM as the sealed object's authorisation value and is therefore covered by
-//!    the dictionary-attack lockout (the sealed object must *not* carry the
-//!    `noda` attribute — see [`seal`]).
+//!    `policyRef = generation`: checks step 1 produced exactly the digest the authority
+//!    signed, then replaces the session digest with a value derived only from the key name
+//!    and policy reference — what lets a firmware update ship a new signature instead of
+//!    forcing a re-seal, and why the generation must be in `policyRef` (see crate-level notes).
+//! 3. `TPM2_PolicyNV`, asserting `counter <= base + generation`, i.e. the rollback floor is
+//!    at or below this generation.
+//! 4. `TPM2_PolicyAuthValue` when a PIN is in use, so it's checked by the TPM as the sealed
+//!    object's authorisation value and covered by the dictionary-attack lockout (the sealed
+//!    object must *not* carry `noda` — see [`seal`]).
 //!
 //! # Signing side
 //!
-//! The authority signs `SHA256(approvedPolicy || policyRef)` with the PCR
-//! prediction key. `approvedPolicy` is the digest a trial session reaches after
-//! `TPM2_PolicyPCR` over the *predicted* values, which is why prediction and
-//! signature can both be produced offline, on a build machine with no TPM
+//! The authority signs `SHA256(approvedPolicy || policyRef)` with the PCR prediction key.
+//! `approvedPolicy` is the digest a trial session reaches after `TPM2_PolicyPCR` over the
+//! *predicted* values, so prediction and signature can both be produced offline with no TPM
 //! involvement beyond a trial session.
 //!
-//! A token may carry several predictions ([`Prediction`] list). Unlock tries
-//! each in turn, so one token can cover "before the firmware update" and "after
-//! the firmware update" simultaneously, which removes the window where an update
-//! has been applied but not yet rebooted into.
+//! A token may carry several predictions ([`Prediction`] list); unlock tries each in turn, so
+//! one token can cover before *and* after a firmware update, removing the window where an
+//! update has been applied but not yet rebooted into.
 
 use crate::argv;
 use crate::exec::{Runner, require, trace_failure};
@@ -52,21 +46,22 @@ pub struct Prediction {
     pub label: String,
 }
 
-/// Wrap a raw PKCS#1 v1.5 signature in the `TPMT_SIGNATURE` structure the TPM
-/// expects.
+/// Wrap a raw PKCS#1 v1.5 signature in the `TPMT_SIGNATURE` structure the TPM expects.
 ///
-/// `TPM2_VerifySignature` is what mints the ticket `TPM2_PolicyAuthorize` needs,
-/// and it only runs if the signature is handed over as a TPM structure. Give
-/// `tpm2_verifysignature` the bare OpenSSL output with `--format=rsassa` instead
-/// and it verifies in software, succeeds, and writes no ticket — which then
-/// surfaces one step later as a missing file rather than as "the TPM was never
-/// asked".
+/// `TPM2_VerifySignature` mints the ticket `TPM2_PolicyAuthorize` needs, but only if the
+/// signature is handed over as a TPM structure — `tpm2_verifysignature --format=rsassa` with
+/// the bare OpenSSL output instead verifies in software and writes no ticket, surfacing one
+/// step later as a missing file rather than "the TPM was never asked".
 ///
-/// Layout: `sigAlg` = `TPM_ALG_RSASSA` (0x0014), `hash` = `TPM_ALG_SHA256`
-/// (0x000B), then a `TPM2B_PUBLIC_KEY_RSA` (big-endian size, then the bytes).
+/// Layout: `sigAlg` = `TPM_ALG_RSASSA` (0x0014), `hash` = `TPM_ALG_SHA256` (0x000B), then a
+/// `TPM2B_PUBLIC_KEY_RSA` (big-endian size, then the bytes).
 pub fn marshal_rsassa_sha256(signature: &[u8]) -> Result<Vec<u8>> {
-    let len = u16::try_from(signature.len())
-        .with_context(|| format!("a {}-byte signature does not fit TPM2B_PUBLIC_KEY_RSA", signature.len()))?;
+    let len = u16::try_from(signature.len()).with_context(|| {
+        format!(
+            "a {}-byte signature does not fit TPM2B_PUBLIC_KEY_RSA",
+            signature.len()
+        )
+    })?;
     let mut out = Vec::with_capacity(signature.len() + 6);
     out.extend_from_slice(&0x0014u16.to_be_bytes()); // TPM_ALG_RSASSA
     out.extend_from_slice(&0x000Bu16.to_be_bytes()); // TPM_ALG_SHA256
@@ -88,12 +83,10 @@ pub fn pcr_selection(bank: &str, pcrs: &[u32]) -> String {
 /// Where the image ships the signed predictions it was built with.
 pub const DEFAULT_PREDICTION_DIR: &str = "/usr/share/qos/pcr-predictions";
 
-/// Read the signed predictions for one generation out of a directory.
-///
-/// A device cannot produce these itself: signing needs the private prediction
-/// key, which is deliberately not on the device. A machine that could sign its
-/// own predictions could authorise any measurement state it liked, which is the
-/// whole property `PolicyAuthorize` is there to provide.
+/// Read the signed predictions for one generation out of a directory. A device cannot
+/// produce these itself: signing needs the private prediction key, deliberately not on the
+/// device — a machine that could sign its own predictions could authorise any measurement
+/// state it liked, defeating the whole point of `PolicyAuthorize`.
 pub fn load_signed_predictions(dir: &Path, generation: u64) -> Result<Vec<Prediction>> {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
@@ -179,22 +172,18 @@ impl Workspace {
     }
 }
 
-/// Flush every transient object, loaded session and saved session.
-///
-/// A bare `swtpm` socket has no resource manager, so it runs out of object slots
-/// after three loads; `/dev/tpmrm0` on real hardware does not. Flushing between
-/// steps costs nothing and makes the code behave the same either way. Failures
-/// are ignored on purpose — there is frequently nothing to flush.
+/// Flush every transient object, loaded session and saved session. A bare `swtpm` socket has
+/// no resource manager and runs out of object slots after three loads (`/dev/tpmrm0` on real
+/// hardware does not); flushing between steps keeps behaviour the same either way. Failures
+/// are ignored on purpose — often there's nothing to flush.
 pub fn flush(runner: &dyn Runner) {
     for flag in ["-t", "-l", "-s"] {
         let _ = runner.run("tpm2_flushcontext", &argv![flag], None);
     }
 }
 
-/// Load the prediction authority's public key and return its TPM Name.
-///
-/// The Name is what `TPM2_PolicyAuthorize` commits to, so it — not the PEM — is
-/// what a sealed token is bound to.
+/// Load the prediction authority's public key and return its TPM Name — that, not the PEM,
+/// is what `TPM2_PolicyAuthorize` commits to and what a sealed token is bound to.
 pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> Result<Vec<u8>> {
     flush(runner);
     let ctx = ws.path("signkey.ctx");
@@ -202,10 +191,14 @@ pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> R
         runner,
         "tpm2_loadexternal",
         &argv![
-            "-C", "o",
-            "-G", "rsa",
-            "-u", public_key_pem.as_os_str(),
-            "-c", ctx.as_os_str(),
+            "-C",
+            "o",
+            "-G",
+            "rsa",
+            "-u",
+            public_key_pem.as_os_str(),
+            "-c",
+            ctx.as_os_str(),
         ],
         "loading the PCR prediction public key",
     )?;
@@ -221,11 +214,9 @@ pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> R
     Ok(bytes)
 }
 
-/// Compute the digest a `TPM2_PolicyPCR` over `pcr_values` reaches.
-///
-/// `pcr_values` is a `tpm2_pcrread -o` blob: the predicted measurements. Pass
-/// `None` to use the machine's live PCRs, which is what enrollment does when it
-/// is generating its own first prediction on the machine itself.
+/// Compute the digest a `TPM2_PolicyPCR` over `pcr_values` reaches. `pcr_values` is a
+/// `tpm2_pcrread -o` blob (the predicted measurements); pass `None` to use the machine's live
+/// PCRs, as enrollment does when generating its own first prediction on the machine itself.
 pub fn approved_policy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -245,7 +236,12 @@ pub fn approved_policy(
         args.push(OsStr::new("-f"));
         args.push(p.as_os_str());
     }
-    let r = require(runner, "tpm2_policypcr", &args, "computing the PCR policy digest");
+    let r = require(
+        runner,
+        "tpm2_policypcr",
+        &args,
+        "computing the PCR policy digest",
+    );
     let out = ws.path("approved.bin");
     let digest = match r {
         Ok(_) => {
@@ -287,17 +283,19 @@ pub fn seal_policy(
         "starting a trial policy session",
     )?;
     let build = || -> Result<Vec<u8>> {
-        // PolicyAuthorize replaces whatever digest precedes it, so in a trial
-        // session there is nothing to build up first: the resulting digest
-        // depends only on the key name and the policy reference. That is exactly
-        // the property that makes the prediction replaceable without re-sealing.
+        // PolicyAuthorize replaces whatever digest precedes it, so in a trial session the resulting
+        // digest depends only on the key name and policy reference — what makes predictions
+        // replaceable without re-sealing.
         require(
             runner,
             "tpm2_policyauthorize",
             &argv![
-                "-S", sess.as_os_str(),
-                "-n", name_file.as_os_str(),
-                "-q", ref_file.as_os_str(),
+                "-S",
+                sess.as_os_str(),
+                "-n",
+                name_file.as_os_str(),
+                "-q",
+                ref_file.as_os_str(),
             ],
             "computing the PolicyAuthorize digest",
         )?;
@@ -305,10 +303,14 @@ pub fn seal_policy(
             runner,
             "tpm2_policynv",
             &argv![
-                "-S", sess.as_os_str(),
-                "-i", operand_file.as_os_str(),
-                &idx, "ule",
-                "-C", &idx,
+                "-S",
+                sess.as_os_str(),
+                "-i",
+                operand_file.as_os_str(),
+                &idx,
+                "ule",
+                "-C",
+                &idx,
             ],
             "computing the rollback-floor PolicyNV digest",
         )?;
@@ -334,8 +336,8 @@ pub fn seal_policy(
     result
 }
 
-/// Sign a prediction. Needs the *private* key, so this runs on the build or
-/// update authority, never on the device.
+/// Sign a prediction. Needs the *private* key, so this runs on the build or update
+/// authority, never on the device.
 pub fn sign_prediction(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -351,9 +353,12 @@ pub fn sign_prediction(
         runner,
         "openssl",
         &argv![
-            "dgst", "-sha256",
-            "-sign", private_key_pem.as_os_str(),
-            "-out", sig.as_os_str(),
+            "dgst",
+            "-sha256",
+            "-sign",
+            private_key_pem.as_os_str(),
+            "-out",
+            sig.as_os_str(),
             msg.as_os_str(),
         ],
         "signing the PCR prediction",
@@ -369,14 +374,10 @@ pub struct SatisfiedSession {
 
 /// Drive a real policy session through the whole chain.
 ///
-/// Returns `Ok(None)` when the *prediction* did not apply — the machine is not
-/// in the predicted state, or the signature is not from the authority, or the
-/// policy reference does not match this generation. That is an expected outcome
-/// when trying several predictions, so it is not an error. `Err` is reserved for
-/// "the mechanism itself is broken".
-///
-/// A failure at the `PolicyNV` step *is* returned as an error, because it means
-/// something quite different: the machine is below the rollback floor.
+/// Returns `Ok(None)` when the *prediction* did not apply (wrong state, wrong signer, or
+/// wrong policy reference) — an expected outcome when trying several predictions, not an
+/// error. `Err` is reserved for "the mechanism itself is broken", except a `PolicyNV` failure
+/// which *is* an error: it means the machine is below the rollback floor.
 #[allow(clippy::too_many_arguments)]
 pub fn satisfy(
     runner: &dyn Runner,
@@ -390,41 +391,50 @@ pub fn satisfy(
     nv_operand: u64,
     with_pin: bool,
 ) -> Result<Option<SatisfiedSession>> {
-    // Stage 1: mint the verification ticket with only the external key loaded.
-    // Keeping the sealed object out of the TPM until the ticket exists is what
-    // lets this run on a TPM with three transient object slots.
+    // Stage 1: mint the verification ticket with only the external key loaded. Keeping the
+    // sealed object out until the ticket exists is what lets this run on a 3-slot TPM.
     flush(runner);
     let sk = ws.path("verifykey.ctx");
-    // `-C o` is load-bearing: `tpm2_loadexternal` defaults to the NULL hierarchy,
-    // and the TPM does not issue a validation ticket for a NULL-hierarchy key.
-    // Without it `tpm2_verifysignature` succeeds, silently writes no ticket, and
-    // the failure appears one step later as `TPM2_PolicyAuthorize` complaining
-    // about a missing file. The key's Name — which is what the policy is bound
-    // to — does not depend on the hierarchy, so this changes nothing about what
-    // a sealed token accepts.
+    // `-C o` is load-bearing: `tpm2_loadexternal` defaults to the NULL hierarchy, and the TPM
+    // issues no validation ticket for a NULL-hierarchy key. Without it, `tpm2_verifysignature`
+    // succeeds silently with no ticket, surfacing later as `TPM2_PolicyAuthorize` missing a file.
+    // The key's Name (what the policy is bound to) doesn't depend on the hierarchy, so this
+    // changes nothing about what a sealed token accepts.
     require(
         runner,
         "tpm2_loadexternal",
         &argv![
-            "-C", "o",
-            "-G", "rsa",
-            "-u", public_key_pem.as_os_str(),
-            "-c", sk.as_os_str(),
+            "-C",
+            "o",
+            "-G",
+            "rsa",
+            "-u",
+            public_key_pem.as_os_str(),
+            "-c",
+            sk.as_os_str(),
         ],
         "loading the PCR prediction public key",
     )?;
     let approved = ws.put("approved.bin", &prediction.approved_policy)?;
-    let mut message = prediction.approved_policy.to_vec();
+    let mut message = prediction.approved_policy.clone();
     message.extend_from_slice(&generation::policy_ref(gen_num));
     let msg = ws.put("verify_msg.bin", &message)?;
-    let sig = ws.put("prediction.sig", &marshal_rsassa_sha256(&prediction.signature)?)?;
+    let sig = ws.put(
+        "prediction.sig",
+        &marshal_rsassa_sha256(&prediction.signature)?,
+    )?;
     let ticket = ws.path("ticket.bin");
     let verify_args = argv![
-        "-c", sk.as_os_str(),
-        "-g", "sha256",
-        "-m", msg.as_os_str(),
-        "-s", sig.as_os_str(),
-        "-t", ticket.as_os_str(),
+        "-c",
+        sk.as_os_str(),
+        "-g",
+        "sha256",
+        "-m",
+        msg.as_os_str(),
+        "-s",
+        sig.as_os_str(),
+        "-t",
+        ticket.as_os_str(),
     ];
     let vs = runner.run("tpm2_verifysignature", &verify_args, None)?;
     let _ = runner.run("tpm2_flushcontext", &argv!["-t"], None);
@@ -455,15 +465,23 @@ pub fn satisfy(
             None,
         )?;
         if !pcr.ok() {
-            bail!("reading live PCRs for the policy session failed: {}", pcr.last_error_line());
+            bail!(
+                "reading live PCRs for the policy session failed: {}",
+                pcr.last_error_line()
+            );
         }
         // Does the live state match what was signed?
         let auth_args = argv![
-            "-S", sess.as_os_str(),
-            "-i", approved.as_os_str(),
-            "-n", name_file.as_os_str(),
-            "-q", ref_file.as_os_str(),
-            "-t", ticket.as_os_str(),
+            "-S",
+            sess.as_os_str(),
+            "-i",
+            approved.as_os_str(),
+            "-n",
+            name_file.as_os_str(),
+            "-q",
+            ref_file.as_os_str(),
+            "-t",
+            ticket.as_os_str(),
         ];
         let auth = runner.run("tpm2_policyauthorize", &auth_args, None)?;
         if !auth.ok() {
@@ -474,10 +492,14 @@ pub fn satisfy(
         let nv = runner.run(
             "tpm2_policynv",
             &argv![
-                "-S", sess.as_os_str(),
-                "-i", operand_file.as_os_str(),
-                &idx, "ule",
-                "-C", &idx,
+                "-S",
+                sess.as_os_str(),
+                "-i",
+                operand_file.as_os_str(),
+                &idx,
+                "ule",
+                "-C",
+                &idx,
             ],
             None,
         )?;

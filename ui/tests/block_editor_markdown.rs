@@ -1,11 +1,11 @@
 //! Round-trip tests for `BlockEditor::from_markdown` /
 //! `BlockEditor::to_markdown`.
 //!
-//! The parser is line-based (no inline marks, no fenced code, no
-//! lists in Phase 2). The serializer joins blocks with a single
-//! blank line and always emits a trailing newline. These two are
-//! inverses for the subset they cover — any document the editor can
-//! produce will re-parse byte-stably back into the same block list.
+//! The parser is line-based, with no inline marks. The serializer joins
+//! blocks with a single blank line and always emits a trailing newline.
+//! These two are inverses for the subset they cover — any document the
+//! editor can produce will re-parse byte-stably back into the same block
+//! list.
 
 use ui::widget::{BlockEditor, BlockKind};
 
@@ -51,14 +51,12 @@ fn empty_document_yields_one_empty_paragraph() {
     assert_eq!(editor.blocks().len(), 1);
     assert!(matches!(editor.blocks()[0].kind, BlockKind::Paragraph));
     assert_eq!(editor.blocks()[0].text(), "");
-    // Re-serialised: a single empty paragraph + trailing newline.
     assert_eq!(editor.to_markdown(), "\n");
 }
 
 #[test]
 fn document_with_only_blank_lines_yields_one_empty_paragraph() {
-    // The parser collapses blank lines — they're separators, not
-    // empty blocks.
+    // The parser collapses blank lines — they're separators, not empty blocks.
     let editor = BlockEditor::from_markdown("\n\n\n");
     assert_eq!(editor.blocks().len(), 1);
     assert_eq!(editor.blocks()[0].text(), "");
@@ -94,8 +92,6 @@ fn heading_with_no_text_is_paragraph() {
     assert_eq!(editor.blocks()[0].text(), "#");
 }
 
-// ---- Phase 3: new block kinds round-trip ----------------------------
-
 #[test]
 fn round_trip_bullet_list_with_indent() {
     let md = "- a\n\n  - b\n\n    - c\n";
@@ -103,15 +99,15 @@ fn round_trip_bullet_list_with_indent() {
     assert_eq!(editor.blocks().len(), 3);
     match &editor.blocks()[0].kind {
         BlockKind::Bullet { indent } => assert_eq!(*indent, 0),
-        k => panic!("expected Bullet, got {:?}", k),
+        k => panic!("expected Bullet, got {k:?}"),
     }
     match &editor.blocks()[1].kind {
         BlockKind::Bullet { indent } => assert_eq!(*indent, 1),
-        k => panic!("expected Bullet, got {:?}", k),
+        k => panic!("expected Bullet, got {k:?}"),
     }
     match &editor.blocks()[2].kind {
         BlockKind::Bullet { indent } => assert_eq!(*indent, 2),
-        k => panic!("expected Bullet, got {:?}", k),
+        k => panic!("expected Bullet, got {k:?}"),
     }
     assert_eq!(editor.to_markdown(), md);
 }
@@ -126,14 +122,14 @@ fn round_trip_checklist_done_and_undone() {
             assert_eq!(*indent, 0);
             assert!(!*done);
         }
-        k => panic!("expected Checklist, got {:?}", k),
+        k => panic!("expected Checklist, got {k:?}"),
     }
     match &editor.blocks()[1].kind {
         BlockKind::Checklist { indent, done } => {
             assert_eq!(*indent, 0);
             assert!(*done);
         }
-        k => panic!("expected Checklist, got {:?}", k),
+        k => panic!("expected Checklist, got {k:?}"),
     }
     assert_eq!(editor.to_markdown(), md);
 }
@@ -147,7 +143,7 @@ fn round_trip_code_block_with_lang() {
         BlockKind::CodeBlock { lang } => {
             assert_eq!(lang.as_deref(), Some("rust"));
         }
-        k => panic!("expected CodeBlock, got {:?}", k),
+        k => panic!("expected CodeBlock, got {k:?}"),
     }
     assert_eq!(editor.blocks()[0].text(), "fn main() {}");
     assert_eq!(editor.to_markdown(), md);
@@ -160,7 +156,7 @@ fn round_trip_code_block_no_lang() {
     assert_eq!(editor.blocks().len(), 1);
     match &editor.blocks()[0].kind {
         BlockKind::CodeBlock { lang } => assert!(lang.is_none()),
-        k => panic!("expected CodeBlock, got {:?}", k),
+        k => panic!("expected CodeBlock, got {k:?}"),
     }
     assert_eq!(editor.to_markdown(), md);
 }

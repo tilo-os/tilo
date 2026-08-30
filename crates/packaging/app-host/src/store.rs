@@ -1,8 +1,6 @@
 //! On-disk content-addressed blob store + per-package eagerly-extracted
 //! payload tree, owning the [`registry`](crate::registry) too.
 //!
-//! Layout:
-//!
 //! ```text
 //! $root/
 //!   store/<hex>              # one file per BLAKE3 hash, content-addressed
@@ -10,9 +8,9 @@
 //!   registry.toml            # `Pinning` + `last_used_unix` index
 //! ```
 //!
-//! `Store` is the synchronous façade the service uses. It wraps a
-//! [`pkg::BlobStore`]-shaped `FsBlobStore` so we can hand the
-//! same store to `pkg::unpack` without copying bytes.
+//! `Store` is the synchronous façade the service uses; it wraps a
+//! [`pkg::BlobStore`]-shaped `FsBlobStore` so the same store can go to
+//! `pkg::unpack` without copying bytes.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -27,16 +25,14 @@ use pkg::id::PackageId;
 
 use crate::registry::{Pinning, Registry, RegistryEntry, RegistryError};
 
-/// File-system content-addressed blob store. Blobs live as
-/// `$root/store/<hex>`. Idempotent — writing the same bytes twice
-/// is a no-op.
+/// File-system content-addressed blob store; blobs live as
+/// `$root/store/<hex>`. Idempotent — writing the same bytes twice is a no-op.
 pub struct FsBlobStore {
     root: PathBuf,
 }
 
 impl FsBlobStore {
-    /// Create / open a store rooted at `root`. The `store/`
-    /// subdirectory is created lazily on first `put`.
+    /// Create / open a store rooted at `root`; the `store/` subdirectory is created lazily on first `put`.
     pub fn new(root: PathBuf) -> io::Result<Self> {
         fs::create_dir_all(&root)?;
         Ok(Self { root })
@@ -46,9 +42,8 @@ impl FsBlobStore {
         self.root.join(hash.to_hex())
     }
 
-    /// Sum the byte length of every blob in the store. Linear in the
-    /// number of blobs; intended for v0 — a future cache could keep a
-    /// running total.
+    /// Sum the byte length of every blob in the store. Linear in blob
+    /// count; fine for v0 — a future cache could keep a running total.
     pub fn total_bytes(&self) -> io::Result<u64> {
         let mut total = 0u64;
         if !self.root.exists() {
@@ -70,10 +65,9 @@ impl BlobStore for FsBlobStore {
         let h = BlobHash::of(bytes);
         let path = self.blob_path(&h);
         if !path.exists() {
-            // The visible blob is either absent or complete. If another
-            // process raced ahead and wrote the same content-addressed bytes,
-            // the destination is correct either way — but a genuine IO
-            // failure is reported rather than dropped.
+            // The visible blob is either absent or complete. If another process
+            // raced ahead and wrote the same content-addressed bytes, the
+            // destination is correct either way — but a genuine IO failure is still reported.
             atomic_file::write(&path, bytes).map_err(BlobStoreError::Io)?;
         }
         Ok(h)
@@ -93,9 +87,9 @@ impl BlobStore for FsBlobStore {
     }
 }
 
-/// Top-level Store: blob store + payload tree manager + registry.
-/// All access goes through `Mutex<Inner>` so the service can hand a
-/// single `Arc<Store>` to its capnp tasks.
+/// Top-level Store: blob store + payload tree manager + registry, all
+/// behind `Mutex<Inner>` so the service can hand a single `Arc<Store>`
+/// to its capnp tasks.
 pub struct Store {
     inner: Mutex<Inner>,
 }
@@ -121,8 +115,7 @@ pub enum StoreError {
 }
 
 impl Store {
-    /// Open / create a store rooted at `root`. Creates every
-    /// required subdirectory.
+    /// Open / create a store rooted at `root`, creating every required subdirectory.
     pub fn open(root: &Path) -> Result<Self, StoreError> {
         fs::create_dir_all(root.join("store"))?;
         fs::create_dir_all(root.join("payloads"))?;
@@ -192,9 +185,8 @@ impl Store {
         Ok(())
     }
 
-    /// Remove a Tried package: drop the registry entry, the payload
-    /// tree, and any blobs unique to this package. Refuses to remove
-    /// Pinned packages.
+    /// Remove a Tried package: drop the registry entry, the payload tree,
+    /// and any blobs unique to it. Refuses to remove Pinned packages.
     pub fn remove(&self, id: PackageId) -> Result<u64, StoreError> {
         let mut inner = self.inner.lock();
         let Some(entry) = inner.registry.get(&id).cloned() else {
@@ -203,16 +195,14 @@ impl Store {
         if entry.pinning == Pinning::Pinned {
             return Err(StoreError::PinnedRemove(id));
         }
-        // Drop the entry from the registry first so blob-sharing
-        // checks reflect the new state.
+        // Drop the entry from the registry first so blob-sharing checks reflect the new state.
         inner.registry.remove(&id);
         inner.persist_registry()?;
         let freed = inner.gc_after_remove(&id, &entry)?;
         Ok(freed)
     }
 
-    /// Insert an entry directly. Used by the `install` flow after
-    /// the qpkg has been parsed + the payload extracted.
+    /// Insert an entry directly; used by the install flow after the qpkg has been parsed + the payload extracted.
     pub fn put_entry(&self, entry: RegistryEntry) -> Result<(), StoreError> {
         let mut inner = self.inner.lock();
         inner.registry.insert(entry);
@@ -220,16 +210,14 @@ impl Store {
         Ok(())
     }
 
-    /// Lock + hand out the inner blob store for an `install`
-    /// operation that needs to ingest several blobs and then unpack
-    /// them via `pkg::unpack`.
+    /// Lock + hand out the inner blob store for an install operation that
+    /// needs to ingest several blobs and then unpack via `pkg::unpack`.
     pub fn with_blobs<R>(&self, f: impl FnOnce(&mut FsBlobStore) -> R) -> R {
         let mut inner = self.inner.lock();
         f(&mut inner.blobs)
     }
 
-    /// `(total_bytes, by_pinning)` reported from on-disk reality:
-    /// blob-store occupancy + payload-tree occupancy.
+    /// (`total_bytes`, `by_pinning`) reported from on-disk reality: blob-store occupancy + payload-tree occupancy.
     pub fn disk_usage(&self) -> Result<DiskUsage, StoreError> {
         let inner = self.inner.lock();
         let payloads_root = inner.root.join("payloads");
@@ -242,9 +230,8 @@ impl Store {
         }
         let pinned_bytes = by_pinning.get(&Pinning::Pinned).copied().unwrap_or(0);
         let tried_bytes = by_pinning.get(&Pinning::Tried).copied().unwrap_or(0);
-        // The blob-store is content-addressed so blobs are shared
-        // across packages — we report total = store + payloads to
-        // surface both axes (caller can decide which it cares about).
+        // Blobs are content-addressed and shared across packages, so we
+        // report total = store + payloads, surfacing both axes.
         Ok(DiskUsage {
             total_bytes: store_total
                 .saturating_add(pinned_bytes)
@@ -255,8 +242,7 @@ impl Store {
         })
     }
 
-    /// Total store-only bytes (blob-store + every payload tree).
-    /// Used by the GC heuristic.
+    /// Total store-only bytes (blob-store + every payload tree); used by the GC heuristic.
     pub fn total_bytes_for_gc(&self) -> Result<u64, StoreError> {
         let u = self.disk_usage()?;
         Ok(u.total_bytes)
@@ -282,27 +268,26 @@ impl Inner {
         self.registry.save(&self.root.join("registry.toml"))
     }
 
-    /// Remove the payload tree, then sweep blobs that are no longer
-    /// referenced by any remaining entry. We re-derive the live
-    /// blob set from the remaining entries' manifest+collection
-    /// hashes; for v0 a simpler strategy works: drop the payload
-    /// tree only, and rely on a later full sweep for the blob layer.
-    /// Returns the bytes freed from the payload tree.
-    fn gc_after_remove(&mut self, id: &PackageId, _entry: &RegistryEntry) -> Result<u64, StoreError> {
+    /// Remove the payload tree, then (for v0) leave blob-layer sweeping
+    /// to a later full sweep rather than re-deriving the live blob set
+    /// from remaining entries. Returns the bytes freed from the payload tree.
+    fn gc_after_remove(
+        &mut self,
+        id: &PackageId,
+        _entry: &RegistryEntry,
+    ) -> Result<u64, StoreError> {
         let payload_dir = self.root.join("payloads").join(id.to_hex());
         let freed = dir_size(&payload_dir).unwrap_or(0);
         if payload_dir.exists() {
             fs::remove_dir_all(&payload_dir)?;
         }
-        // NOTE: we deliberately keep blobs in the content-addressed
-        // store; another package may reference the same content.
-        // A `garbage-collect` sweep is left to a follow-up.
+        // NOTE: blobs deliberately stay in the content-addressed store —
+        // another package may reference the same content; a garbage-collect sweep is a follow-up.
         Ok(freed)
     }
 }
 
-/// Recursive byte sum of every regular file under `path`. Returns
-/// `0` if the dir is absent.
+/// Recursive byte sum of every regular file under `path`; returns 0 if the dir is absent.
 pub(crate) fn dir_size(path: &Path) -> io::Result<u64> {
     if !path.exists() {
         return Ok(0);

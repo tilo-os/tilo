@@ -5,15 +5,31 @@
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -60,14 +76,22 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (vw, vh) = parse_flag(&args, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or((dw, dh));
-        let w = parse_flag(&args, "--width").and_then(|s| s.parse().ok()).unwrap_or(vw);
-        let h = parse_flag(&args, "--height").and_then(|s| s.parse().ok()).unwrap_or(vh);
+        let w = parse_flag(&args, "--width")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(vw);
+        let h = parse_flag(&args, "--height")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(vh);
         // Screenshots + tests default to the hermetic sample source — never
         // the disk or a camera device. `--disk` (or `CAMERA_SHOTS_DISK`) opts
         // into the real live source (honoring `--dir`/`CAMERA_DIR`) to capture
         // the real empty-library / no-camera / offline-scan states.
         let disk = has_flag(&args, "--disk") || std::env::var_os("CAMERA_SHOTS_DISK").is_some();
-        let root = if disk { camera::app_root() } else { camera::shots_root() };
+        let root = if disk {
+            camera::app_root()
+        } else {
+            camera::shots_root()
+        };
         render_shot_to_png(root, (w, h), &out)?;
         return Ok(());
     }
@@ -76,7 +100,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, camera::app_root(), "dev.qos.camera"));
+        std::process::exit(ui::headless::run(
+            spec,
+            camera::app_root(),
+            "dev.qos.camera",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.camera");
@@ -119,7 +147,12 @@ fn emit_photos(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> 
     }
     // The QR poster is written lossless (PNG) so the offline scanner decodes
     // it cleanly.
-    let (qr, _) = camera::frame::scanner_frame(4, 900, 640, "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;");
+    let (qr, _) = camera::frame::scanner_frame(
+        4,
+        900,
+        640,
+        "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;",
+    );
     camera::library::write_photo(dir, &qr, PhotoFormat::Png)?;
     Ok(())
 }
@@ -152,7 +185,7 @@ fn parse_flag(args: &[String], flag: &str) -> Option<String> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
@@ -250,25 +283,31 @@ mod tests {
     fn viewport_flag_seeds_dimensions_and_width_height_override() {
         let args: Vec<String> = ["camera", "--shots", "out.png", "--viewport", "1280x800"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         let (dw, dh) = DEFAULT_SHOTS_VIEWPORT;
         let (vw, vh) = parse_flag(&args, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or((dw, dh));
-        let w = parse_flag(&args, "--width").and_then(|s| s.parse().ok()).unwrap_or(vw);
-        let h = parse_flag(&args, "--height").and_then(|s| s.parse::<u32>().ok()).unwrap_or(vh);
+        let w = parse_flag(&args, "--width")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(vw);
+        let h = parse_flag(&args, "--height")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(vh);
         assert_eq!((w, h), (1280, 800));
 
         // An explicit --width still wins over the alias.
         let args2: Vec<String> = ["camera", "--viewport", "1280x800", "--width", "640"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         let (vw2, _vh2) = parse_flag(&args2, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or((dw, dh));
-        let w2 = parse_flag(&args2, "--width").and_then(|s| s.parse().ok()).unwrap_or(vw2);
+        let w2 = parse_flag(&args2, "--width")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(vw2);
         assert_eq!(w2, 640);
     }
 }

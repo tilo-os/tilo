@@ -13,12 +13,14 @@
 use ui::portal::{FileFilter, PickRequest};
 
 pub use ui::portal::{
-    MultiChannel as ImportChannel, MultiOutcome as ImportOutcome,
-    PortalChannel as ExportChannel, PortalOutcome as ExportOutcome,
+    MultiChannel as ImportChannel, MultiOutcome as ImportOutcome, PortalChannel as ExportChannel,
+    PortalOutcome as ExportOutcome,
 };
 
 #[cfg(test)]
-pub use ui::portal::{inject_for_test as inject_export_for_test, inject_multi_for_test as inject_import_for_test};
+pub use ui::portal::{
+    inject_for_test as inject_export_for_test, inject_multi_for_test as inject_import_for_test,
+};
 
 fn import_filter() -> FileFilter {
     FileFilter::new("vCard")
@@ -70,8 +72,8 @@ mod tests {
 
         // The Save dialog deliberately has no "All files" escape hatch: the
         // output is always a vCard.
-        let export = PickRequest::save("Export contacts", "Export", "contacts.vcf")
-            .filter(export_filter());
+        let export =
+            PickRequest::save("Export contacts", "Export", "contacts.vcf").filter(export_filter());
         assert!(!export.is_multiple());
         assert_eq!(export.suggested_name(), Some("contacts.vcf"));
         assert_eq!(export.filter_names(), vec!["vCard"]);

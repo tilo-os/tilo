@@ -1,0 +1,329 @@
+//! Whole-desktop capture and H.264 handoff to `qos-projector`.
+//!
+//! Capture is dormant until the Win+P controller starts a connection. Scenes
+//! are rendered at a receiver-friendly size on the compositor thread, while
+//! `OpenH264` encoding and socket I/O happen on a one-frame bounded worker. If
+//! encoding falls behind, the newest repaint replaces future work rather than
+//! back-pressuring input and animation.
+
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
+
+use qos_projector::{CaptureProfile, DisplayStreamPolicy, VideoPacket};
+use ui::offscreen::OffscreenRenderer;
+use vello::Scene;
+use vello::kurbo::Affine;
+use vello::peniko::Color;
+
+use crate::collab::encoder::openh264::OpenH264Backend;
+use crate::collab::encoder::{Encoder, EncoderInit, FrameInput};
+
+const VIDEO_SOCKET_ENV: &str = "QOS_PROJECTOR_VIDEO_SOCKET";
+
+struct RawFrame {
+    width: u32,
+    height: u32,
+    presentation_time_us: u64,
+    rgba: Vec<u8>,
+    fps: u32,
+    bitrate_kbps: u32,
+}
+
+struct EncoderWorker {
+    tx: SyncSender<RawFrame>,
+}
+
+impl EncoderWorker {
+    fn spawn(socket_path: PathBuf) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<RawFrame>(1);
+        std::thread::Builder::new()
+            .name("qos-projection-encoder".to_owned())
+            .spawn(move || {
+                let mut stream: Option<UnixStream> = None;
+                let mut encoder: Option<OpenH264Backend> = None;
+                let mut encoder_profile = None;
+                while let Ok(frame) = rx.recv() {
+                    if stream.is_none() {
+                        match UnixStream::connect(&socket_path) {
+                            Ok(connected) => stream = Some(connected),
+                            Err(_) => continue,
+                        }
+                        // A new broker connection must begin with fresh SPS/PPS
+                        // metadata, so never carry an encoder across reconnects.
+                        encoder = None;
+                    }
+                    let profile = (frame.width, frame.height, frame.fps, frame.bitrate_kbps);
+                    if encoder_profile != Some(profile) {
+                        encoder = OpenH264Backend::new(EncoderInit::sdr_h264(
+                            frame.width,
+                            frame.height,
+                            frame.fps,
+                            frame.bitrate_kbps,
+                            1,
+                        ))
+                        .ok();
+                        encoder_profile = encoder.as_ref().map(|_| profile);
+                    }
+                    let Some(active_encoder) = encoder.as_mut() else {
+                        continue;
+                    };
+                    let mut annex_b = Vec::new();
+                    let Ok(stats) =
+                        active_encoder.encode(FrameInput::Rgba(&frame.rgba), &mut annex_b)
+                    else {
+                        continue;
+                    };
+                    let packet = VideoPacket {
+                        width: frame.width,
+                        height: frame.height,
+                        presentation_time_us: frame.presentation_time_us,
+                        keyframe: stats.keyframe,
+                        annex_b,
+                    };
+                    if packet
+                        .write_to(stream.as_mut().expect("stream established above"))
+                        .is_err()
+                    {
+                        stream = None;
+                        encoder = None;
+                        encoder_profile = None;
+                    }
+                }
+            })
+            .expect("projection encoder worker should start");
+        Self { tx }
+    }
+
+    fn submit(&self, frame: RawFrame) -> bool {
+        match self.tx.try_send(frame) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
+        }
+    }
+}
+
+/// Lazily allocated projection capture tap.
+pub struct ProjectionCapture {
+    worker: Option<EncoderWorker>,
+    renderer: Option<OffscreenRenderer>,
+    renderer_size: (u32, u32),
+    started: Instant,
+    last_frame: Option<Instant>,
+    profile_path: Option<PathBuf>,
+    profile: CaptureProfile,
+    hardware_profile: CaptureProfile,
+    accepted_since_pressure: u32,
+    last_profile_check: Option<Instant>,
+}
+
+impl Default for ProjectionCapture {
+    fn default() -> Self {
+        Self::new(default_socket_path())
+    }
+}
+
+impl ProjectionCapture {
+    fn new(socket_path: Option<PathBuf>) -> Self {
+        let profile = DisplayStreamPolicy::default().ceiling(None);
+        Self {
+            worker: socket_path.map(EncoderWorker::spawn),
+            renderer: None,
+            renderer_size: (0, 0),
+            started: Instant::now(),
+            last_frame: None,
+            profile_path: default_profile_path(),
+            profile,
+            hardware_profile: profile,
+            accepted_since_pressure: 0,
+            last_profile_check: None,
+        }
+    }
+
+    /// Render and queue a desktop scene. Returns `true` when a frame was
+    /// accepted for encoding, `false` when throttled or capture is unavailable.
+    pub fn submit_scene(&mut self, scene: &Scene, source_size: (u32, u32)) -> bool {
+        let Some(worker) = self.worker.as_ref() else {
+            return false;
+        };
+        let now = Instant::now();
+        if self
+            .last_profile_check
+            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(1))
+        {
+            if let Some(path) = self.profile_path.as_ref()
+                && let Ok(bytes) = std::fs::read(path)
+                && let Ok(profile) = serde_json::from_slice::<CaptureProfile>(&bytes)
+            {
+                self.profile = profile;
+                self.hardware_profile = clamp_profile(self.hardware_profile, profile);
+            }
+            self.last_profile_check = Some(now);
+        }
+        let effective_profile = clamp_profile(self.hardware_profile, self.profile);
+        let frame_interval = Duration::from_secs_f64(1.0 / f64::from(effective_profile.fps.max(1)));
+        if self
+            .last_frame
+            .is_some_and(|last| now.saturating_duration_since(last) < frame_interval)
+        {
+            return false;
+        }
+        let Some((width, height, scale)) = target_size(source_size, effective_profile) else {
+            return false;
+        };
+        if self.renderer_size != (width, height) {
+            self.renderer = OffscreenRenderer::try_new(width, height).ok();
+            self.renderer_size = (width, height);
+        }
+        let Some(renderer) = self.renderer.as_mut() else {
+            return false;
+        };
+        let mut scaled = Scene::new();
+        scaled.append(scene, Some(Affine::scale(scale)));
+        let rgba = renderer.render(&scaled, Color::from_rgb8(0x1A, 0x1B, 0x26));
+        let accepted = worker.submit(RawFrame {
+            width,
+            height,
+            presentation_time_us: now
+                .saturating_duration_since(self.started)
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64,
+            rgba,
+            fps: effective_profile.fps,
+            bitrate_kbps: effective_profile.bitrate_kbps,
+        });
+        self.last_frame = Some(now);
+        if accepted {
+            self.accepted_since_pressure = self.accepted_since_pressure.saturating_add(1);
+            if self.accepted_since_pressure >= effective_profile.fps.saturating_mul(10) {
+                self.hardware_profile = raise_profile(self.hardware_profile, self.profile);
+                self.accepted_since_pressure = 0;
+            }
+        } else {
+            self.hardware_profile = lower_profile(effective_profile);
+            self.accepted_since_pressure = 0;
+        }
+        accepted
+    }
+}
+
+fn clamp_profile(value: CaptureProfile, ceiling: CaptureProfile) -> CaptureProfile {
+    CaptureProfile::new(
+        value.max_width.min(ceiling.max_width),
+        value.max_height.min(ceiling.max_height),
+        value.fps.min(ceiling.fps),
+        value.bitrate_kbps.min(ceiling.bitrate_kbps),
+    )
+}
+
+fn lower_profile(value: CaptureProfile) -> CaptureProfile {
+    CaptureProfile::new(
+        ((value.max_width * 3 / 4).max(640)) & !1,
+        ((value.max_height * 3 / 4).max(360)) & !1,
+        value.fps,
+        (value.bitrate_kbps * 3 / 4).max(2_500),
+    )
+}
+
+fn raise_profile(value: CaptureProfile, ceiling: CaptureProfile) -> CaptureProfile {
+    CaptureProfile::new(
+        (value.max_width * 4 / 3).min(ceiling.max_width) & !1,
+        (value.max_height * 4 / 3).min(ceiling.max_height) & !1,
+        ceiling.fps,
+        (value.bitrate_kbps * 4 / 3).min(ceiling.bitrate_kbps),
+    )
+}
+
+fn default_profile_path() -> Option<PathBuf> {
+    std::env::var_os("QOS_PROJECTOR_PROFILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .map(|dir| Path::new(&dir).join("qos-projector/capture-profile.json"))
+        })
+}
+
+fn default_socket_path() -> Option<PathBuf> {
+    std::env::var_os(VIDEO_SOCKET_ENV)
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .map(|dir| Path::new(&dir).join("qos-projector/video.sock"))
+        })
+}
+
+fn target_size(source: (u32, u32), profile: CaptureProfile) -> Option<(u32, u32, f64)> {
+    if source.0 == 0 || source.1 == 0 {
+        return None;
+    }
+    let scale = (f64::from(profile.max_width) / f64::from(source.0))
+        .min(f64::from(profile.max_height) / f64::from(source.1))
+        .min(1.0);
+    let even = |value: f64| ((value.floor() as u32).max(2)) & !1;
+    Some((
+        even(f64::from(source.0) * scale),
+        even(f64::from(source.1) * scale),
+        scale,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn target_size_preserves_aspect_and_encoder_evenness() {
+        let smooth = CaptureProfile::new(1280, 720, 60, 6_000);
+        assert_eq!(
+            target_size((1920, 1080), smooth),
+            Some((1280, 720, 2.0 / 3.0))
+        );
+        let (width, height, _) = target_size((1365, 768), smooth).expect("target");
+        assert_eq!(width % 2, 0);
+        assert_eq!(height % 2, 0);
+        assert!(width <= smooth.max_width && height <= smooth.max_height);
+        assert_eq!(
+            target_size((3840, 2160), CaptureProfile::new(3840, 2160, 30, 20_000)),
+            Some((3840, 2160, 1.0))
+        );
+    }
+
+    #[test]
+    fn encoder_pressure_scales_continuously_and_recovers_only_to_the_ceiling() {
+        let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
+        let lowered = lower_profile(ceiling);
+        assert_eq!((lowered.max_width, lowered.max_height), (1920, 1080));
+        assert!(lowered.bitrate_kbps < ceiling.bitrate_kbps);
+        assert_eq!(raise_profile(lowered, ceiling), ceiling);
+
+        let user_limit = CaptureProfile::new(1280, 720, 30, 5_000);
+        assert_eq!(clamp_profile(ceiling, user_limit), user_limit);
+    }
+
+    #[test]
+    fn encoder_worker_sends_a_real_h264_packet_to_a_fake_broker() {
+        let dir = tempfile::tempdir().expect("temp runtime dir");
+        let socket = dir.path().join("video.sock");
+        let listener = UnixListener::bind(&socket).expect("fake broker socket");
+        let worker = EncoderWorker::spawn(socket);
+        assert!(worker.submit(RawFrame {
+            width: 64,
+            height: 64,
+            presentation_time_us: 12_345,
+            rgba: vec![0x44; 64 * 64 * 4],
+            fps: 30,
+            bitrate_kbps: 2_000,
+        }));
+        let (mut stream, _) = listener.accept().expect("encoder connection");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("read timeout");
+        let packet = VideoPacket::read_from(&mut stream).expect("encoded video packet");
+        assert_eq!((packet.width, packet.height), (64, 64));
+        assert_eq!(packet.presentation_time_us, 12_345);
+        assert!(packet.keyframe);
+        assert!(packet.annex_b.windows(4).any(|bytes| bytes == [0, 0, 0, 1]));
+    }
+}

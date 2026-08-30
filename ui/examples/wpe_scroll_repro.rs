@@ -7,7 +7,7 @@
 //!
 //! Run:
 //!   WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
-//!   cargo run -p ui --example wpe_scroll_repro --features webview-wpe --release
+//!   cargo run -p ui --example ui-wpe --features webview-wpe --release -- wpe_scroll_repro
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,7 +26,9 @@ fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {
 }
 
 fn ptr(f: &Option<(Arc<Vec<u8>>, u32, u32)>) -> usize {
-    f.as_ref().map(|(r, _, _)| Arc::as_ptr(r) as usize).unwrap_or(0)
+    f.as_ref()
+        .map(|(r, _, _)| Arc::as_ptr(r) as usize)
+        .unwrap_or(0)
 }
 
 /// Fraction of pixels equal to the top-left pixel (≈1.0 == blank/uniform).
@@ -49,7 +51,10 @@ fn save(f: &Option<(Arc<Vec<u8>>, u32, u32)>, name: &str) {
     if let Some((rgba, w, h)) = f {
         let path = format!("{OUT}/{name}");
         let _ = image::save_buffer(&path, rgba, *w, *h, image::ExtendedColorType::Rgba8);
-        println!("  saved {name} ({w}x{h}, uniformity {:.1}%)", uniformity(rgba) * 100.0);
+        println!(
+            "  saved {name} ({w}x{h}, uniformity {:.1}%)",
+            uniformity(rgba) * 100.0
+        );
     } else {
         println!("  {name}: NO FRAME");
     }
@@ -72,17 +77,20 @@ fn phase(engine: &dyn WebViewEngine, label: &str, window: Duration, mut action: 
     println!("[{label}] distinct new frames: {changes}");
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+pub fn run(args: &[String]) {
     let url = args
-        .get(1)
+        .first()
         .cloned()
         .unwrap_or_else(|| "https://en.wikipedia.org/wiki/Rust_(programming_language)".into());
-    let steps: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60);
+    let steps: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(60);
     println!("url={url} steps={steps}");
 
     let engine: Arc<dyn WebViewEngine> = WpeEngine::new().expect("WpeEngine::new");
-    engine.send(WebViewCommand::Resize { width: W, height: H, scale_factor: 1.0 });
+    engine.send(WebViewCommand::Resize {
+        width: W,
+        height: H,
+        scale_factor: 1.0,
+    });
     engine.send(WebViewCommand::Navigate(url));
 
     // Wait for the first real (non-blank) frame.
@@ -105,7 +113,12 @@ fn main() {
     println!("== scroll DOWN (60 steps) ==");
     phase(&*engine, "down", Duration::from_secs(3), || {
         for _ in 0..steps {
-            engine.send(WebViewCommand::Scroll { dx: 0.0, dy: -120.0, x: 500.0, y: 400.0 });
+            engine.send(WebViewCommand::Scroll {
+                dx: 0.0,
+                dy: -120.0,
+                x: 500.0,
+                y: 400.0,
+            });
             std::thread::sleep(Duration::from_millis(25));
         }
     });
@@ -114,7 +127,12 @@ fn main() {
     println!("== scroll UP (60 steps) ==");
     phase(&*engine, "up", Duration::from_secs(3), || {
         for _ in 0..steps {
-            engine.send(WebViewCommand::Scroll { dx: 0.0, dy: 120.0, x: 500.0, y: 400.0 });
+            engine.send(WebViewCommand::Scroll {
+                dx: 0.0,
+                dy: 120.0,
+                x: 500.0,
+                y: 400.0,
+            });
             std::thread::sleep(Duration::from_millis(25));
         }
     });

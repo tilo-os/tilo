@@ -36,9 +36,8 @@ impl EglExport {
     /// on any failure so the caller can fall back to the SHM path.
     pub fn setup() -> Option<Self> {
         // Default to the first render node; a hybrid machine may need the
-        // node with a working mesa driver (e.g. the AMD iGPU) selected via
-        // QOS_WEBVIEW_DRM_NODE, since a node without a usable driver (an
-        // unsupported dGPU) can't back an EGL display.
+        // node with a working mesa driver selected via QOS_WEBVIEW_DRM_NODE,
+        // since a node without one can't back an EGL display.
         let node_path = std::env::var("QOS_WEBVIEW_DRM_NODE")
             .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
         let node = std::fs::OpenOptions::new()
@@ -74,42 +73,47 @@ impl EglExport {
             }
 
             let cfg_attribs: [ffi::EGLint; 13] = [
-                ffi::EGL_SURFACE_TYPE, ffi::EGL_WINDOW_BIT,
-                ffi::EGL_RENDERABLE_TYPE, ffi::EGL_OPENGL_ES2_BIT,
-                ffi::EGL_RED_SIZE, 8,
-                ffi::EGL_GREEN_SIZE, 8,
-                ffi::EGL_BLUE_SIZE, 8,
-                ffi::EGL_ALPHA_SIZE, 8,
+                ffi::EGL_SURFACE_TYPE,
+                ffi::EGL_WINDOW_BIT,
+                ffi::EGL_RENDERABLE_TYPE,
+                ffi::EGL_OPENGL_ES2_BIT,
+                ffi::EGL_RED_SIZE,
+                8,
+                ffi::EGL_GREEN_SIZE,
+                8,
+                ffi::EGL_BLUE_SIZE,
+                8,
+                ffi::EGL_ALPHA_SIZE,
+                8,
                 ffi::EGL_NONE,
             ];
             let mut config: ffi::EGLConfig = std::ptr::null_mut();
             let mut num_config: ffi::EGLint = 0;
-            if ffi::eglChooseConfig(display, cfg_attribs.as_ptr(), &mut config, 1, &mut num_config)
-                != ffi::EGL_TRUE
+            if ffi::eglChooseConfig(
+                display,
+                cfg_attribs.as_ptr(),
+                &mut config,
+                1,
+                &mut num_config,
+            ) != ffi::EGL_TRUE
                 || num_config < 1
             {
                 tracing::warn!("dmabuf: eglChooseConfig found no config");
                 return None;
             }
-            let ctx_attribs: [ffi::EGLint; 3] =
-                [ffi::EGL_CONTEXT_CLIENT_VERSION, 2, ffi::EGL_NONE];
-            let context = ffi::eglCreateContext(
-                display,
-                config,
-                std::ptr::null_mut(),
-                ctx_attribs.as_ptr(),
-            );
+            let ctx_attribs: [ffi::EGLint; 3] = [ffi::EGL_CONTEXT_CLIENT_VERSION, 2, ffi::EGL_NONE];
+            let context =
+                ffi::eglCreateContext(display, config, std::ptr::null_mut(), ctx_attribs.as_ptr());
             if context.is_null() {
-                tracing::warn!("dmabuf: eglCreateContext failed (0x{:x})", ffi::eglGetError());
+                tracing::warn!(
+                    "dmabuf: eglCreateContext failed (0x{:x})",
+                    ffi::eglGetError()
+                );
                 return None;
             }
             // Surfaceless — WebKit renders offscreen; we never present here.
-            if ffi::eglMakeCurrent(
-                display,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                context,
-            ) != ffi::EGL_TRUE
+            if ffi::eglMakeCurrent(display, std::ptr::null_mut(), std::ptr::null_mut(), context)
+                != ffi::EGL_TRUE
             {
                 tracing::warn!("dmabuf: eglMakeCurrent (surfaceless) failed");
                 return None;
@@ -121,22 +125,27 @@ impl EglExport {
             let export_fn: ffi::PFNEglExportDmabufImageMesa = std::mem::transmute(export_fn);
 
             tracing::info!("dmabuf: EGL {major}.{minor} ready on {node_path}");
-            Some(Self { _node: node, display, query_fn, export_fn })
+            Some(Self {
+                _node: node,
+                display,
+                query_fn,
+                export_fn,
+            })
         }
     }
 
     /// Export a WebKit `EGLImageKHR` to a single-plane dmabuf. Returns
     /// `None` if the image isn't single-plane or the export fails.
-    pub fn export(
-        &self,
-        image: ffi::EGLImageKHR,
-        width: u32,
-        height: u32,
-    ) -> Option<DmabufFrame> {
+    pub fn export(&self, image: ffi::EGLImageKHR, width: u32, height: u32) -> Option<DmabufFrame> {
         unsafe {
             let (mut fourcc, mut num_planes, mut modifier) = (0i32, 0i32, 0u64);
-            if (self.query_fn)(self.display, image, &mut fourcc, &mut num_planes, &mut modifier)
-                != ffi::EGL_TRUE
+            if (self.query_fn)(
+                self.display,
+                image,
+                &mut fourcc,
+                &mut num_planes,
+                &mut modifier,
+            ) != ffi::EGL_TRUE
             {
                 tracing::warn!("dmabuf: export query failed (0x{:x})", ffi::eglGetError());
                 return None;

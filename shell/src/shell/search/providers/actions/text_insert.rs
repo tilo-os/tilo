@@ -1,37 +1,12 @@
 //! The exported action that writes into the focused text document.
 //!
-//! Every other row this provider exports moves the chrome around a
-//! document — opens a panel, spawns a tab, silences a banner. This one
-//! changes the document itself, which makes it the first shell action
-//! that has to be *told* something: the text is not derivable from any
-//! state the chrome holds, so it arrives as a bound
-//! [`ActionArgs`](crate::shell::search::action_api::ActionArgs).
-//!
-//! # Where the edit lands
-//!
-//! In the focused tab's **own** record document, reached through
-//! [`crate::shell::tab_documents`] — not the shell's document. A tab is
-//! an open thing with a document of its own, and writing into the shared
-//! shell document instead is the exact mistake that once made two Notes
-//! tabs show each other's text.
-//!
-//! # Why it splices
-//!
-//! Through [`CrdtTextBody::splice`], which addresses only the range that
-//! changed. The tempting alternative — read the body, concatenate,
-//! write the whole new string back — costs O(len) Automerge ops per call
-//! and leaves O(len²) tombstones behind over a session, and it converges
-//! badly: two peers appending at once with whole-body writes clobber
-//! each other, where two narrow splices merge. See the module note on
-//! [`crate::shell::crdt_text`].
-//!
-//! # Offsets are characters
-//!
-//! `at` is a character offset, not a byte offset. A caller driving this
-//! by address cannot see the buffer, so handing it byte offsets into
-//! UTF-8 would make "insert at position 5" a coin flip on any document
-//! containing an accent. The conversion to the byte offset the mirror
-//! wants happens here, against the live text.
+//! Lands in the focused tab's **own** record document, reached through
+//! [`crate::shell::tab_documents`] — not the shell's document, or two Notes
+//! tabs would show each other's text. Splices via [`CrdtTextBody::splice`]
+//! rather than read-concatenate-write-back, which costs O(len) ops and
+//! O(len²) tombstones per session (see [`crate::shell::crdt_text`]). `at` is
+//! a character offset, not a byte offset — a caller driving this by
+//! address cannot see the buffer.
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::crdt_text::CrdtTextBody;
@@ -57,47 +32,49 @@ pub const PARAMS: &[ActionParam] = &[
     ),
 ];
 
-/// One text tile the shell hosts: which app, and the Automerge key its
-/// body lives under.
+/// Which app, and the Automerge key its body lives under.
 const TEXT_TILES: &[(&str, &str)] = &[
     ("Notes", crate::shell::notes_app::BODY_KEY),
     ("Editor", crate::shell::editor_app::BODY_KEY),
 ];
 
-/// The focused tab, if it hosts one of the shell's text apps.
-///
-/// Returns the tab id and the body key its app writes under. `None` when
-/// nothing is focused, or when the focused tab is a terminal / file
-/// explorer / foreign surface — there is no text document to write into,
-/// and inventing one somewhere else would be worse than refusing.
+/// The focused tab's id and body key, if it hosts one of the shell's text
+/// apps. `None` for a terminal/explorer/foreign surface — inventing a
+/// document elsewhere would be worse than refusing.
 fn focused_text_tab(st: &ChromeState) -> Option<(u64, &'static str)> {
     let tab_id = st.active_tab_id()?;
     let tree = st.tree();
-    for w in &tree.workspaces {
-        for s in &w.strips {
-            for g in &s.window_groups {
-                for t in &g.tabs {
-                    if t.id != tab_id {
-                        continue;
+    // Found (or not) while the read lock is held; the lock is released
+    // below, before this returns to the caller.
+    let found = 'search: {
+        for w in &tree.workspaces {
+            for s in &w.strips {
+                for g in &s.window_groups {
+                    for t in &g.tabs {
+                        if t.id != tab_id {
+                            continue;
+                        }
+                        break 'search TEXT_TILES
+                            .iter()
+                            .find(|(app, _)| tile_hosts_app(&t.tile, app))
+                            .map(|(_, key)| (t.id, *key));
                     }
-                    return TEXT_TILES
-                        .iter()
-                        .find(|(app, _)| tile_hosts_app(&t.tile, app))
-                        .map(|(_, key)| (t.id, *key));
                 }
             }
         }
-    }
-    None
+        None
+    };
+    drop(tree);
+    found
 }
 
 /// Insert `text` into the focused text tile's document.
 pub fn apply(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     // `bind` already proved this is present and is text, so its absence
     // here would be a bug in the binding rather than a caller error.
-    let text = args.text("text").ok_or_else(|| {
-        ActionError::Refused("the bound arguments carry no `text`".to_string())
-    })?;
+    let text = args
+        .text("text")
+        .ok_or_else(|| ActionError::Refused("the bound arguments carry no `text`".to_string()))?;
     let Some((tab_id, body_key)) = focused_text_tab(st) else {
         return Err(ActionError::Refused(
             "the focused tab is not a text document; focus a Notes or Editor \
@@ -109,24 +86,20 @@ pub fn apply(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError>
 
     let record = RecordId::for_tab(tab_id);
     let store = st.records().clone();
-    // The tile whose document this is has it open already; a tab that has
-    // never been rendered has not. Opening is idempotent and is what makes
-    // the action work on a session that has not painted yet.
+    // Opening is idempotent — makes this work on a tab never rendered.
     store.open_record(&crate::shell::tab_documents::scratch_tab_record(tab_id));
 
     let spliced = store.with(&record, |doc| {
         let root = automerge::ROOT;
-        // `sync` fills the mirror from the CRDT, which is what makes the
-        // offset arithmetic below refer to the text that is actually
-        // there rather than to an empty buffer. The CRDT is the source of
-        // truth; this body is a throwaway view onto it for one edit.
+        // `sync` fills the mirror from the CRDT, the source of truth; this
+        // body is a throwaway view onto it for one edit.
         let mut body = CrdtTextBody::new(body_key);
         body.sync(doc, &root);
 
         let char_len = body.text.chars().count();
         let at_chars = match args.integer("at") {
             Some(n) if n < 0 => 0,
-            Some(n) => (n as usize).min(char_len),
+            Some(n) => usize::try_from(n).unwrap_or(usize::MAX).min(char_len),
             None => char_len,
         };
         let at_bytes = body.char_index_to_byte(at_chars);
@@ -136,10 +109,8 @@ pub fn apply(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError>
 
     match spliced {
         Some(_) => Ok(()),
-        // `with` returns `None` only when the record is not open, and we
-        // just opened it — so this is a store that refused, not a missing
-        // tab. Reported rather than silently dropped: an edit that did not
-        // happen must not answer like one that did.
+        // We just opened the record, so `None` means the store refused,
+        // not a missing tab — reported, not silently dropped.
         None => Err(ActionError::Refused(format!(
             "the document for tab {tab_id} could not be opened"
         ))),
@@ -207,41 +178,37 @@ mod tests {
     }
 
     fn args(pairs: Vec<(&str, ArgValue)>) -> ActionArgs {
-        ActionArgs::bind(
-            PARAMS,
-            pairs.into_iter().map(|(k, v)| (k.to_string(), v)),
-        )
-        .expect("the test's arguments must satisfy the declared parameters")
+        ActionArgs::bind(PARAMS, pairs.into_iter().map(|(k, v)| (k.to_string(), v)))
+            .expect("the test's arguments must satisfy the declared parameters")
     }
 
-    fn insert(chrome: &Chrome, a: ActionArgs) -> Result<(), ActionError> {
-        apply(&mut chrome.borrow_mut(), &a)
+    fn insert(chrome: &Chrome, a: &ActionArgs) -> Result<(), ActionError> {
+        apply(&mut chrome.borrow_mut(), a)
     }
 
-    /// The edit lands in the **focused tab's own document**, which is
-    /// where the app that renders it looks. Asserted through
-    /// `tab_body` — the same read the shell's own search does — so the
-    /// text cannot be "written" somewhere nothing reads.
+    /// Asserted through `tab_body`, the same read the shell's own search
+    /// does, so the text can't be "written" somewhere nothing reads.
     #[test]
     fn the_insert_lands_in_the_focused_tabs_document() {
         let (chrome, store) = chrome_focused_on("Notes");
-        insert(&chrome, args(vec![("text", ArgValue::Text("hello".into()))]))
-            .expect("inserting into a focused Notes tab must work");
+        insert(
+            &chrome,
+            &args(vec![("text", ArgValue::Text("hello".into()))]),
+        )
+        .expect("inserting into a focused Notes tab must work");
         assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("hello"));
     }
 
-    /// Omitting `at` appends. Supplying it inserts there, in
-    /// **characters** — a caller that cannot see the buffer must not
-    /// have to reason about UTF-8 widths.
+    /// Omitting `at` appends; supplying it inserts in **characters**, not
+    /// UTF-8 bytes.
     #[test]
     fn the_offset_is_a_character_offset_and_defaults_to_the_end() {
         let (chrome, store) = chrome_focused_on("Notes");
-        insert(&chrome, args(vec![("text", ArgValue::Text("aβc".into()))])).unwrap();
-        // β is two bytes; inserting at character 2 must land between β
-        // and c, not in the middle of β.
+        insert(&chrome, &args(vec![("text", ArgValue::Text("aβc".into()))])).unwrap();
+        // β is two bytes; character 2 must land between β and c.
         insert(
             &chrome,
-            args(vec![
+            &args(vec![
                 ("text", ArgValue::Text("X".into())),
                 ("at", ArgValue::Integer(2)),
             ]),
@@ -250,20 +217,18 @@ mod tests {
         assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("aβXc"));
 
         // No `at` appends to the end of what is there now.
-        insert(&chrome, args(vec![("text", ArgValue::Text("!".into()))])).unwrap();
+        insert(&chrome, &args(vec![("text", ArgValue::Text("!".into()))])).unwrap();
         assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("aβXc!"));
     }
 
-    /// An offset outside the buffer is clamped rather than refused or
-    /// panicking. A caller reasoning about a document it cannot see will
-    /// sometimes be a character behind.
+    /// Clamped rather than refused or panicking.
     #[test]
     fn an_out_of_range_offset_is_clamped_into_the_buffer() {
         let (chrome, store) = chrome_focused_on("Notes");
-        insert(&chrome, args(vec![("text", ArgValue::Text("abc".into()))])).unwrap();
+        insert(&chrome, &args(vec![("text", ArgValue::Text("abc".into()))])).unwrap();
         insert(
             &chrome,
-            args(vec![
+            &args(vec![
                 ("text", ArgValue::Text("Z".into())),
                 ("at", ArgValue::Integer(999)),
             ]),
@@ -271,7 +236,7 @@ mod tests {
         .unwrap();
         insert(
             &chrome,
-            args(vec![
+            &args(vec![
                 ("text", ArgValue::Text("A".into())),
                 ("at", ArgValue::Integer(-5)),
             ]),
@@ -280,14 +245,9 @@ mod tests {
         assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("AabcZ"));
     }
 
-    /// The whole point of routing through `CrdtTextBody::splice`: one
-    /// inserted character costs one Automerge element, not a rewrite of
-    /// the document.
-    ///
-    /// Proven by counting elements in the `Text` object rather than by
-    /// reading the string back — the string is identical either way, and
-    /// the difference between a splice and a whole-body rewrite is
-    /// exactly the thing a string comparison cannot see.
+    /// One inserted character costs one Automerge element, not a document
+    /// rewrite — proven by counting `Text` elements, since the resulting
+    /// string is identical either way.
     #[test]
     fn an_insert_costs_one_element_per_character_not_a_rewrite() {
         use automerge::{ObjType, ReadDoc, Value};
@@ -295,7 +255,7 @@ mod tests {
         let (chrome, store) = chrome_focused_on("Notes");
         insert(
             &chrome,
-            args(vec![("text", ArgValue::Text("x".repeat(64)))]),
+            &args(vec![("text", ArgValue::Text("x".repeat(64)))]),
         )
         .unwrap();
 
@@ -307,7 +267,7 @@ mod tests {
             })
             .unwrap();
 
-        insert(&chrome, args(vec![("text", ArgValue::Text("y".into()))])).unwrap();
+        insert(&chrome, &args(vec![("text", ArgValue::Text("y".into()))])).unwrap();
 
         let after = store
             .read(&record, |doc| {
@@ -324,13 +284,15 @@ mod tests {
         );
     }
 
-    /// Editor tabs are the same machinery under a different body key, so
-    /// the action reaches them too — and writes under *their* key, not
-    /// Notes'.
+    /// Same machinery under a different body key, not Notes'.
     #[test]
     fn an_editor_tab_is_written_under_its_own_body_key() {
         let (chrome, store) = chrome_focused_on("Editor");
-        insert(&chrome, args(vec![("text", ArgValue::Text("fn main".into()))])).unwrap();
+        insert(
+            &chrome,
+            &args(vec![("text", ArgValue::Text("fn main".into()))]),
+        )
+        .unwrap();
         assert_eq!(
             tab_body(&store, TAB, crate::shell::editor_app::BODY_KEY).as_deref(),
             Some("fn main"),
@@ -342,15 +304,11 @@ mod tests {
         );
     }
 
-    /// A tab with no text document refuses, and says why. Writing into
-    /// some other tab because the focused one had nowhere to put it
-    /// would be worse than doing nothing: the caller would be told the
-    /// edit landed, and it would have landed somewhere it did not ask
-    /// for.
+    /// Refuses and says why, rather than writing into some other tab.
     #[test]
     fn a_tab_that_is_not_a_text_document_is_refused() {
         let (chrome, store) = chrome_focused_on("Terminal");
-        let err = insert(&chrome, args(vec![("text", ArgValue::Text("hi".into()))]))
+        let err = insert(&chrome, &args(vec![("text", ArgValue::Text("hi".into()))]))
             .expect_err("a terminal has no text document to write into");
         assert!(
             matches!(&err, ActionError::Refused(m) if m.contains("not a text document")),

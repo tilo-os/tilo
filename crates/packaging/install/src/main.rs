@@ -1,42 +1,6 @@
-//! qos-install — the one-command user-facing install surface.
-//!
-//! Layout on disk (per user, under $XDG_DATA_HOME or ~/.local/share):
-//!
-//! ```text
-//! qos-apps/
-//!   registry.toml        (one entry per installed package)
-//!   payloads/<pkg-id>/   (unpacked payload, manifest.toml + payload files)
-//! ```
-//!
-//! Trust config (per user, under $XDG_CONFIG_HOME or ~/.config/qos):
-//!
-//! ```text
-//! trusted-attestors.toml
-//! revoked-keys.toml
-//! ```
-//!
-//! Subcommands:
-//!
-//! ```text
-//! qos-install install  <path.qpkg> [--require-attestor <id>] [--allow-self-signed] [--pinned] [--force]
-//! qos-install list
-//! qos-install remove   <pkg-id>
-//! qos-install pin      <pkg-id>
-//! qos-install unpin    <pkg-id>
-//! qos-install run      <pkg-id> [--require-attestor <id>] [--allow-self-signed] [--no-services]
-//! qos-install inspect  <pkg-id>
-//! qos-install trust add    --id <id> --pubkey <hex> [--scope <spec>]
-//! qos-install trust list
-//! qos-install trust remove <id>
-//! qos-install revoke   <pubkey_hex> [--reason <text>]
-//! qos-install revoked list
-//! ```
-//!
-//! Verifies the .qpkg signature and the trust chain before
-//! extracting. Refuses to install if the publisher key is on the
-//! revocation list. Warns on self-signed unless `--allow-self-signed`
-//! is set; refuses if `--require-attestor` is set and no matching
-//! attestation is found.
+//! qos-install — the user-facing CLI to install, run, and manage qOS
+//! packages (.qpkg) locally, verifying the package signature and trust
+//! chain before installing.
 
 use std::fs;
 use std::io::Read;
@@ -54,18 +18,20 @@ use pkg::trust::{
 use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify_with_trust};
 use serde::{Deserialize, Serialize};
 
-/// Header block written into every .qpkg tar. Mirrors qos-pkg-cli's
-/// QpkgHeader — kept local so this crate doesn't have a circular dep.
+/// Mirrors qos-pkg-cli's `QpkgHeader` (kept local to avoid a circular dep).
 #[derive(Debug, Deserialize)]
 struct QpkgHeader {
-    /// `qpkg:<hex>` form of the PackageId.
+    /// `qpkg:<hex>` form of the `PackageId`.
     package_id: String,
     #[allow(dead_code)]
     format: u32,
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "qos-install", about = "Install, launch, list, or remove qOS packages.")]
+#[command(
+    name = "qos-install",
+    about = "Install, launch, list, or remove qOS packages."
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -74,16 +40,12 @@ struct Cli {
 /// Trust-related flags shared by `install` and `run`.
 #[derive(Debug, Args, Clone, Default)]
 struct TrustFlags {
-    /// Refuse to proceed unless the .qpkg is signed by this
-    /// attestor id (as found in `trusted-attestors.toml`).
+    /// Refuse to proceed unless signed by this trusted attestor id.
     #[arg(long)]
     require_attestor: Option<String>,
-    /// Permit self-signed packages that lack a trusted-attestor
-    /// signature. Without this flag AND without --require-attestor,
-    /// the current warn-then-proceed behaviour is preserved.
-    /// Combined with --require-attestor: the attestor match is
-    /// preferred; self-signed is the fallback when the attestor
-    /// match fails.
+    /// Permit self-signed packages lacking a trusted-attestor signature.
+    /// With --require-attestor, the attestor match is preferred and
+    /// self-signed is only the fallback when it fails.
     #[arg(long)]
     allow_self_signed: bool,
 }
@@ -94,8 +56,7 @@ enum Cmd {
     Install {
         /// Path to the .qpkg file.
         qpkg: PathBuf,
-        /// Mark the package as pinned. GC (when it lands) will never
-        /// evict pinned packages.
+        /// Mark the package pinned (exempt from future GC eviction).
         #[arg(long)]
         pinned: bool,
         /// Overwrite an existing installation with the same package id.
@@ -112,20 +73,17 @@ enum Cmd {
     /// Fetch a newer version of an installed package and swap it in,
     /// keeping the user's per-room state.
     Update {
-        /// Package id (as printed by `qos-install list`). Omit to
-        /// update every installed package.
+        /// Package id (as printed by `qos-install list`); omit to update all.
         pkg_id: Option<String>,
-        /// Update from a local .qpkg instead of a configured registry.
-        /// Only meaningful with an explicit package id.
+        /// Update from a local .qpkg instead of a configured registry
+        /// (requires an explicit package id).
         #[arg(long)]
         from: Option<PathBuf>,
-        /// A semver requirement to resolve against, e.g. `^2`. Default
-        /// is "the newest version this host can run".
+        /// Semver requirement to resolve against, e.g. `^2` (default: newest runnable).
         #[arg(long)]
         version: Option<String>,
-        /// Permit replacing an installed version with an older one.
-        /// Refused by default: a downgrade is almost always a
-        /// mis-resolved registry rather than an intent.
+        /// Permit downgrading an installed version (refused by default — usually
+        /// a mis-resolved registry, not intent).
         #[arg(long)]
         allow_downgrade: bool,
         /// Print exactly what would change and exit, touching nothing.
@@ -138,19 +96,17 @@ enum Cmd {
     },
     /// List installed packages.
     List,
-    /// Uninstall a package: its payload, its registry entry, its PATH
-    /// shims, and — only when you say so — the state it saved.
+    /// Uninstall a package: payload, registry entry, PATH shims, and
+    /// (opt-in) its saved state.
     #[command(alias = "remove")]
     Uninstall {
         /// Package id (as printed by `qos-install list`).
         pkg_id: String,
-        /// Also delete every room's saved state for this app. This is
-        /// the user's data, not the publisher's files: it does not come
-        /// back with a reinstall.
+        /// Also delete all saved state for this app — the user's data, not the
+        /// publisher's; does not come back on reinstall.
         #[arg(long, conflicts_with = "keep_state")]
         purge: bool,
-        /// Keep the saved state without being asked. The default when
-        /// there is no terminal to ask on.
+        /// Keep saved state without asking (default when there's no terminal to ask on).
         #[arg(long)]
         keep_state: bool,
         /// Print exactly what would be removed and exit, deleting
@@ -158,14 +114,12 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Re-verify an installed package's payload against the signature
-    /// chain recorded at install time.
+    /// Re-verify an installed package's payload against its recorded signature chain.
     Verify {
         /// Package id. Omit to verify every installed package.
         pkg_id: Option<String>,
     },
-    /// Pin an installed package so it's kept + ranked first and never
-    /// evicted under store-side size pressure.
+    /// Pin an installed package: kept, ranked first, never evicted under size pressure.
     Pin {
         /// Package id (as printed by `qos-install list`).
         pkg_id: String,
@@ -182,14 +136,13 @@ enum Cmd {
         /// Forwarded to qos-launcher.
         #[arg(long)]
         no_services: bool,
-        /// Forwarded to qos-launcher. Deprecated: apps that declare
-        /// `runtime = "qos-runtime/<v>"` in their manifest and have the
-        /// bundle installed don't need this. Silently overridden when a
-        /// runtime bundle resolves.
+        /// Forwarded to qos-launcher. Deprecated — apps with an installed
+        /// `qos-runtime/<v>` bundle don't need this; silently overridden when
+        /// a bundle resolves.
         #[arg(long, hide = true)]
         minimal_libs: bool,
-        /// Forwarded to qos-launcher. Fall back to --minimal-libs when
-        /// the manifest declares a runtime bundle that isn't installed.
+        /// Forwarded to qos-launcher; falls back to --minimal-libs if the
+        /// declared runtime bundle isn't installed.
         #[arg(long)]
         allow_missing_runtime: bool,
         /// Turn off the Landlock enforcement. Debug only.
@@ -222,10 +175,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RevokedCmd,
     },
-    /// Print the directory the shim installer writes PATH shims
-    /// into, plus a snippet the user can drop into their shell rc.
-    /// Prepend this to PATH to make `notes`, `notes-import`, etc.
-    /// resolve.
+    /// Print the PATH-shim directory and a shell-rc snippet to prepend it.
     Path,
     /// Manage installed qOS runtime bundles.
     Runtime {
@@ -234,28 +184,20 @@ enum Cmd {
     },
 }
 
-/// What to do about a package whose manifest declares a runtime
-/// bundle that is not installed.
-///
-/// A package that pins `runtime = "qos-runtime/<v>"` will not launch
-/// without it — the launcher refuses with `RuntimeBundleMissing` rather
-/// than starting an app whose loader is absent. Installing the package
-/// and finding that out at first launch is the failure this exists to
-/// remove: the dependency is checked while the user is still looking at
-/// the install.
+/// What to do when a package's declared runtime bundle isn't installed.
+/// Checked at install time (not first launch) so `RuntimeBundleMissing`
+/// is caught while the user is still looking, rather than as a mystery later.
 #[derive(Debug, Args, Clone, Default)]
 struct RuntimeFlags {
-    /// Build and install the runtime bundle the manifest declares, from
-    /// the current host root, if it is not already present.
+    /// Build and install the manifest's declared runtime bundle from the
+    /// current host root, if missing.
     #[arg(long)]
     with_runtime: bool,
-    /// Sign the runtime bundle built by `--with-runtime` with this
-    /// identity. Without it the bundle is unsigned, and the launcher
-    /// refuses unsigned bundles unless told otherwise.
+    /// Sign the bundle built by --with-runtime; unsigned bundles are
+    /// refused by the launcher unless told otherwise.
     #[arg(long, requires = "with_runtime")]
     runtime_identity: Option<PathBuf>,
-    /// Install the package even though its runtime bundle is missing.
-    /// The package will not launch until the bundle is installed.
+    /// Install even though the runtime bundle is missing; the package won't launch until it is.
     #[arg(long)]
     ignore_missing_runtime: bool,
 }
@@ -292,12 +234,10 @@ enum RevokedCmd {
 #[derive(Debug, Subcommand)]
 enum RuntimeCmd {
     /// Build + install a runtime bundle into
-    /// `$XDG_DATA_HOME/qos-runtime/<version>/`. `--from-host` copies
-    /// from the current host root; `--from <path>` from a specific
-    /// prefix (e.g. a distrobox rootfs).
+    /// `$XDG_DATA_HOME/qos-runtime/<version>/`, from the host root or an
+    /// explicit prefix.
     Install {
-        /// Bundle version tag. Written into `bundle.toml` and used
-        /// to look the bundle up at launch time.
+        /// Bundle version tag, written into bundle.toml and used to look it up at launch.
         #[arg(long)]
         version: String,
         /// Copy from the running host root. Equivalent to `--from /`.
@@ -306,15 +246,13 @@ enum RuntimeCmd {
         /// Copy from an explicit host prefix. Wins over `--from-host`.
         #[arg(long)]
         from: Option<PathBuf>,
-        /// Target architecture. Defaults to the host arch. Explicit
-        /// override lets you install a cross-arch bundle from a
-        /// fabricated rootfs.
+        /// Target architecture (default: host arch); lets you build a
+        /// cross-arch bundle from a fabricated rootfs.
         #[arg(long)]
         arch: Option<String>,
-        /// Path to a signing identity JSON file (see
-        /// `qos-runtime-bundle key generate`). Optional — the
-        /// launcher refuses unsigned bundles by default, so most
-        /// installs should sign.
+        /// Path to a signing identity JSON (see `qos-runtime-bundle key
+        /// generate`); the launcher refuses unsigned bundles by default, so
+        /// most installs should sign.
         #[arg(long)]
         identity: Option<PathBuf>,
         /// Overwrite an existing bundle at the same version.
@@ -324,19 +262,14 @@ enum RuntimeCmd {
     /// List installed runtime bundle versions.
     List,
     /// Remove an installed runtime bundle by version tag.
-    Remove {
-        version: String,
-    },
-    /// Print the resolved path for a version. Same lookup order as
-    /// the launcher.
+    Remove { version: String },
+    /// Print the resolved path for a version (same lookup order as the launcher).
     Path {
         #[arg(long)]
         version: String,
     },
     /// Verify an installed bundle's on-disk hash matches its manifest.
-    Verify {
-        version: String,
-    },
+    Verify { version: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -351,7 +284,9 @@ enum Error {
     Revoked { reason: String },
     #[error("policy refused: --require-attestor {required:?} but package verified as {found}")]
     AttestorMismatch { required: String, found: String },
-    #[error("policy refused: --require-attestor {required:?} and package is self-signed (use --allow-self-signed to override)")]
+    #[error(
+        "policy refused: --require-attestor {required:?} and package is self-signed (use --allow-self-signed to override)"
+    )]
     RequireAttestorWithoutAttestation { required: String },
     #[error("qpkg parse: {0}")]
     Parse(String),
@@ -396,7 +331,9 @@ enum Error {
     RuntimeReferenceMalformed(String),
     #[error("integrity: {0}")]
     Integrity(#[from] install::integrity::IntegrityError),
-    #[error("{package} is installed at {installed}; {candidate} is not newer (use --allow-downgrade to install it anyway)")]
+    #[error(
+        "{package} is installed at {installed}; {candidate} is not newer (use --allow-downgrade to install it anyway)"
+    )]
     NotNewer {
         package: String,
         installed: String,
@@ -435,25 +372,19 @@ struct RegistryEntry {
     pinned: bool,
     /// Unix seconds of install.
     installed_at: u64,
-    /// Attestor id if the install was verified via an attestor
-    /// chain. Empty for self-signed installs.
+    /// Attestor id if verified via an attestor chain; empty for self-signed.
     #[serde(default)]
     attested_by: String,
-    /// PATH command names the package published shims for. Retained
-    /// on the entry so `remove` can un-write them without re-reading
-    /// the manifest. Empty when the package has no `[cli]` block.
+    /// PATH command names this package published (so `remove` can un-write
+    /// them without re-reading the manifest); empty if no [cli] block.
     #[serde(default)]
     cli_commands: Vec<String>,
-    /// The manifest's `runtime = "qos-runtime/<v>"`, when it declares
-    /// one. Recorded so `list` can show which packages depend on a
-    /// bundle and `verify` can say whether that bundle is still there,
-    /// without re-reading every manifest.
+    /// The manifest's declared `runtime = "qos-runtime/<v>"`, if any — lets
+    /// `list`/`verify` report bundle status without re-reading manifests.
     #[serde(default)]
     runtime: String,
-    /// Where the bytes came from: the path of a local `.qpkg`, or the
-    /// name of the registry that served it. Not a trust input — the
-    /// signature is — but the answer to "where did this come from?"
-    /// after the fact.
+    /// Where the bytes came from (local path or registry name) —
+    /// provenance, not a trust input (the signature is).
     #[serde(default)]
     source: String,
 }
@@ -465,8 +396,7 @@ struct Registry {
 }
 
 fn data_root() -> Result<PathBuf, Error> {
-    // Honour QOS_APPS_DATA_DIR when set (integration tests, dev
-    // installs). Matches what qos-launcher::registry reads.
+    // Honour QOS_APPS_DATA_DIR (tests/dev installs); matches qos-launcher::registry.
     if let Some(dir) = std::env::var_os("QOS_APPS_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
@@ -482,18 +412,14 @@ fn payloads_root() -> Result<PathBuf, Error> {
     Ok(data_root()?.join("payloads"))
 }
 
-/// The user's data home — the parent of `qos-rooms/`, where apps keep
-/// what they saved.
-///
-/// Deliberately *not* [`data_root`]: that is the installer's own
-/// directory and moves with `QOS_APPS_DATA_DIR`, whereas app state is
-/// written by the launcher and follows `XDG_DATA_HOME`. Reading the
-/// wrong one would make "remove this app's data" quietly find nothing.
+/// The user's data home (parent of `qos-rooms/`), distinct from
+/// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
+/// not `QOS_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
-        if !dir.is_empty() {
-            return Ok(PathBuf::from(dir));
-        }
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
+        && !dir.is_empty()
+    {
+        return Ok(PathBuf::from(dir));
     }
     dirs::data_dir().ok_or(Error::NoDataDir)
 }
@@ -540,9 +466,8 @@ fn save_registry(reg: &Registry) -> Result<(), Error> {
     Ok(())
 }
 
-/// Verify `pkg_id` against the on-disk trust config and apply
-/// the caller's `TrustFlags` policy. Returns the manifest and
-/// the attestor id (empty string for self-signed installs).
+/// Verify `pkg_id` against trust config under the caller's `TrustFlags`
+/// policy; returns the manifest and attestor id (empty if self-signed).
 fn verify_and_gate(
     pkg_id: PackageId,
     store: &MemoryBlobStore,
@@ -553,21 +478,21 @@ fn verify_and_gate(
     let outcome = verify_with_trust(pkg_id, store, &[], attestors.as_slice(), &revocation);
     match outcome {
         Verification::AttestedBy { attestor, manifest } => {
-            if let Some(required) = &trust.require_attestor {
-                if required != &attestor {
-                    return Err(Error::AttestorMismatch {
-                        required: required.clone(),
-                        found: attestor,
-                    });
-                }
+            if let Some(required) = &trust.require_attestor
+                && required != &attestor
+            {
+                return Err(Error::AttestorMismatch {
+                    required: required.clone(),
+                    found: attestor,
+                });
             }
-            let pub_key_hex =
-                extract_publisher_key(&pkg_id, store).map(|k| hex_of(&k)).unwrap_or_default();
+            let pub_key_hex = extract_publisher_key(&pkg_id, store)
+                .map(|k| hex_of(&k))
+                .unwrap_or_default();
             Ok((manifest, pub_key_hex, attestor))
         }
         Verification::UntrustedPublisher { identity, manifest } => {
-            // --require-attestor set: refuse unless --allow-self-signed
-            // rescues us.
+            // --require-attestor set: refuse unless --allow-self-signed rescues it.
             if let Some(required) = &trust.require_attestor {
                 if !trust.allow_self_signed {
                     return Err(Error::RequireAttestorWithoutAttestation {
@@ -596,12 +521,12 @@ fn verify_and_gate(
             Err(Error::Revoked { reason })
         }
         Verification::Trusted { manifest } => {
-            let pub_key_hex =
-                extract_publisher_key(&pkg_id, store).map(|k| hex_of(&k)).unwrap_or_default();
+            let pub_key_hex = extract_publisher_key(&pkg_id, store)
+                .map(|k| hex_of(&k))
+                .unwrap_or_default();
             if let Some(required) = &trust.require_attestor {
-                // Trusted-key path bypasses attestor chain — the
-                // user configured a trusted publisher key elsewhere.
-                // --require-attestor is strict: refuse.
+                // Trusted-key path bypasses the attestor chain; --require-attestor is
+                // strict, so refuse here regardless.
                 return Err(Error::AttestorMismatch {
                     required: required.clone(),
                     found: "trusted-key".into(),
@@ -613,23 +538,18 @@ fn verify_and_gate(
     }
 }
 
-/// Everything a verified `.qpkg` yields, before anything is written
-/// to the install directory.
-///
-/// Reading and verifying is deliberately separated from placing files:
-/// it is what makes `--dry-run` truthful (the package really was
-/// fetched and its signature really was checked, so the plan it prints
-/// is the plan that would run) and what lets `update` decide whether a
-/// swap is worth doing before it disturbs a working install.
+/// Everything a verified `.qpkg` yields, before any file is written.
+/// Reading/verifying is kept separate from placing files so `--dry-run`
+/// is truthful and `update` can decide on a swap before touching a
+/// working install.
 struct Ingested {
     pkg_id: PackageId,
     store: MemoryBlobStore,
     manifest: pkg::Manifest,
     publisher_key_hex: String,
     attested_by: String,
-    /// The three blobs the publisher's signature covers, kept for the
-    /// integrity record. Taken from the store that was just verified,
-    /// so what gets recorded is exactly what was checked.
+    /// The three blobs the publisher's signature covers, taken from the
+    /// just-verified store, so the integrity record matches exactly what was checked.
     signed_root: Vec<u8>,
     manifest_bytes: Vec<u8>,
     collection_bytes: Vec<u8>,
@@ -648,19 +568,18 @@ impl Ingested {
     }
 }
 
-/// Read, verify and gate a `.qpkg`'s bytes — everything up to the
-/// point where a file would be written.
+/// Read, verify and gate a `.qpkg`'s bytes, before any file is written.
 ///
-/// Signature verification is not optional and no flag turns it off.
-/// `--allow-self-signed` decides *whose* signature is acceptable; it
-/// never decides whether one is required.
+/// Signature verification is not optional and no flag turns it off;
+/// `--allow-self-signed` decides *whose* signature is acceptable, never
+/// whether one is required.
 fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
     let (pkg_id, store) = read_qpkg_bytes(bytes)?;
     let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, trust)?;
 
-    // A signature says who wrote the manifest; it does not say that
-    // what the manifest asks for is reasonable. A package that names
-    // its own filesystem paths is refused here, signed or not.
+    // A signature says who wrote the manifest, not that its contents are
+    // reasonable — a package naming its own filesystem paths is refused
+    // here regardless of signature.
     pkg::validate_manifest(&manifest).map_err(|e| Error::Policy(e.to_string()))?;
 
     let blob = |hash: &pkg::BlobHash, what: &str| -> Result<Vec<u8>, Error> {
@@ -687,16 +606,16 @@ fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
     })
 }
 
-/// Unpack a verified package into `dest`, replacing whatever was there,
-/// and write its manifest alongside so the launcher can read it without
-/// re-opening the `.qpkg`.
+/// Unpack a verified package into `dest` (replacing what's there) and
+/// write its manifest alongside, so the launcher can read it without
+/// reopening the .qpkg.
 fn place_payload(ingested: &Ingested, dest: &Path) -> Result<PathBuf, Error> {
     if dest.exists() {
         fs::remove_dir_all(dest)?;
     }
     fs::create_dir_all(dest)?;
-    let manifest = unpack(ingested.pkg_id, &ingested.store, dest)
-        .map_err(|e| Error::Unpack(e.to_string()))?;
+    let manifest =
+        unpack(ingested.pkg_id, &ingested.store, dest).map_err(|e| Error::Unpack(e.to_string()))?;
     let manifest_path = dest.join("manifest.toml");
     fs::write(
         &manifest_path,
@@ -707,11 +626,9 @@ fn place_payload(ingested: &Ingested, dest: &Path) -> Result<PathBuf, Error> {
     Ok(manifest_path)
 }
 
-/// Where the manifest's declared runtime bundle would be found, and
-/// whether it is there.
-///
-/// `Ok(None)` means the package declares no runtime, which is the
-/// common case for anything statically linked.
+/// Where the manifest's declared runtime bundle would live, and
+/// whether it's there. `Ok(None)` means no runtime declared (the
+/// common case for static binaries).
 fn runtime_status(ingested: &Ingested) -> Result<Option<(String, bool)>, Error> {
     let Some(raw) = ingested.runtime_ref() else {
         return Ok(None);
@@ -731,12 +648,9 @@ fn runtime_status(ingested: &Ingested) -> Result<Option<(String, bool)>, Error> 
 
 /// Make the declared runtime available, or refuse the install.
 ///
-/// The refusal is the point. A package pinning `qos-runtime/<v>` will
-/// not launch without that bundle — the launcher returns
-/// `RuntimeBundleMissing` rather than starting an app whose loader is
-/// absent — so installing it and discovering that at first launch turns
-/// a dependency problem into a mysterious one. Checked here, the
-/// message names the exact command that fixes it.
+/// The refusal is the point: catching a missing `qos-runtime/<v>`
+/// bundle here (with a fix command) beats discovering
+/// `RuntimeBundleMissing` at first launch.
 fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Error> {
     let Some((version, present)) = runtime_status(ingested)? else {
         return Ok(());
@@ -745,9 +659,7 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
         return Ok(());
     }
     if flags.with_runtime {
-        println!(
-            "  runtime  : qos-runtime/{version} is missing; building it from the host root"
-        );
+        println!("  runtime  : qos-runtime/{version} is missing; building it from the host root");
         return runtime_install(
             &version,
             true,
@@ -767,16 +679,13 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
     }
     Err(Error::RuntimeDependencyMissing {
         package: ingested.id().to_string(),
-        runtime: ingested
-            .runtime_ref()
-            .unwrap_or("qos-runtime")
-            .to_string(),
+        runtime: ingested.runtime_ref().unwrap_or("qos-runtime").to_string(),
         version,
     })
 }
 
-/// Write the PATH shims a `[cli]` package publishes, returning the
-/// command names recorded on the registry entry.
+/// Write the PATH shims a [cli] package publishes; returns the command
+/// names recorded on the registry entry.
 fn write_cli_shims(manifest: &pkg::Manifest, id_field: &str) -> Result<Vec<String>, Error> {
     let cli_commands: Vec<String> = manifest
         .cli
@@ -826,9 +735,8 @@ fn install(
     runtime: RuntimeFlags,
     dry_run: bool,
 ) -> Result<(), Error> {
-    // 1. Read + verify. Happens before the registry check so a
-    //    `--dry-run` plan is a plan about a package we have actually
-    //    seen and checked, not about a filename.
+    // 1. Read + verify, before the registry check, so a --dry-run plan
+    //    describes a package we've actually seen and checked.
     let bytes = fs::read(qpkg)?;
     let ingested = ingest(&bytes, &trust)?;
     let id_field = ingested.id().to_string();
@@ -847,14 +755,13 @@ fn install(
         return Ok(());
     }
 
-    // 3. Dependencies, before any file is written: an install that
-    //    half-succeeds and then refuses is worse than one that refuses.
+    // 3. Dependencies, before any file is written: a half-succeeded install
+    //    that then refuses is worse than one that refuses upfront.
     satisfy_runtime(&ingested, &runtime)?;
 
     reg.entry.retain(|e| e.id != id_field);
 
-    // 4. Unpack into payloads/<id>. Using the reverse-DNS id (not the
-    //    content hash) means the package name is the install slot.
+    // 4. Unpack into payloads/<id> — the reverse-DNS id (not content hash) is the install slot.
     place_payload(&ingested, &dest)?;
     let manifest_path = dest.join("manifest.toml");
 
@@ -938,7 +845,11 @@ fn print_install_plan(
     if commands.is_empty() {
         println!("  shims     : none");
     } else {
-        println!("  shims     : {} in {}", commands.join(", "), bin_root()?.display());
+        println!(
+            "  shims     : {} in {}",
+            commands.join(", "),
+            bin_root()?.display()
+        );
     }
     println!("  state     : untouched (a package's files are not its user's data)");
     println!("(nothing was written)");
@@ -964,22 +875,21 @@ fn update(
     runtime: RuntimeFlags,
 ) -> Result<(), Error> {
     let reg = load_registry()?;
-    let targets: Vec<RegistryEntry> = match pkg_id {
-        Some(id) => vec![
+    let targets: Vec<RegistryEntry> = if let Some(id) = pkg_id {
+        vec![
             reg.entry
                 .iter()
                 .find(|e| e.id == id)
                 .cloned()
                 .ok_or_else(|| Error::NotInstalled(id.into()))?,
-        ],
-        None => {
-            if from.is_some() {
-                return Err(Error::Policy(
-                    "--from names one .qpkg, so it needs one package id".into(),
-                ));
-            }
-            reg.entry.clone()
+        ]
+    } else {
+        if from.is_some() {
+            return Err(Error::Policy(
+                "--from names one .qpkg, so it needs one package id".into(),
+            ));
         }
+        reg.entry
     };
     if targets.is_empty() {
         println!("(no packages installed)");
@@ -1024,9 +934,8 @@ fn update_one(
     trust: &TrustFlags,
     runtime: &RuntimeFlags,
 ) -> Result<UpdateOutcome, Error> {
-    // 1. Get candidate bytes: a local file, or the configured
-    //    registries. Either way they are verified by `ingest` before
-    //    anything on disk moves.
+    // 1. Get candidate bytes (local file or configured registries); either
+    //    way `ingest` verifies them before anything on disk moves.
     let (bytes, source) = match from {
         Some(path) => (fs::read(path)?, path.display().to_string()),
         None => fetch_from_registries(&entry.id, version_req)?,
@@ -1039,9 +948,8 @@ fn update_one(
         });
     }
 
-    // 2. Is it actually newer? Versions that do not parse as semver
-    //    are compared as strings for equality only — an unparseable
-    //    version is not evidence of an upgrade.
+    // 2. Is it actually newer? Non-semver versions are compared as strings
+    //    for equality only — not evidence of an upgrade.
     let ordering = compare_versions(&entry.version, ingested.version());
     match ordering {
         Some(std::cmp::Ordering::Equal) | None if entry.version == ingested.version() => {
@@ -1086,16 +994,12 @@ fn update_one(
 
     satisfy_runtime(&ingested, runtime)?;
 
-    // 3. Swap. The new payload is built beside the old one and moved
-    //    into place, so a failure part-way through leaves the installed
-    //    version working rather than half-replaced. The one window is
-    //    between the two renames; the old tree is kept until the new
-    //    one is in place, so it is recoverable rather than lost.
+    // 3. Swap: the new payload is built beside the old one and moved into
+    //    place, so a mid-failure leaves the old version working, not half-replaced.
     swap_payload(&ingested, &entry.payload_root)?;
 
-    // 4. Records. Integrity first: a registry that claims a version
-    //    whose evidence has not been written yet would fail its own
-    //    `verify`.
+    // 4. Records: integrity first, since a registry entry claiming a
+    //    version whose evidence isn't written yet would fail its own `verify`.
     let data_root = data_root()?;
     install::integrity::record(
         &data_root,
@@ -1144,10 +1048,10 @@ fn update_one(
 
 /// Build the new payload beside the live one and move it into place.
 ///
-/// Two renames rather than one, because `rename(2)` will not replace a
-/// non-empty directory. The old tree is moved aside first and removed
-/// only once the new one is live, so the failure modes are "old still
-/// installed" or "new installed" — never "neither".
+/// Two renames, not one: `rename(2)` won't replace a non-empty
+/// directory, so the old tree moves aside first and is removed only
+/// once the new one is live — failure modes are "old still installed"
+/// or "new installed", never "neither".
 fn swap_payload(ingested: &Ingested, live: &Path) -> Result<(), Error> {
     let parent = live
         .parent()
@@ -1170,9 +1074,8 @@ fn swap_payload(ingested: &Ingested, live: &Path) -> Result<(), Error> {
         })?;
     }
     if let Err(e) = fs::rename(&staging, live) {
-        // Put the working install back before reporting. Leaving the
-        // user with no payload at all because an update failed is the
-        // one outcome this whole dance exists to prevent.
+        // Restore the working install before reporting — leaving no payload at
+        // all is the one outcome this exists to prevent.
         if retired.exists() {
             let _ = fs::rename(&retired, live);
         }
@@ -1186,23 +1089,21 @@ fn swap_payload(ingested: &Ingested, live: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Compare two version strings as semver. `None` when either side is
-/// not semver, which is a real possibility for a hand-written manifest.
+/// Compare two version strings as semver; `None` when either isn't
+/// valid semver (common for hand-written manifests).
 fn compare_versions(installed: &str, candidate: &str) -> Option<std::cmp::Ordering> {
     let a = semver::Version::parse(installed).ok()?;
     let b = semver::Version::parse(candidate).ok()?;
     Some(a.cmp(&b))
 }
 
-/// Resolve `app_id` through the configured registries and return the
+/// Resolve `app_id` through the configured registries; returns the
 /// verified `.qpkg` bytes plus the registry that served them.
 ///
-/// The verification here is the registry protocol's — signed index,
-/// publisher-signed entry, blake3 of the downloaded blob — and it is
-/// deliberately *not* the end of it: the bytes still go through
-/// `ingest`, which checks the publisher signature embedded in the
-/// package against this machine's trust config. Two independent
-/// checks, because they answer different questions.
+/// This verifies the registry protocol (signed index, signed entry,
+/// blake3 of the blob) — separately from `ingest`'s later check of the
+/// package's own publisher signature against local trust config. Two
+/// independent checks answering different questions.
 fn fetch_from_registries(
     app_id: &str,
     version_req: Option<&str>,
@@ -1221,11 +1122,9 @@ fn fetch_from_registries(
         ))
         .map_err(|e| Error::Fetch {
             app_id: app_id.to_string(),
-            // `{e:#}` renders anyhow's whole context chain, which is
-            // where the useful half of a fetch failure lives — "no
-            // configured registry offers X" vs "index signature not
-            // trusted" are the same error type and very different
-            // problems.
+            // `{e:#}` renders anyhow's full context chain — where the useful part
+            // of a fetch failure lives (e.g. "no registry offers X" vs "index
+            // signature not trusted").
             detail: format!("{e:#}"),
         })?;
     let source = format!("{} (registry {})", outcome.version, outcome.registry);
@@ -1239,8 +1138,8 @@ fn list() -> Result<(), Error> {
         return Ok(());
     }
     println!(
-        "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  {}",
-        "id", "version", "pinned", "attested-by", "runtime", "installed"
+        "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  installed",
+        "id", "version", "pinned", "attested-by", "runtime"
     );
     for e in &reg.entry {
         let ago = age(e.installed_at);
@@ -1249,13 +1148,12 @@ fn list() -> Result<(), Error> {
         } else {
             &e.attested_by
         };
-        // A package whose declared runtime bundle has gone missing
-        // still lists, but says so — it is installed and unlaunchable,
-        // which is exactly the state a bare list would hide.
+        // A package whose runtime bundle has gone missing still lists, but
+        // flagged — installed-but-unlaunchable, which a bare list would hide.
         let runtime = match e.runtime.as_str() {
             "" => "-".to_string(),
             r => {
-                let version = r.split_once('/').map(|(_, v)| v).unwrap_or("");
+                let version = r.split_once('/').map_or("", |(_, v)| v);
                 if runtime_bundle_present(version) {
                     r.to_string()
                 } else {
@@ -1276,8 +1174,8 @@ fn list() -> Result<(), Error> {
     Ok(())
 }
 
-/// Whether a runtime bundle of this version is installed, per-user or
-/// system-wide. Same lookup order the launcher uses.
+/// Whether a runtime bundle of this version is installed (per-user or
+/// system-wide), using the launcher's lookup order.
 fn runtime_bundle_present(version: &str) -> bool {
     if version.is_empty() {
         return false;
@@ -1289,13 +1187,11 @@ fn runtime_bundle_present(version: &str) -> bool {
         .any(|p| p.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists())
 }
 
-/// Uninstall a package, and decide about its user data separately.
+/// Uninstall a package, deciding about its user data separately.
 ///
-/// The payload is the publisher's: signed bytes, exactly reproducible
-/// by reinstalling. The per-room state is the user's: it does not come
-/// back. Conflating the two is how a package manager deletes someone's
-/// notes on their behalf, so the two are separate decisions here and
-/// the state one is never made silently.
+/// The payload is the publisher's (reproducible by reinstalling); the
+/// per-room state is the user's and does not come back — so the two
+/// are separate decisions, and deleting state is never done silently.
 fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Result<(), Error> {
     let mut reg = load_registry()?;
     let idx = reg
@@ -1343,16 +1239,14 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
         return Ok(());
     }
 
-    // Ask about the user's data *before* removing the package, so a
-    // "no" leaves everything as it was rather than half-done.
+    // Ask about user data before removing the package, so "no" leaves things as they were.
     let delete_state = decide_state(&rooms, purge, keep_state);
 
     let entry = reg.entry.remove(idx);
     if entry.payload_root.exists() {
         fs::remove_dir_all(&entry.payload_root)?;
     }
-    // Undo the PATH shims. Best-effort — a missing bin_dir means the
-    // shims were not installed in the first place.
+    // Undo PATH shims, best-effort — a missing bin_dir just means none were installed.
     if !entry.cli_commands.is_empty() {
         let bin_dir = bin_root()?;
         shim::remove_shims(&bin_dir, &entry.cli_commands)
@@ -1407,10 +1301,9 @@ fn print_state_summary(rooms: &[install::state::RoomState]) {
 
 /// Whether to delete the app's saved state.
 ///
-/// The flags win. Otherwise the user is asked — and if there is no
-/// terminal to ask on, the answer is *keep*, because a non-interactive
-/// uninstall silently deleting user data is the failure mode that
-/// cannot be undone.
+/// Flags win; otherwise the user is asked, and with no terminal to ask
+/// on the answer defaults to *keep* — silent, unattended data deletion
+/// is the one failure mode that can't be undone.
 fn decide_state(rooms: &[install::state::RoomState], purge: bool, keep_state: bool) -> bool {
     if rooms.is_empty() {
         return false;
@@ -1449,8 +1342,7 @@ unsafe extern "C" {
     fn libc_isatty(fd: i32) -> i32;
 }
 
-/// Replay the signature chain for one installed package, or all of
-/// them.
+/// Replay the signature chain for one installed package, or all of them.
 fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
     let reg = load_registry()?;
     let targets: Vec<&RegistryEntry> = match pkg_id {
@@ -1504,7 +1396,7 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
             }
         }
         if !entry.runtime.is_empty() {
-            let version = entry.runtime.split_once('/').map(|(_, v)| v).unwrap_or("");
+            let version = entry.runtime.split_once('/').map_or("", |(_, v)| v);
             let present = runtime_bundle::default_bundle_path(version)
                 .ok()
                 .into_iter()
@@ -1528,9 +1420,8 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Flip the `pinned` flag on an installed package. Pinning is what
-/// the store surfaces as "mark installed" — a pinned package is kept
-/// and ranked first, and is exempt from any future size-pressure GC.
+/// Flip the `pinned` flag: pinned packages are kept, ranked first, and
+/// exempt from size-pressure GC.
 fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
     let mut reg = load_registry()?;
     let entry = reg
@@ -1559,25 +1450,24 @@ fn run(
         .find(|e| e.id == pkg_id)
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
 
-    // Re-check trust policy at launch: revocation may have been
-    // added after install. --require-attestor is honoured against
-    // the recorded attested-by field.
+    // Re-check trust policy at launch — revocation may postdate install;
+    // --require-attestor is honoured against the recorded attested-by field.
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
-    if let Ok(pk_bytes) = decode_hex_32(&entry.publisher_key_hex) {
-        if let Some(rev) = revocation.find(&pk_bytes) {
-            eprintln!(
-                "qos-install: REFUSED — installed package's publisher is revoked: {}",
-                rev.reason
-            );
-            return Err(Error::Revoked { reason: rev.reason.clone() });
-        }
+    if let Ok(pk_bytes) = decode_hex_32(&entry.publisher_key_hex)
+        && let Some(rev) = revocation.find(&pk_bytes)
+    {
+        eprintln!(
+            "qos-install: REFUSED — installed package's publisher is revoked: {}",
+            rev.reason
+        );
+        return Err(Error::Revoked {
+            reason: rev.reason.clone(),
+        });
     }
     if let Some(required) = &trust.require_attestor {
-        // The recorded attested_by is fixed at install time; it can
-        // become stale if the registry entry was pinned before a
-        // change in `trusted-attestors.toml`. Re-check: is the
-        // recorded attestor still in the registry?
+        // The recorded attested_by is fixed at install time and can go stale
+        // if trusted-attestors.toml changed since; re-check it's still trusted.
         let still_trusted = attestors.get(&entry.attested_by).is_some();
         if entry.attested_by != *required || !still_trusted {
             if !trust.allow_self_signed {
@@ -1615,7 +1505,9 @@ fn run(
         cmd.arg("--allow-missing-runtime");
     }
     if no_landlock {
-        eprintln!("qos-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging.");
+        eprintln!(
+            "qos-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging."
+        );
         // Not implemented on the CLI yet — surface as a runtime flag if / when needed.
     }
     // exec()-replace so this process's exit code IS the launcher's.
@@ -1664,7 +1556,7 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     if entry.runtime.is_empty() {
         println!("runtime       : (none declared)");
     } else {
-        let version = entry.runtime.split_once('/').map(|(_, v)| v).unwrap_or("");
+        let version = entry.runtime.split_once('/').map_or("", |(_, v)| v);
         println!(
             "runtime       : {} ({})",
             entry.runtime,
@@ -1704,10 +1596,8 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
 }
 
 fn trust_add(id: &str, pubkey_hex: &str, scope: &str) -> Result<(), Error> {
-    // Validate the scope string + pubkey hex up-front so we
-    // reject garbage before touching the file.
-    let scope_parsed =
-        AttestorScope::parse(scope).map_err(|e| Error::Trust(e.to_string()))?;
+    // Validate scope + pubkey hex up-front, before touching the file.
+    let scope_parsed = AttestorScope::parse(scope).map_err(|e| Error::Trust(e.to_string()))?;
     let _ = decode_hex_32(pubkey_hex).map_err(Error::Trust)?;
     let mut attestors = load_trusted_attestors()?;
     attestors.attestor.retain(|a| a.id != id);
@@ -1717,7 +1607,9 @@ fn trust_add(id: &str, pubkey_hex: &str, scope: &str) -> Result<(), Error> {
         scope: scope_parsed,
     });
     let path = trusted_attestors_path()?;
-    attestors.save(&path).map_err(|e| Error::Trust(e.to_string()))?;
+    attestors
+        .save(&path)
+        .map_err(|e| Error::Trust(e.to_string()))?;
     println!("trust: added {id} (scope: {scope})");
     println!("  file: {}", path.display());
     Ok(())
@@ -1744,7 +1636,9 @@ fn trust_remove(id: &str) -> Result<(), Error> {
         return Err(Error::Trust(format!("no trusted attestor with id {id:?}")));
     }
     let path = trusted_attestors_path()?;
-    attestors.save(&path).map_err(|e| Error::Trust(e.to_string()))?;
+    attestors
+        .save(&path)
+        .map_err(|e| Error::Trust(e.to_string()))?;
     println!("trust: removed {id}");
     Ok(())
 }
@@ -1827,7 +1721,9 @@ fn runtime_install(
 }
 
 fn runtime_list() -> Result<(), Error> {
-    let base = dirs::data_dir().ok_or(Error::NoDataDir)?.join("qos-runtime");
+    let base = dirs::data_dir()
+        .ok_or(Error::NoDataDir)?
+        .join("qos-runtime");
     if !base.exists() {
         println!("(no runtime bundles installed)");
         return Ok(());
@@ -1852,7 +1748,7 @@ fn runtime_list() -> Result<(), Error> {
         return Ok(());
     }
     versions.sort();
-    println!("{:<20}  {}", "version", "path");
+    println!("{:<20}  path", "version");
     for v in &versions {
         println!("{:<20}  {}", v, base.join(v).display());
     }
@@ -1985,29 +1881,23 @@ fn main() {
     }
 }
 
-// ---- helpers -----------------------------------------------------------
-
-/// Read a .qpkg tar: reconstruct the [`MemoryBlobStore`] and PackageId.
-///
-/// Mirrors `qos-pkg-cli::read_qpkg` (deliberately duplicated so this
-/// crate stays independent of qos-pkg-cli).
+/// Read a .qpkg tar → [`MemoryBlobStore`] + `PackageId`. Mirrors
+/// (deliberately duplicated) qos-pkg-cli::read_qpkg so this crate
+/// stays independent.
 #[allow(dead_code)]
 fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore), Error> {
     read_qpkg_bytes(&fs::read(path)?)
 }
 
-/// Same, from bytes already in memory — what a registry fetch hands
-/// back, and what makes verification-before-writing possible.
+/// Same, from bytes already in memory — what a registry fetch returns,
+/// enabling verify-before-write.
 fn read_qpkg_bytes(bytes: &[u8]) -> Result<(PackageId, MemoryBlobStore), Error> {
     let mut ar = tar::Archive::new(std::io::Cursor::new(bytes));
     let mut header: Option<QpkgHeader> = None;
     let mut store = MemoryBlobStore::new();
     for entry in ar.entries().map_err(|e| Error::Parse(e.to_string()))? {
         let mut entry = entry.map_err(|e| Error::Parse(e.to_string()))?;
-        let entry_path = entry
-            .path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+        let entry_path = entry.path().map(|p| p.to_path_buf()).unwrap_or_default();
         let name = entry_path.to_string_lossy().to_string();
         let mut buf = Vec::new();
         entry
@@ -2017,18 +1907,16 @@ fn read_qpkg_bytes(bytes: &[u8]) -> Result<(PackageId, MemoryBlobStore), Error> 
             "qpkg.toml" => {
                 let s = String::from_utf8(buf)
                     .map_err(|e| Error::Parse(format!("qpkg.toml not UTF-8: {e}")))?;
-                header = Some(
-                    toml::from_str(&s).map_err(|e| Error::Parse(format!("qpkg.toml: {e}")))?,
-                );
+                header =
+                    Some(toml::from_str(&s).map_err(|e| Error::Parse(format!("qpkg.toml: {e}")))?);
             }
             n if n.starts_with("blobs/") => {
                 store
                     .put(&buf)
                     .map_err(|e| Error::Parse(format!("blob store: {e}")))?;
             }
-            // signed-root / manifest.toml / collection.qcl are also
-            // duplicated under blobs/<hex>, but ingest defensively in
-            // case a packager omitted the duplicate.
+            // signed-root/manifest.toml/collection.qcl are also duplicated under
+            // blobs/<hex>; ingest defensively in case a packager omitted the duplicate.
             "signed-root" | "manifest.toml" | "collection.qcl" => {
                 store
                     .put(&buf)
@@ -2045,9 +1933,8 @@ fn read_qpkg_bytes(bytes: &[u8]) -> Result<(PackageId, MemoryBlobStore), Error> 
     Ok((id, store))
 }
 
-/// Best-effort publisher key extraction. Reads the signed-root blob
-/// out of the store by the PackageId (which IS the signed-root's hash)
-/// and decodes just enough to lift the 32-byte publisher_identity.
+/// Best-effort publisher key extraction: reads the signed-root blob by
+/// `PackageId` and decodes the 32-byte `publisher_identity`.
 fn extract_publisher_key(id: &PackageId, store: &MemoryBlobStore) -> Option<[u8; 32]> {
     let blob = store
         .get(&pkg::blobs::BlobHash(*id.as_bytes()))
@@ -2078,8 +1965,7 @@ fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn age(installed_at: u64) -> String {
@@ -2094,14 +1980,13 @@ fn age(installed_at: u64) -> String {
 }
 
 fn which_launcher() -> PathBuf {
-    // Prefer a sibling binary — matches how the demo installs both under
-    // the same target/release/ dir.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let sib = parent.join("qos-launcher");
-            if sib.exists() {
-                return sib;
-            }
+    // Prefer a sibling binary — matches how the demo installs both under target/release/.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let sib = parent.join("qos-launcher");
+        if sib.exists() {
+            return sib;
         }
     }
     PathBuf::from("qos-launcher")

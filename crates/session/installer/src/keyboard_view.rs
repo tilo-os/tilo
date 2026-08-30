@@ -92,29 +92,36 @@ impl KeyboardView {
     ) {
         let cap = RoundedRect::from_rect(key, (theme.radius_standard * 0.6).max(2.0));
         scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &cap);
-        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &cap);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &cap,
+        );
 
         let font = ((key.height() * 0.42) as f32).clamp(8.0, 16.0);
 
         // Shifted glyph (corner), drawn first / dim so the base reads clear.
-        if let Some(s) = shift {
-            if !s.is_empty() && s != glyph {
-                let sf = (font * 0.72).max(7.0);
-                text_renderer.draw_text(
-                    scene,
-                    s,
-                    sf,
-                    theme.text_dim,
-                    transform * Affine::translate((key.x0 + 3.0, key.y0 + 1.0)),
-                    None,
-                );
-            }
+        if let Some(s) = shift
+            && !s.is_empty()
+            && s != glyph
+        {
+            let sf = (font * 0.72).max(7.0);
+            text_renderer.draw_text(
+                scene,
+                s,
+                sf,
+                theme.text_dim,
+                transform * Affine::translate((key.x0 + 3.0, key.y0 + 1.0)),
+                None,
+            );
         }
 
         if !glyph.is_empty() {
             let (gw, gh) = text_renderer.measure(glyph, font, None);
-            let tx = key.center().x - gw as f64 / 2.0;
-            let ty = key.center().y - gh as f64 / 2.0;
+            let tx = key.center().x - f64::from(gw) / 2.0;
+            let ty = key.center().y - f64::from(gh) / 2.0;
             text_renderer.draw_text(
                 scene,
                 glyph,
@@ -130,10 +137,10 @@ impl KeyboardView {
 impl Widget for KeyboardView {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Re-resolve every sync so the preview tracks the dropdown live.
-        if let Some(name) = Self::read_value(state, root, self.value_path.as_str()) {
-            if let Some(l) = layouts::by_display_name(&name) {
-                self.layout = l;
-            }
+        if let Some(name) = Self::read_value(state, root, self.value_path.as_str())
+            && let Some(l) = layouts::by_display_name(&name)
+        {
+            self.layout = l;
         }
     }
 
@@ -153,17 +160,17 @@ impl Widget for KeyboardView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -183,7 +190,13 @@ impl Widget for KeyboardView {
         // raised key caps pop.
         let board = RoundedRect::from_rect(self.rect, theme.radius_standard);
         scene.fill(Fill::NonZero, transform, theme.bg_app, None, &board);
-        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &board);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &board,
+        );
 
         let inner_w = self.rect.width() - 2.0 * PAD;
         let inner_h = self.rect.height() - 2.0 * PAD;
@@ -233,7 +246,7 @@ impl Widget for KeyboardView {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "KeyboardView"
     }
 
@@ -254,7 +267,9 @@ mod tests {
     fn doc_with_keymap(value: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        let obj = doc.put_object(&root, "installer.keymap", ObjType::Text).unwrap();
+        let obj = doc
+            .put_object(&root, "installer.keymap", ObjType::Text)
+            .unwrap();
         let _ = doc.splice_text(&obj, 0, 0, value);
         (doc, root)
     }

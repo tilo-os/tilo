@@ -1,24 +1,17 @@
-//! Shared reading-surface chrome for the document readers (ebook, pdf_viewer).
+//! Shared reading-surface chrome for the document readers (ebook, `pdf_viewer`),
+//! so both present the *same* selection affordances with the same spacing,
+//! hover, and selected-state treatment:
 //!
-//! Two pieces the readers used to each hand-roll now live here, so both surfaces
-//! present the *same* selection affordances with the same spacing, hover, and
-//! selected-state treatment:
-//!
-//! - [`SelectionHud`] — the floating toolbar shown while a passage is selected:
-//!   a row of highlight swatches, a **Copy** action, a **Note** action, and a
-//!   conditional **delete** (shown when the selection already covers a mark).
-//!   It is presentation + hit-testing only: each app owns the selection model
-//!   and maps the emitted [`HudAction`] to its own command. Copy is wired to
-//!   [`crate::clipboard_copy`] by both apps.
-//! - [`MarkerDrag`] — the tiny grab/track/threshold state a reader embeds to let
-//!   an annotation marker be *dragged*: the pdf reader repositions a sticky note
-//!   in page space; the ebook reader slides a margin marker to re-anchor it to
-//!   another paragraph.
+//! - [`SelectionHud`] — the floating toolbar shown while a passage is
+//!   selected. Presentation + hit-testing only: each app owns the selection
+//!   model and maps the emitted [`HudAction`] to its own command.
+//! - [`MarkerDrag`] — the grab/track/threshold state a reader embeds to let
+//!   an annotation marker be *dragged*, agnostic of the coordinate space
+//!   (page points vs. screen-y).
 //!
 //! Nothing here reaches into a document — it draws from a resolved
-//! [`ReaderHudStyle`] (colours the caller lifts from its `Theme` + reading
-//! palette) and reports hits back. This keeps the component theme-driven (no
-//! hard-coded colours) while staying agnostic of either reader's data model.
+//! [`ReaderHudStyle`] the caller lifts from its `Theme` + reading palette,
+//! and reports hits back.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -26,27 +19,22 @@ use vello::peniko::{Color, Fill};
 
 use crate::text_render::{TextRenderer, TextWeight};
 
-/// An action one of the HUD's controls emits when clicked. The swatch index in
-/// [`HudAction::Highlight`] indexes into the `swatches` slice passed to
-/// [`SelectionHud::draw`], so the caller maps it back to its own colour model.
+/// The swatch index in [`HudAction::Highlight`] indexes into the `swatches`
+/// slice passed to [`SelectionHud::draw`]; the caller maps it back to its own colour model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HudAction {
-    /// Copy the selected passage to the clipboard.
     Copy,
-    /// Apply/toggle the highlight colour at this swatch index.
     Highlight(usize),
-    /// Attach a note to the selection.
     Note,
-    /// Remove the mark the selection covers.
+    /// Removes the mark the selection covers.
     Delete,
 }
 
 /// One highlight colour offered in the HUD's swatch row.
 #[derive(Clone, Copy, Debug)]
 pub struct HudSwatch {
-    /// The swatch's on-screen sRGB fill.
     pub rgb: [u8; 3],
-    /// Whether this is the reader's currently-armed colour (draws a ring).
+    /// The reader's currently-armed colour; draws a ring.
     pub selected: bool,
 }
 
@@ -56,24 +44,21 @@ impl HudSwatch {
     }
 }
 
-/// Resolved colours for the HUD, lifted by the caller from its `Theme` (chrome)
-/// and reading palette (accent). Passing colours rather than a `Theme` keeps the
-/// component usable from a reader whose *page* palette differs from OS chrome.
+/// Passing resolved colours rather than a `Theme` keeps the component usable
+/// from a reader whose *page* palette differs from OS chrome.
 #[derive(Clone, Copy, Debug)]
 pub struct ReaderHudStyle {
-    /// The bar's body fill (a raised surface).
     pub surface: Color,
-    /// The bar's hairline border.
     pub border: Color,
-    /// Drop-shadow colour (already alpha-premultiplied by the caller if needed).
-    pub shadow: Color,
-    /// Primary label ink.
+    /// A token rather than a colour: strength, offset, and blur are one
+    /// decision, and a caller handed only a colour has no choice but to
+    /// invent the other two — which is how this came to paint a hard-edged
+    /// dark copy of the pill peeking out from under it.
+    pub elevation: crate::tokens::Shadow,
     pub text: Color,
-    /// Fill under a hovered control.
     pub hover: Color,
     /// Resting fill of the Copy / Note pills.
     pub pill: Color,
-    /// Ring drawn around the armed swatch.
     pub ring: Color,
     /// Emphasis for the delete control on hover.
     pub danger: Color,
@@ -104,18 +89,11 @@ mod dims {
 }
 
 impl SelectionHud {
-    /// Compute, draw, and return the selection HUD.
-    ///
-    /// - `swatches` — the highlight colours to offer (indices flow back through
-    ///   [`HudAction::Highlight`]).
-    /// - `show_note` / `show_delete` — whether those controls appear. Copy is
-    ///   always present.
-    /// - `cursor` — pointer position, for hover feedback.
-    /// - `anchor` — the point the bar floats above (the horizontal centre and
-    ///   the top-y of the selection's first band, in the same space as
-    ///   `transform`). The bar is centred on `anchor.x` and prefers to sit just
-    ///   above `anchor.y`, dropping below if it would leave `bounds`.
-    /// - `bounds` — the region to keep the bar inside (the reading viewport).
+    /// `anchor` is the point the bar floats above (horizontal centre + top-y
+    /// of the selection's first band, in `transform`'s space); the bar
+    /// centres on `anchor.x` and prefers just above `anchor.y`, dropping
+    /// below if that would leave `bounds`. Copy is always present;
+    /// `show_note`/`show_delete` gate the other two controls.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         scene: &mut Scene,
@@ -129,47 +107,53 @@ impl SelectionHud {
         anchor: Point,
         bounds: Rect,
     ) -> Self {
-        use dims::*;
+        use dims::{ANCHOR_GAP, DOT_GAP, DOT_R, HEIGHT, PAD, PILL_GAP, SEP_W, TRASH};
         let mut hud = SelectionHud::default();
 
-        // ---- width ----------------------------------------------------------
         let n = swatches.len().max(1) as f64;
         let dots_w = n * (DOT_R * 2.0) + (n - 1.0).max(0.0) * DOT_GAP;
         let (cw, _) = tr.measure_weighted("Copy", 13.0, None, TextWeight::Medium);
-        let copy_w = cw as f64 + 24.0;
+        let copy_w = f64::from(cw) + 24.0;
         let (nw, _) = tr.measure_weighted("Note", 13.0, None, TextWeight::Medium);
-        let note_w = nw as f64 + 24.0;
+        let note_w = f64::from(nw) + 24.0;
         let note_extra = if show_note { PILL_GAP + note_w } else { 0.0 };
         let trash_extra = if show_delete { TRASH + 8.0 } else { 0.0 };
         let sep_w = if swatches.is_empty() { 0.0 } else { SEP_W };
         let hud_w = PAD * 2.0 + dots_w + sep_w + copy_w + note_extra + trash_extra;
 
-        // ---- position: centred on anchor.x, floating above anchor.y ---------
-        let hud_x = (anchor.x - hud_w / 2.0).clamp(bounds.x0 + 8.0, (bounds.x1 - 8.0 - hud_w).max(bounds.x0 + 8.0));
+        let hud_x = (anchor.x - hud_w / 2.0).clamp(
+            bounds.x0 + 8.0,
+            (bounds.x1 - 8.0 - hud_w).max(bounds.x0 + 8.0),
+        );
         let above = anchor.y - HEIGHT - ANCHOR_GAP;
         let hud_y = if above >= bounds.y0 + 6.0 {
             above
         } else {
-            (anchor.y + 30.0).min(bounds.y1 - HEIGHT - 6.0).max(bounds.y0 + 6.0)
+            (anchor.y + 30.0)
+                .min(bounds.y1 - HEIGHT - 6.0)
+                .max(bounds.y0 + 6.0)
         };
         let rect = Rect::new(hud_x, hud_y, hud_x + hud_w, hud_y + HEIGHT);
         hud.rect = rect;
         hud.shown = true;
 
-        // ---- body -----------------------------------------------------------
         let radius = HEIGHT / 2.0;
-        let shadow = Rect::new(rect.x0 - 1.0, rect.y0 + 3.0, rect.x1 + 1.0, rect.y1 + 5.0);
-        fill_round(scene, transform, shadow, radius, style.shadow);
+        // Shared painter, so the HUD is lifted by the same material as every other surface.
+        crate::surface::shadow(scene, transform, rect, radius, &style.elevation);
         fill_round(scene, transform, rect, radius, style.surface);
         stroke_round(scene, transform, rect, radius, style.border, 1.0);
 
         let cyc = hud_y + HEIGHT / 2.0;
 
-        // ---- swatch row -----------------------------------------------------
         let mut x = hud_x + PAD + DOT_R;
         for (i, sw) in swatches.iter().enumerate() {
             let center = Point::new(x, cyc);
-            let dot = Rect::new(center.x - DOT_R, center.y - DOT_R, center.x + DOT_R, center.y + DOT_R);
+            let dot = Rect::new(
+                center.x - DOT_R,
+                center.y - DOT_R,
+                center.x + DOT_R,
+                center.y + DOT_R,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -178,15 +162,29 @@ impl SelectionHud {
                 &Circle::new(center, DOT_R),
             );
             if sw.selected {
-                stroke_round(scene, transform, dot.inflate(2.5, 2.5), DOT_R + 2.5, style.ring, 1.8);
+                stroke_round(
+                    scene,
+                    transform,
+                    dot.inflate(2.5, 2.5),
+                    DOT_R + 2.5,
+                    style.ring,
+                    1.8,
+                );
             } else if dot.inflate(3.0, 3.0).contains(cursor) {
-                stroke_round(scene, transform, dot.inflate(2.5, 2.5), DOT_R + 2.5, style.border, 1.2);
+                stroke_round(
+                    scene,
+                    transform,
+                    dot.inflate(2.5, 2.5),
+                    DOT_R + 2.5,
+                    style.border,
+                    1.2,
+                );
             }
-            hud.buttons.push((dot.inflate(3.0, 3.0), HudAction::Highlight(i)));
+            hud.buttons
+                .push((dot.inflate(3.0, 3.0), HudAction::Highlight(i)));
             x += DOT_R * 2.0 + DOT_GAP;
         }
 
-        // ---- divider --------------------------------------------------------
         let dots_end = hud_x + PAD + dots_w;
         if !swatches.is_empty() {
             let div_x = dots_end + sep_w / 2.0;
@@ -199,11 +197,16 @@ impl SelectionHud {
             );
         }
 
-        // ---- Copy pill ------------------------------------------------------
         let copy_x = dots_end + sep_w;
         let copy_rect = Rect::new(copy_x, cyc - 14.0, copy_x + copy_w, cyc + 14.0);
         let copy_hover = copy_rect.contains(cursor);
-        fill_round(scene, transform, copy_rect, 14.0, if copy_hover { style.hover } else { style.pill });
+        fill_round(
+            scene,
+            transform,
+            copy_rect,
+            14.0,
+            if copy_hover { style.hover } else { style.pill },
+        );
         tr.draw_text_weighted(
             scene,
             "Copy",
@@ -215,13 +218,18 @@ impl SelectionHud {
         );
         hud.buttons.push((copy_rect, HudAction::Copy));
 
-        // ---- Note pill ------------------------------------------------------
         let mut cursor_x = copy_x + copy_w;
         if show_note {
             let note_x = cursor_x + PILL_GAP;
             let note_rect = Rect::new(note_x, cyc - 14.0, note_x + note_w, cyc + 14.0);
             let note_hover = note_rect.contains(cursor);
-            fill_round(scene, transform, note_rect, 14.0, if note_hover { style.hover } else { style.pill });
+            fill_round(
+                scene,
+                transform,
+                note_rect,
+                14.0,
+                if note_hover { style.hover } else { style.pill },
+            );
             tr.draw_text_weighted(
                 scene,
                 "Note",
@@ -235,7 +243,6 @@ impl SelectionHud {
             cursor_x = note_x + note_w;
         }
 
-        // ---- delete ---------------------------------------------------------
         if show_delete {
             let tx = cursor_x + 8.0;
             let trash = Rect::new(tx, cyc - TRASH / 2.0, tx + TRASH, cyc + TRASH / 2.0);
@@ -243,7 +250,13 @@ impl SelectionHud {
             if thov {
                 fill_round(scene, transform, trash, 6.0, style.hover);
             }
-            draw_trash(scene, transform, trash, if thov { style.danger } else { style.text }, 1.5);
+            draw_trash(
+                scene,
+                transform,
+                trash,
+                if thov { style.danger } else { style.text },
+                1.5,
+            );
             hud.buttons.push((trash, HudAction::Delete));
         }
 
@@ -258,7 +271,11 @@ impl SelectionHud {
 
     /// Hit-test a pointer against the drawn controls (topmost/last wins).
     pub fn hit(&self, p: Point) -> Option<HudAction> {
-        self.buttons.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, a)| *a)
+        self.buttons
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(p))
+            .map(|(_, a)| *a)
     }
 
     /// The bar's bounding rect (a caller can swallow taps on it).
@@ -276,26 +293,19 @@ impl SelectionHud {
     }
 }
 
-// ===========================================================================
-// Draggable annotation markers
-// ===========================================================================
-
-/// The grab/track state of a marker drag. A reader begins one when a press lands
-/// on a marker it owns, tracks the pointer while held, and reads back the marker
-/// origin on release to persist the new anchor. It stays agnostic of the
-/// coordinate space (page points for the pdf reader, screen-y for the ebook
-/// margin) — the caller decides how to interpret the returned origin.
+/// A reader begins a drag when a press lands on a marker it owns, tracks the
+/// pointer while held, and reads back the marker origin on release to
+/// persist the new anchor. Agnostic of the coordinate space (page points vs.
+/// screen-y) — the caller decides how to interpret the returned origin.
 #[derive(Clone, Debug)]
 pub struct MarkerDrag {
-    /// Which annotation is being dragged (opaque to this type).
+    /// Opaque to this type.
     pub id: String,
-    /// Pointer offset from the marker origin captured at grab, so the marker
-    /// doesn't jump to the cursor on the first move.
+    /// Captured at grab, so the marker doesn't jump to the cursor on the first move.
     grab_off: (f64, f64),
-    /// Whether the pointer has moved past [`Self::THRESHOLD`] since the grab —
-    /// below it, a release is a click, not a move.
+    /// Past [`Self::THRESHOLD`] since the grab — below it, a release is a click, not a move.
     moved: bool,
-    /// The marker origin as of the last [`Self::update`].
+    /// As of the last [`Self::update`].
     origin: (f64, f64),
 }
 
@@ -303,7 +313,6 @@ impl MarkerDrag {
     /// Movement (in the caller's units) past which a press becomes a drag.
     pub const THRESHOLD: f64 = 4.0;
 
-    /// Begin dragging marker `id` whose origin is `origin`, grabbed at `pointer`.
     pub fn begin(id: impl Into<String>, pointer: (f64, f64), origin: (f64, f64)) -> Self {
         Self {
             id: id.into(),
@@ -313,40 +322,46 @@ impl MarkerDrag {
         }
     }
 
-    /// Track the pointer to a new position; returns the marker's new origin
-    /// (pointer minus the grab offset). Latches [`Self::moved`] once the origin
-    /// has travelled past the threshold from where it started.
+    /// Returns the marker's new origin (pointer minus the grab offset).
+    /// Latches [`Self::moved`] once travelled past the threshold from where it started.
     pub fn update(&mut self, pointer: (f64, f64)) -> (f64, f64) {
         let new = (pointer.0 - self.grab_off.0, pointer.1 - self.grab_off.1);
         if (new.0 - self.origin.0).hypot(new.1 - self.origin.1) > Self::THRESHOLD {
             self.moved = true;
         }
-        // Note: origin is only advanced enough to latch `moved`; callers read the
-        // returned value each move. Keep the initial origin as the travel datum.
+        // `self.origin` is never advanced — it stays the travel datum; callers
+        // read the returned value each move.
         new
     }
 
-    /// Whether this drag has moved far enough to count as a reposition (vs a
-    /// plain click that should fall through to selection).
     pub fn moved(&self) -> bool {
         self.moved
     }
 }
 
-// ===========================================================================
-// Small vector helpers (kept local so the module has no app dependency)
-// ===========================================================================
+// Vector helpers below are kept local so the module has no app dependency.
 
 fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &RoundedRect::from_rect(r, radius));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(r, radius),
+    );
 }
 
 fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color, w: f64) {
-    scene.stroke(&Stroke::new(w), t, color, None, &RoundedRect::from_rect(r, radius));
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(r, radius),
+    );
 }
 
-/// A minimal trash glyph inside `r` (a lid + a can), matching the readers' own
-/// iconography closely enough to read as "delete".
+/// A minimal trash glyph (lid + can) inside `r`.
 fn draw_trash(scene: &mut Scene, t: Affine, r: Rect, color: Color, w: f64) {
     let cx0 = r.x0 + r.width() * 0.22;
     let cx1 = r.x1 - r.width() * 0.22;
@@ -354,15 +369,69 @@ fn draw_trash(scene: &mut Scene, t: Affine, r: Rect, color: Color, w: f64) {
     let bot = r.y1 - r.height() * 0.18;
     let stroke = Stroke::new(w);
     // lid
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(r.x0 + r.width() * 0.14, top), Point::new(r.x1 - r.width() * 0.14, top)));
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(
+            Point::new(r.x0 + r.width() * 0.14, top),
+            Point::new(r.x1 - r.width() * 0.14, top),
+        ),
+    );
     // handle
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx0 + 2.0, top), Point::new(cx0 + 2.0, top - r.height() * 0.12)));
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx1 - 2.0, top), Point::new(cx1 - 2.0, top - r.height() * 0.12)));
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx0 + 2.0, top - r.height() * 0.12), Point::new(cx1 - 2.0, top - r.height() * 0.12)));
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(
+            Point::new(cx0 + 2.0, top),
+            Point::new(cx0 + 2.0, top - r.height() * 0.12),
+        ),
+    );
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(
+            Point::new(cx1 - 2.0, top),
+            Point::new(cx1 - 2.0, top - r.height() * 0.12),
+        ),
+    );
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(
+            Point::new(cx0 + 2.0, top - r.height() * 0.12),
+            Point::new(cx1 - 2.0, top - r.height() * 0.12),
+        ),
+    );
     // can sides + bottom
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx0, top), Point::new(cx0 + 1.0, bot)));
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx1, top), Point::new(cx1 - 1.0, bot)));
-    scene.stroke(&stroke, t, color, None, &Line::new(Point::new(cx0 + 1.0, bot), Point::new(cx1 - 1.0, bot)));
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(Point::new(cx0, top), Point::new(cx0 + 1.0, bot)),
+    );
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(Point::new(cx1, top), Point::new(cx1 - 1.0, bot)),
+    );
+    scene.stroke(
+        &stroke,
+        t,
+        color,
+        None,
+        &Line::new(Point::new(cx0 + 1.0, bot), Point::new(cx1 - 1.0, bot)),
+    );
 }
 
 #[cfg(test)]
@@ -374,7 +443,7 @@ mod tests {
         ReaderHudStyle {
             surface: c,
             border: c,
-            shadow: c,
+            elevation: crate::theme::Theme::dark().tokens.elevation.e2,
             text: c,
             hover: c,
             pill: c,
@@ -391,8 +460,7 @@ mod tests {
         ]
     }
 
-    /// Draw the HUD into a throwaway scene and return it, so we assert on the
-    /// real geometry the readers will hit-test — not a re-derived layout.
+    /// Asserts on the real geometry the readers will hit-test, not a re-derived layout.
     fn draw_hud(show_note: bool, show_delete: bool, anchor: Point, bounds: Rect) -> SelectionHud {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
@@ -412,33 +480,66 @@ mod tests {
 
     #[test]
     fn hud_lays_out_copy_and_every_swatch() {
-        let hud = draw_hud(true, false, Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 800.0, 600.0));
+        let hud = draw_hud(
+            true,
+            false,
+            Point::new(400.0, 300.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
         assert!(hud.is_shown());
         // Every swatch + Copy + Note is a hittable button.
         let highlights: Vec<usize> = hud
             .buttons()
             .iter()
-            .filter_map(|(_, a)| if let HudAction::Highlight(i) = a { Some(*i) } else { None })
+            .filter_map(|(_, a)| {
+                if let HudAction::Highlight(i) = a {
+                    Some(*i)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(highlights, vec![0, 1, 2], "one hit per swatch, in order");
-        assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy), "Copy present");
-        assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Note), "Note present");
-        assert!(!hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete), "no delete without a mark");
+        assert!(
+            hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy),
+            "Copy present"
+        );
+        assert!(
+            hud.buttons().iter().any(|(_, a)| *a == HudAction::Note),
+            "Note present"
+        );
+        assert!(
+            !hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete),
+            "no delete without a mark"
+        );
     }
 
     #[test]
     fn delete_appears_only_when_asked() {
-        let hud = draw_hud(true, true, Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 800.0, 600.0));
+        let hud = draw_hud(
+            true,
+            true,
+            Point::new(400.0, 300.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
         assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
     }
 
     #[test]
     fn hit_returns_the_control_under_the_point() {
-        let hud = draw_hud(true, false, Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 800.0, 600.0));
-        // The centre of the Copy pill hit-tests to Copy.
-        let copy = hud.buttons().iter().find(|(_, a)| *a == HudAction::Copy).unwrap().0;
+        let hud = draw_hud(
+            true,
+            false,
+            Point::new(400.0, 300.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        let copy = hud
+            .buttons()
+            .iter()
+            .find(|(_, a)| *a == HudAction::Copy)
+            .unwrap()
+            .0;
         assert_eq!(hud.hit(copy.center()), Some(HudAction::Copy));
-        // A point well outside the bar hits nothing.
         assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
     }
 
@@ -451,7 +552,10 @@ mod tests {
         assert!(r.x0 >= bounds.x0, "left edge kept in bounds: {r:?}");
         assert!(r.x1 <= bounds.x1 + 0.01, "right edge kept in bounds: {r:?}");
         assert!(r.y0 >= bounds.y0, "top edge kept in bounds: {r:?}");
-        assert!(r.y1 <= bounds.y1 + 0.01, "bottom edge kept in bounds: {r:?}");
+        assert!(
+            r.y1 <= bounds.y1 + 0.01,
+            "bottom edge kept in bounds: {r:?}"
+        );
     }
 
     #[test]
@@ -459,7 +563,10 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
         // Anchor near the top → the bar drops below it rather than off-screen.
         let hud = draw_hud(true, false, Point::new(400.0, 10.0), bounds);
-        assert!(hud.rect().y0 >= 10.0, "bar sits at/below the anchor near the top");
+        assert!(
+            hud.rect().y0 >= 10.0,
+            "bar sits at/below the anchor near the top"
+        );
     }
 
     #[test]
@@ -468,7 +575,10 @@ mod tests {
         // A grab keeps the offset so the first tiny move doesn't jump.
         let o = d.update((101.0, 101.0));
         assert!(!d.moved(), "a sub-threshold nudge is still a click");
-        assert!((o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6, "origin tracks pointer minus grab offset");
+        assert!(
+            (o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6,
+            "origin tracks pointer minus grab offset"
+        );
         let o2 = d.update((130.0, 130.0));
         assert!(d.moved(), "a real drag latches moved");
         assert!(o2.0 > o.0 && o2.1 > o.1);

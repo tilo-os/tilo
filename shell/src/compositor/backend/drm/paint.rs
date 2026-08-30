@@ -1,54 +1,26 @@
 //! CPU-fallback vello → RGBA bridge for the DRM backend.
 //!
-//! ## Why CPU-fallback (Phase 5.2 v1)
+//! Vello renders into a wgpu texture; smithay's DRM path drives GLES. Zero-copy would need
+//! `wgpu::Texture` → DMA-BUF fd → `GlesRenderer::import_dmabuf` → page-flip, which on the
+//! Vulkan wgpu backend needs `hal_texture` → `vulkan::Image` → external memory fd — a
+//! multi-week, Vulkan-only build. Instead this renders to an offscreen wgpu texture, copies
+//! bytes back to a CPU buffer, and exposes tight-packed `&[u8]` for the DRM upload side.
 //!
-//! Vello renders into a wgpu texture; smithay's DRM path drives GLES.
-//! The zero-copy path is `wgpu::Texture` → DMA-BUF fd → smithay
-//! `GlesRenderer::import_dmabuf` → `GlesTexture` → page-flip. That
-//! interop is doable on the Vulkan wgpu backend (`hal_texture` →
-//! `vulkan::Image` → external memory fd) but it's a multi-week build
-//! that adds Vulkan-only constraints. Phase 5.2's mandate is "ship the
-//! path; perf optimization is a follow-up": this module renders to an
-//! offscreen wgpu texture, copies bytes back to a CPU buffer, and
-//! exposes them as a tight-packed `&[u8]` so the DRM upload side can
-//! glTexImage2D / GBM-buffer-blit them.
+//! `wgpu::copy_texture_to_buffer` requires `bytes_per_row` to be a multiple of
+//! `COPY_BYTES_PER_ROW_ALIGNMENT` (256); for unaligned tight strides we allocate a padded
+//! readback buffer and strip the padding on the way into the public `readback`.
 //!
-//! Loudly logs `"DRM paint: CPU fallback active"` on first call so the
-//! operator knows the slow path is engaged. Replace with the DMA-BUF
-//! interop path in a Phase 5.3 follow-up.
-//!
-//! ## Row-pitch alignment
-//!
-//! `wgpu::copy_texture_to_buffer` requires `bytes_per_row` to be a
-//! multiple of `COPY_BYTES_PER_ROW_ALIGNMENT` (256). For widths whose
-//! tight stride isn't aligned we allocate a padded readback buffer and
-//! strip the padding while copying into the public `readback`.
-//!
-//! ## Test strategy
-//!
-//! Unit tests run inside `#[cfg(test)]` and need a wgpu device, which
-//! requires `llvmpipe` (`vulkan_lvp`) inside the distrobox. The
-//! existing `tests/support/offscreen.rs` harness establishes that
-//! llvmpipe is available; the same prerequisite applies here. The
-//! tests check
-//!
-//! * rendering a non-empty scene yields at least one non-background
-//!   pixel,
-//! * rendering an empty scene yields a buffer of the base color,
-//! * resizing reallocates the readback buffer to the right size.
-//!
-//! No real DRM device is touched; the bridge is purely "vello + wgpu
-//! → CPU bytes".
+//! Tests need a wgpu device (`llvmpipe`/`vulkan_lvp` inside the distrobox); no real DRM device is touched.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use pollster::FutureExt;
 use vello::peniko::Color;
-use vello::util::RenderContext;
+// `ui::gpu`'s context, not `vello::util`'s: this device is shared with every other client on the machine, so it needs the same memory hint — see the header of `ui/src/gpu.rs`.
+use ui::gpu::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 
-/// Errors the bridge can return. Each variant maps to an operator-
-/// visible message; the DRM backend logs and skips the frame.
+/// Errors the bridge can return; each variant maps to an operator-visible message and the DRM backend logs+skips the frame.
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
     #[error(
@@ -66,47 +38,33 @@ pub enum BridgeError {
     Map(String),
 }
 
-/// One-shot latch so the "CPU fallback active" warning only fires once
-/// per process. Shared across all bridges since the message is
-/// process-global.
+/// One-shot latch so the "CPU fallback active" warning fires once per process; shared across all bridges since the message is process-global.
 static WARNED_CPU_FALLBACK: AtomicBool = AtomicBool::new(false);
 
-/// CPU-fallback bridge between a vello `Scene` and an RGBA byte
-/// buffer. Owns its wgpu device + offscreen texture + readback buffer
-/// so callers can reuse the bridge across frames without re-allocation.
-///
-/// Single-output by design — multi-output is one bridge per output.
+/// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
+/// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
 pub struct VelloDrmBridge {
     context: RenderContext,
     dev_id: usize,
-    /// The vello renderer parented to the same wgpu device as
-    /// `texture`. Cached across frames so we don't pay the
-    /// pipeline-compile cost on every paint.
+    /// The vello renderer parented to the same wgpu device as `texture`, cached across frames so we don't pay the pipeline-compile cost on every paint.
     renderer: Renderer,
     /// Offscreen render target. Recreated on resize.
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     /// Readback buffer (padded to the wgpu row alignment requirement).
     readback_buf: wgpu::Buffer,
-    /// Bytes-per-row in the padded readback buffer. May exceed
-    /// `width * 4` when the tight stride doesn't divide 256.
+    /// Bytes-per-row in the padded readback buffer; may exceed `width * 4` when the tight stride doesn't divide 256.
     padded_bytes_per_row: u32,
     /// Tight (no padding) RGBA buffer the public `paint` returns.
     readback: Vec<u8>,
-    /// Current size; resize triggers reallocation of `texture` +
-    /// `readback_buf`.
+    /// Current size; resize triggers reallocation of `texture` + `readback_buf`.
     size: (u32, u32),
-    /// Base color used to clear when the caller's scene is empty.
-    /// Matches the winit backend's fallback so the host window doesn't
-    /// flash white.
+    /// Base color used to clear when the caller's scene is empty; matches the winit backend's fallback so the host window doesn't flash white.
     base_color: Color,
 }
 
 impl VelloDrmBridge {
-    /// Build a bridge sized at `width × height`.
-    ///
-    /// `width` and `height` must both be > 0 (the bridge panics
-    /// otherwise; DRM connector enumeration guarantees this).
+    /// Build a bridge sized at `width × height`. Both must be > 0 (panics otherwise; DRM connector enumeration guarantees this).
     pub fn new(width: u32, height: u32) -> Result<Self, BridgeError> {
         assert!(
             width > 0 && height > 0,
@@ -149,18 +107,13 @@ impl VelloDrmBridge {
         })
     }
 
-    /// Override the per-frame clear color. Matches the winit backend
-    /// API so callers can swap themes uniformly.
+    /// Override the per-frame clear color; matches the winit backend API so callers can swap themes uniformly.
     pub fn set_base_color(&mut self, color: Color) {
         self.base_color = color;
     }
 
-    /// Render `scene` into the offscreen texture and return a slice of
-    /// the tight-packed RGBA bytes (`width * height * 4`).
-    ///
-    /// The slice's lifetime is tied to `&mut self`; callers that need
-    /// to keep the bytes across frames must clone them out before the
-    /// next `paint` invocation.
+    /// Render `scene` into the offscreen texture and return a slice of the tight-packed RGBA bytes
+    /// (`width * height * 4`). The slice's lifetime is tied to `&mut self`; callers must clone bytes out before the next `paint`.
     pub fn paint(&mut self, scene: &Scene) -> Result<&[u8], BridgeError> {
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
             tracing::warn!(
@@ -173,8 +126,7 @@ impl VelloDrmBridge {
         let (width, height) = self.size;
         self.render_to_readback(scene)?;
 
-        // Block-map the readback buffer and copy into the tight
-        // `self.readback`, stripping row padding.
+        // Block-map the readback buffer and copy into the tight `self.readback`, stripping row padding.
         let mapped = self.map_readback()?;
         let tight_row = (width * 4) as usize;
         let needed = tight_row * height as usize;
@@ -191,24 +143,15 @@ impl VelloDrmBridge {
         Ok(&self.readback)
     }
 
-    /// Render `scene` and write it **directly** into an XRGB8888
-    /// destination (little-endian byte order `[B, G, R, X]`), fusing
-    /// the wgpu padding-strip and the RGBA→XRGB swizzle into a single
-    /// pass.
+    /// Render `scene` and write it **directly** into an XRGB8888 destination (little-endian
+    /// `[B, G, R, X]`), fusing the wgpu padding-strip and the RGBA→XRGB swizzle into one pass.
     ///
-    /// This is the copy-eliminating sibling of [`paint`](Self::paint):
-    /// the `paint()` path produces a tight RGBA `Vec` that the DRM
-    /// scanout then swizzles into the dumb buffer (two full-frame
-    /// copies after the GPU readback). `paint_into_xrgb8888` swizzles
-    /// the mapped wgpu readback straight into the caller's destination
-    /// (a DRM dumb-buffer mmap), so only the unavoidable GPU→CPU
-    /// readback plus one swizzle remain.
+    /// The copy-eliminating sibling of [`paint`](Self::paint): `paint()` produces a tight RGBA
+    /// `Vec` that the DRM scanout then swizzles into the dumb buffer (two full-frame copies after
+    /// GPU readback); this swizzles the mapped wgpu readback straight into the caller's destination
+    /// (a DRM dumb-buffer mmap), leaving only the unavoidable GPU→CPU readback plus one swizzle.
     ///
-    /// `dst` is the destination buffer and `dst_pitch` its row stride
-    /// in bytes (may exceed `width * 4` for hardware pitch alignment).
-    /// Rows and columns are clamped to whatever `dst` can hold, so a
-    /// short destination is logged-and-truncated rather than a panic —
-    /// matching the scanout's defensive contract.
+    /// `dst_pitch` may exceed `width * 4` for hardware pitch alignment; rows/columns are clamped to what `dst` can hold, so a short destination is logged-and-truncated rather than panicking.
     pub fn paint_into_xrgb8888(
         &mut self,
         scene: &Scene,
@@ -254,10 +197,8 @@ impl VelloDrmBridge {
         Ok(())
     }
 
-    /// Render `scene` into the offscreen texture and stage the
-    /// texture→`readback_buf` copy (padded to wgpu's row alignment).
-    /// Shared prologue for [`paint`](Self::paint) and
-    /// [`paint_into_xrgb8888`](Self::paint_into_xrgb8888).
+    /// Render `scene` into the offscreen texture and stage the texture→`readback_buf` copy (padded
+    /// to wgpu's row alignment); shared prologue for [`paint`](Self::paint) and [`paint_into_xrgb8888`](Self::paint_into_xrgb8888).
     fn render_to_readback(&mut self, scene: &Scene) -> Result<(), BridgeError> {
         let (width, height) = self.size;
         let device = &self.context.devices[self.dev_id].device;
@@ -305,9 +246,7 @@ impl VelloDrmBridge {
         Ok(())
     }
 
-    /// Map the staged `readback_buf` for CPU reads, blocking until the
-    /// GPU copy completes. The returned view borrows `readback_buf`;
-    /// the caller must drop it and then call `readback_buf.unmap()`.
+    /// Map the staged `readback_buf` for CPU reads, blocking until the GPU copy completes. The returned view borrows `readback_buf`; the caller must drop it then call `readback_buf.unmap()`.
     fn map_readback(&self) -> Result<wgpu::BufferView, BridgeError> {
         let device = &self.context.devices[self.dev_id].device;
         let slice = self.readback_buf.slice(..);
@@ -315,12 +254,9 @@ impl VelloDrmBridge {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             tx.send(r).ok();
         });
-        // Bounded, not indefinite: a fence in flight across a system
-        // suspend/resume can never signal, and an unbounded wait would
-        // wedge the paint path forever — the same freeze the winit
-        // presenter's post-present poll had (see `backend/winit.rs`).
-        // A second covers any real readback; a timeout drops this frame
-        // through the existing error path and the next one retries.
+        // Bounded, not indefinite: a fence in flight across a system suspend/resume can never signal,
+        // and an unbounded wait would wedge the paint path forever — the same freeze the winit
+        // presenter's post-present poll had (see `backend/winit.rs`). A timeout drops this frame through the existing error path; the next one retries.
         let waited = device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: Some(std::time::Duration::from_secs(1)),
@@ -334,9 +270,7 @@ impl VelloDrmBridge {
         Ok(slice.get_mapped_range())
     }
 
-    /// Resize the offscreen target. Reallocates the texture + readback
-    /// buffer to fit the new dimensions; returns `Ok(())` even when
-    /// the new size matches the current (no-op).
+    /// Resize the offscreen target, reallocating texture + readback buffer; returns `Ok(())` even when the new size matches the current (no-op).
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), BridgeError> {
         assert!(
             width > 0 && height > 0,
@@ -353,23 +287,17 @@ impl VelloDrmBridge {
         self.readback_buf = readback_buf;
         self.padded_bytes_per_row = padded_bytes_per_row;
         self.size = (width, height);
-        // Reset the tight buffer; it'll be repopulated on the next
-        // `paint`. We could keep capacity, but the new size may be
-        // larger so it's cleaner to clear.
+        // Reset the tight buffer for the next `paint`; the new size may be larger, so clearing is cleaner than keeping capacity.
         self.readback.clear();
         Ok(())
     }
 
-    /// Current (width, height). Useful in tests and for callers that
-    /// want to compare against the connector's mode size before
-    /// resizing.
+    /// Current (width, height); useful in tests and for comparing against the connector's mode size before resizing.
     pub fn size(&self) -> (u32, u32) {
         self.size
     }
 
-    /// Allocate (texture, view, readback_buf, padded_bytes_per_row)
-    /// for the given size. Pulled out so `new` and `resize` share the
-    /// allocation logic.
+    /// Allocate (texture, view, `readback_buf`, `padded_bytes_per_row`) for the given size; shared by `new` and `resize`.
     fn allocate_targets(
         device: &wgpu::Device,
         width: u32,
@@ -396,7 +324,7 @@ impl VelloDrmBridge {
         let unpadded = width * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row = unpadded.div_ceil(align) * align;
-        let readback_size = (padded_bytes_per_row as u64) * (height as u64);
+        let readback_size = u64::from(padded_bytes_per_row) * u64::from(height);
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quick-desktop-drm-paint-readback"),
             size: readback_size,
@@ -408,26 +336,16 @@ impl VelloDrmBridge {
     }
 }
 
-/// Swizzle a sub-rectangle of a tight-packed RGBA source buffer
-/// (`[R, G, B, A]`, row stride `src_w * 4`) into an XRGB8888 destination
-/// (`[B, G, R, X]`, row stride `dst_pitch`).
+/// Swizzle a sub-rectangle of a tight-packed RGBA source buffer (`[R, G, B, A]`, row stride
+/// `src_w * 4`) into an XRGB8888 destination (`[B, G, R, X]`, row stride `dst_pitch`).
 ///
-/// This is the per-output present primitive for the multi-monitor path
-/// (Track B3): the compositor renders one scene spanning the combined
-/// output geometry into `src_rgba` (via [`VelloDrmBridge::paint`]), then
-/// each output presents the sub-rect at its `Output.position` /
-/// `Output.size` into its own scanout dumb buffer. `(src_x, src_y)` is
-/// the sub-rect's top-left in the source (the output's global position);
-/// `out_w`×`out_h` is the output's size.
+/// The per-output present primitive for multi-monitor: the compositor renders one scene
+/// spanning the combined output geometry into `src_rgba` (via [`VelloDrmBridge::paint`]), then
+/// each output presents the sub-rect at its `Output.position`/`size` into its own scanout dumb
+/// buffer. `(src_x, src_y)` is the sub-rect's top-left in the source; `out_w`×`out_h` is the output's size.
 ///
-/// Rows/cols outside the source bounds or the destination buffer are
-/// skipped, so a short `dst` or an output that overhangs the combined
-/// scene is clamped rather than panicking — matching the scanout's
-/// defensive contract. For a single output at the origin whose size
-/// equals the combined geometry this copies every pixel with the same
-/// `R,G,B → B,G,R,0xFF` swizzle as
-/// [`VelloDrmBridge::paint_into_xrgb8888`], so the single-output path is
-/// byte-for-byte unchanged.
+/// Rows/cols outside the source or destination bounds are skipped (clamped, not panicking). For
+/// a single output at the origin matching the combined geometry, this is byte-for-byte [`VelloDrmBridge::paint_into_xrgb8888`].
 pub fn swizzle_subrect_rgba_to_xrgb8888(
     src_rgba: &[u8],
     src_w: usize,
@@ -471,13 +389,10 @@ pub fn swizzle_subrect_rgba_to_xrgb8888(
 
 #[cfg(test)]
 mod subrect_tests {
-    //! Pure-CPU tests for the sub-rect swizzle — no wgpu/GPU needed, so
-    //! they run everywhere `cargo test -p shell --lib` runs.
+    //! Pure-CPU tests for the sub-rect swizzle — no wgpu/GPU needed, run everywhere `cargo test -p shell --lib` runs.
     use super::swizzle_subrect_rgba_to_xrgb8888;
 
-    /// Build a `w×h` tight RGBA buffer where pixel `(x,y)` is
-    /// `(x, y, 0, 0xFF)` so the test can identify which source pixel
-    /// landed where after the swizzle.
+    /// Build a `w×h` tight RGBA buffer where pixel `(x,y)` is `(x, y, 0, 0xFF)`, so the test can identify which source pixel landed where after the swizzle.
     fn ramp_rgba(w: usize, h: usize) -> Vec<u8> {
         let mut v = vec![0u8; w * h * 4];
         for y in 0..h {
@@ -494,9 +409,7 @@ mod subrect_tests {
 
     #[test]
     fn whole_buffer_swizzles_like_paint_into_xrgb8888() {
-        // A single output at the origin: src_x = src_y = 0, out size ==
-        // src size. Every pixel is swizzled R,G,B -> B,G,R,0xFF, which is
-        // exactly what the fused single-output path produces.
+        // A single output at the origin: src_x=src_y=0, out size == src size. Every pixel swizzles R,G,B -> B,G,R,0xFF — the fused single-output path's output.
         let (w, h) = (4usize, 3usize);
         let src = ramp_rgba(w, h);
         let pitch = w * 4;
@@ -516,9 +429,7 @@ mod subrect_tests {
 
     #[test]
     fn offset_subrect_picks_the_right_source_region() {
-        // Combined scene 6x2; the second output is a 2x2 region whose
-        // global position is (4, 0). The swizzle must pull source columns
-        // 4 and 5, not 0 and 1.
+        // Combined scene 6x2; second output is a 2x2 region at global position (4,0) — the swizzle must pull source columns 4 and 5, not 0 and 1.
         let (cw, ch) = (6usize, 2usize);
         let src = ramp_rgba(cw, ch);
         let (ow, oh) = (2usize, 2usize);
@@ -535,11 +446,10 @@ mod subrect_tests {
 
     #[test]
     fn destination_pitch_padding_is_untouched() {
-        // A DRM dumb buffer's pitch usually exceeds out_w*4. The trailing
-        // padding bytes must stay as they were.
+        // A DRM dumb buffer's pitch usually exceeds out_w*4; the trailing padding bytes must stay as they were.
         let (w, h) = (2usize, 2usize);
         let src = ramp_rgba(w, h);
-        let pitch = 16; // > 2*4 = 8
+        let pitch = 16;
         let mut dst = vec![0xEEu8; pitch * h];
         swizzle_subrect_rgba_to_xrgb8888(&src, w, h, 0, 0, &mut dst, pitch, w, h);
         for row in 0..h {
@@ -553,7 +463,7 @@ mod subrect_tests {
         // Output wider/taller than the source region remaining: must clamp.
         let (w, h) = (3usize, 3usize);
         let src = ramp_rgba(w, h);
-        let (ow, oh) = (4usize, 4usize); // overhangs
+        let (ow, oh) = (4usize, 4usize);
         let pitch = ow * 4;
         let mut dst = vec![0u8; pitch * oh];
         // src_x=2 leaves only 1 valid source column; must not panic.
@@ -565,11 +475,8 @@ mod subrect_tests {
 
 #[cfg(test)]
 mod tests {
-    //! These tests need a working wgpu adapter (llvmpipe inside the
-    //! distrobox). We soft-skip when adapter acquisition fails so a
-    //! CI run on a host without Vulkan doesn't flake. The verification
-    //! recipe runs them inside `my-distrobox`, where llvmpipe is
-    //! available.
+    //! These tests need a working wgpu adapter (llvmpipe inside the distrobox); soft-skip on
+    //! adapter-acquisition failure so a CI host without Vulkan doesn't flake. Run inside `my-distrobox`, where llvmpipe is available.
     use super::*;
     use vello::kurbo::Affine;
     use vello::peniko::Fill;
@@ -587,7 +494,7 @@ mod tests {
 
     fn rect_scene(w: u32, h: u32, color: Color) -> Scene {
         let mut scene = Scene::new();
-        let rect = vello::kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
+        let rect = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
         scene
     }
@@ -601,8 +508,7 @@ mod tests {
         let scene = rect_scene(64, 64, Color::from_rgb8(0, 255, 255));
         let bytes = bridge.paint(&scene).expect("paint");
         assert_eq!(bytes.len(), 64 * 64 * 4);
-        // Find at least one non-background pixel. Background is the
-        // bridge's default base color (~0x1A, 0x1B, 0x26).
+        // Find at least one non-background pixel (background is the bridge's default base color, ~0x1A,0x1B,0x26).
         let any_non_bg = bytes
             .chunks_exact(4)
             .any(|p| p[0] != 0x1A || p[1] != 0x1B || p[2] != 0x26);
@@ -617,12 +523,10 @@ mod tests {
         let Some(mut bridge) = bridge_or_skip(1600, 900) else {
             return;
         };
-        // First render at 1600x900.
         let bytes = bridge.paint(&Scene::new()).expect("paint at initial size");
         assert_eq!(bytes.len(), 1600 * 900 * 4);
 
-        // Resize to 1280x720 and verify the next paint returns the
-        // new buffer size.
+        // Resize to 1280x720 and verify the next paint returns the new buffer size.
         bridge.resize(1280, 720).expect("resize");
         assert_eq!(bridge.size(), (1280, 720));
         let bytes = bridge.paint(&Scene::new()).expect("paint after resize");
@@ -634,12 +538,10 @@ mod tests {
         let Some(mut bridge) = bridge_or_skip(32, 32) else {
             return;
         };
-        // Pick a distinctive base color so we can tell the empty
-        // background apart from any other clear.
+        // Pick a distinctive base color so the empty background is distinguishable from any other clear.
         bridge.set_base_color(Color::from_rgb8(0x12, 0x34, 0x56));
         let bytes = bridge.paint(&Scene::new()).expect("paint empty");
         assert_eq!(bytes.len(), 32 * 32 * 4);
-        // Every pixel must be exactly the base color.
         for (i, p) in bytes.chunks_exact(4).enumerate() {
             assert_eq!(
                 (p[0], p[1], p[2]),
@@ -654,15 +556,12 @@ mod tests {
 
     #[test]
     fn paint_into_xrgb8888_matches_paint_swizzled() {
-        // The fused path must produce the same pixels as the tight-RGBA
-        // `paint()` output swizzled to XRGB8888 — proving the
-        // copy-elimination is byte-exact, not just "close".
+        // The fused path must produce the same pixels as tight-RGBA `paint()` output swizzled to XRGB8888 — proving copy-elimination is byte-exact, not just "close".
         let Some(mut bridge) = bridge_or_skip(40, 24) else {
             return;
         };
         let scene = rect_scene(40, 24, Color::from_rgb8(10, 200, 90));
 
-        // Reference: paint() → tight RGBA → manual swizzle to XRGB.
         let rgba = bridge.paint(&scene).expect("paint").to_vec();
         let mut expected = vec![0u8; 40 * 24 * 4];
         for (i, p) in rgba.chunks_exact(4).enumerate() {
@@ -673,7 +572,6 @@ mod tests {
             d[3] = 0xFF; // X
         }
 
-        // Fused: paint_into_xrgb8888 with a tight pitch.
         let pitch = 40 * 4;
         let mut dst = vec![0u8; pitch * 24];
         bridge
@@ -687,20 +585,17 @@ mod tests {
 
     #[test]
     fn paint_into_xrgb8888_respects_destination_pitch() {
-        // A destination whose pitch exceeds width*4 (the common DRM
-        // dumb-buffer case) must leave the trailing padding bytes
-        // untouched and place each row at `row * dst_pitch`.
+        // A destination whose pitch exceeds width*4 (the common DRM dumb-buffer case) must leave trailing padding untouched and place each row at `row * dst_pitch`.
         let Some(mut bridge) = bridge_or_skip(8, 4) else {
             return;
         };
         bridge.set_base_color(Color::from_rgb8(0x11, 0x22, 0x33));
-        let pitch = 64; // > 8*4 = 32
+        let pitch = 64;
         let mut dst = vec![0xEEu8; pitch * 4];
         bridge
             .paint_into_xrgb8888(&Scene::new(), &mut dst, pitch)
             .expect("paint into padded dst");
         for row in 0..4usize {
-            // First 8 pixels of each row are the base color (XRGB).
             for x in 0..8usize {
                 let o = row * pitch + x * 4;
                 assert_eq!(
@@ -709,7 +604,6 @@ mod tests {
                     "row {row} px {x} should be base color in BGR order"
                 );
             }
-            // Padding after the row stays the untouched sentinel.
             assert_eq!(
                 dst[row * pitch + 8 * 4],
                 0xEE,
@@ -720,8 +614,7 @@ mod tests {
 
     #[test]
     fn bridge_handles_non_aligned_width_via_padding() {
-        // Width=33 → tight stride=132, padded to 256. Verifies the
-        // row-pitch stripping in `paint`.
+        // Width=33 → tight stride=132, padded to 256 — verifies the row-pitch stripping in `paint`.
         let Some(mut bridge) = bridge_or_skip(33, 16) else {
             return;
         };

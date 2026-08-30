@@ -1,62 +1,40 @@
 //! The document's version history, as a strip under the editing canvas.
 //!
-//! The editor already round-trips through `qdoc`, so its document *is* the
-//! change graph — this pane is the view onto it. [`ui::HistorySource`] turns
-//! that graph into rows, the [`HistoryScrubber`] renders them as a draggable
-//! track, and dragging the handle scrubs through the document's past.
+//! The document already *is* the change graph (via `qdoc`); this pane is the
+//! view onto it. [`ui::HistorySource`] turns it into rows, [`HistoryScrubber`]
+//! renders a draggable track, and dragging scrubs through the document's past.
+//! Four scrubber-owned affordances: **Preview** (materialise as-of a tick,
+//! nothing written), **Restore to this version** ([`restore_to`], a forward
+//! change), **Name/Rename** (retroactive, on the run the handle sits in), and
+//! **Start/Finish version** (prospective — opens an unbounded range that
+//! absorbs changes until closed).
 //!
-//! Four affordances, all the scrubber's own:
+//! The track shows **top-level runs**, not one tick per change ([`ui::group_entries`]
+//! groups the graph — hundreds of raw ticks would be an unaimable grey smear) and
+//! not nested sub-ranges (one dimension, unlike the two-dimensional activity pane).
 //!
-//! * **Preview** materialises the document as of the selected tick and shows
-//!   its text above the strip. Nothing is written; the live document is
-//!   untouched and the user can keep scrubbing.
-//! * **Restore to this version** rewrites the live document to that state — as
-//!   a *forward* change. See [`restore_to`].
-//! * **Name / Rename this version** writes a name over the run of changes the
-//!   handle is sitting in. Retroactive: the grouping has already drawn the run,
-//!   so naming it costs one click and no forethought.
-//! * **Start a version / Finish version** is the prospective case — say what you
-//!   are about to do, work, close it. It opens a range with no end, which absorbs
-//!   every change until it is closed.
-//!
-//! # Versions on the track
-//!
-//! The strip does not show one tick per change. A debounced editor produces
-//! hundreds of them, and a track of hundreds of ticks is a grey smear you cannot
-//! aim at. So [`ui::group_entries`] cuts the change graph into runs, the strip
-//! renders those as a labelled band above the track, and the handle snaps to
-//! their boundaries.
-//!
-//! The band shows **top-level** runs only. A name nested inside another name is
-//! a legible thing in the activity pane, which has two dimensions to draw it in;
-//! the strip has one, and stacking a sub-range on top of its parent would mean
-//! two labels over the same pixels. The pane is where nesting is read.
-//!
-//! The strip lives inside the app's own content area, under the canvas and
-//! above the layout bar, alongside the outline pane and the styles panel. It is
-//! not window chrome: the compositor owns titlebars and window decoration, and
-//! an app must not draw those. What an app owns is its document, and its
-//! document's history is document content.
+//! Lives inside the app's own content area (under the canvas, above the layout
+//! bar) — not window chrome, since an app owns its document and the document's
+//! history is document content.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::num;
 use automerge::{AutoCommit, ChangeHash};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::history_scrubber::{ScrubberGroup, VersionAction};
 use ui::widget::{HistoryEntryId, HistoryScrubber};
 use ui::{AuthorDirectory, GroupNameRequest, GroupingConfig, HistorySource, Theme};
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
-/// Height of the history strip when open, with the version band showing.
-///
-/// The strip asks the widget rather than hard-coding: it is taller once there is
-/// a version band above the track, and a host that reserved the old height would
-/// clip the button row.
+/// Height of the history strip when open (with the version band showing). The
+/// strip asks the widget rather than hard-coding this, since a host that
+/// reserved the old (bandless) height would clip the button row.
 pub const HISTORY_BAND_H: f64 = 168.0;
 
 /// Height of the preview card drawn above the strip while a past version is
@@ -263,13 +241,11 @@ impl HistoryPanel {
         self.preview.as_ref().map(|p| p.text.as_str())
     }
 
-    /// Re-derive the timeline if the document moved since the last call.
-    ///
-    /// Also binds the local automerge actor to the qOS identity on disk, so the
-    /// user's own rows carry their name rather than the raw actor hex. Outside
-    /// a qOS session there is no identity file and the actor falls through to
-    /// the handle the process set for itself (`QUICK_APP_ID`), which is the
-    /// same key the remote carets are already coloured by.
+    /// Re-derive the timeline if the document moved since the last call. Also
+    /// binds the local automerge actor to the qOS identity on disk, so the
+    /// user's rows carry their name rather than the raw actor hex (outside a
+    /// qOS session, falls back to `QUICK_APP_ID`, the same key remote carets
+    /// are coloured by).
     pub fn refresh(&mut self, doc: &mut AutoCommit) {
         let heads = doc.get_heads();
         if heads == self.last_heads && !self.scrubber.entries().is_empty() {
@@ -282,7 +258,8 @@ impl HistoryPanel {
             self.source.authors_mut().register_local_identity(&actor);
         }
 
-        let at_end = self.scrubber.current_tick() + 1 >= self.scrubber.tick_count().max(1);
+        let at_end =
+            self.scrubber.current_tick().saturating_add(1) >= self.scrubber.tick_count().max(1);
         let entries = self.source.entries(doc);
         let tick = self.scrubber.current_tick();
         // The names people have given runs of this document live in the document,
@@ -361,7 +338,11 @@ impl HistoryPanel {
         // rect — but `Widget::handle_event` asks for a layout tree, so hand it
         // a throwaway one rather than threading the host's.
         let mut scratch: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let node = scratch.new_leaf(taffy::Style::default()).unwrap();
+        let Ok(node) = scratch.new_leaf(taffy::Style::default()) else {
+            // A fresh tree cannot be out of capacity; if it ever were, the
+            // panel simply reports "nothing happened" for this event.
+            return HistoryOutcome::default();
+        };
         self.scrubber.handle_event(
             event,
             scale_factor,
@@ -416,12 +397,9 @@ impl HistoryPanel {
     }
 }
 
-/// Write (or remove) a name over a run of changes.
-///
-/// An empty label is the request to take a name off — that is what clearing the
-/// field and pressing Enter means. Both paths leave the transaction open for the
-/// host to commit, so a name lands stamped and attributed like any other edit and
-/// reaches collaborators through the same sync.
+/// Write (or remove) a name over a run of changes. An empty label clears it
+/// (clearing the field + Enter). Either way the transaction is left open for
+/// the host to commit, so the name lands stamped/attributed like any edit.
 pub fn apply_name(doc: &mut AutoCommit, req: &GroupNameRequest) -> bool {
     if req.label.is_empty() {
         return match &req.record_id {
@@ -448,16 +426,12 @@ pub fn apply_version(doc: &mut AutoCommit, action: &VersionAction) -> bool {
     }
 }
 
-/// Rewrite `doc` to the state it had at the version `id` names, as a **forward
-/// change**.
-///
-/// The delta from now to then is derived and *written*, exactly as undo does.
-/// History is appended to, never rewritten: the versions rolled past are still
-/// in the change graph, the restore itself becomes the newest entry on the
-/// timeline, and any remote edit merged in while the user was scrubbing
-/// survives because only the properties that actually differ are touched.
-///
-/// The transaction is left open for the host to commit.
+/// Rewrite `doc` to the state at version `id`, as a **forward change**: the
+/// delta from now to then is derived and *written*, exactly as undo does.
+/// History is appended to, never rewritten — rolled-past versions stay in the
+/// graph, the restore becomes the newest entry, and a remote edit merged in
+/// while scrubbing survives (only the properties that differ are touched).
+/// Transaction is left open for the host to commit.
 pub fn restore_to(doc: &mut AutoCommit, id: &HistoryEntryId) -> bool {
     let Some(target) = ui::heads_for_entry(doc, id) else {
         return false;
@@ -531,7 +505,7 @@ fn draw_preview_card(
     );
     let head = format!(
         "Version {} \u{00b7} {} \u{00b7} {}",
-        p.version + 1,
+        p.version.saturating_add(1),
         p.author,
         p.summary
     );
@@ -554,7 +528,7 @@ fn draw_preview_card(
         13.0,
         theme.tokens.colors.text_primary,
         transform * Affine::translate((card.x0 + 12.0, card.y0 + 28.0)),
-        Some((card.width() - 24.0) as f32),
+        Some(num::f32_of_f64(card.width() - 24.0)),
     );
     let _ = Point::ZERO;
 }
@@ -580,18 +554,46 @@ mod tests {
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
         s.commit_action(None, None);
         let p = {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             let id = dm.insert_block(None, "paragraph");
             dm.splice_text(&id, 0, 0, "first");
             id
         };
         s.commit_action(None, None);
         {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.splice_text(&p, 5, 0, " second");
         }
         s.commit_action(None, None);
         s
+    }
+
+    /// The entry whose edit produced `summary`, addressed by meaning rather
+    /// than by index — the track's contents shift when the schema changes.
+    fn entry_with(panel: &HistoryPanel, summary: &str) -> ui::widget::history::HistoryEntryId {
+        panel
+            .entries()
+            .iter()
+            .find(|e| e.summary == summary)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no entry summarised {summary:?}; track is {:?}",
+                    panel
+                        .entries()
+                        .iter()
+                        .map(|e| e.summary.as_str())
+                        .collect::<Vec<_>>()
+                )
+            })
+            .id
     }
 
     fn body(s: &State) -> String {
@@ -609,7 +611,12 @@ mod tests {
         let mut s = three_version_doc();
         let mut panel = HistoryPanel::new();
         panel.refresh(&mut s.doc);
-        assert_eq!(panel.version_count(), 3, "schema init plus two edits");
+        assert_eq!(
+            panel.version_count(),
+            2,
+            "the two edits; the schema genesis is written by a fixed actor and \
+             is not an authored revision"
+        );
         let summaries: Vec<&str> = panel.entries().iter().map(|e| e.summary.as_str()).collect();
         assert!(
             summaries.contains(&"+5 -0 chars") && summaries.contains(&"+7 -0 chars"),
@@ -618,7 +625,11 @@ mod tests {
         assert!(
             panel.entries().iter().all(|e| e.author.name == "alice"),
             "the actor the editor set resolves to a name: {:?}",
-            panel.entries().iter().map(|e| &e.author.name).collect::<Vec<_>>()
+            panel
+                .entries()
+                .iter()
+                .map(|e| &e.author.name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -632,7 +643,8 @@ mod tests {
         assert_eq!(body(&s), "first second");
 
         let versions_before = panel.version_count();
-        let target = panel.entries()[1].id;
+        // The state after "first" was typed, before " second".
+        let target = entry_with(&panel, "+5 -0 chars");
         assert!(restore_to(&mut s.doc, &target), "restore writes something");
         // The host commits — this is what `needs_commit()` triggers in the app.
         s.commit_action(None, None);
@@ -658,7 +670,7 @@ mod tests {
         let mut s = three_version_doc();
         let mut panel = HistoryPanel::new();
         panel.refresh(&mut s.doc);
-        let target = panel.entries()[1].id;
+        let target = entry_with(&panel, "+5 -0 chars");
 
         panel.preview = build_preview(&mut s.doc, &target, panel.scrubber.entries());
         assert_eq!(panel.preview_text(), Some("first"));
@@ -680,13 +692,21 @@ mod tests {
         let blocks = qdoc::model::materialize(&s.doc, &c).blocks;
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.splice_text(&blocks[0].id, 0, 0, "X");
         }
         s.commit_action(None, None);
 
         panel.refresh(&mut s.doc);
-        assert_eq!(panel.current_tick(), 0, "the handle stays where it was dragged");
+        assert_eq!(
+            panel.current_tick(),
+            0,
+            "the handle stays where it was dragged"
+        );
     }
 
     /// A row id from another document restores nothing.
@@ -713,17 +733,21 @@ mod tests {
 
     /// A document with three working sessions: two by the local author either
     /// side of a long break, one by a peer in between — the shape that makes
-    /// grouping mean something. Committed with explicit wall clocks, the way the
-    /// FS layer commits when it replays a durable chain, because the gaps are the
-    /// point.
+    /// grouping mean something. Committed with explicit wall clocks (the gaps
+    /// are the point), the way the FS layer commits when replaying a durable chain.
     fn three_session_doc() -> (State, Vec<String>) {
         let mut s = State::new();
-        s.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+        s.doc
+            .set_actor(automerge::ActorId::from("alice".as_bytes()));
         let c = qdoc::model::init(&mut s.doc, &s.root);
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
         qdoc::history::commit_stamped_at(&mut s.doc, 1_000_000);
         let p = {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             let id = dm.insert_block(None, "paragraph");
             dm.splice_text(&id, 0, 0, "Start.");
             id
@@ -731,7 +755,7 @@ mod tests {
         qdoc::history::commit_stamped_at(&mut s.doc, 1_000_010);
 
         // Session one: five more edits, seconds apart.
-        for i in 0..5 {
+        for stamp in (1_000_020..).step_by(10).take(5) {
             let at = {
                 let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
                 qdoc::model::materialize(&s.doc, &cc).blocks[0]
@@ -739,17 +763,20 @@ mod tests {
                     .chars()
                     .count()
             };
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.splice_text(&p, at, 0, " one");
-            drop(dm);
-            qdoc::history::commit_stamped_at(&mut s.doc, 1_000_020 + i * 10);
+            qdoc::history::commit_stamped_at(&mut s.doc, stamp);
         }
 
         // Session two, an hour later, by a peer — forked, edited under its own
         // actor, merged back, exactly as a sync round arrives.
         let mut peer = s.doc.fork();
         peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
-        for i in 0..3 {
+        for stamp in (1_004_000..).step_by(10).take(3) {
             let at = {
                 let cc = qdoc::model::open(&peer, &s.root).unwrap();
                 qdoc::model::materialize(&peer, &cc).blocks[0]
@@ -759,15 +786,18 @@ mod tests {
             };
             let cc = qdoc::model::open(&peer, &s.root).unwrap();
             let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-            let mut dm = qdoc::DocMut { doc: &mut peer, c: &cc, ids: &mut pids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut peer,
+                c: &cc,
+                ids: &mut pids,
+            };
             dm.splice_text(&p, at, 0, " two");
-            drop(dm);
-            qdoc::history::commit_stamped_at(&mut peer, 1_004_000 + i * 10);
+            qdoc::history::commit_stamped_at(&mut peer, stamp);
         }
         s.doc.merge(&mut peer).expect("peers merge");
 
         // Session three, two hours after that, back to the local author.
-        for i in 0..4 {
+        for stamp in (1_012_000..).step_by(10).take(4) {
             let at = {
                 let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
                 qdoc::model::materialize(&s.doc, &cc).blocks[0]
@@ -776,10 +806,13 @@ mod tests {
                     .count()
             };
             let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &cc, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &cc,
+                ids: &mut ids,
+            };
             dm.splice_text(&p, at, 0, " three");
-            drop(dm);
-            qdoc::history::commit_stamped_at(&mut s.doc, 1_012_000 + i * 10);
+            qdoc::history::commit_stamped_at(&mut s.doc, stamp);
         }
         (s, Vec::new())
     }
@@ -800,12 +833,21 @@ mod tests {
         assert!(
             panel.versions().iter().any(|v| v.derived.contains("edits")),
             "an unnamed version describes itself: {:?}",
-            panel.versions().iter().map(|v| v.derived.clone()).collect::<Vec<_>>()
+            panel
+                .versions()
+                .iter()
+                .map(|v| v.derived.clone())
+                .collect::<Vec<_>>()
         );
         // And the segments tile the whole track without gaps or overlaps.
         let mut cursor = 0usize;
         for v in panel.versions() {
-            assert_eq!(v.start, cursor, "versions must tile: {:?}", panel.versions());
+            assert_eq!(
+                v.start,
+                cursor,
+                "versions must tile: {:?}",
+                panel.versions()
+            );
             cursor = v.end + 1;
         }
         assert_eq!(cursor, changes, "and cover every change");
@@ -817,9 +859,8 @@ mod tests {
         let mut panel = HistoryPanel::new();
         panel.toggle();
         panel.refresh(&mut s.doc);
-        assert_eq!(
-            panel.band_height(),
-            HISTORY_BAND_H,
+        assert!(
+            (panel.band_height() - HISTORY_BAND_H).abs() < f64::EPSILON,
             "the strip asks for the taller band once it has versions to show"
         );
         let mut empty = HistoryPanel::new();
@@ -861,7 +902,11 @@ mod tests {
                 .iter()
                 .any(|g| g.label.as_deref() == Some("Bob's pass")),
             "the band is on the track: {:?}",
-            panel.versions().iter().map(|g| g.title().to_string()).collect::<Vec<_>>()
+            panel
+                .versions()
+                .iter()
+                .map(|g| g.title().to_string())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -925,11 +970,17 @@ mod tests {
         for _ in 0..3 {
             let at = {
                 let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
-                qdoc::model::materialize(&s.doc, &cc).blocks[0].text.chars().count()
+                qdoc::model::materialize(&s.doc, &cc).blocks[0]
+                    .text
+                    .chars()
+                    .count()
             };
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.splice_text(&blocks[0].id, at, 0, " more");
-            drop(dm);
             s.commit_action(None, None);
         }
         panel.follow_document();
@@ -960,7 +1011,10 @@ mod tests {
             .clone();
         assert!(apply_version(
             &mut s.doc,
-            &VersionAction::Close { record_id: record, at: end_id }
+            &VersionAction::Close {
+                record_id: record,
+                at: end_id
+            }
         ));
         s.commit_action(None, None);
         panel.follow_document();
@@ -993,13 +1047,20 @@ mod tests {
         // work, and nothing after it.
         let v = panel.versions()[1].clone();
         let boundary = panel.entries()[v.end].id;
-        let expected = {
-            let snap = qdoc::history::materialize_at(&mut s.doc, v.end).unwrap();
-            snap.blocks.first().map(|b| b.text.clone()).unwrap_or_default()
-        };
+        // Read the expected text through the same id the restore uses. `v.end`
+        // indexes `entries()`, which omits the schema genesis, while
+        // `materialize_at` counts raw changes — passing one to the other
+        // compares two different states and the assertion drifts by whatever
+        // the entry list filtered out.
+        let expected = build_preview(&mut s.doc, &boundary, panel.scrubber.entries())
+            .map(|p| p.text)
+            .unwrap_or_default();
         assert_ne!(expected, live, "the boundary is a different state");
 
-        assert!(restore_to(&mut s.doc, &boundary), "the restore wrote something");
+        assert!(
+            restore_to(&mut s.doc, &boundary),
+            "the restore wrote something"
+        );
         s.commit_action(None, None);
         assert_eq!(
             body(&s),
@@ -1024,7 +1085,12 @@ mod tests {
         panel.refresh(&mut s.doc);
         for v in panel.versions().to_vec() {
             panel.set_current_tick(v.end);
-            assert_eq!(panel.current_tick(), v.end, "version ending at {} unreachable", v.end);
+            assert_eq!(
+                panel.current_tick(),
+                v.end,
+                "version ending at {} unreachable",
+                v.end
+            );
         }
     }
 }

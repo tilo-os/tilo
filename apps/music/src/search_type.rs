@@ -17,7 +17,7 @@
 //!   or a procedural seed (offline), plus the deep link that opens it.
 //! * [`MusicSearchProvider`] — turns a query into [`SearchHit`]s by delegating
 //!   to whichever [`crate::backend::MusicBackend`] the build selected (offline
-//!   sample by default, real YouTube Music under `--features live`).
+//!   sample by default, real `YouTube` Music under `--features live`).
 //! * [`library_hits`] — contributes the user's **own library** (synced across
 //!   their devices) to OS search, so a saved album or a personal playlist is
 //!   findable even on the hermetic/offline build.
@@ -56,22 +56,38 @@ pub struct SearchableType {
 
 /// The descriptor Music registers for song results.
 pub fn song_searchable_type() -> SearchableType {
-    SearchableType { id: SONG_TYPE_ID, display_name: "Song", has_thumbnail: true }
+    SearchableType {
+        id: SONG_TYPE_ID,
+        display_name: "Song",
+        has_thumbnail: true,
+    }
 }
 
 /// The descriptor Music registers for album results.
 pub fn album_searchable_type() -> SearchableType {
-    SearchableType { id: ALBUM_TYPE_ID, display_name: "Album", has_thumbnail: true }
+    SearchableType {
+        id: ALBUM_TYPE_ID,
+        display_name: "Album",
+        has_thumbnail: true,
+    }
 }
 
 /// The descriptor Music registers for artist results.
 pub fn artist_searchable_type() -> SearchableType {
-    SearchableType { id: ARTIST_TYPE_ID, display_name: "Artist", has_thumbnail: true }
+    SearchableType {
+        id: ARTIST_TYPE_ID,
+        display_name: "Artist",
+        has_thumbnail: true,
+    }
 }
 
 /// The descriptor Music registers for playlist results.
 pub fn playlist_searchable_type() -> SearchableType {
-    SearchableType { id: PLAYLIST_TYPE_ID, display_name: "Playlist", has_thumbnail: true }
+    SearchableType {
+        id: PLAYLIST_TYPE_ID,
+        display_name: "Playlist",
+        has_thumbnail: true,
+    }
 }
 
 /// Every result type Music contributes, in the order the palette should section
@@ -95,7 +111,7 @@ pub struct SearchHit {
     /// Secondary line: the artist, the owner, "N songs", a duration — whatever
     /// disambiguates the hit at a glance.
     pub subtitle: String,
-    /// Real cover-art URL (YouTube image CDN) when the live backend provides
+    /// Real cover-art URL (`YouTube` image CDN) when the live backend provides
     /// one. Empty for own-library / offline hits — the palette then renders the
     /// procedural tile keyed by [`Self::thumbnail_seed`], so no image bytes
     /// need cross the boundary.
@@ -332,7 +348,11 @@ pub fn library_hits(lib: &Library, query: &str) -> Vec<SearchHit> {
             hits.push(SearchHit {
                 type_id: ARTIST_TYPE_ID,
                 title: a.name.clone(),
-                subtitle: if a.genre.is_empty() { "Artist".into() } else { a.genre.clone() },
+                subtitle: if a.genre.is_empty() {
+                    "Artist".into()
+                } else {
+                    a.genre.clone()
+                },
                 cover_url: String::new(),
                 thumbnail_seed: a.id.clone(),
                 deep_link: SearchHit::artist_link(&a.id),
@@ -361,7 +381,10 @@ fn song_subtitle(artist: &str, duration_s: u32) -> String {
     if duration_s == 0 {
         format!("Song · {artist}")
     } else {
-        format!("Song · {artist} · {}", ui::format::timecode(duration_s as u64))
+        format!(
+            "Song · {artist} · {}",
+            ui::format::timecode(u64::from(duration_s))
+        )
     }
 }
 
@@ -377,16 +400,19 @@ fn artist_subtitle(subscribers: u64) -> String {
     if subscribers == 0 {
         "Artist".into()
     } else {
-        format!("Artist · {} subscribers", ui::format::compact_count(subscribers))
+        format!(
+            "Artist · {} subscribers",
+            ui::format::compact_count(subscribers)
+        )
     }
 }
 
 fn playlist_subtitle(owner: &str, tracks: u64) -> String {
     match (owner.is_empty(), tracks) {
         (true, 0) => "Playlist".into(),
-        (true, n) => format!("Playlist · {} songs", n),
+        (true, n) => format!("Playlist · {n} songs"),
         (false, 0) => format!("Playlist · {owner}"),
-        (false, n) => format!("Playlist · {owner} · {} songs", n),
+        (false, n) => format!("Playlist · {owner} · {n} songs"),
     }
 }
 
@@ -470,7 +496,7 @@ impl LibrarySearchProvider {
 }
 
 impl SearchProvider for LibrarySearchProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         // Default group label / diagnostic name; individual rows carry their own
         // per-type kind ("Songs", "Albums", …) so the overlay sections them.
         "Music"
@@ -484,7 +510,6 @@ impl SearchProvider for LibrarySearchProvider {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,7 +520,15 @@ mod tests {
     fn descriptors_are_stable_and_complete() {
         let types = all_searchable_types();
         let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
-        assert_eq!(ids, [SONG_TYPE_ID, ALBUM_TYPE_ID, ARTIST_TYPE_ID, PLAYLIST_TYPE_ID]);
+        assert_eq!(
+            ids,
+            [
+                SONG_TYPE_ID,
+                ALBUM_TYPE_ID,
+                ARTIST_TYPE_ID,
+                PLAYLIST_TYPE_ID
+            ]
+        );
         assert!(types.iter().all(|t| t.has_thumbnail));
         assert!(types.iter().all(|t| !t.display_name.is_empty()));
     }
@@ -548,8 +581,9 @@ mod tests {
         let some = lib.tracks.values().next().unwrap().clone();
         let hits = library_hits(&lib, &some.title);
         assert!(
-            hits.iter().any(|h| h.type_id == SONG_TYPE_ID
-                && h.deep_link == SearchHit::track_link(&some.id)),
+            hits.iter().any(
+                |h| h.type_id == SONG_TYPE_ID && h.deep_link == SearchHit::track_link(&some.id)
+            ),
             "song hit with a play deep-link"
         );
 
@@ -618,20 +652,35 @@ mod tests {
         assert_eq!(song.kind, "Songs");
         assert_eq!(song.title, track.title);
         assert_eq!(song.icon, Some(Icon::Music));
-        assert!(DeepLink::parse(&song.action_id).is_some(), "action_id is a routable deep link");
+        assert!(
+            DeepLink::parse(&song.action_id).is_some(),
+            "action_id is a routable deep link"
+        );
 
         // All four types section under their plural kind headers.
         let album = lib.albums.values().next().unwrap().clone();
-        assert!(registry.query_grouped(&album.title).iter().any(|g| g.kind == "Albums"
-            && g.results.iter().any(|r| r.action_id == SearchHit::album_link(&album.id))));
+        assert!(registry.query_grouped(&album.title).iter().any(|g| {
+            g.kind == "Albums"
+                && g.results
+                    .iter()
+                    .any(|r| r.action_id == SearchHit::album_link(&album.id))
+        }));
 
         let artist = lib.artists.values().next().unwrap().clone();
-        assert!(registry.query_grouped(&artist.name).iter().any(|g| g.kind == "Artists"
-            && g.results.iter().any(|r| r.action_id == SearchHit::artist_link(&artist.id))));
+        assert!(registry.query_grouped(&artist.name).iter().any(|g| {
+            g.kind == "Artists"
+                && g.results
+                    .iter()
+                    .any(|r| r.action_id == SearchHit::artist_link(&artist.id))
+        }));
 
         let pl = lib.playlists.first().unwrap().clone();
-        assert!(registry.query_grouped(&pl.name).iter().any(|g| g.kind == "Playlists"
-            && g.results.iter().any(|r| r.action_id == SearchHit::playlist_link(&pl.id))));
+        assert!(registry.query_grouped(&pl.name).iter().any(|g| {
+            g.kind == "Playlists"
+                && g.results
+                    .iter()
+                    .any(|r| r.action_id == SearchHit::playlist_link(&pl.id))
+        }));
     }
 
     #[test]

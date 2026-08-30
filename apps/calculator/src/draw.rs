@@ -58,14 +58,22 @@ pub fn text_in(
         return;
     }
     let (w, _h) = tr.measure_weighted(text, size, None, weight);
-    let line_h = size as f64 * 1.25;
+    let line_h = f64::from(size) * 1.25;
     let x = match align {
         Align::Left => rect.x0,
-        Align::Center => rect.center().x - w as f64 / 2.0,
-        Align::Right => rect.x1 - w as f64,
+        Align::Center => rect.center().x - f64::from(w) / 2.0,
+        Align::Right => rect.x1 - f64::from(w),
     };
     let y = rect.y0 + (rect.height() - line_h) / 2.0;
-    tr.draw_text_weighted(scene, text, size, color, t * Affine::translate((x, y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        text,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        None,
+        weight,
+    );
 }
 
 /// Draw text at an explicit top-left point.
@@ -83,16 +91,31 @@ pub fn text_at(
     if text.is_empty() {
         return;
     }
-    tr.draw_text_weighted(scene, text, size, color, t * Affine::translate((pos.x, pos.y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        text,
+        size,
+        color,
+        t * Affine::translate((pos.x, pos.y)),
+        None,
+        weight,
+    );
 }
 
 /// Mix two colours by `t` in [0, 1] (straight, non-premultiplied bytes).
 pub fn mix(a: Color, b: Color, t: f64) -> Color {
     let t = t.clamp(0.0, 1.0);
     let lerp = |x: u8, y: u8| -> u8 {
-        (x as f64 + (y as f64 - x as f64) * t).round().clamp(0.0, 255.0) as u8
+        (f64::from(x) + (f64::from(y) - f64::from(x)) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
     };
-    Color::from_rgba8(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()), lerp(a.a(), b.a()))
+    Color::from_rgba8(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+        lerp(a.a(), b.a()),
+    )
 }
 
 /// Apply an alpha to a colour.

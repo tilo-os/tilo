@@ -1,11 +1,10 @@
 //! The [`ActionEnvelope`]: what actually replicates.
 //!
-//! The envelope binds an [`EncodedAction`] to the metadata a peer needs to
-//! *replay it into an identical document*: the base heads it was authored
-//! against, the deterministic actor id (its [`ActionId`]), the commit
-//! timestamp, and the declared [`ExecutionLocus`]. Everything here is
-//! `Serialize`/`Deserialize` so it can ride any transport (the local broker
-//! today, MLS-encrypted libp2p later).
+//! Binds an [`EncodedAction`] to the metadata a peer needs to *replay it
+//! into an identical document*: the base heads it was authored against,
+//! the deterministic actor id ([`ActionId`]), the commit timestamp, and
+//! the declared [`ExecutionLocus`]. All `Serialize`/`Deserialize` so it
+//! rides any transport (the local broker today, MLS-encrypted Iroh later).
 
 use automerge::{ActorId, ChangeHash};
 use serde::{Deserialize, Serialize};
@@ -20,15 +19,26 @@ pub struct ActionEnvelope {
     pub id: ActionId,
     /// The serialized action.
     pub action: EncodedAction,
-    /// Document heads the action was authored against. A replica at exactly
+    /// Document heads the action was authored against — a replica at exactly
     /// these heads replays to the identical document.
     pub base_heads: Vec<[u8; 32]>,
-    /// Commit timestamp (unix seconds), pinned so the change is byte-identical
-    /// on origin and on every replaying replica.
+    /// Commit timestamp (unix seconds), pinned so the change is
+    /// byte-identical on origin and every replaying replica.
     pub timestamp: i64,
     /// The action's declared execution locus, carried so the transport can
     /// honor it.
     pub locus: ExecutionLocus,
+    /// The participant that authored this action, when named — a person, an
+    /// agent, or another session reached through [`crate::door`].
+    ///
+    /// These bytes become the Automerge actor the change commits under, so
+    /// an edit from outside attributes in history exactly like a typed one.
+    /// `None` is the app's own dispatch (the [`ActionId`]-derived actor).
+    /// Replay stays byte-identical either way, since the actor rides on the
+    /// envelope rather than the applying replica. Optional on the wire so an
+    /// envelope written before attribution existed still deserializes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<Vec<u8>>,
 }
 
 impl ActionEnvelope {
@@ -37,8 +47,13 @@ impl ActionEnvelope {
         self.base_heads.iter().map(|b| ChangeHash(*b)).collect()
     }
 
-    /// The deterministic actor id derived from [`ActionId`].
+    /// The actor this action's change commits under: the authoring
+    /// participant when named, else the [`ActionId`]-derived actor. Read off
+    /// the envelope so a replaying replica never substitutes its own.
     pub fn actor(&self) -> ActorId {
-        ActorId::from(self.id.actor_bytes().to_vec())
+        match &self.actor {
+            Some(bytes) if !bytes.is_empty() => ActorId::from(bytes.clone()),
+            _ => ActorId::from(self.id.actor_bytes().to_vec()),
+        }
     }
 }

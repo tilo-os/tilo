@@ -37,13 +37,6 @@ anyhow.workspace = true
 # from a background worker thread; never touched on the `--shots` path.
 # rustls-tls because the distrobox image has no openssl/native-tls.
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# H.264 decode for real video playback. Same pin + `source` feature as `ui`'s
-# `VideoPlayer`, so this reuses the already-compiled artifact (no extra build).
-# Tube drives the decoder directly (not through `VideoPlayer`) so it can disable
-# openh264's default flush-after-every-decode — that default flushes a frame per
-# call, prematurely releasing the reference frames P-slices depend on and
-# cascading into dsRefLost errors that drop ~95% of a real stream's frames.
-openh264.workspace = true
 
 # --- live YouTube backend (off by default) ---------------------------------
 # rustypipe is a pure-Rust InnerTube client (search/channel/video/streams/
@@ -76,21 +69,6 @@ snow = { version = "0.9", optional = true }
 flate2 = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 
-# --- GStreamer decode/playback — off by default -----------------------------
-# Real video playback (VP9 / AV1 / H.264 + audio, adaptive) through GStreamer:
-# a `playbin` whose video is diverted through `videoconvert ! appsink` so the
-# UI paints decoded RGBA frames (the same appsink→RGBA idiom `apps/camera` and
-# `apps/music` use). Pinned to 0.24 to reuse the versions the workspace already
-# locks (see `apps/camera`), so no fresh resolution and the offline build stays
-# hermetic. The stream URL is resolved by yt-dlp; GStreamer's `uridecodebin`
-# picks the decoder, so this replaces the openh264-only decode path (which is
-# retained behind the `live` path only as a legacy fallback). Gated behind
-# `media` so the default build (and every `--shots`/test run) never links the
-# gstreamer-1.0 dev stack.
-gstreamer = { workspace = true, optional = true }
-gstreamer-app = { workspace = true, optional = true }
-gstreamer-video = { workspace = true, optional = true }
-
 [dev-dependencies]
 # Encoding-level assertions in the video-surface test: prove a decoded frame
 # actually emits an IMAGE draw command into the scene (mirrors ui's own
@@ -116,15 +94,12 @@ default = ["live", "media"]
 live = ["dep:rustypipe", "dep:tokio"]
 # Real video decode + playback + audio out. Turns on the shared media engine's
 # GStreamer backend (`media/decode`) that the watch-page `VideoPlayer` streams
-# through, and keeps the direct `gstreamer` deps that the `backend::gst_playback`
-# diagnostic + `--probe-gst` use (same 0.24 pin, so cargo links one copy). The
+# through. The former `--probe-gst` diagnostic is now an alias for the same
+# MediaEngine probe, so Tube no longer links a second direct playback stack. The
 # default build keeps the synthesized-frame fallback, so `--shots`/tests need no
 # gstreamer stack.
 media = [
     "media/decode",
-    "dep:gstreamer",
-    "dep:gstreamer-app",
-    "dep:gstreamer-video",
     # Desktop media integration: the watch-page player publishes now-playing +
     # accepts media keys through the toolkit's MPRIS service.
     "ui/mpris",
@@ -133,3 +108,6 @@ media = [
 # the live `GrayjaySyncTransport`; the default build keeps only the deterministic
 # `StubTransport`, so nothing here can touch the hermetic path.
 grayjay-sync = ["dep:snow", "dep:flate2", "dep:base64"]
+
+[lints]
+workspace = true

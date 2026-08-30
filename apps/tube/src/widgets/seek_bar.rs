@@ -1,14 +1,14 @@
 //! `SeekBar` — the SponsorBlock-aware scrubber.
 //!
 //! This is the differentiating widget of the whole app: the seek bar is
-//! painted with the community SponsorBlock segments inline, each in its
+//! painted with the community `SponsorBlock` segments inline, each in its
 //! canonical category colour, so before you even press play you can see
 //! "there's a 90-second sponsor read at the 24-minute mark". Click or drag
 //! anywhere to seek; the root auto-skips enabled categories as the
 //! playhead crosses them.
 //!
 //! Track / played / knob colours come from the OS [`Theme`]; only the
-//! segment bands use SponsorBlock's brand colours (documented in
+//! segment bands use `SponsorBlock`'s brand colours (documented in
 //! [`crate::model::Category::rgb`]), because matching what users already
 //! recognise is the whole point.
 
@@ -44,7 +44,13 @@ pub struct SeekBar {
 }
 
 impl SeekBar {
-    pub fn new(bus: &ActionBus, duration: f64, playhead: f64, segments: Vec<Segment>, enabled: Vec<bool>) -> Self {
+    pub fn new(
+        bus: &ActionBus,
+        duration: f64,
+        playhead: f64,
+        segments: Vec<Segment>,
+        enabled: Vec<bool>,
+    ) -> Self {
         Self {
             duration: duration.max(1.0),
             playhead,
@@ -80,28 +86,23 @@ impl Widget for SeekBar {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
+        let node = super::leaf_node(
+            taffy,
+            Style {
                 size: taffy::Size {
-                    width: percent(1.0),
-                    height: length(26.0),
+                    width: percent(1.0_f32),
+                    height: length(26.0_f32),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+            },
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
-        );
+        self.rect = super::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -113,13 +114,23 @@ impl Widget for SeekBar {
         _presence: &PresenceCtx,
     ) {
         let cy = self.rect.center().y;
-        let track_h = if self.hovered || self.dragging { 8.0 } else { 6.0 };
+        let track_h = if self.hovered || self.dragging {
+            8.0
+        } else {
+            6.0
+        };
         let x0 = self.rect.x0;
         let x1 = self.rect.x1;
         let w = (x1 - x0).max(1.0);
 
         // Track.
-        let track = RoundedRect::new(x0, cy - track_h / 2.0, x1, cy + track_h / 2.0, track_h / 2.0);
+        let track = RoundedRect::new(
+            x0,
+            cy - track_h / 2.0,
+            x1,
+            cy + track_h / 2.0,
+            track_h / 2.0,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -137,7 +148,13 @@ impl Widget for SeekBar {
             cy + track_h / 2.0,
             track_h / 2.0,
         );
-        scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &played);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.accent_primary,
+            None,
+            &played,
+        );
 
         // SponsorBlock segment bands, in their category colours.
         for (i, seg) in self.segments.iter().enumerate() {
@@ -152,7 +169,13 @@ impl Widget for SeekBar {
             // Bands sit a few px taller than the track so the SponsorBlock
             // segments read clearly even when short.
             let bh = track_h / 2.0 + 3.0;
-            let band = RoundedRect::new(x0 + w * s, cy - bh, (x0 + w * e).max(x0 + w * s + 2.0), cy + bh, 2.0);
+            let band = RoundedRect::new(
+                x0 + w * s,
+                cy - bh,
+                (x0 + w * e).max(x0 + w * s + 2.0),
+                cy + bh,
+                2.0,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -164,7 +187,11 @@ impl Widget for SeekBar {
 
         // Playhead knob.
         let kx = x0 + w * frac;
-        let kr = if self.hovered || self.dragging { 8.0 } else { 6.0 };
+        let kr = if self.hovered || self.dragging {
+            8.0
+        } else {
+            6.0
+        };
         scene.fill(
             Fill::NonZero,
             transform,
@@ -243,7 +270,7 @@ impl Widget for SeekBar {
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SeekBar"
     }
     fn is_layout_dirty(&self) -> bool {

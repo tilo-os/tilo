@@ -2,9 +2,9 @@
 //! indexes as three stacked panels. Read-only inspection — the kind of view
 //! you reach for to remember a column's type or check a constraint.
 
+use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 
 use crate::model::TableInfo;
 use crate::theme_ext::ThemeExt;
@@ -54,7 +54,17 @@ pub fn draw_structure(
         area.x0 + 430.0,
         area.x0 + 510.0,
     ];
-    y = panel_header(scene, t, tr, theme, area, y, "COLUMNS", &col_headers, &col_x);
+    y = panel_header(
+        scene,
+        t,
+        tr,
+        theme,
+        area,
+        y,
+        "COLUMNS",
+        &col_headers,
+        &col_x,
+    );
 
     for (i, col) in table.columns.iter().enumerate() {
         let row = Rect::new(area.x0, y, area.x1, y + ROW_H);
@@ -62,7 +72,8 @@ pub fn draw_structure(
             scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
         }
         // Type icon chip.
-        let chip = Rect::new(col_x[1] - 22.0, y + 5.0, col_x[1] - 6.0, y + 21.0).to_rounded_rect(4.0);
+        let chip =
+            Rect::new(col_x[1] - 22.0, y + 5.0, col_x[1] - 6.0, y + 21.0).to_rounded_rect(4.0);
         scene.fill(Fill::NonZero, t, theme.type_color(col.class), None, &chip);
         tr.draw_text(
             scene,
@@ -79,13 +90,25 @@ pub fn draw_structure(
             scene,
             t,
             tr,
-            if col.not_null { theme.tokens.colors.semantic.danger } else { theme.text_dim },
+            if col.not_null {
+                theme.tokens.colors.semantic.danger
+            } else {
+                theme.text_dim
+            },
             if col.not_null { "NOT NULL" } else { "nullable" },
             col_x[2],
             y,
         );
         if col.primary_key {
-            cell(scene, t, tr, theme.tokens.colors.semantic.warning, "PK", col_x[3], y);
+            cell(
+                scene,
+                t,
+                tr,
+                theme.tokens.colors.semantic.warning,
+                "PK",
+                col_x[3],
+                y,
+            );
         }
         if let Some(d) = &col.default {
             cell(scene, t, tr, theme.text_dim, d, col_x[4], y);
@@ -104,13 +127,29 @@ pub fn draw_structure(
         for col in table.primary_keys() {
             let row = Rect::new(area.x0, y, area.x1, y + ROW_H);
             scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
-            cell(scene, t, tr, theme.tokens.colors.semantic.warning, "PRIMARY KEY", kx[0], y);
+            cell(
+                scene,
+                t,
+                tr,
+                theme.tokens.colors.semantic.warning,
+                "PRIMARY KEY",
+                kx[0],
+                y,
+            );
             cell(scene, t, tr, theme.text_primary, &col.name, kx[1], y);
             cell(scene, t, tr, theme.text_dim, "—", kx[2], y);
             y += ROW_H;
         }
         for fk in &table.foreign_keys {
-            cell(scene, t, tr, theme.tokens.colors.semantic.info, "FOREIGN KEY", kx[0], y);
+            cell(
+                scene,
+                t,
+                tr,
+                theme.tokens.colors.semantic.info,
+                "FOREIGN KEY",
+                kx[0],
+                y,
+            );
             cell(scene, t, tr, theme.text_primary, &fk.column, kx[1], y);
             cell(
                 scene,
@@ -141,12 +180,24 @@ pub fn draw_structure(
                 scene,
                 t,
                 tr,
-                if idx.unique { theme.tokens.colors.semantic.success } else { theme.text_dim },
+                if idx.unique {
+                    theme.tokens.colors.semantic.success
+                } else {
+                    theme.text_dim
+                },
                 if idx.unique { "UNIQUE" } else { "—" },
                 ix[1],
                 y,
             );
-            cell(scene, t, tr, theme.text_dim, &idx.columns.join(", "), ix[2], y);
+            cell(
+                scene,
+                t,
+                tr,
+                theme.text_dim,
+                &idx.columns.join(", "),
+                ix[2],
+                y,
+            );
             y += ROW_H;
         }
     }
@@ -196,7 +247,15 @@ fn panel_header(
     y
 }
 
-fn cell(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, color: Color, text: &str, x: f64, y: f64) {
+fn cell(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    color: Color,
+    text: &str,
+    x: f64,
+    y: f64,
+) {
     tr.draw_text(
         scene,
         text,

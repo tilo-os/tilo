@@ -1,0 +1,88 @@
+//! Transport-neutral payloads exchanged between collaboration brokers.
+//!
+//! App-to-broker RPC uses Cap'n Proto, while broker-to-broker replication
+//! uses the peer transport.  These types are the semantic hand-off between
+//! them: peer messages no longer embed a serialized legacy UI request.
+
+use serde::{Deserialize, Serialize};
+
+use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
+
+/// One keyed presence update ready for broker-to-broker replication.
+///
+/// `key` is the canonical postcard representation of the app's presence key.
+/// The broker does not interpret application-specific key variants, but it can
+/// forward them without depending on a UI request enum.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerPresence {
+    pub key: Vec<u8>,
+    pub payload: PeerPresencePayload,
+}
+
+impl PeerPresence {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
+        canonical_bytes(self)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, CanonicalError> {
+        from_canonical_bytes(bytes)
+    }
+}
+
+/// Presence semantics shared by the typed local service and peer transport.
+/// Character positions are fixed-width on the wire rather than architecture-
+/// sized `usize`; conversion back into a local model is checked by the broker.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PeerPresencePayload {
+    Pointer { x: f32, y: f32 },
+    Caret { pos: u64 },
+    Selection { start: u64, end: u64 },
+    Typing { start: u64, end: u64 },
+    Arrived,
+    Left,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixtures() -> Vec<PeerPresencePayload> {
+        vec![
+            PeerPresencePayload::Pointer { x: 12.5, y: -4.0 },
+            PeerPresencePayload::Caret { pos: 42 },
+            PeerPresencePayload::Selection { start: 3, end: 99 },
+            PeerPresencePayload::Typing { start: 8, end: 13 },
+            PeerPresencePayload::Arrived,
+            PeerPresencePayload::Left,
+        ]
+    }
+
+    #[test]
+    fn every_presence_variant_round_trips_canonically() {
+        for payload in fixtures() {
+            let presence = PeerPresence {
+                key: vec![0, 1, 2, 255],
+                payload,
+            };
+            let first = presence.to_bytes().unwrap();
+            let second = presence.to_bytes().unwrap();
+            assert_eq!(first, second, "canonical encoding must be deterministic");
+            assert_eq!(PeerPresence::from_bytes(&first).unwrap(), presence);
+        }
+    }
+
+    #[test]
+    fn trailing_and_truncated_peer_frames_are_rejected() {
+        let frame = PeerPresence {
+            key: vec![7],
+            payload: PeerPresencePayload::Arrived,
+        }
+        .to_bytes()
+        .unwrap();
+        let mut trailing = frame.clone();
+        trailing.push(0);
+        assert!(PeerPresence::from_bytes(&trailing).is_err());
+        assert!(PeerPresence::from_bytes(&frame[..frame.len() - 1]).is_err());
+    }
+}

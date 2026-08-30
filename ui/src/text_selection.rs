@@ -14,14 +14,55 @@
 //!   chrome, `wl_data_device` for a Wayland app, arboard on X11, and an
 //!   in-process buffer of last resort that announces itself in the log.
 //!
-//! The boundary predicate (`is_word_char`) mirrors POSIX `\w` and Vim's
-//! `iskeyword`: letters, digits, underscore are word characters; whitespace
-//! and punctuation are boundaries.
+//! Word operations follow Unicode Standard Annex #29, so apostrophes,
+//! combining marks, non-Latin scripts, and Unicode numeric forms behave as
+//! coherent words instead of being reduced to an ASCII-style predicate.
 
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::clipboard::{ClipboardTarget, clipboard_backend, warn_fallback_once};
+
+/// Which shaped run owns a caret at a shared logical byte boundary.
+///
+/// Most offsets have only one visual position, so callers rarely need to set
+/// this explicitly. Mixed-direction text and soft wraps can expose both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextAffinity {
+    /// Associate the caret with the text ending at this byte.
+    #[default]
+    Before,
+    /// Associate the caret with the text beginning at this byte.
+    After,
+}
+
+/// A document byte offset plus the visual side of an ambiguous boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TextPosition {
+    pub byte: usize,
+    pub affinity: TextAffinity,
+}
+
+impl TextPosition {
+    /// The conventional position for APIs that only have a byte offset.
+    pub const fn new(byte: usize) -> Self {
+        Self {
+            byte,
+            affinity: TextAffinity::Before,
+        }
+    }
+
+    pub const fn with_affinity(byte: usize, affinity: TextAffinity) -> Self {
+        Self { byte, affinity }
+    }
+}
+
+impl From<usize> for TextPosition {
+    fn from(byte: usize) -> Self {
+        Self::new(byte)
+    }
+}
 
 /// Anchor + cursor pair. `anchor == cursor` means "no live selection".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -35,9 +76,11 @@ pub struct Selection {
 }
 
 impl Selection {
-    /// Construct a collapsed selection at `pos`.
     pub fn collapsed(pos: usize) -> Self {
-        Self { anchor: pos, cursor: pos }
+        Self {
+            anchor: pos,
+            cursor: pos,
+        }
     }
 
     /// `true` when `anchor == cursor` — no characters are selected.
@@ -45,22 +88,18 @@ impl Selection {
         self.anchor == self.cursor
     }
 
-    /// Lower byte index of the selection.
     pub fn min(&self) -> usize {
         self.anchor.min(self.cursor)
     }
 
-    /// Upper byte index of the selection.
     pub fn max(&self) -> usize {
         self.anchor.max(self.cursor)
     }
 
-    /// Sorted byte range covering the selection.
     pub fn range(&self) -> Range<usize> {
         self.min()..self.max()
     }
 
-    /// Collapse the selection to the cursor position (anchor follows).
     pub fn collapse_to_cursor(&mut self) {
         self.anchor = self.cursor;
     }
@@ -79,95 +118,54 @@ impl Selection {
     }
 }
 
-/// A character counts as a "word" character if it's a letter, digit,
-/// or underscore — same convention as POSIX `\w` and Vim's `iskeyword`.
-/// Whitespace and punctuation are word boundaries; double-click word
-/// selection and Ctrl+Left/Right use this predicate.
-pub(crate) fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
+use crate::text_break::unicode_word_ranges;
 
-/// Walk back to the previous "word boundary" (start of the word the
-/// cursor sits in, or start of the previous word if already at a
-/// boundary). Returns a byte index that is always on a char boundary.
+/// Walk back to the previous UAX #29 word start. If the cursor is inside a
+/// word this returns that word's start; at its start it returns the preceding
+/// word's start. The result is always a UTF-8 boundary.
 pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx == 0 {
-        return 0;
+    let mut byte = byte_idx.min(text.len());
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
     }
-    let mut i = byte_idx.min(text.len());
-    while i > 0 && !text.is_char_boundary(i) {
-        i -= 1;
-    }
-    // Skip non-word chars walking left (whitespace + punctuation eaten
-    // before reaching the previous word's body).
-    while i > 0 {
-        let c = text[..i].chars().next_back().unwrap();
-        if is_word_char(c) {
-            break;
-        }
-        i -= c.len_utf8();
-    }
-    // Skip the word body itself.
-    while i > 0 {
-        let c = text[..i].chars().next_back().unwrap();
-        if !is_word_char(c) {
-            break;
-        }
-        i -= c.len_utf8();
-    }
-    i
+    unicode_word_ranges(text)
+        .rev()
+        .find(|range| range.start < byte)
+        .map_or(0, |range| range.start)
 }
 
-/// Mirror of [`prev_word_boundary`] for the forward direction.
+/// Mirror of [`prev_word_boundary`] for forward movement: the next UAX #29
+/// word start, or the end of the string.
 pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
-    let mut i = byte_idx.min(text.len());
-    while i < text.len() && !text.is_char_boundary(i) {
-        i += 1;
+    let mut byte = byte_idx.min(text.len());
+    while byte < text.len() && !text.is_char_boundary(byte) {
+        byte += 1;
     }
-    while i < text.len() {
-        let c = text[i..].chars().next().unwrap();
-        if !is_word_char(c) {
-            break;
-        }
-        i += c.len_utf8();
-    }
-    while i < text.len() {
-        let c = text[i..].chars().next().unwrap();
-        if is_word_char(c) {
-            break;
-        }
-        i += c.len_utf8();
-    }
-    i
+    unicode_word_ranges(text)
+        .find(|range| range.start > byte)
+        .map_or(text.len(), |range| range.start)
 }
 
-/// Byte range `(start, end)` of the word containing `byte_idx` (or the
-/// word immediately on the left when `byte_idx` lands on whitespace
-/// right after a word — matches every native editor's double-click
-/// behaviour). Used by double-click word selection.
+/// Byte range `(start, end)` of the UAX #29 word containing `byte_idx`, or the
+/// word immediately on the left when the index lands in following punctuation
+/// or whitespace. Used by double-click word selection.
 pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
-    let mut start = byte_idx.min(text.len());
-    while start > 0 && !text.is_char_boundary(start) {
-        start -= 1;
+    let mut byte = byte_idx.min(text.len());
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
     }
-    // Find left edge of current word.
-    while start > 0 {
-        let c = text[..start].chars().next_back().unwrap();
-        if !is_word_char(c) {
+    let mut previous = None;
+    for range in unicode_word_ranges(text) {
+        if range.start <= byte && byte <= range.end {
+            return (range.start, range.end);
+        }
+        if range.end <= byte {
+            previous = Some(range);
+        } else {
             break;
         }
-        start -= c.len_utf8();
     }
-    // Find right edge.
-    let mut end = start;
-    while end < text.len() {
-        let c = text[end..].chars().next().unwrap();
-        if !is_word_char(c) {
-            break;
-        }
-        end += c.len_utf8();
-    }
-    (start, end)
+    previous.map_or((byte, byte), |range| (range.start, range.end))
 }
 
 /// Byte range `(start, end)` of the *line* containing `byte_idx`, where
@@ -176,38 +174,50 @@ pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
 /// selection uses this.
 pub fn line_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     let byte_idx = byte_idx.min(text.len());
-    let start = text[..byte_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let start = text[..byte_idx].rfind('\n').map_or(0, |i| i + 1);
     let end = text[byte_idx..]
         .find('\n')
-        .map(|i| byte_idx + i)
-        .unwrap_or(text.len());
+        .map_or(text.len(), |i| byte_idx + i);
     (start, end)
 }
 
-/// Step one Unicode scalar to the left of `byte_idx`. Always returns a
-/// char-boundary byte index.
-pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx == 0 {
-        return 0;
-    }
-    let mut i = byte_idx.min(text.len()) - 1;
-    while i > 0 && !text.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Step one Unicode scalar to the right of `byte_idx`. Always returns
-/// a char-boundary byte index.
-pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
+/// The nearest extended-grapheme boundary at or before `byte_idx`.
+///
+/// This is the safe place to clamp carets after remote edits: a UTF-8 scalar
+/// boundary may still sit inside a combining sequence or emoji ZWJ cluster.
+pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
     if byte_idx >= text.len() {
         return text.len();
     }
-    let mut i = byte_idx + 1;
-    while i < text.len() && !text.is_char_boundary(i) {
-        i += 1;
-    }
-    i
+    let byte_idx = byte_idx.min(text.len());
+    text.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= byte_idx)
+        .last()
+        .unwrap_or(0)
+}
+
+/// Step one user-perceived character to the left of `byte_idx`. Extended
+/// grapheme clusters keep combining marks, emoji modifiers, flags, and ZWJ
+/// sequences together. The legacy function name is retained for API
+/// compatibility.
+pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
+    let byte_idx = byte_idx.min(text.len());
+    text.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .take_while(|&i| i < byte_idx)
+        .last()
+        .unwrap_or(0)
+}
+
+/// Step one user-perceived character to the right of `byte_idx`. See
+/// [`prev_char_boundary`] for the compatibility note.
+pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
+    let byte_idx = byte_idx.min(text.len());
+    text.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .find(|&i| i > byte_idx)
+        .unwrap_or(text.len())
 }
 
 // --- char-indexed variants -------------------------------------------------
@@ -221,8 +231,7 @@ pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
     text.char_indices()
         .nth(char_idx)
-        .map(|(b, _)| b)
-        .unwrap_or(text.len())
+        .map_or(text.len(), |(b, _)| b)
 }
 
 fn byte_to_char(text: &str, byte_idx: usize) -> usize {
@@ -254,16 +263,15 @@ pub fn word_boundaries_chars(text: &str, char_idx: usize) -> (usize, usize) {
 /// Word/line-granularity drag extension — the shared rule behind
 /// double-click-then-drag in `TextInput` and the reader.
 ///
-/// After a double- or triple-click snapped the anchor to a whole unit
-/// `(anchor_lo, anchor_hi)` (a word or a line, `lo <= hi`), a continuing drag
-/// must keep that original unit *inside* the selection and grow by whole units.
-/// Given the boundary span `(unit_lo, unit_hi)` the pointer now sits in and the
-/// pointer's own position `raw` (to decide which side of the anchor it is on),
-/// this returns the `(anchor, cursor)` the selection should adopt.
+/// After a double-/triple-click snaps the anchor to a whole unit
+/// `(anchor_lo, anchor_hi)` (`lo <= hi`), a continuing drag must keep that
+/// unit *inside* the selection and grow by whole units. Given the boundary
+/// span `(unit_lo, unit_hi)` the pointer now sits in and its own position
+/// `raw` (to decide which side of the anchor it's on), returns the
+/// `(anchor, cursor)` the selection should adopt.
 ///
-/// Position type `T` is whatever a selector indexes by — a byte offset
-/// (`TextInput`) or a `(block, char)` document position (the reader) — so both
-/// share one rule instead of re-deriving the anchor pinning.
+/// `T` is whatever a selector indexes by — a byte offset (`TextInput`) or a
+/// `(block, char)` document position (the reader) — so both share one rule.
 pub fn extend_span_drag<T: Ord + Copy>(
     anchor_lo: T,
     anchor_hi: T,
@@ -272,14 +280,10 @@ pub fn extend_span_drag<T: Ord + Copy>(
     unit_hi: T,
 ) -> (T, T) {
     if raw < anchor_lo {
-        // Pointer is left of the original unit: pin the anchor to that unit's
-        // far (right) edge and walk the cursor to the left edge of the unit the
-        // pointer is inside.
+        // Left of the original unit: pin the anchor to its far edge.
         (anchor_hi, unit_lo)
     } else {
-        // Pointer is inside or right of the original unit: pin the anchor to the
-        // near (left) edge and walk the cursor to the right edge under the
-        // pointer.
+        // Inside or right of the original unit: pin the anchor to its near edge.
         (anchor_lo, unit_hi)
     }
 }
@@ -287,14 +291,12 @@ pub fn extend_span_drag<T: Ord + Copy>(
 /// Lazy global `arboard` handle, used **only on X11** and other non-Wayland
 /// platforms.
 ///
-/// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, the
-/// clipboard-manager protocol, which qOS does not offer to sandboxed apps for
-/// the reasons in `shell/src/compositor/selection.rs`. A `ui` app on Wayland
-/// goes through [`crate::clipboard::WaylandClipboard`] and `wl_data_device`
-/// instead, so constructing arboard there would only produce a handle that
-/// fails on every call. Construction is skipped rather than attempted, because
-/// arboard's Wayland probe is slow and its failure is the exact thing that
-/// used to be mistaken for "no clipboard support".
+/// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, which qOS does
+/// not offer to sandboxed apps (see `shell/src/compositor/selection.rs`); a
+/// `ui` app there goes through [`crate::clipboard::WaylandClipboard`] and
+/// `wl_data_device` instead. Construction is skipped rather than attempted
+/// on Wayland because arboard's probe there is slow, and a handle that
+/// fails on every call is worse than no handle.
 fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
     static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
     CB.get_or_init(|| {
@@ -315,11 +317,10 @@ fn running_on_wayland() -> bool {
 /// nor arboard can serve the request — a unit test, a headless scenario run,
 /// or a session with no clipboard owner at all.
 ///
-/// It keeps copy → paste round-tripping **within the process** so the shared
-/// caret/clipboard core stays testable headlessly. That convenience is also
-/// how a completely dead clipboard went unnoticed for so long, so every fall
-/// through to this buffer now logs once via
-/// [`crate::clipboard::warn_fallback_once`].
+/// Keeps copy → paste round-tripping **within the process** so the shared
+/// caret/clipboard core stays testable headlessly. A silently-working
+/// fallback can mask a genuinely dead clipboard, so every fall-through here
+/// logs once via [`crate::clipboard::warn_fallback_once`].
 fn clipboard_fallback() -> &'static Mutex<(Option<String>, Option<String>)> {
     static FB: OnceLock<Mutex<(Option<String>, Option<String>)>> = OnceLock::new();
     FB.get_or_init(|| Mutex::new((None, None)))
@@ -327,32 +328,32 @@ fn clipboard_fallback() -> &'static Mutex<(Option<String>, Option<String>)> {
 
 /// Write `text` to `target`, trying each backend in priority order.
 fn write_selection(target: ClipboardTarget, text: &str) {
-    if let Some(backend) = clipboard_backend() {
-        if backend.set_text(target, text) {
-            return;
-        }
+    if let Some(backend) = clipboard_backend()
+        && backend.set_text(target, text)
+    {
+        return;
     }
-    if let Some(cb) = arboard_clipboard() {
-        if let Ok(mut handle) = cb.lock() {
-            let wrote = match target {
-                ClipboardTarget::Clipboard => handle.set_text(text.to_string()).is_ok(),
-                #[cfg(target_os = "linux")]
-                ClipboardTarget::Primary => {
-                    use arboard::{LinuxClipboardKind, SetExtLinux};
-                    handle
-                        .set()
-                        .clipboard(LinuxClipboardKind::Primary)
-                        .text(text.to_string())
-                        .is_ok()
-                }
-                // No primary selection outside Linux; the regular clipboard is
-                // the closest honest equivalent.
-                #[cfg(not(target_os = "linux"))]
-                ClipboardTarget::Primary => handle.set_text(text.to_string()).is_ok(),
-            };
-            if wrote {
-                return;
+    if let Some(cb) = arboard_clipboard()
+        && let Ok(mut handle) = cb.lock()
+    {
+        let wrote = match target {
+            ClipboardTarget::Clipboard => handle.set_text(text.to_string()).is_ok(),
+            #[cfg(target_os = "linux")]
+            ClipboardTarget::Primary => {
+                use arboard::{LinuxClipboardKind, SetExtLinux};
+                handle
+                    .set()
+                    .clipboard(LinuxClipboardKind::Primary)
+                    .text(text.to_string())
+                    .is_ok()
             }
+            // No primary selection outside Linux; the regular clipboard is
+            // the closest honest equivalent.
+            #[cfg(not(target_os = "linux"))]
+            ClipboardTarget::Primary => handle.set_text(text.to_string()).is_ok(),
+        };
+        if wrote {
+            return;
         }
     }
     warn_fallback_once("copy");
@@ -369,23 +370,23 @@ fn read_selection(target: ClipboardTarget) -> Option<String> {
     if let Some(backend) = clipboard_backend() {
         return backend.text(target);
     }
-    if let Some(cb) = arboard_clipboard() {
-        if let Ok(mut handle) = cb.lock() {
-            return match target {
-                ClipboardTarget::Clipboard => handle.get_text().ok(),
-                #[cfg(target_os = "linux")]
-                ClipboardTarget::Primary => {
-                    use arboard::{GetExtLinux, LinuxClipboardKind};
-                    handle
-                        .get()
-                        .clipboard(LinuxClipboardKind::Primary)
-                        .text()
-                        .ok()
-                }
-                #[cfg(not(target_os = "linux"))]
-                ClipboardTarget::Primary => handle.get_text().ok(),
-            };
-        }
+    if let Some(cb) = arboard_clipboard()
+        && let Ok(mut handle) = cb.lock()
+    {
+        return match target {
+            ClipboardTarget::Clipboard => handle.get_text().ok(),
+            #[cfg(target_os = "linux")]
+            ClipboardTarget::Primary => {
+                use arboard::{GetExtLinux, LinuxClipboardKind};
+                handle
+                    .get()
+                    .clipboard(LinuxClipboardKind::Primary)
+                    .text()
+                    .ok()
+            }
+            #[cfg(not(target_os = "linux"))]
+            ClipboardTarget::Primary => handle.get_text().ok(),
+        };
     }
     warn_fallback_once("paste");
     let fb = clipboard_fallback().lock().ok()?;
@@ -438,13 +439,8 @@ pub fn clipboard_paste() -> Option<String> {
 /// Push `text` onto the **primary selection** — the mouse-driven "select then
 /// middle-click paste" buffer, distinct from the Ctrl+C clipboard. Terminals
 /// and editors set this whenever a range is selected so a middle-click paste
-/// in any app receives it.
-///
-/// This used to be a silent no-op on qOS: the only implementation went through
-/// arboard, which could not open at all against a compositor that advertised
-/// no selection protocol, so the terminal's "middle-click paste works" promise
-/// was dead code. It now goes through the same backend chain as the clipboard,
-/// including the in-process fallback, so it is never silently nothing.
+/// in any app receives it. Goes through the same backend chain as the
+/// clipboard, including the in-process fallback.
 pub fn clipboard_copy_primary(text: &str) {
     write_selection(ClipboardTarget::Primary, text);
 }
@@ -460,10 +456,8 @@ mod tests {
     use super::*;
 
     /// Copy → paste must round-trip within the process even with no system
-    /// clipboard (the headless test env). Without the in-process fallback this
-    /// silently returned `None`, so the shared Ctrl+C/Ctrl+V core couldn't be
-    /// proven headlessly. When a real clipboard IS present this still holds
-    /// (copy then paste from the same clipboard).
+    /// clipboard (the headless test env), and equally when a real clipboard
+    /// is present.
     #[test]
     fn clipboard_round_trips_in_process() {
         let payload = "https://example.com/feed.xml";
@@ -477,13 +471,19 @@ mod tests {
 
     #[test]
     fn selection_helpers_min_max_range_collapsed() {
-        let s = Selection { anchor: 3, cursor: 7 };
+        let s = Selection {
+            anchor: 3,
+            cursor: 7,
+        };
         assert_eq!(s.min(), 3);
         assert_eq!(s.max(), 7);
         assert_eq!(s.range(), 3..7);
         assert!(!s.is_collapsed());
 
-        let s2 = Selection { anchor: 9, cursor: 4 };
+        let s2 = Selection {
+            anchor: 9,
+            cursor: 4,
+        };
         assert_eq!(s2.min(), 4);
         assert_eq!(s2.max(), 9);
         assert_eq!(s2.range(), 4..9);
@@ -511,8 +511,6 @@ mod tests {
         assert_eq!(s.cursor, 10);
     }
 
-    /// Walking back through a sentence with `prev_word_boundary` must
-    /// land on the start of each word.
     #[test]
     fn prev_word_boundary_walks_word_starts() {
         let s = "hello world quick ui";
@@ -545,8 +543,7 @@ mod tests {
         assert_eq!(word_boundaries(s, 11), (6, 11));
     }
 
-    /// Multi-byte UTF-8 must be handled cleanly — no slicing into the
-    /// middle of a code point. "café" — é is 2 bytes.
+    /// No slicing into the middle of a code point ("café" — é is 2 bytes).
     #[test]
     fn word_boundaries_utf8_clean() {
         let s = "café latte";
@@ -558,6 +555,35 @@ mod tests {
         assert_eq!(word_boundaries(s, 5), (0, 5));
         // Cursor in "latte": 6..11.
         assert_eq!(word_boundaries(s, 8), (6, 11));
+    }
+
+    #[test]
+    fn unicode_words_keep_apostrophes_and_decimal_numbers_together() {
+        let text = "can't pay 32.3 now";
+        assert_eq!(word_boundaries(text, 3), (0, "can't".len()));
+        let number_start = text.find("32.3").unwrap();
+        assert_eq!(
+            word_boundaries(text, number_start + 2),
+            (number_start, number_start + "32.3".len())
+        );
+        assert_eq!(next_word_boundary(text, 0), "can't ".len());
+    }
+
+    #[test]
+    fn unicode_words_keep_combining_marks_with_their_base() {
+        let text = "nai\u{308}ve café";
+        let first_end = text.find(' ').unwrap();
+        assert_eq!(word_boundaries(text, 4), (0, first_end));
+        assert_eq!(prev_word_boundary(text, first_end), 0);
+    }
+
+    #[test]
+    fn dictionary_word_motion_segments_thai_without_spaces() {
+        let text = "ทุกสองสัปดาห์";
+        assert_eq!(next_word_boundary(text, 0), 9);
+        assert_eq!(next_word_boundary(text, 9), 18);
+        assert_eq!(prev_word_boundary(text, text.len()), 18);
+        assert_eq!(word_boundaries(text, 12), (9, 18));
     }
 
     #[test]
@@ -600,13 +626,11 @@ mod tests {
     fn prev_next_char_boundary_utf8() {
         let s = "aé€b"; // a=0, é=1..3, €=3..6, b=6..7. len=7.
         assert_eq!(s.len(), 7);
-        // Step right across multi-byte chars.
         assert_eq!(next_char_boundary(s, 0), 1);
         assert_eq!(next_char_boundary(s, 1), 3);
         assert_eq!(next_char_boundary(s, 3), 6);
         assert_eq!(next_char_boundary(s, 6), 7);
         assert_eq!(next_char_boundary(s, 7), 7);
-        // And left.
         assert_eq!(prev_char_boundary(s, 7), 6);
         assert_eq!(prev_char_boundary(s, 6), 3);
         assert_eq!(prev_char_boundary(s, 3), 1);
@@ -615,15 +639,30 @@ mod tests {
     }
 
     #[test]
+    fn character_motion_keeps_extended_graphemes_whole() {
+        let combining = "a\u{301}b";
+        let first_cluster_end = "a\u{301}".len();
+        assert_eq!(next_char_boundary(combining, 0), first_cluster_end);
+        assert_eq!(prev_char_boundary(combining, first_cluster_end), 0);
+
+        let family = "👩‍👩‍👧‍👦!";
+        let emoji_end = family.len() - 1;
+        assert_eq!(next_char_boundary(family, 0), emoji_end);
+        assert_eq!(prev_char_boundary(family, emoji_end), 0);
+        assert_eq!(
+            grapheme_boundary_at_or_before(family, family.len()),
+            family.len()
+        );
+        assert_eq!(grapheme_boundary_at_or_before(family, 4), 0);
+    }
+
+    #[test]
     fn boundaries_at_edges() {
         let s = "abc";
-        // At end.
         assert_eq!(prev_word_boundary(s, s.len()), 0);
         assert_eq!(next_word_boundary(s, s.len()), s.len());
-        // At start.
         assert_eq!(prev_word_boundary(s, 0), 0);
         assert_eq!(next_word_boundary(s, 0), s.len());
-        // Empty string.
         assert_eq!(prev_word_boundary("", 0), 0);
         assert_eq!(next_word_boundary("", 0), 0);
     }

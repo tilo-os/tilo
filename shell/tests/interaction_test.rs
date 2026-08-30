@@ -71,12 +71,24 @@ fn test_click_interaction_in_sandbox() {
     let socket_name = started_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Server failed to start");
-    let container = Container::new(std::env::current_dir().unwrap().to_str().unwrap());
+    // cargo runs an integration test with the *package* root as its cwd, not
+    // the workspace root, so a relative "target/debug/..." resolved to
+    // shell/target and the sandbox reported the client missing — as "did not
+    // become ready", with the real cause in a log under /tmp. This is the path
+    // cargo hands us for its own binary, so it survives any layout change.
+    let client = std::path::Path::new(env!("CARGO_BIN_EXE_click_test_client"));
+    let container = Container::new(
+        client
+            .parent()
+            .expect("the built binary has a directory")
+            .to_str()
+            .expect("a UTF-8 target path"),
+    );
     let tab_id = Uuid::new_v4();
 
     // 3. Spawn Client
     let _child = container
-        .spawn("target/debug/click_test_client", &socket_name, tab_id)
+        .spawn("./click_test_client", &socket_name, tab_id)
         .expect("Failed to spawn client");
 
     // 4. Wait for Window/Frame
@@ -92,10 +104,8 @@ fn test_click_interaction_in_sandbox() {
                 }
                 WaylandEvent::Frame {
                     surface_id, app_id, ..
-                } if app_id == "click-test" => {
-                    if captured_surface_id.is_none() {
-                        captured_surface_id = Some(surface_id);
-                    }
+                } if app_id == "click-test" && captured_surface_id.is_none() => {
+                    captured_surface_id = Some(surface_id);
                 }
                 _ => {}
             }
@@ -111,14 +121,11 @@ fn test_click_interaction_in_sandbox() {
     let test_x = 123.0;
     let test_y = 45.0;
 
-    println!(
-        "DEBUG: Sending Motion to ID {} at {},{}",
-        surface_id, test_x, test_y
-    );
+    println!("DEBUG: Sending Motion to ID {surface_id} at {test_x},{test_y}");
     input_tx
         .send(WaylandInput::Motion {
-            x: test_x as f64,
-            y: test_y as f64,
+            x: test_x,
+            y: test_y,
             surface_id: Some(surface_id),
             surface_width: 256.0,
             surface_height: 256.0,
@@ -150,14 +157,13 @@ fn test_click_interaction_in_sandbox() {
     thread::sleep(Duration::from_secs(2));
 
     // 6. Verify Log
-    let log_path = format!("/tmp/quick-desktop-app-{}.log", tab_id);
+    let log_path = format!("/tmp/quick-desktop-app-{tab_id}.log");
     let log_content = fs::read_to_string(&log_path).unwrap_or_default();
-    let expected_pattern = format!("EVENT:CLICK AT {:.1},{:.1}", test_x, test_y);
-    println!("DEBUG: Final Client Log:\n{}", log_content);
+    let expected_pattern = format!("EVENT:CLICK AT {test_x:.1},{test_y:.1}");
+    println!("DEBUG: Final Client Log:\n{log_content}");
 
     assert!(
         log_content.contains(&expected_pattern),
-        "Client did not log click at expected coordinates! Expected: {}",
-        expected_pattern
+        "Client did not log click at expected coordinates! Expected: {expected_pattern}"
     );
 }

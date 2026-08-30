@@ -67,11 +67,11 @@ fn canonical_form_is_deterministic_across_two_processes_worth_of_encoders() {
     let key = SigningKey::generate(&mut OsRng);
     let entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
     let m1 = entry.signing_message();
-    let m2 = entry.clone().signing_message();
+    let m2 = entry.signing_message();
     assert_eq!(m1, m2);
 
     // Different entry → different signing bytes (sanity check).
-    let mut other = entry.clone();
+    let mut other = entry;
     other.name = "Something Else".into();
     assert_ne!(other.signing_message(), m1);
 }

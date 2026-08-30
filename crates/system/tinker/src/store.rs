@@ -164,7 +164,8 @@ impl Store {
         let path = self.meta_path(name);
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("no layer named '{name}' (tinker list)"))?;
-        toml::from_str(&text).with_context(|| format!("layer metadata at {} is unreadable", path.display()))
+        toml::from_str(&text)
+            .with_context(|| format!("layer metadata at {} is unreadable", path.display()))
     }
 
     pub fn list(&self) -> Result<Vec<Layer>> {
@@ -271,11 +272,14 @@ impl Store {
     /// safe to offer at all.
     pub fn revert_path(&self, name: &str, logical: &Path) -> Result<()> {
         let rel = logical.strip_prefix("/").unwrap_or(logical);
-        if rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        if rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
             bail!("path must not contain '..'");
         }
         let target = self.upper_dir(name).join(rel);
-        if !target.symlink_metadata().is_ok() {
+        if target.symlink_metadata().is_err() {
             bail!("layer '{name}' did not change {}", logical.display());
         }
         if target.symlink_metadata()?.is_dir() {
@@ -299,7 +303,10 @@ fn validate_name(name: &str) -> Result<()> {
     if name.starts_with('.') || name.starts_with('-') {
         bail!("layer name must not start with '.' or '-'");
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
         bail!("layer name may only contain letters, digits, '-', '_' and '.'");
     }
     Ok(())
@@ -308,8 +315,7 @@ fn validate_name(name: &str) -> Result<()> {
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn dirs_data_home() -> Option<PathBuf> {
@@ -335,7 +341,8 @@ mod tests {
     #[test]
     fn a_created_layer_round_trips() {
         let (_d, s) = store();
-        s.create("scratch", "debian", LayerKind::Ephemeral, vec![]).unwrap();
+        s.create("scratch", "debian", LayerKind::Ephemeral, vec![])
+            .unwrap();
         let back = s.load("scratch").unwrap();
         assert_eq!(back.name, "scratch");
         assert_eq!(back.base, "debian");
@@ -349,29 +356,38 @@ mod tests {
     fn creating_twice_refuses_rather_than_clobbering() {
         let (_d, s) = store();
         s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
-        let err = s.create("a", "debian", LayerKind::Kept, vec![]).unwrap_err();
+        let err = s
+            .create("a", "debian", LayerKind::Kept, vec![])
+            .unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
     }
 
     #[test]
     fn promotion_is_retroactive_and_can_rename() {
         let (_d, s) = store();
-        s.create("scratch", "debian", LayerKind::Ephemeral, vec![]).unwrap();
+        s.create("scratch", "debian", LayerKind::Ephemeral, vec![])
+            .unwrap();
         std::fs::write(s.upper_dir("scratch").join("marker"), b"work").unwrap();
 
-        let kept = s.promote("scratch", Some("rust-dev"), Some("cargo + clang")).unwrap();
+        let kept = s
+            .promote("scratch", Some("rust-dev"), Some("cargo + clang"))
+            .unwrap();
         assert_eq!(kept.kind, LayerKind::Kept);
         assert_eq!(kept.name, "rust-dev");
         assert_eq!(kept.note, "cargo + clang");
         // The work done before the decision has to survive the decision.
-        assert_eq!(std::fs::read(s.upper_dir("rust-dev").join("marker")).unwrap(), b"work");
+        assert_eq!(
+            std::fs::read(s.upper_dir("rust-dev").join("marker")).unwrap(),
+            b"work"
+        );
         assert!(s.load("scratch").is_err());
     }
 
     #[test]
     fn promoting_twice_is_not_an_error() {
         let (_d, s) = store();
-        s.create("a", "debian", LayerKind::Ephemeral, vec![]).unwrap();
+        s.create("a", "debian", LayerKind::Ephemeral, vec![])
+            .unwrap();
         s.promote("a", None, None).unwrap();
         let again = s.promote("a", None, Some("note")).unwrap();
         assert_eq!(again.kind, LayerKind::Kept);
@@ -381,24 +397,33 @@ mod tests {
     #[test]
     fn renaming_rewrites_stack_references() {
         let (_d, s) = store();
-        s.create("bottom", "debian", LayerKind::Kept, vec![]).unwrap();
-        s.create("top", "debian", LayerKind::Ephemeral, vec!["bottom".into()]).unwrap();
+        s.create("bottom", "debian", LayerKind::Kept, vec![])
+            .unwrap();
+        s.create("top", "debian", LayerKind::Ephemeral, vec!["bottom".into()])
+            .unwrap();
         s.promote("bottom", Some("renamed"), None).unwrap();
-        assert_eq!(s.load("top").unwrap().stacked_on, vec!["renamed".to_string()]);
+        assert_eq!(
+            s.load("top").unwrap().stacked_on,
+            vec!["renamed".to_string()]
+        );
     }
 
     #[test]
     fn stacking_on_a_missing_layer_is_refused() {
         let (_d, s) = store();
-        let err = s.create("top", "debian", LayerKind::Ephemeral, vec!["ghost".into()]).unwrap_err();
+        let err = s
+            .create("top", "debian", LayerKind::Ephemeral, vec!["ghost".into()])
+            .unwrap_err();
         assert!(err.to_string().contains("no such layer"), "{err}");
     }
 
     #[test]
     fn discard_refuses_to_pull_a_layer_out_from_under_a_stack() {
         let (_d, s) = store();
-        s.create("bottom", "debian", LayerKind::Kept, vec![]).unwrap();
-        s.create("top", "debian", LayerKind::Ephemeral, vec!["bottom".into()]).unwrap();
+        s.create("bottom", "debian", LayerKind::Kept, vec![])
+            .unwrap();
+        s.create("top", "debian", LayerKind::Ephemeral, vec!["bottom".into()])
+            .unwrap();
 
         let err = s.discard("bottom").unwrap_err();
         assert!(err.to_string().contains("top"), "{err}");

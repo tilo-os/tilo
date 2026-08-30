@@ -1,6 +1,6 @@
 //! Export settings + the (gated) render pipeline.
 //!
-//! Real encode/decode runs through GStreamer, which is only linked when
+//! Real encode/decode runs through `GStreamer`, which is only linked when
 //! the crate is built with `--features gst`. The default build — the one
 //! the fleet's `qos-build` invokes — keeps the pipeline a stub so the app
 //! compiles and screenshots without the gstreamer-1.0 dev headers being
@@ -145,7 +145,11 @@ impl ExportSettings {
     /// declines to quote a size at all where the selected encoder is known not
     /// to track the rate it is given.
     pub fn estimated_mb(&self, duration: f64, with_audio: bool) -> f64 {
-        let audio_mbps = if with_audio { AUDIO_BITRATE_BPS as f64 / 1_000_000.0 } else { 0.0 };
+        let audio_mbps = if with_audio {
+            AUDIO_BITRATE_BPS as f64 / 1_000_000.0
+        } else {
+            0.0
+        };
         (self.resolution.target_mbps() + audio_mbps) * duration / 8.0
     }
 
@@ -182,7 +186,10 @@ impl ExportSettings {
     ) -> String {
         let with_audio = crate::audio::has_audio(project);
         if video.bitrate_is_predictive() {
-            return format!("≈ {:.0} MB", self.estimated_mb(project.duration(), with_audio));
+            return format!(
+                "≈ {:.0} MB",
+                self.estimated_mb(project.duration(), with_audio)
+            );
         }
         let audio = if with_audio {
             format!(" + {} kbit/s audio", AUDIO_BITRATE_BPS / 1000)
@@ -301,7 +308,10 @@ pub fn audio_encoder(container: Container) -> Selection {
 /// registry, so "not yet known" can never be read as "yes".
 pub fn selected_encoders(container: Container) -> EncodeReport {
     let (video, _, _) = encode_chain(container);
-    EncodeReport { video: Some(video), audio: Some(audio_encoder(container)) }
+    EncodeReport {
+        video: Some(video),
+        audio: Some(audio_encoder(container)),
+    }
 }
 
 /// The rate the export asks its audio encoder for, in bits per second.
@@ -388,12 +398,12 @@ pub fn pipeline_desc_with_audio(
 pub fn output_dims(settings: &ExportSettings, project: &Project) -> (u32, u32) {
     let (_pw, ph) = settings.resolution.dims();
     let aspect = if project.height > 0 {
-        project.width as f64 / project.height as f64
+        f64::from(project.width) / f64::from(project.height)
     } else {
         16.0 / 9.0
     };
     let h = ph.max(2);
-    let mut w = (h as f64 * aspect).round() as u32;
+    let mut w = (f64::from(h) * aspect).round() as u32;
     w += w & 1; // make even
     (w.max(2), h)
 }
@@ -406,8 +416,7 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
         return std::path::PathBuf::from(full);
     }
     let dir = std::env::var_os("QOS_VE_EXPORT_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     dir.join(settings.suggested_filename(&project.name))
 }
 
@@ -442,12 +451,18 @@ impl ExportJob {
         }
         let total = self.shared.total.load(Ordering::Relaxed).max(1);
         let done = self.shared.done.load(Ordering::Relaxed);
-        ExportStatus::Rendering { progress: (done as f64 / total as f64).clamp(0.0, 1.0) }
+        ExportStatus::Rendering {
+            progress: (done as f64 / total as f64).clamp(0.0, 1.0),
+        }
     }
 
     /// Whether the worker is still going.
     pub fn is_running(&self) -> bool {
-        self.shared.outcome.lock().map(|o| o.is_none()).unwrap_or(false)
+        self.shared
+            .outcome
+            .lock()
+            .map(|o| o.is_none())
+            .unwrap_or(false)
     }
 
     /// Ask the render to stop. The worker notices between frames, tears the
@@ -473,7 +488,9 @@ impl ExportJob {
             .lock()
             .ok()
             .and_then(|o| o.clone())
-            .unwrap_or_else(|| ExportStatus::Failed { reason: "export worker vanished".into() })
+            .unwrap_or_else(|| ExportStatus::Failed {
+                reason: "export worker vanished".into(),
+            })
     }
 }
 
@@ -610,7 +627,9 @@ fn render(
     #[cfg(not(feature = "gst"))]
     {
         let _ = (project, settings, destination, state);
-        Err(unavailable_reason().unwrap_or("Export is unavailable").to_string())
+        Err(unavailable_reason()
+            .unwrap_or("Export is unavailable")
+            .to_string())
     }
 }
 
@@ -632,7 +651,7 @@ pub fn unavailable_reason() -> Option<&'static str> {
 
 /// Kick off an export. Returns the status the dialog should show next.
 ///
-/// With `--features gst` this runs a real GStreamer pipeline — a raw-RGBA
+/// With `--features gst` this runs a real `GStreamer` pipeline — a raw-RGBA
 /// `appsrc` fed the composited timeline frames (the same grade/fade math the
 /// preview shows), encoded and muxed to a real file on disk. The default build
 /// has no encoder linked, so it is honest — an "unavailable" status, never a
@@ -691,7 +710,10 @@ mod gst_pipeline {
         // export is diagnosable — "it fell back to openh264enc because no
         // vah264enc is installed" rather than a guess. `gst::init` above has
         // populated the registry, so this is read, not assumed.
-        tracing::info!("export: {}", selected_encoders(settings.container).describe());
+        tracing::info!(
+            "export: {}",
+            selected_encoders(settings.container).describe()
+        );
         let desc = pipeline_desc_with_audio(settings, w, h, &out_str, with_audio);
         let pipeline = gst::parse::launch(&desc)
             .map_err(|e| format!("build export pipeline: {e}"))?
@@ -733,8 +755,8 @@ mod gst_pipeline {
         // `Exact` because an export has no interactive deadline to miss
         // and every frame must be the right one; the preview asks the
         // same sources for `Responsive` instead.
-        let mut compositor = crate::gpu::HeadlessCompositor::new()
-            .map_err(|e| format!("export compositor: {e}"))?;
+        let mut compositor =
+            crate::gpu::HeadlessCompositor::new().map_err(|e| format!("export compositor: {e}"))?;
         let mut sources = crate::gpu::MediaFrameSource::new(project, crate::gpu::Fetch::Exact);
         let mut pcm = crate::audio::DecodedPcm::new(project);
         // Whether any frame of this render actually got a decoded picture.
@@ -819,7 +841,9 @@ mod gst_pipeline {
         }
 
         // Wait for EOS (or an error) so the muxer flushes a complete file.
-        let bus = pipeline.bus().ok_or_else(|| "export pipeline bus".to_string())?;
+        let bus = pipeline
+            .bus()
+            .ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
@@ -881,7 +905,6 @@ mod gst_pipeline {
 mod tests {
     use super::*;
 
-
     /// The progress bar used to be dead code: nothing ever constructed
     /// `Rendering`, so the dialog showed a bar that could not move.
     #[cfg(feature = "gst")]
@@ -913,7 +936,10 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(seen_rendering, "a running render reports Rendering, not a frozen dialog");
+        assert!(
+            seen_rendering,
+            "a running render reports Rendering, not a frozen dialog"
+        );
 
         match job.join() {
             ExportStatus::Done { path } => {
@@ -941,7 +967,10 @@ mod tests {
 
         let job = start_export(
             &project,
-            &ExportSettings { resolution: Resolution::P720, ..Default::default() },
+            &ExportSettings {
+                resolution: Resolution::P720,
+                ..Default::default()
+            },
             out.clone(),
         );
         // Let it get going, then stop it.
@@ -994,7 +1023,6 @@ mod tests {
         }
     }
 
-
     /// Write a `secs`-long tone to `path` and hand back its duration.
     ///
     /// The bundled demo clip carries a video track and nothing else — it is a
@@ -1018,7 +1046,9 @@ mod tests {
             .expect("build tone pipeline")
             .downcast::<gst::Pipeline>()
             .expect("pipeline");
-        pipeline.set_state(gst::State::Playing).expect("play tone pipeline");
+        pipeline
+            .set_state(gst::State::Playing)
+            .expect("play tone pipeline");
         let bus = pipeline.bus().expect("bus");
         for msg in bus.iter_timed(gst::ClockTime::from_seconds(30)) {
             use gst::MessageView;
@@ -1093,7 +1123,10 @@ mod tests {
     fn decoded_audio(path: &std::path::Path) -> Vec<f32> {
         let uri = crate::media::engine_source(path).to_uri();
         let pcm = crate::audio::decode_pcm_for_test(&uri).unwrap_or_else(|| {
-            panic!("no readable audio stream in {} -- the level cannot be judged", path.display())
+            panic!(
+                "no readable audio stream in {} -- the level cannot be judged",
+                path.display()
+            )
         });
         assert!(
             pcm.len() > crate::audio::SAMPLE_RATE as usize / 2,
@@ -1115,7 +1148,10 @@ mod tests {
     #[test]
     fn the_audio_branch_targets_the_muxer_and_names_a_real_encoder() {
         for container in Container::ALL {
-            let s = ExportSettings { container, ..Default::default() };
+            let s = ExportSettings {
+                container,
+                ..Default::default()
+            };
             let silent = pipeline_desc_with_audio(&s, 64, 64, "/tmp/o", false);
             assert!(
                 !silent.contains("qos_audio"),
@@ -1126,7 +1162,10 @@ mod tests {
             let selected = audio_encoder(container);
             let enc = selected.spec.element;
             assert!(voiced.contains("appsrc name=qos_audio"), "{voiced}");
-            assert!(voiced.contains(enc), "{container:?} encodes audio with {enc}: {voiced}");
+            assert!(
+                voiced.contains(enc),
+                "{container:?} encodes audio with {enc}: {voiced}"
+            );
             // The branch has to end at the same muxer the video goes to, or
             // it would be a second file's worth of graph going nowhere — and
             // it carries the rate the size estimate quotes on the way there.
@@ -1157,7 +1196,10 @@ mod tests {
         let pid = std::process::id();
         let tone = std::env::temp_dir().join(format!("qos-ve-tone-{pid}.wav"));
         write_tone(&tone, 1.5);
-        assert!(audio_peak(&tone) > 0.5, "the tone itself is loud, so silence means a bug");
+        assert!(
+            audio_peak(&tone) > 0.5,
+            "the tone itself is loud, so silence means a bug"
+        );
 
         let p = project_with_tone(&clip, &tone, 1.5, false);
         assert!(crate::audio::has_audio(&p), "the project has an audio lane");
@@ -1251,9 +1293,14 @@ mod tests {
         let loud_peak = audio_peak(&full);
         let quiet_peak = audio_peak(&quiet);
         let muted_peak = audio_peak(&muted);
-        println!("encoded peaks: full={loud_peak:.3} quarter={quiet_peak:.3} muted={muted_peak:.3}");
+        println!(
+            "encoded peaks: full={loud_peak:.3} quarter={quiet_peak:.3} muted={muted_peak:.3}"
+        );
 
-        assert!(loud_peak > 0.05, "the unmuted export carries audio ({loud_peak})");
+        assert!(
+            loud_peak > 0.05,
+            "the unmuted export carries audio ({loud_peak})"
+        );
         assert!(
             quiet_peak < loud_peak * 0.5,
             "quartering clip volume is audible in the ENCODED file: {loud_peak} → {quiet_peak}",
@@ -1274,7 +1321,11 @@ mod tests {
         // actually runs.
         for container in Container::ALL {
             for resolution in Resolution::ALL {
-                let s = ExportSettings { resolution, container, ..Default::default() };
+                let s = ExportSettings {
+                    resolution,
+                    container,
+                    ..Default::default()
+                };
                 let d = pipeline_desc(&s, 1920, 1080, "/tmp/o");
                 let bps = (resolution.target_mbps() * 1_000_000.0) as u64;
                 assert!(
@@ -1328,7 +1379,10 @@ mod tests {
                 container.label(),
             );
             assert!(
-                codec.candidates().iter().any(|c| c.element == sel.spec.element),
+                codec
+                    .candidates()
+                    .iter()
+                    .any(|c| c.element == sel.spec.element),
                 "{container:?} is labelled {named} but selected {}, which does not encode it",
                 sel.spec.element,
             );
@@ -1345,7 +1399,11 @@ mod tests {
         // bits, which is the difference between 16 Mbit/s and 16 Gbit/s.
         for container in Container::ALL {
             for resolution in Resolution::ALL {
-                let s = ExportSettings { container, resolution, ..Default::default() };
+                let s = ExportSettings {
+                    container,
+                    resolution,
+                    ..Default::default()
+                };
                 let desc = pipeline_desc(&s, 640, 360, "/tmp/o");
                 let (sel, _, _) = encode_chain(container);
                 let bps = (resolution.target_mbps() * 1_000_000.0) as u64;
@@ -1367,7 +1425,10 @@ mod tests {
     fn the_export_reports_which_encoder_it_selected_without_claiming_hardware() {
         for container in Container::ALL {
             let report = selected_encoders(container);
-            let video = report.video.as_ref().expect("a video encoder is always named");
+            let video = report
+                .video
+                .as_ref()
+                .expect("a video encoder is always named");
             assert!(
                 !video.spec.element.is_empty(),
                 "the report names a real element: {}",
@@ -1398,7 +1459,10 @@ mod tests {
             // No encoder linked: the reason given to the dialog is the same
             // one the attempt fails with.
             (Some(reason), ExportStatus::Failed { reason: got }) => {
-                assert_eq!(reason, got, "the dialog and the attempt must say the same thing");
+                assert_eq!(
+                    reason, got,
+                    "the dialog and the attempt must say the same thing"
+                );
             }
             // An encoder is linked, so nothing may claim otherwise. The
             // empty project has no clips but still renders a black frame.
@@ -1436,7 +1500,13 @@ mod tests {
             ..Default::default()
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "T1".into(), kind, index: 1, ..Default::default() });
+        p.tracks.push(Track {
+            id: tid,
+            name: "T1".into(),
+            kind,
+            index: 1,
+            ..Default::default()
+        });
         let cid = p.add_clip(tid, mid, 0.0).expect("the media exists");
         p.clip_mut(cid).expect("clip").out_point = CLIP_SECS;
         p
@@ -1491,14 +1561,21 @@ mod tests {
                 .chain(media::encode::VideoCodec::Vp8.candidates())
                 .find(|s| s.element == element)
                 .unwrap_or_else(|| panic!("{element} is in the candidate tables"));
-            media::encode::Selection { spec, confirmed: true, passed_over: Vec::new() }
+            media::encode::Selection {
+                spec,
+                confirmed: true,
+                passed_over: Vec::new(),
+            }
         };
         let choices = [confirmed("x264enc"), confirmed("openh264enc")];
 
         let mut saw_predictive = false;
         let mut saw_unpredictable = false;
         for container in Container::ALL {
-            let s = ExportSettings { container, ..Default::default() };
+            let s = ExportSettings {
+                container,
+                ..Default::default()
+            };
             // The machine's own choice must agree with the same call made
             // explicitly, or these two branches are testing something the
             // dialog does not use.
@@ -1514,7 +1591,10 @@ mod tests {
                     s.estimate_label_for(&silent, video),
                     s.estimate_label_for(&voiced, video),
                 );
-                println!("{container:?} via {}: silent {a:?}, with audio {b:?}", video.describe());
+                println!(
+                    "{container:?} via {}: silent {a:?}, with audio {b:?}",
+                    video.describe()
+                );
 
                 // The arithmetic first, at full precision and independent of how
                 // the label rounds: an audio track costs exactly the rate the
@@ -1530,7 +1610,10 @@ mod tests {
 
                 if video.bitrate_is_predictive() {
                     saw_predictive = true;
-                    assert!(a.contains("MB") && b.contains("MB"), "a size is quoted: {a:?} / {b:?}");
+                    assert!(
+                        a.contains("MB") && b.contains("MB"),
+                        "a size is quoted: {a:?} / {b:?}"
+                    );
                     // The audio track has to cost something, or the figure is
                     // still describing a video-only file.
                     let mb = |label: &str| {
@@ -1563,8 +1646,10 @@ mod tests {
                 }
             }
         }
-        println!("size line: predictive branch seen={saw_predictive}, \
-                  unpredictable branch seen={saw_unpredictable}");
+        println!(
+            "size line: predictive branch seen={saw_predictive}, \
+                  unpredictable branch seen={saw_unpredictable}"
+        );
         assert!(
             saw_predictive && saw_unpredictable,
             "both branches must be exercised, saw predictive={saw_predictive} \
@@ -1576,16 +1661,25 @@ mod tests {
     #[test]
     fn size_estimate_scales_with_resolution() {
         let d = 60.0;
-        let p720 = ExportSettings { resolution: Resolution::P720, ..Default::default() }
-            .estimated_mb(d, true);
-        let p2160 = ExportSettings { resolution: Resolution::P2160, ..Default::default() }
-            .estimated_mb(d, true);
+        let p720 = ExportSettings {
+            resolution: Resolution::P720,
+            ..Default::default()
+        }
+        .estimated_mb(d, true);
+        let p2160 = ExportSettings {
+            resolution: Resolution::P2160,
+            ..Default::default()
+        }
+        .estimated_mb(d, true);
         assert!(p2160 > p720 * 4.0, "4K should be much heavier than 720p");
     }
 
     #[test]
     fn filename_is_slugged_with_extension() {
-        let s = ExportSettings { container: Container::WebM, ..Default::default() };
+        let s = ExportSettings {
+            container: Container::WebM,
+            ..Default::default()
+        };
         assert_eq!(s.suggested_filename("My Doc v3"), "My_Doc_v3.webm");
     }
 
@@ -1610,10 +1704,19 @@ mod tests {
 
     #[test]
     fn pipeline_desc_wires_the_right_chain_per_container() {
-        let mp4 = ExportSettings { container: Container::Mp4, ..Default::default() };
+        let mp4 = ExportSettings {
+            container: Container::Mp4,
+            ..Default::default()
+        };
         let d = pipeline_desc(&mp4, 1920, 1080, "/tmp/out.mp4");
-        assert!(d.contains("appsrc name=qos_src"), "an appsrc feeds real frames: {d}");
-        assert!(d.contains("format=RGBA,width=1920,height=1080"), "caps match the frames: {d}");
+        assert!(
+            d.contains("appsrc name=qos_src"),
+            "an appsrc feeds real frames: {d}"
+        );
+        assert!(
+            d.contains("format=RGBA,width=1920,height=1080"),
+            "caps match the frames: {d}"
+        );
         // Which H.264 encoder this is depends on the machine — a VA-API,
         // NVENC or QSV one where the registry has it, openh264enc where it
         // does not — so the assertion is against the encoder that was actually
@@ -1627,26 +1730,51 @@ mod tests {
             "a hardware element is only ever named once the registry confirmed it: {}",
             sel.describe(),
         );
-        assert!(d.contains(sel.spec.element), "the selected H.264 encoder: {d}");
         assert!(
-            d.contains(&format!("{} {}", sel.spec.element, sel.spec.bitrate_arg(16_000_000))),
+            d.contains(sel.spec.element),
+            "the selected H.264 encoder: {d}"
+        );
+        assert!(
+            d.contains(&format!(
+                "{} {}",
+                sel.spec.element,
+                sel.spec.bitrate_arg(16_000_000)
+            )),
             "the encoder is told to hit the bitrate the size estimate quotes: {d}",
         );
         assert!(d.contains("h264parse ! mp4mux"), "parsed + MP4-muxed: {d}");
-        assert!(d.contains("filesink location=/tmp/out.mp4"), "writes a real file: {d}");
+        assert!(
+            d.contains("filesink location=/tmp/out.mp4"),
+            "writes a real file: {d}"
+        );
 
-        let webm = ExportSettings { container: Container::WebM, ..Default::default() };
+        let webm = ExportSettings {
+            container: Container::WebM,
+            ..Default::default()
+        };
         let dw = pipeline_desc(&webm, 640, 360, "/tmp/o.webm");
         let (vp8, _, _) = encode_chain(Container::WebM);
-        assert!(dw.contains(vp8.spec.element) && dw.contains("webmmux"), "VP8/WebM chain: {dw}");
         assert!(
-            dw.contains(&format!("{} {}=", vp8.spec.element, vp8.spec.bitrate_property)),
+            dw.contains(vp8.spec.element) && dw.contains("webmmux"),
+            "VP8/WebM chain: {dw}"
+        );
+        assert!(
+            dw.contains(&format!(
+                "{} {}=",
+                vp8.spec.element, vp8.spec.bitrate_property
+            )),
             "the VP8 encoder gets its bitrate under whichever property it names: {dw}",
         );
         assert!(!dw.contains("h264parse"), "no h264parse for WebM: {dw}");
 
-        let mov = ExportSettings { container: Container::Mov, ..Default::default() };
-        assert!(pipeline_desc(&mov, 2, 2, "/tmp/o.mov").contains("qtmux"), "MOV muxes with qtmux");
+        let mov = ExportSettings {
+            container: Container::Mov,
+            ..Default::default()
+        };
+        assert!(
+            pipeline_desc(&mov, 2, 2, "/tmp/o.mov").contains("qtmux"),
+            "MOV muxes with qtmux"
+        );
     }
 
     /// A project holding one clip of `path`, which is exactly what the
@@ -1692,7 +1820,11 @@ mod tests {
         // is right for a preview and never right for a file.
         let p = one_clip_over("no/such/directory/definitely-not-here-42.mp4");
         let missing = unreadable_sources(&p);
-        assert_eq!(missing.len(), 1, "the one unreadable source is named: {missing:?}");
+        assert_eq!(
+            missing.len(),
+            1,
+            "the one unreadable source is named: {missing:?}"
+        );
         assert_eq!(missing[0].0, "clip");
 
         let out = std::env::temp_dir().join(format!("qos-ve-missing-{}.mp4", std::process::id()));
@@ -1703,7 +1835,10 @@ mod tests {
 
         match status {
             ExportStatus::Failed { reason } => {
-                assert!(reason.contains("clip"), "the refusal names the source: {reason:?}");
+                assert!(
+                    reason.contains("clip"),
+                    "the refusal names the source: {reason:?}"
+                );
                 assert!(
                     reason.contains("stand-in"),
                     "and says what it would otherwise have written: {reason:?}",
@@ -1711,7 +1846,10 @@ mod tests {
             }
             other => panic!("an unreadable source must refuse, got {other:?}"),
         }
-        assert!(!out.exists(), "and no file is left behind looking like a render");
+        assert!(
+            !out.exists(),
+            "and no file is left behind looking like a render"
+        );
     }
 
     #[test]
@@ -1739,7 +1877,10 @@ mod tests {
             ..Default::default()
         });
         p.add_clip(tid, mid, 0.0).expect("media exists");
-        assert!(unreadable_sources(&p).is_empty(), "a title has no bytes to be missing");
+        assert!(
+            unreadable_sources(&p).is_empty(),
+            "a title has no bytes to be missing"
+        );
         assert!(
             !places_decoded_video(&p),
             "and nothing on this timeline is expected to decode",
@@ -1772,7 +1913,10 @@ mod tests {
         let mut p = Project::new("t");
         p.width = 1440;
         p.height = 1080; // 4:3
-        let s = ExportSettings { resolution: Resolution::P720, ..Default::default() };
+        let s = ExportSettings {
+            resolution: Resolution::P720,
+            ..Default::default()
+        };
         let (w, h) = output_dims(&s, &p);
         assert_eq!(h, 720);
         assert_eq!(w, 960, "4:3 at 720p is 960×720");
@@ -1814,14 +1958,26 @@ mod tests {
             ..Default::default()
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+            solo: false,
+        });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 0.2;
 
         let out = std::env::temp_dir().join(format!("qos-ve-export-{}.mp4", std::process::id()));
         // Safety: single-threaded test mutation of process env.
         unsafe { std::env::set_var("QOS_VE_EXPORT_OUT", &out) };
-        let s = ExportSettings { resolution: Resolution::P720, container: Container::Mp4, frame_rate: FrameRate::F24 };
+        let s = ExportSettings {
+            resolution: Resolution::P720,
+            container: Container::Mp4,
+            frame_rate: FrameRate::F24,
+        };
         let status = begin_export(&p, &s);
         unsafe { std::env::remove_var("QOS_VE_EXPORT_OUT") };
 
@@ -1829,7 +1985,11 @@ mod tests {
             ExportStatus::Done { path } => {
                 assert_eq!(path, out.to_string_lossy());
                 let bytes = std::fs::read(&out).expect("export file exists");
-                assert!(bytes.len() > 512, "a real encoded file, got {} bytes", bytes.len());
+                assert!(
+                    bytes.len() > 512,
+                    "a real encoded file, got {} bytes",
+                    bytes.len()
+                );
                 // A valid ISO-BMFF file has an `ftyp` box type at offset 4.
                 assert_eq!(&bytes[4..8], b"ftyp", "the output is a real MP4 container");
             }
@@ -1944,7 +2104,11 @@ mod tests {
                         count += 1.0;
                     }
                 }
-                grid[gy * n + gx] = if count > 0.0 { sum / count / 255.0 } else { 0.0 };
+                grid[gy * n + gx] = if count > 0.0 {
+                    sum / count / 255.0
+                } else {
+                    0.0
+                };
             }
         }
         grid
@@ -2066,16 +2230,23 @@ mod tests {
     #[serial_test::serial(video_editor_gst)]
     fn the_grade_changes_the_encoded_footage() {
         let Some(clip) = demo_clip() else {
-            panic!("this test needs the bundled demo clip; see the_export_encodes_the_source_footage");
+            panic!(
+                "this test needs the bundled demo clip; see the_export_encodes_the_source_footage"
+            );
         };
         let neutral = project_over(&clip, 8.0, 0.6);
         let mut bright = neutral.clone();
         let cid = bright.clips[0].id;
-        bright.clip_mut(cid).unwrap().filters =
-            crate::model::Filters { brightness: 0.85, contrast: 0.5, saturation: 0.5 };
+        bright.clip_mut(cid).unwrap().filters = crate::model::Filters {
+            brightness: 0.85,
+            contrast: 0.5,
+            saturation: 0.5,
+        };
         let mut grey = neutral.clone();
-        grey.clip_mut(cid).unwrap().effects =
-            vec![crate::model::ClipEffect { kind: crate::model::EffectKind::Grayscale, amount: 1.0 }];
+        grey.clip_mut(cid).unwrap().effects = vec![crate::model::ClipEffect {
+            kind: crate::model::EffectKind::Grayscale,
+            amount: 1.0,
+        }];
 
         let dir = std::env::temp_dir();
         let pid = std::process::id();
@@ -2137,7 +2308,9 @@ mod tests {
     fn transitions_reach_the_encoded_file_as_distinct_pictures() {
         use crate::model::Transition;
         let Some(clip) = demo_clip() else {
-            panic!("this test needs the bundled demo clip; see the_export_encodes_the_source_footage");
+            panic!(
+                "this test needs the bundled demo clip; see the_export_encodes_the_source_footage"
+            );
         };
         // Two clips over one source, the incoming one inverted so the two
         // pictures are unmistakably different whatever the footage does.
@@ -2205,9 +2378,20 @@ mod tests {
             // Skip the feathered middle columns.
             (mean_of(0..5) - mean_of(7..12)).abs()
         };
-        let wipe_split = half_split(&grids.iter().find(|(k, _)| *k == Transition::Wipe).unwrap().1);
-        let dissolve_split =
-            half_split(&grids.iter().find(|(k, _)| *k == Transition::CrossDissolve).unwrap().1);
+        let wipe_split = half_split(
+            &grids
+                .iter()
+                .find(|(k, _)| *k == Transition::Wipe)
+                .unwrap()
+                .1,
+        );
+        let dissolve_split = half_split(
+            &grids
+                .iter()
+                .find(|(k, _)| *k == Transition::CrossDissolve)
+                .unwrap()
+                .1,
+        );
         assert!(
             wipe_split > dissolve_split + 0.1,
             "the encoded wipe must split the frame left/right ({wipe_split:.3}) far more \
@@ -2229,5 +2413,4 @@ mod tests {
             }
         }
     }
-
 }

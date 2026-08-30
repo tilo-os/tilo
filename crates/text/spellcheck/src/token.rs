@@ -89,7 +89,10 @@ fn is_word_char(c: char) -> bool {
 /// Characters that join two word characters into one token but are not words on
 /// their own.
 fn is_connector(c: char) -> bool {
-    matches!(c, '\'' | '\u{2019}' | '.' | '@' | ':' | '/' | '_' | ',' | '-')
+    matches!(
+        c,
+        '\'' | '\u{2019}' | '.' | '@' | ':' | '/' | '_' | ',' | '-'
+    )
 }
 
 /// Starting at byte offset `idx`, skip any run of connector characters and

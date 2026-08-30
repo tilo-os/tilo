@@ -3,13 +3,13 @@
 //! Renders the four canonical states — no window opened — so the layout can be
 //! self-inspected against HIG §1:
 //!   1. `nav_shell-wide.png`          — `[ sidebar | overview | detail ]` three
-//!                                       abreast, docked sidebar + collapse chevron.
+//!      abreast, docked sidebar + collapse chevron.
 //!   2. `nav_shell-narrow-overview.png` — full-screen overview + hamburger.
 //!   3. `nav_shell-narrow-drawer.png`   — sidebar overlay drawer over the overview,
-//!                                       scrim behind, collapse chevron.
+//!      scrim behind, collapse chevron.
 //!   4. `nav_shell-narrow-detail.png`   — detail slid over the overview + Back button.
 //!
-//! Run: `cargo run -p ui --example nav_shell_shots`
+//! Run: `cargo run -p ui --example ui-shots -- nav_shell_shots`
 //! Output dir: `$NAV_SHELL_SHOTS_OUT` (default `/tmp/nav_shell_shots`).
 
 use std::collections::HashMap;
@@ -25,9 +25,7 @@ use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{
-    Column, Container, NavPane, NavShell, Row, Spacer, Text, Widget,
-};
+use ui::widget::{Column, Container, NavPane, NavShell, Row, Spacer, Text, Widget};
 
 /// A titled list panel filled with `fill`, a header band, and rows. The header
 /// title is indented by `header_indent` px so it clears the shell's top-left
@@ -48,9 +46,13 @@ fn panel(
         .with_height(56.0)
         .with_child(Box::new(
             Row::new()
-                .push(Box::new(Container::new().with_width(header_indent).with_height(1.0)))
                 .push(Box::new(
-                    Text::new(title).with_size(20.0).with_color(theme.text_primary),
+                    Container::new().with_width(header_indent).with_height(1.0),
+                ))
+                .push(Box::new(
+                    Text::new(title)
+                        .with_size(20.0)
+                        .with_color(theme.text_primary),
                 )),
         ));
     col = col.push(Box::new(header));
@@ -59,19 +61,30 @@ fn panel(
     for (primary, secondary) in rows {
         let mut row_col = Column::new().with_intrinsic_height();
         row_col = row_col.push(Box::new(
-            Text::new(*primary).with_size(15.0).with_color(theme.text_primary),
+            Text::new(primary)
+                .with_size(15.0)
+                .with_color(theme.text_primary),
         ));
         if !secondary.is_empty() {
             row_col = row_col.push(Box::new(
-                Text::new(*secondary).with_size(12.0).with_color(theme.text_dim),
+                Text::new(secondary)
+                    .with_size(12.0)
+                    .with_color(theme.text_dim),
             ));
         }
-        let row = Container::new().with_height(52.0).with_child(Box::new(row_col));
+        let row = Container::new()
+            .with_height(52.0)
+            .with_child(Box::new(row_col));
         col = col.push(Box::new(row));
     }
     col = col.push(Box::new(Spacer::new()));
 
-    Box::new(Container::new().with_fill(fill).filling().with_child(Box::new(col)))
+    Box::new(
+        Container::new()
+            .with_fill(fill)
+            .filling()
+            .with_child(Box::new(col)),
+    )
 }
 
 fn make_shell(theme: &Theme) -> NavShell {
@@ -176,9 +189,9 @@ fn shoot(shell: &mut NavShell, w: u32, h: u32, out: PathBuf, set: impl Fn(&mut N
     println!("wrote {}", out.display());
 }
 
-fn main() {
-    let dir = std::env::var("NAV_SHELL_SHOTS_OUT")
-        .unwrap_or_else(|_| "/tmp/nav_shell_shots".to_string());
+pub fn run(_args: &[String]) {
+    let dir =
+        std::env::var("NAV_SHELL_SHOTS_OUT").unwrap_or_else(|_| "/tmp/nav_shell_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
     let theme = Theme::dark();
@@ -189,18 +202,36 @@ fn main() {
 
     // 2. NARROW overview: full-screen overview, hamburger to summon the drawer.
     let mut s = make_shell(&theme);
-    shoot(&mut s, 440, 780, dir.join("nav_shell-narrow-overview.png"), |_| {});
+    shoot(
+        &mut s,
+        440,
+        780,
+        dir.join("nav_shell-narrow-overview.png"),
+        |_| {},
+    );
 
     // 3. NARROW drawer: overlay sidebar open over the overview, scrim + chevron.
     let mut s = make_shell(&theme);
-    shoot(&mut s, 440, 780, dir.join("nav_shell-narrow-drawer.png"), |sh| {
-        sh.open_sidebar();
-        sh.snap_sidebar(true);
-    });
+    shoot(
+        &mut s,
+        440,
+        780,
+        dir.join("nav_shell-narrow-drawer.png"),
+        |sh| {
+            sh.open_sidebar();
+            sh.snap_sidebar(true);
+        },
+    );
 
     // 4. NARROW detail: detail slid over the overview, Back button top-left.
     let mut s = make_shell(&theme);
-    shoot(&mut s, 440, 780, dir.join("nav_shell-narrow-detail.png"), |sh| {
-        sh.snap_pane(NavPane::Detail);
-    });
+    shoot(
+        &mut s,
+        440,
+        780,
+        dir.join("nav_shell-narrow-detail.png"),
+        |sh| {
+            sh.snap_pane(NavPane::Detail);
+        },
+    );
 }

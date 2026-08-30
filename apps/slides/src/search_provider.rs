@@ -30,7 +30,9 @@ pub struct SlideSearchProvider {
 impl SlideSearchProvider {
     /// Snapshot the current deck into a provider.
     pub fn new(deck: &Deck) -> Self {
-        Self { slides: deck.slides.clone() }
+        Self {
+            slides: deck.slides.clone(),
+        }
     }
 
     /// The `action_id` for a slide — what a chosen row hands back.
@@ -40,7 +42,9 @@ impl SlideSearchProvider {
 
     /// Resolve an `action_id` produced by this provider back into a slide id.
     pub fn parse_action_id(action_id: &str) -> Option<&str> {
-        action_id.strip_prefix(ACTION_PREFIX).filter(|s| !s.is_empty())
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .filter(|s| !s.is_empty())
     }
 
     /// The first non-empty text box on the slide — used as its title.
@@ -51,8 +55,10 @@ impl SlideSearchProvider {
             .filter(|e| e.kind == ElementKind::Text)
             .map(|e| e.text.trim())
             .find(|t| !t.is_empty())
-            .map(|t| t.lines().next().unwrap_or(t).to_string())
-            .unwrap_or_else(|| format!("Slide {}", index + 1))
+            .map_or_else(
+                || format!("Slide {}", index + 1),
+                |t| t.lines().next().unwrap_or(t).to_string(),
+            )
     }
 
     /// All searchable text on a slide: every text box plus the speaker notes.
@@ -139,7 +145,11 @@ mod tests {
             .find(|r| r.action_id == SlideSearchProvider::action_id(&target.id))
             .expect("the slide is browsable through the registry");
         let id = SlideSearchProvider::parse_action_id(&hit.action_id).unwrap();
-        assert_eq!(deck.index_of(id), Some(2), "the id resolves back to the right slide index");
+        assert_eq!(
+            deck.index_of(id),
+            Some(2),
+            "the id resolves back to the right slide index"
+        );
     }
 
     #[test]
@@ -165,12 +175,23 @@ mod tests {
             let providers = app.search_providers();
             assert!(!providers.is_empty(), "slides publishes a search provider");
             let rows = providers[0].search("");
-            assert!(rows.len() > target_idx, "the seeded deck has several slides");
+            assert!(
+                rows.len() > target_idx,
+                "the seeded deck has several slides"
+            );
             rows[target_idx].action_id.clone()
         };
-        assert_ne!(app.current_slide(), target_idx, "not already on the target slide");
+        assert_ne!(
+            app.current_slide(),
+            target_idx,
+            "not already on the target slide"
+        );
 
         app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(app.current_slide(), target_idx, "activation navigated to the chosen slide");
+        assert_eq!(
+            app.current_slide(),
+            target_idx,
+            "activation navigated to the chosen slide"
+        );
     }
 }

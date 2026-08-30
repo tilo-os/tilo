@@ -168,7 +168,12 @@ impl PreviewPane {
         let mut y = 0.0f64;
         for p in pages {
             let x_off = ((content_w - p.width_pt) / 2.0).max(0.0);
-            boxes.push(PageBox { x_off, top: y, w_pt: p.width_pt, h_pt: p.height_pt });
+            boxes.push(PageBox {
+                x_off,
+                top: y,
+                w_pt: p.width_pt,
+                h_pt: p.height_pt,
+            });
             y += p.height_pt + PAGE_GAP_PT;
         }
         let content_h = (y - PAGE_GAP_PT).max(0.0);
@@ -243,7 +248,11 @@ impl PreviewPane {
     /// when a page spans the pane — the UX the welcome document advertises.
     pub fn zoom(&self) -> f64 {
         let fw = self.viewport.fit_width_zoom();
-        if fw > 0.0 { self.viewport.zoom() / fw } else { 1.0 }
+        if fw > 0.0 {
+            self.viewport.zoom() / fw
+        } else {
+            1.0
+        }
     }
 
     pub fn zoom_in(&mut self) {
@@ -271,20 +280,30 @@ impl PreviewPane {
     /// The main (non-thumbnail) viewport rect.
     fn main_rect(&self) -> Rect {
         if self.has_thumbs() {
-            Rect::new(self.rect.x0 + THUMB_STRIP_W, self.rect.y0, self.rect.x1, self.rect.y1)
+            Rect::new(
+                self.rect.x0 + THUMB_STRIP_W,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y1,
+            )
         } else {
             self.rect
         }
     }
 
     fn thumb_strip(&self) -> Rect {
-        Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + THUMB_STRIP_W, self.rect.y1)
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x0 + THUMB_STRIP_W,
+            self.rect.y1,
+        )
     }
 
     // ----- scrolling / zoom input ----------------------------------------
 
     /// Plain wheel scroll (kept for callers that only have a vertical delta —
-    /// e.g. keyboard PageDown mapping). Positive `dy` scrolls down.
+    /// e.g. keyboard `PageDown` mapping). Positive `dy` scrolls down.
     pub fn scroll_by(&mut self, dy: f64) {
         self.viewport.pan_by(0.0, dy);
         self.recompute_current();
@@ -404,10 +423,10 @@ impl PreviewPane {
             self.recompute_current();
             return;
         }
-        if self.selecting {
-            if let Some(b) = self.boundary_at(p) {
-                self.sel_cursor = b;
-            }
+        if self.selecting
+            && let Some(b) = self.boundary_at(p)
+        {
+            self.sel_cursor = b;
         }
     }
 
@@ -497,8 +516,13 @@ impl PreviewPane {
         let mut y = self.rect.y0 + THUMB_GAP;
         for i in 0..self.images.len() {
             let (pw, ph) = self.sizes_px[i];
-            let th = tw * (ph.max(1) as f64) / (pw.max(1) as f64);
-            let r = Rect::new(self.rect.x0 + THUMB_GAP, y, self.rect.x0 + THUMB_GAP + tw, y + th);
+            let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
+            let r = Rect::new(
+                self.rect.x0 + THUMB_GAP,
+                y,
+                self.rect.x0 + THUMB_GAP + tw,
+                y + th,
+            );
             if r.contains(p) {
                 self.scroll_to_page(i);
                 return;
@@ -538,10 +562,10 @@ impl PreviewPane {
         let mut out = String::new();
         let mut prev_key: Option<(usize, i64)> = None;
         for cell in &self.cells[lo..hi] {
-            if let Some(k) = prev_key {
-                if k != cell.line_key {
-                    out.push('\n');
-                }
+            if let Some(k) = prev_key
+                && k != cell.line_key
+            {
+                out.push('\n');
             }
             out.push_str(&cell.text);
             prev_key = Some(cell.line_key);
@@ -585,12 +609,20 @@ impl PreviewPane {
             return;
         }
         self.sel_anchor = ((n as f64) * lo.clamp(0.0, 1.0)) as usize;
-        self.sel_cursor = (((n as f64) * hi.clamp(0.0, 1.0)) as usize).max(self.sel_anchor + 1).min(n);
+        self.sel_cursor = (((n as f64) * hi.clamp(0.0, 1.0)) as usize)
+            .max(self.sel_anchor + 1)
+            .min(n);
     }
 
     // ----- drawing -------------------------------------------------------
 
-    pub fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, transform, c.neutral[1], None, &self.rect);
 
@@ -610,7 +642,13 @@ impl PreviewPane {
 
     /// A floating banner across the top of the preview telling the user the
     /// pages below are from the last good compile, not the current source.
-    fn draw_stale_banner(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_stale_banner(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
         let main = self.main_rect();
         let text = "Compile failed — showing last successful render";
@@ -618,14 +656,26 @@ impl PreviewPane {
         let (tw, _) = tr.measure(text, font, None);
         let pad_x = 12.0;
         let h = 26.0;
-        let w = (tw as f64 + pad_x * 2.0).min(main.width() - 20.0);
+        let w = (f64::from(tw) + pad_x * 2.0).min(main.width() - 20.0);
         let x0 = main.x0 + (main.width() - w) * 0.5;
         let y0 = main.y0 + 10.0;
         let banner = Rect::new(x0, y0, x0 + w, y0 + h);
         // Soft shadow, then a warning-toned pill.
-        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &RoundedRect::from_rect(banner.inflate(2.0, 2.0), 9.0));
-        scene.fill(Fill::NonZero, transform, c.semantic.warning, None, &RoundedRect::from_rect(banner, 8.0));
-        let ty = y0 + (h - font as f64 * 1.25) / 2.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.overlay,
+            None,
+            &RoundedRect::from_rect(banner.inflate(2.0, 2.0), 9.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.semantic.warning,
+            None,
+            &RoundedRect::from_rect(banner, 8.0),
+        );
+        let ty = y0 + (h - f64::from(font) * 1.25) / 2.0;
         tr.draw_text(
             scene,
             text,
@@ -636,13 +686,21 @@ impl PreviewPane {
         );
     }
 
-    fn draw_main(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_main(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
         let main = self.viewport.rect();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &main);
 
         for (i, b) in self.boxes.iter().enumerate() {
-            let tl = self.viewport.content_point_to_screen(Point::new(b.x_off, b.top));
+            let tl = self
+                .viewport
+                .content_point_to_screen(Point::new(b.x_off, b.top));
             let br = self
                 .viewport
                 .content_point_to_screen(Point::new(b.x_off + b.w_pt, b.top + b.h_pt));
@@ -658,7 +716,13 @@ impl PreviewPane {
             // Paper.
             self.images[i].paint_at(scene, transform, page_rect);
             // Border.
-            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &page_rect);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                c.border_standard,
+                None,
+                &page_rect,
+            );
 
             // Page caption under the page.
             let label = format!("Page {} of {}", i + 1, self.images.len());
@@ -720,7 +784,13 @@ impl PreviewPane {
         }
     }
 
-    fn draw_thumbs(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_thumbs(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
         let strip = self.thumb_strip();
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &strip);
@@ -740,12 +810,23 @@ impl PreviewPane {
         let mut y = self.rect.y0 + THUMB_GAP;
         for i in 0..self.images.len() {
             let (pw, ph) = self.sizes_px[i];
-            let th = tw * (ph.max(1) as f64) / (pw.max(1) as f64);
-            let r = Rect::new(self.rect.x0 + THUMB_GAP, y, self.rect.x0 + THUMB_GAP + tw, y + th);
+            let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
+            let r = Rect::new(
+                self.rect.x0 + THUMB_GAP,
+                y,
+                self.rect.x0 + THUMB_GAP + tw,
+                y + th,
+            );
 
             if i == self.current {
                 let ring = r.inflate(3.0, 3.0);
-                scene.stroke(&Stroke::new(2.0), transform, theme.accent_primary, None, &ring);
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    theme.accent_primary,
+                    None,
+                    &ring,
+                );
             }
             self.images[i].paint_at(scene, transform, r);
             scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &r);
@@ -765,11 +846,20 @@ impl PreviewPane {
         scene.pop_layer();
     }
 
-    fn draw_placeholder(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_placeholder(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
-        let text = self.placeholder.clone().unwrap_or_else(|| "No output".into());
+        let text = self
+            .placeholder
+            .clone()
+            .unwrap_or_else(|| "No output".into());
         let (w, _h) = tr.measure(&text, 14.0, None);
-        let x = self.rect.x0 + (self.rect.width() - w as f64) * 0.5;
+        let x = self.rect.x0 + (self.rect.width() - f64::from(w)) * 0.5;
         let y = self.rect.y0 + self.rect.height() * 0.5 - 9.0;
         tr.draw_text(
             scene,
@@ -786,7 +876,7 @@ impl PreviewPane {
 /// viewport kernel's own scaling so wheel feel is identical across apps).
 fn wheel_px(delta: &MouseScrollDelta, scale_factor: f64) -> (f64, f64) {
     match delta {
-        MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 56.0, *y as f64 * 56.0),
+        MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
         MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
     }
 }
@@ -821,10 +911,18 @@ mod tests {
         let mut cells = Vec::new();
         let mut x = x0;
         for ch in chars.chars() {
-            cells.push(TextCell { x0: x, x1: x + cw, text: ch.to_string() });
+            cells.push(TextCell {
+                x0: x,
+                x1: x + cw,
+                text: ch.to_string(),
+            });
             x += cw;
         }
-        TextRun { top: y, bottom: y + 12.0, cells }
+        TextRun {
+            top: y,
+            bottom: y + 12.0,
+            cells,
+        }
     }
 
     /// A 200×800pt single-page preview in a 400×300 pane with one text line.
@@ -868,7 +966,10 @@ mod tests {
             p.viewport.rect().center(),
             1.0,
         );
-        assert!(p.viewport.scroll_y() > y0, "plain wheel scrolls the zoomed page down");
+        assert!(
+            p.viewport.scroll_y() > y0,
+            "plain wheel scrolls the zoomed page down"
+        );
     }
 
     #[test]
@@ -886,7 +987,11 @@ mod tests {
             p.viewport.rect().center(),
             1.0,
         );
-        assert_ne!(p.viewport.scroll_y(), y0, "tilt wheel moves a tall page vertically");
+        assert_ne!(
+            p.viewport.scroll_y(),
+            y0,
+            "tilt wheel moves a tall page vertically"
+        );
     }
 
     #[test]
@@ -918,7 +1023,10 @@ mod tests {
     fn tilt_wheel_pans_horizontally_when_zoomed_past_fit() {
         let mut p = pane();
         p.demo_set_view(1.6, 0.3);
-        assert!(p.viewport.overflows_x(), "page overflows sideways when zoomed");
+        assert!(
+            p.viewport.overflows_x(),
+            "page overflows sideways when zoomed"
+        );
         let x0 = p.viewport.scroll_x();
         // A tilt (horizontal) wheel pans the page sideways once it overflows.
         p.on_wheel(
@@ -927,7 +1035,11 @@ mod tests {
             p.viewport.rect().center(),
             1.0,
         );
-        assert_ne!(p.viewport.scroll_x(), x0, "tilt wheel pans a wide zoomed page sideways");
+        assert_ne!(
+            p.viewport.scroll_x(),
+            x0,
+            "tilt wheel pans a wide zoomed page sideways"
+        );
     }
 
     #[test]
@@ -935,8 +1047,13 @@ mod tests {
         let mut p = pane();
         // Press at the first glyph, drag to just before the space (5 chars in).
         let start = p.viewport.content_point_to_screen(Point::new(21.0, 46.0));
-        let end = p.viewport.content_point_to_screen(Point::new(20.0 + 8.0 * 5.0 + 1.0, 46.0));
-        assert!(p.on_mouse_down(start, false), "a text press begins a selection drag");
+        let end = p
+            .viewport
+            .content_point_to_screen(Point::new(20.0 + 8.0 * 5.0 + 1.0, 46.0));
+        assert!(
+            p.on_mouse_down(start, false),
+            "a text press begins a selection drag"
+        );
         p.on_mouse_drag(end);
         assert!(p.has_selection(), "the drag produced a selection");
         assert_eq!(p.selected_text().as_deref(), Some("Hello"));
@@ -947,10 +1064,17 @@ mod tests {
         let mut p = PreviewPane::new();
         p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
         let pages = vec![page(200.0, 400.0)];
-        let runs = vec![line_run(40.0, "ab", 20.0, 8.0), line_run(80.0, "cd", 20.0, 8.0)];
+        let runs = vec![
+            line_run(40.0, "ab", 20.0, 8.0),
+            line_run(80.0, "cd", 20.0, 8.0),
+        ];
         p.set_pages_with_text(&pages, &[runs]);
         p.select_all();
-        assert_eq!(p.selected_text().as_deref(), Some("ab\ncd"), "line break between runs");
+        assert_eq!(
+            p.selected_text().as_deref(),
+            Some("ab\ncd"),
+            "line break between runs"
+        );
     }
 
     #[test]
@@ -963,6 +1087,9 @@ mod tests {
         assert!(p.has_thumbs());
         p.scroll_to_page(2);
         assert_eq!(p.current_page(), 2);
-        assert!(p.viewport.scroll_y() > 0.0, "jumping to a later page scrolls down");
+        assert!(
+            p.viewport.scroll_y() > 0.0,
+            "jumping to a later page scrolls down"
+        );
     }
 }

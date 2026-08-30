@@ -68,10 +68,13 @@ pub struct Span {
 /// expand-variables affordance reads the same everywhere.
 pub fn highlight_line(line: &str, lang: Language) -> Vec<Span> {
     // Comment lines short-circuit: the whole line is one comment span.
-    if let Some(prefix) = comment_prefix(lang) {
-        if line.trim_start().starts_with(prefix) {
-            return vec![Span { text: line.to_string(), kind: TokenKind::Comment }];
-        }
+    if let Some(prefix) = comment_prefix(lang)
+        && line.trim_start().starts_with(prefix)
+    {
+        return vec![Span {
+            text: line.to_string(),
+            kind: TokenKind::Comment,
+        }];
     }
 
     let mut spans = lex(line, lang);
@@ -84,8 +87,12 @@ pub fn highlight_line(line: &str, lang: Language) -> Vec<Span> {
 fn comment_prefix(lang: Language) -> Option<&'static str> {
     match lang {
         Language::Rust | Language::JavaScript | Language::Css => Some("//"),
-        Language::Shell | Language::Python | Language::Yaml | Language::Toml
-        | Language::Dockerfile | Language::Git => Some("#"),
+        Language::Shell
+        | Language::Python
+        | Language::Yaml
+        | Language::Toml
+        | Language::Dockerfile
+        | Language::Git => Some("#"),
         Language::Sql => Some("--"),
         _ => None,
     }
@@ -97,19 +104,53 @@ fn keywords(lang: Language) -> &'static [&'static str] {
     match lang {
         Language::Rust => &[
             "fn", "let", "mut", "const", "static", "struct", "enum", "trait", "impl", "for",
-            "while", "loop", "if", "else", "match", "return", "pub", "use", "mod", "crate",
-            "self", "super", "as", "in", "ref", "move", "where", "type", "dyn", "async", "await",
-            "unsafe", "extern", "break", "continue",
+            "while", "loop", "if", "else", "match", "return", "pub", "use", "mod", "crate", "self",
+            "super", "as", "in", "ref", "move", "where", "type", "dyn", "async", "await", "unsafe",
+            "extern", "break", "continue",
         ],
         Language::Shell => &[
             "if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac",
             "function", "in", "return", "export", "local", "set", "echo", "cd", "exit",
         ],
         Language::Sql => &[
-            "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
-            "CREATE", "TABLE", "ALTER", "DROP", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON",
-            "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "OFFSET", "AND", "OR", "NOT", "NULL", "AS",
-            "DISTINCT", "COUNT", "INDEX", "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "RETURNING",
+            "SELECT",
+            "FROM",
+            "WHERE",
+            "INSERT",
+            "INTO",
+            "VALUES",
+            "UPDATE",
+            "SET",
+            "DELETE",
+            "CREATE",
+            "TABLE",
+            "ALTER",
+            "DROP",
+            "JOIN",
+            "LEFT",
+            "RIGHT",
+            "INNER",
+            "OUTER",
+            "ON",
+            "GROUP",
+            "BY",
+            "ORDER",
+            "HAVING",
+            "LIMIT",
+            "OFFSET",
+            "AND",
+            "OR",
+            "NOT",
+            "NULL",
+            "AS",
+            "DISTINCT",
+            "COUNT",
+            "INDEX",
+            "PRIMARY",
+            "KEY",
+            "FOREIGN",
+            "REFERENCES",
+            "RETURNING",
         ],
         Language::Python => &[
             "def", "class", "import", "from", "as", "if", "elif", "else", "for", "while", "return",
@@ -117,19 +158,78 @@ fn keywords(lang: Language) -> &'static [&'static str] {
             "continue", "in", "is", "and", "or", "not", "None", "True", "False", "async", "await",
         ],
         Language::JavaScript => &[
-            "function", "const", "let", "var", "if", "else", "for", "while", "return", "class",
-            "extends", "new", "this", "import", "export", "from", "default", "async", "await",
-            "try", "catch", "finally", "throw", "typeof", "instanceof", "of", "in", "null",
-            "undefined", "true", "false",
+            "function",
+            "const",
+            "let",
+            "var",
+            "if",
+            "else",
+            "for",
+            "while",
+            "return",
+            "class",
+            "extends",
+            "new",
+            "this",
+            "import",
+            "export",
+            "from",
+            "default",
+            "async",
+            "await",
+            "try",
+            "catch",
+            "finally",
+            "throw",
+            "typeof",
+            "instanceof",
+            "of",
+            "in",
+            "null",
+            "undefined",
+            "true",
+            "false",
         ],
         Language::Git => &[
-            "git", "add", "commit", "push", "pull", "fetch", "merge", "rebase", "checkout",
-            "branch", "status", "log", "diff", "reset", "stash", "tag", "remote", "clone",
-            "cherry-pick", "switch", "restore",
+            "git",
+            "add",
+            "commit",
+            "push",
+            "pull",
+            "fetch",
+            "merge",
+            "rebase",
+            "checkout",
+            "branch",
+            "status",
+            "log",
+            "diff",
+            "reset",
+            "stash",
+            "tag",
+            "remote",
+            "clone",
+            "cherry-pick",
+            "switch",
+            "restore",
         ],
         Language::Dockerfile => &[
-            "FROM", "RUN", "CMD", "LABEL", "EXPOSE", "ENV", "ADD", "COPY", "ENTRYPOINT", "VOLUME",
-            "USER", "WORKDIR", "ARG", "ONBUILD", "HEALTHCHECK", "SHELL",
+            "FROM",
+            "RUN",
+            "CMD",
+            "LABEL",
+            "EXPOSE",
+            "ENV",
+            "ADD",
+            "COPY",
+            "ENTRYPOINT",
+            "VOLUME",
+            "USER",
+            "WORKDIR",
+            "ARG",
+            "ONBUILD",
+            "HEALTHCHECK",
+            "SHELL",
         ],
         _ => &[],
     }
@@ -142,7 +242,16 @@ fn builtins(lang: Language) -> &'static [&'static str] {
             "String", "Vec", "Option", "Result", "Box", "Some", "None", "Ok", "Err", "u8", "u16",
             "u32", "u64", "usize", "i32", "i64", "f32", "f64", "bool", "str", "char",
         ],
-        Language::Sql => &["INT", "INTEGER", "VARCHAR", "TEXT", "BOOLEAN", "TIMESTAMP", "SERIAL", "UUID"],
+        Language::Sql => &[
+            "INT",
+            "INTEGER",
+            "VARCHAR",
+            "TEXT",
+            "BOOLEAN",
+            "TIMESTAMP",
+            "SERIAL",
+            "UUID",
+        ],
         _ => &[],
     }
 }
@@ -160,13 +269,18 @@ fn lex(line: &str, lang: Language) -> Vec<Span> {
         let c = chars[i];
 
         // ${placeholder}
-        if c == '$' && i + 1 < chars.len() && chars[i + 1] == '{' {
-            if let Some(end) = find_char(&chars, i + 2, '}') {
-                let text: String = chars[i..=end].iter().collect();
-                spans.push(Span { text, kind: TokenKind::Placeholder });
-                i = end + 1;
-                continue;
-            }
+        if c == '$'
+            && i + 1 < chars.len()
+            && chars[i + 1] == '{'
+            && let Some(end) = find_char(&chars, i + 2, '}')
+        {
+            let text: String = chars[i..=end].iter().collect();
+            spans.push(Span {
+                text,
+                kind: TokenKind::Placeholder,
+            });
+            i = end + 1;
+            continue;
         }
 
         // string literal
@@ -184,25 +298,35 @@ fn lex(line: &str, lang: Language) -> Vec<Span> {
                 i += 1; // include the closing quote
             }
             let text: String = chars[start..i].iter().collect();
-            spans.push(Span { text, kind: TokenKind::StringLit });
+            spans.push(Span {
+                text,
+                kind: TokenKind::StringLit,
+            });
             continue;
         }
 
         // number
         if c.is_ascii_digit() {
             let start = i;
-            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_') {
+            while i < chars.len()
+                && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_')
+            {
                 i += 1;
             }
             let text: String = chars[start..i].iter().collect();
-            spans.push(Span { text, kind: TokenKind::Number });
+            spans.push(Span {
+                text,
+                kind: TokenKind::Number,
+            });
             continue;
         }
 
         // identifier (letters, digits, _, -)
         if c.is_alphabetic() || c == '_' {
             let start = i;
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-') {
+            while i < chars.len()
+                && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-')
+            {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
@@ -224,7 +348,10 @@ fn lex(line: &str, lang: Language) -> Vec<Span> {
         let start = i;
         i += 1;
         let text: String = chars[start..i].iter().collect();
-        spans.push(Span { text, kind: TokenKind::Plain });
+        spans.push(Span {
+            text,
+            kind: TokenKind::Plain,
+        });
     }
     spans
 }
@@ -238,11 +365,11 @@ fn find_char(chars: &[char], from: usize, target: char) -> Option<usize> {
 fn coalesce(spans: &mut Vec<Span>) {
     let mut out: Vec<Span> = Vec::with_capacity(spans.len());
     for s in spans.drain(..) {
-        if let Some(last) = out.last_mut() {
-            if last.kind == s.kind {
-                last.text.push_str(&s.text);
-                continue;
-            }
+        if let Some(last) = out.last_mut()
+            && last.kind == s.kind
+        {
+            last.text.push_str(&s.text);
+            continue;
         }
         out.push(s);
     }
@@ -260,7 +387,11 @@ mod tests {
     #[test]
     fn placeholder_is_recognised_in_any_language() {
         let spans = highlight_line("echo ${name}", Language::PlainText);
-        assert!(spans.iter().any(|s| s.kind == TokenKind::Placeholder && s.text == "${name}"));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == TokenKind::Placeholder && s.text == "${name}")
+        );
     }
 
     #[test]
@@ -287,13 +418,21 @@ mod tests {
     fn sql_keywords_upper_and_string() {
         let spans = highlight_line("SELECT * FROM users WHERE name = 'x'", Language::Sql);
         assert!(kinds(&spans).contains(&TokenKind::Keyword));
-        assert!(spans.iter().any(|s| s.kind == TokenKind::StringLit && s.text == "'x'"));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == TokenKind::StringLit && s.text == "'x'")
+        );
     }
 
     #[test]
     fn number_literal_is_number_kind() {
         let spans = highlight_line("let x = 42", Language::Rust);
-        assert!(spans.iter().any(|s| s.kind == TokenKind::Number && s.text == "42"));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == TokenKind::Number && s.text == "42")
+        );
     }
 
     #[test]

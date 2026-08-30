@@ -1,25 +1,20 @@
 //! Interrupt-aware utterance queue.
 //!
-//! The screen reader is *chatty*: a fast Tab through a toolbar can enqueue a
-//! dozen focus-narration utterances in the time it takes to speak one. Naively
-//! speaking them all is unusable — by the time "Save button" finishes the user
-//! has moved on five times. The queue exists to make that sane:
+//! The screen reader is *chatty*: a fast Tab through a toolbar can enqueue a dozen
+//! focus-narration utterances in the time it takes to speak one. Naively speaking them all
+//! is unusable, so the queue exists to make it sane:
 //!
-//! * An **interrupting** utterance ([`Utterance::interrupt`]) clears all pending
-//!   work of *equal or lower* significance, so the latest focus change wins and
-//!   stale narration is dropped — *but* a queued [`Priority::Important`] (an
-//!   error / permission prompt) survives a lower-priority interrupt.
+//! * An **interrupting** utterance ([`Utterance::interrupt`]) clears all pending work of
+//!   *equal or lower* significance, so the latest focus change wins — *but* a queued
+//!   [`Priority::Important`] (error / permission prompt) survives a lower-priority interrupt.
 //! * A **non-interrupting** utterance is appended; it waits its turn.
-//! * The queue is engine-agnostic: it just produces an ordered list of
-//!   [`Utterance`]s to hand to a [`Speaker`]. The decision of *when* to pull the
-//!   next one (on the daemon's "speech finished" event, or on a timer for the
-//!   subprocess backend) belongs to the reader's run loop, not here. This keeps
-//!   the queue trivially unit-testable without a daemon.
+//! * The queue is engine-agnostic: it just produces an ordered list of [`Utterance`]s to hand
+//!   to a [`Speaker`]. When to pull the next one belongs to the reader's run loop, not here —
+//!   which keeps the queue trivially unit-testable without a daemon.
 //!
 //! Coalescing rule, precisely: when pushing utterance `U`:
-//!   1. If `U.interrupt`, drop every *pending* utterance `P` with
-//!      `P.priority <= U.priority`. (Equal priority is dropped — the newer focus
-//!      change supersedes the older one. Strictly-higher pending stays.)
+//!   1. If `U.interrupt`, drop every *pending* utterance `P` with `P.priority <= U.priority`
+//!      (equal priority drops too — the newer focus change supersedes the older one).
 //!   2. Append `U`.
 //!
 //! [`Priority`]: crate::Priority
@@ -29,11 +24,9 @@ use std::collections::VecDeque;
 
 use crate::speaker::{Speaker, Utterance};
 
-/// An ordered, interrupt-aware buffer of [`Utterance`]s.
-///
-/// Holds no [`Speaker`] itself; call [`SpeechQueue::drive`] (or pull manually
-/// with [`SpeechQueue::pop`]) to flush it into a backend. This separation means
-/// the queue is pure data — fully testable without any TTS engine.
+/// An ordered, interrupt-aware buffer of [`Utterance`]s. Holds no [`Speaker`] itself; call
+/// [`SpeechQueue::drive`] (or pull manually with [`SpeechQueue::pop`]) to flush it into a
+/// backend — the queue is pure data, fully testable without any TTS engine.
 #[derive(Debug, Default, Clone)]
 pub struct SpeechQueue {
     pending: VecDeque<Utterance>,
@@ -47,21 +40,19 @@ impl SpeechQueue {
         }
     }
 
-    /// Enqueue an utterance, applying the interrupt/coalesce rule above.
-    ///
-    /// Returns `true` if this push interrupted/cleared pending work (the caller
-    /// should then issue a `stop()` to the backend to cut off in-progress
-    /// speech), `false` if it was a plain append.
+    /// Enqueue an utterance, applying the interrupt/coalesce rule above. Returns `true` if this
+    /// push interrupted/cleared pending work (the caller should then `stop()` the backend to cut
+    /// off in-progress speech), `false` if it was a plain append.
     pub fn push(&mut self, utterance: Utterance) -> bool {
         let interrupted = utterance.interrupt;
         if interrupted {
-            // Drop pending work of equal-or-lower significance; strictly-higher
-            // (e.g. a queued Important error) survives.
+            // Drop pending work of equal-or-lower significance; strictly-higher (e.g. a queued
+            // Important error) survives.
             self.pending.retain(|p| p.priority > utterance.priority);
         }
         self.pending.push_back(utterance);
-        // An interrupting push always signals the caller to stop in-flight
-        // speech (the daemon/subprocess may already be mid-utterance).
+        // An interrupting push always signals the caller to stop in-flight speech (the
+        // daemon/subprocess may already be mid-utterance).
         interrupted
     }
 
@@ -95,19 +86,15 @@ impl SpeechQueue {
         self.pending.is_empty()
     }
 
-    /// Flush the entire queue into `speaker`, in order.
-    ///
-    /// For the subprocess/null backends (where `speak` blocks or is synchronous)
-    /// this speaks everything. For the speech-dispatcher backend (which is async
-    /// daemon-side) this enqueues everything at once; the daemon serializes. The
-    /// reader's run loop typically prefers [`SpeechQueue::pop`] one-at-a-time so
-    /// it can keep interrupting, but `drive` is handy for tests and for "say all"
-    /// where no further interruption is expected.
+    /// Flush the entire queue into `speaker`, in order. For the subprocess/null backends
+    /// (synchronous `speak`) this speaks everything; for speech-dispatcher (async daemon-side)
+    /// this enqueues everything at once and the daemon serializes. The reader's run loop
+    /// typically prefers [`SpeechQueue::pop`] one-at-a-time to keep interrupting, but `drive` is
+    /// handy for tests and "say all" where no further interruption is expected.
     pub fn drive(&mut self, speaker: &mut dyn Speaker) {
         while let Some(u) = self.pop() {
-            // The first popped utterance carries its own interrupt flag; the
-            // rest within a single drive are continuations and should not
-            // re-interrupt each other.
+            // The first popped utterance carries its own interrupt flag; the rest within a single
+            // drive are continuations and should not re-interrupt each other.
             speaker.speak_utterance(u);
         }
     }

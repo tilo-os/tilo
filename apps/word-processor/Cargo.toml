@@ -1,7 +1,9 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "word-processor"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "CRDT rich-text word processor: a ui app over qdoc with .odt support."
 
 [lib]
@@ -12,8 +14,20 @@ path = "src/lib.rs"
 name = "word-processor"
 path = "src/main.rs"
 
+[features]
+# Build the word processor as a thin app. Enabling this puts the shared
+# toolkit dylib (`runtime-dylib` -> libruntime_dylib.so) on the link
+# path; combined with `-C prefer-dynamic --profile thin-app` rustc then
+# serves `ui` (and its wgpu / vello / cosmic-text / automerge graph) and
+# libstd out of that shared object instead of baking a private copy into
+# this binary. Off by default -- a normal `cargo build --release -p
+# word-processor` is an unchanged static build.
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
 ui = { path = "../../ui", features = ["portal"] }
+# Only pulled in under `--features thin`; see the `thin` feature above.
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 qos-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 spellcheck = { path = "../../crates/text/spellcheck" }
@@ -34,3 +48,10 @@ unic-langid.workspace = true
 # Host-native image open through the XDG Desktop Portal (FileChooser). The
 # portal round-trip runs on a worker thread; the chosen path comes back over a
 # channel drained each frame — the UI thread never blocks.
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

@@ -75,7 +75,7 @@ let mut carol_group =
 `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` — the canonical MLS
 small-suite. Picked because:
 
-- Ed25519 aligns with the rest of qOS (identity, FROST, libp2p).
+- Ed25519 aligns with the rest of qOS (identity, FROST, Iroh).
 - X25519 / AES-128-GCM / SHA-256 are universally implemented; no
   P-384 dependency for human-scale groups.
 - Single fixed suite eliminates downgrade attacks and keeps the test

@@ -30,9 +30,7 @@ fn editing_a_page_through_the_block_editor_persists_to_disk() {
     // they came from a key press or a programmatic split.
     {
         let panel = app.main_panel_mut();
-        panel.editor_mut().blocks_mut()[0]
-            .line
-            .set_focus(true);
+        panel.editor_mut().blocks_mut()[0].line.set_focus(true);
         panel.editor_mut().blocks_mut()[0]
             .line
             .set_text("# Hello\n");
@@ -54,7 +52,7 @@ fn editing_a_page_through_the_block_editor_persists_to_disk() {
     let body = read_body(tmp.path(), welcome_id);
     // After our edit the body should be "# Hello\n" turned into
     // markdown by the editor's serializer.
-    assert!(body.contains("# Hello"), "got body: {:?}", body);
+    assert!(body.contains("# Hello"), "got body: {body:?}");
 }
 
 #[test]
@@ -79,9 +77,7 @@ fn split_and_save_round_trip_through_disk() {
         let editor = panel.editor_mut();
         editor.blocks_mut()[0].line.set_text("First");
         editor.blocks_mut()[0].line.set_focus(true);
-        editor.blocks_mut()[0]
-            .line
-            .set_cursor_pos("First".len());
+        editor.blocks_mut()[0].line.set_cursor_pos("First".len());
         editor.split_at_cursor(0, "First".len());
         editor.blocks_mut()[1].line.set_text("Second");
         editor.force_dirty_for_test();

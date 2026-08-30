@@ -66,7 +66,6 @@ tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 
 # Optional: enabled only by the `streaming` / `audio` / `lyrics` / `p2p`
 # features above. Versions pinned to match the workspace lock so no extra
@@ -89,3 +88,6 @@ tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"
 # resolution. Embeds `rquickjs` for signature deobfuscation — no ffmpeg /
 # yt-dlp / JS runtime binary. Gated behind `live`; off the `--shots` path.
 rustypipe = { workspace = true, optional = true, default-features = true }
+
+[lints]
+workspace = true

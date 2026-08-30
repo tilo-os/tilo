@@ -30,7 +30,7 @@
 //! would only add an unused field.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
@@ -58,7 +58,6 @@ pub enum TubeAction {
     AddToQueue { video_id: String },
     /// Like a comment (addressed by its video + ordered index).
     LikeComment { video_id: String, index: usize },
-    /// Post a reply to a comment.
     ReplyToComment {
         video_id: String,
         index: usize,
@@ -144,10 +143,25 @@ pub fn register(registry: &mut ActionRegistry) {
 }
 
 /// Encode a Tube action; used by the resource specs (and their prompted
-/// builders). Serialization of this enum cannot fail, so the panic is
-/// unreachable — kept explicit rather than swallowing a would-be bug.
+/// builders). Serialization of this enum cannot fail — every variant holds
+/// only `String`/`usize` fields — so the panic is unreachable; kept explicit
+/// rather than swallowing a would-be bug. `ActionSpec::prompted`'s `build`
+/// closure must return `EncodedAction` directly (not `Result`), so there is
+/// no error path to propagate to instead.
 fn encode(action: &TubeAction) -> EncodedAction {
-    EncodedAction::encode(TUBE_ACTION_TYPE, action).expect("TubeAction is always serializable")
+    #[allow(clippy::expect_used)]
+    let encoded =
+        EncodedAction::encode(TUBE_ACTION_TYPE, action).expect("TubeAction is always serializable");
+    encoded
+}
+
+/// `ActionSpec::immediate` for a [`TubeAction`]. Every variant holds only
+/// `String`/`usize` fields, so encoding cannot fail — see [`encode`].
+fn immediate_spec(id: &str, label: &str, action: &TubeAction) -> ActionSpec {
+    #[allow(clippy::expect_used)]
+    let spec = ActionSpec::immediate(id, label, TUBE_ACTION_TYPE, action)
+        .expect("TubeAction always serializes");
+    spec
 }
 
 /// One-line comment preview for the palette label.
@@ -181,27 +195,23 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
     );
 
     root = root.with_action(
-        ActionSpec::immediate(
+        immediate_spec(
             "like",
             "Like video",
-            TUBE_ACTION_TYPE,
             &TubeAction::LikeVideo {
                 video_id: video_id.clone(),
             },
         )
-        .expect("encode like")
         .with_description("Toggle the like on this video"),
     );
     root = root.with_action(
-        ActionSpec::immediate(
+        immediate_spec(
             "queue",
             "Add to queue",
-            TUBE_ACTION_TYPE,
             &TubeAction::AddToQueue {
                 video_id: video_id.clone(),
             },
         )
-        .expect("encode queue")
         .with_description("Append to the shared watch queue"),
     );
 
@@ -213,18 +223,14 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
             "tube.comment",
             comment_label(&comment.author, &comment.text),
         )
-        .with_action(
-            ActionSpec::immediate(
-                "like",
-                "Like comment",
-                TUBE_ACTION_TYPE,
-                &TubeAction::LikeComment {
-                    video_id: vid.clone(),
-                    index,
-                },
-            )
-            .expect("encode comment like"),
-        )
+        .with_action(immediate_spec(
+            "like",
+            "Like comment",
+            &TubeAction::LikeComment {
+                video_id: vid.clone(),
+                index,
+            },
+        ))
         .with_action(ActionSpec::prompted(
             "reply",
             "Reply to comment",
@@ -259,7 +265,7 @@ mod tests {
     use qos_actions::{ActionRegistry, LocalTransport};
     use ui::widget::Widget;
 
-    /// A TubeApp sitting on the watch page of a sample video that has comments.
+    /// A `TubeApp` sitting on the watch page of a sample video that has comments.
     fn watching() -> (TubeApp, String, usize) {
         let mut model = crate::sample::model();
         let v = model
@@ -280,7 +286,7 @@ mod tests {
         r
     }
 
-    /// (b) Ctrl+K on tube lists the open video + its comment resources and their
+    /// Ctrl+K on tube lists the open video + its comment resources and their
     /// actions. Drives the real resource-collection hook (`Widget::resources`)
     /// and the real `ui::ActionPalette`.
     #[test]
@@ -295,9 +301,16 @@ mod tests {
         assert_eq!(video.kind, "tube.video");
         let video_actions: Vec<&str> = video.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(video_actions.contains(&"like"), "video exports like");
-        assert!(video_actions.contains(&"queue"), "video exports add-to-queue");
+        assert!(
+            video_actions.contains(&"queue"),
+            "video exports add-to-queue"
+        );
 
-        assert_eq!(video.children.len(), n_comments, "each comment is a child resource");
+        assert_eq!(
+            video.children.len(),
+            n_comments,
+            "each comment is a child resource"
+        );
         let c0 = &video.children[0];
         assert_eq!(c0.kind, "tube.comment");
         let comment_actions: Vec<&str> = c0.actions.iter().map(|a| a.id.as_str()).collect();
@@ -330,9 +343,8 @@ mod tests {
             (Value::Object(ObjType::Map), id) => id,
             _ => return None,
         };
-        match doc.get(&sub, key).ok()?? {
-            (v, _) => v.to_bool(),
-        }
+        let (v, _) = doc.get(&sub, key).ok()??;
+        v.to_bool()
     }
 
     /// Select a palette row by a substring of its label, then activate it (the
@@ -357,7 +369,7 @@ mod tests {
             .expect("dispatch succeeded")
     }
 
-    /// (c) Executing the "Like video" action mutates the CRDT.
+    /// Executing the "Like video" action mutates the CRDT.
     #[test]
     fn executing_like_action_mutates_crdt() {
         let (app, vid, _) = watching();
@@ -371,7 +383,11 @@ mod tests {
         let mut tx = LocalTransport::new();
         let d = run_row(&mut palette, &mut doc, &registry(), &mut tx, "Like video");
         assert!(matches!(d, qos_actions::Dispatched::AppliedLocal(_)));
-        assert_eq!(read_bool(&doc, "likes", &vid), Some(true), "like written to CRDT");
+        assert_eq!(
+            read_bool(&doc, "likes", &vid),
+            Some(true),
+            "like written to CRDT"
+        );
         assert_eq!(tx.replicated.len(), 1, "replicated once");
     }
 
@@ -403,6 +419,9 @@ mod tests {
             _ => panic!("queue list"),
         };
         assert_eq!(doc.length(&queue), 1);
-        assert_eq!(doc.get(&queue, 0).unwrap().unwrap().0.to_str(), Some(vid.as_str()));
+        assert_eq!(
+            doc.get(&queue, 0).unwrap().unwrap().0.to_str(),
+            Some(vid.as_str())
+        );
     }
 }

@@ -1,10 +1,8 @@
-//! Shared support modules for shell integration tests.
-//!
-//! Pulled into individual test binaries via `mod support;`. Keeping
-//! `offscreen.rs` here (rather than under `ui/tests/support/`)
-//! means the shell's e2e harness can live in `shell/tests/` and
-//! still reach a headless renderer, without depending on a helper that
-//! the `quick-ui` crate doesn't export.
+//! Shared support modules for shell integration tests, pulled into
+//! individual test binaries via `mod support;`. `offscreen.rs` lives here
+//! (rather than under `ui/tests/support/`) so the shell's e2e harness can
+//! reach a headless renderer without depending on a helper `quick-ui`
+//! doesn't export.
 
 pub mod offscreen;
 pub mod snapshot;

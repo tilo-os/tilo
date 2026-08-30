@@ -1,41 +1,22 @@
 //! Clipboard backends — how a `ui` process actually reaches the selection.
 //!
-//! [`crate::text_selection`] exposes the four verbs every widget uses
-//! (`clipboard_copy`, `clipboard_paste`, and the primary-selection pair). This
-//! module is what those verbs resolve to at runtime, and there are three
-//! possibilities:
+//! [`crate::text_selection`]'s four verbs resolve to one of three backends:
+//! a host-installed one (the compositor hosts several apps in-process and
+//! mirrors its own selection for them), [`WaylandClipboard`] (every sandboxed
+//! app, over its own `wl_data_device`/`zwp_primary_selection_device_v1`
+//! connection), or an in-process fallback when neither exists.
 //!
-//! 1. **A host-installed backend.** The compositor hosts `terminal`,
-//!    `file-explorer`, the notes and editor apps and all of its own chrome
-//!    *inside its own process*. Those widgets have no Wayland client
-//!    connection to copy over — they are the server. The compositor installs a
-//!    backend that reads and writes its selection mirror directly.
-//! 2. **The Wayland selection**, via [`WaylandClipboard`]. This is the path
-//!    every sandboxed `ui` app takes. It speaks `wl_data_device` and
-//!    `zwp_primary_selection_device_v1` on the app's *own* connection, so the
-//!    compositor sees a normal focused client asking for the clipboard.
-//! 3. **An in-process buffer**, when neither of the above exists — a unit
-//!    test, a headless scenario run, an X11 session with no clipboard owner.
+//! The fallback is the bug this module exists to fix — it round-trips inside
+//! one process, so a test passes while cross-process copy is silently dead —
+//! so it now announces itself: the first fallback copy or paste logs a
+//! warning naming it.
 //!
-//! The third case is the one that caused the bug this module exists to fix. It
-//! round-trips inside one process, so a test passes and a demo looks right
-//! while cross-process copy is silently dead. It is still here, because tests
-//! need it, but it now announces itself: the first time a copy or paste
-//! resolves to the fallback the process logs a warning naming it. A clipboard
-//! that does not work must never again be indistinguishable from one that
-//! does.
-//!
-//! ## Why not `arboard` on Wayland
-//!
-//! `arboard`'s Wayland backend is `wl-clipboard-rs`, which requires
-//! `zwlr_data_control_manager_v1` — the clipboard-*manager* protocol. qOS does
-//! not offer that global to sandboxed apps, deliberately: it exposes every
-//! selection on the seat to any client that binds it, with no focus check, and
-//! the app fleet routinely copies TOTP codes and recovery phrases. (The
-//! reasoning lives in `shell/src/compositor/selection.rs`.) `wl_data_device`
-//! is the protocol an *application* is supposed to use, it is focus-gated, and
-//! it is what [`WaylandClipboard`] speaks. `arboard` is kept only for X11,
-//! where it is the right answer.
+//! `arboard`'s Wayland path needs `zwlr_data_control_manager_v1`, a
+//! clipboard-*manager* protocol qOS deliberately withholds from sandboxed
+//! apps: it exposes every selection on the seat with no focus check, and the
+//! fleet copies TOTP codes and recovery phrases (see
+//! `shell/src/compositor/selection.rs`). [`WaylandClipboard`]'s
+//! `wl_data_device` is focus-gated instead; `arboard` is kept only for X11.
 
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -91,9 +72,7 @@ fn backend_slot() -> &'static RwLock<Option<Arc<dyn ClipboardBackend>>> {
 /// Install `backend` as this process's clipboard, replacing any previous one.
 ///
 /// Called by the compositor for its in-process widgets, and by
-/// [`crate::app`] for a windowed app once it has a Wayland display. An app
-/// that wants a different clipboard entirely (a remote session, a test double)
-/// can call this before its window comes up.
+/// [`crate::app`] for a windowed app once it has a Wayland display.
 pub fn install_clipboard_backend(backend: Arc<dyn ClipboardBackend>) {
     let name = backend.name();
     if let Ok(mut slot) = backend_slot().write() {
@@ -126,10 +105,6 @@ pub fn warn_fallback_once(op: &str) {
     });
 }
 
-// -----------------------------------------------------------------------------
-// The Wayland client backend
-// -----------------------------------------------------------------------------
-
 /// `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
 /// Wayland connection.
 ///
@@ -160,9 +135,7 @@ impl WaylandClipboard {
     /// long as the event loop, which outlives every widget that could copy.
     pub unsafe fn new(display_ptr: *mut std::ffi::c_void) -> Self {
         Self {
-            inner: std::sync::Mutex::new(unsafe {
-                smithay_clipboard::Clipboard::new(display_ptr)
-            }),
+            inner: std::sync::Mutex::new(unsafe { smithay_clipboard::Clipboard::new(display_ptr) }),
         }
     }
 }
@@ -177,10 +150,8 @@ impl ClipboardBackend for WaylandClipboard {
             ClipboardTarget::Clipboard => inner.store(text.to_string()),
             ClipboardTarget::Primary => inner.store_primary(text.to_string()),
         }
-        // `store` is a queued request, not a round trip: it cannot report
-        // whether the compositor accepted the selection. A failure surfaces on
-        // the next read instead, which is the same contract every Wayland
-        // clipboard has.
+        // `store` is a queued request, not a round trip — a failure surfaces
+        // on the next read instead, the same contract every Wayland clipboard has.
         true
     }
 
@@ -192,9 +163,8 @@ impl ClipboardBackend for WaylandClipboard {
         };
         match read {
             Ok(text) => Some(text),
-            // An empty selection and a failed transfer are both "nothing to
-            // paste" from a widget's point of view; the distinction is only
-            // useful in a log.
+            // Empty and failed both read as "nothing to paste" to a widget;
+            // the distinction is only useful in a log.
             Err(e) => {
                 tracing::debug!(target: "ui::clipboard", error = %e, ?target, "clipboard read returned nothing");
                 None
@@ -207,12 +177,8 @@ impl ClipboardBackend for WaylandClipboard {
     }
 }
 
-/// Install [`WaylandClipboard`] for this process if it is running on Wayland.
-///
 /// Returns `true` when a Wayland backend was installed. A no-op when a backend
-/// is already installed (the compositor's own, or one the app chose), when the
-/// process is on X11, or when the display handle is not a Wayland one — in all
-/// of those cases the caller's existing resolution is already correct.
+/// is already installed, on X11, or when the display handle is not Wayland.
 #[cfg(target_os = "linux")]
 pub fn install_wayland_backend_from_display(
     handle: &impl winit::raw_window_handle::HasDisplayHandle,
@@ -280,8 +246,14 @@ mod tests {
         let b = RecordingBackend::default();
         b.set_text(ClipboardTarget::Clipboard, "copied");
         b.set_text(ClipboardTarget::Primary, "selected");
-        assert_eq!(b.text(ClipboardTarget::Clipboard).as_deref(), Some("copied"));
-        assert_eq!(b.text(ClipboardTarget::Primary).as_deref(), Some("selected"));
+        assert_eq!(
+            b.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("copied")
+        );
+        assert_eq!(
+            b.text(ClipboardTarget::Primary).as_deref(),
+            Some("selected")
+        );
     }
 
     /// A backend that carries only text must say so rather than pretending an

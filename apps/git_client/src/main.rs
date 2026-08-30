@@ -10,15 +10,31 @@
 //!                              overlay flap over its scrim, exercising the
 //!                              responsive collapse.
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -76,7 +92,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, git_client::app_root(), "dev.qos.git-client"));
+        std::process::exit(ui::headless::run(
+            spec,
+            git_client::app_root(),
+            "dev.qos.git-client",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.git-client");
@@ -95,9 +115,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// `git_client::repo::commit` — the same functions the UI's Stage-all and
 /// Commit buttons invoke.
 fn stage_and_commit(message: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::var("GIT_CLIENT_REPO")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let path = std::env::var("GIT_CLIENT_REPO").map_or_else(
+        |_| std::env::current_dir().unwrap_or_else(|_| ".".into()),
+        std::path::PathBuf::from,
+    );
     git_client::repo::stage_all(&path)?;
     let id = git_client::repo::commit(&path, message)?;
     println!("git_client: committed {id} to {}", path.display());
@@ -120,7 +141,7 @@ fn parse_flag_value(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),

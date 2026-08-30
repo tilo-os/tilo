@@ -1,36 +1,28 @@
 //! Distributed Key Generation (DKG) state machine.
 //!
-//! FROST DKG is a three-round protocol where each participant
-//! contributes a polynomial commitment in round 1, exchanges
-//! per-recipient secret shares in round 2, and verifies + assembles
-//! the final long-lived key material in round 3. The output is a
-//! `KeyPackage` per participant plus a single shared
-//! `PublicKeyPackage` that encodes the group verifying key.
+//! FROST DKG is a three-round protocol: round 1 broadcasts a polynomial
+//! commitment, round 2 exchanges per-recipient secret shares, round 3
+//! verifies + assembles the final key material. Output is a
+//! `KeyPackage` per participant plus a shared `PublicKeyPackage`
+//! encoding the group verifying key.
 //!
-//! We expose the state machine as [`DkgSession`], a per-device
-//! handle that advances through `Round1 → Round2 → Complete`. The
-//! orchestrator (a higher-level subsystem in `shell/`) is
-//! responsible for shuttling [`EnrolmentRound1`] / [`EnrolmentRound2`]
-//! messages between devices over its preferred transport (libp2p
-//! direct-message, in the production path).
+//! [`DkgSession`] is a per-device handle advancing `Round1 → Round2 →
+//! Complete`; a higher-level orchestrator (in `shell/`) shuttles
+//! [`EnrolmentRound1`]/[`EnrolmentRound2`] messages between devices over
+//! its transport (Iroh direct-message in production).
 //!
-//! ## Why a session struct rather than free functions
-//!
-//! The intermediate "secret packages" from FROST round 1 / round 2
-//! must remain in memory between rounds. They are *not* sent over
-//! the wire — only the public packages are — but losing them
-//! aborts the protocol. A session struct binds them to the
-//! lifecycle of one DKG run so the caller doesn't have to thread
-//! them through several function signatures.
+//! A session struct (not free functions) because FROST's intermediate
+//! secret packages must stay in memory between rounds — never sent over
+//! the wire, but losing them aborts the protocol — so binding them to
+//! one DKG run's lifecycle avoids threading them through several
+//! function signatures.
 //!
 //! ## Wire types
 //!
-//! [`EnrolmentRound1`] and [`EnrolmentRound2`] are the only types
-//! that cross device boundaries. Both serialise via postcard for
-//! consistency with the rest of the qOS crypto stack
-//! (`qos-collab-types::canonical_bytes`). The byte layout is the
-//! serialised `frost-ed25519` round package wrapped in a small
-//! header with the sender's share index.
+//! [`EnrolmentRound1`]/[`EnrolmentRound2`] are the only types crossing
+//! device boundaries, serialised via postcard for consistency with the
+//! rest of the qOS crypto stack: the frost-ed25519 round package wrapped
+//! in a small header carrying the sender's share index.
 
 use std::collections::BTreeMap;
 
@@ -48,30 +40,25 @@ use collab_types::Ed25519PublicKey;
 use crate::errors::ThresholdError;
 use crate::shares::{SecretShare, u16_to_identifier};
 
-/// Round-1 DKG message: sender's polynomial commitment.
-///
-/// Broadcast to every other participant. Carries the serialised
+/// Round-1 DKG message: sender's polynomial commitment, broadcast to
+/// every other participant. Carries the serialised
 /// `frost_ed25519::keys::dkg::round1::Package` plus the sender's
-/// 1-indexed share number so recipients can key the message into
-/// a `BTreeMap<Identifier, …>` without out-of-band info.
+/// 1-indexed share number so recipients can key it into a
+/// `BTreeMap<Identifier, …>` without out-of-band info.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EnrolmentRound1 {
     /// 1-indexed share number of the sender.
     pub from_share_index: u16,
-    /// Serialised `frost_ed25519::keys::dkg::round1::Package`.
-    /// Opaque to callers; we round-trip through
-    /// `frost-ed25519`'s own serializer.
+    /// Serialised `frost_ed25519::keys::dkg::round1::Package`, opaque to
+    /// callers — round-tripped through frost-ed25519's own serializer.
     #[serde(with = "serde_bytes")]
     pub package_bytes: Vec<u8>,
 }
 
 /// Round-2 DKG message: sender's per-recipient secret share.
-///
-/// Unlike round 1 these are *point-to-point*: each recipient
-/// receives a different round-2 message. The `to_share_index`
-/// field disambiguates so a coordinator can route. Both
-/// `from_share_index` and `to_share_index` are included for
-/// audit-log clarity.
+/// Point-to-point unlike round 1 — each recipient gets a different
+/// message. `to_share_index` disambiguates for coordinator routing;
+/// `from_share_index` is kept too for audit-log clarity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EnrolmentRound2 {
     /// 1-indexed share number of the sender.
@@ -83,12 +70,10 @@ pub struct EnrolmentRound2 {
     pub package_bytes: Vec<u8>,
 }
 
-/// A single device's view of one DKG run.
-///
-/// Constructed via [`DkgSession::start`]. Internal phase advances
-/// through `Round1Pending → Round2Pending → Complete`. Each
-/// transition is fallible: a malformed peer message or a wrong
-/// round count produces [`ThresholdError`].
+/// A single device's view of one DKG run, constructed via
+/// [`DkgSession::start`]. Phase advances `Round1Pending → Round2Pending
+/// → Complete`; each transition is fallible, returning
+/// [`ThresholdError`] on a malformed peer message or wrong round count.
 pub struct DkgSession {
     /// This device's 1-indexed share number.
     share_index: u16,
@@ -100,33 +85,26 @@ pub struct DkgSession {
     phase: DkgPhase,
 }
 
-// frost-core's `KeyPackage` + `PublicKeyPackage` are large
-// (~584 bytes combined) compared to the round-1 / round-2
-// secrets. Boxing the Complete variant to balance variant sizes
-// would force a heap allocation on every DKG run — and DkgPhase
-// only ever lives on the stack inside a single DkgSession. We
-// keep the inline layout for clarity; clippy's
-// `large_enum_variant` is a code-size hint, not a correctness
-// issue here.
+// frost-core's `KeyPackage` + `PublicKeyPackage` are large (~584
+// bytes) vs. the round secrets; not boxed to balance sizes, since
+// `DkgPhase` only ever lives on the stack inside one `DkgSession` and
+// boxing would force a heap alloc per DKG run.
 #[allow(clippy::large_enum_variant)]
 enum DkgPhase {
-    /// Round 1 emitted; awaiting other participants' Round 1
-    /// packages.
+    /// Round 1 emitted; awaiting other participants' Round 1 packages.
     Round1Sent {
         /// FROST round-1 secret; must persist for round 2.
         secret: Round1Secret,
     },
-    /// Round 2 emitted; awaiting other participants' Round 2
-    /// packages.
+    /// Round 2 emitted; awaiting other participants' Round 2 packages.
     Round2Sent {
         /// FROST round-2 secret; must persist for round 3.
         secret: Round2Secret,
-        /// Cached round-1 packages from peers — needed again in
-        /// part3 to verify each peer's contribution.
+        /// Cached round-1 packages from peers — needed again in part3 to verify
+        /// each peer's contribution.
         round1_from_peers: BTreeMap<frost_ed25519::Identifier, Round1Package>,
     },
-    /// Protocol complete. Holding the result here is optional;
-    /// callers normally drain it via `DkgSession::finish`.
+    /// Protocol complete; callers normally drain via `DkgSession::finish`.
     Complete {
         /// Per-participant key material for this device.
         key_package: KeyPackage,
@@ -136,15 +114,11 @@ enum DkgPhase {
 }
 
 impl DkgSession {
-    /// Start a DKG run. Returns the session handle plus the
-    /// caller's round-1 broadcast message.
-    ///
-    /// Parameters:
-    /// - `share_index` — this device's 1-indexed slot. The caller
-    ///   chooses; the orchestrator coordinates so all participants
-    ///   pick distinct values in `1..=total`.
-    /// - `threshold` — `t` in t-of-n. Must satisfy `1 ≤ t ≤ n`.
-    /// - `total` — `n`. Must be ≥ 1.
+    /// Start a DKG run, returning the session handle plus this device's
+    /// round-1 broadcast. `share_index` is this device's 1-indexed slot
+    /// (caller-chosen; the orchestrator ensures all participants pick
+    /// distinct values in `1..=total`); `threshold` is `t` (1 ≤ t ≤ n);
+    /// `total` is `n` (≥ 1).
     pub fn start<R: CryptoRng + RngCore>(
         share_index: u16,
         threshold: u16,
@@ -171,20 +145,16 @@ impl DkgSession {
         ))
     }
 
-    /// Process round-1 messages from every other participant,
-    /// produce this device's round-2 messages.
-    ///
-    /// The returned map is keyed by recipient share index so the
-    /// coordinator can route each entry to its intended device.
-    /// The caller must ensure `others` contains exactly one
-    /// message from every OTHER participant (i.e. `total - 1`
-    /// entries) and none from `self.share_index`.
+    /// Process round-1 messages from every other participant, producing
+    /// this device's round-2 messages, keyed by recipient share index.
+    /// `others` must contain exactly one message from every OTHER
+    /// participant (`total - 1` entries), none from `self.share_index`.
     pub fn receive_round1(
         &mut self,
         others: &[EnrolmentRound1],
     ) -> Result<BTreeMap<u16, EnrolmentRound2>, ThresholdError> {
-        // Drain the round-1 secret from the phase; we transition
-        // to Round2Sent at the end.
+        // Drain the round-1 secret from the phase; transition to
+        // Round2Sent at the end.
         let prev = std::mem::replace(
             &mut self.phase,
             DkgPhase::Complete {
@@ -193,14 +163,13 @@ impl DkgSession {
                 public_key_package: dummy_public_key_package_placeholder()?,
             },
         );
-        let r1_secret = match prev {
-            DkgPhase::Round1Sent { secret } => secret,
-            _ => {
-                self.phase = prev;
-                return Err(ThresholdError::DkgStateMisuse(
-                    "receive_round1 called outside Round1Sent",
-                ));
-            }
+        let r1_secret = if let DkgPhase::Round1Sent { secret } = prev {
+            secret
+        } else {
+            self.phase = prev;
+            return Err(ThresholdError::DkgStateMisuse(
+                "receive_round1 called outside Round1Sent",
+            ));
         };
 
         // Decode peer round-1 packages.
@@ -241,17 +210,11 @@ impl DkgSession {
         Ok(outgoing)
     }
 
-    /// Process round-2 messages from every other participant,
-    /// finalise the protocol.
-    ///
-    /// The caller must supply exactly one [`EnrolmentRound2`]
-    /// from every other participant where `to_share_index ==
-    /// self.share_index`. Extra or missing entries return
-    /// `DkgStateMisuse`.
-    pub fn receive_round2(
-        &mut self,
-        others: &[EnrolmentRound2],
-    ) -> Result<(), ThresholdError> {
+    /// Process round-2 messages from every other participant and finalise
+    /// the protocol. Requires exactly one [`EnrolmentRound2`] per other
+    /// participant addressed to `self.share_index`; extra or missing
+    /// entries return `DkgStateMisuse`.
+    pub fn receive_round2(&mut self, others: &[EnrolmentRound2]) -> Result<(), ThresholdError> {
         let prev = std::mem::replace(
             &mut self.phase,
             DkgPhase::Complete {
@@ -272,8 +235,8 @@ impl DkgSession {
             }
         };
 
-        // Decode each peer's round-2 contribution. They must all
-        // be addressed to this device.
+        // Decode each peer's round-2 contribution; all must be addressed to
+        // this device.
         let mut peer_pkgs = BTreeMap::new();
         for msg in others {
             if msg.to_share_index != self.share_index {
@@ -300,11 +263,9 @@ impl DkgSession {
         Ok(())
     }
 
-    /// Drain the completed protocol and return the produced
-    /// `(SecretShare, group_public_key)`.
-    ///
-    /// Fails with `DkgStateMisuse` if the session is not yet in
-    /// the Complete phase. Consumes the session.
+    /// Drain the completed protocol and return `(SecretShare,
+    /// group_public_key)`. Fails with `DkgStateMisuse` if not yet Complete;
+    /// consumes the session.
     pub fn finish(self) -> Result<DkgOutcome, ThresholdError> {
         match self.phase {
             DkgPhase::Complete {
@@ -337,8 +298,8 @@ impl DkgSession {
 pub struct DkgOutcome {
     /// This device's secret share.
     pub share: SecretShare,
-    /// The shared group public key, byte-for-byte compatible with
-    /// a regular Ed25519 verifying key.
+    /// The shared group public key, byte-for-byte compatible with a regular
+    /// Ed25519 verifying key.
     pub group_public_key: Ed25519PublicKey,
     /// `t` in t-of-n.
     pub threshold: u16,
@@ -349,12 +310,10 @@ pub struct DkgOutcome {
 }
 
 impl DkgSession {
-    /// Drain the complete protocol state and return the full
-    /// per-device record. Crate-internal because
-    /// `PublicKeyPackage` is a `frost-core` type we deliberately
-    /// keep out of the public surface; the wrapping
-    /// [`crate::identity::ThresholdIdentity`] consumes it via
-    /// this path.
+    /// Drain the complete protocol state into the full per-device record.
+    /// Crate-internal because `PublicKeyPackage` (a `frost-core` type) is
+    /// deliberately kept out of the public surface — only
+    /// [`crate::identity::ThresholdIdentity`] consumes it, via this path.
     pub(crate) fn into_inner_complete(
         self,
     ) -> Result<
@@ -395,24 +354,18 @@ impl DkgSession {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Placeholder helpers — used to satisfy the `std::mem::replace` trick when
-// transitioning DkgPhase variants. They must produce *valid* values because
-// the enum payload type requires a non-`Default` `KeyPackage` /
-// `PublicKeyPackage`. The placeholder is immediately overwritten so the
-// values it returns never leak. We construct them via the trusted-dealer
-// path on a single-signer scheme — cheap, deterministic for a fixed RNG,
-// and never observed by callers.
-//
-// We deliberately do NOT use `Option<…>` for the phase fields because
-// (a) it forces unwraps at every callsite and (b) the placeholder
-// approach mirrors how `std::mem::take` works for non-`Default` types.
+// Placeholder helpers for the `std::mem::replace` trick when
+// transitioning DkgPhase variants — must produce *valid* values
+// because the enum payload requires a non-`Default` `KeyPackage`/
+// `PublicKeyPackage`. Immediately overwritten so the values never
+// leak; constructed via the trusted-dealer path on a single-signer
+// scheme (cheap, deterministic). `Option<…>` is deliberately not
+// used for the phase fields: it would force unwraps at every
+// callsite, whereas this mirrors `std::mem::take` for non-`Default` types.
 
-// FROST requires min_signers ≥ 2 in keygen, so the placeholder
-// is a 2-of-2 generate (the smallest legal config). The
-// placeholder values never leak; they are overwritten by the
-// real round-2 / round-3 outputs before any caller observes
-// them.
+// FROST requires min_signers ≥ 2 in keygen, so the placeholder is a
+// 2-of-2 generate (smallest legal config) — never observed by
+// callers, overwritten by the real round-2/round-3 outputs.
 
 fn dummy_key_package_placeholder() -> Result<KeyPackage, ThresholdError> {
     use frost_ed25519::keys::{IdentifierList, generate_with_dealer};

@@ -50,7 +50,7 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         ..Default::default()
     };
     cfg.password = "app-password".into();
-    AccountStore::single(cfg.clone())
+    AccountStore::single(cfg)
         .persist_in(&root)
         .expect("persist account to the shared store");
 
@@ -61,7 +61,10 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     let loaded = store.active_config();
     assert_eq!(loaded.email, "ada@analytical.example");
     assert_eq!(loaded.imap_host, "imap.analytical.example");
-    assert_eq!(loaded.password, "app-password", "password rehydrates from the vault");
+    assert_eq!(
+        loaded.password, "app-password",
+        "password rehydrates from the vault"
+    );
 
     // 3) Drive the account engine with that loaded account over its real
     //    channel — exactly the requests the app posts. The offline stub backend
@@ -69,7 +72,10 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     //    regardless of which backend the default `spawn()` would select.
     let (tx, rx) = mail::engine::spawn_with(Box::new(mail::engine::StubEngine));
 
-    tx.send(EngineRequest::Connect { account: loaded.clone() }).unwrap();
+    tx.send(EngineRequest::Connect {
+        account: loaded.clone(),
+    })
+    .unwrap();
     match recv(&rx) {
         EngineEvent::Connected { account_id } => {
             assert_eq!(account_id, "ada@analytical.example");
@@ -77,7 +83,11 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         other => panic!("expected Connected, got {other:?}"),
     }
 
-    tx.send(EngineRequest::Fetch { account: loaded.clone(), folder: Folder::Inbox }).unwrap();
+    tx.send(EngineRequest::Fetch {
+        account: loaded.clone(),
+        folder: Folder::Inbox,
+    })
+    .unwrap();
     match recv(&rx) {
         EngineEvent::Fetched { folder, .. } => assert_eq!(folder, Folder::Inbox),
         other => panic!("expected Fetched, got {other:?}"),
@@ -92,13 +102,19 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         body: "This travels through the engine.".into(),
         ..Default::default()
     };
-    tx.send(EngineRequest::Send { account: loaded.clone(), draft: Box::new(draft.clone()) })
-        .unwrap();
+    tx.send(EngineRequest::Send {
+        account: loaded.clone(),
+        draft: Box::new(draft.clone()),
+    })
+    .unwrap();
     let wire = match recv(&rx) {
         EngineEvent::Sent { wire_bytes } => wire_bytes,
         other => panic!("expected Sent, got {other:?}"),
     };
-    assert!(wire > 0, "the engine built and measured a real MIME payload on Send");
+    assert!(
+        wire > 0,
+        "the engine built and measured a real MIME payload on Send"
+    );
 
     // A compose produces a well-formed SMTP payload. Build the same draft's MIME
     // (the exact function the engine's Send uses) and check it directly. Note:
@@ -108,20 +124,41 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     // length of a second build to the engine's. The exact bytes the engine puts
     // on the wire are asserted by the `--features live` SMTP socket test, which
     // captures the server-side DATA.
-    let from = Addr::new(loaded.display_name.clone(), loaded.email.clone());
+    let from = Addr::new(loaded.display_name.clone(), loaded.email);
     let mime = build_mime(&from, &draft).expect("build MIME");
     let text = String::from_utf8_lossy(&mime);
-    assert!(text.contains("Subject: Loop check"), "subject header present: {text}");
-    assert!(text.contains("ada@analytical.example"), "From address present in the payload");
-    assert!(text.contains("you@qos.example"), "To recipient present in the payload");
-    assert!(text.contains("cc@qos.example"), "Cc recipient present in the payload");
-    assert!(text.contains("This travels through the engine."), "body present in the payload");
+    assert!(
+        text.contains("Subject: Loop check"),
+        "subject header present: {text}"
+    );
+    assert!(
+        text.contains("ada@analytical.example"),
+        "From address present in the payload"
+    );
+    assert!(
+        text.contains("you@qos.example"),
+        "To recipient present in the payload"
+    );
+    assert!(
+        text.contains("cc@qos.example"),
+        "Cc recipient present in the payload"
+    );
+    assert!(
+        text.contains("This travels through the engine."),
+        "body present in the payload"
+    );
     // And it parses back cleanly as a real RFC 5322 message.
     let round = parse_eml(&mime, 0, Folder::Sent).expect("parse built MIME");
     assert_eq!(round.subject, "Loop check");
     assert_eq!(round.from.email, "ada@analytical.example");
-    assert!(round.to.iter().any(|a| a.email == "you@qos.example"), "To recipient survives");
-    assert!(round.cc.iter().any(|a| a.email == "cc@qos.example"), "Cc recipient survives");
+    assert!(
+        round.to.iter().any(|a| a.email == "you@qos.example"),
+        "To recipient survives"
+    );
+    assert!(
+        round.cc.iter().any(|a| a.email == "cc@qos.example"),
+        "Cc recipient survives"
+    );
 
     // 4b) A fetch parses a message: the exact decode a live UID FETCH runs, with
     //     the server's \Seen flag applied.
@@ -131,8 +168,8 @@ Subject: Difference Engine notes\r\n\
 Date: Fri, 01 Jan 2021 09:30:00 +0000\r\n\
 \r\n\
 The mill and the store are ready.\r\n";
-    let msg = parse_fetched(raw, Folder::Inbox, true, false, None, 0)
-        .expect("parse a fetched message");
+    let msg =
+        parse_fetched(raw, Folder::Inbox, true, false, None, 0).expect("parse a fetched message");
     assert_eq!(msg.subject, "Difference Engine notes");
     assert_eq!(msg.from.email, "babbage@engine.example");
     assert!(msg.body.contains("mill and the store"));

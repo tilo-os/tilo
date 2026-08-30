@@ -2,13 +2,12 @@
 //! Unix socket in a `LocalSet`, dial from a client, and drive
 //! install → list → pin → resolve → diskUsage.
 
-mod common;
-
+use crate::common;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use app_host::app_host_capnp::{app_host as capnp_app_host, Pinning as WirePinning};
+use app_host::app_host_capnp::{Pinning as WirePinning, app_host as capnp_app_host};
 use app_host::store::Store;
 use app_host::transport;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
@@ -40,7 +39,7 @@ impl Harness {
                 }
             }
         }
-        Err(anyhow::anyhow!("connect failed: {:?}", last))
+        Err(anyhow::anyhow!("connect failed: {last:?}"))
     }
 }
 
@@ -105,29 +104,19 @@ fn install_list_pin_resolve_over_capnp() {
         let resp = resolve_req.send().promise.await.unwrap();
         let entry = resp.get().unwrap().get_entry().unwrap();
         assert_eq!(entry.get_pinning().unwrap(), WirePinning::Pinned);
-        let payload_root = entry
-            .get_payload_root()
-            .unwrap()
-            .to_string()
-            .unwrap();
+        let payload_root = entry.get_payload_root().unwrap().to_string().unwrap();
         assert!(!payload_root.is_empty());
-        let manifest_text = entry
-            .get_manifest_text()
-            .unwrap()
-            .to_string()
-            .unwrap();
+        let manifest_text = entry.get_manifest_text().unwrap().to_string().unwrap();
         assert!(manifest_text.contains("dev.qos.editor"));
 
         // diskUsage
-        let du = client
-            .disk_usage_request()
-            .send()
-            .promise
-            .await
-            .unwrap();
+        let du = client.disk_usage_request().send().promise.await.unwrap();
         let result = du.get().unwrap();
         assert!(result.get_total_bytes() > 0);
         let by = result.get_by_pinning().unwrap();
-        assert!(by.get_pinned_bytes() > 0, "pinned bytes should be > 0 after we pinned");
+        assert!(
+            by.get_pinned_bytes() > 0,
+            "pinned bytes should be > 0 after we pinned"
+        );
     });
 }

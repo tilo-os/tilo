@@ -26,7 +26,7 @@
 //! ```
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
 /// Which top-level section is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,7 +205,7 @@ impl ViewDoc {
         }
     }
 
-    /// ObjId of one of the create-form's Text fields, so a `TextInput`-style
+    /// `ObjId` of one of the create-form's Text fields, so a `TextInput`-style
     /// edit can splice directly into the shared draft.
     pub fn create_field_obj(doc: &mut AutoCommit, field: CreateField) -> ObjId {
         let m = Self::create_map(doc);
@@ -382,7 +382,10 @@ mod tests {
     #[test]
     fn create_run_args_requires_image() {
         let mut doc = AutoCommit::new();
-        assert!(ViewDoc::create_run_args(&mut doc).is_none(), "no image → no args");
+        assert!(
+            ViewDoc::create_run_args(&mut doc).is_none(),
+            "no image → no args"
+        );
         ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx:alpine");
         ViewDoc::set_create_field(&mut doc, CreateField::Name, "web");
         ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80, 8443:443");
@@ -400,17 +403,30 @@ mod tests {
         let mut doc = AutoCommit::new();
         ViewDoc::set_create_field(&mut doc, CreateField::Image, "postgres:16");
         ViewDoc::set_create_field(&mut doc, CreateField::Env, "POSTGRES_DB=app, TZ=UTC");
-        ViewDoc::set_create_field(&mut doc, CreateField::Volumes, "pgdata:/var/lib/postgresql/data");
+        ViewDoc::set_create_field(
+            &mut doc,
+            CreateField::Volumes,
+            "pgdata:/var/lib/postgresql/data",
+        );
         let args = ViewDoc::create_run_args(&mut doc).unwrap();
         // -e flags for each env entry, -v for the volume mount.
         let e_count = args.iter().filter(|a| *a == "-e").count();
         assert_eq!(e_count, 2, "one -e per env entry: {args:?}");
-        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "POSTGRES_DB=app"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-e" && w[1] == "POSTGRES_DB=app")
+        );
         assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "TZ=UTC"));
-        assert!(args.windows(2).any(|w| w[0] == "-v" && w[1] == "pgdata:/var/lib/postgresql/data"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-v" && w[1] == "pgdata:/var/lib/postgresql/data")
+        );
         // The image comes after every flag, before any command.
         let img_pos = args.iter().position(|a| a == "postgres:16").unwrap();
-        let last_flag = args.iter().rposition(|a| a == "-e" || a == "-v" || a == "-p").unwrap();
+        let last_flag = args
+            .iter()
+            .rposition(|a| a == "-e" || a == "-v" || a == "-p")
+            .unwrap();
         assert!(img_pos > last_flag, "image follows all flags: {args:?}");
     }
 
@@ -455,6 +471,9 @@ mod tests {
             ViewDoc::set_search(&mut doc, &long);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-storing the same search grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-storing the same search grew the document {a} -> {b}"
+        );
     }
 }

@@ -1,0 +1,74 @@
+# Photos — qOS application manifest.
+#
+# Opens no socket of its own and executes nothing. The only file it reads
+# outside its own sandbox is the one the user picks, which arrives through the
+# host chooser as a portal-granted handle rather than as a path this app went
+# looking for.
+#
+# Pack and install:
+#
+#     cargo build -p photos -p pkg-cli -p install
+#     mkdir -p target/qpkg/photos/bin
+#     cp target/debug/photos target/qpkg/photos/bin/photos
+#     target/debug/qos-pkg pack --manifest apps/photos/qos-app.toml \
+#         --payload target/qpkg/photos --output target/photos.qpkg
+#     target/debug/qos-install install target/photos.qpkg --allow-self-signed
+
+[package]
+id       = "dev.qos.photos"
+name     = "Photos"
+category = "Graphics"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
+# so the shipped binaries genuinely require AVX2/BMI2/FMA.
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent: a photo viewer that reaches the network is a
+# photo viewer that can exfiltrate what it was shown.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+# Opening and saving both go through the host chooser, so the app never needs
+# ambient read or write access to the user's pictures.
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+qos-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/photos"
+type            = "gui"
+splash-segments = ["bin/photos[0x0:0x400000]"]
+splash-budget   = 250
+
+# What this app is offered for. The formats are exactly the ones the decoder
+# is built with; claiming more would put the app on a menu it cannot serve.
+[providers]
+mime = ["image/png", "image/jpeg", "image/webp"]
+ext  = ["png", "jpg", "jpeg", "webp"]

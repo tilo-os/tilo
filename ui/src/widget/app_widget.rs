@@ -2,10 +2,8 @@
 //! any in-process app hosted inside a tile. Extends the base `Widget` trait
 //! with app-level metadata (kind, title, icon, permission hint, commands).
 //!
-//! Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` §7.
-//!
-//! `AppKind` is the tile-host enum re-exported from `tile_host` — one enum,
-//! spec §7 variants (`Terminal, Files, Editor, Browser, Settings`).
+//! `AppKind` is the tile-host enum re-exported from `tile_host`: one enum,
+//! `Terminal, Files, Editor, Browser, Settings`.
 
 use crate::widget::{AppKind, Widget};
 
@@ -19,6 +17,10 @@ pub enum IconDescriptor {
     Named(String),
 }
 
+/// An [`AppCommand::invoke`] handler.
+pub type AppCommandInvoke =
+    Box<dyn Fn(&mut automerge::AutoCommit, &automerge::ObjId) + Send + Sync>;
+
 /// A command palette entry contributed by an app. Invoked with a mutable
 /// CRDT handle and the app's root `ObjId` so the command can mutate state
 /// directly (matching `quick-ui`'s direct-mutation event model).
@@ -26,7 +28,7 @@ pub struct AppCommand {
     pub id: String,
     pub label: String,
     pub shortcut: Option<String>,
-    pub invoke: Box<dyn Fn(&mut automerge::AutoCommit, &automerge::ObjId) + Send + Sync>,
+    pub invoke: AppCommandInvoke,
 }
 
 impl std::fmt::Debug for AppCommand {

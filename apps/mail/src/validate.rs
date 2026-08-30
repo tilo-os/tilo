@@ -82,7 +82,10 @@ pub fn classify_conn_failure(detail: &str) -> String {
         || d.contains("authentication failed")
         || d.contains("invalid credentials")
         || d.contains("auth")
-            && (d.contains("fail") || d.contains("reject") || d.contains("denied") || d.contains("invalid"))
+            && (d.contains("fail")
+                || d.contains("reject")
+                || d.contains("denied")
+                || d.contains("invalid"))
         || d.contains("login failed")
         || d.contains("[authenticationfailed]")
     {
@@ -156,7 +159,7 @@ impl ProbeTransport for LiveProbe {
 mod live_probe {
     use std::sync::Arc;
 
-    use super::*;
+    use super::{AccountConfig, classify_conn_failure};
     use crate::model::AuthMethod;
 
     /// Run `fut` to completion on a short-lived current-thread runtime. The
@@ -186,7 +189,11 @@ mod live_probe {
     /// The access token / password to present. Mirrors the engine's resolution:
     /// a password from the config, or an OAuth token read from the vault.
     fn creds(cfg: &AccountConfig) -> Result<(String, Option<String>), String> {
-        let user = if cfg.username.trim().is_empty() { cfg.email.clone() } else { cfg.username.clone() };
+        let user = if cfg.username.trim().is_empty() {
+            cfg.email.clone()
+        } else {
+            cfg.username.clone()
+        };
         match cfg.auth {
             AuthMethod::Password => {
                 if cfg.password.is_empty() {
@@ -224,7 +231,11 @@ mod live_probe {
         let tls = tls_config();
         block_on(async move {
             let host = cfg.imap_host.trim();
-            let port = if cfg.imap_port == 0 { 993 } else { cfg.imap_port };
+            let port = if cfg.imap_port == 0 {
+                993
+            } else {
+                cfg.imap_port
+            };
             let tcp = tokio::net::TcpStream::connect((host, port))
                 .await
                 .map_err(|e| classify_conn_failure(&e.to_string()))?;
@@ -238,7 +249,10 @@ mod live_probe {
             let client = async_imap::Client::new(stream);
             let mut session = match token {
                 Some(access) => {
-                    let auth = XOAuth2 { user: user.clone(), token: access };
+                    let auth = XOAuth2 {
+                        user: user.clone(),
+                        token: access,
+                    };
                     client
                         .authenticate("XOAUTH2", auth)
                         .await
@@ -251,7 +265,10 @@ mod live_probe {
             };
             // A successful SELECT proves the session is usable, not just that
             // the greeting arrived.
-            session.select("INBOX").await.map_err(|e| classify_conn_failure(&e.to_string()))?;
+            session
+                .select("INBOX")
+                .await
+                .map_err(|e| classify_conn_failure(&e.to_string()))?;
             let _ = session.logout().await;
             Ok::<(), String>(())
         })
@@ -277,7 +294,11 @@ mod live_probe {
             return Err("no SMTP host".into());
         }
         let host = cfg.smtp_host.trim();
-        let port = if cfg.smtp_port == 0 { 465 } else { cfg.smtp_port };
+        let port = if cfg.smtp_port == 0 {
+            465
+        } else {
+            cfg.smtp_port
+        };
         let (user, token) = creds(cfg)?;
         block_on(async move {
             let builder = if port == 465 {
@@ -334,19 +355,38 @@ mod tests {
 
     #[test]
     fn both_succeed_yields_ok_and_persists() {
-        let st = validate_account(&good_cfg(), &MockProbe { imap: Ok(()), smtp: Ok(()) });
+        let st = validate_account(
+            &good_cfg(),
+            &MockProbe {
+                imap: Ok(()),
+                smtp: Ok(()),
+            },
+        );
         assert_eq!(st, ValidationState::Ok);
-        assert!(st.persisted(), "a fully-successful check persists the account");
+        assert!(
+            st.persisted(),
+            "a fully-successful check persists the account"
+        );
     }
 
     #[test]
     fn imap_failure_does_not_persist_and_reports_imap() {
         let st = validate_account(
             &good_cfg(),
-            &MockProbe { imap: Err("auth rejected (535)".into()), smtp: Ok(()) },
+            &MockProbe {
+                imap: Err("auth rejected (535)".into()),
+                smtp: Ok(()),
+            },
         );
-        assert!(!st.persisted(), "an IMAP failure must not persist the account");
-        assert!(st.message().contains("IMAP"), "error names the failing stage: {}", st.message());
+        assert!(
+            !st.persisted(),
+            "an IMAP failure must not persist the account"
+        );
+        assert!(
+            st.message().contains("IMAP"),
+            "error names the failing stage: {}",
+            st.message()
+        );
         assert!(st.message().contains("535"));
     }
 
@@ -354,7 +394,10 @@ mod tests {
     fn smtp_failure_does_not_persist_and_reports_smtp() {
         let st = validate_account(
             &good_cfg(),
-            &MockProbe { imap: Ok(()), smtp: Err("connection refused".into()) },
+            &MockProbe {
+                imap: Ok(()),
+                smtp: Err("connection refused".into()),
+            },
         );
         assert!(!st.persisted());
         assert!(st.message().contains("SMTP"), "{}", st.message());
@@ -382,25 +425,41 @@ mod tests {
     #[test]
     fn offline_probe_reports_success() {
         let st = validate_account(&good_cfg(), &OfflineProbe);
-        assert_eq!(st, ValidationState::Ok, "offline probe lets an account save");
+        assert_eq!(
+            st,
+            ValidationState::Ok,
+            "offline probe lets an account save"
+        );
     }
 
     #[test]
     fn classify_maps_real_transport_errors_to_specific_reasons() {
         // Auth: the exact IMAP tagged-NO an server sends on bad credentials.
-        assert!(classify_conn_failure("[AUTHENTICATIONFAILED] Invalid credentials")
-            .contains("authentication failed"));
-        assert!(classify_conn_failure("535 5.7.8 Username and Password not accepted")
-            .contains("authentication failed"));
+        assert!(
+            classify_conn_failure("[AUTHENTICATIONFAILED] Invalid credentials")
+                .contains("authentication failed")
+        );
+        assert!(
+            classify_conn_failure("535 5.7.8 Username and Password not accepted")
+                .contains("authentication failed")
+        );
         // Connection refused (nothing listening on the port).
-        assert!(classify_conn_failure("Connection refused (os error 111)")
-            .contains("connection refused"));
+        assert!(
+            classify_conn_failure("Connection refused (os error 111)")
+                .contains("connection refused")
+        );
         // DNS failure.
-        assert!(classify_conn_failure("failed to lookup address information: Name or service not known")
-            .contains("host not found"));
+        assert!(
+            classify_conn_failure(
+                "failed to lookup address information: Name or service not known"
+            )
+            .contains("host not found")
+        );
         // TLS/certificate.
-        assert!(classify_conn_failure("invalid peer certificate: UnknownIssuer")
-            .contains("TLS/certificate"));
+        assert!(
+            classify_conn_failure("invalid peer certificate: UnknownIssuer")
+                .contains("TLS/certificate")
+        );
         // Timeout.
         assert!(classify_conn_failure("connection timed out").contains("timed out"));
         // Unknown → the underlying detail is preserved, not swallowed.
@@ -413,6 +472,10 @@ mod tests {
         // A message that mentions both a socket concept and auth must classify
         // as auth (the more actionable, specific cause).
         let msg = "AUTHENTICATE failed: login rejected";
-        assert!(classify_conn_failure(msg).contains("authentication failed"), "{}", classify_conn_failure(msg));
+        assert!(
+            classify_conn_failure(msg).contains("authentication failed"),
+            "{}",
+            classify_conn_failure(msg)
+        );
     }
 }

@@ -143,7 +143,12 @@ impl CurveKey {
             cx: bits(model.view2d.cx),
             cy: bits(model.view2d.cy),
             scale: bits(model.view2d.scale),
-            canvas: (bits(canvas.x0), bits(canvas.y0), bits(canvas.x1), bits(canvas.y1)),
+            canvas: (
+                bits(canvas.x0),
+                bits(canvas.y0),
+                bits(canvas.x1),
+                bits(canvas.y1),
+            ),
         }
     }
 }
@@ -179,12 +184,22 @@ impl Graph2dScreen {
                 self.panel = Rect::new(area.x0, area.y0, area.x0 + w, area.y1);
                 self.scrim_rect = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
                 // "Hide" chip at the drawer header's right edge.
-                self.toggle_rect = Rect::new(self.panel.x1 - 66.0, self.panel.y0 + 14.0, self.panel.x1 - 16.0, self.panel.y0 + 42.0);
+                self.toggle_rect = Rect::new(
+                    self.panel.x1 - 66.0,
+                    self.panel.y0 + 14.0,
+                    self.panel.x1 - 16.0,
+                    self.panel.y0 + 42.0,
+                );
             } else {
                 self.panel = Rect::ZERO;
                 self.scrim_rect = Rect::ZERO;
                 // Closed overlay: a toggle pill floats at the canvas top-left.
-                self.toggle_rect = Rect::new(area.x0 + 12.0, area.y0 + 12.0, area.x0 + 152.0, area.y0 + 44.0);
+                self.toggle_rect = Rect::new(
+                    area.x0 + 12.0,
+                    area.y0 + 12.0,
+                    area.x0 + 152.0,
+                    area.y0 + 44.0,
+                );
             }
         }
     }
@@ -207,18 +222,33 @@ impl Graph2dScreen {
         for i in 0..model.funcs.len() {
             let card_h = self.card_heights.get(i).copied().unwrap_or(BASE_ROW_H);
             let r = Rect::new(self.panel.x0 + 12.0, y, self.panel.x1 - 12.0, y + card_h);
-            let vis = Rect::new(r.x1 - 34.0, r.center().y - 11.0, r.x1 - 12.0, r.center().y + 11.0);
+            let vis = Rect::new(
+                r.x1 - 34.0,
+                r.center().y - 11.0,
+                r.x1 - 12.0,
+                r.center().y + 11.0,
+            );
             // Editor area: a "y =" label sits at the left, the math field fills
             // the rest up to the visibility dot. Its height is the grown card
             // minus the padding, so the field viewport grows with the card.
-            let edit = Rect::new(r.x0 + 60.0, r.y0 + CARD_PAD_Y, vis.x0 - 8.0, r.y1 - CARD_PAD_Y);
+            let edit = Rect::new(
+                r.x0 + 60.0,
+                r.y0 + CARD_PAD_Y,
+                vis.x0 - 8.0,
+                r.y1 - CARD_PAD_Y,
+            );
             self.vis_rects.push(vis);
             self.edit_rects.push(edit);
             self.row_rects.push(r);
             y += card_h + ROW_GAP;
         }
         let add_y = y + 4.0;
-        self.add_rect = Rect::new(self.panel.x0 + 12.0, add_y, self.panel.x1 - 12.0, add_y + 36.0);
+        self.add_rect = Rect::new(
+            self.panel.x0 + 12.0,
+            add_y,
+            self.panel.x1 - 12.0,
+            add_y + 36.0,
+        );
     }
 
     /// Measure every row's formula and compute its grown card height. Run at the
@@ -244,7 +274,11 @@ impl Graph2dScreen {
     /// field per row and feed it the row's current expression. Local edits are
     /// preserved because `set_source` is a no-op when the string is unchanged.
     pub fn sync_fields(&mut self, model: &CalcModel) {
-        if self.fields.len() != model.funcs.len() {
+        if self.fields.len() == model.funcs.len() {
+            for (field, f) in self.fields.iter_mut().zip(&model.funcs) {
+                field.set_source(&f.expr);
+            }
+        } else {
             self.fields = model
                 .funcs
                 .iter()
@@ -262,10 +296,6 @@ impl Graph2dScreen {
                 } else {
                     field.park_caret_in_structure();
                 }
-            }
-        } else {
-            for (field, f) in self.fields.iter_mut().zip(&model.funcs) {
-                field.set_source(&f.expr);
             }
         }
     }
@@ -289,7 +319,13 @@ impl Graph2dScreen {
 
     /// Paint remote collaborators' carets into the active function field,
     /// snapping each scene-space cursor to the field's 2D glyph layout.
-    pub fn draw_remote_carets(&self, scene: &mut Scene, t: Affine, active: usize, cursors: &[(Point, Color)]) {
+    pub fn draw_remote_carets(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        active: usize,
+        cursors: &[(Point, Color)],
+    ) {
         if let Some(f) = self.fields.get(active) {
             f.draw_remote_carets(scene, t, cursors);
         }
@@ -337,17 +373,63 @@ impl Graph2dScreen {
         }
         // Open overlay drawer: lay a dismiss scrim over the canvas first.
         if self.overlay {
-            draw::fill_rect(scene, t, self.scrim_rect, draw::with_alpha(Color::BLACK, 110));
+            draw::fill_rect(
+                scene,
+                t,
+                self.scrim_rect,
+                draw::with_alpha(Color::BLACK, 110),
+            );
         }
 
         // ----- function panel ----------------------------------------------
-        let panel_bg = if self.overlay { c.surfaces.raised } else { c.surfaces.base };
+        let panel_bg = if self.overlay {
+            c.surfaces.raised
+        } else {
+            c.surfaces.base
+        };
         draw::fill_rect(scene, t, self.panel, panel_bg);
-        draw::line(scene, t, Point::new(self.panel.x1, self.panel.y0), Point::new(self.panel.x1, self.panel.y1), c.border_standard, if self.overlay { 1.5 } else { 1.0 });
-        let head = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 12.0, self.panel.x1 - 16.0, self.panel.y0 + 36.0);
-        draw::text_in(scene, tr, t, head, "Functions", 16.0, c.text_primary, Align::Left, TextWeight::Semibold);
-        let sub = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 36.0, self.panel.x1 - 16.0, self.panel.y0 + 56.0);
-        draw::text_in(scene, tr, t, sub, "y = f(x)  ·  click to edit", 12.0, c.text_dim, Align::Left, TextWeight::Regular);
+        draw::line(
+            scene,
+            t,
+            Point::new(self.panel.x1, self.panel.y0),
+            Point::new(self.panel.x1, self.panel.y1),
+            c.border_standard,
+            if self.overlay { 1.5 } else { 1.0 },
+        );
+        let head = Rect::new(
+            self.panel.x0 + 16.0,
+            self.panel.y0 + 12.0,
+            self.panel.x1 - 16.0,
+            self.panel.y0 + 36.0,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            head,
+            "Functions",
+            16.0,
+            c.text_primary,
+            Align::Left,
+            TextWeight::Semibold,
+        );
+        let sub = Rect::new(
+            self.panel.x0 + 16.0,
+            self.panel.y0 + 36.0,
+            self.panel.x1 - 16.0,
+            self.panel.y0 + 56.0,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            sub,
+            "y = f(x)  ·  click to edit",
+            12.0,
+            c.text_dim,
+            Align::Left,
+            TextWeight::Regular,
+        );
 
         // Editors are already reconciled + measured by `measure_cards` above.
         for i in 0..model.funcs.len() {
@@ -355,25 +437,70 @@ impl Graph2dScreen {
             let r = self.row_rects[i];
             let active = i == model.active_fn;
             if active {
-                draw::fill_rrect(scene, t, r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.18));
+                draw::fill_rrect(
+                    scene,
+                    t,
+                    r,
+                    8.0,
+                    draw::mix(c.surfaces.raised, c.accent[5], 0.18),
+                );
                 draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
                 draw::fill_rrect(scene, t, r, 8.0, c.surfaces.raised);
             }
             // colour swatch
-            let sw = Rect::new(r.x0 + 12.0, r.center().y - 7.0, r.x0 + 26.0, r.center().y + 7.0);
+            let sw = Rect::new(
+                r.x0 + 12.0,
+                r.center().y - 7.0,
+                r.x0 + 26.0,
+                r.center().y + 7.0,
+            );
             let col = series_color(theme, i);
-            draw::fill_rrect(scene, t, sw, 3.0, if f.visible { col } else { draw::with_alpha(col, 80) });
+            draw::fill_rrect(
+                scene,
+                t,
+                sw,
+                3.0,
+                if f.visible {
+                    col
+                } else {
+                    draw::with_alpha(col, 80)
+                },
+            );
             // "y =" prefix (upright label), then the 2D math editor.
-            let txt_col = if f.visible { c.text_primary } else { c.text_dim };
+            let txt_col = if f.visible {
+                c.text_primary
+            } else {
+                c.text_dim
+            };
             let prefix = Rect::new(r.x0 + 34.0, r.y0, r.x0 + 60.0, r.y1);
-            draw::text_in(scene, tr, t, prefix, "y =", 14.0, txt_col, Align::Left, TextWeight::Medium);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                prefix,
+                "y =",
+                14.0,
+                txt_col,
+                Align::Left,
+                TextWeight::Medium,
+            );
             let edit = self.edit_rects[i];
             let visible = f.visible;
             let empty = self.fields[i].is_empty();
             if empty && !active {
                 let pr = Rect::new(edit.x0 + 4.0, edit.y0, edit.x1, edit.y1);
-                draw::text_in(scene, tr, t, pr, "f(x)", 14.0, c.text_dim, Align::Left, TextWeight::Regular);
+                draw::text_in(
+                    scene,
+                    tr,
+                    t,
+                    pr,
+                    "f(x)",
+                    14.0,
+                    c.text_dim,
+                    Align::Left,
+                    TextWeight::Regular,
+                );
             } else {
                 self.fields[i].set_rect(edit, tr);
                 let fld_col = if visible { txt_col } else { c.text_dim };
@@ -392,28 +519,102 @@ impl Graph2dScreen {
         // add button
         draw::fill_rrect(scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::stroke_rrect(scene, t, self.add_rect, 8.0, c.border_standard, 1.0);
-        draw::text_in(scene, tr, t, self.add_rect, "+ Add function", 13.0, c.accent[6], Align::Center, TextWeight::Medium);
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            self.add_rect,
+            "+ Add function",
+            13.0,
+            c.accent[6],
+            Align::Center,
+            TextWeight::Medium,
+        );
 
         // view + trace readout
         let info_y = self.add_rect.y1 + 16.0;
-        let info = Rect::new(self.panel.x0 + 16.0, info_y, self.panel.x1 - 16.0, info_y + 80.0);
+        let info = Rect::new(
+            self.panel.x0 + 16.0,
+            info_y,
+            self.panel.x1 - 16.0,
+            info_y + 80.0,
+        );
         draw::fill_rrect(scene, t, info, 8.0, c.neutral[1]);
         let view = &model.view2d;
-        let l1 = Rect::new(info.x0 + 12.0, info.y0 + 8.0, info.x1 - 12.0, info.y0 + 28.0);
-        draw::text_in(scene, tr, t, l1, &format!("center  ({:.2}, {:.2})", view.cx, view.cy), 12.0, c.text_dim, Align::Left, TextWeight::Regular);
-        let l2 = Rect::new(info.x0 + 12.0, info.y0 + 28.0, info.x1 - 12.0, info.y0 + 48.0);
-        draw::text_in(scene, tr, t, l2, &format!("zoom  {:.1} px/unit", view.scale), 12.0, c.text_dim, Align::Left, TextWeight::Regular);
-        let l3 = Rect::new(info.x0 + 12.0, info.y0 + 50.0, info.x1 - 12.0, info.y1 - 6.0);
+        let l1 = Rect::new(
+            info.x0 + 12.0,
+            info.y0 + 8.0,
+            info.x1 - 12.0,
+            info.y0 + 28.0,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            l1,
+            &format!("center  ({:.2}, {:.2})", view.cx, view.cy),
+            12.0,
+            c.text_dim,
+            Align::Left,
+            TextWeight::Regular,
+        );
+        let l2 = Rect::new(
+            info.x0 + 12.0,
+            info.y0 + 28.0,
+            info.x1 - 12.0,
+            info.y0 + 48.0,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            l2,
+            &format!("zoom  {:.1} px/unit", view.scale),
+            12.0,
+            c.text_dim,
+            Align::Left,
+            TextWeight::Regular,
+        );
+        let l3 = Rect::new(
+            info.x0 + 12.0,
+            info.y0 + 50.0,
+            info.x1 - 12.0,
+            info.y1 - 6.0,
+        );
         if let Some(p) = trace {
             let wx = self.to_world(p, view).x;
-            if let Some(expr) = model.active_expr() {
-                if let Ok(comp) = engine::compile(expr, model.deg, false) {
-                    let wy = comp.eval1(wx);
-                    draw::text_in(scene, tr, t, l3, &format!("f({}) = {}", engine::format_number(wx), engine::format_number(wy)), 13.0, c.accent[6], Align::Left, TextWeight::Semibold);
-                }
+            if let Some(expr) = model.active_expr()
+                && let Ok(comp) = engine::compile(expr, model.deg, false)
+            {
+                let wy = comp.eval1(wx);
+                draw::text_in(
+                    scene,
+                    tr,
+                    t,
+                    l3,
+                    &format!(
+                        "f({}) = {}",
+                        engine::format_number(wx),
+                        engine::format_number(wy)
+                    ),
+                    13.0,
+                    c.accent[6],
+                    Align::Left,
+                    TextWeight::Semibold,
+                );
             }
         } else {
-            draw::text_in(scene, tr, t, l3, "drag to pan · scroll to zoom", 12.0, c.text_dim, Align::Left, TextWeight::Regular);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                l3,
+                "drag to pan · scroll to zoom",
+                12.0,
+                c.text_dim,
+                Align::Left,
+                TextWeight::Regular,
+            );
         }
 
         // Overlay drawer keeps a "Hide" chip in its header so it can be
@@ -434,11 +635,37 @@ impl Graph2dScreen {
         let r = self.toggle_rect;
         if self.panel_open {
             draw::fill_rrect(scene, t, r, 8.0, c.neutral[2]);
-            draw::text_in(scene, tr, t, r, "Hide", 12.0, c.text_dim, Align::Center, TextWeight::Semibold);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                r,
+                "Hide",
+                12.0,
+                c.text_dim,
+                Align::Center,
+                TextWeight::Semibold,
+            );
         } else {
-            draw::fill_rrect(scene, t, r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.20));
+            draw::fill_rrect(
+                scene,
+                t,
+                r,
+                8.0,
+                draw::mix(c.surfaces.raised, c.accent[5], 0.20),
+            );
             draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
-            draw::text_in(scene, tr, t, r, "ƒ  Functions", 13.0, c.accent[6], Align::Center, TextWeight::Semibold);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                r,
+                "ƒ  Functions",
+                13.0,
+                c.accent[6],
+                Align::Center,
+                TextWeight::Semibold,
+            );
         }
     }
 
@@ -478,7 +705,7 @@ impl Graph2dScreen {
     /// Center of function row `i`'s visibility dot, once laid out (test helper).
     #[doc(hidden)]
     pub fn vis_center(&self, i: usize) -> Option<Point> {
-        self.vis_rects.get(i).map(|r| r.center())
+        self.vis_rects.get(i).map(ui::kurbo::Rect::center)
     }
 
     // ----- canvas internals -------------------------------------------------
@@ -494,7 +721,14 @@ impl Graph2dScreen {
         Point::new(v.cx + (p.x - cx) / v.scale, v.cy - (p.y - cy) / v.scale)
     }
 
-    fn draw_grid(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, v: &View2d) {
+    fn draw_grid(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        v: &View2d,
+    ) {
         let c = &theme.tokens.colors;
         let step = nice_step(72.0 / v.scale);
         let minor = step / 5.0;
@@ -503,41 +737,89 @@ impl Graph2dScreen {
         let top = self.to_world(Point::new(0.0, self.canvas.y0), v).y;
         let bottom = self.to_world(Point::new(0.0, self.canvas.y1), v).y;
 
-        scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &self.canvas);
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &self.canvas,
+        );
 
         // minor gridlines
         let minor_col = draw::with_alpha(c.neutral[2], 120);
         for k in line_indices(left, right, minor) {
             let x = k as f64 * minor;
             let p = self.to_screen(x, 0.0, v).x;
-            draw::line(scene, t, Point::new(p, self.canvas.y0), Point::new(p, self.canvas.y1), minor_col, 1.0);
+            draw::line(
+                scene,
+                t,
+                Point::new(p, self.canvas.y0),
+                Point::new(p, self.canvas.y1),
+                minor_col,
+                1.0,
+            );
         }
         for k in line_indices(bottom, top, minor) {
             let y = k as f64 * minor;
             let p = self.to_screen(0.0, y, v).y;
-            draw::line(scene, t, Point::new(self.canvas.x0, p), Point::new(self.canvas.x1, p), minor_col, 1.0);
+            draw::line(
+                scene,
+                t,
+                Point::new(self.canvas.x0, p),
+                Point::new(self.canvas.x1, p),
+                minor_col,
+                1.0,
+            );
         }
         // major gridlines
         let major_col = c.neutral[3];
         for k in line_indices(left, right, step) {
             let x = k as f64 * step;
             let p = self.to_screen(x, 0.0, v).x;
-            draw::line(scene, t, Point::new(p, self.canvas.y0), Point::new(p, self.canvas.y1), major_col, 1.0);
+            draw::line(
+                scene,
+                t,
+                Point::new(p, self.canvas.y0),
+                Point::new(p, self.canvas.y1),
+                major_col,
+                1.0,
+            );
         }
         for k in line_indices(bottom, top, step) {
             let y = k as f64 * step;
             let p = self.to_screen(0.0, y, v).y;
-            draw::line(scene, t, Point::new(self.canvas.x0, p), Point::new(self.canvas.x1, p), major_col, 1.0);
+            draw::line(
+                scene,
+                t,
+                Point::new(self.canvas.x0, p),
+                Point::new(self.canvas.x1, p),
+                major_col,
+                1.0,
+            );
         }
 
         // axes
         let axis_col = c.neutral[5];
         let origin = self.to_screen(0.0, 0.0, v);
         if origin.y >= self.canvas.y0 && origin.y <= self.canvas.y1 {
-            draw::line(scene, t, Point::new(self.canvas.x0, origin.y), Point::new(self.canvas.x1, origin.y), axis_col, 1.6);
+            draw::line(
+                scene,
+                t,
+                Point::new(self.canvas.x0, origin.y),
+                Point::new(self.canvas.x1, origin.y),
+                axis_col,
+                1.6,
+            );
         }
         if origin.x >= self.canvas.x0 && origin.x <= self.canvas.x1 {
-            draw::line(scene, t, Point::new(origin.x, self.canvas.y0), Point::new(origin.x, self.canvas.y1), axis_col, 1.6);
+            draw::line(
+                scene,
+                t,
+                Point::new(origin.x, self.canvas.y0),
+                Point::new(origin.x, self.canvas.y1),
+                axis_col,
+                1.6,
+            );
         }
 
         // numeric labels at majors
@@ -549,7 +831,17 @@ impl Graph2dScreen {
             let x = k as f64 * step;
             let p = self.to_screen(x, 0.0, v).x;
             let r = Rect::new(p + 3.0, label_y, p + 60.0, label_y + 16.0);
-            draw::text_in(scene, tr, t, r, &fmt_tick(x, step), 11.0, c.text_dim, Align::Left, TextWeight::Regular);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                r,
+                &fmt_tick(x, step),
+                11.0,
+                c.text_dim,
+                Align::Left,
+                TextWeight::Regular,
+            );
         }
         let label_x = (origin.x + 6.0).clamp(self.canvas.x0 + 2.0, self.canvas.x1 - 50.0);
         for k in line_indices(bottom, top, step) {
@@ -559,7 +851,17 @@ impl Graph2dScreen {
             let y = k as f64 * step;
             let p = self.to_screen(0.0, y, v).y;
             let r = Rect::new(label_x, p - 16.0, label_x + 60.0, p);
-            draw::text_in(scene, tr, t, r, &fmt_tick(y, step), 11.0, c.text_dim, Align::Left, TextWeight::Regular);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                r,
+                &fmt_tick(y, step),
+                11.0,
+                c.text_dim,
+                Align::Left,
+                TextWeight::Regular,
+            );
         }
         scene.pop_layer();
     }
@@ -575,7 +877,13 @@ impl Graph2dScreen {
             self.zoom.mark_sampled(model.view2d);
             Affine::IDENTITY
         };
-        scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &self.canvas);
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &self.canvas,
+        );
         let stroke = vello::kurbo::Stroke::new(2.0);
         for cp in &self.curve_cache.paths {
             let col = series_color(theme, cp.series);
@@ -658,18 +966,38 @@ impl Graph2dScreen {
         self.curve_cache.rebuilds = self.curve_cache.rebuilds.wrapping_add(1);
     }
 
-    fn draw_trace(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel, p: Point, v: &View2d) {
+    fn draw_trace(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+        p: Point,
+        v: &View2d,
+    ) {
         if !self.canvas.contains(p) {
             return;
         }
         let c = &theme.tokens.colors;
         let wx = self.to_world(p, v).x;
-        let Some(expr) = model.active_expr() else { return };
-        let Ok(comp) = engine::compile(expr, model.deg, false) else { return };
+        let Some(expr) = model.active_expr() else {
+            return;
+        };
+        let Ok(comp) = engine::compile(expr, model.deg, false) else {
+            return;
+        };
         let wy = comp.eval1(wx);
         let sx = self.to_screen(wx, 0.0, v).x;
         // vertical guide
-        draw::line(scene, t, Point::new(sx, self.canvas.y0), Point::new(sx, self.canvas.y1), draw::with_alpha(c.text_dim, 120), 1.0);
+        draw::line(
+            scene,
+            t,
+            Point::new(sx, self.canvas.y0),
+            Point::new(sx, self.canvas.y1),
+            draw::with_alpha(c.text_dim, 120),
+            1.0,
+        );
         if wy.is_finite() {
             let dot = self.to_screen(wx, wy, v);
             if dot.y >= self.canvas.y0 && dot.y <= self.canvas.y1 {
@@ -679,13 +1007,32 @@ impl Graph2dScreen {
                 draw::stroke_rrect(scene, t, r, 5.0, Color::WHITE, 1.5);
             }
             // readout chip near the top
-            let label = format!("({}, {})", engine::format_number(wx), engine::format_number(wy));
+            let label = format!(
+                "({}, {})",
+                engine::format_number(wx),
+                engine::format_number(wy)
+            );
             let (w, _h) = tr.measure_weighted(&label, 13.0, None, TextWeight::Semibold);
-            let chip = Rect::new(sx + 8.0, self.canvas.y0 + 10.0, sx + 8.0 + w as f64 + 20.0, self.canvas.y0 + 36.0);
+            let chip = Rect::new(
+                sx + 8.0,
+                self.canvas.y0 + 10.0,
+                sx + 8.0 + f64::from(w) + 20.0,
+                self.canvas.y0 + 36.0,
+            );
             let chip = clamp_rect_x(chip, self.canvas);
             draw::fill_rrect(scene, t, chip, 6.0, c.surfaces.raised);
             draw::stroke_rrect(scene, t, chip, 6.0, c.border_standard, 1.0);
-            draw::text_in(scene, tr, t, chip, &label, 13.0, c.text_primary, Align::Center, TextWeight::Semibold);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                chip,
+                &label,
+                13.0,
+                c.text_primary,
+                Align::Center,
+                TextWeight::Semibold,
+            );
         }
     }
 
@@ -787,8 +1134,14 @@ mod tests {
         s.layout(area, &m);
         assert!(!s.overlay, "wide window docks the panel");
         assert!(s.panel_open);
-        assert!(s.panel.width() > 0.0 && s.panel.x0 == area.x0, "docked panel on the left");
-        assert!(s.canvas.x0 >= s.panel.x1 - 0.5, "canvas starts after the docked panel");
+        assert!(
+            s.panel.width() > 0.0 && s.panel.x0 == area.x0,
+            "docked panel on the left"
+        );
+        assert!(
+            s.canvas.x0 >= s.panel.x1 - 0.5,
+            "canvas starts after the docked panel"
+        );
     }
 
     #[test]
@@ -798,10 +1151,23 @@ mod tests {
         let area = Rect::new(0.0, 60.0, 560.0, 800.0);
         s.layout(area, &m);
         assert!(s.overlay, "narrow window uses the overlay drawer");
-        assert!(!s.panel_open, "narrow default is collapsed so the plot keeps the width");
-        assert_eq!(s.panel, Rect::ZERO, "collapsed → no docked panel eating the canvas");
-        assert!((s.canvas.width() - area.width()).abs() < 0.5, "canvas gets the full width when collapsed");
-        assert!(s.toggle_at(s.toggle_rect.center()), "a floating toggle must be present to open it");
+        assert!(
+            !s.panel_open,
+            "narrow default is collapsed so the plot keeps the width"
+        );
+        assert_eq!(
+            s.panel,
+            Rect::ZERO,
+            "collapsed → no docked panel eating the canvas"
+        );
+        assert!(
+            (s.canvas.width() - area.width()).abs() < 0.5,
+            "canvas gets the full width when collapsed"
+        );
+        assert!(
+            s.toggle_at(s.toggle_rect.center()),
+            "a floating toggle must be present to open it"
+        );
     }
 
     #[test]
@@ -815,7 +1181,10 @@ mod tests {
         s.layout(area, &m);
         assert!(s.panel_open && s.overlay);
         assert!(s.panel.width() > 0.0, "open overlay draws a drawer");
-        assert!(s.scrim_rect.width() > 0.0, "open overlay lays down a dismiss scrim");
+        assert!(
+            s.scrim_rect.width() > 0.0,
+            "open overlay lays down a dismiss scrim"
+        );
         // A press inside the drawer must not pan the canvas.
         assert!(!s.canvas_contains(s.panel.center()));
         // Scrim tap dismisses.
@@ -835,7 +1204,10 @@ mod tests {
         s.layout(Rect::new(0.0, 60.0, 560.0, 800.0), &m);
         assert!(s.overlay && !s.panel_open);
         s.layout(Rect::new(0.0, 60.0, 1280.0, 800.0), &m);
-        assert!(!s.overlay && s.panel_open, "widening must re-dock the panel");
+        assert!(
+            !s.overlay && s.panel_open,
+            "widening must re-dock the panel"
+        );
     }
 
     #[test]
@@ -859,7 +1231,10 @@ mod tests {
         // ensure_curves keys on changes, so re-calling it must NOT resample.
         s.ensure_curves(&m);
         s.ensure_curves(&m);
-        assert_eq!(s.curve_cache.rebuilds, 1, "re-sampled with no geometry change");
+        assert_eq!(
+            s.curve_cache.rebuilds, 1,
+            "re-sampled with no geometry change"
+        );
         // Switching tabs and back leaves funcs/view/canvas identical.
         m.mode = Mode::Calc;
         s.ensure_curves(&m);
@@ -911,7 +1286,10 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut s = Graph2dScreen::default();
         let mut m = CalcModel::seeded();
-        m.funcs = vec![crate::model::PlotFn { expr: "(x^2+1)/(x-3)".into(), visible: true }];
+        m.funcs = vec![crate::model::PlotFn {
+            expr: "(x^2+1)/(x-3)".into(),
+            visible: true,
+        }];
         m.active_fn = 0;
         let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
         s.measure_cards(&m, &mut tr);
@@ -942,7 +1320,10 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut s = Graph2dScreen::default();
         let mut m = CalcModel::seeded();
-        m.funcs = vec![crate::model::PlotFn { expr: "(1/x)/(1/y)".into(), visible: true }];
+        m.funcs = vec![crate::model::PlotFn {
+            expr: "(1/x)/(1/y)".into(),
+            visible: true,
+        }];
         m.active_fn = 0;
         let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
         s.measure_cards(&m, &mut tr);
@@ -961,7 +1342,10 @@ mod tests {
             s.edit_rects[0].height()
         );
         s.fields[0].set_rect(s.edit_rects[0], &mut tr);
-        assert!(s.fields[0].overflows(), "the maxed field must report overflow");
+        assert!(
+            s.fields[0].overflows(),
+            "the maxed field must report overflow"
+        );
     }
 
     /// A short one-line formula keeps the base card height and does not scroll,
@@ -971,7 +1355,10 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut s = Graph2dScreen::default();
         let mut m = CalcModel::seeded();
-        m.funcs = vec![crate::model::PlotFn { expr: "sin(x)".into(), visible: true }];
+        m.funcs = vec![crate::model::PlotFn {
+            expr: "sin(x)".into(),
+            visible: true,
+        }];
         m.active_fn = 0;
         s.measure_cards(&m, &mut tr);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
@@ -992,8 +1379,14 @@ mod tests {
         let mut s = Graph2dScreen::default();
         let mut m = CalcModel::seeded();
         m.funcs = vec![
-            crate::model::PlotFn { expr: "(x^2+1)/(x-3)".into(), visible: true },
-            crate::model::PlotFn { expr: "sin(x)".into(), visible: true },
+            crate::model::PlotFn {
+                expr: "(x^2+1)/(x-3)".into(),
+                visible: true,
+            },
+            crate::model::PlotFn {
+                expr: "sin(x)".into(),
+                visible: true,
+            },
         ];
         s.measure_cards(&m, &mut tr);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);

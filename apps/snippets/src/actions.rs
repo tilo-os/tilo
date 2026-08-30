@@ -153,27 +153,45 @@ pub fn delete_snippet_action(id: SnippetId) -> SnippetsAction {
 }
 
 pub fn rename_action(id: SnippetId, title: &str) -> SnippetsAction {
-    SnippetsAction::Rename { id: id.to_string(), title: title.to_string() }
+    SnippetsAction::Rename {
+        id: id.to_string(),
+        title: title.to_string(),
+    }
 }
 
 pub fn set_language_action(id: SnippetId, language: Language) -> SnippetsAction {
-    SnippetsAction::SetLanguage { id: id.to_string(), language: language.slug().to_string() }
+    SnippetsAction::SetLanguage {
+        id: id.to_string(),
+        language: language.slug().to_string(),
+    }
 }
 
 pub fn set_favorite_action(id: SnippetId, favorite: bool) -> SnippetsAction {
-    SnippetsAction::SetFavorite { id: id.to_string(), favorite }
+    SnippetsAction::SetFavorite {
+        id: id.to_string(),
+        favorite,
+    }
 }
 
 pub fn set_description_action(id: SnippetId, description: &str) -> SnippetsAction {
-    SnippetsAction::SetDescription { id: id.to_string(), description: description.to_string() }
+    SnippetsAction::SetDescription {
+        id: id.to_string(),
+        description: description.to_string(),
+    }
 }
 
 pub fn set_folder_action(id: SnippetId, folder: &str) -> SnippetsAction {
-    SnippetsAction::SetFolder { id: id.to_string(), folder: folder.to_string() }
+    SnippetsAction::SetFolder {
+        id: id.to_string(),
+        folder: folder.to_string(),
+    }
 }
 
 pub fn set_tags_action(id: SnippetId, tags: &[String]) -> SnippetsAction {
-    SnippetsAction::SetTags { id: id.to_string(), tags: tags.to_vec() }
+    SnippetsAction::SetTags {
+        id: id.to_string(),
+        tags: tags.to_vec(),
+    }
 }
 
 pub fn record_use_action(id: SnippetId) -> SnippetsAction {
@@ -268,7 +286,12 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
             "Language",
             "rust, shell, python, sql…",
             ExecutionLocus::ClientLocal,
-            move |t: &str| encode(&set_language_action(id, Language::from_slug(&t.trim().to_lowercase()))),
+            move |t: &str| {
+                encode(&set_language_action(
+                    id,
+                    Language::from_slug(&t.trim().to_lowercase()),
+                ))
+            },
         ));
         // Move to a folder — prompted.
         r = r.with_action(ActionSpec::prompted(
@@ -305,7 +328,11 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
             &set_favorite_action(id, !s.favorite),
         ));
         // Delete — immediate, the same EncodedAction the toolbar Delete dispatches.
-        r = r.with_action(encode_spec("delete", "Delete snippet", &delete_snippet_action(id)));
+        r = r.with_action(encode_spec(
+            "delete",
+            "Delete snippet",
+            &delete_snippet_action(id),
+        ));
 
         lib = lib.with_child(r);
     }
@@ -359,7 +386,10 @@ mod tests {
     }
 
     fn first_snippet(doc: &AutoCommit) -> Snippet {
-        SnippetsDoc::list(doc).into_iter().next().expect("a seeded snippet")
+        SnippetsDoc::list(doc)
+            .into_iter()
+            .next()
+            .expect("a seeded snippet")
     }
 
     /// Ctrl+K on Snippets yields the library resource plus one child per snippet,
@@ -378,8 +408,19 @@ mod tests {
         let snip = &lib.children[0];
         assert_eq!(snip.kind, "snippets.snippet");
         let ids: Vec<&str> = snip.actions.iter().map(|a| a.id.as_str()).collect();
-        for want in ["rename", "set-language", "move-to-folder", "set-tags", "edit-description", "toggle-favorite", "delete"] {
-            assert!(ids.contains(&want), "snippet resource missing {want}: {ids:?}");
+        for want in [
+            "rename",
+            "set-language",
+            "move-to-folder",
+            "set-tags",
+            "edit-description",
+            "toggle-favorite",
+            "delete",
+        ] {
+            assert!(
+                ids.contains(&want),
+                "snippet resource missing {want}: {ids:?}"
+            );
         }
 
         // The one palette surfaces the tree's actions as rows.
@@ -387,8 +428,14 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New snippet")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete snippet")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("New snippet")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete snippet")),
+            "{labels:?}"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -401,33 +448,28 @@ mod tests {
         state.doc = seeded_doc;
         let target = first_snippet(&state.doc);
         let before_heads = state.doc.get_heads();
-        assert!(!target.favorite, "seed picks an unstarred snippet as the target");
+        assert!(
+            !target.favorite,
+            "seed picks an unstarred snippet as the target"
+        );
 
         let action = set_favorite_action(target.id, true);
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert!(
             SnippetsDoc::get(&state.doc, target.id).unwrap().favorite,
             "the action starred the snippet"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert!(
             !SnippetsDoc::get(&state.doc, target.id).unwrap().favorite,
             "undo reverted the star and nothing else"
@@ -444,7 +486,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let target = first_snippet(&a);
         let action = rename_action(target.id, "Converged Title");
@@ -453,8 +499,15 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
-        assert_eq!(SnippetsDoc::get(&a, target.id).unwrap().title, "Converged Title");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
+        assert_eq!(
+            SnippetsDoc::get(&a, target.id).unwrap().title,
+            "Converged Title"
+        );
         assert_eq!(
             SnippetsDoc::get(&a, target.id).unwrap().title,
             SnippetsDoc::get(&b, target.id).unwrap().title,
@@ -477,18 +530,29 @@ mod tests {
 
         let left = SnippetsDoc::list(&doc);
         assert_eq!(left.len(), before - 1, "exactly one snippet removed");
-        assert!(left.iter().all(|s| s.id != target.id), "the target row is gone");
+        assert!(
+            left.iter().all(|s| s.id != target.id),
+            "the target row is gone"
+        );
     }
 
     /// A malformed id is a no-op, not an error — a bad replay can't wedge a peer.
     #[test]
     fn malformed_id_is_a_no_op() {
         let mut doc = AutoCommit::new();
-        let bogus = SnippetsAction::DeleteSnippet { id: "not-a-uuid".into() };
+        let bogus = SnippetsAction::DeleteSnippet {
+            id: "not-a-uuid".into(),
+        };
         assert!(bogus.apply(&mut doc).is_ok());
-        let rename = SnippetsAction::Rename { id: "also-bad".into(), title: "x".into() };
+        let rename = SnippetsAction::Rename {
+            id: "also-bad".into(),
+            title: "x".into(),
+        };
         assert!(rename.apply(&mut doc).is_ok());
-        assert!(SnippetsDoc::list(&doc).is_empty(), "nothing was created by malformed actions");
+        assert!(
+            SnippetsDoc::list(&doc).is_empty(),
+            "nothing was created by malformed actions"
+        );
     }
 
     /// Single source of truth: the palette's immediate specs for a snippet build
@@ -507,19 +571,32 @@ mod tests {
         let from_spec = immediate_encode(del_spec);
         let from_builder = encode(&delete_snippet_action(id));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "delete is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "delete is one source of truth"
+        );
 
         // Toggle-favorite carries the flipped value, matching the toolbar Star.
-        let fav_spec = snip.actions.iter().find(|a| a.id == "toggle-favorite").unwrap();
+        let fav_spec = snip
+            .actions
+            .iter()
+            .find(|a| a.id == "toggle-favorite")
+            .unwrap();
         let from_spec = immediate_encode(fav_spec);
         let from_builder = encode(&set_favorite_action(id, !seeded_fav));
-        assert_eq!(from_spec.payload, from_builder.payload, "star is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "star is one source of truth"
+        );
 
         // A prompted rename matches the rename builder for the same argument.
         let rename_spec = snip.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename_spec, "Renamed");
         let from_builder = encode(&rename_action(id, "Renamed"));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
     }
 
     #[test]
@@ -534,7 +611,12 @@ mod tests {
         let mut s = Snippet::blank("Ops");
         s.language = Language::PlainText;
         SnippetsDoc::upsert(&mut doc, &s);
-        set_language_action(s.id, Language::Rust).apply(&mut doc).unwrap();
-        assert_eq!(SnippetsDoc::get(&doc, s.id).unwrap().language, Language::Rust);
+        set_language_action(s.id, Language::Rust)
+            .apply(&mut doc)
+            .unwrap();
+        assert_eq!(
+            SnippetsDoc::get(&doc, s.id).unwrap().language,
+            Language::Rust
+        );
     }
 }

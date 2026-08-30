@@ -3,25 +3,17 @@
 //!
 //! The systemd unit guards re-runs with a `ConditionPathExists` on
 //! `/etc/quick-desktop/.firstboot-done`, so this module is a one-shot
-//! "make sure the user-facing config + cache dirs exist before the
-//! compositor expects them" hook. It must be cheap, idempotent, and
-//! must NOT bail the compositor boot — `main` runs `run` and then
-//! continues into the normal compositor entry point regardless.
+//! "make sure the user-facing config + cache dirs exist" hook. Cheap,
+//! idempotent, and must NOT bail the compositor boot — `main` runs `run` then continues regardless.
 //!
-//! On top of the XDG-config bootstrap, this hook also provisions a
+//! On top of the XDG-config bootstrap, this also provisions a
 //! single-device signing identity at `<config>/qos/identity/primary.json`
-//! when none is present. That file is what `runtime-identity::load`
-//! reads inside sandboxed apps (via the `QOS_USER_IDENTITY` env var
-//! set by the launcher), and its absence is what previously caused
-//! every app to sit at "no signing identity" — join_channel then
-//! carried empty identity bytes and no signed op could be minted.
-//! The record is encoded by `ui::widget::identity_flow::IdentityRecord`,
-//! the same type the interactive ceremony writes, so both paths mint
-//! the same shape.
+//! when none is present — the file `runtime-identity::load` reads inside
+//! sandboxed apps via `QOS_USER_IDENTITY`, encoded by the same
+//! `ui::widget::identity_flow::IdentityRecord` type the interactive ceremony writes.
 //!
-//! See `os/usr/lib/systemd/system/quick-desktop-firstboot.service` for
-//! the boot chain and `CLAUDE.md`'s "Boot chain" section for the
-//! lifecycle context.
+//! See `os/usr/lib/systemd/system/quick-desktop-firstboot.service` and
+//! `CLAUDE.md`'s "Boot chain" section for the lifecycle context.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -32,24 +24,20 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use qos_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist, sign_device_cert};
 use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
 use ui::widget::identity_flow::IdentityRecord;
 
 /// File name for the primary single-device identity record. Matches
-/// what `runtime-identity::load()` expects (via the `QOS_USER_IDENTITY`
-/// env var pointing at this file) and what `DiskIdentityStore` writes
-/// via the UI's identity-flow ceremony.
+/// what `runtime-identity::load()` expects (`QOS_USER_IDENTITY`) and what `DiskIdentityStore` writes via the UI's identity-flow ceremony.
 const PRIMARY_IDENTITY_FILE: &str = "primary.json";
 
 /// Process-global entry point. Resolves the user's XDG config dir from
 /// `$XDG_CONFIG_HOME` (falling back to `$HOME/.config`) and creates
-/// `quick-desktop/` under it. Returns `Ok(())` on success and on the
-/// "no HOME / no XDG" no-op path so the compositor boot continues.
+/// `quick-desktop/` under it. Returns `Ok(())` on success and on the "no HOME / no XDG" no-op path so boot continues.
 ///
-/// Errors are surfaced only when the directory creation itself fails
-/// (permission denied, ENOSPC, etc.); the caller (`main`) logs and
-/// continues.
+/// Errors surface only when directory creation itself fails (permission denied, ENOSPC); the caller (`main`) logs and continues.
 pub fn run() -> Result<(), Box<dyn Error>> {
     run_with_env(
         std::env::var_os("XDG_CONFIG_HOME"),
@@ -57,8 +45,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     )
 }
 
-/// Effective uid of this process. `0` means the identity step must not run —
-/// see [`run_as`].
+/// Effective uid of this process; `0` means the identity step must not run — see [`run_as`].
 #[cfg(unix)]
 fn effective_uid() -> u32 {
     // Safety: `geteuid` is always successful and takes no arguments.
@@ -71,9 +58,7 @@ fn effective_uid() -> u32 {
 }
 
 /// Pure form of [`run`] that takes env-var values as arguments instead
-/// of reading the real environment. Tests drive this directly with a
-/// `tempdir`-rooted fixture so the test suite never pokes the
-/// developer's actual `$HOME`.
+/// of reading the real environment — tests drive this with a `tempdir`-rooted fixture so the suite never pokes the developer's real `$HOME`.
 pub fn run_with_env(
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
@@ -84,15 +69,12 @@ pub fn run_with_env(
 /// [`run_with_env`] with the effective uid supplied, so the "root must not
 /// mint an identity" rule is testable without running the suite as root.
 ///
-/// # Why the uid matters
-///
-/// This hook is reachable from a *system* unit that runs before anyone has
-/// logged in. In that context `$HOME` is root's, so minting here would put
-/// the user's signing key in `/root/.config`, owned by root — somewhere the
-/// person it belongs to cannot read. The session would then find no identity
-/// and boot without one, which is exactly the failure this guard exists to
-/// prevent. A signing identity is *personal*: it is minted in the user's own
-/// session, by [`crate::onboarding`], after the user has been told what it is.
+/// This hook is reachable from a *system* unit running before anyone has
+/// logged in, where `$HOME` is root's — minting here would put the
+/// user's signing key in `/root/.config`, owned by root and unreadable
+/// by the person it belongs to. The session would then find no identity
+/// and boot without one, exactly the failure this guard prevents. A
+/// signing identity is *personal*: minted in the user's own session, by [`crate::onboarding`], after the user has been told what it is.
 pub fn run_as(
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
@@ -110,10 +92,7 @@ pub fn run_as(
         config_dir.display()
     );
 
-    // Identity provisioning happens in the user's session, never here as
-    // root. See `run_as` for why. Minting into root's tree produced a key the
-    // user could not read and a session that logged "no identity found" —
-    // refusing loudly is better than writing it to the wrong home.
+    // Identity provisioning happens in the user's session, never here as root — see `run_as`'s doc comment for why.
     if uid == 0 {
         tracing::info!(
             "firstboot: running as root, so no signing identity is minted here — \
@@ -123,11 +102,9 @@ pub fn run_as(
     }
 
     // Create a fresh single-device Ed25519 record if none exists.
-    // Best-effort — a failure to write the identity does NOT prevent the
-    // compositor from continuing to boot; without a real record apps fall
-    // back to unsigned collab ops, which is the pre-existing behaviour. Any
-    // subsequent enrolment / rotation goes through the identity-flow
-    // ceremony in `ui::widget::identity_flow`.
+    // Best-effort — a failure to write does NOT prevent boot from
+    // continuing; without a real record apps fall back to unsigned collab
+    // ops. Any later enrolment/rotation goes through the identity-flow ceremony in `ui::widget::identity_flow`.
     if let Some(identity_dir) = resolve_identity_dir(xdg_config_home, home) {
         match ensure_primary_identity(&identity_dir) {
             Ok(ProvisionOutcome::Existing) => {
@@ -154,22 +131,18 @@ pub fn run_as(
     Ok(())
 }
 
-/// Result of the "make sure a primary identity exists" step. Exposed
-/// out of [`ensure_primary_identity`] so tests can distinguish "we
-/// created one" from "one was already there and we left it alone".
+/// Result of the "make sure a primary identity exists" step, exposed so
+/// tests can distinguish "we created one" from "one was already there".
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProvisionOutcome {
     /// The identity file already existed; we did not touch it.
     Existing,
-    /// A fresh single-device identity was minted and written. The
-    /// derived Ed25519 pubkey is included so a wrapper (e.g. the
-    /// firstboot log line, tests) can render the identity's public
-    /// half without re-reading the file.
+    /// A fresh single-device identity was minted and written — the derived
+    /// Ed25519 pubkey is included so a wrapper (log line, tests) can render the public half without re-reading the file.
     Created { pubkey_hex: String },
 }
 
-/// Compute the quick-desktop config dir (`<config-base>/quick-desktop`)
-/// following the same XDG fallback rules the peer-sync marker uses.
+/// Compute the quick-desktop config dir (`<config-base>/quick-desktop`) following the same XDG fallback rules the peer-sync marker uses.
 fn resolve_config_dir(
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
@@ -186,10 +159,8 @@ fn resolve_config_dir(
     Some(p)
 }
 
-/// Compute the qOS identity dir (`<config-base>/qos/identity`) —
-/// the same path `runtime-identity::load()` reads (when
-/// `QOS_USER_IDENTITY` points at the primary file inside it) and the
-/// same directory `DiskIdentityStore::from_env` writes to.
+/// Compute the qOS identity dir (`<config-base>/qos/identity`) — the
+/// same path `runtime-identity::load()` reads and `DiskIdentityStore::from_env` writes to.
 fn resolve_identity_dir(
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
@@ -214,13 +185,11 @@ fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
 }
 
 /// Create a fresh single-device identity JSON record at
-/// `<identity_dir>/primary.json` when none exists, `0600`-mode. The
-/// directory itself is created `0700` for the same rest-of-XDG
-/// reason `DiskIdentityStore` uses (world-readable dirs leak
-/// existence + atime even when the file itself is locked down).
+/// `<identity_dir>/primary.json` when none exists, `0600`-mode; the
+/// directory itself is `0700` (world-readable dirs leak existence +
+/// atime even when the file itself is locked down).
 ///
-/// Idempotent: an existing file is returned as
-/// [`ProvisionOutcome::Existing`] with no modification.
+/// Idempotent: an existing file is returned as [`ProvisionOutcome::Existing`] with no modification.
 pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
     fs::create_dir_all(identity_dir)?;
     #[cfg(unix)]
@@ -235,11 +204,10 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
     }
 
     // Mint through the same encoder the interactive ceremony uses, so
-    // there is exactly one writer of the on-disk record and the two
-    // provisioning paths cannot drift apart in what they store.
+    // there's exactly one writer of the on-disk record — the two provisioning paths can't drift apart in what they store.
     let mut rng = OsRng;
     let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
     let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
     let record = IdentityRecord::from_threshold_identity(
         &identity,
@@ -252,10 +220,155 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
         .to_json_bytes()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // The 0600 is applied to the temp file before the rename, so the record
-    // is never readable by anyone else at its final path.
+    // The 0600 is applied to the temp file before the rename, so the record is never readable by anyone else at its final path.
     atomic_file::write_with_mode(&path, &bytes, 0o600)?;
     Ok(ProvisionOutcome::Created { pubkey_hex })
+}
+
+/// Provision the complete identity chain used by collaboration.
+///
+/// The personal 1-of-1 signing key remains in `primary.json`, while the same
+/// key is also persisted as the user root that certifies a distinct
+/// per-device key.  That device key is the single transport identity used by
+/// the shell, filesystem synchroniser, and hosted relay.  Existing records
+/// are migrated idempotently; an existing device key is never replaced.
+pub fn ensure_collaboration_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+) -> Result<ProvisionOutcome, io::Error> {
+    fs::create_dir_all(identity_dir)?;
+    #[cfg(unix)]
+    {
+        let mut perm = fs::metadata(identity_dir)?.permissions();
+        perm.set_mode(0o700);
+        fs::set_permissions(identity_dir, perm)?;
+    }
+
+    let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
+    let (identity, outcome) = if primary_path.exists() {
+        let bytes = fs::read(&primary_path)?;
+        let record = IdentityRecord::from_json_bytes(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let identity = record
+            .into_threshold_identity()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        (identity, ProvisionOutcome::Existing)
+    } else if paths.user_privkey.exists() {
+        let root = persist::read_signing_key(&paths.user_privkey)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let identity = ThresholdIdentity::from_single_device_seed(&root.to_bytes());
+        let record = IdentityRecord::from_threshold_identity(
+            &identity,
+            "",
+            [128, 128, 128],
+            std::time::SystemTime::now(),
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let bytes = record
+            .to_json_bytes()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        atomic_file::write_with_mode(&primary_path, &bytes, 0o600)?;
+        let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
+        (identity, ProvisionOutcome::Created { pubkey_hex })
+    } else {
+        let mut rng = OsRng;
+        let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let record = IdentityRecord::from_threshold_identity(
+            &identity,
+            "",
+            [128, 128, 128],
+            std::time::SystemTime::now(),
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let bytes = record
+            .to_json_bytes()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        atomic_file::write_with_mode(&primary_path, &bytes, 0o600)?;
+        let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
+        (identity, ProvisionOutcome::Created { pubkey_hex })
+    };
+
+    let root_seed = identity.single_device_seed().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "threshold identity cannot be exported as a single-device root",
+        )
+    })?;
+    let root = ed25519_dalek::SigningKey::from_bytes(&root_seed);
+    paths.ensure_directories()?;
+
+    if paths.user_privkey.exists() {
+        let stored = persist::read_signing_key(&paths.user_privkey)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if stored.verifying_key() != root.verifying_key() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "primary identity does not match the persisted user root",
+            ));
+        }
+    } else {
+        persist::write_signing_key(&paths.user_privkey, &root)?;
+    }
+
+    let root_public = root.verifying_key().to_bytes();
+    if paths.user_pubkey.exists() {
+        let stored = persist::read_public_key(&paths.user_pubkey)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if stored != root_public {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "primary identity does not match the persisted user public key",
+            ));
+        }
+    } else {
+        persist::write_public_key(&paths.user_pubkey, &root_public)?;
+    }
+
+    let (device, _) =
+        persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
+    if paths.device_cert.exists() {
+        let cert = persist::read_device_cert(&paths.device_cert)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        qos_user_identity::verify_device_cert(&cert)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if cert.user_public_key != root_public
+            || cert.device_public_key != device.verifying_key().to_bytes()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "device certificate does not match the provisioned identity keys",
+            ));
+        }
+    } else {
+        let issued_at_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        let mut cert = DeviceCert {
+            user_public_key: root_public,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Primary device".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).map_err(|e| io::Error::other(e.to_string()))?;
+        persist::write_device_cert(&paths.device_cert, &cert)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+    }
+
+    Ok(outcome)
+}
+
+/// Resolve the system identity root, with the same test/development override
+/// used by the filesystem synchroniser.
+pub fn collaboration_identity_paths() -> IdentityPaths {
+    std::env::var_os("QOS_IDENTITY_ROOT")
+        .filter(|value| !value.is_empty())
+        .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -273,8 +386,7 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
-    /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep —
-    /// this is the only test in `quick-shell` that needs one).
+    /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
     struct TmpDir(PathBuf);
     impl TmpDir {
         fn new(name: &str) -> Self {
@@ -282,8 +394,7 @@ mod tests {
             let pid = std::process::id();
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
+                .map_or(0, |d| d.as_nanos());
             let path = base.join(format!("quick-desktop-firstboot-{name}-{pid}-{nonce}"));
             std::fs::create_dir_all(&path).expect("create tmpdir");
             TmpDir(path)
@@ -323,9 +434,7 @@ mod tests {
     #[test]
     fn run_is_idempotent_on_existing_dir() {
         let tmp = TmpDir::new("idempotent");
-        // First call creates the dir.
         run_with_env(Some(OsString::from(tmp.path())), None).expect("first run ok");
-        // Second call must not error out.
         run_with_env(Some(OsString::from(tmp.path())), None).expect("second run ok");
         let expected = tmp.path().join("quick-desktop");
         assert!(expected.exists());
@@ -333,9 +442,8 @@ mod tests {
 
     #[test]
     fn run_without_env_is_a_noop_not_an_error() {
-        // Systemd `Type=oneshot` units fail the whole transaction if
-        // ExecStart returns non-zero — first-boot must never break
-        // boot just because env-vars are missing in the unit context.
+        // Systemd `Type=oneshot` units fail the whole transaction if ExecStart
+        // returns non-zero — first-boot must never break boot over missing env-vars in the unit context.
         run_with_env(None, None).expect("no-env case is a no-op, not an error");
     }
 
@@ -353,17 +461,15 @@ mod tests {
             "expected identity file at {identity_file:?}"
         );
 
-        // File loads through runtime-identity's parser — real seed,
-        // real derived pubkey, no soft-mismatch.
-        let ident = runtime_identity::load_from_path(identity_file.clone())
+        // File loads through runtime-identity's parser — real seed, real derived pubkey, no soft-mismatch.
+        let ident = runtime_identity::load_from_path(identity_file)
             .expect("runtime-identity must parse the minted record");
         assert!(ident.is_single_device());
         assert_eq!(ident.threshold(), 1);
         assert_eq!(ident.total_shares(), 1);
         assert_eq!(ident.share_index(), 1);
-        // Round-trip via a real sign+verify to confirm the seed and
-        // pubkey stored in the file match — a placeholder record
-        // would fail this check.
+        // Round-trip via a real sign+verify to confirm the seed and pubkey
+        // stored in the file match — a placeholder record would fail this.
         let sig = ident.sign(b"firstboot-check").expect("sign ok");
         let vk =
             ed25519_dalek::VerifyingKey::from_bytes(&ident.group_public_key()).expect("vk decode");
@@ -373,14 +479,12 @@ mod tests {
             .expect("dalek verify must succeed against derived pubkey");
     }
 
-    /// Running as root must not mint an identity. The system unit that used
-    /// to call this ran before login, so the key landed in `/root/.config`
-    /// owned by root — unreadable by the person it belonged to, and the
-    /// session then booted with no identity at all.
+    /// Running as root must not mint an identity — see `run_as`'s doc comment for why.
     #[test]
     fn root_does_not_mint_an_identity() {
         let tmp = TmpDir::new("root-refuses");
-        run_as(Some(OsString::from(tmp.path())), None, 0).expect("root path is a no-op, not an error");
+        run_as(Some(OsString::from(tmp.path())), None, 0)
+            .expect("root path is a no-op, not an error");
         let identity_file = tmp
             .path()
             .join("qos")
@@ -392,8 +496,7 @@ mod tests {
         );
     }
 
-    /// The same call as a normal user does mint, so the guard is about the
-    /// uid and not about the function having quietly stopped working.
+    /// The same call as a normal user does mint, so the guard is about the uid and not about the function having quietly stopped working.
     #[test]
     fn a_normal_user_still_mints() {
         let tmp = TmpDir::new("user-mints");
@@ -403,7 +506,10 @@ mod tests {
             .join("qos")
             .join("identity")
             .join(PRIMARY_IDENTITY_FILE);
-        assert!(identity_file.exists(), "a non-root uid mints {identity_file:?}");
+        assert!(
+            identity_file.exists(),
+            "a non-root uid mints {identity_file:?}"
+        );
     }
 
     #[test]
@@ -412,10 +518,8 @@ mod tests {
         let dir = tmp.path().join("qos").join("identity");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join(PRIMARY_IDENTITY_FILE);
-        // Marker bytes: not a valid identity — the point is to prove
-        // firstboot doesn't overwrite it. If firstboot ever starts
-        // repairing malformed records, replace the marker with a
-        // real valid record and assert the byte-content is preserved.
+        // Marker bytes: not a valid identity — proves firstboot doesn't
+        // overwrite it. If firstboot starts repairing malformed records, swap in a real record and assert byte-content is preserved.
         std::fs::write(&file, b"MARKER: hands off").unwrap();
         run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
         let got = std::fs::read(&file).unwrap();
@@ -436,6 +540,37 @@ mod tests {
         // Second run leaves it alone.
         assert_eq!(
             ensure_primary_identity(&dir).expect("provision ok (2nd)"),
+            ProvisionOutcome::Existing
+        );
+    }
+
+    #[test]
+    fn collaboration_setup_creates_one_verified_identity_chain() {
+        let tmp = TmpDir::new("collaboration-identity");
+        let personal = tmp.path().join("config/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+
+        assert!(matches!(
+            ensure_collaboration_identity(&personal, &paths).expect("provision identity"),
+            ProvisionOutcome::Created { .. }
+        ));
+        let record = IdentityRecord::from_json_bytes(
+            &std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
+        )
+        .unwrap();
+        let root = persist::read_signing_key(&paths.user_privkey).unwrap();
+        let device = persist::read_device_key(&paths.device_privkey).unwrap();
+        let cert = persist::read_device_cert(&paths.device_cert).unwrap();
+
+        assert_eq!(
+            record.threshold_identity.group_public_key,
+            root.verifying_key().to_bytes()
+        );
+        assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
+        assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
+        qos_user_identity::verify_device_cert(&cert).unwrap();
+        assert_eq!(
+            ensure_collaboration_identity(&personal, &paths).unwrap(),
             ProvisionOutcome::Existing
         );
     }

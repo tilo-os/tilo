@@ -32,9 +32,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
-use crate::model::{
-    Background, Deck, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign,
-};
+use crate::model::{Background, Deck, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign};
 
 pub struct SlidesDoc;
 
@@ -61,7 +59,9 @@ impl SlidesDoc {
         let deck = Self::deck_ensure(doc);
         match doc.get(&deck, "slides") {
             Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => doc.put_object(&deck, "slides", ObjType::List).expect("put slides"),
+            _ => doc
+                .put_object(&deck, "slides", ObjType::List)
+                .expect("put slides"),
         }
     }
 
@@ -97,10 +97,10 @@ impl SlidesDoc {
         };
         let n = doc.length(&elements);
         for j in 0..n {
-            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j) {
-                if str_field(doc, &e, "id").as_deref() == Some(elem_id) {
-                    return Some(e);
-                }
+            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j)
+                && str_field(doc, &e, "id").as_deref() == Some(elem_id)
+            {
+                return Some(e);
             }
         }
         None
@@ -152,14 +152,18 @@ impl SlidesDoc {
         Self::write_text(doc, obj, "notes", &slide.notes);
         let elements = match doc.get(obj, "elements") {
             Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => doc.put_object(obj, "elements", ObjType::List).expect("put elements"),
+            _ => doc
+                .put_object(obj, "elements", ObjType::List)
+                .expect("put elements"),
         };
         // Fresh write: clear any existing then append in order.
         while doc.length(&elements) > 0 {
             let _ = doc.delete(&elements, 0);
         }
         for (j, el) in slide.elements.iter().enumerate() {
-            let e = doc.insert_object(&elements, j, ObjType::Map).expect("insert element");
+            let e = doc
+                .insert_object(&elements, j, ObjType::Map)
+                .expect("insert element");
             Self::write_element(doc, &e, el);
         }
     }
@@ -174,7 +178,9 @@ impl SlidesDoc {
             let _ = doc.delete(&slides, 0);
         }
         for (i, s) in deck.slides.iter().enumerate() {
-            let so = doc.insert_object(&slides, i, ObjType::Map).expect("insert slide");
+            let so = doc
+                .insert_object(&slides, i, ObjType::Map)
+                .expect("insert slide");
             Self::write_slide(doc, &so, s);
         }
     }
@@ -192,7 +198,9 @@ impl SlidesDoc {
         let deck = Self::deck_ensure(doc);
         let tid = match doc.get(&deck, "title") {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => doc.put_object(&deck, "title", ObjType::Text).expect("put title"),
+            _ => doc
+                .put_object(&deck, "title", ObjType::Text)
+                .expect("put title"),
         };
         let _ = doc.splice_text(&tid, char_pos, del as isize, ins);
     }
@@ -224,19 +232,15 @@ impl SlidesDoc {
         if let Some(s) = Self::slide_obj(doc, slide_idx) {
             let tid = match doc.get(&s, "notes") {
                 Ok(Some((Value::Object(ObjType::Text), id))) => id,
-                _ => doc.put_object(&s, "notes", ObjType::Text).expect("put notes"),
+                _ => doc
+                    .put_object(&s, "notes", ObjType::Text)
+                    .expect("put notes"),
             };
             let _ = doc.splice_text(&tid, char_pos, del as isize, ins);
         }
     }
 
-    pub fn set_element_pos(
-        doc: &mut AutoCommit,
-        slide_idx: usize,
-        elem_id: &str,
-        x: f64,
-        y: f64,
-    ) {
+    pub fn set_element_pos(doc: &mut AutoCommit, slide_idx: usize, elem_id: &str, x: f64, y: f64) {
         if let Some(e) = Self::element_obj(doc, slide_idx, elem_id) {
             let _ = doc.put(&e, "x", x);
             let _ = doc.put(&e, "y", y);
@@ -296,12 +300,7 @@ impl SlidesDoc {
         }
     }
 
-    pub fn set_element_z(
-        doc: &mut AutoCommit,
-        slide_idx: usize,
-        elem_id: &str,
-        z: i64,
-    ) {
+    pub fn set_element_z(doc: &mut AutoCommit, slide_idx: usize, elem_id: &str, z: i64) {
         if let Some(e) = Self::element_obj(doc, slide_idx, elem_id) {
             let _ = doc.put(&e, "z", z);
         }
@@ -335,18 +334,16 @@ impl SlidesDoc {
     }
 
     pub fn remove_element(doc: &mut AutoCommit, slide_idx: usize, elem_id: &str) {
-        if let Some(slide) = Self::slide_obj(doc, slide_idx) {
-            if let Ok(Some((Value::Object(ObjType::List), elements))) =
-                doc.get(&slide, "elements")
-            {
-                let n = doc.length(&elements);
-                for j in 0..n {
-                    if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j) {
-                        if str_field(doc, &e, "id").as_deref() == Some(elem_id) {
-                            let _ = doc.delete(&elements, j);
-                            return;
-                        }
-                    }
+        if let Some(slide) = Self::slide_obj(doc, slide_idx)
+            && let Ok(Some((Value::Object(ObjType::List), elements))) = doc.get(&slide, "elements")
+        {
+            let n = doc.length(&elements);
+            for j in 0..n {
+                if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j)
+                    && str_field(doc, &e, "id").as_deref() == Some(elem_id)
+                {
+                    let _ = doc.delete(&elements, j);
+                    return;
                 }
             }
         }
@@ -363,10 +360,10 @@ impl SlidesDoc {
     }
 
     pub fn remove_slide(doc: &mut AutoCommit, idx: usize) {
-        if let Some(slides) = Self::slides_list_get(doc) {
-            if idx < doc.length(&slides) {
-                let _ = doc.delete(&slides, idx);
-            }
+        if let Some(slides) = Self::slides_list_get(doc)
+            && idx < doc.length(&slides)
+        {
+            let _ = doc.delete(&slides, idx);
         }
     }
 
@@ -441,12 +438,22 @@ impl SlidesDoc {
                     });
                 }
             }
-            slides.push(Slide { id, layout, background, notes, elements });
+            slides.push(Slide {
+                id,
+                layout,
+                background,
+                notes,
+                elements,
+            });
         }
         if slides.is_empty() {
             return None;
         }
-        Some(Deck { title, palette, slides })
+        Some(Deck {
+            title,
+            palette,
+            slides,
+        })
     }
 }
 
@@ -456,7 +463,7 @@ impl SlidesDoc {
 
 fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -464,7 +471,7 @@ fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
 fn text_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     match doc.get(obj, key) {
         Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).ok(),
-        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -493,7 +500,7 @@ fn bool_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{seed_deck, ElementKind};
+    use crate::model::{ElementKind, seed_deck};
 
     #[test]
     fn write_text_append_one_char_is_bounded() {
@@ -528,7 +535,10 @@ mod tests {
             SlidesDoc::write_text(&mut doc, &obj, "notes", &long);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-storing the same text grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-storing the same text grew the document {a} -> {b}"
+        );
     }
 
     #[test]
@@ -568,9 +578,15 @@ mod tests {
         let el = Element::shape(ElementKind::Ellipse, 10.0, 10.0, 50.0, 50.0);
         let id = el.id.clone();
         SlidesDoc::add_element(&mut doc, 0, &el);
-        assert_eq!(SlidesDoc::load(&doc).unwrap().slides[0].elements.len(), before + 1);
+        assert_eq!(
+            SlidesDoc::load(&doc).unwrap().slides[0].elements.len(),
+            before + 1
+        );
         SlidesDoc::remove_element(&mut doc, 0, &id);
-        assert_eq!(SlidesDoc::load(&doc).unwrap().slides[0].elements.len(), before);
+        assert_eq!(
+            SlidesDoc::load(&doc).unwrap().slides[0].elements.len(),
+            before
+        );
     }
 
     #[test]
@@ -594,7 +610,10 @@ mod tests {
         // Char-level splice (the inline-rename path): insert " 2026" at the end.
         let at = "Quarterly review".chars().count();
         SlidesDoc::splice_title(&mut doc, at, 0, " 2026");
-        assert_eq!(SlidesDoc::load(&doc).unwrap().title, "Quarterly review 2026");
+        assert_eq!(
+            SlidesDoc::load(&doc).unwrap().title,
+            "Quarterly review 2026"
+        );
         // Delete the first char.
         SlidesDoc::splice_title(&mut doc, 0, 1, "");
         assert_eq!(SlidesDoc::load(&doc).unwrap().title, "uarterly review 2026");

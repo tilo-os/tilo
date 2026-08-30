@@ -38,7 +38,7 @@ use crate::customizer::{self, Customizer};
 use crate::doc;
 use crate::draw;
 use crate::gallery::Gallery;
-use crate::model::{self, default_catalog, demo_catalog, ThemeSpec, TokenId, FONTS};
+use crate::model::{FONTS, ThemeSpec, TokenId, default_catalog, demo_catalog};
 use crate::preview::PreviewPane;
 use crate::store;
 use crate::widgets::{Btn, BtnVariant};
@@ -129,6 +129,12 @@ pub struct ThemesApp {
     /// editable custom theme) instead of the live presets-only default — for
     /// `--shots` and "try it" walkthroughs, never the live path.
     seed_demo: bool,
+}
+
+impl Default for ThemesApp {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ThemesApp {
@@ -246,15 +252,35 @@ impl ThemesApp {
     /// Draw the hamburger / close toggle at the left of the top bar and record
     /// its rect for hit testing. Shows a hamburger when the gallery is hidden
     /// and a close "X" once it's revealed.
-    fn draw_toggle(&mut self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme, tb: Rect) {
+    fn draw_toggle(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        _tr: &mut TextRenderer,
+        theme: &Theme,
+        tb: Rect,
+    ) {
         let s = TOGGLE_SIZE;
         let bx = tb.x0 + 16.0;
         let by = tb.center().y - s / 2.0;
         let btn = Rect::new(bx, by, bx + s, by + s);
         self.toggle_rect = btn;
 
-        draw::fill_rrect(scene, t, btn, theme.tokens.radii.md as f64, theme.bg_app);
-        draw::stroke_rrect(scene, t, btn, theme.tokens.radii.md as f64, theme.border_standard, 1.0);
+        draw::fill_rrect(
+            scene,
+            t,
+            btn,
+            f64::from(theme.tokens.radii.md),
+            theme.bg_app,
+        );
+        draw::stroke_rrect(
+            scene,
+            t,
+            btn,
+            f64::from(theme.tokens.radii.md),
+            theme.border_standard,
+            1.0,
+        );
 
         let cx = btn.center().x;
         let cy = btn.center().y;
@@ -262,8 +288,22 @@ impl ThemesApp {
         if open {
             // Close "X".
             let r = 6.0;
-            draw::line(scene, t, Point::new(cx - r, cy - r), Point::new(cx + r, cy + r), theme.text_primary, 1.8);
-            draw::line(scene, t, Point::new(cx - r, cy + r), Point::new(cx + r, cy - r), theme.text_primary, 1.8);
+            draw::line(
+                scene,
+                t,
+                Point::new(cx - r, cy - r),
+                Point::new(cx + r, cy + r),
+                theme.text_primary,
+                1.8,
+            );
+            draw::line(
+                scene,
+                t,
+                Point::new(cx - r, cy + r),
+                Point::new(cx + r, cy - r),
+                theme.text_primary,
+                1.8,
+            );
         } else {
             // Three-line hamburger.
             let w = 7.0;
@@ -290,7 +330,13 @@ impl ThemesApp {
         let x1 = vp.x1 - 3.0;
         let x0 = x1 - 6.0;
         let track = Rect::new(x0, vp.y0 + 4.0, x1, vp.y1 - 4.0);
-        draw::fill_rrect(scene, t, track, 3.0, theme.border_standard.multiply_alpha(0.35));
+        draw::fill_rrect(
+            scene,
+            t,
+            track,
+            3.0,
+            theme.border_standard.multiply_alpha(0.35),
+        );
         let ratio = (self.scroll_viewport_h / self.scroll_content_h).clamp(0.08, 1.0);
         let thumb_h = (track.height() * ratio).max(28.0);
         let max_scroll = (self.scroll_content_h - self.scroll_viewport_h).max(1.0);
@@ -409,22 +455,26 @@ impl ThemesApp {
     /// safe no-op).
     fn delete_theme(&mut self, id: &str, state: &mut AutoCommit, path: &ObjId) {
         let catalog = doc::load_catalog(state, path).unwrap_or_default();
-        if let Some(idx) = catalog.iter().position(|s| s.id == id) {
-            if !catalog[idx].builtin && catalog.len() > 1 {
-                let name = catalog[idx].name.clone();
-                self.perform_action(state, crate::actions::delete_custom_theme_action(id));
-                // Move the selection onto a surviving theme: the row that slides
-                // into `idx`, or the new last row when `idx` was the tail.
-                let survivors: Vec<String> =
-                    catalog.iter().filter(|s| s.id != id).map(|s| s.id.clone()).collect();
-                let next = survivors
-                    .get(idx.min(survivors.len().saturating_sub(1)))
-                    .cloned()
-                    .unwrap_or_default();
-                doc::put_str(state, path, doc::KEY_SELECTED, &next);
-                self.status = format!("Deleted “{name}”");
-                self.structure_dirty = true;
-            }
+        if let Some(idx) = catalog.iter().position(|s| s.id == id)
+            && !catalog[idx].builtin
+            && catalog.len() > 1
+        {
+            let name = catalog[idx].name.clone();
+            self.perform_action(state, crate::actions::delete_custom_theme_action(id));
+            // Move the selection onto a surviving theme: the row that slides
+            // into `idx`, or the new last row when `idx` was the tail.
+            let survivors: Vec<String> = catalog
+                .iter()
+                .filter(|s| s.id != id)
+                .map(|s| s.id.clone())
+                .collect();
+            let next = survivors
+                .get(idx.min(survivors.len().saturating_sub(1)))
+                .cloned()
+                .unwrap_or_default();
+            doc::put_str(state, path, doc::KEY_SELECTED, &next);
+            self.status = format!("Deleted “{name}”");
+            self.structure_dirty = true;
         }
     }
 
@@ -492,7 +542,11 @@ impl Widget for ThemesApp {
         // theme. The demo focuses its editable custom theme (so a capture shows
         // real editing); the live install focuses the first preset.
         if doc::load_catalog(state, path).is_none() {
-            let cat = if self.seed_demo { demo_catalog() } else { default_catalog() };
+            let cat = if self.seed_demo {
+                demo_catalog()
+            } else {
+                default_catalog()
+            };
             doc::save_catalog(state, path, &cat);
             let sel = if self.seed_demo {
                 cat.last().map(|s| s.id.clone()).unwrap_or_default()
@@ -502,8 +556,8 @@ impl Widget for ThemesApp {
             doc::put_str(state, path, doc::KEY_SELECTED, &sel);
             doc::put_str(state, path, doc::KEY_EDIT_TOKEN, "accent");
             if let Some(s) = cat.iter().find(|s| s.id == sel) {
-                doc::put_f64(state, path, doc::KEY_ED_RADIUS, s.radius_norm as f64);
-                doc::put_f64(state, path, doc::KEY_ED_SPACING, s.spacing_norm as f64);
+                doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(s.radius_norm));
+                doc::put_f64(state, path, doc::KEY_ED_SPACING, f64::from(s.spacing_norm));
                 doc::put_str(state, path, doc::KEY_ED_FONT, &s.font);
                 doc::put_str(state, path, doc::KEY_ED_NAME, &s.name);
             }
@@ -549,8 +603,13 @@ impl Widget for ThemesApp {
         if changed {
             // LOAD: spec → controls; rebuild the colour picker.
             let spec = catalog[idx].clone();
-            doc::put_f64(state, path, doc::KEY_ED_RADIUS, spec.radius_norm as f64);
-            doc::put_f64(state, path, doc::KEY_ED_SPACING, spec.spacing_norm as f64);
+            doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(spec.radius_norm));
+            doc::put_f64(
+                state,
+                path,
+                doc::KEY_ED_SPACING,
+                f64::from(spec.spacing_norm),
+            );
             doc::put_str(state, path, doc::KEY_ED_FONT, &spec.font);
             doc::put_str(state, path, doc::KEY_ED_NAME, &spec.name);
             self.customizer.load_picker(spec.token(edit_token));
@@ -563,10 +622,10 @@ impl Widget for ThemesApp {
             if let Some(s) = doc::get_f64(state, path, doc::KEY_ED_SPACING) {
                 catalog[idx].spacing_norm = (s as f32).clamp(0.0, 1.0);
             }
-            if let Some(f) = doc::get_str(state, path, doc::KEY_ED_FONT) {
-                if FONTS.contains(&f.as_str()) {
-                    catalog[idx].font = f;
-                }
+            if let Some(f) = doc::get_str(state, path, doc::KEY_ED_FONT)
+                && FONTS.contains(&f.as_str())
+            {
+                catalog[idx].font = f;
             }
             // Inline sidebar rename: a non-empty edited name replaces the
             // theme's name (empty is ignored so a mid-edit clear can't wipe it).
@@ -581,8 +640,13 @@ impl Widget for ThemesApp {
         } else {
             // Built-in preset: pin the controls to the read-only values.
             let spec = catalog[idx].clone();
-            doc::put_f64(state, path, doc::KEY_ED_RADIUS, spec.radius_norm as f64);
-            doc::put_f64(state, path, doc::KEY_ED_SPACING, spec.spacing_norm as f64);
+            doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(spec.radius_norm));
+            doc::put_f64(
+                state,
+                path,
+                doc::KEY_ED_SPACING,
+                f64::from(spec.spacing_norm),
+            );
             doc::put_str(state, path, doc::KEY_ED_FONT, &spec.font);
             doc::put_str(state, path, doc::KEY_ED_NAME, &spec.name);
         }
@@ -594,7 +658,8 @@ impl Widget for ThemesApp {
         // 7. Push view state into the panels.
         let sel_spec = self.catalog[idx].clone();
         let active_id = doc::get_str(state, path, doc::KEY_ACTIVE).unwrap_or_default();
-        self.gallery.set_view(&self.catalog, &selected, &active_id, editable);
+        self.gallery
+            .set_view(&self.catalog, &selected, &active_id, editable);
         self.preview.set_spec(&sel_spec);
         self.customizer.set_view(sel_spec, edit_token, editable);
 
@@ -606,16 +671,28 @@ impl Widget for ThemesApp {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         // Top bar actions (right-aligned row of buttons).
-        let btn_nodes: Vec<NodeId> = self.topbar_buttons.iter_mut().map(|b| b.build_layout(taffy, theme, node_map)).collect();
+        let btn_nodes: Vec<NodeId> = self
+            .topbar_buttons
+            .iter_mut()
+            .map(|b| b.build_layout(taffy, theme, node_map))
+            .collect();
         let actions = taffy
             .new_with_children(
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Row,
                     align_items: Some(taffy::AlignItems::Center),
-                    gap: Size { width: length(8.0), height: length(0.0) },
+                    gap: Size {
+                        width: length(8.0_f32),
+                        height: length(0.0_f32),
+                    },
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
@@ -630,8 +707,16 @@ impl Widget for ThemesApp {
                     flex_direction: taffy::FlexDirection::Row,
                     justify_content: Some(taffy::JustifyContent::FlexEnd),
                     align_items: Some(taffy::AlignItems::Center),
-                    padding: taffy::Rect { left: length(18.0), right: length(18.0), top: length(0.0), bottom: length(0.0) },
-                    size: Size { width: Dimension::percent(1.0), height: Dimension::length(TOPBAR_H) },
+                    padding: taffy::Rect {
+                        left: length(18.0_f32),
+                        right: length(18.0_f32),
+                        top: length(0.0_f32),
+                        bottom: length(0.0_f32),
+                    },
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(TOPBAR_H),
+                    },
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
@@ -649,7 +734,10 @@ impl Widget for ThemesApp {
         let _ = taffy.set_style(
             gallery,
             Style {
-                size: Size { width: Dimension::length(GALLERY_W), height: Dimension::percent(1.0) },
+                size: Size {
+                    width: Dimension::length(GALLERY_W),
+                    height: Dimension::percent(1.0),
+                },
                 flex_shrink: 0.0,
                 ..taffy.style(gallery).cloned().unwrap_or_default()
             },
@@ -665,7 +753,10 @@ impl Widget for ThemesApp {
             let _ = taffy.set_style(
                 preview,
                 Style {
-                    size: Size { width: Dimension::percent(1.0), height: Dimension::length(NARROW_PREVIEW_H) },
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(NARROW_PREVIEW_H),
+                    },
                     flex_grow: 0.0,
                     flex_shrink: 0.0,
                     flex_basis: Dimension::auto(),
@@ -680,14 +771,20 @@ impl Widget for ThemesApp {
             // Collapsed: full width, intrinsic height, no shrink — a scrolling
             // stack member rather than a fixed side column.
             Style {
-                size: Size { width: Dimension::percent(1.0), height: Dimension::length(customizer::intrinsic_height()) },
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(customizer::intrinsic_height()),
+                },
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
                 ..taffy.style(customizer).cloned().unwrap_or_default()
             }
         } else {
             Style {
-                size: Size { width: Dimension::length(CUSTOMIZER_W), height: Dimension::percent(1.0) },
+                size: Size {
+                    width: Dimension::length(CUSTOMIZER_W),
+                    height: Dimension::percent(1.0),
+                },
                 flex_shrink: 0.0,
                 ..taffy.style(customizer).cloned().unwrap_or_default()
             }
@@ -704,10 +801,16 @@ impl Widget for ThemesApp {
                     Style {
                         display: taffy::Display::Flex,
                         flex_direction: taffy::FlexDirection::Column,
-                        size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
                         flex_grow: 1.0,
-                        flex_basis: length(0.0),
-                        overflow: taffy::Point { x: taffy::Overflow::Hidden, y: taffy::Overflow::Hidden },
+                        flex_basis: length(0.0_f32),
+                        overflow: taffy::Point {
+                            x: taffy::Overflow::Hidden,
+                            y: taffy::Overflow::Hidden,
+                        },
                         ..Default::default()
                     },
                     &[preview, customizer],
@@ -719,9 +822,12 @@ impl Widget for ThemesApp {
                     Style {
                         display: taffy::Display::Flex,
                         flex_direction: taffy::FlexDirection::Row,
-                        size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
                         flex_grow: 1.0,
-                        flex_basis: length(0.0),
+                        flex_basis: length(0.0_f32),
                         ..Default::default()
                     },
                     &[gallery, preview, customizer],
@@ -737,7 +843,10 @@ impl Widget for ThemesApp {
             let _ = taffy.set_style(
                 gallery,
                 Style {
-                    size: Size { width: Dimension::length(GALLERY_W), height: Dimension::percent(1.0) },
+                    size: Size {
+                        width: Dimension::length(GALLERY_W),
+                        height: Dimension::percent(1.0),
+                    },
                     position: taffy::Position::Absolute,
                     flex_shrink: 0.0,
                     ..taffy.style(gallery).cloned().unwrap_or_default()
@@ -752,23 +861,26 @@ impl Widget for ThemesApp {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
-                    size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
                     ..Default::default()
                 },
                 &root_children,
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let o = Point::new(self.rect.x0, self.rect.y0);
 
@@ -779,8 +891,8 @@ impl Widget for ThemesApp {
         let layout = self.layout_class();
         self.gallery_flap.reconcile(layout);
         let new_build_width = self.rect.width();
-        let class_changed =
-            SplitLayout::from_width(self.build_width, BREAKPOINT) != layout && self.rect.width() > 0.0;
+        let class_changed = SplitLayout::from_width(self.build_width, BREAKPOINT) != layout
+            && self.rect.width() > 0.0;
         if class_changed {
             self.structure_dirty = true;
         }
@@ -791,9 +903,15 @@ impl Widget for ThemesApp {
 
         if let (Some(tb), Some(actions)) = (self.topbar_node, self.topbar_actions_node) {
             let tbl = taffy.layout(tb).unwrap();
-            let tb_o = Point::new(o.x + tbl.location.x as f64, o.y + tbl.location.y as f64);
+            let tb_o = Point::new(
+                o.x + f64::from(tbl.location.x),
+                o.y + f64::from(tbl.location.y),
+            );
             let al = taffy.layout(actions).unwrap();
-            let a_o = Point::new(tb_o.x + al.location.x as f64, tb_o.y + al.location.y as f64);
+            let a_o = Point::new(
+                tb_o.x + f64::from(al.location.x),
+                tb_o.y + f64::from(al.location.y),
+            );
             if let Ok(children) = taffy.children(actions) {
                 for (b, c) in self.topbar_buttons.iter_mut().zip(children.iter()) {
                     b.apply_layout(taffy, *c, a_o);
@@ -803,17 +921,29 @@ impl Widget for ThemesApp {
 
         if let Some(content) = self.content_node {
             let cl = taffy.layout(content).unwrap();
-            let c_o = Point::new(o.x + cl.location.x as f64, o.y + cl.location.y as f64);
+            let c_o = Point::new(
+                o.x + f64::from(cl.location.x),
+                o.y + f64::from(cl.location.y),
+            );
             if layout == SplitLayout::Overlay {
                 // Collapsed: preview stacked above customizer, both offset up
                 // by the scroll so the taller-than-viewport content is fully
                 // reachable. `content_rect` is the clip/viewport the wheel and
                 // scrollbar work against.
-                let vp = Rect::new(c_o.x, c_o.y, c_o.x + cl.size.width as f64, c_o.y + cl.size.height as f64);
+                let vp = Rect::new(
+                    c_o.x,
+                    c_o.y,
+                    c_o.x + f64::from(cl.size.width),
+                    c_o.y + f64::from(cl.size.height),
+                );
                 self.content_rect = vp;
                 self.scroll_viewport_h = vp.height();
-                let ph = self.preview_node.map(|n| taffy.layout(n).unwrap().size.height as f64).unwrap_or(0.0);
-                let ch = self.customizer_node.map(|n| taffy.layout(n).unwrap().size.height as f64).unwrap_or(0.0);
+                let ph = self
+                    .preview_node
+                    .map_or(0.0, |n| f64::from(taffy.layout(n).unwrap().size.height));
+                let ch = self
+                    .customizer_node
+                    .map_or(0.0, |n| f64::from(taffy.layout(n).unwrap().size.height));
                 self.scroll_content_h = ph + ch;
                 if self.shot_scroll {
                     self.scroll = 260.0;
@@ -845,13 +975,16 @@ impl Widget for ThemesApp {
         // top bar so the hamburger stays reachable.
         if layout == SplitLayout::Overlay {
             let slide = self.gallery_flap.slide();
-            let gw = GALLERY_W as f64;
+            let gw = f64::from(GALLERY_W);
             let x0 = self.rect.x0 - gw * (1.0 - slide);
-            let y0 = self.rect.y0 + TOPBAR_H as f64;
+            let y0 = self.rect.y0 + f64::from(TOPBAR_H);
             self.gallery_overlay_rect = Rect::new(x0, y0, x0 + gw, self.rect.y1);
             if let Some(n) = self.gallery_node {
-                self.gallery
-                    .apply_layout(taffy, n, Point::new(self.gallery_overlay_rect.x0, self.gallery_overlay_rect.y0));
+                self.gallery.apply_layout(
+                    taffy,
+                    n,
+                    Point::new(self.gallery_overlay_rect.x0, self.gallery_overlay_rect.y0),
+                );
             }
         } else {
             self.gallery_overlay_rect = Rect::ZERO;
@@ -865,7 +998,14 @@ impl Widget for ThemesApp {
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, p: &PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        p: &PresenceCtx,
+    ) {
         // Advance the reveal animation (frame-rate-independent; `needs_redraw`
         // keeps frames flowing while it settles).
         let layout = self.layout_class();
@@ -882,7 +1022,13 @@ impl Widget for ThemesApp {
             // Clip the scrolling preview+customizer stack to its viewport so
             // scrolled-out content can't bleed over the top bar; then draw the
             // scroll indicator over the clipped content.
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.content_rect);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                t,
+                &self.content_rect,
+            );
             self.preview.draw(scene, t, tr, theme, p);
             self.customizer.draw(scene, t, tr, theme, p);
             scene.pop_layer();
@@ -900,20 +1046,37 @@ impl Widget for ThemesApp {
             if reveal > 0.001 {
                 let scrim_rect = Rect::new(
                     self.rect.x0,
-                    self.rect.y0 + TOPBAR_H as f64,
+                    self.rect.y0 + f64::from(TOPBAR_H),
                     self.rect.x1,
                     self.rect.y1,
                 );
-                let scrim = theme.tokens.colors.surfaces.overlay.with_alpha_factor((reveal * 0.6) as f32);
+                let scrim = theme
+                    .tokens
+                    .colors
+                    .surfaces
+                    .overlay
+                    .with_alpha_factor((reveal * 0.6) as f32);
                 scene.fill(Fill::NonZero, t, scrim, None, &scrim_rect);
                 self.gallery.draw(scene, t, tr, theme, p);
             }
         }
 
         // Top bar over the panes.
-        let tb = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + TOPBAR_H as f64);
+        let tb = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + f64::from(TOPBAR_H),
+        );
         draw::fill_rect(scene, t, tb, theme.bg_primary);
-        draw::line(scene, t, Point::new(tb.x0, tb.y1), Point::new(tb.x1, tb.y1), theme.border_standard, 1.0);
+        draw::line(
+            scene,
+            t,
+            Point::new(tb.x0, tb.y1),
+            Point::new(tb.x1, tb.y1),
+            theme.border_standard,
+            1.0,
+        );
 
         // Hamburger / close toggle (overlay only) sits at the far left. The OS
         // owns the window title/app-name/logo, so the app draws no wordmark.
@@ -929,21 +1092,54 @@ impl Widget for ThemesApp {
         if !self.status.is_empty() {
             let (w, _) = tr.measure(&self.status, 12.0, None);
             let pad = 14.0;
-            let tw = w as f64 + pad * 2.0;
+            let tw = f64::from(w) + pad * 2.0;
             let cx = tb.center().x - tw / 2.0;
             let pill = Rect::new(cx, tb.y0 + 14.0, cx + tw, tb.y0 + 40.0);
             draw::fill_rrect(scene, t, pill, 13.0, theme.tokens.colors.semantic.success);
-            draw::text_center(tr, scene, t, &self.status, 12.0, vello::peniko::Color::WHITE, pill.x0, pill.x1, pill.y0, pill.y1, TextWeight::Semibold);
+            draw::text_center(
+                tr,
+                scene,
+                t,
+                &self.status,
+                12.0,
+                vello::peniko::Color::WHITE,
+                pill.x0,
+                pill.x1,
+                pill.y0,
+                pill.y1,
+                TextWeight::Semibold,
+            );
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn handle_event(&mut self, event: &WindowEvent, scale: f64, m: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, _node: NodeId, taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        m: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        _node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
         // Pointer-capture priority: a live picker / slider drag in the
         // customizer must keep receiving events wherever the cursor goes.
         if self.customizer.wants_pointer_capture() {
             if let Some(n) = self.customizer_node {
-                self.customizer.handle_event(event, scale, m, state, path, handled, focus_target, n, taffy);
+                self.customizer.handle_event(
+                    event,
+                    scale,
+                    m,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
             }
             return;
         }
@@ -958,46 +1154,52 @@ impl Widget for ThemesApp {
 
         // Collapsed layout: the wheel scrolls the preview+customizer stack
         // (unless the overlay gallery is open, which owns input while up).
-        if overlay && !gallery_open {
-            if let WindowEvent::MouseWheel { delta, .. } = event {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -*y * 60.0,
-                    MouseScrollDelta::PixelDelta(pp) => -pp.y as f32,
-                };
-                let max = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
-                self.scroll = (self.scroll + dy as f64).clamp(0.0, max);
-                *handled = true;
-                return;
-            }
+        if overlay
+            && !gallery_open
+            && let WindowEvent::MouseWheel { delta, .. } = event
+        {
+            let dy = match delta {
+                MouseScrollDelta::LineDelta(_, y) => -*y * 60.0,
+                MouseScrollDelta::PixelDelta(pp) => -pp.y as f32,
+            };
+            let max = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
+            self.scroll = (self.scroll + f64::from(dy)).clamp(0.0, max);
+            *handled = true;
+            return;
         }
 
         // Esc dismisses an open overlay gallery before anything else sees it.
-        if overlay && gallery_open {
-            if let WindowEvent::KeyboardInput { event: key_event, .. } = event {
-                if key_event.state == ElementState::Pressed
-                    && key_event.logical_key == Key::Named(NamedKey::Escape)
-                {
-                    self.gallery_flap.close();
-                    *handled = true;
-                    return;
-                }
-            }
+        if overlay
+            && gallery_open
+            && let WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } = event
+            && key_event.state == ElementState::Pressed
+            && key_event.logical_key == Key::Named(NamedKey::Escape)
+        {
+            self.gallery_flap.close();
+            *handled = true;
+            return;
         }
 
         // The hamburger toggle (overlay only) summons / dismisses the gallery.
-        if overlay {
-            if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
-                if self.toggle_rect.contains(self.last_cursor) {
-                    self.gallery_flap.toggle(SplitLayout::Overlay);
-                    *handled = true;
-                    return;
-                }
-                // Tapping the scrim (content, outside the flap) dismisses it.
-                if gallery_open && !self.gallery_overlay_rect.contains(self.last_cursor) {
-                    self.gallery_flap.close();
-                    *handled = true;
-                    return;
-                }
+        if overlay
+            && let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+        {
+            if self.toggle_rect.contains(self.last_cursor) {
+                self.gallery_flap.toggle(SplitLayout::Overlay);
+                *handled = true;
+                return;
+            }
+            // Tapping the scrim (content, outside the flap) dismisses it.
+            if gallery_open && !self.gallery_overlay_rect.contains(self.last_cursor) {
+                self.gallery_flap.close();
+                *handled = true;
+                return;
             }
         }
 
@@ -1007,7 +1209,17 @@ impl Widget for ThemesApp {
                 .unwrap_or_default()
                 .iter(),
         ) {
-            b.handle_event(event, scale, m, state, path, handled, focus_target, *c, taffy);
+            b.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                *c,
+                taffy,
+            );
             if *handled {
                 return;
             }
@@ -1016,41 +1228,78 @@ impl Widget for ThemesApp {
         // The gallery only receives events when docked, or when its overlay
         // flap is open. While open, any pointer press landing inside the flap
         // is consumed so it can't fall through to the content beneath.
-        if !overlay || gallery_open {
-            if let Some(n) = self.gallery_node {
-                self.gallery.handle_event(event, scale, m, state, path, handled, focus_target, n, taffy);
-                if *handled {
-                    // Selecting a theme from the open flap dismisses it so the
-                    // narrow window returns to the preview + customizer (the
-                    // master→detail return).
-                    if overlay {
-                        self.gallery_flap.close();
-                    }
-                    return;
-                }
+        if (!overlay || gallery_open)
+            && let Some(n) = self.gallery_node
+        {
+            self.gallery.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            if *handled {
+                // Selecting a theme from the open flap dismisses it so the
+                // narrow window returns to the preview + customizer (the
+                // master→detail return).
                 if overlay {
-                    if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
-                        if self.gallery_overlay_rect.contains(self.last_cursor) {
-                            *handled = true;
-                            return;
-                        }
-                    }
+                    self.gallery_flap.close();
                 }
+                return;
+            }
+            if overlay
+                && let WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } = event
+                && self.gallery_overlay_rect.contains(self.last_cursor)
+            {
+                *handled = true;
+                return;
             }
         }
         if let Some(n) = self.customizer_node {
-            self.customizer.handle_event(event, scale, m, state, path, handled, focus_target, n, taffy);
+            self.customizer.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
             if *handled {
                 return;
             }
         }
         if let Some(n) = self.preview_node {
-            self.preview.handle_event(event, scale, m, state, path, handled, focus_target, n, taffy);
+            self.preview.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
         }
     }
 
-    fn name(&self) -> &str { "ThemesApp" }
-    fn get_rect(&self) -> Rect { self.rect }
+    fn name(&self) -> &'static str {
+        "ThemesApp"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.gallery, &self.preview, &self.customizer]
@@ -1059,7 +1308,9 @@ impl Widget for ThemesApp {
         vec![&mut self.gallery, &mut self.preview, &mut self.customizer]
     }
 
-    fn needs_redraw(&self) -> bool { true }
+    fn needs_redraw(&self) -> bool {
+        true
+    }
 
     fn take_structure_dirty(&mut self) -> bool {
         let d = self.structure_dirty
@@ -1080,12 +1331,6 @@ impl Widget for ThemesApp {
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
-}
-
-/// Legible on-accent colour for the OS theme (used by the top-bar logo).
-fn ui_on_accent(theme: &Theme) -> vello::peniko::Color {
-    let a = [theme.accent_primary.r(), theme.accent_primary.g(), theme.accent_primary.b()];
-    model::color(model::on_color(a))
 }
 
 #[cfg(test)]
@@ -1146,7 +1391,10 @@ mod tests {
         run(&mut app, &mut st, "duplicate:qos-blue");
         let cat = catalog(&st);
         assert_eq!(cat.len(), before + 1, "one theme added");
-        let copy = cat.iter().find(|s| s.name == "qOS Blue copy").expect("named copy exists");
+        let copy = cat
+            .iter()
+            .find(|s| s.name == "qOS Blue copy")
+            .expect("named copy exists");
         assert!(!copy.builtin, "the copy is editable");
         assert_eq!(selected(&st), copy.id, "the copy becomes the selection");
     }
@@ -1157,19 +1405,34 @@ mod tests {
         // one of them — no fabricated "your custom theme".
         let (_app, st) = seeded();
         let cat = catalog(&st);
-        assert!(cat.iter().all(|s| s.builtin), "live catalog is presets only");
+        assert!(
+            cat.iter().all(|s| s.builtin),
+            "live catalog is presets only"
+        );
         let sel = selected(&st);
-        assert!(cat.iter().find(|s| s.id == sel).map(|s| s.builtin).unwrap_or(false));
-        assert!(!cat.iter().any(|s| s.id == "sunset"), "no seeded custom theme on the live path");
+        assert!(cat.iter().find(|s| s.id == sel).is_some_and(|s| s.builtin));
+        assert!(
+            !cat.iter().any(|s| s.id == "sunset"),
+            "no seeded custom theme on the live path"
+        );
     }
 
     #[test]
     fn delete_command_removes_a_custom_theme_and_reselects() {
         let (mut app, mut st) = seeded_demo();
-        assert!(catalog(&st).iter().any(|s| s.id == "sunset"), "seeded custom present");
+        assert!(
+            catalog(&st).iter().any(|s| s.id == "sunset"),
+            "seeded custom present"
+        );
         run(&mut app, &mut st, "delete:sunset");
-        assert!(!catalog(&st).iter().any(|s| s.id == "sunset"), "custom theme removed");
-        assert!(catalog(&st).iter().any(|s| s.id == selected(&st)), "selection stays valid");
+        assert!(
+            !catalog(&st).iter().any(|s| s.id == "sunset"),
+            "custom theme removed"
+        );
+        assert!(
+            catalog(&st).iter().any(|s| s.id == selected(&st)),
+            "selection stays valid"
+        );
     }
 
     #[test]
@@ -1190,17 +1453,29 @@ mod tests {
         // the next sync reconciles it into the catalog (persisted in the CRDT).
         doc::put_str(&mut st.doc, &st.root, doc::KEY_ED_NAME, "My Theme");
         app.sync(&mut st.doc, &st.root);
-        assert_eq!(catalog(&st).iter().find(|s| s.id == "sunset").unwrap().name, "My Theme");
+        assert_eq!(
+            catalog(&st).iter().find(|s| s.id == "sunset").unwrap().name,
+            "My Theme"
+        );
     }
 
     #[test]
     fn rename_command_selects_its_target() {
         let (mut app, mut st) = seeded();
         run(&mut app, &mut st, "duplicate:nord");
-        let copy_id = catalog(&st).iter().find(|s| s.name == "Nord copy").unwrap().id.clone();
+        let copy_id = catalog(&st)
+            .iter()
+            .find(|s| s.name == "Nord copy")
+            .unwrap()
+            .id
+            .clone();
         run(&mut app, &mut st, "select:qos-blue");
         run(&mut app, &mut st, &format!("rename:{copy_id}"));
-        assert_eq!(selected(&st), copy_id, "rename selects the target so its name is editable");
+        assert_eq!(
+            selected(&st),
+            copy_id,
+            "rename selects the target so its name is editable"
+        );
     }
 
     #[test]
@@ -1209,13 +1484,15 @@ mod tests {
         run(&mut app, &mut st, "select:dracula");
         run(&mut app, &mut st, "apply");
         // The in-app "Active" badge id updates immediately…
-        assert_eq!(doc::get_str(&st.doc, &st.root, doc::KEY_ACTIVE).as_deref(), Some("dracula"));
+        assert_eq!(
+            doc::get_str(&st.doc, &st.root, doc::KEY_ACTIVE).as_deref(),
+            Some("dracula")
+        );
         // …and the shared settings store on disk now names it the OS theme.
         assert_eq!(store::load_active_id().as_deref(), Some("dracula"));
-        let back = store::active_spec(
-            &std::fs::read_to_string(store::store_path().unwrap()).unwrap(),
-        )
-        .expect("the full applied spec round-trips out of the store");
+        let back =
+            store::active_spec(&std::fs::read_to_string(store::store_path().unwrap()).unwrap())
+                .expect("the full applied spec round-trips out of the store");
         assert_eq!(back.id, "dracula");
     }
 
@@ -1231,7 +1508,10 @@ mod tests {
 
         // The affordance path: the sidebar's "Delete" command for the sunset row.
         run(&mut app, &mut st, "delete:sunset");
-        let from_affordance = app.last_dispatched().expect("a delete was dispatched").clone();
+        let from_affordance = app
+            .last_dispatched()
+            .expect("a delete was dispatched")
+            .clone();
 
         // The palette path: the sunset resource's exported delete spec. Rebuilt
         // from a fresh doc that still holds sunset (the affordance already
@@ -1244,7 +1524,11 @@ mod tests {
             .iter()
             .find(|r| r.id.as_str() == "themes.theme:sunset")
             .expect("sunset resource");
-        let spec = sunset.actions.iter().find(|a| a.id == "delete").expect("delete spec");
+        let spec = sunset
+            .actions
+            .iter()
+            .find(|a| a.id == "delete")
+            .expect("delete spec");
         let from_spec = match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
             _ => panic!("delete is an immediate action"),
@@ -1265,10 +1549,16 @@ mod tests {
     fn affordance_delete_is_one_undo_boundary_reverted_by_ctrl_z() {
         let (mut app, mut st) = seeded_demo();
         let before_len = catalog(&st).len();
-        assert!(catalog(&st).iter().any(|s| s.id == "sunset"), "custom present");
+        assert!(
+            catalog(&st).iter().any(|s| s.id == "sunset"),
+            "custom present"
+        );
 
         run(&mut app, &mut st, "delete:sunset");
-        assert!(!catalog(&st).iter().any(|s| s.id == "sunset"), "the delete landed");
+        assert!(
+            !catalog(&st).iter().any(|s| s.id == "sunset"),
+            "the delete landed"
+        );
 
         // The host drains the affordance's captured heads (taken just before the
         // dispatch, so the command-bus churn is outside the bracket) and records
@@ -1284,7 +1574,9 @@ mod tests {
             ),
             "the host recorded an undo boundary for the affordance's delete"
         );
-        let entry = st.peek_last_undo().expect("exactly one undo boundary recorded");
+        let entry = st
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
         assert_eq!(
             entry.author.as_ref(),
             Some(&local_author),
@@ -1299,7 +1591,14 @@ mod tests {
         st.undo_as(Some(&local_author), None, None)
             .expect("an undo entry to pop");
         app.sync(&mut st.doc, &st.root);
-        assert_eq!(catalog(&st).len(), before_len, "undo restored the theme count");
-        assert!(catalog(&st).iter().any(|s| s.id == "sunset"), "sunset is back after undo");
+        assert_eq!(
+            catalog(&st).len(),
+            before_len,
+            "undo restored the theme count"
+        );
+        assert!(
+            catalog(&st).iter().any(|s| s.id == "sunset"),
+            "sunset is back after undo"
+        );
     }
 }

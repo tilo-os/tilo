@@ -4,9 +4,7 @@
 //! shows an honest unavailable state when firewalld can't be read. Models a
 //! typical laptop/workstation firewalld configuration with `public` active.
 
-use crate::model::{
-    Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, ZoneKind,
-};
+use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, ZoneKind};
 
 fn rule(matcher: Matcher, action: Action, source: &str) -> Rule {
     Rule::new(matcher, action, source)
@@ -17,7 +15,10 @@ fn svc(name: &str) -> Matcher {
 }
 
 fn port(p: &str, proto: Proto) -> Matcher {
-    Matcher::Port { port: p.to_string(), proto }
+    Matcher::Port {
+        port: p.to_string(),
+        proto,
+    }
 }
 
 /// Build the full sample configuration.
@@ -95,7 +96,12 @@ pub fn sample_config() -> FirewallConfig {
 
     // internal — internal network, peers trusted.
     let mut internal = Zone::new(ZoneKind::Internal, Target::Default);
-    internal.services = vec!["ssh".into(), "mdns".into(), "samba".into(), "dhcpv6-client".into()];
+    internal.services = vec![
+        "ssh".into(),
+        "mdns".into(),
+        "samba".into(),
+        "dhcpv6-client".into(),
+    ];
     zones.push(internal);
 
     // trusted — accept everything.

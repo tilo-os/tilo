@@ -71,7 +71,12 @@ impl Btn {
 impl Widget for Btn {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         let width = if self.full_width {
             Dimension::percent(1.0)
         } else {
@@ -79,31 +84,45 @@ impl Widget for Btn {
         };
         let node = taffy
             .new_leaf(Style {
-                size: Size { width, height: Dimension::length(34.0) },
+                size: Size {
+                    width,
+                    height: Dimension::length(34.0),
+                },
                 flex_shrink: 0.0,
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, _p: &PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _p: &PresenceCtx,
+    ) {
         let radius = theme.radius_standard;
         let (mut bg, mut fg, border) = match self.variant {
             BtnVariant::Primary => (theme.accent_primary, on_accent(theme), Color::TRANSPARENT),
             BtnVariant::Ghost => (theme.bg_primary, theme.text_primary, theme.border_standard),
-            BtnVariant::Danger => (theme.tokens.colors.semantic.danger, Color::WHITE, Color::TRANSPARENT),
+            BtnVariant::Danger => (
+                theme.tokens.colors.semantic.danger,
+                Color::WHITE,
+                Color::TRANSPARENT,
+            ),
         };
         if !self.enabled {
             bg = bg.multiply_alpha(0.4);
@@ -121,13 +140,33 @@ impl Widget for Btn {
             draw::stroke_rrect(scene, t, self.rect, radius, border, 1.0);
         }
         draw::text_center(
-            tr, scene, t, &self.label, 13.0, fg,
-            self.rect.x0, self.rect.x1, self.rect.y0, self.rect.y1, TextWeight::Semibold,
+            tr,
+            scene,
+            t,
+            &self.label,
+            13.0,
+            fg,
+            self.rect.x0,
+            self.rect.x1,
+            self.rect.y0,
+            self.rect.y1,
+            TextWeight::Semibold,
         );
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn handle_event(&mut self, event: &WindowEvent, scale: f64, _m: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        _m: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
         if !self.enabled {
             return;
         }
@@ -140,7 +179,11 @@ impl Widget for Btn {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: es, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: es,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if *es == ElementState::Pressed && self.hover {
                     self.pressed = true;
                     *focus_target = Some(node_id);
@@ -157,9 +200,15 @@ impl Widget for Btn {
         }
     }
 
-    fn name(&self) -> &str { "Btn" }
-    fn get_rect(&self) -> Rect { self.rect }
-    fn is_focusable(&self) -> bool { self.enabled }
+    fn name(&self) -> &'static str {
+        "Btn"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn is_focusable(&self) -> bool {
+        self.enabled
+    }
 }
 
 /// Height of one sidebar theme row (logical px). Mirrors weather's
@@ -206,12 +255,25 @@ impl ThemeRow {
     }
 
     fn swatch_of(spec: &ThemeSpec) -> [Rgb; 6] {
-        [spec.surface_base, spec.surface_raised, spec.accent, spec.success, spec.warning, spec.danger]
+        [
+            spec.surface_base,
+            spec.surface_raised,
+            spec.accent,
+            spec.success,
+            spec.warning,
+            spec.danger,
+        ]
     }
 
-    pub fn id(&self) -> &str { &self.id }
-    pub fn is_custom(&self) -> bool { !self.builtin }
-    pub fn get_rect(&self) -> Rect { self.rect }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn is_custom(&self) -> bool {
+        !self.builtin
+    }
+    pub fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     /// Refresh visual fields in place (preserves hover / rect so the gallery
     /// can push fresh state every frame without flicker).
@@ -229,36 +291,56 @@ impl ThemeRow {
     /// overlays its inline editor for the selected custom theme.
     pub fn name_rect(&self) -> Rect {
         let tx = self.rect.x0 + 62.0;
-        Rect::new(tx, self.rect.y0 + 9.0, self.rect.x1 - 12.0, self.rect.y0 + 33.0)
+        Rect::new(
+            tx,
+            self.rect.y0 + 9.0,
+            self.rect.x1 - 12.0,
+            self.rect.y0 + 33.0,
+        )
     }
 }
 
 impl Widget for ThemeRow {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: Dimension::percent(1.0), height: Dimension::length(ROW_H) },
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(ROW_H),
+                },
                 flex_shrink: 0.0,
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, _p: &PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _p: &PresenceCtx,
+    ) {
         let radius = theme.radius_standard.min(12.0);
         // Row background: selected → accent-tinted; else hover / raised —
         // the same tiering weather's saved-place chip uses.
@@ -279,38 +361,108 @@ impl Widget for ThemeRow {
 
         // Palette swatch: a compact tile of the theme's base surface with a
         // raised inset and a row of accent + semantic dots.
-        let sw = Rect::new(self.rect.x0 + 11.0, self.rect.y0 + 9.0, self.rect.x0 + 51.0, self.rect.y1 - 9.0);
+        let sw = Rect::new(
+            self.rect.x0 + 11.0,
+            self.rect.y0 + 9.0,
+            self.rect.x0 + 51.0,
+            self.rect.y1 - 9.0,
+        );
         draw::fill_rrect(scene, t, sw, 7.0, model::color(self.swatch[0]));
-        draw::stroke_rrect(scene, t, sw, 7.0, theme.border_standard.multiply_alpha(0.5), 1.0);
-        let inset = Rect::new(sw.x0 + 5.0, sw.y0 + 5.0, sw.x1 - 5.0, sw.y0 + sw.height() * 0.42);
+        draw::stroke_rrect(
+            scene,
+            t,
+            sw,
+            7.0,
+            theme.border_standard.multiply_alpha(0.5),
+            1.0,
+        );
+        let inset = Rect::new(
+            sw.x0 + 5.0,
+            sw.y0 + 5.0,
+            sw.x1 - 5.0,
+            sw.y0 + sw.height() * 0.42,
+        );
         draw::fill_rrect(scene, t, inset, 4.0, model::color(self.swatch[1]));
         let dot_y = sw.y1 - 8.5;
         for (i, c) in self.swatch[2..].iter().enumerate() {
-            draw::circle(scene, t, Point::new(sw.x0 + 8.0 + i as f64 * 8.6, dot_y), 3.0, model::color(*c));
+            draw::circle(
+                scene,
+                t,
+                Point::new(sw.x0 + 8.0 + i as f64 * 8.6, dot_y),
+                3.0,
+                model::color(*c),
+            );
         }
 
         // Name (unless the gallery's inline editor covers it) + tag.
         let tx = sw.x1 + 11.0;
         if !self.suppress_name {
-            draw::text_w(tr, scene, t, &self.name, 14.0, theme.text_primary, tx, self.rect.y0 + 11.0, TextWeight::Semibold);
+            draw::text_w(
+                tr,
+                scene,
+                t,
+                &self.name,
+                14.0,
+                theme.text_primary,
+                tx,
+                self.rect.y0 + 11.0,
+                TextWeight::Semibold,
+            );
         }
         let tag = if self.builtin { "Preset" } else { "Custom" };
         let base = if self.dark_base { "Dark" } else { "Light" };
-        draw::text(tr, scene, t, &format!("{tag} · {base}"), 11.0, theme.text_dim, tx, self.rect.y0 + 33.0);
+        draw::text(
+            tr,
+            scene,
+            t,
+            &format!("{tag} · {base}"),
+            11.0,
+            theme.text_dim,
+            tx,
+            self.rect.y0 + 33.0,
+        );
 
         // Applied-theme badge on the right edge.
         if self.active {
             let lab = "Active";
             let (w, _) = tr.measure(lab, 10.0, None);
-            let pw = w as f64 + 16.0;
-            let pill = Rect::new(self.rect.x1 - pw - 10.0, self.rect.center().y - 9.0, self.rect.x1 - 10.0, self.rect.center().y + 9.0);
+            let pw = f64::from(w) + 16.0;
+            let pill = Rect::new(
+                self.rect.x1 - pw - 10.0,
+                self.rect.center().y - 9.0,
+                self.rect.x1 - 10.0,
+                self.rect.center().y + 9.0,
+            );
             draw::fill_rrect(scene, t, pill, 9.0, theme.accent_primary);
-            draw::text_center(tr, scene, t, lab, 10.0, on_accent(theme), pill.x0, pill.x1, pill.y0, pill.y1, TextWeight::Bold);
+            draw::text_center(
+                tr,
+                scene,
+                t,
+                lab,
+                10.0,
+                on_accent(theme),
+                pill.x0,
+                pill.x1,
+                pill.y0,
+                pill.y1,
+                TextWeight::Bold,
+            );
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn handle_event(&mut self, event: &WindowEvent, scale: f64, _m: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        _m: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale, position.y / scale);
@@ -320,21 +472,36 @@ impl Widget for ThemeRow {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                if self.hover {
-                    crate::doc::put_str(state, path, crate::doc::KEY_COMMAND, &format!("select:{}", self.id));
-                    *focus_target = Some(node_id);
-                    *handled = true;
-                }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.hover => {
+                crate::doc::put_str(
+                    state,
+                    path,
+                    crate::doc::KEY_COMMAND,
+                    &format!("select:{}", self.id),
+                );
+                *focus_target = Some(node_id);
+                *handled = true;
             }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str { "ThemeRow" }
-    fn get_rect(&self) -> Rect { self.rect }
-    fn is_focusable(&self) -> bool { true }
-    fn test_id(&self) -> Option<&str> { Some(&self.id) }
+    fn name(&self) -> &'static str {
+        "ThemeRow"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some(&self.id)
+    }
 }
 
 // --- shared colour helpers ---------------------------------------------
@@ -343,7 +510,11 @@ use vello::Scene;
 
 /// Pick a legible on-colour for an accent fill.
 pub fn on_accent(theme: &Theme) -> Color {
-    let a = [theme.accent_primary.r(), theme.accent_primary.g(), theme.accent_primary.b()];
+    let a = [
+        theme.accent_primary.r(),
+        theme.accent_primary.g(),
+        theme.accent_primary.b(),
+    ];
     model::color(model::on_color(a))
 }
 

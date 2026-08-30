@@ -94,8 +94,15 @@ fn dispatch(
     let mut handled = false;
     let mut focus_target = None;
     app.handle_event(
-        event, 1.0, &modifiers, &mut state.doc, &state.root, &mut handled, &mut focus_target,
-        child, taffy,
+        event,
+        1.0,
+        &modifiers,
+        &mut state.doc,
+        &state.root,
+        &mut handled,
+        &mut focus_target,
+        child,
+        taffy,
     );
 }
 
@@ -104,18 +111,26 @@ fn mouse_wheel_scrolls_and_clamps_to_content() {
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.selected_for_test().unwrap();
-    app.main_panel_mut().load_page(id, "Long page".into(), tall_body());
+    app.main_panel_mut()
+        .load_page(id, "Long page".into(), tall_body());
 
     let mut state = ui::State::new();
     // Wide (stays inline) but short so the content overflows.
     let (taffy, child) = settle(&mut app, &mut state, 1000, 300);
-    assert_eq!(app.main_panel_mut().scroll_y_for_test(), 0.0, "starts at top");
+    assert_eq!(
+        app.main_panel_mut().scroll_y_for_test(),
+        0.0,
+        "starts at top"
+    );
 
     // Scroll down: negative LineDelta y → positive px offset.
     dispatch(&mut app, &mut state, &taffy, child, &wheel(-3.0));
     let (taffy, child) = settle(&mut app, &mut state, 1000, 300);
     let scrolled = app.main_panel_mut().scroll_y_for_test();
-    assert!(scrolled > 0.0, "wheel-down must advance scroll_y; got {scrolled}");
+    assert!(
+        scrolled > 0.0,
+        "wheel-down must advance scroll_y; got {scrolled}"
+    );
 
     // Scroll far past the bottom: scroll_y must clamp to the content
     // extent — a second huge scroll can't push it further.
@@ -125,7 +140,10 @@ fn mouse_wheel_scrolls_and_clamps_to_content() {
     dispatch(&mut app, &mut state, &taffy, child, &wheel(-1000.0));
     let (taffy, child) = settle(&mut app, &mut state, 1000, 300);
     let still_max = app.main_panel_mut().scroll_y_for_test();
-    assert!(at_max > scrolled, "scrolling further must increase offset up to the clamp");
+    assert!(
+        at_max > scrolled,
+        "scrolling further must increase offset up to the clamp"
+    );
     assert_eq!(
         at_max, still_max,
         "scroll_y must clamp to the content extent (can't exceed it)"

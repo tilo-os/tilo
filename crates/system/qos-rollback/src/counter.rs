@@ -2,51 +2,33 @@
 //!
 //! # Index choice
 //!
-//! [`DEFAULT_NV_INDEX`] sits in the range the TCG registry leaves to the
-//! platform owner, one block away from `0x01D81000` where `systemd-pcrlock`
-//! keeps its own policy NV index, so the two cannot collide. It is a
-//! [`crate::Config`] field rather than a hard constant because a machine that
-//! already has something at that index needs to be able to move ours.
+//! [`DEFAULT_NV_INDEX`] sits in the TCG registry's platform-owner range, one block away
+//! from `0x01D81000` where `systemd-pcrlock` keeps its own index, so the two cannot collide.
+//! It's a [`crate::Config`] field rather than a constant so a machine with something already
+//! at that index can move ours.
 //!
 //! # Why a counter and not ordinary NV storage
 //!
-//! `TPM2_NV_Increment` on an index with `nt=counter` is the only write the TPM
-//! will perform on it: there is no "set to value" and no decrement. And a
-//! counter index that is undefined and redefined does **not** start over — the
-//! TPM initialises a newly created counter to the largest value any counter on
-//! that TPM has ever held, specifically so that undefine/redefine cannot be
-//! used to roll one back. Verified against `swtpm` in `tests/mechanism.rs`.
+//! `TPM2_NV_Increment` on an `nt=counter` index is the only write the TPM allows: no "set to
+//! value", no decrement, and undefine/redefine does **not** start over — a newly created
+//! counter is initialised to the largest value any counter on that TPM has ever held,
+//! specifically to stop that rollback trick. Verified against `swtpm` in `tests/mechanism.rs`.
 //!
 //! # Floor generation versus counter value
 //!
-//! A freshly created counter does not start at zero — it starts at whatever that
-//! TPM's high-water mark is, which on a fresh TPM is 1 and on a well-used one can
-//! be anything. So the floor generation is an *offset*:
+//! A freshly created counter starts at that TPM's high-water mark (1 on a fresh TPM, anything
+//! on a used one), not zero, so the floor generation is an offset: `floor_generation =
+//! counter_value - base`. `base` is signed and routinely negative — enrolling generation 500
+//! on a counter reading 1 gives `base = -497` — since an unsigned `base` would force hundreds
+//! of NV writes just to enroll a machine. `base` is fixed at first materialisation and
+//! recorded in every sealed LUKS2 token and `/var/lib/qos/rollback/state.json`.
 //!
-//! ```text
-//! floor_generation = counter_value - base
-//! ```
-//!
-//! `base` is signed, and routinely negative: enrolling generation 500 on a TPM
-//! whose counter reads 1 gives `base = 1 - 498 = -497`. Making it unsigned would
-//! force the counter to be incremented up to the generation number before the
-//! machine could be enrolled at all — hundreds of NV writes on a first install,
-//! and impossible for any generation numbering that is not tiny.
-//!
-//! `base` is fixed when the counter is first materialised and then recorded in
-//! two places: every sealed LUKS2 token, and `/var/lib/qos/rollback/state.json`.
-//!
-//! `base` is not integrity-critical for the security property. The bound that
-//! actually gates an unseal is the absolute operand baked into each token's
-//! policy digest, and a policy digest cannot be edited — changing the recorded
-//! `base` can only make a future seal wrong or a report misleading, never make a
-//! stale token unseal.
-//!
-//! It *is* availability-critical, though: a `base` that has been tampered upward
-//! would make [`FloorState::increments_to`] ask for a huge number of increments
-//! and soft-brick the machine into recovery-key-only. Hence
-//! [`MAX_INCREMENTS_PER_ADVANCE`] and the cross-check in
-//! [`crate::confirm::load_base`].
+//! `base` is not integrity-critical: the actual gate is the absolute operand baked into each
+//! token's policy digest, which cannot be edited, so a wrong recorded `base` can only make a
+//! future seal wrong, never make a stale token unseal. It *is* availability-critical though —
+//! a tampered-upward `base` would make [`FloorState::increments_to`] demand a huge number of
+//! increments and soft-brick the machine into recovery-key-only. Hence
+//! [`MAX_INCREMENTS_PER_ADVANCE`] and the cross-check in [`crate::confirm::load_base`].
 
 use crate::argv;
 use crate::exec::{Runner, require};
@@ -58,18 +40,15 @@ use std::path::Path;
 /// NV index holding the rollback floor.
 pub const DEFAULT_NV_INDEX: u32 = 0x01D9_1100;
 
-/// Attributes for the floor counter.
-///
-/// `authread` with an empty auth value, because the floor is not secret and every
-/// unseal has to read it. `policywrite` and **no** `authwrite` or `ownerwrite`,
-/// because an increment must present a signed, single-use approval — see
-/// [`crate::approval`] for why, and for what happens when the authority that
-/// issues them is unavailable.
+/// Attributes for the floor counter: `authread` with an empty auth value (the floor isn't
+/// secret and every unseal reads it), `policywrite` with **no** `authwrite`/`ownerwrite` so
+/// an increment must present a signed, single-use approval (see [`crate::approval`]).
 pub const NV_ATTRS: &str = "authread|policywrite|nt=counter";
 
 /// [`NV_ATTRS`] as the bitmask the TPM reports, for computing the index's Name.
-pub const NV_ATTRS_BITS: u32 =
-    tpm_policy::nv_attr::AUTHREAD | tpm_policy::nv_attr::POLICYWRITE | tpm_policy::nv_attr::NT_COUNTER;
+pub const NV_ATTRS_BITS: u32 = tpm_policy::nv_attr::AUTHREAD
+    | tpm_policy::nv_attr::POLICYWRITE
+    | tpm_policy::nv_attr::NT_COUNTER;
 
 /// Size of the counter's data area, in bytes.
 pub const NV_DATA_SIZE: u16 = 8;
@@ -83,15 +62,11 @@ pub const NV_DATA_SIZE: u16 = 8;
 /// )
 /// ```
 ///
-/// The second branch is what lets a device with no signing key bring the counter
-/// into existence. It is self-limiting: the write it performs sets
-/// `TPMA_NV_WRITTEN`, after which `PolicyNvWritten(clear)` can never be satisfied
-/// again. Proven against a TPM in `tests/mechanism.rs`.
+/// The second branch lets a device with no signing key bring the counter into existence; it's
+/// self-limiting since the write sets `TPMA_NV_WRITTEN`, after which `PolicyNvWritten(clear)`
+/// can never be satisfied again. Proven against a TPM in `tests/mechanism.rs`.
 pub fn auth_policy(authority_key_name: &[u8]) -> tpm_policy::Digest256 {
-    tpm_policy::or(&[
-        signed_branch(authority_key_name),
-        first_write_branch(),
-    ])
+    tpm_policy::or(&[signed_branch(authority_key_name), first_write_branch()])
 }
 
 /// The `PolicyAuthorize` branch of [`auth_policy`].
@@ -107,12 +82,9 @@ pub fn first_write_branch() -> tpm_policy::Digest256 {
     )
 }
 
-/// The index's TPM Name once it has been written.
-///
-/// The written flag lives in the public area, so this is *not* the Name the index
-/// has before its first increment. Everything that seals against the index — every
-/// token's `PolicyNV`, every approval — must use this one, which is why the
-/// counter is materialised before anything is sealed.
+/// The index's TPM Name once it has been written. The written flag lives in the public area,
+/// so this differs from the Name before the first increment — every token's `PolicyNV` and
+/// every approval must use this one, which is why the counter is materialised before sealing.
 pub fn written_name(index: u32, auth_policy: &tpm_policy::Digest256) -> Vec<u8> {
     tpm_policy::nv_index_name(
         index,
@@ -127,9 +99,8 @@ pub fn unwritten_name(index: u32, auth_policy: &tpm_policy::Digest256) -> Vec<u8
     tpm_policy::nv_index_name(index, NV_ATTRS_BITS, auth_policy, NV_DATA_SIZE)
 }
 
-/// Refuse to perform more than this many increments in one advance without an
-/// explicit override. A legitimate advance moves the floor by a handful of
-/// generations; a request for thousands means the recorded `base` is wrong or
+/// Refuse more than this many increments in one advance without an explicit override — a
+/// legitimate advance moves by a handful of generations; thousands means `base` is wrong or
 /// tampered, and applying it would lock the machine out of its own keyslots.
 pub const MAX_INCREMENTS_PER_ADVANCE: u64 = 64;
 
@@ -149,9 +120,8 @@ impl FloorState {
         u64::try_from(f.max(0)).unwrap_or(u64::MAX)
     }
 
-    /// Absolute `operandB` for `TPM2_PolicyNV` when sealing for generation `g`.
-    ///
-    /// The policy asserts `counter <= base + g`, i.e. `floor <= g`.
+    /// Absolute `operandB` for `TPM2_PolicyNV` when sealing for generation `g`; the policy
+    /// asserts `counter <= base + g`, i.e. `floor <= g`.
     pub fn operand_for(&self, generation: u64) -> Result<u64> {
         operand(self.base, generation)
     }
@@ -170,10 +140,8 @@ impl FloorState {
     }
 }
 
-/// The counter value that corresponds to floor generation `generation`.
-///
-/// Shared with the LUKS2 token so that the header and the TPM can never drift
-/// apart on the arithmetic.
+/// The counter value that corresponds to floor generation `generation`, shared with the
+/// LUKS2 token so the header and TPM can never drift apart on the arithmetic.
 pub fn operand(base: i64, generation: u64) -> Result<u64> {
     let v = i128::from(base) + i128::from(generation);
     if v < 0 {
@@ -189,7 +157,6 @@ fn idx(index: u32) -> String {
     format!("0x{index:08X}")
 }
 
-/// Does the index exist?
 pub fn exists(runner: &dyn Runner, index: u32) -> Result<bool> {
     let i = idx(index);
     let out = runner.run("tpm2_nvreadpublic", &argv![&i], None)?;
@@ -215,18 +182,16 @@ pub fn read_name(runner: &dyn Runner, index: u32) -> Result<Vec<u8>> {
     hex::decode(hex_name).with_context(|| format!("NV index name {hex_name:?} is not hex"))
 }
 
-/// Define the counter. Idempotent, and it verifies that an existing index is
-/// really ours.
+/// Define the counter. Idempotent, and verifies that an existing index is really ours.
 ///
 /// SAFETY-CRITICAL, twice over:
 ///
-/// * Never `tpm2_nvundefine` here. Undefining the index makes every sealed token
-///   permanently unopenable — its policy cannot execute at all — which turns the
-///   recovery key from a backstop into the only path.
-/// * An index that exists with different attributes or a different `authPolicy`
-///   has a different Name, and every token sealed against the old Name will fail
-///   to unseal. That is reported here, by name, rather than being discovered at
-///   the next boot.
+/// * Never `tpm2_nvundefine` here — undefining the index makes every sealed token
+///   permanently unopenable (its policy can't execute at all), turning the recovery key
+///   from a backstop into the only path.
+/// * An index with different attributes or a different `authPolicy` has a different Name,
+///   so every token sealed against the old Name fails to unseal — reported here, by name,
+///   rather than discovered at the next boot.
 pub fn define(
     runner: &dyn Runner,
     index: u32,
@@ -256,12 +221,7 @@ pub fn define(
     require(
         runner,
         "tpm2_nvdefine",
-        &argv![
-            &i,
-            "-C", "o",
-            "-a", NV_ATTRS,
-            "-L", policy_file.as_os_str(),
-        ],
+        &argv![&i, "-C", "o", "-a", NV_ATTRS, "-L", policy_file.as_os_str(),],
         &format!("defining the rollback floor counter at {i}"),
     )?;
     Ok(true)
@@ -277,9 +237,8 @@ pub fn read(runner: &dyn Runner, index: u32, scratch: &Path) -> Result<Option<u6
         None,
     )?;
     if !out.ok() {
-        // An index that exists but was never written reads as an error; that is
-        // the only failure we translate to `None`, and only after confirming the
-        // index really is there.
+        // An index that exists but was never written reads as an error; that's the only failure we
+        // translate to `None`, and only after confirming the index really is there.
         if exists(runner, index)? {
             return Ok(None);
         }
@@ -288,7 +247,8 @@ pub fn read(runner: &dyn Runner, index: u32, scratch: &Path) -> Result<Option<u6
             out.last_error_line()
         );
     }
-    let bytes = std::fs::read(&out_path).with_context(|| format!("reading {}", out_path.display()))?;
+    let bytes =
+        std::fs::read(&out_path).with_context(|| format!("reading {}", out_path.display()))?;
     let _ = std::fs::remove_file(&out_path);
     decode(&bytes)
 }
@@ -313,9 +273,7 @@ fn branch_files(
     Ok((a, b))
 }
 
-/// The one increment that needs no approval: the one that brings the counter into
-/// existence.
-///
+/// The one increment that needs no approval: the one that brings the counter into existence.
 /// Works exactly once per index, enforced by the TPM.
 pub fn increment_first(
     runner: &dyn Runner,
@@ -367,11 +325,9 @@ pub fn increment_first(
     r
 }
 
-/// One increment, authorised by a signed single-use approval.
-///
-/// The approval is spent by the TPM, not by this function: after the increment the
-/// counter no longer equals `target - 1`, so the same approval cannot be used
-/// again even if the file survives.
+/// One increment, authorised by a signed single-use approval. The approval is spent by the
+/// TPM, not by this function: after the increment the counter no longer equals `target - 1`,
+/// so the same approval can't be reused even if the file survives.
 pub fn increment_approved(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -381,12 +337,9 @@ pub fn increment_approved(
     approval: &crate::approval::Approval,
 ) -> Result<()> {
     let i = idx(index);
-    // SAFETY-CRITICAL: validate against the Name the TPM reports for the index,
-    // never against the Name the approval claims for itself. Trusting the
-    // approval's own copy makes the check vacuous — an approval issued for another
-    // machine would validate happily and then fail deep inside the policy session
-    // with an unhelpful error. Caught by
-    // `an_approval_for_another_machines_index_is_refused`.
+    // SAFETY-CRITICAL: validate against the Name the TPM reports for the index, never against
+    // the Name the approval claims for itself — trusting the approval's own copy makes the check
+    // vacuous. Caught by `an_approval_for_another_machines_index_is_refused`.
     let nv_name = read_name(runner, index)?;
     approval.validate_for(index, &nv_name)?;
     let policy = approval.decoded_policy()?;
@@ -400,15 +353,18 @@ pub fn increment_approved(
         runner,
         "tpm2_loadexternal",
         &argv![
-            "-C", "o",
-            "-G", "rsa",
-            "-u", authority_public_key.as_os_str(),
-            "-c", ak.as_os_str(),
+            "-C",
+            "o",
+            "-G",
+            "rsa",
+            "-u",
+            authority_public_key.as_os_str(),
+            "-c",
+            ak.as_os_str(),
         ],
         "loading the floor authority public key",
     )?;
-    let message =
-        tpm_policy::authorize_signed_message(&policy, crate::approval::POLICY_REF);
+    let message = tpm_policy::authorize_signed_message(&policy, crate::approval::POLICY_REF);
     let msg = ws.put("floor_verify_msg.bin", &message)?;
     let sig = ws.put(
         "floor_approval.sig",
@@ -418,11 +374,16 @@ pub fn increment_approved(
     let vs = runner.run(
         "tpm2_verifysignature",
         &argv![
-            "-c", ak.as_os_str(),
-            "-g", "sha256",
-            "-m", msg.as_os_str(),
-            "-s", sig.as_os_str(),
-            "-t", ticket.as_os_str(),
+            "-c",
+            ak.as_os_str(),
+            "-g",
+            "sha256",
+            "-m",
+            msg.as_os_str(),
+            "-s",
+            sig.as_os_str(),
+            "-t",
+            ticket.as_os_str(),
         ],
         None,
     )?;
@@ -461,10 +422,14 @@ pub fn increment_approved(
         let pnv = runner.run(
             "tpm2_policynv",
             &argv![
-                "-S", sess.as_os_str(),
-                "-i", operand.as_os_str(),
-                &i, "eq",
-                "-C", &i,
+                "-S",
+                sess.as_os_str(),
+                "-i",
+                operand.as_os_str(),
+                &i,
+                "eq",
+                "-C",
+                &i,
             ],
             None,
         )?;
@@ -481,11 +446,16 @@ pub fn increment_approved(
             runner,
             "tpm2_policyauthorize",
             &argv![
-                "-S", sess.as_os_str(),
-                "-i", approved_file.as_os_str(),
-                "-n", name_file.as_os_str(),
-                "-q", ref_file.as_os_str(),
-                "-t", ticket.as_os_str(),
+                "-S",
+                sess.as_os_str(),
+                "-i",
+                approved_file.as_os_str(),
+                "-n",
+                name_file.as_os_str(),
+                "-q",
+                ref_file.as_os_str(),
+                "-t",
+                ticket.as_os_str(),
             ],
             "applying the signed floor-advance approval",
         )?;
@@ -527,12 +497,13 @@ pub fn materialise(
         .context("the rollback floor counter is still unreadable after an increment")?;
     // `base` is deliberately allowed to go negative: a fresh TPM's counter reads
     // 1, and the generation being enrolled is usually much larger than that.
-    let base = i64::try_from(i128::from(counter) - i128::from(initial_floor)).with_context(|| {
-        format!(
-            "counter {counter} and initial floor {initial_floor} are too far apart to record a \
+    let base =
+        i64::try_from(i128::from(counter) - i128::from(initial_floor)).with_context(|| {
+            format!(
+                "counter {counter} and initial floor {initial_floor} are too far apart to record a \
              counter base"
-        )
-    })?;
+            )
+        })?;
     Ok(FloorState { counter, base })
 }
 
@@ -552,17 +523,14 @@ impl AdvanceOutcome {
     }
 }
 
-/// Raise the floor towards `target_floor`, spending one signed approval per step.
+/// Raise the floor towards `target_floor`, spending one signed approval per step. Advances
+/// as far as available approvals allow and reports the rest — a partial advance is safe (the
+/// counter only ever moves in the permitted direction), and better than refusing outright,
+/// which would leave the floor pinned forever after one missing approval.
 ///
-/// Advances as far as the available approvals allow and reports the rest. A
-/// partial advance is safe — the counter only ever moves in the permitted
-/// direction — and stopping short is much better than the alternatives: refusing
-/// to advance at all would leave the floor pinned forever after one missing
-/// approval, and there is no way to advance without one.
-///
-/// SAFETY-CRITICAL: callers must have already proved that a token at or above
-/// `target_floor` unseals. This function does not and cannot check that — see
-/// [`crate::confirm::advance_floor`], which is the only intended caller.
+/// SAFETY-CRITICAL: callers must have already proved that a token at or above `target_floor`
+/// unseals. This function does not and cannot check that — see
+/// [`crate::confirm::advance_floor`], the only intended caller.
 #[allow(clippy::too_many_arguments)]
 pub fn advance(
     runner: &dyn Runner,
@@ -648,14 +616,20 @@ mod tests {
 
     #[test]
     fn floor_is_the_counter_minus_the_base() {
-        let s = FloorState { counter: 105, base: 100 };
+        let s = FloorState {
+            counter: 105,
+            base: 100,
+        };
         assert_eq!(s.floor_generation(), 5);
     }
 
     #[test]
     fn a_negative_base_is_the_normal_case_on_a_fresh_tpm() {
         // Enrolling generation 500 on a TPM whose counter reads 1.
-        let s = FloorState { counter: 1, base: 1 - 498 };
+        let s = FloorState {
+            counter: 1,
+            base: 1 - 498,
+        };
         assert_eq!(s.floor_generation(), 498);
         assert_eq!(s.operand_for(500).unwrap(), 3);
         assert_eq!(s.operand_for(498).unwrap(), 1);
@@ -663,34 +637,49 @@ mod tests {
 
     #[test]
     fn a_base_above_the_counter_reads_as_floor_zero_not_a_wrap() {
-        let s = FloorState { counter: 3, base: 100 };
+        let s = FloorState {
+            counter: 3,
+            base: 100,
+        };
         assert_eq!(s.floor_generation(), 0);
     }
 
     #[test]
     fn operand_is_absolute() {
-        let s = FloorState { counter: 105, base: 100 };
+        let s = FloorState {
+            counter: 105,
+            base: 100,
+        };
         assert_eq!(s.operand_for(7).unwrap(), 107);
         assert_eq!(s.operand_for(0).unwrap(), 100);
     }
 
     #[test]
     fn a_generation_that_maps_below_zero_is_refused() {
-        let s = FloorState { counter: 1, base: -400 };
+        let s = FloorState {
+            counter: 1,
+            base: -400,
+        };
         let e = s.operand_for(399).unwrap_err().to_string();
         assert!(e.contains("below zero"), "{e}");
     }
 
     #[test]
     fn increments_to_counts_the_gap() {
-        let s = FloorState { counter: 105, base: 100 };
+        let s = FloorState {
+            counter: 105,
+            base: 100,
+        };
         assert_eq!(s.increments_to(5).unwrap(), 0);
         assert_eq!(s.increments_to(8).unwrap(), 3);
     }
 
     #[test]
     fn increments_to_counts_the_gap_with_a_negative_base() {
-        let s = FloorState { counter: 1, base: -497 };
+        let s = FloorState {
+            counter: 1,
+            base: -497,
+        };
         assert_eq!(s.floor_generation(), 498);
         assert_eq!(s.increments_to(498).unwrap(), 0);
         assert_eq!(s.increments_to(500).unwrap(), 2);
@@ -698,14 +687,20 @@ mod tests {
 
     #[test]
     fn increments_to_refuses_to_go_backwards() {
-        let s = FloorState { counter: 105, base: 100 };
+        let s = FloorState {
+            counter: 105,
+            base: 100,
+        };
         let e = s.increments_to(4).unwrap_err().to_string();
         assert!(e.contains("do not decrement"), "{e}");
     }
 
     #[test]
     fn operand_overflow_is_an_error() {
-        let s = FloorState { counter: u64::MAX, base: i64::MAX };
+        let s = FloorState {
+            counter: u64::MAX,
+            base: i64::MAX,
+        };
         assert!(s.operand_for(u64::MAX).is_err());
     }
 

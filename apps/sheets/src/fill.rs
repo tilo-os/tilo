@@ -24,9 +24,7 @@
 //! returns the cells to write, so it is exercised in isolation by the unit
 //! tests here and through the real fill-handle event path in `app`.
 
-use crate::model::{
-    date_to_serial, serial_to_ymd, CellFormat, CellValue,
-};
+use crate::model::{CellFormat, CellValue, date_to_serial, serial_to_ymd};
 
 /// One source cell handed to the fill engine: the stored raw input, the
 /// computed value (used to recognise numeric / date series), and the display
@@ -41,7 +39,11 @@ pub struct FillCell {
 impl FillCell {
     /// Convenience constructor for tests and callers.
     pub fn new(raw: impl Into<String>, value: CellValue, fmt: CellFormat) -> Self {
-        Self { raw: raw.into(), value, fmt }
+        Self {
+            raw: raw.into(),
+            value,
+            fmt,
+        }
     }
 
     fn is_formula(&self) -> bool {
@@ -96,21 +98,34 @@ pub fn extend_series(pattern: &[FillCell], count: usize, dcol: i64, drow: i64) -
 /// relative references by how far the generated cell sits from the source it
 /// copies. Plain values copy verbatim.
 fn block_copy(pattern: &[FillCell], count: usize, dcol: i64, drow: i64) -> Vec<FillOut> {
-    let len = pattern.len();
-    (0..count)
-        .map(|j| {
-            let p = len + j;
-            let s = p % len;
-            let src = &pattern[s];
-            let steps = (p - s) as i64;
-            let raw = if src.is_formula() {
-                crate::formula::offset_refs(&src.raw, steps * dcol, steps * drow)
-            } else {
-                src.raw.clone()
-            };
-            FillOut { raw, fmt: src.fmt }
-        })
-        .collect()
+    let block = i64::try_from(pattern.len()).unwrap_or(i64::MAX);
+    // Distance from a generated cell back to the source it copies: one whole
+    // block for the first repetition, one more for each further one.
+    let mut steps = block;
+    let mut sources = pattern.iter();
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        if sources.as_slice().is_empty() {
+            // Wrapped past the end of the block: this repetition sits one
+            // whole block further from the source it copies.
+            steps = steps.saturating_add(block);
+            sources = pattern.iter();
+        }
+        let Some(src) = sources.next() else {
+            break; // empty pattern: nothing to copy forward
+        };
+        let raw = if src.is_formula() {
+            crate::formula::offset_refs(
+                &src.raw,
+                steps.saturating_mul(dcol),
+                steps.saturating_mul(drow),
+            )
+        } else {
+            src.raw.clone()
+        };
+        out.push(FillOut { raw, fmt: src.fmt });
+    }
+    out
 }
 
 /// Plain-number series: every cell is a number that is not date/time
@@ -127,14 +142,15 @@ fn numeric_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
         }
     }
     let len = nums.len();
+    // Formats cycle through the pattern as the series runs past its end.
     Some(
-        (0..count)
-            .map(|j| {
-                let p = len + j;
-                FillOut {
-                    raw: num_to_raw(linear_at(&nums, p)),
-                    fmt: pattern[p % len].fmt,
-                }
+        pattern
+            .iter()
+            .cycle()
+            .zip(0..count)
+            .map(|(src, j)| FillOut {
+                raw: num_to_raw(linear_at(&nums, len.saturating_add(j))),
+                fmt: src.fmt,
             })
             .collect(),
     )
@@ -160,12 +176,18 @@ fn date_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
     let len = serials.len();
 
     if let Some(months) = monthly_step(&serials) {
-        let (y, m, d) = serial_to_ymd(serials[len - 1]);
+        let (y, m, d) = serial_to_ymd(*serials.last()?);
         return Some(
             (0..count)
                 .map(|j| {
-                    let serial = add_months(y, m, d, months * (j as i64 + 1));
-                    FillOut { raw: num_to_raw(serial), fmt: CellFormat::Date(style) }
+                    // `j` counts generated cells, so the month offset stays
+                    // small; saturating keeps an absurd drag from wrapping.
+                    let ahead = i64::try_from(j).unwrap_or(i64::MAX).saturating_add(1);
+                    let serial = add_months(y, m, d, ahead.saturating_mul(months));
+                    FillOut {
+                        raw: num_to_raw(serial),
+                        fmt: CellFormat::Date(style),
+                    }
                 })
                 .collect(),
         );
@@ -174,9 +196,11 @@ fn date_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
     Some(
         (0..count)
             .map(|j| {
-                let p = len + j;
-                let serial = series_at(&serials, p).round();
-                FillOut { raw: num_to_raw(serial), fmt: CellFormat::Date(style) }
+                let serial = series_at(&serials, len.saturating_add(j)).round();
+                FillOut {
+                    raw: num_to_raw(serial),
+                    fmt: CellFormat::Date(style),
+                }
             })
             .collect(),
     )
@@ -190,27 +214,65 @@ fn name_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     const MONTHS_LONG: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June", "July", "August", "September",
-        "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
     const DAYS_SHORT: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const DAYS_LONG: [&str; 7] = [
-        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
     ];
 
-    for list in [&MONTHS_SHORT[..], &MONTHS_LONG[..], &DAYS_SHORT[..], &DAYS_LONG[..]] {
+    for list in [
+        &MONTHS_SHORT[..],
+        &MONTHS_LONG[..],
+        &DAYS_SHORT[..],
+        &DAYS_LONG[..],
+    ] {
         if let Some(idxs) = match_names(pattern, list) {
-            let n = list.len() as i64;
+            let Ok(n) = i64::try_from(list.len()) else {
+                continue;
+            };
+            if n == 0 {
+                continue;
+            }
             let step = mod_series_step(&idxs, n);
-            let last = *idxs.last().unwrap();
-            let len = idxs.len();
+            let last = *idxs.last()?;
             return Some(
-                (0..count)
-                    .map(|j| {
-                        let idx = (last + step * (j as i64 + 1)).rem_euclid(n) as usize;
+                pattern
+                    .iter()
+                    .cycle()
+                    .zip(0..count)
+                    .map(|(src, j)| {
+                        // `rem_euclid(n)` lands inside the list, so the lookup
+                        // below always finds a name.
+                        let ahead = i64::try_from(j).unwrap_or(i64::MAX).saturating_add(1);
+                        let idx = last
+                            .saturating_add(step.saturating_mul(ahead))
+                            .rem_euclid(n);
+                        let name = usize::try_from(idx)
+                            .ok()
+                            .and_then(|i| list.get(i))
+                            .copied()
+                            .unwrap_or_default();
                         FillOut {
-                            raw: list[idx].to_string(),
-                            fmt: pattern[(len + j) % len].fmt,
+                            raw: name.to_string(),
+                            fmt: src.fmt,
                         }
                     })
                     .collect(),
@@ -235,23 +297,28 @@ fn text_number_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>
             _ => return None,
         }
         width = width.min(w);
-        nums.push(val as f64);
+        nums.push(val);
     }
     let prefix = prefix?;
     let len = nums.len();
     Some(
-        (0..count)
-            .map(|j| {
-                let p = len + j;
-                let n = series_at(&nums, p).round() as i64;
-                let num_str = if width > 1 && n >= 0 {
-                    format!("{:0width$}", n, width = width)
+        pattern
+            .iter()
+            .cycle()
+            .zip(0..count)
+            .map(|(src, j)| {
+                let value = series_at(&nums, len.saturating_add(j)).round();
+                // A small negative fit rounds to `-0.0`; fold it back so a
+                // zero never renders with a sign.
+                let value = if value == 0.0 { 0.0 } else { value };
+                let num_str = if width > 1 && value >= 0.0 {
+                    format!("{value:0width$.0}")
                 } else {
-                    n.to_string()
+                    format!("{value:.0}")
                 };
                 FillOut {
-                    raw: format!("{}{}", prefix, num_str),
-                    fmt: pattern[p % len].fmt,
+                    raw: format!("{prefix}{num_str}"),
+                    fmt: src.fmt,
                 }
             })
             .collect(),
@@ -264,57 +331,80 @@ fn text_number_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>
 /// constant. Two or more samples: an exact arithmetic progression continues by
 /// its step; otherwise a least-squares straight-line fit.
 fn linear_at(vals: &[f64], p: usize) -> f64 {
-    if vals.len() == 1 {
-        return vals[0];
+    match vals {
+        [only] => *only,
+        _ => line_value(vals, p),
     }
-    line_value(vals, p)
 }
 
 /// Like [`linear_at`] but a single sample *increments by one* per step — the
 /// behaviour dates and text+number use (a lone `1/1` advances a day; a lone
 /// `Item 1` becomes `Item 2`).
 fn series_at(vals: &[f64], p: usize) -> f64 {
-    if vals.len() == 1 {
-        return vals[0] + p as f64;
+    match vals {
+        [only] => only + pos_f64(p),
+        _ => line_value(vals, p),
     }
-    line_value(vals, p)
+}
+
+/// A position or length in a fill series as a float. These are cell counts,
+/// so `u32` covers every value one can reach by dragging, and the widening is
+/// exact — unlike a `usize as f64` cast, which silently rounds past 2^53.
+fn pos_f64(p: usize) -> f64 {
+    f64::from(u32::try_from(p).unwrap_or(u32::MAX))
 }
 
 /// The line through `vals` (positions `0..len`) evaluated at `p`. Uses the
 /// exact step for an arithmetic progression, else least squares.
 fn line_value(vals: &[f64], p: usize) -> f64 {
+    let [first, second, ..] = vals else {
+        // Fewer than two samples: there is no line, only the sample itself.
+        return vals.first().copied().unwrap_or(0.0);
+    };
     let len = vals.len();
-    let step = vals[1] - vals[0];
-    let is_ap = vals.windows(2).all(|w| {
-        let d = w[1] - w[0];
-        (d - step).abs() <= 1e-9 * (1.0 + w[0].abs().max(w[1].abs()))
-    });
+    let step = second - first;
+    let is_ap = vals
+        .iter()
+        .zip(vals.iter().skip(1))
+        .all(|(a, b)| ((b - a) - step).abs() <= 1e-9 * (1.0 + a.abs().max(b.abs())));
     if is_ap {
-        return vals[0] + step * p as f64;
+        return first + step * pos_f64(p);
     }
     // Least-squares linear fit over positions 0..len.
-    let n = len as f64;
-    let sx: f64 = (0..len).map(|i| i as f64).sum();
+    let n = pos_f64(len);
+    let sx: f64 = (0..len).map(pos_f64).sum();
     let sy: f64 = vals.iter().sum();
-    let sxx: f64 = (0..len).map(|i| (i * i) as f64).sum();
-    let sxy: f64 = vals.iter().enumerate().map(|(i, v)| i as f64 * v).sum();
-    let denom = n * sxx - sx * sx;
+    let sxx: f64 = (0..len)
+        .map(|i| {
+            let x = pos_f64(i);
+            x * x
+        })
+        .sum();
+    let sxy: f64 = vals.iter().enumerate().map(|(i, v)| pos_f64(i) * v).sum();
+    let n_sxx = n * sxx;
+    let sx_squared = sx * sx;
+    let denom = n_sxx - sx_squared;
     if denom.abs() < 1e-12 {
         return sy / n;
     }
     let slope = (n * sxy - sx * sy) / denom;
     let intercept = (sy - slope * sx) / n;
-    intercept + slope * p as f64
+    intercept + slope * pos_f64(p)
 }
 
 /// Render a number as the shortest exact-looking decimal (matching how the
 /// smart-entry path persists numbers): integers print bare, fractions keep up
 /// to ten significant digits with trailing zeros trimmed.
 fn num_to_raw(n: f64) -> String {
-    if n.fract() == 0.0 && n.abs() < 1e15 {
-        return format!("{}", n as i64);
+    if n == 0.0 {
+        return "0".to_string(); // also normalises `-0.0`
     }
-    let s = format!("{:.10}", n);
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        // Whole and inside the exactly-representable range: print the integer
+        // straight, with no decimal point.
+        return format!("{n:.0}");
+    }
+    let s = format!("{n:.10}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
@@ -328,24 +418,43 @@ fn monthly_step(serials: &[f64]) -> Option<i64> {
         return None;
     }
     let ymd: Vec<(i64, u32, u32)> = serials.iter().map(|s| serial_to_ymd(*s)).collect();
-    let d0 = ymd[0].2;
-    if ymd.iter().any(|(_, _, d)| *d != d0) {
+    let (_, _, d0) = *ymd.first()?;
+    if ymd.iter().any(|&(_, _, d)| d != d0) {
         return None;
     }
-    let months: Vec<i64> = ymd.iter().map(|(y, m, _)| y * 12 + *m as i64).collect();
-    let step = months[1] - months[0];
+    // The years come from a serial the model already bounds, so the month
+    // index stays tiny and the saturating ops never trigger.
+    let months: Vec<i64> = ymd
+        .iter()
+        .map(|&(y, m, _)| y.saturating_mul(12).saturating_add(i64::from(m)))
+        .collect();
+    let mut deltas = months
+        .iter()
+        .zip(months.iter().skip(1))
+        .map(|(a, b)| b.saturating_sub(*a));
+    let step = deltas.next()?;
     if step == 0 {
         return None;
     }
-    months.windows(2).all(|w| w[1] - w[0] == step).then_some(step)
+    deltas.all(|d| d == step).then_some(step)
 }
 
 /// Add `add` months to `(y, m, d)` and return the resulting Excel serial,
 /// clamping the day into the target month (`31 Jan` + 1 month → `28/29 Feb`).
 fn add_months(y: i64, m: u32, d: u32, add: i64) -> f64 {
-    let total = y * 12 + (m as i64 - 1) + add;
+    // Months since year 0. `y` comes from a serial the model already bounds
+    // and `add` from the fill count, so saturating keeps an extreme drag from
+    // wrapping into a bogus date.
+    let total = y
+        .saturating_mul(12)
+        .saturating_add(i64::from(m))
+        .saturating_sub(1)
+        .saturating_add(add);
     let ny = total.div_euclid(12);
-    let nm = total.rem_euclid(12) as u32 + 1;
+    // `rem_euclid(12)` is in [0, 11], so the month lands in [1, 12].
+    let nm = u32::try_from(total.rem_euclid(12))
+        .unwrap_or(0)
+        .saturating_add(1);
     let dd = d.min(days_in_month(ny, nm));
     date_to_serial(ny, nm, dd)
 }
@@ -353,15 +462,12 @@ fn add_months(y: i64, m: u32, d: u32, add: i64) -> f64 {
 fn days_in_month(y: i64, m: u32) -> u32 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
         2 => {
             let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-            if leap {
-                29
-            } else {
-                28
-            }
+            if leap { 29 } else { 28 }
         }
+        // April, June, September, November — and any month index out of
+        // range, which the callers never produce.
         _ => 30,
     }
 }
@@ -375,10 +481,8 @@ fn match_names(pattern: &[FillCell], list: &[&str]) -> Option<Vec<i64>> {
     for c in pattern {
         let s = c.display();
         let s = s.trim();
-        let idx = list
-            .iter()
-            .position(|name| name.eq_ignore_ascii_case(s))?;
-        out.push(idx as i64);
+        let idx = list.iter().position(|name| name.eq_ignore_ascii_case(s))?;
+        out.push(i64::try_from(idx).ok()?);
     }
     Some(out)
 }
@@ -386,41 +490,44 @@ fn match_names(pattern: &[FillCell], list: &[&str]) -> Option<Vec<i64>> {
 /// The step of an index series taken modulo `wrap`: `+1` for a single sample,
 /// else the consistent forward delta (or `+1` when inconsistent).
 fn mod_series_step(idxs: &[i64], wrap: i64) -> i64 {
-    if idxs.len() < 2 {
+    // `rem_euclid` needs a positive modulus, and a lone sample has no delta.
+    if wrap <= 0 {
         return 1;
     }
-    let step = (idxs[1] - idxs[0]).rem_euclid(wrap);
+    let [first, second, ..] = idxs else {
+        return 1;
+    };
+    let step = second.saturating_sub(*first).rem_euclid(wrap);
     let consistent = idxs
-        .windows(2)
-        .all(|w| (w[1] - w[0]).rem_euclid(wrap) == step);
-    if consistent && step != 0 {
-        step
-    } else {
-        1
-    }
+        .iter()
+        .zip(idxs.iter().skip(1))
+        .all(|(a, b)| b.saturating_sub(*a).rem_euclid(wrap) == step);
+    if consistent && step != 0 { step } else { 1 }
 }
 
-/// Split a string into `(prefix, trailing_integer, digit_width)`, or `None`
-/// when it has no trailing digits.
-fn split_trailing_number(s: &str) -> Option<(String, i64, usize)> {
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = chars.len();
-    while i > 0 && chars[i - 1].is_ascii_digit() {
-        i -= 1;
-    }
-    if i == chars.len() {
+/// Split a string into `(prefix, trailing_number, digit_width)`, or `None`
+/// when it has no trailing digits — or so many that the value cannot be
+/// represented, in which case there is no series to continue.
+fn split_trailing_number(s: &str) -> Option<(String, f64, usize)> {
+    // Every trailing digit is one ASCII byte, so the count is also the byte
+    // offset of the split.
+    let digits_len = s.chars().rev().take_while(char::is_ascii_digit).count();
+    let split = s.len().checked_sub(digits_len)?;
+    let (prefix, digits) = s.split_at_checked(split)?;
+    if digits.is_empty() {
         return None; // no trailing digits
     }
-    let prefix: String = chars[..i].iter().collect();
-    let digits: String = chars[i..].iter().collect();
-    let val: i64 = digits.parse().ok()?;
-    Some((prefix, val, digits.len()))
+    let val: f64 = digits.parse().ok()?;
+    if !val.is_finite() {
+        return None;
+    }
+    Some((prefix.to_string(), val, digits.len()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DateStyle, CellFormat, CellValue};
+    use crate::model::{CellFormat, CellValue, DateStyle};
 
     fn num(n: f64) -> FillCell {
         FillCell::new(num_to_raw(n), CellValue::Number(n), CellFormat::General)
@@ -448,16 +555,25 @@ mod tests {
             CellValue::Number(0.0),
             CellFormat::General,
         )];
-        assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["=A2", "=A3", "=A4"]);
+        assert_eq!(
+            raws(&extend_series(&pat, 3, 0, 1)),
+            vec!["=A2", "=A3", "=A4"]
+        );
         // Filled right instead → =B1, =C1, =D1.
-        assert_eq!(raws(&extend_series(&pat, 3, 1, 0)), vec!["=B1", "=C1", "=D1"]);
+        assert_eq!(
+            raws(&extend_series(&pat, 3, 1, 0)),
+            vec!["=B1", "=C1", "=D1"]
+        );
         // An absolute reference stays put on the copy.
         let anch = [FillCell::new(
             "=$A$1+B1",
             CellValue::Number(0.0),
             CellFormat::General,
         )];
-        assert_eq!(raws(&extend_series(&anch, 2, 0, 1)), vec!["=$A$1+B2", "=$A$1+B3"]);
+        assert_eq!(
+            raws(&extend_series(&anch, 2, 0, 1)),
+            vec!["=$A$1+B2", "=$A$1+B3"]
+        );
     }
 
     #[test]
@@ -497,13 +613,22 @@ mod tests {
         }
         let s0: f64 = out[0].raw.parse().unwrap();
         let s1: f64 = out[1].raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(s0, DateStyle::Iso), "2024-01-02");
-        assert_eq!(crate::model::serial_to_date(s1, DateStyle::Iso), "2024-01-03");
+        assert_eq!(
+            crate::model::serial_to_date(s0, DateStyle::Iso),
+            "2024-01-02"
+        );
+        assert_eq!(
+            crate::model::serial_to_date(s1, DateStyle::Iso),
+            "2024-01-03"
+        );
         // Two dates a week apart continue weekly.
         let pat = [date(2024, 1, 1), date(2024, 1, 8)];
         let out = extend_series(&pat, 1, 0, 1);
         let s: f64 = out[0].raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(s, DateStyle::Iso), "2024-01-15");
+        assert_eq!(
+            crate::model::serial_to_date(s, DateStyle::Iso),
+            "2024-01-15"
+        );
     }
 
     #[test]
@@ -513,8 +638,14 @@ mod tests {
         let out = extend_series(&pat, 2, 0, 1);
         let s0: f64 = out[0].raw.parse().unwrap();
         let s1: f64 = out[1].raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(s0, DateStyle::Iso), "2024-03-15");
-        assert_eq!(crate::model::serial_to_date(s1, DateStyle::Iso), "2024-04-15");
+        assert_eq!(
+            crate::model::serial_to_date(s0, DateStyle::Iso),
+            "2024-03-15"
+        );
+        assert_eq!(
+            crate::model::serial_to_date(s1, DateStyle::Iso),
+            "2024-04-15"
+        );
         // Month-end clamps: a day-31 monthly cadence (Oct 31, Dec 31 — step of
         // two months) continues to Feb 29 (leap) and Apr 30, each clamped into
         // its shorter month.
@@ -522,8 +653,14 @@ mod tests {
         let out = extend_series(&pat, 2, 0, 1);
         let s0: f64 = out[0].raw.parse().unwrap();
         let s1: f64 = out[1].raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(s0, DateStyle::Iso), "2024-02-29");
-        assert_eq!(crate::model::serial_to_date(s1, DateStyle::Iso), "2024-04-30");
+        assert_eq!(
+            crate::model::serial_to_date(s0, DateStyle::Iso),
+            "2024-02-29"
+        );
+        assert_eq!(
+            crate::model::serial_to_date(s1, DateStyle::Iso),
+            "2024-04-30"
+        );
     }
 
     #[test]

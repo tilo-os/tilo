@@ -1,21 +1,18 @@
 //! Visual probe: does every bootstrap tab come up as a *real* app?
 //!
-//! Renders each of the boot workspace's tabs (Notes / Files / Terminal) after
-//! activating it, so the result can be looked at instead of inferred. The
-//! terminal needs a moment for its PTY to emit a prompt, so its frames are
-//! pumped over a short window.
+//! Renders each boot-workspace tab (Notes/Files/Terminal) after activating
+//! it, so the result can be looked at instead of inferred; the terminal's
+//! frames are pumped over a short window since its PTY needs a moment to
+//! emit a prompt.
 //!
-//! `#[ignore]` — needs a GPU adapter and spawns a real shell; it's a review
+//! `#[ignore]` — needs a GPU adapter and spawns a real shell; a review
 //! tool, not a gate.
-//!
 //! ```text
 //! QOS_SHOT_DIR=/tmp/shots cargo test -p shell --test real_apps_visual \
 //!     -- --ignored --nocapture
 //! ```
 
-mod support;
-
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 
 use automerge::{AutoCommit, ROOT};
 use shell::compositor::frame::FrameBuilder;
@@ -27,9 +24,10 @@ const W: u32 = 1600;
 const H: u32 = 900;
 
 fn shot_dir() -> std::path::PathBuf {
-    std::env::var("QOS_SHOT_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("qos-apps-shots"))
+    std::env::var("QOS_SHOT_DIR").map_or_else(
+        |_| std::env::temp_dir().join("qos-apps-shots"),
+        std::path::PathBuf::from,
+    )
 }
 
 struct Driver {
@@ -78,7 +76,7 @@ impl Driver {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a review tool: needs a GPU adapter and spawns a real shell"]
 fn render_every_boot_tab() {
     let dir = shot_dir();
     std::fs::create_dir_all(&dir).expect("shot dir");
@@ -96,7 +94,6 @@ fn render_every_boot_tab() {
             .expect("one strip")
     };
 
-    // What did the boot tree actually materialise for each tab?
     {
         let g = fb.host_mut().group_at_for_tests(strip_id, 0).unwrap();
         for (i, t) in g.tabs().iter().enumerate() {
@@ -108,8 +105,7 @@ fn render_every_boot_tab() {
     let tab_count = fb
         .host_mut()
         .group_at_for_tests(strip_id, 0)
-        .map(|g| g.tabs().len())
-        .unwrap_or(0);
+        .map_or(0, |g| g.tabs().len());
 
     for idx in 0..tab_count {
         let (pill, title) = {
@@ -121,7 +117,7 @@ fn render_every_boot_tab() {
         };
         d.cursor(&mut fb, pill);
         d.click(&mut fb);
-        // Pump a few frames so async app content (PTY output) lands. Mirrors
+        // Pump a few frames so async app content (PTY output) lands, mirroring
         // the production loop: pump_apps (sync + update) then relayout/paint.
         for _ in 0..40 {
             fb.pump_apps(&mut d.doc, &ROOT);

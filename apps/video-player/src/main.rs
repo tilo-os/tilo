@@ -11,6 +11,22 @@
 //!   * `--open PATH`     — stage a real file for the captured frame (else a
 //!                          synthesized demo clip is shown).
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -61,7 +77,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, video_player::app_root(open), "dev.qos.video-player"));
+        std::process::exit(ui::headless::run(
+            spec,
+            video_player::app_root(open),
+            "dev.qos.video-player",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.video-player");
@@ -90,7 +110,7 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 }
 
 /// Render one offscreen frame of `widget` and write it as a PNG. Mirrors
-/// `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),

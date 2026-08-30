@@ -1,21 +1,13 @@
 //! What the compositor actually puts on the wire.
 //!
-//! A client does not care which `*State::new` calls a constructor made;
-//! it cares which globals arrive in the registry. So this connects a
-//! **real** `wayland-client` to a **real** `wayland-server` display
-//! driven by the compositor's own `State`, and reads the registry the
-//! way GTK, Qt or SDL would.
-//!
-//! The regression it exists to catch is specific and was live: qOS's
-//! own toolkit never asks for `wl_data_device_manager`, so nothing
-//! in-tree noticed it was missing — and GTK refuses to use a Wayland
-//! display at all without it. Every GTK application on the machine,
-//! which is most Flatpaks, connected, was refused, and fell back to an
-//! X11 display that does not exist. Nothing in the compositor logged an
-//! error; the app looked broken.
-//!
-//! A check that could not observe the wire could not have caught that,
-//! which is the whole reason this test talks to a socket.
+//! A client cares which globals arrive in the registry, not which
+//! `*State::new` calls a constructor made — so this connects a **real**
+//! `wayland-client` to a **real** `wayland-server` display driven by the
+//! compositor's own `State`, and reads the registry the way GTK, Qt or SDL
+//! would. GTK refuses a Wayland display without `wl_data_device_manager`
+//! and silently falls back to a nonexistent X11 display with no logged
+//! error, and qOS's own toolkit never asks for it — so nothing in-tree
+//! noticed it was missing until the wire itself was observed.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -34,7 +26,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Seen {
         state: &mut Self,
         _registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -49,10 +41,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Seen {
 fn advertised_globals() -> Vec<String> {
     let event_loop: EventLoop<'static, shell::compositor::state::State> =
         EventLoop::try_new().expect("calloop");
-    let mut display: Display<shell::compositor::state::State> =
-        Display::new().expect("display");
-    let mut state =
-        shell::compositor::state::State::new(event_loop.handle(), display.handle());
+    let mut display: Display<shell::compositor::state::State> = Display::new().expect("display");
+    let mut state = shell::compositor::state::State::new(event_loop.handle(), display.handle());
 
     let (server_side, client_side) = UnixStream::pair().expect("socketpair");
     display
@@ -71,15 +61,13 @@ fn advertised_globals() -> Vec<String> {
     let mut seen = Seen::default();
     let sink = seen.0.clone();
 
-    // One blocking round to get the registry burst, then non-blocking
-    // drains for anything that trails it.
-    //
-    // Deliberately *one* blocking dispatch: the globals all arrive in
-    // response to `get_registry`, and once they have there is nothing
-    // further for the server to send — a second blocking read would
-    // wait forever rather than finish the test.
+    // One blocking round for the registry burst, then non-blocking drains for
+    // the trailer — a second blocking dispatch would wait forever once the
+    // globals arrive and the server has nothing more to send.
     let _ = queue.flush();
-    display.dispatch_clients(&mut state).expect("server dispatch");
+    display
+        .dispatch_clients(&mut state)
+        .expect("server dispatch");
     display.flush_clients().expect("flush");
     queue
         .blocking_dispatch(&mut seen)
@@ -91,28 +79,17 @@ fn advertised_globals() -> Vec<String> {
         let _ = queue.dispatch_pending(&mut seen);
     }
 
-    let out = sink.lock().expect("globals").clone();
-    out
+    sink.lock().expect("globals").clone()
 }
 
-/// The globals a toolkit needs that the compositor advertises from
-/// construction.
+/// Globals a toolkit needs that the compositor advertises from
+/// construction. `wl_compositor`, `wl_shm` and `wl_data_device_manager`
+/// are the three `gdk_wayland_display_open` checks before using a Wayland
+/// display at all; the rest are what a client needs to get a window up.
 ///
-/// `wl_compositor`, `wl_shm` and `wl_data_device_manager` are the three
-/// GTK's `gdk_wayland_display_open` checks together before it will use a
-/// Wayland display at all; miss one and it warns "the Wayland
-/// compositor does not provide one or more of the required interfaces"
-/// and falls back to X11. The rest are what a client needs to actually
-/// get a window on screen and drive it.
-///
-/// **`wl_output` is deliberately not here.** It is not a global the
-/// compositor constructs — one is created per attached monitor by the
-/// backend, so a `State` with no backend has none, and asserting on it
-/// would fail for a reason that has nothing to do with what this test
-/// is about. What *is* constructed is the xdg-output manager, checked
-/// separately below. Covering `wl_output` needs a harness that attaches
-/// an output; this one does not have one, and says so rather than
-/// implying the coverage.
+/// **`wl_output` is deliberately absent** — the backend creates it per
+/// attached monitor, so a `State` with no backend has none; the
+/// xdg-output manager is checked separately below.
 const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     "wl_compositor",
     "wl_shm",
@@ -145,8 +122,8 @@ fn every_interface_a_toolkit_requires_is_advertised() {
     );
 }
 
-/// Named separately because it is the one that was actually absent, and
-/// a specific failure message beats being one entry in a list.
+/// Named separately because it is the one that was actually absent, and a
+/// specific failure message beats being one entry in a list.
 #[test]
 fn the_clipboard_global_is_advertised() {
     let globals = advertised_globals();

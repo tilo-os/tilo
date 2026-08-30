@@ -5,28 +5,49 @@ use ui::tokens::SpringParams;
 
 #[test]
 fn spring_converges_to_target() {
-    let mut s = Spring::new(0.0, SpringParams { stiffness: 260.0, damping: 28.0, mass: 1.0 });
+    let mut s = Spring::new(
+        0.0,
+        SpringParams {
+            stiffness: 260.0,
+            damping: 28.0,
+            mass: 1.0,
+        },
+    );
     s.set_target(100.0);
-    for _ in 0..600 { s.step(1.0 / 120.0); }
+    for _ in 0..600 {
+        s.step(1.0 / 120.0);
+    }
     assert!((s.value() - 100.0).abs() < 0.5);
     assert!(s.velocity().abs() < 0.5);
 }
 
 #[test]
 fn spring_settled_after_convergence() {
-    let mut s = Spring::new(0.0, SpringParams { stiffness: 260.0, damping: 28.0, mass: 1.0 });
+    let mut s = Spring::new(
+        0.0,
+        SpringParams {
+            stiffness: 260.0,
+            damping: 28.0,
+            mass: 1.0,
+        },
+    );
     s.set_target(50.0);
-    for _ in 0..500 { s.step(1.0 / 120.0); }
+    for _ in 0..500 {
+        s.step(1.0 / 120.0);
+    }
     assert!(s.is_settled());
 }
 
 #[test]
 fn tween_interpolates_linearly() {
-    // `Tween`/`Ease` became `Animated`/`Curve`, which are driven by a clock
-    // rather than by `advance(dt)` — so the start instant is pinned and time is
-    // supplied, instead of stepped.
     let start = Instant::now();
-    let t = Animated::starting_at(0.0f32, 100.0f32, start, Duration::from_secs(1), Curve::Linear);
+    let t = Animated::starting_at(
+        0.0f32,
+        100.0f32,
+        start,
+        Duration::from_secs(1),
+        Curve::Linear,
+    );
     assert!((t.current(start + Duration::from_millis(500)) - 50.0).abs() < 0.01);
     assert!(t.done(start + Duration::from_secs(1)));
     assert!((t.current(start + Duration::from_secs(1)) - 100.0).abs() < 0.01);

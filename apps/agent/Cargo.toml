@@ -1,7 +1,7 @@
 [package]
 name = "agent"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "qos-agent: a headless participant that joins a word-processor document through the compositor's collaboration broker and edits it with the app's own actions."
 
 [lib]
@@ -13,17 +13,35 @@ name = "qos-agent"
 path = "src/main.rs"
 
 [dependencies]
-# The wire types every participant speaks (`CollabRequest` / `CollabEvent`,
-# presence keys and payloads) — the same definitions the word processor
-# serialises, so a frame the agent writes is a frame the app reads.
+# The blocking agent facade delegates to the toolkit's typed
+# `QOS_SVC_COLLAB_FD` client and consumes the same request/event model as a
+# windowed app.
 ui = { path = "../../ui" }
 # The word processor's exported actions: the agent edits with exactly the
 # ops the toolbar produces, never with its own idea of the document.
 word-processor = { path = "../word-processor" }
+# Where the agent is spoken to, and a second app of a deliberately different
+# shape: a conversation rather than a document. Default features off — the
+# live media engine (GStreamer, iroh, openh264, the screen portal) is a chat
+# window's business and nothing a headless participant reading messages
+# needs.
+chat = { path = "../chat", default-features = false }
+# The one app in the room whose subject is not a document at all, and the
+# reason an instruction can name two apps: a photograph edited here is a
+# thing to put somewhere else. Its own decode and its own render, so "the
+# cropped photograph" means what the app means by it.
+photos = { path = "../photos" }
 qos-actions = { path = "../../crates/collab/actions" }
+# The address a chat message carries when it was authored by selecting
+# something — what `listen`'s `Subject::Carried` reads, so the agent never
+# has to work out what "this" meant on its own.
+qos-reference = { path = "../../crates/collab/reference" }
 qdoc = { path = "../../crates/doc/qdoc" }
+# The decision — which exported action answers an instruction — is a model
+# call. Blocking, because the agent's loop is a plain blocking loop; rustls so
+# no OS TLS stack is needed inside the image.
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 automerge.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
@@ -34,3 +52,6 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
+
+[lints]
+workspace = true

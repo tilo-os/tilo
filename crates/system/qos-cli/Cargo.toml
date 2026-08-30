@@ -15,7 +15,8 @@ path = "src/main.rs"
 # constraint that shaped qos-rollback the same way.
 anyhow.workspace = true
 clap.workspace = true
-serde_json.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
+
+[lints]
+workspace = true

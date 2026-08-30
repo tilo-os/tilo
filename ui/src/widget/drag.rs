@@ -1,49 +1,24 @@
 //! Reusable **drag-to-reorder** interaction model — the single source of
-//! truth for live-reflow list reordering used by system apps (weather's
-//! saved cities today; notes pages, playlists, contacts next).
+//! truth for live-reflow list reordering (weather's saved cities today;
+//! notes, playlists, contacts next).
 //!
-//! Like [`Scrollbar`](crate::widget::scrollbar) and
-//! [`DragSelect`](crate::gesture::DragSelect), this is a **pure state
-//! machine**, not a widget: it holds only ephemeral interaction state and
-//! turns a `(list geometry, cursor)` pair into the three things a
-//! reorderable list needs to render *live* feedback and commit on drop:
+//! Like [`Scrollbar`](crate::widget::scrollbar), this is a pure state
+//! machine, not a widget: it turns `(list geometry, cursor)` into the live
+//! insertion index, per-item reflow shift, and floating ghost rect.
+//! [`DragController::cancel`] just forgets the session, so cancel is a no-op
+//! by construction. A generic `Id` payload lets a caller key
+//! selection/presence to the moving item without the controller
+//! understanding it.
 //!
-//! - **the live insertion index** ([`DragController::insertion`]) — the
-//!   boundary the dragged item would land at, updated on every pointer move
-//!   so the gap tracks the cursor rather than snapping only on release;
-//! - **the per-item reflow shift** ([`DragController::item_shift`]) — how far
-//!   each *other* item slides along the axis to open a one-slot gap exactly
-//!   where the dragged item will land, so the list visibly reflows in real
-//!   time; and
-//! - **the floating ghost rect** ([`DragController::ghost_rect`]) — the
-//!   dragged item following the cursor at its original grab offset.
-//!
-//! On release [`DragController::commit`] yields the `(from, to)` move to apply
-//! to the model (the app writes it into the CRDT), or `None` when nothing
-//! changed. [`DragController::cancel`] restores the original order for
-//! Escape or a drop outside the list — the model is never mutated until a
-//! real commit, so a cancel is a no-op by construction.
-//!
-//! The model is deliberately **app-agnostic**: it knows nothing about
-//! weather chips, cities, or the document. It is generic over an identity
-//! payload `Id` the caller attaches to the dragged item ([`DragPayload`]-style
-//! opaque identity) so an app can key selection / presence to the moving
-//! item without the controller understanding it.
-//!
-//! ## Uniform-list assumption
-//! The reflow math assumes a **uniform** list: every item shares one extent
-//! along the axis and a fixed gap (a "slot pitch"). This matches every
-//! current adopter (weather chips, notes page rows, playlist rows, contact
-//! rows). Non-uniform lists can still drive the insertion index by supplying
-//! their own [`ListMetrics`] per hit-test, but the whole-slot reflow shift is
-//! only meaningful for uniform slots.
+//! The reflow math assumes a **uniform** list (one extent + fixed gap per
+//! item) — true of every current adopter. A non-uniform list can still drive
+//! the insertion index via its own [`ListMetrics`], but the whole-slot
+//! reflow shift only makes sense for uniform slots.
 
 use vello::kurbo::{Point, Rect, Size};
 
-/// Which way a reorderable list runs. A vertical list reorders on the Y
-/// axis (weather's cities, notes pages); a horizontal one on X (a
-/// thumbnail strip). The controller pins the *cross* axis while dragging so
-/// the ghost slides only along the list.
+/// Which way a reorderable list runs. The controller pins the *cross* axis
+/// while dragging so the ghost slides only along the list.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Axis {
     Vertical,
@@ -51,19 +26,16 @@ pub enum Axis {
 }
 
 /// Pixels of pointer travel before a press is promoted to a reorder drag, so
-/// a plain click never jitters into a move. Matches
-/// [`crate::dnd::DRAG_START_THRESHOLD_PX`] conventions.
+/// a plain click never jitters into a move.
 pub const REORDER_THRESHOLD_PX: f64 = 5.0;
 
 /// Uniform geometry of a reorderable list along the drag axis, in the same
-/// (logical, scroll-adjusted) coordinate space as the cursor handed to the
-/// controller.
+/// (logical, scroll-adjusted) coordinate space as the cursor.
 ///
-/// `origin` is the **leading edge** of item 0 (its top for a vertical list,
-/// its left for a horizontal one) *after* any scroll offset is applied — i.e.
-/// exactly where the first slot paints this frame. Rebuild it each frame from
-/// live layout so the insertion index and reflow stay correct while the list
-/// scrolls.
+/// `origin` is the **leading edge** of item 0, *after* any scroll offset —
+/// exactly where the first slot paints this frame. Rebuild it each frame
+/// from live layout so the insertion index and reflow stay correct while
+/// the list scrolls.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ListMetrics {
     pub origin: f64,
@@ -73,10 +45,13 @@ pub struct ListMetrics {
 }
 
 impl ListMetrics {
-    /// A uniform list of `count` items each `item_extent` long with `gap`
-    /// between them, the first item's leading edge at `origin`.
     pub fn uniform(origin: f64, item_extent: f64, gap: f64, count: usize) -> Self {
-        Self { origin, item_extent, gap, count }
+        Self {
+            origin,
+            item_extent,
+            gap,
+            count,
+        }
     }
 
     /// Distance from one slot's leading edge to the next (item + gap).
@@ -84,17 +59,15 @@ impl ListMetrics {
         self.item_extent + self.gap
     }
 
-    /// Leading-edge coordinate of slot boundary `i` (`0..=count`), where
-    /// boundary `0` sits before the first item and boundary `count` after
-    /// the last. Used to paint an insertion caret and to derive grab offsets.
+    /// Leading-edge coordinate of slot boundary `i` (`0..=count`): boundary
+    /// `0` sits before the first item, boundary `count` after the last.
     pub fn slot_lead(&self, i: usize) -> f64 {
         self.origin + i as f64 * self.pitch()
     }
 
-    /// The insertion **boundary** (`0..=count`) nearest `axis_coord` — the
-    /// gap the dragged item would drop into. Boundary `k` is the seam between
-    /// item `k-1` and item `k`. Snaps to the closest seam by rounding, so the
-    /// gap flips at the midpoint of each slot.
+    /// The insertion **boundary** (`0..=count`) nearest `axis_coord` —
+    /// snaps to the closest seam by rounding, so the gap flips at the
+    /// midpoint of each slot.
     pub fn insertion_at(&self, axis_coord: f64) -> usize {
         if self.count == 0 || self.pitch() <= 0.0 {
             return 0;
@@ -108,25 +81,21 @@ impl ListMetrics {
 /// constructed directly.
 #[derive(Clone, Debug)]
 struct Session<Id> {
-    /// Opaque identity the caller attached to the grabbed item.
     id: Id,
     /// Original index of the grabbed item in the pre-drag list.
     from: usize,
-    /// Pointer offset within the grabbed item along the axis at grab time, so
-    /// the ghost keeps the exact point you picked it up by instead of
-    /// snapping its leading edge to the cursor.
+    /// Pointer offset within the grabbed item at grab time, so the ghost
+    /// keeps the exact point picked up rather than snapping to the cursor.
     grab_offset: f64,
     /// Pointer position at press (for the drag-start threshold).
     start: Point,
-    /// Latest pointer position.
     current: Point,
-    /// Has the pointer crossed the drag-start threshold yet? Until it has,
-    /// there is no ghost, no gap, and a release is treated as a plain click.
+    /// Until the pointer crosses the drag-start threshold, there is no
+    /// ghost, no gap, and a release is treated as a plain click.
     active: bool,
-    /// Live **target index** (`0..=count-1`) the dragged item would land at,
-    /// recomputed from the ghost's displacement as the pointer moves. Equals
-    /// `from` while the ghost still overlaps its own original slot (the
-    /// dead-zone), so a small nudge opens no gap.
+    /// Live target index, recomputed from the ghost's displacement as the
+    /// pointer moves. Equals `from` while the ghost overlaps its own
+    /// original slot (the dead-zone), so a small nudge opens no gap.
     target: usize,
 }
 
@@ -138,11 +107,10 @@ fn axis_coord(axis: Axis, p: Point) -> f64 {
     }
 }
 
-/// The target index (`0..=count-1`) the dragged item lands at, derived from
-/// how far its ghost has travelled from its original slot. Rounding the
-/// slot-displacement gives a half-slot dead-zone centred on the original
-/// position: the gap only moves once the ghost's leading edge crosses the
-/// midpoint of a neighbouring slot.
+/// The target index the dragged item lands at, derived from how far its
+/// ghost has travelled from its original slot. Rounding the slot-displacement
+/// gives a half-slot dead-zone: the gap only moves once the ghost's leading
+/// edge crosses the midpoint of a neighbouring slot.
 fn target_for<Id>(axis: Axis, s: &Session<Id>, m: &ListMetrics) -> usize {
     if m.count == 0 {
         return 0;
@@ -153,26 +121,18 @@ fn target_for<Id>(axis: Axis, s: &Session<Id>, m: &ListMetrics) -> usize {
     (s.from as f64 + delta).clamp(0.0, (m.count - 1) as f64) as usize
 }
 
-/// A single-axis drag-to-reorder controller.
-///
-/// Construct one per reorderable list ([`DragController::vertical`] /
-/// [`DragController::horizontal`]) and keep it beside the list's own state.
-/// Drive it from the owner's event handler and read its derived quantities
-/// from `draw`:
+/// A single-axis drag-to-reorder controller. Construct one per reorderable
+/// list ([`DragController::vertical`] / [`DragController::horizontal`]) and
+/// drive it from the owner's event handler:
 ///
 /// ```ignore
-/// // press on item `i` grabbed at `cursor`
-/// let grab = cursor.y - metrics.slot_lead(i);      // offset within the item
+/// let grab = cursor.y - metrics.slot_lead(i);      // press on item i
 /// ctrl.begin(item_id, i, grab, cursor);
-/// // move (metrics = this frame's list geometry)
 /// if ctrl.pointer_moved(cursor, &metrics) { /* mark dirty */ }
-/// // draw: gap + reflow + ghost
-/// for (i, item) in items { let dy = ctrl.item_shift(i, &metrics); /* offset item */ }
-/// if let Some(g) = ctrl.ghost_rect(list_x0, list_x1) { /* paint floating ghost */ }
-/// // release → commit or nothing
+/// for (i, item) in items { let dy = ctrl.item_shift(i, &metrics); }
+/// if let Some(g) = ctrl.ghost_rect(list_x0, list_x1) { /* paint ghost */ }
 /// if let Some((from, to)) = ctrl.commit() { model.move_item(from, to); }
-/// // Escape / drop outside
-/// ctrl.cancel();
+/// ctrl.cancel(); // Escape / drop outside
 /// ```
 pub struct DragController<Id = ()> {
     axis: Axis,
@@ -182,7 +142,11 @@ pub struct DragController<Id = ()> {
 
 impl<Id: Clone> DragController<Id> {
     fn new(axis: Axis) -> Self {
-        Self { axis, threshold: REORDER_THRESHOLD_PX, session: None }
+        Self {
+            axis,
+            threshold: REORDER_THRESHOLD_PX,
+            session: None,
+        }
     }
 
     /// A vertical reorderable list (items stack top-to-bottom, ghost slides
@@ -218,12 +182,9 @@ impl<Id: Clone> DragController<Id> {
     // --- lifecycle -----------------------------------------------------
 
     /// Begin a (pending) drag of the item at index `from`, carrying `id`.
-    ///
-    /// `grab_offset` is the pointer's offset *within* the grabbed item along
-    /// the axis (`cursor_axis - item_leading_edge`); it keeps the ghost under
-    /// the exact point the user grabbed. The drag is not yet "active" — it
-    /// promotes to a live reorder only once the pointer travels past the
-    /// threshold, so a click that never moves stays a click.
+    /// `grab_offset` is the pointer's offset *within* the grabbed item
+    /// (`cursor_axis - item_leading_edge`). Not yet "active" — promotes to a
+    /// live reorder only once the pointer clears the threshold.
     pub fn begin(&mut self, id: Id, from: usize, grab_offset: f64, start: Point) {
         self.session = Some(Session {
             id,
@@ -237,14 +198,14 @@ impl<Id: Clone> DragController<Id> {
     }
 
     /// Feed the latest pointer position. Promotes the drag to active once it
-    /// clears the threshold and, while active, recomputes the live target
-    /// index from the ghost's displacement against `metrics`. Returns `true`
-    /// when the visible state changed (activation or a moved gap) so the owner
-    /// can schedule a redraw only on an edge.
+    /// clears the threshold. Returns `true` when the visible state changed
+    /// (activation or a moved gap) so the owner can redraw only on an edge.
     pub fn pointer_moved(&mut self, cursor: Point, metrics: &ListMetrics) -> bool {
         let axis = self.axis;
         let threshold = self.threshold;
-        let Some(s) = self.session.as_mut() else { return false };
+        let Some(s) = self.session.as_mut() else {
+            return false;
+        };
         s.current = cursor;
         let mut changed = false;
         if !s.active && s.start.distance(cursor) >= threshold {
@@ -262,24 +223,21 @@ impl<Id: Clone> DragController<Id> {
     }
 
     /// Recompute the live target index from the freshest `metrics` without a
-    /// pointer move — call once per frame in `draw` after the list geometry
-    /// (scroll, viewport) is known, so the gap stays pinned to the ghost even
-    /// as the list scrolls under a held drag. No-op unless a drag is active.
+    /// pointer move — call once per frame in `draw` so the gap stays pinned
+    /// to the ghost while the list scrolls under a held drag.
     pub fn sync_insertion(&mut self, metrics: &ListMetrics) {
         let axis = self.axis;
-        if let Some(s) = self.session.as_mut() {
-            if s.active {
-                s.target = target_for(axis, s, metrics);
-            }
+        if let Some(s) = self.session.as_mut()
+            && s.active
+        {
+            s.target = target_for(axis, s, metrics);
         }
     }
 
-    /// End the drag, yielding the `(from, to)` reorder to apply to the model,
-    /// or `None` when the drag never became active or the item didn't move
-    /// (the ghost stayed within its own slot's dead-zone). Clears the session
-    /// either way. `to` is the item's **final index** (`0..=count-1`) after
-    /// removal-and-reinsertion, i.e. the argument to a `Vec::remove(from)` +
-    /// `insert(to, _)` style move.
+    /// End the drag, yielding `(from, to)` to apply to the model, or `None`
+    /// when the drag never became active or the item didn't move. Clears
+    /// the session either way. `to` is the final index after
+    /// removal-and-reinsertion (`Vec::remove(from)` + `insert(to, _)`).
     pub fn commit(&mut self) -> Option<(usize, usize)> {
         let s = self.session.take()?;
         if !s.active {
@@ -288,12 +246,9 @@ impl<Id: Clone> DragController<Id> {
         (s.target != s.from).then_some((s.from, s.target))
     }
 
-    /// Abort the drag and restore the original order (Escape, or a drop
-    /// outside the list). Because the model is only mutated on [`commit`], a
-    /// cancel simply forgets the session. Returns `true` if a drag was in
-    /// progress.
-    ///
-    /// [`commit`]: DragController::commit
+    /// Abort the drag (Escape, or a drop outside the list). The model is
+    /// only mutated on [`commit`](DragController::commit), so this simply
+    /// forgets the session. Returns `true` if a drag was in progress.
     pub fn cancel(&mut self) -> bool {
         self.session.take().is_some()
     }
@@ -302,8 +257,7 @@ impl<Id: Clone> DragController<Id> {
 
     /// Whether a press has latched (active or not). Wire this to
     /// [`Widget::wants_pointer_capture`](crate::widget::Widget::wants_pointer_capture)
-    /// so the drag keeps receiving events after the cursor leaves the source
-    /// item's rect.
+    /// so the drag keeps receiving events after the cursor leaves the item.
     pub fn is_pending(&self) -> bool {
         self.session.is_some()
     }
@@ -325,12 +279,9 @@ impl<Id: Clone> DragController<Id> {
         self.session.as_ref().filter(|s| s.active).map(|s| s.from)
     }
 
-    /// The live **target index** (`0..=count-1`) the dragged item would land
-    /// at, once active — equivalently the slot the reflow leaves empty and the
-    /// `to` a drop would commit. Equals [`from_index`](DragController::from_index)
-    /// while the ghost is still inside its own slot's dead-zone (no gap opens).
-    /// Paint the insertion caret at this slot so the caret and the reflowed gap
-    /// coincide. `None` unless the drag is active.
+    /// The live target index the dragged item would land at, once active —
+    /// the `to` a drop would commit. Paint the insertion caret at this slot
+    /// so the caret and the reflowed gap coincide.
     pub fn insertion(&self) -> Option<usize> {
         self.session.as_ref().filter(|s| s.active).map(|s| s.target)
     }
@@ -343,16 +294,15 @@ impl<Id: Clone> DragController<Id> {
     // --- reflow + ghost ------------------------------------------------
 
     /// How far the *non-dragged* item at original index `index` must slide
-    /// along the axis (logical px, signed) to open a one-slot gap at the live
-    /// target index. `0` for the dragged item itself (draw it as the ghost
-    /// instead), `0` when no drag is active, and `0` for every item while the
-    /// ghost sits in its own slot's dead-zone (`target == from`).
-    ///
-    /// The reflow models "remove the dragged item, then open a gap where it
-    /// will land": an item collapses up into the vacated slot and then shifts
-    /// down past the gap if the drop lands before it.
+    /// (signed) to open a one-slot gap at the live target index. `0` for the
+    /// dragged item, and `0` for every item during the dead-zone. Models
+    /// "remove the dragged item, then open a gap where it will land": an
+    /// item collapses into the vacated slot, then shifts past the gap if
+    /// the drop lands before it.
     pub fn item_shift(&self, index: usize, metrics: &ListMetrics) -> f64 {
-        let Some(s) = self.session.as_ref() else { return 0.0 };
+        let Some(s) = self.session.as_ref() else {
+            return 0.0;
+        };
         if !s.active || index == s.from {
             return 0.0;
         }
@@ -360,7 +310,11 @@ impl<Id: Clone> DragController<Id> {
         // Index within the list with the dragged item removed.
         let collapsed = if index < s.from { index } else { index - 1 };
         // Index after re-inserting the dragged item at `to`.
-        let final_i = if collapsed < to { collapsed } else { collapsed + 1 };
+        let final_i = if collapsed < to {
+            collapsed
+        } else {
+            collapsed + 1
+        };
         (final_i as f64 - index as f64) * metrics.pitch()
     }
 
@@ -392,7 +346,9 @@ impl<Id: Clone> DragController<Id> {
         let lead = self.ghost_lead()?;
         Some(match self.axis {
             Axis::Vertical => Rect::new(cross_lo, lead, cross_lo + size.width, lead + size.height),
-            Axis::Horizontal => Rect::new(lead, cross_lo, lead + size.width, cross_lo + size.height),
+            Axis::Horizontal => {
+                Rect::new(lead, cross_lo, lead + size.width, cross_lo + size.height)
+            }
         })
     }
 }
@@ -448,7 +404,11 @@ mod tests {
         assert_eq!(c.insertion(), Some(2));
         // Keep dragging past the last item → target follows to the last slot.
         c.pointer_moved(Point::new(200.0, 400.0), &m4());
-        assert_eq!(c.insertion(), Some(3), "gap tracks the ghost live, not on release");
+        assert_eq!(
+            c.insertion(),
+            Some(3),
+            "gap tracks the ghost live, not on release"
+        );
     }
 
     #[test]
@@ -483,7 +443,11 @@ mod tests {
                 "no item reflows while the ghost is in its own slot's dead-zone (i={i})"
             );
         }
-        assert_eq!(c.commit(), None, "dropping where it started changes nothing");
+        assert_eq!(
+            c.commit(),
+            None,
+            "dropping where it started changes nothing"
+        );
     }
 
     #[test]
@@ -494,7 +458,11 @@ mod tests {
         // Just past the neighbour's midpoint downward: ghost lead moves ~0.6
         // slot, which rounds to a one-slot move → the gap finally opens.
         c.pointer_moved(Point::new(200.0, 198.0 + 0.6 * m.pitch()), &m);
-        assert_eq!(c.insertion(), Some(2), "crossing the midpoint opens the gap below");
+        assert_eq!(
+            c.insertion(),
+            Some(2),
+            "crossing the midpoint opens the gap below"
+        );
         assert!(
             c.item_shift(2, &m) != 0.0,
             "the neighbour reflows once the gap has moved onto it"
@@ -558,7 +526,11 @@ mod tests {
         c.pointer_moved(Point::new(200.0, 400.0), &m); // drag item 0 to the end
         let shown = c.insertion();
         assert_eq!(shown, Some(3), "the gap sits at the final slot");
-        assert_eq!(c.commit().map(|(_, to)| to), shown, "drop lands where the gap showed");
+        assert_eq!(
+            c.commit().map(|(_, to)| to),
+            shown,
+            "drop lands where the gap showed"
+        );
     }
 
     #[test]
@@ -587,7 +559,11 @@ mod tests {
         // up with it, so the same ghost now points one slot lower.
         let scrolled = ListMetrics::uniform(32.0, 60.0, 8.0, 4);
         c.sync_insertion(&scrolled);
-        assert_eq!(c.insertion(), Some(3), "gap re-pins to the ghost after scroll");
+        assert_eq!(
+            c.insertion(),
+            Some(3),
+            "gap re-pins to the ghost after scroll"
+        );
     }
 
     #[test]
@@ -597,7 +573,11 @@ mod tests {
         c.begin(0, 0, 40.0, Point::new(40.0, 50.0)); // ghost lead = slot_lead(0)
         c.pointer_moved(Point::new(200.0, 50.0), &m); // slide right ~1.8 slots
         assert!(c.is_active());
-        assert_eq!(c.insertion(), Some(2), "the ghost landed over the last slot");
+        assert_eq!(
+            c.insertion(),
+            Some(2),
+            "the ghost landed over the last slot"
+        );
         assert_eq!(c.ghost_lead(), Some(160.0), "ghost tracks X at grab offset");
         assert_eq!(c.commit(), Some((0, 2)));
     }

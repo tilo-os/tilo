@@ -1,11 +1,10 @@
-//! The perf harness must run a scripted scenario against an app's **real**
-//! five passes and produce per-pass frame-time statistics — the production
-//! path, not a mock. These tests drive [`ui::profiling::run_scenario_on`],
-//! which stands up the same headless [`ui::headless::Driver`] the persistence
-//! harness uses and times each `sync` / `build_layout` / `apply_layout` /
-//! `draw` / `handle_event` pass.
+//! The perf harness runs a scripted scenario against an app's **real** five
+//! passes and produces per-pass frame-time statistics — the production path,
+//! not a mock. These tests drive [`ui::profiling::run_scenario_on`], which
+//! stands up the same headless [`ui::headless::Driver`] the persistence
+//! harness uses.
 
-use ui::profiling::{run_scenario_on, PerfScenario, PerfStep, FRAME_BUDGET_US};
+use ui::profiling::{FRAME_BUDGET_US, PerfScenario, PerfStep, run_scenario_on};
 use ui::state::State;
 use ui::widget::{Column, Scrollable, Text, Widget};
 
@@ -35,8 +34,6 @@ fn scroll_scenario_produces_per_pass_stats() {
     assert_eq!(report.frames, count, "one frame per scroll notch");
     assert_eq!(report.samples.len(), count);
 
-    // Every pass column is populated once per frame: this is "collects per-pass
-    // timings across frames".
     for (name, st) in [
         ("sync", report.sync),
         ("build_layout", report.build_layout),
@@ -48,18 +45,20 @@ fn scroll_scenario_produces_per_pass_stats() {
         assert_eq!(st.count, count, "{name} has one measurement per frame");
     }
 
-    // Timing actually happened on the production path: rebuilding layout for
-    // 150 rows and drawing them each frame costs real, non-zero time.
+    // Real, non-zero time: rebuilding layout for 150 rows and drawing them
+    // each frame on the production path costs something.
     assert!(report.total.max_us > 0, "total frame time was measured");
-    assert!(report.draw.max_us > 0, "draw pass was measured: {:?}", report.draw);
+    assert!(
+        report.draw.max_us > 0,
+        "draw pass was measured: {:?}",
+        report.draw
+    );
     assert!(
         report.build_layout.max_us > 0,
         "build_layout pass was measured: {:?}",
         report.build_layout
     );
 
-    // The stats struct exposes mean / p50 / p95 / max and an over-budget count,
-    // and they are internally consistent.
     assert!(report.total.p50_us <= report.total.p95_us);
     assert!(report.total.p95_us <= report.total.max_us);
     assert!(report.total.min_us <= report.total.p50_us);
@@ -70,7 +69,10 @@ fn scroll_scenario_produces_per_pass_stats() {
     for w in report.samples.windows(2) {
         assert!(w[1].frame > w[0].frame, "frame indices increase");
     }
-    assert!(report.samples[0].frame >= 3, "warmup frames were counted then cleared");
+    assert!(
+        report.samples[0].frame >= 3,
+        "warmup frames were counted then cleared"
+    );
 }
 
 /// A steady-state scenario dispatches no input, so `handle_event` is zero for

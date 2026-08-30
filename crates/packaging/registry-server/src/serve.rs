@@ -42,7 +42,7 @@ struct AppStateInner {
     storage: Storage,
     identity: ServerIdentity,
     /// Owner allowlist — hot-read on every POST, hot-write on
-    /// `add-publisher`, so guard with an RwLock.
+    /// `add-publisher`, so guard with an `RwLock`.
     allowlist: RwLock<PublisherAllowlist>,
 }
 
@@ -65,7 +65,7 @@ impl AppState {
 }
 
 /// The one-and-only HTTP handler — dispatched to by
-/// hyper::service_fn.
+/// `hyper::service_fn`.
 pub async fn handle(
     state: AppState,
     req: Request<Incoming>,
@@ -74,7 +74,10 @@ pub async fn handle(
     let path = req.uri().path().to_string();
 
     let res = match (method, path.as_str()) {
-        (Method::GET, "/health") => Ok(json_response(StatusCode::OK, &serde_json::json!({"ok": true}))),
+        (Method::GET, "/health") => Ok(json_response(
+            StatusCode::OK,
+            &serde_json::json!({"ok": true}),
+        )),
         (Method::GET, "/registry") => handle_get_registry(&state).await,
         (Method::GET, "/entries") => handle_get_entries(&state).await,
         (Method::GET, p) if p.starts_with("/entries/") => {
@@ -160,7 +163,10 @@ async fn handle_post_entries(
     // Verify the signature FIRST — no touching disk before the
     // request is proven authorised.
     if let Err(e) = verify_change_request(&change, &allow_snapshot) {
-        warn!("rejecting change request for {}: {e:?}", change.entry.package_id);
+        warn!(
+            "rejecting change request for {}: {e:?}",
+            change.entry.package_id
+        );
         let (code, msg) = match e {
             VerifyError::PublisherNotAllowed => (
                 StatusCode::FORBIDDEN,
@@ -287,7 +293,7 @@ async fn publisher_may_add_new(state: &AppState, entry: &RegistryEntry) -> bool 
     let mut key = [0u8; 32];
     key.copy_from_slice(&bytes);
     let g = state.inner.allowlist.read().await;
-    g.get(&key).map(|row| row.can_add_new).unwrap_or(false)
+    g.get(&key).is_some_and(|row| row.can_add_new)
 }
 
 // ---- response helpers ------------------------------------------

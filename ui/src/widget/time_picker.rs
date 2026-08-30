@@ -1,31 +1,26 @@
-//! TimePicker — three side-by-side vertical spinners for `HH : MM : SS`.
+//! `TimePicker` — three side-by-side vertical spinners for `HH : MM : SS`.
 //!
-//! Each spinner is a small column of three regions: an up-arrow button, the
-//! two-digit value cell (background `surfaces.raised`, radius `radii.sm`), and
-//! a down-arrow button. Clicking an arrow steps the value by 1 with wrap-
-//! around (hours 0..=23, minutes/seconds 0..=59); scrolling the wheel while
-//! the cursor is inside a value cell does the same.
+//! Each spinner is a column of three regions: an up-arrow, the two-digit
+//! value cell, and a down-arrow. Clicking an arrow steps the value by 1
+//! with wrap-around (hours 0..=23, minutes/seconds 0..=59); scrolling the
+//! wheel over a value cell does the same.
 //!
-//! The seconds spinner is hidden when the picker is constructed without
-//! `with_seconds`; its `second_rect` stays `Rect::ZERO` and the colon between
-//! minutes and seconds is suppressed.
-//!
-//! State lives entirely on the widget (this is a "leaf control" — there is no
-//! Automerge path bound to the value yet; the `on_change` callback is the
-//! escape hatch for plumbing changes back into the document if a host needs
-//! to). The five-pass model is honoured so the widget composes cleanly inside
-//! a `Row` / `Column`.
+//! The seconds spinner is hidden unless constructed via `with_seconds`;
+//! its `second_rect` then stays `Rect::ZERO`. State lives entirely on the
+//! widget — there is no Automerge path bound to the value yet, so
+//! `on_change` is the escape hatch for plumbing changes into a document.
 
 use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 
-use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
+use crate::widget::Widget;
 
 /// Maximum hour value (inclusive). 24-hour clock — wraps 23 → 0.
 const HOUR_MAX: u8 = 23;
@@ -42,21 +37,26 @@ const PICKER_HEIGHT: f32 = 72.0;
 /// Width of the colon separator between spinners.
 const COLON_WIDTH: f32 = 8.0;
 
-/// Which cell currently has keyboard focus (digit-input target).
-/// `None` means no cell is focused and digit keys are ignored.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TimeCell { Hours, Minutes, Seconds }
+pub enum TimeCell {
+    Hours,
+    Minutes,
+    Seconds,
+}
+
+/// `(hours, minutes, seconds)`.
+type TimeChange = Box<dyn FnMut(u8, u8, Option<u8>)>;
 
 /// Three-spinner time picker. See module docs.
 pub struct TimePicker {
     hours: u8,           // 0..=23
     minutes: u8,         // 0..=59
     seconds: Option<u8>, // Some(0..=59) only when explicitly enabled
-    on_change: Option<Box<dyn FnMut(u8, u8, Option<u8>)>>,
+    on_change: Option<TimeChange>,
     rect: Rect,
-    hour_rect: Rect,     // populated in apply_layout
+    hour_rect: Rect, // populated in apply_layout
     minute_rect: Rect,
-    second_rect: Rect,   // ZERO when seconds == None
+    second_rect: Rect, // ZERO when seconds == None
     last_cursor: Point,
     is_focused: bool,
     /// Which cell consumes the next digit key. Set by clicking a
@@ -94,23 +94,24 @@ impl TimePicker {
 
     /// Which cell currently consumes digit keys, if any. Mostly for
     /// tests; the chrome reads this for visual focus highlighting.
-    pub fn focused_cell(&self) -> Option<TimeCell> { self.focused_cell }
+    pub fn focused_cell(&self) -> Option<TimeCell> {
+        self.focused_cell
+    }
 
     /// Current per-cell digit accumulator (visible while typing).
-    pub fn digit_buffer(&self) -> &str { &self.digit_buffer }
+    pub fn digit_buffer(&self) -> &str {
+        &self.digit_buffer
+    }
 
-    /// Append a single digit to the focused cell's accumulator and
-    /// commit it. Behaviour:
-    /// - First digit: replaces the cell value (so typing "9" into a
-    ///   field currently showing "23" gives "09").
-    /// - Second digit: appends if the resulting two-digit number is
-    ///   still in range; otherwise replaces the buffer with just the
-    ///   new digit (so typing "2" then "5" into hours gives "5", not
-    ///   "25").
-    /// - After two valid digits the focus auto-advances to the next
-    ///   cell, matching every native time-input.
+    /// Append a single digit to the focused cell's accumulator and commit
+    /// it. First digit replaces the cell value (typing "9" into "23" gives
+    /// "09"). Second digit appends if still in range, else replaces the
+    /// buffer with just the new digit ("2" then "5" gives "5", not "25").
+    /// After two valid digits, focus auto-advances to the next cell.
     fn accept_digit(&mut self, d: u8) {
-        let Some(cell) = self.focused_cell else { return; };
+        let Some(cell) = self.focused_cell else {
+            return;
+        };
         let max = match cell {
             TimeCell::Hours => HOUR_MAX,
             TimeCell::Minutes | TimeCell::Seconds => MINSEC_MAX,
@@ -119,12 +120,10 @@ impl TimePicker {
             self.digit_buffer.clear();
         }
         let mut candidate = self.digit_buffer.clone();
-        candidate.push(char::from_digit(d as u32, 10).unwrap());
+        candidate.push(char::from_digit(u32::from(d), 10).unwrap());
         let parsed: u8 = candidate.parse().unwrap_or(0);
         if parsed > max {
-            // The two-digit candidate overflows: drop the prior digit
-            // and treat the new one as a fresh first character.
-            self.digit_buffer = char::from_digit(d as u32, 10).unwrap().to_string();
+            self.digit_buffer = char::from_digit(u32::from(d), 10).unwrap().to_string();
         } else {
             self.digit_buffer = candidate;
         }
@@ -146,11 +145,13 @@ impl TimePicker {
     fn advance_focus(&mut self) {
         self.focused_cell = match self.focused_cell {
             Some(TimeCell::Hours) => Some(TimeCell::Minutes),
-            Some(TimeCell::Minutes) => if self.seconds.is_some() {
-                Some(TimeCell::Seconds)
-            } else {
-                None
-            },
+            Some(TimeCell::Minutes) => {
+                if self.seconds.is_some() {
+                    Some(TimeCell::Seconds)
+                } else {
+                    None
+                }
+            }
             Some(TimeCell::Seconds) => None,
             None => None,
         };
@@ -168,8 +169,12 @@ impl TimePicker {
     }
 
     fn cell_for_point(&self, p: Point) -> Option<TimeCell> {
-        if self.hour_rect.contains(p) { return Some(TimeCell::Hours); }
-        if self.minute_rect.contains(p) { return Some(TimeCell::Minutes); }
+        if self.hour_rect.contains(p) {
+            return Some(TimeCell::Hours);
+        }
+        if self.minute_rect.contains(p) {
+            return Some(TimeCell::Minutes);
+        }
         if self.seconds.is_some() && self.second_rect.contains(p) {
             return Some(TimeCell::Seconds);
         }
@@ -194,9 +199,15 @@ impl TimePicker {
         self
     }
 
-    pub fn hours(&self) -> u8 { self.hours }
-    pub fn minutes(&self) -> u8 { self.minutes }
-    pub fn seconds(&self) -> Option<u8> { self.seconds }
+    pub fn hours(&self) -> u8 {
+        self.hours
+    }
+    pub fn minutes(&self) -> u8 {
+        self.minutes
+    }
+    pub fn seconds(&self) -> Option<u8> {
+        self.seconds
+    }
 
     /// Install a callback invoked with `(hours, minutes, seconds)` every
     /// time a user-driven change commits a new value.
@@ -205,12 +216,10 @@ impl TimePicker {
         self
     }
 
-    /// Set the hour value, clamping into 0..=23.
     pub fn set_hours(&mut self, h: u8) {
         self.hours = h.min(HOUR_MAX);
     }
 
-    /// Set the minute value, clamping into 0..=59.
     pub fn set_minutes(&mut self, m: u8) {
         self.minutes = m.min(MINSEC_MAX);
     }
@@ -221,8 +230,8 @@ impl TimePicker {
     /// [`Widget::apply_layout`] does, so click/scroll/keyboard all work.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
-        let cell_w = SPINNER_WIDTH as f64;
-        let colon_w = COLON_WIDTH as f64;
+        let cell_w = f64::from(SPINNER_WIDTH);
+        let colon_w = f64::from(COLON_WIDTH);
         let y0 = self.rect.y0;
         let y1 = self.rect.y1;
         let mut x = self.rect.x0;
@@ -242,8 +251,8 @@ impl TimePicker {
     /// [`Self::apply_layout_external`].
     pub fn intrinsic_size(&self) -> (f64, f64) {
         let n = if self.seconds.is_some() { 3.0 } else { 2.0 };
-        let w = n * SPINNER_WIDTH as f64 + (n - 1.0) * COLON_WIDTH as f64;
-        (w, PICKER_HEIGHT as f64)
+        let w = n * f64::from(SPINNER_WIDTH) + (n - 1.0) * f64::from(COLON_WIDTH);
+        (w, f64::from(PICKER_HEIGHT))
     }
 
     /// Compute the three sub-rects (up arrow / value cell / down arrow) for
@@ -256,24 +265,20 @@ impl TimePicker {
         (up, value, down)
     }
 
-    /// Wrap `v + 1` within `0..=max`.
     fn wrap_inc(v: u8, max: u8) -> u8 {
         if v >= max { 0 } else { v + 1 }
     }
 
-    /// Wrap `v - 1` within `0..=max`.
     fn wrap_dec(v: u8, max: u8) -> u8 {
         if v == 0 { max } else { v - 1 }
     }
 
-    /// Fire the `on_change` callback with the current values.
     fn fire_on_change(&mut self) {
         if let Some(cb) = self.on_change.as_mut() {
             cb(self.hours, self.minutes, self.seconds);
         }
     }
 
-    /// Bump the hour spinner by `delta` (±1).
     fn step_hours(&mut self, delta: i8) {
         if delta > 0 {
             self.hours = Self::wrap_inc(self.hours, HOUR_MAX);
@@ -283,7 +288,6 @@ impl TimePicker {
         self.fire_on_change();
     }
 
-    /// Bump the minute spinner by `delta` (±1).
     fn step_minutes(&mut self, delta: i8) {
         if delta > 0 {
             self.minutes = Self::wrap_inc(self.minutes, MINSEC_MAX);
@@ -293,7 +297,7 @@ impl TimePicker {
         self.fire_on_change();
     }
 
-    /// Bump the seconds spinner by `delta` (±1). No-op if seconds disabled.
+    /// No-op if seconds disabled.
     fn step_seconds(&mut self, delta: i8) {
         let Some(cur) = self.seconds else { return };
         let new = if delta > 0 {
@@ -307,9 +311,14 @@ impl TimePicker {
         self.fire_on_change();
     }
 
-    /// Draw a single chevron (up or down) centred in `cell`.
-    fn draw_chevron(scene: &mut Scene, transform: Affine, cell: Rect, color: vello::peniko::Color, up: bool) {
-        // Triangle inscribed in the central ~50% of the cell — keeps the
+    fn draw_chevron(
+        scene: &mut Scene,
+        transform: Affine,
+        cell: Rect,
+        color: vello::peniko::Color,
+        up: bool,
+    ) {
+        // Triangle inscribed in the central ~50% of the cell, keeping the
         // hit area larger than the visible arrow.
         let cx = cell.center().x;
         let cy = cell.center().y;
@@ -342,26 +351,24 @@ impl Widget for TimePicker {
         // Total width = spinner + colon + spinner [+ colon + spinner]
         let n_spinners: f32 = if self.seconds.is_some() { 3.0 } else { 2.0 };
         let total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(total_w),
-                    height: Dimension::length(PICKER_HEIGHT),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(total_w),
+                height: Dimension::length(PICKER_HEIGHT),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.apply_layout_external(Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         ));
     }
 
@@ -374,10 +381,9 @@ impl Widget for TimePicker {
         _presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = theme.tokens.radii.sm as f64;
+        let radius = f64::from(theme.tokens.radii.sm);
         let text_size = theme.tokens.typography.scale.lg;
 
-        // Collect the visible spinner cells along with their current value.
         let mut cells: Vec<(Rect, u8)> = vec![
             (self.hour_rect, self.hours),
             (self.minute_rect, self.minutes),
@@ -389,7 +395,6 @@ impl Widget for TimePicker {
         for (cell_idx, (cell, value)) in cells.iter().enumerate() {
             let (up_rect, value_rect, down_rect) = Self::spinner_subrects(*cell);
 
-            // Value cell background.
             let bg = RoundedRect::from_rect(value_rect, radius);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -398,27 +403,19 @@ impl Widget for TimePicker {
                 None,
                 &bg,
             );
-            // Focus ring on the cell currently consuming digit keys.
             let cell_kind = match cell_idx {
                 0 => TimeCell::Hours,
                 1 => TimeCell::Minutes,
                 _ => TimeCell::Seconds,
             };
             if self.is_focused && self.focused_cell == Some(cell_kind) {
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    colors.border_focus,
-                    None,
-                    &bg,
-                );
+                scene.stroke(&Stroke::new(2.0), transform, colors.border_focus, None, &bg);
             }
 
-            // Two-digit value label centred in the value cell.
-            let label = format!("{:02}", value);
+            let label = format!("{value:02}");
             let (w, h) = text_renderer.measure(&label, text_size, None);
-            let tx = value_rect.x0 + (value_rect.width() - w as f64) / 2.0;
-            let ty = value_rect.y0 + (value_rect.height() - h as f64) / 2.0;
+            let tx = value_rect.x0 + (value_rect.width() - f64::from(w)) / 2.0;
+            let ty = value_rect.y0 + (value_rect.height() - f64::from(h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &label,
@@ -428,14 +425,12 @@ impl Widget for TimePicker {
                 None,
             );
 
-            // Up and down chevrons.
             Self::draw_chevron(scene, transform, up_rect, colors.text_dim, true);
             Self::draw_chevron(scene, transform, down_rect, colors.text_dim, false);
         }
 
-        // Colons between visible spinners. Drawn at the same point size as
-        // the value text so the baselines line up.
-        let between_h_m_x = (self.hour_rect.x1 + self.minute_rect.x0) / 2.0;
+        // Colons at the same point size as the value text so baselines line up.
+        let between_h_m_x = f64::midpoint(self.hour_rect.x1, self.minute_rect.x0);
         let centre_y = self.rect.center().y;
         let colon = ":";
         let (cw, ch) = text_renderer.measure(colon, text_size, None);
@@ -444,17 +439,25 @@ impl Widget for TimePicker {
             colon,
             text_size,
             colors.text_dim,
-            transform * Affine::translate((between_h_m_x - cw as f64 / 2.0, centre_y - ch as f64 / 2.0)),
+            transform
+                * Affine::translate((
+                    between_h_m_x - f64::from(cw) / 2.0,
+                    centre_y - f64::from(ch) / 2.0,
+                )),
             None,
         );
         if self.seconds.is_some() {
-            let between_m_s_x = (self.minute_rect.x1 + self.second_rect.x0) / 2.0;
+            let between_m_s_x = f64::midpoint(self.minute_rect.x1, self.second_rect.x0);
             text_renderer.draw_text(
                 scene,
                 colon,
                 text_size,
                 colors.text_dim,
-                transform * Affine::translate((between_m_s_x - cw as f64 / 2.0, centre_y - ch as f64 / 2.0)),
+                transform
+                    * Affine::translate((
+                        between_m_s_x - f64::from(cw) / 2.0,
+                        centre_y - f64::from(ch) / 2.0,
+                    )),
                 None,
             );
         }
@@ -482,9 +485,8 @@ impl Widget for TimePicker {
                 ..
             } => {
                 let p = self.last_cursor;
-                // First: did the click land on a value cell (the
-                // middle third)? If so, latch keyboard focus on that
-                // cell so digit keys flow through `accept_digit`.
+                // A click on a value cell latches keyboard focus there so
+                // digit keys flow through `accept_digit`.
                 if let Some(cell) = self.cell_for_point(p) {
                     let value_rect = self.cell_value_rect(cell);
                     if value_rect.contains(p) {
@@ -499,11 +501,8 @@ impl Widget for TimePicker {
                         return;
                     }
                 }
-                // Otherwise: same up/down chevron handling as before.
-                let mut cells: Vec<(Rect, u8)> = vec![
-                    (self.hour_rect, 0),
-                    (self.minute_rect, 1),
-                ];
+                // Otherwise: up/down chevron handling.
+                let mut cells: Vec<(Rect, u8)> = vec![(self.hour_rect, 0), (self.minute_rect, 1)];
                 if self.seconds.is_some() {
                     cells.push((self.second_rect, 2));
                 }
@@ -531,14 +530,27 @@ impl Widget for TimePicker {
                     break;
                 }
             }
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: element_state, text, .. }, .. } => {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: element_state,
+                        text,
+                        ..
+                    },
+                ..
+            } => {
                 if !self.is_focused || *element_state != ElementState::Pressed {
                     return;
                 }
                 let shift = modifiers.state().shift_key();
                 match logical_key {
                     Key::Named(NamedKey::Tab) => {
-                        if shift { self.retreat_focus(); } else { self.advance_focus(); }
+                        if shift {
+                            self.retreat_focus();
+                        } else {
+                            self.advance_focus();
+                        }
                         *handled = true;
                     }
                     Key::Named(NamedKey::Escape) => {
@@ -547,9 +559,7 @@ impl Widget for TimePicker {
                         *handled = true;
                     }
                     Key::Named(NamedKey::Backspace) => {
-                        // Drop the most recent digit from the buffer.
-                        // Empty buffer → reset the cell value to zero
-                        // (clearing the field).
+                        // An empty buffer resets the cell value to zero.
                         if let Some(cell) = self.focused_cell {
                             self.digit_buffer.pop();
                             let v: u8 = self.digit_buffer.parse().unwrap_or(0);
@@ -598,10 +608,8 @@ impl Widget for TimePicker {
                         *handled = true;
                     }
                     _ => {
-                        // Direct digit input. We deliberately use the
-                        // logical-key character path so numpad digits
-                        // also work (winit reports them as
-                        // `Key::Character("0".."9")` after IME).
+                        // Deliberately the logical-key character path, not
+                        // named keys, so numpad digits also work.
                         if let Some(t) = text {
                             for c in t.chars() {
                                 if let Some(d) = c.to_digit(10) {
@@ -615,22 +623,23 @@ impl Widget for TimePicker {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let p = self.last_cursor;
-                // Wheel up → positive y delta → increment; wheel down →
-                // negative → decrement. Match the convention from native
-                // OS time pickers and the spec.
+                // Wheel up increments, matching native OS time pickers.
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     MouseScrollDelta::PixelDelta(pp) => pp.y,
                 };
-                let step: i8 = if dy > 0.0 { 1 } else if dy < 0.0 { -1 } else { 0 };
+                let step: i8 = if dy > 0.0 {
+                    1
+                } else if dy < 0.0 {
+                    -1
+                } else {
+                    0
+                };
                 if step == 0 {
                     return;
                 }
 
-                let mut cells: Vec<(Rect, u8)> = vec![
-                    (self.hour_rect, 0),
-                    (self.minute_rect, 1),
-                ];
+                let mut cells: Vec<(Rect, u8)> = vec![(self.hour_rect, 0), (self.minute_rect, 1)];
                 if self.seconds.is_some() {
                     cells.push((self.second_rect, 2));
                 }
@@ -652,11 +661,17 @@ impl Widget for TimePicker {
         }
     }
 
-    fn name(&self) -> &str { "TimePicker" }
+    fn name(&self) -> &'static str {
+        "TimePicker"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
-    fn is_focusable(&self) -> bool { true }
+    fn is_focusable(&self) -> bool {
+        true
+    }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
         if !focused {
@@ -667,7 +682,9 @@ impl Widget for TimePicker {
             self.focused_cell = Some(TimeCell::Hours);
         }
     }
-    fn is_focused(&self) -> bool { self.is_focused }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
 
     /// The time picker reports [`Role::ComboBox`] — a selector whose value
     /// is the chosen time as `HH:MM` (or `HH:MM:SS` when the seconds spinner
@@ -689,10 +706,6 @@ impl Widget for TimePicker {
         )
     }
 }
-
-// =====================================================================
-// Tests
-// =====================================================================
 
 #[cfg(test)]
 mod tests {
@@ -716,7 +729,7 @@ mod tests {
     /// Drive an event through the picker with default scaffolding.
     fn dispatch(tp: &mut TimePicker, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -734,17 +747,18 @@ mod tests {
         );
     }
 
-    /// Stage `hour_rect`, `minute_rect`, and (optionally) `second_rect` by
-    /// running `build_layout` + `apply_layout` through a real taffy tree.
-    /// Returns the picker with all sub-rects populated.
+    /// Populates `hour_rect`/`minute_rect`/`second_rect` by running
+    /// `build_layout` + `apply_layout` through a real taffy tree.
     fn picker_with_layout(tp: &mut TimePicker) {
         use taffy::prelude::TaffyMaxContent;
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
         let node = tp.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
-        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
         tp.apply_layout(&taffy, node, Point::ZERO);
     }
 
@@ -788,17 +802,20 @@ mod tests {
     fn time_picker_scroll_up_increments_minutes() {
         let mut tp = TimePicker::new(10, 30);
         picker_with_layout(&mut tp);
-        assert!(tp.minute_rect.width() > 0.0, "minute_rect must be populated by apply_layout");
+        assert!(
+            tp.minute_rect.width() > 0.0,
+            "minute_rect must be populated by apply_layout"
+        );
 
-        // Move cursor into the centre of the minute spinner's value cell.
-        // The value cell is the middle third of `minute_rect`.
         let centre = tp.minute_rect.center();
         dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
-
-        // Positive wheel delta → increment.
         dispatch(&mut tp, &wheel(1.0));
 
-        assert_eq!(tp.minutes(), 31, "wheel up over minute cell must increment minutes");
+        assert_eq!(
+            tp.minutes(),
+            31,
+            "wheel up over minute cell must increment minutes"
+        );
     }
 
     /// Clicking on the hour value cell must latch keyboard focus on
@@ -813,11 +830,14 @@ mod tests {
 
         let centre = tp.hour_rect.center();
         dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
-        dispatch(&mut tp, &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        dispatch(
+            &mut tp,
+            &WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
         assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
     }
 

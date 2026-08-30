@@ -1,12 +1,9 @@
-//! Task 15: Spawns the nirios shell in headless mode, embeds a real terminal
-//! and a real file-explorer in tabs, and asserts their `AppWidget` metadata is
-//! reflected in the live `Shell::workspace_tree()`.
-//!
-//! Task 16 extends this with two render-path integration tests that drive the
-//! apps through (an abbreviated form of) the five-pass pipeline and assert
-//! visible content: the terminal produces a non-empty first grid line once
-//! the PTY reader delivers bytes, and the file-explorer's initial listing
-//! contains at least one entry with a non-empty name.
+//! Spawns the nirios shell headless, embeds a real terminal and a real
+//! file-explorer in tabs, and asserts their `AppWidget` metadata reaches
+//! the live `Shell::workspace_tree()`. Also drives them through an
+//! abbreviated render pipeline and asserts visible content: a non-empty
+//! first terminal grid line once the PTY delivers bytes, and at least one
+//! non-empty-named file-explorer entry.
 
 use shell::shell::{Shell, tile::TileContent};
 use std::time::Duration;
@@ -34,51 +31,34 @@ fn default_workspace_hosts_terminal_and_files_and_browser_stub() {
 
     assert!(
         kinds.contains(&AppKind::Terminal),
-        "default workspace must host a terminal (kinds={:?})",
-        kinds
+        "default workspace must host a terminal (kinds={kinds:?})"
     );
     assert!(
         kinds.contains(&AppKind::Files),
-        "default workspace must host a file-explorer (kinds={:?})",
-        kinds
+        "default workspace must host a file-explorer (kinds={kinds:?})"
     );
     assert!(
         kinds.contains(&AppKind::Browser),
-        "default workspace must include a browser stub (kinds={:?})",
-        kinds
+        "default workspace must include a browser stub (kinds={kinds:?})"
     );
 }
 
-// ---- Task 16 ---------------------------------------------------------------
-//
-// These tests drive the shell's apps through an abbreviated render pipeline
-// (sync + update, without Vello draw — that would need a GPU) and assert
-// visible content. They rely on three introspection helpers added alongside
-// `Shell::new_with_default_demo_workspace`:
-//
-//   * `Shell::tick_for_test()` — runs one sync+update pass over every app
-//     tile against the shell-owned Automerge doc.
-//   * `Shell::first_terminal_line()` — returns the first row of the first
-//     hosted terminal, or `None` if there is no live terminal tile.
-//   * `Shell::first_file_explorer_entries()` — returns the entry names from
-//     the first hosted file-explorer, in the order the widget displays them.
-//
-// These three helpers are guarded behind `cfg(any(test, debug_assertions))`
-// on the shell side so they only exist in test / debug builds.
+// Abbreviated render pipeline (sync + update, no Vello draw — that needs
+// a GPU), via three introspection helpers guarded behind
+// `cfg(any(test, debug_assertions))`: `tick_for_test`,
+// `first_terminal_line`, `first_file_explorer_entries`.
 
 #[test]
 fn terminal_tab_emits_a_prompt_within_10_seconds() {
     // PTY init time is environment-dependent (shell rc files, distro
-    // defaults, container start-up cost) and a 3-second budget proved
-    // flaky on slower distrobox / CI runners. 10 seconds gives even a
-    // cold bash with a heavy `.bashrc` time to print its first prompt
-    // line without losing the smoke-test signal — if the terminal still
-    // hasn't emitted anything by then, something is genuinely wrong.
+    // defaults, container start-up); a 3s budget proved flaky on slower CI.
+    // 10s gives even a cold bash with a heavy `.bashrc` time to print its
+    // first prompt line.
     let mut shell = Shell::new_with_default_demo_workspace();
 
-    // If the PTY failed to spawn (e.g. sandboxed CI without /dev/ptmx) the
-    // tile will be a Stub, not an App; skip the render assertion in that
-    // case so we're not asserting against an environment-shaped failure.
+    // A failed PTY spawn (e.g. sandboxed CI without /dev/ptmx) leaves a Stub
+    // rather than an App; skip so this doesn't assert against an
+    // environment-shaped failure.
     if shell.first_terminal_line().is_none() {
         eprintln!(
             "skipped: no live terminal tile (PTY spawn likely failed; tile fell back to Stub)"
@@ -89,10 +69,10 @@ fn terminal_tab_emits_a_prompt_within_10_seconds() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         shell.tick_for_test();
-        if let Some(line0) = shell.first_terminal_line() {
-            if !line0.trim().is_empty() {
-                return;
-            }
+        if let Some(line0) = shell.first_terminal_line()
+            && !line0.trim().is_empty()
+        {
+            return;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -103,9 +83,8 @@ fn terminal_tab_emits_a_prompt_within_10_seconds() {
 fn file_explorer_tab_lists_current_directory() {
     let shell = Shell::new_with_default_demo_workspace();
     let entries = shell.first_file_explorer_entries();
-    // The initial directory (usually /workspace or $HOME) will almost
-    // always contain >= 1 entry in a test environment; if truly empty the
-    // test skips via a marker so we don't fail on a pristine sandbox.
+    // The initial directory almost always has >= 1 entry; a truly empty one
+    // skips via a marker rather than failing on a pristine sandbox.
     if entries.is_empty() {
         eprintln!("skipped: initial dir empty");
         return;

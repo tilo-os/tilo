@@ -1,13 +1,12 @@
-//! Parse the `word/document.xml` `w:body` into canonical blocks + marks.
-//! Styles (`word/styles.xml`) and numbering (`word/numbering.xml`) are pre-parsed
-//! into a [`StyleRegistry`]; this walk resolves paragraph/heading/list/character
-//! styles against it. Paragraphs become `paragraph`/`heading`/`list_item` blocks
-//! depending on `w:pStyle` and `w:numPr`; runs (`w:r`/`w:rPr`/`w:t`) map onto
-//! inline marks; tabs/breaks, alignment, fonts and tables all map onto the model.
-//! Unmodeled body-level elements are captured verbatim as fidelity atoms.
+//! Parse `word/document.xml`'s `w:body` into canonical blocks + marks, resolving
+//! paragraph/heading/list/character styles against a pre-parsed [`StyleRegistry`].
+//! Paragraphs become `paragraph`/`heading`/`list_item` per `w:pStyle`/`w:numPr`; runs map
+//! onto inline marks. Unmodeled body-level elements are captured verbatim as fidelity atoms.
 
 use super::container::DocxContainer;
-use super::styles::{attr_val, line_spacing_from_spacing, mark_from_rpr_child, map_jc, StyleRegistry};
+use super::styles::{
+    StyleRegistry, attr_val, line_spacing_from_spacing, map_jc, mark_from_rpr_child,
+};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
@@ -17,17 +16,18 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
 
-/// EMUs per CSS pixel (914400 EMU/inch ÷ 96 px/inch). Used to convert OOXML
-/// `wp:extent` sizes to the model's pixel width/height.
+/// EMUs per CSS pixel (914400 EMU/inch ÷ 96 px/inch), for `wp:extent` → model pixel size.
 const EMU_PER_PX: f64 = 914400.0 / 96.0;
 
-/// Build a `rId → media bytes` map from `word/_rels/document.xml.rels`, resolving
-/// each image relationship's `Target` against the package. So the body parser can
-/// turn an `a:blip r:embed="rIdN"` into a stored image blob.
+/// Build a `rId → media bytes` map from `word/_rels/document.xml.rels`, so the body parser can turn an `a:blip r:embed="rIdN"` into a stored image blob.
 pub(crate) fn build_image_map(container: &DocxContainer) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
-    let Some(rels) = container.get("word/_rels/document.xml.rels") else { return out };
-    let Ok(s) = std::str::from_utf8(rels) else { return out };
+    let Some(rels) = container.get("word/_rels/document.xml.rels") else {
+        return out;
+    };
+    let Ok(s) = std::str::from_utf8(rels) else {
+        return out;
+    };
     let mut reader = Reader::from_str(s);
     loop {
         let ev = match reader.read_event() {
@@ -39,10 +39,13 @@ pub(crate) fn build_image_map(container: &DocxContainer) -> BTreeMap<String, Vec
                 let id = attr_val(&e, b"Id");
                 let target = attr_val(&e, b"Target");
                 if let (Some(id), Some(target)) = (id, target) {
-                    // Targets are relative to `word/` (e.g. `media/image1.png`);
-                    // absolute (`/word/...`) targets are de-slashed.
+                    // Targets are relative to `word/`; absolute (`/word/...`) targets are de-slashed.
                     let t = target.trim_start_matches('/');
-                    let part = if t.starts_with("word/") { t.to_string() } else { format!("word/{t}") };
+                    let part = if t.starts_with("word/") {
+                        t.to_string()
+                    } else {
+                        format!("word/{t}")
+                    };
                     if let Some(bytes) = container.get(&part) {
                         out.insert(id, bytes.to_vec());
                     }
@@ -71,8 +74,13 @@ struct DrawingState {
     rel: Option<String>,
 }
 
-/// Open a fresh top-level block anchored after the previous one.
-fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, kind: &str) -> String {
+fn start_block(
+    doc: &mut DocMut,
+    prev: &mut Option<String>,
+    cur: &mut Option<String>,
+    cur_len: &mut usize,
+    kind: &str,
+) -> String {
     let id = doc.insert_block(prev.as_deref(), kind);
     *prev = Some(id.clone());
     *cur = Some(id.clone());
@@ -80,13 +88,12 @@ fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<Str
     id
 }
 
-/// Append literal text (tab / break) to the current block.
 fn append(doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str) {
-    if let Some(b) = cur {
-        if !txt.is_empty() {
-            doc.splice_text(b, *cur_len, 0, txt);
-            *cur_len += txt.chars().count();
-        }
+    if let Some(b) = cur
+        && !txt.is_empty()
+    {
+        doc.splice_text(b, *cur_len, 0, txt);
+        *cur_len += txt.chars().count();
     }
 }
 
@@ -115,47 +122,34 @@ pub(crate) fn parse_body(
     let mut p_numid: Option<String> = None;
     let mut p_line_spacing: Option<f64> = None;
 
-    // Run state. Marks are collected for the run's `w:rPr` and applied over the
-    // run's text range at `</w:r>` (so later text doesn't expand the mark).
+    // Run marks are collected for `w:rPr` and applied over the run's text range at `</w:r>`.
     let mut in_run = false;
     let mut in_rpr = false;
     let mut in_t = false;
     let mut run_start: usize = 0;
     let mut run_marks: Vec<(String, MarkValue)> = Vec::new();
 
-    // (block, start, end, name, value), applied after all text is present.
     let mut pending_marks: Vec<(String, usize, usize, String, MarkValue)> = Vec::new();
     // Paragraph-style inline marks for the current block, applied over [0, len].
     let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
-    // (block, char index, note id) reference markers, applied after all text is in.
     let mut note_refs: Vec<(String, usize, String)> = Vec::new();
-    // Open comment ranges keyed by docx id: `docx_id → (comment id, block, start char
-    // index)`, awaiting their matching `w:commentRangeEnd`.
+    // Open comment ranges keyed by docx id, awaiting their matching `w:commentRangeEnd`.
     let mut open_comments: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
-    // (block, start, end, comment id) anchor marks, applied after all text is in.
     let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
-    // Open bookmark ranges keyed by the OOXML `w:id`: `w:id → (block, start char index,
-    // name)`, awaiting their matching `w:bookmarkEnd` (matched by id). The name comes
-    // from the `w:bookmarkStart`'s `w:name`.
+    // Open bookmark ranges keyed by the OOXML `w:id`, matched on `w:bookmarkEnd`; the name comes from `w:bookmarkStart`'s `w:name`.
     let mut open_bookmarks: BTreeMap<String, (String, usize, String)> = BTreeMap::new();
-    // (block, start, end, bookmark name) anchor marks, applied after all text is in.
     let mut bookmark_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
-    // In-progress `w:hyperlink w:anchor="name"` (an internal cross-reference): the
-    // anchor target + the char index at which its run group begins. The runs inside
-    // splice text normally; a `link` mark valued `#name` is applied at the close.
+    // In-progress cross-reference (`w:hyperlink w:anchor="name"`): anchor target + start index; the `link` mark applies at close.
     let mut hyperlink: Option<(String, Option<String>, usize)> = None;
-    // (block, start, end, `#target` value) cross-ref `link` marks, applied after text.
     let mut cross_refs: Vec<(String, usize, usize, String)> = Vec::new();
 
-    // In-progress tracked change `<w:ins>`/`<w:del>` wrapper: its qdoc change id, kind,
-    // anchor block, and the char index at which the changed range begins. The runs
-    // inside splice text normally; the `ins`/`del` mark is applied at the close. Deleted
-    // runs carry `<w:delText>` instead of `<w:t>` (treated identically on import).
+    // In-progress `<w:ins>`/`<w:del>` wrapper: change id, kind, anchor block, start index; the `ins`/`del` mark applies at close.
+    // Deleted runs carry `<w:delText>` instead of `<w:t>` (treated identically here).
     let mut change: Option<(String, crate::snapshot::ChangeKind, Option<String>, usize)> = None;
-    // (block, start, end, kind, change id) anchor marks, applied after all text is in.
-    let mut change_ranges: Vec<(String, usize, usize, crate::snapshot::ChangeKind, String)> = Vec::new();
+    let mut change_ranges: Vec<(String, usize, usize, crate::snapshot::ChangeKind, String)> =
+        Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
@@ -165,9 +159,7 @@ pub(crate) fn parse_body(
 
     let mut capture: Option<(usize, i32)> = None; // (start byte, open depth) of a fidelity atom
 
-    // In-progress `w:drawing` (image). Collected as we descend its children; the
-    // image becomes its own `image` block at `</w:drawing>` (replacing the enclosing
-    // empty paragraph, mirroring how the ODT codec lifts an image-only paragraph).
+    // In-progress `w:drawing`; becomes its own `image` block at `</w:drawing>`, replacing the enclosing empty paragraph.
     let mut drawing: Option<DrawingState> = None;
 
     macro_rules! flush_para_marks {
@@ -181,15 +173,11 @@ pub(crate) fn parse_body(
         };
     }
 
-    // Finalise the just-parsed paragraph's properties onto its (already opened)
-    // block: pick the kind (list_item / heading / paragraph), set attrs, and stash
-    // the whole-block paragraph-style marks for plain paragraphs.
+    // Finalise the paragraph's properties: pick the block kind (list_item/heading/paragraph), set attrs, stash whole-block marks.
     macro_rules! finalize_ppr {
         () => {
             if let Some(id) = cur.clone() {
-                // Line spacing rides as a direct `line_spacing` Float attr regardless
-                // of the block kind (paragraph/heading/list_item). A direct `w:spacing`
-                // wins; otherwise inherit it from the paragraph style.
+                // Line spacing rides as `line_spacing` regardless of block kind; a direct `w:spacing` wins over inheriting from the style.
                 let line_spacing = p_line_spacing.or_else(|| p_style.as_deref().and_then(|s| reg.para_line_spacing(s)));
                 if let Some(ls) = line_spacing {
                     doc.set_attr(&id, "line_spacing", ls);
@@ -199,10 +187,7 @@ pub(crate) fn parse_body(
                     doc.set_kind(&id, "list_item");
                     let ordered = reg.num_ordered.get(&numid).copied().unwrap_or(false);
                     doc.set_attr(&id, "ordered", ordered);
-                    // Numbering fidelity (ordered lists only): preserve the format +
-                    // start so the list re-exports with its numbering intact. A plain
-                    // decimal-from-1 list adds no extra attrs (minimal cross-codec
-                    // attr set).
+                    // Numbering fidelity (ordered lists only): preserve format + start so the list re-exports intact.
                     if ordered {
                         if let Some(def) = reg.num_def.get(&numid) {
                             if let Some(f) = def.num_format {
@@ -213,8 +198,7 @@ pub(crate) fn parse_body(
                             if let Some(s) = def.num_start {
                                 if s != 1 {
                                     doc.set_attr(&id, "num_start", s);
-                                    // OOXML numbering restarts by default; a non-1
-                                    // start implies a restart at that value.
+                                    // OOXML numbering restarts by default; a non-1 start implies a restart at that value.
                                     doc.set_attr(&id, "num_restart", true);
                                 }
                             }
@@ -233,15 +217,8 @@ pub(crate) fn parse_body(
                         doc.set_attr(&id, "align", a.as_str());
                     }
                 } else {
-                    // A plain paragraph. A *named* (non-heading, non-list) paragraph
-                    // style → a real CRDT-native style: lift its definition into the
-                    // styles container (keyed by the `w:styleId`) and point the block
-                    // at it via an explicit `style` attr, so the editor resolves the
-                    // real named style. The style now supplies the block's alignment +
-                    // formatting, so those are not *also* lifted onto the block (keeps
-                    // the round-trip idempotent). A *direct* `w:jc` override still
-                    // rides on the block as an `align` attr. Built-in heading/list
-                    // mapping is handled above and untouched.
+                    // A plain paragraph with a *named* style lifts the style's definition into the styles container and points the block at
+                    // it via `style`, rather than also baking its formatting onto the block — which would break round-trip idempotency.
                     let lifted = p_style
                         .as_deref()
                         .filter(|s| reg.is_named_para(s))
@@ -268,7 +245,9 @@ pub(crate) fn parse_body(
 
     loop {
         let pos_before = reader.buffer_position() as usize;
-        let ev = reader.read_event().map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
+        let ev = reader
+            .read_event()
+            .map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
 
         if let Some((start, depth)) = capture.as_mut() {
             match &ev {
@@ -288,8 +267,7 @@ pub(crate) fn parse_body(
             continue;
         }
 
-        // Inside a `w:drawing`: collect inline-vs-anchor, extent, wrap, and the blip
-        // rel, then materialise an `image` block on `</w:drawing>`.
+        // Inside a `w:drawing`: collect inline-vs-anchor, extent, wrap, and the blip rel, then materialise on `</w:drawing>`.
         if let Some(dr) = drawing.as_mut() {
             match &ev {
                 Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
@@ -303,18 +281,18 @@ pub(crate) fn parse_body(
                             dr.height = Some((cy / EMU_PER_PX).round() as i64);
                         }
                     }
-                    // Wrap modes. `wrapNone`/`wrapTopAndBottom` don't flow text beside
-                    // the image → `none`; `wrapSquare`/`wrapTight`/`wrapThrough` use the
-                    // `wrapText` side (`left`/`right`/`bothSides`→both, default both).
+                    // wrapNone/wrapTopAndBottom don't flow text beside the image → `none`; wrapSquare/wrapTight/wrapThrough use the wrapText side.
                     b"wp:wrapNone" | b"wp:wrapTopAndBottom" => dr.wrap = Some("none".to_string()),
                     b"wp:wrapSquare" | b"wp:wrapTight" | b"wp:wrapThrough" => {
                         let side = attr_val(e, b"wrapText");
-                        dr.wrap = Some(match side.as_deref() {
-                            Some("left") => "left",
-                            Some("right") => "right",
-                            _ => "both", // "bothSides" | "largest" | absent
-                        }
-                        .to_string());
+                        dr.wrap = Some(
+                            match side.as_deref() {
+                                Some("left") => "left",
+                                Some("right") => "right",
+                                _ => "both", // "bothSides" | "largest" | absent
+                            }
+                            .to_string(),
+                        );
                     }
                     // Page-relative horizontal/vertical positioning marks a page anchor.
                     b"wp:positionH" | b"wp:positionV" => {
@@ -322,10 +300,8 @@ pub(crate) fn parse_body(
                             dr.page_relative = true;
                         }
                     }
-                    b"a:blip" => {
-                        if dr.rel.is_none() {
-                            dr.rel = attr_val(e, b"r:embed").or_else(|| attr_val(e, b"r:link"));
-                        }
+                    b"a:blip" if dr.rel.is_none() => {
+                        dr.rel = attr_val(e, b"r:embed").or_else(|| attr_val(e, b"r:link"));
                     }
                     _ => {}
                 },
@@ -334,8 +310,7 @@ pub(crate) fn parse_body(
                     let bytes = dr.rel.as_deref().and_then(|r| image_map.get(r));
                     if let Some(bytes) = bytes {
                         let hash = doc.put_blob(bytes);
-                        // Reuse the enclosing (image-only) paragraph if it holds no text,
-                        // else open a fresh block. Either way it becomes an `image`.
+                        // Reuse the enclosing (image-only) paragraph if empty, else open a fresh block, as `image`.
                         let id = if let (Some(c), 0) = (cur.clone(), cur_len) {
                             doc.set_kind(&c, "image");
                             c
@@ -351,15 +326,15 @@ pub(crate) fn parse_body(
                             "paragraph"
                         };
                         doc.set_attr(&id, "anchor", anchor);
-                        if let Some(w) = dr.width {
-                            if w > 0 {
-                                doc.set_attr(&id, "width", w);
-                            }
+                        if let Some(w) = dr.width
+                            && w > 0
+                        {
+                            doc.set_attr(&id, "width", w);
                         }
-                        if let Some(h) = dr.height {
-                            if h > 0 {
-                                doc.set_attr(&id, "height", h);
-                            }
+                        if let Some(h) = dr.height
+                            && h > 0
+                        {
+                            doc.set_attr(&id, "height", h);
                         }
                         if let Some(w) = dr.wrap {
                             doc.set_attr(&id, "wrap", w.as_str());
@@ -378,8 +353,7 @@ pub(crate) fn parse_body(
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"w:body" => in_body = true,
-                // A paragraph (outside a table) opens a block; its kind is refined
-                // once `w:pPr` closes.
+                // A paragraph (outside a table) opens a block; its kind is refined once `w:pPr` closes.
                 b"w:p" if in_body && table_id.is_none() => {
                     start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
                     p_style = None;
@@ -390,10 +364,7 @@ pub(crate) fn parse_body(
                 }
                 b"w:pPr" if table_id.is_none() => in_ppr = true,
                 b"w:numPr" if in_ppr => in_numpr = true,
-                // A tracked-change wrapper around the runs it covers. Create the change
-                // record now (author/date from attrs) and remember the start char index;
-                // the runs inside splice text, and the `ins`/`del` mark is applied over
-                // `[start, cur_len)` at the close.
+                // A tracked-change wrapper: create the change record now, remember the start index; the mark applies over `[start, cur_len)` at close.
                 b"w:ins" | b"w:del" if in_body && cur.is_some() => {
                     let kind = if e.name().as_ref() == b"w:ins" {
                         crate::snapshot::ChangeKind::Ins
@@ -406,12 +377,13 @@ pub(crate) fn parse_body(
                     change = Some((cid, kind, cur.clone(), cur_len));
                 }
                 b"w:hyperlink" if in_body && cur.is_some() => {
-                    // An internal cross-reference (`w:anchor="name"`): remember the
-                    // target + current char index; the runs inside splice text normally
-                    // and a `link` mark valued `#name` is applied at `</w:hyperlink>`.
-                    // (`r:id`-based external links aren't modeled by this codec.)
+                    // A cross-reference (`w:anchor="name"`): remember target + start index; `r:id`-based external links aren't modeled.
                     if let Some(anchor) = attr_val(&e, b"w:anchor") {
-                        hyperlink = Some((format!("{}{anchor}", crate::schema::CROSS_REF_PREFIX), cur.clone(), cur_len));
+                        hyperlink = Some((
+                            format!("{}{anchor}", crate::schema::CROSS_REF_PREFIX),
+                            cur.clone(),
+                            cur_len,
+                        ));
                     }
                 }
                 b"w:r" if in_body => {
@@ -420,14 +392,12 @@ pub(crate) fn parse_body(
                     run_marks.clear();
                 }
                 b"w:rPr" if in_run => in_rpr = true,
-                // An embedded image: begin collecting the drawing's size/positioning/
-                // blip until `</w:drawing>`. (`in_run` is always true here in practice.)
+                // An embedded image: begin collecting size/positioning/blip until `</w:drawing>`.
                 b"w:drawing" if in_body => {
                     drawing = Some(DrawingState::default());
                 }
                 b"w:t" if in_run => in_t = true,
-                // Deleted text inside a `<w:del>` run uses `<w:delText>`; treat it like
-                // `<w:t>` so the retained-but-struck content lands in the model.
+                // Deleted text in a `<w:del>` run uses `<w:delText>`; treated like `<w:t>` on import.
                 b"w:delText" if in_run => in_t = true,
                 b"w:tbl" if in_body => {
                     table_seq += 1;
@@ -456,7 +426,6 @@ pub(crate) fn parse_body(
                 }
                 b"w:pStyle" if in_ppr => p_style = attr_val(&e, b"w:val"),
                 b"w:jc" if in_ppr => p_align = attr_val(&e, b"w:val").map(|v| map_jc(&v)),
-                // Paragraph line spacing: `<w:spacing w:line w:lineRule="auto">`.
                 b"w:spacing" if in_ppr => {
                     if let Some(ls) = line_spacing_from_spacing(&e) {
                         p_line_spacing = Some(ls);
@@ -466,77 +435,66 @@ pub(crate) fn parse_body(
                 b"w:tab" if in_run => append(doc, &cur, &mut cur_len, "\t"),
                 b"w:br" | b"w:cr" if in_run => append(doc, &cur, &mut cur_len, "\n"),
                 b"w:footnoteReference" | b"w:endnoteReference" if in_run => {
-                    // A note reference: resolve its docx id to a qdoc note id (via the
-                    // pre-parsed parts), splice a placeholder, and defer the `note-ref`
-                    // marker until all text is present.
+                    // A note reference: resolve its docx id to a qdoc note id, splice a placeholder, and defer the marker until text is present.
                     let is_foot = e.name().as_ref() == b"w:footnoteReference";
                     let map = if is_foot { foot_map } else { end_map };
-                    if let Some(docx_id) = attr_val(&e, b"w:id") {
-                        if let Some(note_id) = map.get(&docx_id) {
-                            if let Some(b) = cur.clone() {
-                                let idx = cur_len;
-                                append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
-                                note_refs.push((b, idx, note_id.clone()));
-                            }
-                        }
+                    if let Some(docx_id) = attr_val(&e, b"w:id")
+                        && let Some(note_id) = map.get(&docx_id)
+                        && let Some(b) = cur.clone()
+                    {
+                        let idx = cur_len;
+                        append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
+                        note_refs.push((b, idx, note_id.clone()));
                     }
                 }
                 b"w:commentRangeStart" if in_body && cur.is_some() => {
-                    // The start of a commented range: remember the current char index;
-                    // the matching `w:commentRangeEnd` records the end. The range marks
-                    // sit at body level (between runs), so `cur_len` is the boundary.
-                    if let Some(docx_id) = attr_val(&e, b"w:id") {
-                        if let Some(cid) = comment_map.get(&docx_id) {
-                            if let Some(b) = cur.clone() {
-                                open_comments.insert(docx_id, (cid.clone(), b, cur_len));
-                            }
-                        }
+                    // The start of a commented range: remember the char index; the matching `w:commentRangeEnd` records the end.
+                    if let Some(docx_id) = attr_val(&e, b"w:id")
+                        && let Some(cid) = comment_map.get(&docx_id)
+                        && let Some(b) = cur.clone()
+                    {
+                        open_comments.insert(docx_id, (cid.clone(), b, cur_len));
                     }
                 }
                 b"w:commentRangeEnd" if in_body => {
-                    // Closes a commented range: anchor a `comment` mark over
-                    // `[start, cur_len)` for the matching docx id.
-                    if let Some(docx_id) = attr_val(&e, b"w:id") {
-                        if let Some((cid, b, start)) = open_comments.remove(&docx_id) {
-                            comment_ranges.push((b, start, cur_len, cid));
-                        }
+                    // Closes a commented range: anchor a `comment` mark over `[start, cur_len)`.
+                    if let Some(docx_id) = attr_val(&e, b"w:id")
+                        && let Some((cid, b, start)) = open_comments.remove(&docx_id)
+                    {
+                        comment_ranges.push((b, start, cur_len, cid));
                     }
                 }
                 b"w:bookmarkStart" if in_body && cur.is_some() => {
-                    // Opens a bookmark's range: remember the name + current char index;
-                    // the matching `w:bookmarkEnd` (by `w:id`) records the end. Word's
-                    // built-in `_GoBack` bookmark carries no useful name → skip it.
-                    if let (Some(id), Some(name), Some(b)) = (attr_val(&e, b"w:id"), attr_val(&e, b"w:name"), cur.clone()) {
-                        if name != "_GoBack" {
-                            open_bookmarks.insert(id, (b, cur_len, name));
-                        }
+                    // Opens a bookmark's range: remember name + start index. Word's built-in `_GoBack` bookmark has no useful name, so it's skipped.
+                    if let (Some(id), Some(name), Some(b)) =
+                        (attr_val(&e, b"w:id"), attr_val(&e, b"w:name"), cur.clone())
+                        && name != "_GoBack"
+                    {
+                        open_bookmarks.insert(id, (b, cur_len, name));
                     }
                 }
                 b"w:bookmarkEnd" if in_body => {
-                    // Closes a bookmark's range: anchor a `bookmark` mark valued with the
-                    // name over `[start, cur_len)` for the matching `w:id`.
-                    if let Some(id) = attr_val(&e, b"w:id") {
-                        if let Some((b, start, name)) = open_bookmarks.remove(&id) {
-                            bookmark_ranges.push((b, start, cur_len, name));
-                        }
+                    // Closes a bookmark's range: anchor a `bookmark` mark valued with the name.
+                    if let Some(id) = attr_val(&e, b"w:id")
+                        && let Some((b, start, name)) = open_bookmarks.remove(&id)
+                    {
+                        bookmark_ranges.push((b, start, cur_len, name));
                     }
                 }
-                // `w:commentReference` (the citation marker run child) carries no
-                // range info — the range is defined by start/end — so it is ignored.
+                // `w:commentReference` carries no range info (defined by start/end), so it's ignored.
                 _ if in_rpr => {
                     if let Some((k, v)) = mark_from_rpr_child(&e) {
                         run_marks.retain(|(k2, _)| k2 != &k);
                         run_marks.push((k, v));
-                    } else if e.name().as_ref() == b"w:rStyle" {
-                        if let Some(name) = attr_val(&e, b"w:val") {
-                            for (k, v) in reg.text_marks(&name) {
-                                run_marks.retain(|(k2, _)| k2 != &k);
-                                run_marks.push((k, v));
-                            }
+                    } else if e.name().as_ref() == b"w:rStyle"
+                        && let Some(name) = attr_val(&e, b"w:val")
+                    {
+                        for (k, v) in reg.text_marks(&name) {
+                            run_marks.retain(|(k2, _)| k2 != &k);
+                            run_marks.push((k, v));
                         }
                     }
                 }
-                // Unknown block-level empty element → fidelity atom.
                 _ if in_body && cur.is_none() && table_id.is_none() => {
                     let raw = s[pos_before..reader.buffer_position() as usize].to_string();
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
@@ -556,12 +514,11 @@ pub(crate) fn parse_body(
                 b"w:t" => in_t = false,
                 b"w:delText" => in_t = false,
                 b"w:ins" | b"w:del" => {
-                    // Close the tracked-change wrapper: anchor an `ins`/`del` mark over
-                    // `[start, cur_len)` for the change (applied after all text is in).
-                    if let Some((cid, kind, block, start)) = change.take() {
-                        if let Some(b) = block {
-                            change_ranges.push((b, start, cur_len, kind, cid));
-                        }
+                    // Close the tracked-change wrapper: anchor an `ins`/`del` mark over `[start, cur_len)`.
+                    if let Some((cid, kind, block, start)) = change.take()
+                        && let Some(b) = block
+                    {
+                        change_ranges.push((b, start, cur_len, kind, cid));
                     }
                 }
                 b"w:r" => {
@@ -574,12 +531,11 @@ pub(crate) fn parse_body(
                     run_marks.clear();
                 }
                 b"w:hyperlink" => {
-                    // Close the cross-reference: anchor a `link` mark valued `#name` over
-                    // `[start, cur_len)` (applied after all text is in).
-                    if let Some((value, block, start)) = hyperlink.take() {
-                        if let Some(b) = block {
-                            cross_refs.push((b, start, cur_len, value));
-                        }
+                    // Close the cross-reference: anchor a `link` mark valued `#name` over `[start, cur_len)`.
+                    if let Some((value, block, start)) = hyperlink.take()
+                        && let Some(b) = block
+                    {
+                        cross_refs.push((b, start, cur_len, value));
                     }
                 }
                 b"w:p" if table_id.is_none() => {
@@ -598,13 +554,13 @@ pub(crate) fn parse_body(
                 _ => {}
             },
             Event::Text(t) => {
-                if in_t {
-                    if let Some(b) = cur.as_ref() {
-                        let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
-                        if !txt.is_empty() {
-                            doc.splice_text(b, cur_len, 0, &txt);
-                            cur_len += txt.chars().count();
-                        }
+                if in_t && let Some(b) = cur.as_ref() {
+                    let txt = t
+                        .xml10_content()
+                        .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                    if !txt.is_empty() {
+                        doc.splice_text(b, cur_len, 0, &txt);
+                        cur_len += txt.chars().count();
                     }
                 }
             }
@@ -624,19 +580,15 @@ pub(crate) fn parse_body(
             MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
         }
     }
-    // Note-reference markers over the placeholder spliced at each reference element.
     for (b, idx, nid) in note_refs {
         doc.add_mark(&b, idx, idx + 1, MARK_NOTE_REF, nid.as_str());
     }
-    // A comment whose `w:commentRangeEnd` never arrived still anchors at its start,
-    // extending to the block's end so it has a non-empty range when content follows.
+    // A comment missing its `w:commentRangeEnd` anchors at start, extending to block end.
     for (_docx_id, (cid, b, start)) in std::mem::take(&mut open_comments) {
         let end = doc_block_len(doc, &b).max(start);
         comment_ranges.push((b, start, end, cid));
     }
-    // Comment anchor marks: cover each commented range with a `comment` mark valued
-    // with the comment id. A zero-width range can't carry a mark, so widen it to one
-    // character when the block has text after the anchor.
+    // A zero-width comment range can't carry a mark, so it's widened to one character when the block has text after the anchor.
     for (b, start, mut end, cid) in comment_ranges {
         if end <= start {
             let blen = doc_block_len(doc, &b);
@@ -646,27 +598,22 @@ pub(crate) fn parse_body(
             doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
         }
     }
-    // Tracked-change anchor marks: cover each changed range with the `ins`/`del` mark
-    // matching the change's kind, valued with the change id.
+    // Tracked-change anchor marks: cover each changed range with the matching `ins`/`del` mark.
     for (b, start, end, kind, cid) in change_ranges {
         if end > start {
             doc.add_change_mark(kind, &b, start, end, &cid);
         }
     }
-    // Any bookmark whose `w:bookmarkEnd` never arrived still anchors at its start,
-    // extending to the block's end so it has a non-empty range when content follows.
+    // A bookmark missing its `w:bookmarkEnd` anchors at start, extending to block end.
     for (_id, (b, start, name)) in std::mem::take(&mut open_bookmarks) {
         let end = doc_block_len(doc, &b).max(start);
         bookmark_ranges.push((b, start, end, name));
     }
-    // Bookmark anchor marks: cover each bookmarked range with a `bookmark` mark valued
-    // with the name. A zero-width (point) range is widened to one character (see
-    // `add_bookmark`).
+    // Bookmark anchor marks: a zero-width (point) range is widened to one character (see `add_bookmark`).
     for (b, start, end, name) in bookmark_ranges {
         doc.add_bookmark(&b, start, end, &name);
     }
-    // Cross-reference `link` marks (internal hyperlinks): cover each linked range with a
-    // `link` mark valued `#target`.
+    // Cross-reference `link` marks cover each linked range, valued `#target`.
     for (b, start, end, value) in cross_refs {
         if end > start {
             doc.add_mark(&b, start, end, crate::schema::MARK_LINK, value.as_str());
@@ -677,13 +624,13 @@ pub(crate) fn parse_body(
 
 /// The character length of a body block's text (0 if absent).
 fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
-    crate::model::block_text(doc.doc, doc.c, block_id).map(|t| t.chars().count()).unwrap_or(0)
+    crate::model::block_text(doc.doc, doc.c, block_id).map_or(0, |t| t.chars().count())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::container::{minimal_docx, minimal_docx_numbered, minimal_docx_styled};
     use super::super::DocxCodec;
+    use super::super::container::{minimal_docx, minimal_docx_numbered, minimal_docx_styled};
     use crate::{AttrVal, Document, FormatProvider};
 
     #[test]
@@ -706,9 +653,7 @@ mod tests {
 
     #[test]
     fn imports_heading_via_named_style_with_style_alignment() {
-        // A real styles.xml: a custom paragraph style derived from Heading1 that
-        // also centres its text. Heading detection + alignment both come from the
-        // resolved style, not from anything on the paragraph itself.
+        // A custom style derived from Heading1 that also centres text: heading detection + alignment come from the resolved style.
         let styles = concat!(
             r#"<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/><w:jc w:val="center"/></w:pPr></w:style>"#,
             r#"<w:style w:type="paragraph" w:styleId="MyTitle"><w:basedOn w:val="Heading1"/></w:style>"#,
@@ -720,8 +665,16 @@ mod tests {
         let b = &d.materialize().blocks[0];
         assert_eq!(b.kind, "heading", "named paragraph style → heading");
         assert_eq!(b.text, "My Title");
-        assert_eq!(b.attrs.get("level"), Some(&AttrVal::Int(1)), "level inherited via basedOn");
-        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())), "alignment from the style");
+        assert_eq!(
+            b.attrs.get("level"),
+            Some(&AttrVal::Int(1)),
+            "level inherited via basedOn"
+        );
+        assert_eq!(
+            b.attrs.get("align"),
+            Some(&AttrVal::Str("center".into())),
+            "alignment from the style"
+        );
     }
 
     #[test]
@@ -740,10 +693,34 @@ mod tests {
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
         let p = &d.materialize().blocks[0];
         assert_eq!(p.text, "a bold and more");
-        assert!(p.marks.iter().any(|m| m.name == "strong" && m.start == 2 && m.end == 6), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "em" && m.start == 11 && m.end == 15), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "underline" && m.start == 11 && m.end == 15), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "strike" && m.start == 11 && m.end == 15), "{:?}", p.marks);
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 2 && m.end == 6),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "em" && m.start == 11 && m.end == 15),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "underline" && m.start == 11 && m.end == 15),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "strike" && m.start == 11 && m.end == 15),
+            "{:?}",
+            p.marks
+        );
         let _ = MarkValue::Bool(true);
     }
 
@@ -760,14 +737,32 @@ mod tests {
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "big");
-        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())), "{:?}", b.attrs);
-        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)), "{:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
+        assert_eq!(
+            b.attrs.get("align"),
+            Some(&AttrVal::Str("center".into())),
+            "{:?}",
+            b.attrs
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
+            "{:?}",
+            b.marks
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+            "{:?}",
+            b.marks
+        );
     }
 
     #[test]
     fn imports_named_character_style_and_whitespace() {
-        let styles = r#"<w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style>"#;
+        let styles =
+            r#"<w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style>"#;
         let body = concat!(
             r#"<w:p><w:r><w:t>x</w:t></w:r>"#,
             r#"<w:r><w:rPr><w:rStyle w:val="Strong"/></w:rPr><w:t>y</w:t></w:r></w:p>"#,
@@ -779,7 +774,13 @@ mod tests {
         let snap = d.materialize();
         let p0 = &snap.blocks[0];
         assert_eq!(p0.text, "xy");
-        assert!(p0.marks.iter().any(|m| m.name == "strong" && m.start == 1 && m.end == 2), "named char style → mark: {:?}", p0.marks);
+        assert!(
+            p0.marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 1 && m.end == 2),
+            "named char style → mark: {:?}",
+            p0.marks
+        );
         let p1 = &snap.blocks[1];
         assert!(p1.text.contains('\n'), "w:br → newline: {:?}", p1.text);
         assert!(p1.text.contains('\t'), "w:tab → tab: {:?}", p1.text);
@@ -802,11 +803,23 @@ mod tests {
         let mut d = Document::new();
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
         let snap = d.materialize();
-        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "list_item")
+            .collect();
         assert_eq!(items.len(), 2, "{snap:?}");
         assert_eq!(items[0].text, "first");
-        assert_eq!(items[0].attrs.get("ordered"), Some(&AttrVal::Bool(true)), "decimal numId → ordered");
-        assert_eq!(items[1].attrs.get("ordered"), Some(&AttrVal::Bool(false)), "bullet numId → unordered");
+        assert_eq!(
+            items[0].attrs.get("ordered"),
+            Some(&AttrVal::Bool(true)),
+            "decimal numId → ordered"
+        );
+        assert_eq!(
+            items[1].attrs.get("ordered"),
+            Some(&AttrVal::Bool(false)),
+            "bullet numId → unordered"
+        );
     }
 
     #[test]
@@ -823,7 +836,10 @@ mod tests {
         let snap = d.materialize();
         let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
         assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
-        assert_eq!(cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(), vec!["a", "b", "c", "d"]);
+        assert_eq!(
+            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            vec!["a", "b", "c", "d"]
+        );
         assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
         assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
     }
@@ -847,15 +863,15 @@ mod tests {
             Some(AttrVal::Str(x)) => x.clone(),
             other => panic!("fidelity atom missing xml attr: {other:?}"),
         };
-        assert!(raw.starts_with("<w:sdt") && raw.contains("boxed") && raw.ends_with("</w:sdt>"), "captured raw: {raw}");
+        assert!(
+            raw.starts_with("<w:sdt") && raw.contains("boxed") && raw.ends_with("</w:sdt>"),
+            "captured raw: {raw}"
+        );
     }
 
     #[test]
     fn imports_named_paragraph_style_into_container() {
-        // A custom (non-heading, non-list) paragraph style carrying formatting →
-        // a CRDT-native style in the styles container, with the block pointing at
-        // it via its `w:styleId` rather than the formatting being baked onto the
-        // block. Mirrors the `.odt` named-style import.
+        // A custom paragraph style carrying formatting lifts into the styles container, pointed at via `w:styleId`.
         let styles = concat!(
             r##"<w:style w:type="paragraph" w:styleId="Fancy"><w:name w:val="Fancy"/>"##,
             r##"<w:pPr><w:jc w:val="center"/><w:spacing w:after="180"/><w:ind w:left="360"/></w:pPr>"##,
@@ -869,21 +885,58 @@ mod tests {
         let b = &snap.blocks[0];
         assert_eq!(b.kind, "paragraph");
         assert_eq!(b.text, "hi");
-        assert_eq!(b.attrs.get("style"), Some(&AttrVal::Str("Fancy".into())), "block points at the styleId: {:?}", b.attrs);
+        assert_eq!(
+            b.attrs.get("style"),
+            Some(&AttrVal::Str("Fancy".into())),
+            "block points at the styleId: {:?}",
+            b.attrs
+        );
         // The formatting lives in the style, not directly on the block.
-        assert_eq!(b.attrs.get("align"), None, "alignment comes from the style, not a direct attr: {:?}", b.attrs);
-        assert!(b.marks.is_empty(), "style formatting not lifted as inline marks: {:?}", b.marks);
+        assert_eq!(
+            b.attrs.get("align"),
+            None,
+            "alignment comes from the style, not a direct attr: {:?}",
+            b.attrs
+        );
+        assert!(
+            b.marks.is_empty(),
+            "style formatting not lifted as inline marks: {:?}",
+            b.marks
+        );
 
-        let st = snap.styles.get("Fancy").expect("style lifted into container");
+        let st = snap
+            .styles
+            .get("Fancy")
+            .expect("style lifted into container");
         assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
         assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
         assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
-        assert_eq!(st.get("color"), Some(&AttrVal::Str("#ff0000".into())), "w:color FF0000 → #ff0000");
+        assert_eq!(
+            st.get("color"),
+            Some(&AttrVal::Str("#ff0000".into())),
+            "w:color FF0000 → #ff0000"
+        );
         assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
-        assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)), "w:sz 40 half-points → 20pt");
-        assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())), "Times New Roman → serif");
-        assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)), "180 twips → 12px");
-        assert_eq!(st.get("indent"), Some(&AttrVal::Float(24.0)), "360 twips → 24px");
+        assert_eq!(
+            st.get("size"),
+            Some(&AttrVal::Float(20.0)),
+            "w:sz 40 half-points → 20pt"
+        );
+        assert_eq!(
+            st.get("font"),
+            Some(&AttrVal::Str("serif".into())),
+            "Times New Roman → serif"
+        );
+        assert_eq!(
+            st.get("space_after"),
+            Some(&AttrVal::Float(12.0)),
+            "180 twips → 12px"
+        );
+        assert_eq!(
+            st.get("indent"),
+            Some(&AttrVal::Float(24.0)),
+            "360 twips → 24px"
+        );
     }
 
     #[test]
@@ -902,7 +955,10 @@ mod tests {
         let p = &d.materialize().blocks[0];
         assert_eq!(p.text, "a bonjour");
         assert!(
-            p.marks.iter().any(|m| m.name == "lang" && m.start == 2 && m.end == 9 && m.value == MarkValue::Str("fr".into())),
+            p.marks.iter().any(|m| m.name == "lang"
+                && m.start == 2
+                && m.end == 9
+                && m.value == MarkValue::Str("fr".into())),
             "lang mark over 'bonjour': {:?}",
             p.marks
         );
@@ -910,25 +966,26 @@ mod tests {
 
     #[test]
     fn imports_document_default_language() {
-        // A `docDefaults > rPrDefault > rPr > w:lang` in styles.xml → the document
-        // default language. The style block carries its own (different) `w:lang` to
-        // prove only the *run default* is read.
+        // `docDefaults > rPrDefault > rPr > w:lang` sets the document default; the style's own `w:lang` proves only the run default is read.
         let styles = concat!(
             r#"<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="de-DE"/></w:rPr></w:rPrDefault></w:docDefaults>"#,
             r#"<w:style w:type="paragraph" w:styleId="Body"><w:rPr><w:lang w:val="en-US"/></w:rPr></w:style>"#,
         );
-        let body = r#"<w:p><w:r><w:t>hi</w:t></w:r></w:p>"#;
+        let body = r"<w:p><w:r><w:t>hi</w:t></w:r></w:p>";
         let docx = minimal_docx_styled(styles, body);
         let mut d = Document::new();
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
-        assert_eq!(d.materialize().language.as_deref(), Some("de-DE"), "document default language from docDefaults");
+        assert_eq!(
+            d.materialize().language.as_deref(),
+            Some("de-DE"),
+            "document default language from docDefaults"
+        );
     }
 
     #[test]
     fn document_and_run_language_roundtrip() {
         use crate::document::MarkValue;
-        // Author a document with a `de-DE` default language and a `fr`-marked run,
-        // export to `.docx`, re-import: both survive (codes preserved verbatim).
+        // A `de-DE` default language plus a `fr`-marked run must both survive export→import.
         let mut d = Document::new();
         d.set_language("de-DE");
         let id = d.insert_block(None, "paragraph");
@@ -940,11 +997,19 @@ mod tests {
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
 
-        assert_eq!(snap.language.as_deref(), Some("de-DE"), "document default language survives: {:?}", snap.language);
+        assert_eq!(
+            snap.language.as_deref(),
+            Some("de-DE"),
+            "document default language survives: {:?}",
+            snap.language
+        );
         let b = &snap.blocks[0];
         assert_eq!(b.text, "bonjour monde");
         assert!(
-            b.marks.iter().any(|m| m.name == "lang" && m.start == 0 && m.end == 7 && m.value == MarkValue::Str("fr".into())),
+            b.marks.iter().any(|m| m.name == "lang"
+                && m.start == 0
+                && m.end == 7
+                && m.value == MarkValue::Str("fr".into())),
             "run lang mark `fr` survives over 'bonjour': {:?}",
             b.marks
         );

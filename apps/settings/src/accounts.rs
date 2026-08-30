@@ -5,13 +5,13 @@
 //! # Why Settings owns these
 //!
 //! Account *management* in qOS lives in one place: this app's External
-//! Accounts panel. Adding an IMAP mailbox, a CalDAV calendar, a WebDAV
+//! Accounts panel. Adding an IMAP mailbox, a `CalDAV` calendar, a `WebDAV`
 //! share, or a Nextcloud sign-in all happen here. The individual apps only
 //! *consume* the resulting lists.
 //!
-//! # Where email + CalDAV live: the shared `accounts` crate
+//! # Where email + `CalDAV` live: the shared `accounts` crate
 //!
-//! Email and CalDAV accounts are persisted through the shared
+//! Email and `CalDAV` accounts are persisted through the shared
 //! [`accounts::AccountStore`] — one canonical JSON document at
 //! `~/.config/qos/accounts/store.json` — the **same** store Mail and Calendar
 //! read. Settings owns the write lifecycle (add / edit / remove); those apps
@@ -28,7 +28,7 @@
 //!
 //! # The still-separate file stores (format contracts)
 //!
-//! WebDAV (files) and Nextcloud accounts keep their own JSON documents at
+//! `WebDAV` (files) and Nextcloud accounts keep their own JSON documents at
 //! fixed per-user paths for now; each app reads the same file with the same
 //! shape:
 //!
@@ -110,17 +110,14 @@ impl AccountConfig {
             "icloud.com" | "me.com" => Some(("imap.mail.me.com", "smtp.mail.me.com")),
             _ => None,
         };
-        match known {
-            Some((imap, smtp)) => {
-                self.imap_host = imap.to_string();
-                self.smtp_host = smtp.to_string();
-                true
-            }
-            None => {
-                self.imap_host = format!("imap.{domain}");
-                self.smtp_host = format!("smtp.{domain}");
-                false
-            }
+        if let Some((imap, smtp)) = known {
+            self.imap_host = imap.to_string();
+            self.smtp_host = smtp.to_string();
+            true
+        } else {
+            self.imap_host = format!("imap.{domain}");
+            self.smtp_host = format!("smtp.{domain}");
+            false
         }
     }
 }
@@ -143,7 +140,12 @@ impl MailAccount {
         } else {
             config.email.clone()
         };
-        Self { id, config, collapsed: false, tint: 0 }
+        Self {
+            id,
+            config,
+            collapsed: false,
+            tint: 0,
+        }
     }
 
     /// Display label: display name → email → placeholder.
@@ -160,17 +162,11 @@ impl MailAccount {
 
 /// The mail account list — Mail's `AccountStore` shape, persisted at
 /// [`MailStore::PATH`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailStore {
     pub accounts: Vec<MailAccount>,
     #[serde(default)]
     pub active: usize,
-}
-
-impl Default for MailStore {
-    fn default() -> Self {
-        Self { accounts: Vec::new(), active: 0 }
-    }
 }
 
 impl MailStore {
@@ -217,7 +213,7 @@ impl MailStore {
 // DAV store — CalDAV (calendar) and WebDAV (files), parallel files.
 // ---------------------------------------------------------------------------
 
-/// A CalDAV / WebDAV account. Both speak HTTP(S) to a base URL with a
+/// A `CalDAV` / `WebDAV` account. Both speak HTTP(S) to a base URL with a
 /// username, so they share one shape. Credentials are never serialised.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DavAccount {
@@ -235,7 +231,11 @@ pub struct DavAccount {
 }
 
 impl DavAccount {
-    pub fn new(label: impl Into<String>, base_url: impl Into<String>, username: impl Into<String>) -> Self {
+    pub fn new(
+        label: impl Into<String>,
+        base_url: impl Into<String>,
+        username: impl Into<String>,
+    ) -> Self {
         Self {
             id: format!("dav-{}", uuid::Uuid::new_v4()),
             label: label.into(),
@@ -260,12 +260,12 @@ pub struct DavStore {
 }
 
 impl DavStore {
-    /// The CalDAV (calendar) store path.
+    /// The `CalDAV` (calendar) store path.
     pub fn calendar_path() -> Option<PathBuf> {
         config_root().map(|r| r.join("calendar").join("accounts.json"))
     }
 
-    /// The WebDAV (files) store path.
+    /// The `WebDAV` (files) store path.
     pub fn files_path() -> Option<PathBuf> {
         config_root().map(|r| r.join("files").join("accounts.json"))
     }
@@ -322,7 +322,11 @@ pub struct NextcloudAccount {
 }
 
 impl NextcloudAccount {
-    pub fn new(label: impl Into<String>, server_url: impl Into<String>, username: impl Into<String>) -> Self {
+    pub fn new(
+        label: impl Into<String>,
+        server_url: impl Into<String>,
+        username: impl Into<String>,
+    ) -> Self {
         Self {
             id: format!("nc-{}", uuid::Uuid::new_v4()),
             label: label.into(),
@@ -402,9 +406,9 @@ impl AccountKind {
 
     pub fn glyph(self) -> &'static str {
         match self {
-            AccountKind::Mail => "\u{f01ee}",     // md-email
-            AccountKind::CalDav => "\u{f00ed}",   // md-calendar
-            AccountKind::WebDav => "\u{f0256}",   // md-folder_outline
+            AccountKind::Mail => "\u{f01ee}",      // md-email
+            AccountKind::CalDav => "\u{f00ed}",    // md-calendar
+            AccountKind::WebDav => "\u{f0256}",    // md-folder_outline
             AccountKind::Nextcloud => "\u{f015f}", // md-cloud
         }
     }
@@ -443,9 +447,9 @@ pub struct AccountDirectory {
 }
 
 impl AccountDirectory {
-    /// Load every store. Email and CalDAV accounts come from the shared
+    /// Load every store. Email and `CalDAV` accounts come from the shared
     /// canonical store ([`accounts::AccountStore`]) — the same store Mail and
-    /// Calendar read, so the shapes can no longer drift apart. WebDAV (files)
+    /// Calendar read, so the shapes can no longer drift apart. `WebDAV` (files)
     /// and Nextcloud keep their own stores for now. Missing stores are empty.
     pub fn load() -> Self {
         let shared = accounts::AccountStore::load();
@@ -487,9 +491,7 @@ impl AccountDirectory {
                 .collect(),
             AccountKind::CalDav => self.calendar.accounts.iter().map(dav_view_caldav).collect(),
             AccountKind::WebDav => self.files.accounts.iter().map(dav_view_webdav).collect(),
-            AccountKind::Nextcloud => {
-                self.nextcloud.accounts.iter().map(nextcloud_view).collect()
-            }
+            AccountKind::Nextcloud => self.nextcloud.accounts.iter().map(nextcloud_view).collect(),
         }
     }
 }
@@ -563,7 +565,7 @@ fn default_version() -> u32 {
 
 /// The shared-store type id for email accounts (Mail contributes these).
 const MAIL_TYPE: &str = "email";
-/// The shared-store type id for CalDAV accounts (Calendar contributes these).
+/// The shared-store type id for `CalDAV` accounts (Calendar contributes these).
 const CALDAV_TYPE: &str = "caldav";
 
 /// Project the shared store's email accounts into a [`MailStore`].
@@ -577,7 +579,12 @@ fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
             // shape; unknown fields (Mail's `auth`, the sidebar `collapsed`)
             // are ignored.
             let config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
-            Some(MailAccount { id: a.id.to_string(), config, collapsed: false, tint: a.tint })
+            Some(MailAccount {
+                id: a.id.to_string(),
+                config,
+                collapsed: false,
+                tint: a.tint,
+            })
         })
         .collect();
     let active = shared
@@ -587,7 +594,7 @@ fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
     MailStore { accounts, active }
 }
 
-/// Project the shared store's CalDAV accounts into a [`DavStore`] (the shape
+/// Project the shared store's `CalDAV` accounts into a [`DavStore`] (the shape
 /// the pane renders for the Calendar kind).
 fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
     let ty = accounts::AccountTypeId::from(CALDAV_TYPE);
@@ -614,7 +621,10 @@ fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
             password: String::new(),
         })
         .collect();
-    DavStore { version: 1, accounts }
+    DavStore {
+        version: 1,
+        accounts,
+    }
 }
 
 /// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`.
@@ -668,10 +678,19 @@ pub fn sample_directory() -> AccountDirectory {
     cloud.tint = 6;
 
     AccountDirectory {
-        mail: MailStore { accounts: vec![work, personal], active: 0 },
-        calendar: DavStore { version: 1, accounts: vec![cal] },
+        mail: MailStore {
+            accounts: vec![work, personal],
+            active: 0,
+        },
+        calendar: DavStore {
+            version: 1,
+            accounts: vec![cal],
+        },
         files: DavStore::default(),
-        nextcloud: NextcloudStore { version: 1, accounts: vec![cloud] },
+        nextcloud: NextcloudStore {
+            version: 1,
+            accounts: vec![cloud],
+        },
     }
 }
 
@@ -687,7 +706,10 @@ mod tests {
             ..Default::default()
         });
         acct.tint = 4;
-        let store = MailStore { accounts: vec![acct], active: 0 };
+        let store = MailStore {
+            accounts: vec![acct],
+            active: 0,
+        };
         let json = store.to_json();
         // The password must never reach the JSON.
         assert!(!json.contains("hunter2"));
@@ -725,12 +747,18 @@ mod tests {
     fn dav_and_nextcloud_drop_passwords() {
         let mut a = DavAccount::new("Cal", "https://d/", "u");
         a.password = "secret".into();
-        let store = DavStore { version: 1, accounts: vec![a] };
+        let store = DavStore {
+            version: 1,
+            accounts: vec![a],
+        };
         assert!(!store.to_json().contains("secret"));
 
         let mut n = NextcloudAccount::new("NC", "https://c", "u");
         n.password = "nextsecret".into();
-        let store = NextcloudStore { version: 1, accounts: vec![n] };
+        let store = NextcloudStore {
+            version: 1,
+            accounts: vec![n],
+        };
         assert!(!store.to_json().contains("nextsecret"));
     }
 
@@ -762,11 +790,17 @@ mod tests {
 
     #[test]
     fn autofill_recognises_gmail_and_falls_back() {
-        let mut c = AccountConfig { email: "x@gmail.com".into(), ..Default::default() };
+        let mut c = AccountConfig {
+            email: "x@gmail.com".into(),
+            ..Default::default()
+        };
         assert!(c.autofill_from_email());
         assert_eq!(c.imap_host, "imap.gmail.com");
 
-        let mut c2 = AccountConfig { email: "x@acme.test".into(), ..Default::default() };
+        let mut c2 = AccountConfig {
+            email: "x@acme.test".into(),
+            ..Default::default()
+        };
         assert!(!c2.autofill_from_email());
         assert_eq!(c2.imap_host, "imap.acme.test");
     }

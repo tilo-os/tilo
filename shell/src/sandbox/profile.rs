@@ -1,55 +1,48 @@
 //! `SandboxProfile`: a serialisable description of a per-workspace
 //! Bubblewrap sandbox, rendered into the argv expected by the `bwrap` CLI.
+//! A pure value type — no I/O, no fd plumbing — so it can be built from
+//! the workspace CRDT in one place and rendered wherever the argv is
+//! needed.
 //!
-//! The profile intentionally stays a pure value type — no I/O, no fd
-//! plumbing — so it can be built from the workspace CRDT in one place
-//! and rendered wherever the argv is needed.
-//!
-//! ## This is not the enforcement point
-//!
-//! Nothing in the compositor spawns an application through this type.
-//! Apps are launched by execing `qos-launcher`, which builds its own
-//! bubblewrap namespace from the package manifest **and** the
-//! workspace capabilities the shell hands it (`launcher::capabilities`,
-//! reached via [`crate::shell::launcher`]). That is where a grant
-//! becomes a mount and a revocation becomes a missing one.
-//!
-//! What remains here is the compositor-side *model* of a per-workspace
-//! sandbox: the bind/env/uid shape, the seccomp + Landlock plumbing
-//! points, and [`SandboxProfile::apply_grants`], which mirrors the
-//! launcher's capability rules for the profile shape. Treat a
-//! disagreement between the two as a bug in this file, not in the
-//! launcher.
+//! This is not the enforcement point: nothing in the compositor spawns an
+//! application through this type. Apps are launched by execing
+//! `qos-launcher`, which builds its own bubblewrap namespace from the
+//! package manifest **and** the workspace capabilities the shell hands it
+//! (`launcher::capabilities`, via [`crate::shell::launcher`]) — that is
+//! where a grant becomes a mount and a revocation becomes a missing one.
+//! What remains here is the compositor-side *model*: the bind/env/uid
+//! shape, the seccomp + Landlock plumbing points, and
+//! [`SandboxProfile::apply_grants`], which mirrors the launcher's
+//! capability rules. Treat a disagreement between the two as a bug here,
+//! not in the launcher.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-/// D-6 fix: per-directory memo of the entries we care about during
+/// Per-directory memo of the entries we care about during
 /// capability-grant application (`/dev/video*` for camera, the
-/// pipewire socket + `/dev/snd` for microphone). `apply_grants` is
-/// called once per process spawn into a workspace; without memoization
-/// every cluster launch re-walks the same `/dev` tree (and re-stats
-/// `pipewire-0` / `/dev/snd`). The TTL is conservative: 5s is short
-/// enough that hotplugged hardware shows up within a couple of
-/// subsequent launches, long enough to coalesce the rapid-fire
-/// spawns that happen when a user clicks a launcher 3-4 times.
+/// pipewire socket + `/dev/snd` for microphone). `apply_grants` runs
+/// once per process spawn into a workspace; without memoization every
+/// cluster launch re-walks the same `/dev` tree. TTL is 5s: short enough
+/// that hotplugged hardware shows up within a couple of launches, long
+/// enough to coalesce the rapid-fire spawns from a user double-clicking
+/// a launcher.
 ///
 /// Cache shape: `directory path -> (filtered entries, captured-at)`.
 /// The filtering function is opaque to the cache; consumers pass a
-/// closure-free key so different filters of the same directory each
-/// get their own cache slot.
+/// closure-free key so different filters of the same directory get
+/// independent cache slots.
 static SCAN_MEMO: LazyLock<Mutex<HashMap<(PathBuf, &'static str), (Vec<PathBuf>, Instant)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// D-6: TTL for cached `/dev` and `XDG_RUNTIME_DIR` scans.
+/// TTL for cached `/dev` and `XDG_RUNTIME_DIR` scans.
 const SCAN_MEMO_TTL: Duration = Duration::from_secs(5);
 
-/// D-6 test hook: counts the number of times the underlying directory
-/// walk runs through the slow path (filesystem hit). The cached
-/// happy-path increments nothing. Tests assert `take_count_since` to
-/// confirm memoization. Production never reads this.
+/// Test hook: counts how many times the underlying directory walk runs
+/// the slow path (filesystem hit); the cached happy path increments
+/// nothing. Production never reads this.
 #[cfg(test)]
 static SCAN_WALK_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -63,10 +56,10 @@ pub(crate) fn clear_scan_memo() {
     SCAN_MEMO.lock().unwrap().clear();
 }
 
-/// D-6: memoised directory walk. `filter_tag` is a stable string id for
-/// the filter being applied (e.g. `"video"` for `/dev/video*`) — it
-/// keys the cache so two different filters of the same directory get
-/// independent cache slots.
+/// Memoised directory walk. `filter_tag` is a stable string id for the
+/// filter being applied (e.g. `"video"` for `/dev/video*`) — it keys the
+/// cache so two different filters of the same directory get independent
+/// cache slots.
 fn scan_dir_memoised(
     dir: &Path,
     filter_tag: &'static str,
@@ -75,10 +68,10 @@ fn scan_dir_memoised(
     let key = (dir.to_path_buf(), filter_tag);
     {
         let cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");
-        if let Some((entries, captured)) = cache.get(&key) {
-            if captured.elapsed() < SCAN_MEMO_TTL {
-                return entries.clone();
-            }
+        if let Some((entries, captured)) = cache.get(&key)
+            && captured.elapsed() < SCAN_MEMO_TTL
+        {
+            return entries.clone();
         }
     }
     // Slow path: actually walk the directory.
@@ -88,10 +81,10 @@ fn scan_dir_memoised(
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if filter(name) {
-                    out.push(path);
-                }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && filter(name)
+            {
+                out.push(path);
             }
         }
     }
@@ -114,11 +107,11 @@ pub struct SandboxProfile {
     pub binds_ro: Vec<(PathBuf, PathBuf)>,
     /// Read-write host → sandbox bind mounts. Rendered as `--bind`.
     pub binds_rw: Vec<(PathBuf, PathBuf)>,
-    /// Environment overrides applied via `--setenv`. Note that `bwrap`
-    /// already starts from a clean env when `--clearenv` is passed; we
-    /// don't emit `--clearenv` in Phase 1 because the tests assert on
-    /// the exact argv shape and adding it would be a behaviour change
-    /// that belongs to the launcher layer.
+    /// Environment overrides applied via `--setenv`. `bwrap` already
+    /// starts from a clean env when `--clearenv` is passed, but this
+    /// doesn't emit it: the tests assert the exact argv shape, and
+    /// adding the flag is a behaviour change that belongs to the
+    /// launcher layer.
     pub env: HashMap<String, String>,
     /// User namespace mapping target. Rendered as `--uid`.
     pub uid: u32,
@@ -149,8 +142,8 @@ pub struct SandboxProfile {
     /// Optional per-workspace D-Bus session bus socket on the host.
     pub dbus_socket: Option<PathBuf>,
     /// When true, render `--unshare-net` so the sandbox gets an empty
-    /// network namespace. Phase 1 defaults to `true` for safety; the
-    /// portal flow in a later phase flips this for the owner session.
+    /// network namespace. Defaults to `true` for safety; the portal flow
+    /// flips this for the owner session.
     pub net_isolated: bool,
     /// Optional path to the Landlock launcher shim (`plan/security.md`
     /// §7.1). When `Some`, [`Self::into_argv`] makes `bwrap` exec the
@@ -171,16 +164,6 @@ pub struct SandboxProfile {
 
 impl SandboxProfile {
     /// Build a minimal profile for tests and v1 launches.
-    ///
-    /// Defaults match the plan (lines 125-135):
-    /// * `binds_ro`: `(/usr, /usr)`. `/etc/resolv.conf` is added only
-    ///   when the workspace has network — Phase 1 defaults to network
-    ///   isolation, so it's omitted here.
-    /// * `binds_rw`: workspace root → `/work`, cache root → `/cache`,
-    ///   wayland bridge socket → `/run/user/1000/wayland-0`.
-    /// * `env`: `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `HOME`.
-    /// * `uid`/`gid`: 1000.
-    /// * `net_isolated`: `true`.
     pub fn for_workspace_test(ws_root: &Path, cache_root: &Path) -> Self {
         let wayland_socket = PathBuf::from("/run/user/1000").join(format!("quick-bridge-{}", 0u64));
 
@@ -255,7 +238,7 @@ impl SandboxProfile {
     pub fn grant_microphone(&mut self) {
         let runtime_dir =
             std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{}", self.uid));
-        let pipewire_path = std::path::PathBuf::from(format!("{}/pipewire-0", runtime_dir));
+        let pipewire_path = std::path::PathBuf::from(format!("{runtime_dir}/pipewire-0"));
         if pipewire_path.exists() {
             self.binds_rw.push((pipewire_path.clone(), pipewire_path));
         }
@@ -269,28 +252,15 @@ impl SandboxProfile {
     /// Walk a workspace's `grants` slice for one app and apply each
     /// granted capability to this profile. Handles `Camera` /
     /// `Microphone`, `Filesystem` grants scoped `Always` or `Session`,
-    /// and `Always`-scoped `Network` grants.
+    /// and `Always`-scoped `Network` grants. `Screencast` is a no-op here
+    /// (portal screencast follow-up).
     ///
-    /// Filesystem delivery by scope:
-    /// * `Always` — persists across restarts; bound into the sandbox.
-    /// * `Session` — held for the current shell session; also bound. The
-    ///   sandbox process lifetime is bounded by the session, and a
-    ///   `Session` grant is cleared from the workspace's grant map on
-    ///   shell restart, so a re-spawn in a fresh session won't re-bind
-    ///   it — that gives the bind exactly session lifetime.
-    /// * `Once` — one-shot; **not** bound. Binding a path into a sandbox
-    ///   that outlives the single request would over-persist the access,
-    ///   so `Once` grants are delivered as an open fd through the runtime
-    ///   portal (cap-std) instead.
-    ///
-    /// `Screencast` is a no-op here and lands in the portal screencast
-    /// follow-up.
-    ///
-    /// The plan says the policy is "without a grant, the device socket
-    /// simply isn't bound" — so the contract is additive: this method
-    /// only ever appends binds, never removes them. Callers that want a
-    /// strictly minimal profile should start from
-    /// [`for_workspace_test`] and pass an empty grants slice.
+    /// Filesystem grants bind into the sandbox for every scope except
+    /// `Once`: a one-shot grant that outlived the single request would
+    /// over-persist the access, so it's delivered as a portal fd instead.
+    /// This method only ever appends binds, never removes them — callers
+    /// wanting a minimal profile should start from [`for_workspace_test`]
+    /// with an empty grants slice.
     pub fn apply_grants(&mut self, grants: &[crate::shell::state::Capability]) {
         use crate::shell::state::{Capability, Expiry};
         for cap in grants {
@@ -298,36 +268,27 @@ impl SandboxProfile {
                 Capability::Camera { .. } => self.grant_camera(),
                 Capability::Microphone { .. } => self.grant_microphone(),
                 Capability::Filesystem { path, mode, scope } => {
-                    // A grant that outlives its request is delivered as a
-                    // bind-mount; only the one-shot stays portal-fd.
-                    //
-                    // `EndOfSession` binds too, and must: it is the scope a
-                    // dropped file records, and refusing it leaves the grant
+                    // `EndOfSession` must bind: it's the scope a dropped
+                    // file records, and refusing it would leave the grant
                     // recorded while the app can never read the file. The
-                    // bind then has exactly session lifetime — it is rebuilt
-                    // from the capability list on every spawn, and an
-                    // `EndOfSession` capability is never written to disk, so
-                    // a restart is what ends it. `AfterUse` stays fd-only:
-                    // binding a one-shot into a longer-lived sandbox would
-                    // over-persist it past the request that justified it.
+                    // bind has session lifetime because it's rebuilt from
+                    // the capability list on every spawn and is never
+                    // written to disk. `AfterUse` stays fd-only — binding
+                    // a one-shot into a longer-lived sandbox would
+                    // over-persist it.
                     if !matches!(scope, Expiry::AfterUse) {
                         self.grant_filesystem_path(path, mode.clone());
                     }
                 }
                 Capability::Network { hosts, scope } => {
                     // A network grant lifts the default namespace
-                    // isolation (`--unshare-net`). That is the *only*
-                    // mechanism in play, and a namespace is
-                    // all-or-nothing: there is no packet filter here and
-                    // no nftables code anywhere in this repository.
-                    //
-                    // So an allowlist naming specific hosts is recorded
-                    // faithfully and then applied as unrestricted
-                    // outbound access. Say so out loud rather than
-                    // leaving the difference buried in a comment — an
-                    // operator reading the journal should be able to
-                    // see that the allowlist they configured is not
-                    // what is protecting them.
+                    // isolation (`--unshare-net`) — the only mechanism in
+                    // play; there is no packet filter or nftables code
+                    // anywhere in this repository. An allowlist naming
+                    // specific hosts is recorded faithfully and then
+                    // applied as unrestricted outbound access — say so
+                    // out loud so an operator reading the journal can see
+                    // that the allowlist is not what is protecting them.
                     if !scope.persists_across_restart() {
                         continue;
                     }
@@ -373,18 +334,15 @@ impl SandboxProfile {
         }
     }
 
-    /// Render this profile to the argv slice we'd pass to `bwrap`.
+    /// Render this profile to the argv slice passed to `bwrap`. Just the
+    /// arguments — the caller invokes `bwrap` itself. `command` is
+    /// appended verbatim so callers can pass through both program and
+    /// arguments without escaping.
     ///
-    /// The rendered argv is *just* the arguments — the caller is
-    /// responsible for invoking `bwrap` itself.
-    /// `command` is appended verbatim so callers can pass through both
-    /// the program and its arguments without escaping.
-    ///
-    /// We intentionally consume `self` rather than borrowing: the
-    /// `binds_*` vectors are moved into the rendered `Vec<String>` so we
-    /// don't allocate intermediate `String`s that get thrown away.
-    /// Callers that need the profile afterwards should clone before
-    /// rendering.
+    /// Consumes `self` rather than borrowing: the `binds_*` vectors move
+    /// into the rendered `Vec<String>` instead of allocating intermediate
+    /// `String`s that get thrown away. Clone first if you need the
+    /// profile afterwards.
     pub fn into_argv(self, command: &[String]) -> Vec<String> {
         // Capture the bits the Landlock shim needs BEFORE the consuming
         // `for (host, sandbox) in self.binds_*` loops move the binds out.
@@ -437,10 +395,9 @@ impl SandboxProfile {
             argv.push(path_to_string(&sandbox));
         }
 
-        // HashMap iteration order is unspecified; the unit tests look
+        // HashMap iteration order is unspecified; the unit tests check
         // for *presence* of `--setenv K V` triples rather than a fixed
-        // ordering, so this is fine. Future seccomp Phase will add a
-        // stable ordering when the launcher composes profiles.
+        // ordering.
         for (key, value) in self.env {
             argv.push("--setenv".to_string());
             argv.push(key);
@@ -456,26 +413,22 @@ impl SandboxProfile {
             argv.push("--unshare-net".to_string());
         }
 
-        // Only emit `--seccomp <fd>` when a spawner has actually plumbed
-        // the file to a known descriptor (`seccomp_fd` is `Some`). An
-        // earlier version hardcoded fd `10` whenever `self.seccomp` was
-        // set, which left bwrap reading whatever happened to be at fd 10
-        // — typically nothing, so the deny-list filter was silently
-        // bypassed. A profile rendered for inspection leaves
-        // `seccomp_fd` `None` and drops the flag entirely.
+        // Only emit `--seccomp <fd>` when a spawner actually plumbed the
+        // file to a known descriptor (`seccomp_fd` is `Some`) — otherwise
+        // bwrap reads whatever happens to be at a guessed fd, typically
+        // nothing, and the filter is silently bypassed. A profile
+        // rendered for inspection leaves `seccomp_fd` `None` and drops
+        // the flag entirely.
         if let Some(fd) = self.seccomp_fd {
             argv.push("--seccomp".to_string());
             argv.push(fd.to_string());
         }
 
-        // Landlock layer (`plan/security.md` §7.1). When the spawn helper
-        // has stamped `landlock_shim`, bwrap execs the shim instead of the
-        // app: `<shim> __sandbox-exec --ro <p>… --rw <p>… [--net-restricted]
-        // -- <real argv>`. The shim builds + applies a Landlock ruleset for
-        // the sandbox-side bind paths (read for ro, read+write+create for
-        // rw) and, when net-restricted, denies TCP bind/connect — then
-        // `execvp`s the real command. seccomp (above) still applies; both
-        // layers compose. Without the shim, the command is appended raw.
+        // See `landlock_shim`'s field doc for the wire format. The shim
+        // applies read-only Landlock rules for ro binds and
+        // read+write+create for rw, and denies TCP bind/connect when
+        // net-restricted, before `execvp`-ing the real command. seccomp
+        // still applies on top.
         match landlock_shim {
             Some(shim) => {
                 argv.push(path_to_string(&shim));
@@ -500,13 +453,12 @@ impl SandboxProfile {
     }
 }
 
-/// Helper: lossy conversion to keep `into_argv` returning `Vec<String>`.
+/// Lossy conversion to keep `into_argv` returning `Vec<String>`.
 ///
-/// Bubblewrap arguments hit the kernel via `execve`, so they are bytes
-/// not Unicode. Phase 1 stays on `String` to match the plan's signature;
-/// the few non-UTF-8 paths we'd see in practice (mostly user-chosen
-/// workspace names) are surfaced as replacement characters rather than
-/// silently dropped, which keeps the test output readable.
+/// Bubblewrap arguments hit the kernel via `execve`, so they are bytes,
+/// not Unicode. The few non-UTF-8 paths seen in practice (mostly
+/// user-chosen workspace names) are surfaced as replacement characters
+/// rather than silently dropped, which keeps test output readable.
 fn path_to_string(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
@@ -514,10 +466,10 @@ fn path_to_string(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `apply_grants` reads/writes the process-wide `SCAN_MEMO` static
-    // (D-6's per-directory memoisation). Tests that exercise that path
-    // are tagged `#[serial(scan_memo)]` so parallel `cargo test` runs
-    // don't corrupt the shared walk counter the memo test asserts on.
+    // `apply_grants` reads/writes the process-wide `SCAN_MEMO` static (the
+    // per-directory memoisation cache). Tests exercising that path are
+    // tagged `#[serial(scan_memo)]` so parallel `cargo test` runs don't
+    // corrupt the shared walk counter the memo test asserts on.
     use serial_test::serial;
 
     #[test]
@@ -525,20 +477,16 @@ mod tests {
         let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let argv = p.into_argv(&["sh".into(), "-c".into(), "echo hi".into()]);
 
-        // `--ro-bind /usr /usr` is present.
         assert!(argv.iter().any(|a| a == "--ro-bind"));
         assert!(argv.iter().any(|a| a == "/usr"));
 
-        // At least one `--bind` exists.
         assert!(argv.iter().any(|a| a == "--bind"));
 
-        // The workspace root is bound to `/work`.
         assert!(
             argv.windows(3).any(|w| w[0] == "--bind" && w[2] == "/work"),
             "expected `--bind <ws_root> /work` in argv: {argv:?}"
         );
 
-        // Command tail is preserved verbatim.
         assert_eq!(argv.last().unwrap(), "echo hi");
     }
 
@@ -567,7 +515,6 @@ mod tests {
     fn profile_renders_uid_and_gid() {
         let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let argv = p.into_argv(&["true".into()]);
-        // `--uid 1000` and `--gid 1000` appear as adjacent pairs.
         assert!(
             argv.windows(2).any(|w| w[0] == "--uid" && w[1] == "1000"),
             "expected `--uid 1000`: {argv:?}"
@@ -599,7 +546,6 @@ mod tests {
         p.grant_camera();
         // /dev/video* may or may not exist on CI; assert "no shrink".
         assert!(p.binds_rw.len() >= initial_count);
-        // If /dev/video0 exists on this host, expect it in binds_rw.
         if std::path::Path::new("/dev/video0").exists() {
             assert!(
                 p.binds_rw
@@ -620,7 +566,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_camera_capability_invokes_grant_camera() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_SESSION};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let initial_count = p.binds_rw.len();
@@ -634,7 +580,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_no_camera_or_mic_is_noop_for_those_cases() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_ALWAYS};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let before_rw = p.binds_rw.len();
@@ -692,7 +638,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_always_scope_invokes_grant_filesystem() {
-        use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let grants = vec![Capability::Filesystem {
@@ -712,15 +658,10 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_session_scope_binds_for_the_session() {
         use crate::shell::state::{Capability, Expiry, FsMode};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
-        // A Session-scoped grant (the scope a dropped file records) must
-        // make the path reachable inside the sandbox — otherwise the
-        // grant is recorded but the app can never read the file. The
-        // bind has session lifetime: it's rebuilt from the grant map on
-        // every spawn, and the grant is cleared on shell restart.
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+        // Session-scoped (the dropped-file grant) must bind — otherwise
+        // the grant is recorded but the app can never read the file.
         let granted = std::path::Path::new("/home/u/dropped");
         let grants = vec![Capability::Filesystem {
             path: granted.to_path_buf(),
@@ -729,7 +670,9 @@ mod tests {
         }];
         p.apply_grants(&grants);
         assert!(
-            p.binds_rw.iter().any(|(src, dst)| src == granted && dst == granted),
+            p.binds_rw
+                .iter()
+                .any(|(src, dst)| src == granted && dst == granted),
             "Session-scoped ReadWrite grant must bind the path into the \
              sandbox for the session; binds_rw = {:?}",
             p.binds_rw
@@ -740,10 +683,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_session_scope_read_binds_read_only() {
         use crate::shell::state::{Capability, Expiry, FsMode};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         // A dropped file records a `Read` + `Session` grant. It must land
         // in the *read-only* bind set — least privilege — not read-write.
         let granted = std::path::Path::new("/home/u/notes.ts");
@@ -771,10 +712,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_once_scope_does_not_bind() {
         use crate::shell::state::{Capability, Expiry, FsMode};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         // `Once` is one-shot: it must NOT bind into the sandbox (which
         // outlives the single request). It's delivered as a portal fd
         // instead. Binding it would over-persist the access.
@@ -798,7 +737,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_network_always_scope_disables_isolation() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_ALWAYS};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
@@ -816,7 +755,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_network_session_scope_does_not_change_isolation() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_SESSION};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
@@ -831,21 +770,16 @@ mod tests {
         );
     }
 
-    /// A network allowlist reaches no enforcement mechanism.
-    ///
-    /// This test used to assert that `hosts: Some([...])` and
-    /// `hosts: None` behave identically, which read as approval of the
-    /// gap. What is actually true — and what is asserted here — is
-    /// narrower and more uncomfortable: the *only* thing a host
-    /// allowlist does is toggle network-namespace isolation, and the
-    /// hostname the user named appears nowhere in the rendered `bwrap`
-    /// argv, because bwrap has no vocabulary for it and there is no
+    /// A network allowlist reaches no enforcement mechanism: the *only*
+    /// thing a host allowlist does is toggle network-namespace isolation.
+    /// The hostname the user named appears nowhere in the rendered
+    /// `bwrap` argv — bwrap has no vocabulary for it and there is no
     /// packet filter behind it. Per-host filtering would need
     /// per-namespace nftables rules, which this repository does not have.
     #[test]
     #[serial(scan_memo)]
     fn network_allowlist_only_toggles_namespace_isolation_and_reaches_no_host_filter() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_ALWAYS};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
@@ -859,8 +793,7 @@ mod tests {
             "an allowlisted-host grant lifts namespace isolation — that is the whole of its effect"
         );
 
-        // The rendered argv is the sandbox. The allowlisted host is not
-        // in it, in any form: nothing downstream of this profile can
+        // The rendered argv is the sandbox: nothing downstream of it can
         // restrict the app to `github.com`.
         let argv = p.into_argv(&["true".into()]);
         assert!(
@@ -877,15 +810,14 @@ mod tests {
 
     /// Smoke test for the spawn helper. Only runs when `bwrap` is
     /// installed and the kernel allows unprivileged user namespaces;
-    /// otherwise we skip cleanly so CI on lean images is not gated on
-    /// system configuration. Phase 2 hardens this with a fixture that
-    /// asserts on stdout.
+    /// otherwise it skips cleanly so CI on lean images isn't gated on
+    /// system configuration.
     ///
-    /// We extend the default profile with the minimum viable mounts to
-    /// actually execute a binary (`/bin`, `/lib`, `/lib64`, `/proc`,
+    /// This extends the default profile with the minimum viable mounts
+    /// to actually execute a binary (`/bin`, `/lib`, `/lib64`, `/proc`,
     /// `/dev`). The default profile is intentionally minimal — those
-    /// mounts come from the per-workspace launcher in later phases —
-    /// so the integration test takes responsibility for them itself.
+    /// mounts come from the per-workspace launcher — so the integration
+    /// test takes responsibility for them itself.
     #[test]
     #[ignore = "requires bwrap + user-ns; run locally with `cargo test -- --ignored`"]
     fn spawned_process_can_read_work_path() {
@@ -913,8 +845,8 @@ mod tests {
             }
         }
         // bwrap needs `--proc /proc` and `--dev /dev` to populate those
-        // pseudo-filesystems; we render those manually as an argv
-        // suffix because `SandboxProfile` doesn't model them in Phase 1.
+        // pseudo-filesystems; render those manually as an argv suffix
+        // since `SandboxProfile` doesn't model them.
         let mut argv = clone_for_test(&profile).into_argv(&[]);
         argv.extend(
             [
@@ -971,17 +903,16 @@ mod tests {
         base
     }
 
-    /// C-5 regression: when a caller sets `profile.seccomp = Some(...)`
-    /// but does NOT also set `profile.seccomp_fd`, the rendered argv
-    /// must omit `--seccomp` entirely rather than emitting a stale
-    /// hardcoded `--seccomp 10` that points at no real fd.
+    /// When a caller sets `profile.seccomp = Some(...)` but not
+    /// `profile.seccomp_fd`, the rendered argv must omit `--seccomp`
+    /// entirely rather than emitting a stale hardcoded fd that points at
+    /// nothing.
     ///
-    /// The spawn helper is responsible for opening the bpf file,
-    /// duping it to a known descriptor in the child, and stamping
-    /// `seccomp_fd` with that number. A profile without `seccomp_fd`
-    /// indicates the caller skipped that plumbing — in which case
-    /// rendering the flag would tell bwrap to read from a fd that
-    /// doesn't exist (the previous bug). Suppress instead.
+    /// The spawn helper is responsible for opening the bpf file, duping
+    /// it to a known descriptor in the child, and stamping `seccomp_fd`
+    /// with that number. A profile without `seccomp_fd` means the caller
+    /// skipped that plumbing, so the flag is suppressed rather than
+    /// telling bwrap to read from a fd that doesn't exist.
     #[test]
     fn seccomp_some_does_not_emit_argv_without_fd_plumbing() {
         let mut p =
@@ -997,20 +928,18 @@ mod tests {
         );
     }
 
-    /// D-6 contract: `apply_grants` with a camera capability memoises
-    /// the `/dev` scan. The first call hits the filesystem; the second
-    /// call within the 5s TTL reuses the cached entry list and does
-    /// NOT re-walk `/dev`.
+    /// `apply_grants` with a camera capability memoises the `/dev` scan:
+    /// the first call hits the filesystem, the second call within the 5s
+    /// TTL reuses the cached entry list and does NOT re-walk `/dev`.
     ///
-    /// We count walks via the test-only `SCAN_WALK_COUNT` counter
-    /// that the slow path increments. Before D-6's fix the counter
-    /// would tick on every `apply_grants` call; the assertion guards
-    /// against the cache being silently bypassed (e.g. a future
-    /// refactor reaches into `std::fs::read_dir` directly).
+    /// Counted via the test-only `SCAN_WALK_COUNT` counter the slow path
+    /// increments — this guards against the cache being silently
+    /// bypassed (e.g. a future refactor reaching into `std::fs::read_dir`
+    /// directly).
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_dev_scan_is_memoised() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_SESSION};
         // Reset both the cache and the counter so other tests can't
         // contaminate our measurement.
         super::clear_scan_memo();
@@ -1167,10 +1096,10 @@ mod tests {
         assert_eq!(argv.last().unwrap(), "hi");
     }
 
-    /// C-5 regression: when both `seccomp` AND `seccomp_fd` are set —
-    /// the post-fix code path the spawn helper drives — the argv
-    /// MUST carry the matching `--seccomp <fd>` triple using the
-    /// actually-plumbed descriptor number, NOT a hardcoded `10`.
+    /// When both `seccomp` AND `seccomp_fd` are set — the code path the
+    /// spawn helper drives — the argv MUST carry the matching
+    /// `--seccomp <fd>` triple using the actually-plumbed descriptor
+    /// number, not a hardcoded one.
     #[test]
     fn seccomp_argv_uses_actually_loaded_fd() {
         let mut p =
@@ -1180,14 +1109,13 @@ mod tests {
         // dup'd it to fd 16 in the child.
         p.seccomp_fd = Some(16);
         let argv = p.into_argv(&["true".into()]);
-        // The flag must appear and reference fd 16, not the legacy
-        // hardcoded `10`.
+        // The flag must appear and reference fd 16.
         let pos = argv
             .iter()
             .position(|a| a == "--seccomp")
             .expect("expected --seccomp triple in argv");
         assert_eq!(
-            argv.get(pos + 1).map(|s| s.as_str()),
+            argv.get(pos + 1).map(std::string::String::as_str),
             Some("16"),
             "argv carries --seccomp at index {pos} but the fd value is \
              {:?} (must match seccomp_fd=Some(16), not the legacy 10): \

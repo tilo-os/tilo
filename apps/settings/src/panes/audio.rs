@@ -16,16 +16,16 @@
 //! ([`parse_wpctl_status`]); when more than one output (or input) device
 //! exists a picker is shown, and choosing one runs `wpctl set-default <id>`
 //! through [`DeviceControl`], persisting the choice to [`AudioPrefs`]. On a
-//! host with no PipeWire the enumerator returns nothing, so the picker simply
+//! host with no `PipeWire` the enumerator returns nothing, so the picker simply
 //! isn't shown (no fabricated devices) and the volume/mute/input controls
 //! still act on the current default.
 //!
-//! **Per-application routing** enumerates the PipeWire node graph via
+//! **Per-application routing** enumerates the `PipeWire` node graph via
 //! [`media::audio`] (`pw-dump`): each application stream that is playing (or
 //! recording) becomes a row with a picker that routes just that app to a chosen
 //! device — the music app to the headphones while the browser stays on the
 //! speakers — plus per-app volume and mute. Moving a stream writes the
-//! WirePlumber `target.object` metadata; per-app volume/mute go through `wpctl`
+//! `WirePlumber` `target.object` metadata; per-app volume/mute go through `wpctl`
 //! on the stream's node id. The graph is re-read on a throttle so a newly
 //! plugged headset (or a freshly started app) appears without reopening
 //! Settings. Empty means empty: no application playing ⇒ no fabricated rows.
@@ -50,7 +50,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use media::audio::{
     AudioEnumerator, AudioGraph, AudioStream, GraphControl, NoopGraphControl, RealEnumerator,
     RealGraphControl,
@@ -60,22 +60,22 @@ use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Slider, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{AudioPrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row_described, rows, setting_row};
+use crate::widgets::{caption, card, choice_row_described, rows, setting_row};
 
-/// How often the pane re-reads the PipeWire graph while it is open, so a
+/// How often the pane re-reads the `PipeWire` graph while it is open, so a
 /// device plugged in (a headset) or an application that just started playing
 /// appears without reopening Settings. Cheap enough for an actively-viewed
 /// pane; the enumeration is one `pw-dump`.
 const HOTPLUG_INTERVAL: Duration = Duration::from_millis(1_500);
 
 /// CRDT key prefix for a per-application stream's routing/volume/mute, keyed by
-/// its PipeWire node id. `audio.stream.<id>.sink` holds the chosen output
+/// its `PipeWire` node id. `audio.stream.<id>.sink` holds the chosen output
 /// label (or [`FOLLOW_DEFAULT`]); `.volume` the perceptual gain; `.muted` the
 /// mute.
 fn stream_sink_key(id: u32) -> String {
@@ -117,7 +117,11 @@ pub struct RealInput;
 impl InputControl for RealInput {
     fn set_input_volume(&self, pct: f32) -> Result<(), String> {
         let frac = (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0);
-        run_wpctl(&["set-volume", "@DEFAULT_AUDIO_SOURCE@", &format!("{frac:.2}")])
+        run_wpctl(&[
+            "set-volume",
+            "@DEFAULT_AUDIO_SOURCE@",
+            &format!("{frac:.2}"),
+        ])
     }
 }
 
@@ -139,7 +143,7 @@ fn run_wpctl(args: &[&str]) -> Result<(), String> {
 /// `wpctl status`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioDevice {
-    /// PipeWire node id — the handle `wpctl set-default <id>` takes.
+    /// `PipeWire` node id — the handle `wpctl set-default <id>` takes.
     pub id: u32,
     pub name: String,
     /// Whether this device is the current system default for its class.
@@ -156,11 +160,17 @@ pub struct AudioDevices {
 impl AudioDevices {
     /// Name of the current default sink, if any.
     pub fn default_sink(&self) -> Option<&str> {
-        self.sinks.iter().find(|d| d.default).map(|d| d.name.as_str())
+        self.sinks
+            .iter()
+            .find(|d| d.default)
+            .map(|d| d.name.as_str())
     }
     /// Name of the current default source, if any.
     pub fn default_source(&self) -> Option<&str> {
-        self.sources.iter().find(|d| d.default).map(|d| d.name.as_str())
+        self.sources
+            .iter()
+            .find(|d| d.default)
+            .map(|d| d.name.as_str())
     }
     fn sink_id(&self, name: &str) -> Option<u32> {
         self.sinks.iter().find(|d| d.name == name).map(|d| d.id)
@@ -174,8 +184,7 @@ impl AudioDevices {
 /// indents its rows with, leaving the row's content.
 fn strip_tree_prefix(line: &str) -> &str {
     line.trim_start_matches(|c: char| {
-        c.is_whitespace()
-            || matches!(c, '│' | '├' | '└' | '─' | '┌' | '┐' | '┘' | '┬' | '┴' | '┼')
+        c.is_whitespace() || matches!(c, '│' | '├' | '└' | '─' | '┌' | '┐' | '┘' | '┬' | '┴' | '┼')
     })
 }
 
@@ -249,7 +258,7 @@ pub fn parse_wpctl_status(stdout: &str) -> AudioDevices {
 }
 
 /// Enumerate the audio devices via `wpctl status`. Best-effort: an empty set
-/// when `wpctl` is missing or fails, so a non-qOS host with no PipeWire shows
+/// when `wpctl` is missing or fails, so a non-qOS host with no `PipeWire` shows
 /// no device pickers rather than fabricated devices.
 fn list_audio_devices() -> AudioDevices {
     let Ok(out) = Command::new("wpctl").arg("status").output() else {
@@ -300,7 +309,12 @@ fn get_source_volume() -> Option<f32> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     // `Volume: 0.42` (optionally ` [MUTED]`).
     let after = stdout.lines().next()?.split(':').nth(1)?.trim();
-    after.split_whitespace().next()?.parse::<f32>().ok().map(|v| v.clamp(0.0, 1.0))
+    after
+        .split_whitespace()
+        .next()?
+        .parse::<f32>()
+        .ok()
+        .map(|v| v.clamp(0.0, 1.0))
 }
 
 /// Audio pane widget.
@@ -309,7 +323,7 @@ pub struct AudioPane {
     input: Arc<dyn InputControl>,
     device: Arc<dyn DeviceControl>,
     devices: AudioDevices,
-    /// The PipeWire node graph: the per-application streams the "Applications"
+    /// The `PipeWire` node graph: the per-application streams the "Applications"
     /// / "Recording" cards route, plus the devices they can be routed to.
     graph: AudioGraph,
     /// Side-effect surface for editing the graph (route a stream, per-app
@@ -372,7 +386,10 @@ fn devices_from_graph(graph: &AudioGraph) -> AudioDevices {
             })
             .collect()
     };
-    AudioDevices { sinks: map(&graph.sinks), sources: map(&graph.sources) }
+    AudioDevices {
+        sinks: map(&graph.sinks),
+        sources: map(&graph.sources),
+    }
 }
 
 impl Default for AudioPane {
@@ -480,7 +497,7 @@ impl AudioPane {
         self
     }
 
-    /// Test / `--shots` builder: inject a PipeWire [`AudioGraph`] and the
+    /// Test / `--shots` builder: inject a `PipeWire` [`AudioGraph`] and the
     /// [`GraphControl`] recorder so the per-application routing path is
     /// exercised without touching `pw-dump` / `pw-metadata`. A static
     /// enumerator returns the same graph, so any hotplug re-enumeration is a
@@ -507,7 +524,7 @@ impl AudioPane {
         &self.devices
     }
 
-    /// The enumerated PipeWire graph (tests read this to assert hotplug
+    /// The enumerated `PipeWire` graph (tests read this to assert hotplug
     /// re-enumeration landed).
     pub fn graph(&self) -> &AudioGraph {
         &self.graph
@@ -538,7 +555,12 @@ impl AudioPane {
         // --- Input card: an optional source picker, then the mic level.
         let mut input_rows = Vec::new();
         if self.devices.sources.len() >= 2 {
-            let opts: Vec<String> = self.devices.sources.iter().map(|d| d.name.clone()).collect();
+            let opts: Vec<String> = self
+                .devices
+                .sources
+                .iter()
+                .map(|d| d.name.clone())
+                .collect();
             let mut dd = Dropdown::new(opts, INPUT_DEVICE_KEY).with_id("audio.input_device");
             if let Some(name) = self.devices.default_source() {
                 dd = dd.with_placeholder(name);
@@ -637,18 +659,21 @@ impl AudioPane {
             let dd = Dropdown::new(options.clone(), &sink_key)
                 .with_id(&format!("{sink_key}.dd"))
                 .with_placeholder(&current);
-            let route_row = choice_row_described(
-                &s.app,
-                s.media_name.as_deref().unwrap_or(""),
-                Box::new(dd),
-            );
+            let route_row =
+                choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
             let vol_row = setting_row(
                 "Volume",
-                Box::new(Slider::new("settings.audio.volume", &vol_key).with_id(&format!("{vol_key}.sl"))),
+                Box::new(
+                    Slider::new("settings.audio.volume", &vol_key)
+                        .with_id(&format!("{vol_key}.sl")),
+                ),
             );
             let mute_row = setting_row(
                 "Mute",
-                Box::new(Toggle::new("settings.audio.mute", &mute_key).with_id(&format!("{mute_key}.tg"))),
+                Box::new(
+                    Toggle::new("settings.audio.mute", &mute_key)
+                        .with_id(&format!("{mute_key}.tg")),
+                ),
             );
             blocks.push(rows(vec![route_row, vol_row, mute_row]));
         }
@@ -659,8 +684,15 @@ impl AudioPane {
     /// to, or "Default" when that device is the system default (so a stream on
     /// the default reads as following it, not pinned).
     fn stream_target_label(&self, s: &AudioStream) -> String {
-        let devices = if s.playback { &self.graph.sinks } else { &self.graph.sources };
-        match s.target_id.and_then(|tid| devices.iter().find(|d| d.id == tid)) {
+        let devices = if s.playback {
+            &self.graph.sinks
+        } else {
+            &self.graph.sources
+        };
+        match s
+            .target_id
+            .and_then(|tid| devices.iter().find(|d| d.id == tid))
+        {
             Some(d) if d.is_default => FOLLOW_DEFAULT.to_string(),
             Some(d) => d.description.clone(),
             None => FOLLOW_DEFAULT.to_string(),
@@ -680,7 +712,7 @@ impl AudioPane {
         let _ = state.put(
             root,
             stream_volume_key(s.id).as_str(),
-            automerge::ScalarValue::F64(vol as f64),
+            automerge::ScalarValue::F64(f64::from(vol)),
         );
         let _ = state.put(
             root,
@@ -697,22 +729,25 @@ impl AudioPane {
     /// rest doesn't re-fire. Routes through the injected [`GraphControl`].
     fn dispatch_stream(&mut self, state: &AutoCommit, root: &ObjId, s: &AudioStream) {
         // Route: match the chosen label to a device serial (or follow default).
-        if let Some(choice) = read_str(state, root, stream_sink_key(s.id).as_str()) {
-            if self.last_stream_sink.get(&s.id).map(String::as_str) != Some(choice.as_str()) {
-                self.last_stream_sink.insert(s.id, choice.clone());
-                let result = if choice == FOLLOW_DEFAULT {
-                    self.gctl.unroute_stream(s.id)
+        if let Some(choice) = read_str(state, root, stream_sink_key(s.id).as_str())
+            && self.last_stream_sink.get(&s.id).map(String::as_str) != Some(choice.as_str())
+        {
+            self.last_stream_sink.insert(s.id, choice.clone());
+            let result = if choice == FOLLOW_DEFAULT {
+                self.gctl.unroute_stream(s.id)
+            } else {
+                let devices = if s.playback {
+                    &self.graph.sinks
                 } else {
-                    let devices =
-                        if s.playback { &self.graph.sinks } else { &self.graph.sources };
-                    match devices.iter().find(|d| d.description == choice) {
-                        Some(dev) => self.gctl.route_stream(s.id, dev.serial),
-                        None => Ok(()),
-                    }
+                    &self.graph.sources
                 };
-                if let Err(e) = result {
-                    warn!(target: "qos::settings", op = "route_stream", stream = s.id, error = %e, "audio pane stream route failed");
+                match devices.iter().find(|d| d.description == choice) {
+                    Some(dev) => self.gctl.route_stream(s.id, dev.serial),
+                    None => Ok(()),
                 }
+            };
+            if let Err(e) = result {
+                warn!(target: "qos::settings", op = "route_stream", stream = s.id, error = %e, "audio pane stream route failed");
             }
         }
         // Per-app volume.
@@ -726,12 +761,12 @@ impl AudioPane {
             }
         }
         // Per-app mute.
-        if let Some(b) = read_bool(state, root, stream_muted_key(s.id).as_str()) {
-            if self.last_stream_mute.get(&s.id).copied() != Some(b) {
-                self.last_stream_mute.insert(s.id, b);
-                if let Err(e) = self.gctl.set_node_mute(s.id, b) {
-                    warn!(target: "qos::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
-                }
+        if let Some(b) = read_bool(state, root, stream_muted_key(s.id).as_str())
+            && self.last_stream_mute.get(&s.id).copied() != Some(b)
+        {
+            self.last_stream_mute.insert(s.id, b);
+            if let Err(e) = self.gctl.set_node_mute(s.id, b) {
+                warn!(target: "qos::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
             }
         }
     }
@@ -800,13 +835,13 @@ impl Widget for AudioPane {
             let _ = state.put(
                 root,
                 VOLUME_KEY,
-                automerge::ScalarValue::F64(self.initial_volume as f64),
+                automerge::ScalarValue::F64(f64::from(self.initial_volume)),
             );
             let _ = state.put(root, MUTED_KEY, automerge::ScalarValue::Boolean(false));
             let _ = state.put(
                 root,
                 INPUT_VOLUME_KEY,
-                automerge::ScalarValue::F64(self.initial_input as f64),
+                automerge::ScalarValue::F64(f64::from(self.initial_input)),
             );
             let _ = state.put(
                 root,
@@ -852,64 +887,62 @@ impl Widget for AudioPane {
                 }
             }
         }
-        if let Some(b) = read_bool(state, root, MUTED_KEY) {
-            if b != self.last_muted {
-                self.last_muted = b;
-                if let Err(e) = self.dispatcher.toggle_mute() {
-                    warn!(target: "qos::settings", op = "toggle_mute", error = %e, "audio pane dispatch failed");
-                }
+        if let Some(b) = read_bool(state, root, MUTED_KEY)
+            && b != self.last_muted
+        {
+            self.last_muted = b;
+            if let Err(e) = self.dispatcher.toggle_mute() {
+                warn!(target: "qos::settings", op = "toggle_mute", error = %e, "audio pane dispatch failed");
             }
         }
         // System-sound preferences → persist to the shared store on change.
-        if let Some(b) = read_bool(state, root, EVENT_SOUNDS_KEY) {
-            if b != self.last_prefs.event_sounds {
-                self.last_prefs.event_sounds = b;
-                Self::persist_audio(|a| a.event_sounds = b);
-            }
+        if let Some(b) = read_bool(state, root, EVENT_SOUNDS_KEY)
+            && b != self.last_prefs.event_sounds
+        {
+            self.last_prefs.event_sounds = b;
+            Self::persist_audio(|a| a.event_sounds = b);
         }
-        if let Some(b) = read_bool(state, root, CHAT_JOIN_KEY) {
-            if b != self.last_prefs.chat_join {
-                self.last_prefs.chat_join = b;
-                Self::persist_audio(|a| a.chat_join = b);
-            }
+        if let Some(b) = read_bool(state, root, CHAT_JOIN_KEY)
+            && b != self.last_prefs.chat_join
+        {
+            self.last_prefs.chat_join = b;
+            Self::persist_audio(|a| a.chat_join = b);
         }
-        if let Some(b) = read_bool(state, root, CHAT_LEAVE_KEY) {
-            if b != self.last_prefs.chat_leave {
-                self.last_prefs.chat_leave = b;
-                Self::persist_audio(|a| a.chat_leave = b);
-            }
+        if let Some(b) = read_bool(state, root, CHAT_LEAVE_KEY)
+            && b != self.last_prefs.chat_leave
+        {
+            self.last_prefs.chat_leave = b;
+            Self::persist_audio(|a| a.chat_leave = b);
         }
         // Output-device (sink) selection → wpctl set-default, guarded so a
         // selection at rest doesn't re-fire.
-        if let Some(name) = read_str(state, root, OUTPUT_DEVICE_KEY) {
-            if self.last_sink.as_deref() != Some(name.as_str()) {
-                if let Some(id) = self.devices.sink_id(&name) {
-                    // Persist the chosen default sink so it is remembered across
-                    // sessions (the preferred output stays selected).
-                    if self.persist_prefs {
-                        let nm = name.clone();
-                        Self::persist_audio(|a| a.output_device = Some(nm));
-                    }
-                    self.last_sink = Some(name);
-                    if let Err(e) = self.device.set_default(id) {
-                        warn!(target: "qos::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
-                    }
-                }
+        if let Some(name) = read_str(state, root, OUTPUT_DEVICE_KEY)
+            && self.last_sink.as_deref() != Some(name.as_str())
+            && let Some(id) = self.devices.sink_id(&name)
+        {
+            // Persist the chosen default sink so it is remembered across
+            // sessions (the preferred output stays selected).
+            if self.persist_prefs {
+                let nm = name.clone();
+                Self::persist_audio(|a| a.output_device = Some(nm));
+            }
+            self.last_sink = Some(name);
+            if let Err(e) = self.device.set_default(id) {
+                warn!(target: "qos::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
             }
         }
         // Input-device (source) selection → wpctl set-default.
-        if let Some(name) = read_str(state, root, INPUT_DEVICE_KEY) {
-            if self.last_source.as_deref() != Some(name.as_str()) {
-                if let Some(id) = self.devices.source_id(&name) {
-                    if self.persist_prefs {
-                        let nm = name.clone();
-                        Self::persist_audio(|a| a.input_device = Some(nm));
-                    }
-                    self.last_source = Some(name);
-                    if let Err(e) = self.device.set_default(id) {
-                        warn!(target: "qos::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
-                    }
-                }
+        if let Some(name) = read_str(state, root, INPUT_DEVICE_KEY)
+            && self.last_source.as_deref() != Some(name.as_str())
+            && let Some(id) = self.devices.source_id(&name)
+        {
+            if self.persist_prefs {
+                let nm = name.clone();
+                Self::persist_audio(|a| a.input_device = Some(nm));
+            }
+            self.last_source = Some(name);
+            if let Err(e) = self.device.set_default(id) {
+                warn!(target: "qos::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
             }
         }
         // Per-application streams: seed each stream's route/volume/mute keys
@@ -952,24 +985,23 @@ impl Widget for AudioPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -998,22 +1030,21 @@ impl Widget for AudioPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -1033,7 +1064,7 @@ impl Widget for AudioPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AudioPane"
     }
 
@@ -1107,7 +1138,7 @@ mod tests {
         let _ = doc.put(&root, VOLUME_KEY, automerge::ScalarValue::F64(0.30));
         pane.sync(&mut doc, &root);
         let calls = rec.calls();
-        assert_eq!(calls.len(), 1, "expected one dispatch, got {:?}", calls);
+        assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
         assert!(calls[0].starts_with("set_volume("));
         assert!(calls[0].contains("30."), "expected 30 in {:?}", calls[0]);
     }
@@ -1195,7 +1226,7 @@ Video
         let dev = Arc::new(RecordingDevice::default());
         let devices = parse_wpctl_status(sample_status());
         let mut pane = AudioPane::with_controls(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             Arc::new(RealInput),
             0.5,
             0.75,
@@ -1219,7 +1250,7 @@ Video
         let dev = Arc::new(RecordingDevice::default());
         let devices = parse_wpctl_status(sample_status());
         let mut pane = AudioPane::with_controls(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             Arc::new(RealInput),
             0.5,
             0.75,
@@ -1240,7 +1271,7 @@ Video
         let rec = Arc::new(RecordingDispatcher::default());
         let input = Arc::new(RecordingInput::default());
         let mut pane = AudioPane::with_controls(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             input.clone(),
             0.5,
             0.75,
@@ -1248,14 +1279,21 @@ Video
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert!(input.calls.lock().unwrap().is_empty(), "seed must not dispatch");
+        assert!(
+            input.calls.lock().unwrap().is_empty(),
+            "seed must not dispatch"
+        );
         // User drags the input slider to 40%.
         let _ = doc.put(&root, INPUT_VOLUME_KEY, automerge::ScalarValue::F64(0.40));
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root); // idempotent while at rest
         let calls = input.calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "one input dispatch per change: {calls:?}");
-        assert!((calls[0] - 40.0).abs() < 0.5, "expected ~40%, got {}", calls[0]);
+        assert!(
+            (calls[0] - 40.0).abs() < 0.5,
+            "expected ~40%, got {}",
+            calls[0]
+        );
     }
 
     // --- Per-application routing -------------------------------------------
@@ -1341,8 +1379,13 @@ Video
 
     fn routing_pane(gctl: Arc<dyn GraphControl>) -> AudioPane {
         let disp = Arc::new(RecordingDispatcher::default());
-        AudioPane::with_controls(disp as Arc<dyn Dispatcher + Send + Sync>, Arc::new(RealInput), 0.5, 0.75)
-            .with_graph(graph_two_sinks_one_stream(), gctl)
+        AudioPane::with_controls(
+            disp as Arc<dyn Dispatcher + Send + Sync>,
+            Arc::new(RealInput),
+            0.5,
+            0.75,
+        )
+        .with_graph(graph_two_sinks_one_stream(), gctl)
     }
 
     #[test]
@@ -1353,9 +1396,16 @@ Video
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root);
-        assert!(rec.calls().is_empty(), "seeding a stream must dispatch nothing: {:?}", rec.calls());
+        assert!(
+            rec.calls().is_empty(),
+            "seeding a stream must dispatch nothing: {:?}",
+            rec.calls()
+        );
         // The stream on the default sink seeds its picker to "Default".
-        assert_eq!(read_str(&doc, &root, &stream_sink_key(84)).as_deref(), Some(FOLLOW_DEFAULT));
+        assert_eq!(
+            read_str(&doc, &root, &stream_sink_key(84)).as_deref(),
+            Some(FOLLOW_DEFAULT)
+        );
     }
 
     #[test]
@@ -1396,8 +1446,16 @@ Video
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, stream_volume_key(84).as_str(), automerge::ScalarValue::F64(0.30));
-        let _ = doc.put(&root, stream_muted_key(84).as_str(), automerge::ScalarValue::Boolean(true));
+        let _ = doc.put(
+            &root,
+            stream_volume_key(84).as_str(),
+            automerge::ScalarValue::F64(0.30),
+        );
+        let _ = doc.put(
+            &root,
+            stream_muted_key(84).as_str(),
+            automerge::ScalarValue::Boolean(true),
+        );
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root); // idempotent at rest
         assert_eq!(rec.calls(), vec!["volume(84,0.30)", "mute(84,true)"]);
@@ -1442,17 +1500,33 @@ Video
             0.75,
         )
         .with_graph(before, rec)
-        .with_hotplug(Arc::new(Scripted { seq: vec![after], idx: Mutex::new(0) }));
+        .with_hotplug(Arc::new(Scripted {
+            seq: vec![after],
+            idx: Mutex::new(0),
+        }));
         assert_eq!(pane.graph().sinks.len(), 1, "starts with one sink");
 
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root); // re-enumerates → adopts the plugged-in sink
 
-        assert_eq!(pane.graph().sinks.len(), 2, "the headset appeared in the graph");
-        assert!(pane.graph().sinks.iter().any(|d| d.description == "Headphones"));
+        assert_eq!(
+            pane.graph().sinks.len(),
+            2,
+            "the headset appeared in the graph"
+        );
+        assert!(
+            pane.graph()
+                .sinks
+                .iter()
+                .any(|d| d.description == "Headphones")
+        );
         // …and it is selectable in the output-device picker (device view).
-        assert_eq!(pane.devices().sinks.len(), 2, "the picker gained the headset");
+        assert_eq!(
+            pane.devices().sinks.len(),
+            2,
+            "the picker gained the headset"
+        );
         assert!(pane.devices().sinks.iter().any(|d| d.name == "Headphones"));
     }
 
@@ -1481,6 +1555,10 @@ Video
         pane.sync(&mut doc, &root);
         // The choice survives to the shared prefs store.
         let saved = SystemPrefs::load().audio.output_device;
-        assert_eq!(saved.as_deref(), Some("HDMI / DisplayPort"), "default sink preference persisted");
+        assert_eq!(
+            saved.as_deref(),
+            Some("HDMI / DisplayPort"),
+            "default sink preference persisted"
+        );
     }
 }

@@ -82,15 +82,15 @@ impl StatusModel {
     pub fn right_text(&self) -> String {
         let pages = match self.state.page_count {
             1 => "1 page".to_string(),
-            n => format!("{} pages", n),
+            n => format!("{n} pages"),
         };
         match self.state.word_count {
             Some(w) => {
                 let words = match w {
                     1 => "1 word".to_string(),
-                    _ => format!("{} words", w),
+                    _ => format!("{w} words"),
                 };
-                format!("{} · {}", pages, words)
+                format!("{pages} · {words}")
             }
             None => pages,
         }
