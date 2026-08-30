@@ -778,7 +778,10 @@ fn read_scrollback(
         return (Vec::new(), true);
     };
     let ch_state = ch.state_for(artifact);
-    let (ops, exhausted) = ch_state.scrollback_for(artifact, before_seq, max as u16);
+    // A caller asking for more than a u16 can hold gets the max page
+    // size instead of a wrapped, much-smaller one.
+    let max = u16::try_from(max).unwrap_or(u16::MAX);
+    let (ops, exhausted) = ch_state.scrollback_for(artifact, before_seq, max);
     let encoded: Vec<Vec<u8>> = ops
         .into_iter()
         .filter_map(|op| postcard::to_stdvec(&op).ok())
@@ -787,10 +790,17 @@ fn read_scrollback(
 }
 
 fn fill_scrollback_batch(mut b: scrollback_batch::Builder<'_>, ops: Vec<Vec<u8>>, exhausted: bool) {
-    let n = ops.len() as u32;
+    // capnp list indices are u32; `ops.len()` realistically never
+    // approaches u32::MAX, but clamp (and cap the fill loop to match)
+    // rather than let a truncating cast desync the list length from
+    // how many ops actually get written into it.
+    let n = u32::try_from(ops.len()).unwrap_or(u32::MAX);
     let mut list = b.reborrow().init_ops(n);
-    for (i, op) in ops.iter().enumerate() {
-        list.set(i as u32, op);
+    for (i, op) in ops.iter().enumerate().take(n as usize) {
+        let Ok(i) = u32::try_from(i) else {
+            break;
+        };
+        list.set(i, op);
     }
     // Bracket seq isn't tracked; consumers needing bounds decode the ops.
     b.set_earliest_seq(0);
@@ -878,14 +888,17 @@ impl presence_handle::Server for CapnpPresenceHandle {
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
-            let pos = r.get_pos();
+            // A caret position wider than `usize` can't address anything
+            // real anyway; clamp rather than let it wrap to a small,
+            // wrong offset.
+            let pos = usize::try_from(r.get_pos()).unwrap_or(usize::MAX);
             publish_keyed_presence(
                 &state,
                 peer_id,
                 &route,
                 &full_route,
-                key_bytes,
-                PresencePayload::Caret { pos: pos as usize },
+                &key_bytes,
+                PresencePayload::Caret { pos },
             );
             Ok(())
         })
@@ -903,18 +916,16 @@ impl presence_handle::Server for CapnpPresenceHandle {
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
-            let start = r.get_start();
-            let end = r.get_end();
+            // Same reasoning as `publish_caret`: clamp rather than wrap.
+            let start = usize::try_from(r.get_start()).unwrap_or(usize::MAX);
+            let end = usize::try_from(r.get_end()).unwrap_or(usize::MAX);
             publish_keyed_presence(
                 &state,
                 peer_id,
                 &route,
                 &full_route,
-                key_bytes,
-                PresencePayload::Selection {
-                    start: start as usize,
-                    end: end as usize,
-                },
+                &key_bytes,
+                PresencePayload::Selection { start, end },
             );
             Ok(())
         })
@@ -937,7 +948,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 peer_id,
                 &route,
                 &full_route,
-                key_bytes,
+                &key_bytes,
                 PresencePayload::Arrived,
             );
             Ok(())
@@ -961,7 +972,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 peer_id,
                 &route,
                 &full_route,
-                key_bytes,
+                &key_bytes,
                 PresencePayload::Left,
             );
             Ok(())
@@ -992,10 +1003,10 @@ fn publish_keyed_presence(
     peer_id: u64,
     route: &CrdtRoute,
     full_route: &CrdtRoute,
-    key_bytes: Vec<u8>,
+    key_bytes: &[u8],
     payload: PresencePayload,
 ) {
-    let Ok(key) = postcard::from_bytes::<PresenceKey>(&key_bytes) else {
+    let Ok(key) = postcard::from_bytes::<PresenceKey>(key_bytes) else {
         tracing::debug!(
             len = key_bytes.len(),
             "capnp presence publish: key bytes not decodable — dropping",
@@ -1079,13 +1090,10 @@ impl presence_stream::Server for PresenceStreamServer {
                 PresencePayload::Caret { pos } => {
                     payload.init_caret().set_pos(pos as u64);
                 }
-                PresencePayload::Selection { start, end } => {
-                    let mut s = payload.init_selection();
-                    s.set_start(start as u64);
-                    s.set_end(end as u64);
-                }
-                // No dedicated "typing" case in the capnp union yet.
-                PresencePayload::Typing { start, end } => {
+                // `Typing` has no dedicated case in the capnp union yet,
+                // so it rides along on `Selection`'s wire shape.
+                PresencePayload::Selection { start, end }
+                | PresencePayload::Typing { start, end } => {
                     let mut s = payload.init_selection();
                     s.set_start(start as u64);
                     s.set_end(end as u64);
@@ -1147,20 +1155,26 @@ impl context_stream::Server for ContextStreamServer {
             };
             let mut ctx = results.get().init_ctx();
             {
-                let mut collabs = ctx
-                    .reborrow()
-                    .init_collaborators(env.collaborators.len() as u32);
-                for (i, c) in env.collaborators.iter().enumerate() {
-                    let mut slot = collabs.reborrow().get(i as u32);
+                // capnp list lengths/indices are u32; these lists
+                // realistically never approach u32::MAX, but clamp (and
+                // cap the fill loop to match) rather than let a
+                // truncating cast desync the list from what gets written.
+                let n = u32::try_from(env.collaborators.len()).unwrap_or(u32::MAX);
+                let mut collabs = ctx.reborrow().init_collaborators(n);
+                for (i, c) in env.collaborators.iter().enumerate().take(n as usize) {
+                    let Ok(i) = u32::try_from(i) else { break };
+                    let mut slot = collabs.reborrow().get(i);
                     slot.set_user_id(&c.id);
                     slot.set_display_name(&c.name);
                     slot.set_color(pack_color(c.color));
                 }
             }
             {
-                let mut perms = ctx.init_permissions(env.permissions.len() as u32);
-                for (i, p) in env.permissions.iter().enumerate() {
-                    perms.set(i as u32, p.as_str());
+                let n = u32::try_from(env.permissions.len()).unwrap_or(u32::MAX);
+                let mut perms = ctx.init_permissions(n);
+                for (i, p) in env.permissions.iter().enumerate().take(n as usize) {
+                    let Ok(i) = u32::try_from(i) else { break };
+                    perms.set(i, p.as_str());
                 }
             }
             Ok(())
@@ -1170,6 +1184,13 @@ impl context_stream::Server for ContextStreamServer {
 
 /// Convert `[f32; 3]` RGB in 0..=1 to the wire's `0x00RRGGBB`.
 fn pack_color(rgb: [f32; 3]) -> u32 {
+    // Clamped to [0.0, 1.0] before scaling to [0.0, 255.0] and rounding,
+    // so this cast is always in u32's range.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0.0, 255.0] above"
+    )]
     let clamp = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u32;
     let r = clamp(rgb[0]);
     let g = clamp(rgb[1]);
@@ -1286,6 +1307,12 @@ pub fn spawn(
 ///
 /// Returns an I/O error if the socket still hasn't appeared after
 /// retrying with backoff for ~2s, or if connecting to it fails outright.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc's object model is Rc/RefCell-based and its futures are \
+              inherently !Send; this always runs on the connection's own LocalSet, \
+              same as the production accept loop in spawn()"
+)]
 pub async fn dial_capnp_for_test(
     path: PathBuf,
 ) -> Result<
@@ -1326,7 +1353,7 @@ pub async fn dial_capnp_for_test(
         futures::io::BufReader::new(r.compat()),
         futures::io::BufWriter::new(w.compat_write()),
         rpc_twoparty_capnp::Side::Client,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let mut rpc = RpcSystem::new(network, None);
     let client: runtime_collab::raw::collab_service::Client =
@@ -1349,7 +1376,7 @@ async fn drive_connection(
         futures::io::BufReader::new(reader),
         futures::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Server,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let service = CapnpCollabService { state, peer_id };
     let client: collab_service::Client = capnp_rpc::new_client(service);
