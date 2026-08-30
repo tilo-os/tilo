@@ -770,7 +770,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     let now = std::time::Instant::now();
                     let is_double = matches!(
                         self.last_click_row,
-                        Some((pri, t)) if pri == ri && now.duration_since(t) < std::time::Duration::from_millis(500)
+                        Some((pri, t)) if pri == ri && now.duration_since(t) < crate::gesture::multi_click_interval()
                     );
                     if is_double {
                         self.last_click_row = None;
