@@ -12478,6 +12478,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "dirs 6.0.0",
+ "serde",
  "serde_json",
  "serial_test",
 ]
