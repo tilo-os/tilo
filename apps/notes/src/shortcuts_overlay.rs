@@ -157,6 +157,10 @@ impl ShortcutsOverlay {
 
     /// Draw the overlay on top of the host's scene. Call this AFTER
     /// the main widget tree has been drawn. No-op when not visible.
+    #[allow(
+        clippy::similar_names,
+        reason = "inner_x0/x1/y0/y1 mirror Rect's own x0/y0/x1/y1 fields — the clearest name for each rect edge"
+    )]
     pub fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -230,90 +234,17 @@ impl ShortcutsOverlay {
 
         // Groups: 2-column grid. Each column gets half the inner width
         // (minus a spacing.s6 gutter).
-        let gutter = f64::from(tokens.spacing.s6);
-        let col_w = ((inner_w - gutter) / 2.0).max(0.0);
-        let groups_top = hint_y + f64::from(hint_size) + f64::from(tokens.spacing.s4);
-        let col_left_x = inner_x0;
-        let col_right_x = inner_x0 + col_w + gutter;
-
-        let group_size = GROUP_SIZE_TOKEN(theme);
-        let row_size = ROW_SIZE_TOKEN(theme);
-
-        // Place groups in row-major order: [0, 1] in row 0, [2, 3] in row 1.
         let _ = inner_y1;
-        let column_top_for = |idx: usize| -> f64 {
-            // Find the tallest group in row 0 to figure where row 1 starts.
-            if idx < 2 {
-                groups_top
-            } else {
-                let h0 = group_block_height(GROUPS[0].rows.len(), group_size, row_size);
-                let h1 = group_block_height(GROUPS[1].rows.len(), group_size, row_size);
-                groups_top + h0.max(h1) + f64::from(tokens.spacing.s6)
-            }
-        };
-
-        for (idx, group) in GROUPS.iter().enumerate() {
-            let x = if idx % 2 == 0 {
-                col_left_x
-            } else {
-                col_right_x
-            };
-            let y = column_top_for(idx);
-
-            // Group heading.
-            text_renderer.draw_text(
-                scene,
-                group.label,
-                group_size,
-                tokens.colors.text_primary,
-                transform * Affine::translate((x, y)),
-                None,
-            );
-
-            let rows_top = y + f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP;
-            for (i, (label, key)) in group.rows.iter().enumerate() {
-                let row_y = rows_top + (i as f64) * ROW_HEIGHT;
-                text_renderer.draw_text(
-                    scene,
-                    label,
-                    row_size,
-                    tokens.colors.text_dim,
-                    transform * Affine::translate((x, row_y)),
-                    None,
-                );
-                // Shortcut chip: right-aligned in the column.
-                let (kw, _) = text_renderer.measure(key, row_size, None);
-                let kx = x + col_w - f64::from(kw);
-                // Soft chip background — translucent white for a "kbd"
-                // affordance without needing per-theme tinting.
-                let chip_pad_x = 6.0;
-                let chip_pad_y = 2.0;
-                let chip = RoundedRect::from_rect(
-                    Rect::new(
-                        kx - chip_pad_x,
-                        row_y - chip_pad_y,
-                        kx + f64::from(kw) + chip_pad_x,
-                        row_y + f64::from(row_size) + chip_pad_y,
-                    ),
-                    f64::from(tokens.radii.sm),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    tokens.colors.surface_white_10,
-                    None,
-                    &chip,
-                );
-                text_renderer.draw_text(
-                    scene,
-                    key,
-                    row_size,
-                    tokens.colors.text_primary,
-                    transform * Affine::translate((kx, row_y)),
-                    None,
-                );
-            }
-        }
+        let groups_top = hint_y + f64::from(hint_size) + f64::from(tokens.spacing.s4);
+        draw_groups(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            inner_x0,
+            inner_w,
+            groups_top,
+        );
     }
 
     /// Handle a key/mouse event when visible. Returns true if the
@@ -367,6 +298,110 @@ impl Default for ShortcutsOverlay {
 
 fn group_block_height(row_count: usize, group_size: f32, _row_size: f32) -> f64 {
     f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP + (row_count as f64) * ROW_HEIGHT
+}
+
+/// Draw every [`GROUPS`] entry in a 2-column grid starting at
+/// `(inner_x0, groups_top)`, row-major: `[0, 1]` in row 0, `[2, 3]` in
+/// row 1.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "draw-context bundle, not real parameter coupling"
+)]
+fn draw_groups(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    inner_x0: f64,
+    inner_w: f64,
+    groups_top: f64,
+) {
+    let tokens = &theme.tokens;
+    let gutter = f64::from(tokens.spacing.s6);
+    let col_w = ((inner_w - gutter) / 2.0).max(0.0);
+    let col_left_x = inner_x0;
+    let col_right_x = inner_x0 + col_w + gutter;
+
+    let group_size = GROUP_SIZE_TOKEN(theme);
+    let row_size = ROW_SIZE_TOKEN(theme);
+
+    // Find the tallest group in row 0 to figure where row 1 starts.
+    let column_top_for = |idx: usize| -> f64 {
+        if idx < 2 {
+            groups_top
+        } else {
+            let h0 = GROUPS.first().map_or(0.0, |g| {
+                group_block_height(g.rows.len(), group_size, row_size)
+            });
+            let h1 = GROUPS.get(1).map_or(0.0, |g| {
+                group_block_height(g.rows.len(), group_size, row_size)
+            });
+            groups_top + h0.max(h1) + f64::from(tokens.spacing.s6)
+        }
+    };
+
+    for (idx, group) in GROUPS.iter().enumerate() {
+        let x = if idx % 2 == 0 {
+            col_left_x
+        } else {
+            col_right_x
+        };
+        let y = column_top_for(idx);
+
+        // Group heading.
+        text_renderer.draw_text(
+            scene,
+            group.label,
+            group_size,
+            tokens.colors.text_primary,
+            transform * Affine::translate((x, y)),
+            None,
+        );
+
+        let rows_top = y + f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP;
+        for (i, (label, key)) in group.rows.iter().enumerate() {
+            let row_y = rows_top + (i as f64) * ROW_HEIGHT;
+            text_renderer.draw_text(
+                scene,
+                label,
+                row_size,
+                tokens.colors.text_dim,
+                transform * Affine::translate((x, row_y)),
+                None,
+            );
+            // Shortcut chip: right-aligned in the column.
+            let (kw, _) = text_renderer.measure(key, row_size, None);
+            let kx = x + col_w - f64::from(kw);
+            // Soft chip background — translucent white for a "kbd"
+            // affordance without needing per-theme tinting.
+            let chip_pad_x = 6.0;
+            let chip_pad_y = 2.0;
+            let chip = RoundedRect::from_rect(
+                Rect::new(
+                    kx - chip_pad_x,
+                    row_y - chip_pad_y,
+                    kx + f64::from(kw) + chip_pad_x,
+                    row_y + f64::from(row_size) + chip_pad_y,
+                ),
+                f64::from(tokens.radii.sm),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                tokens.colors.surface_white_10,
+                None,
+                &chip,
+            );
+            text_renderer.draw_text(
+                scene,
+                key,
+                row_size,
+                tokens.colors.text_primary,
+                transform * Affine::translate((kx, row_y)),
+                None,
+            );
+        }
+    }
 }
 
 impl Widget for ShortcutsOverlay {
