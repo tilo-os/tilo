@@ -11,6 +11,12 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag (is_hovered, is_checked, is_focused, enabled) is an independent piece of \
+              widget state — pointer hover, CRDT-synced checked value, keyboard focus, and \
+              build-time disabled config — not a combinatorial options API"
+)]
 pub struct Checkbox {
     _id: String,
     rect: Rect,
@@ -48,12 +54,14 @@ impl Checkbox {
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
     /// Gate this widget behind a permission scope.
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -63,6 +71,7 @@ impl Checkbox {
     /// custom id the checkbox reports `"checkbox"`; callers with multiple
     /// checkboxes in the same surface can disambiguate them, e.g.
     /// `with_id("remember_me")`.
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id_override = Some(id.to_string());
         self
@@ -70,6 +79,7 @@ impl Checkbox {
 
     /// Set the enabled state at build time. A disabled checkbox is skipped
     /// by focus, rejects input and renders dimmed. Default `true`.
+    #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -77,6 +87,7 @@ impl Checkbox {
 
     /// Give a label-less checkbox a spoken name so a screen reader
     /// announces what it controls rather than just "checkbox, checked".
+    #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
