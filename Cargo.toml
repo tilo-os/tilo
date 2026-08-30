@@ -528,6 +528,23 @@ debug = "line-tables-only"
 [profile.test]
 debug = "line-tables-only"
 
+# Optimise the CRDT core even in a dev build. Every widget's state lives in an
+# `AutoCommit`, so almost every test touches this code, and unoptimised it is
+# not slow-but-workable — deleting ~3 KB from a text object takes 6.1 s in a
+# dev build against 6.9 ms in release, an 890x gap, because the column store is
+# built from deep generic iterator chains that only inlining makes sane. Seven
+# maps tests hit the 240 s timeout on that alone. These are dependencies, so
+# they are compiled once and cached; nothing here is our own code being
+# optimised out from under a debugger.
+[profile.dev.package.automerge]
+opt-level = 3
+[profile.dev.package.hexane]
+opt-level = 3
+[profile.test.package.automerge]
+opt-level = 3
+[profile.test.package.hexane]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "fat"
