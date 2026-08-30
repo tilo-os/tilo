@@ -53,6 +53,18 @@ impl Transport {
     }
 }
 
+/// `level` is always clamped to `0.0..=1.0` by every `Osd` constructor,
+/// so this never truncates or loses a sign — the result is always
+/// `0..=100`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "level is clamped to 0.0..=1.0 by every constructor, so *100.0 is always 0..=100"
+)]
+fn level_to_percent(level: f32) -> u32 {
+    (level * 100.0).round() as u32
+}
+
 /// One on-screen readout in flight.
 #[derive(Clone, Copy, Debug)]
 pub struct Osd {
@@ -108,9 +120,9 @@ impl Osd {
         match self.kind {
             OsdKind::Volume { muted: true } => "Muted".to_string(),
             OsdKind::Volume { muted: false } => {
-                format!("Volume {}%", (self.level * 100.0).round() as u32)
+                format!("Volume {}%", level_to_percent(self.level))
             }
-            OsdKind::Brightness => format!("Brightness {}%", (self.level * 100.0).round() as u32),
+            OsdKind::Brightness => format!("Brightness {}%", level_to_percent(self.level)),
             OsdKind::MicMute { muted: true } => "Microphone muted".to_string(),
             OsdKind::MicMute { muted: false } => "Microphone on".to_string(),
             OsdKind::Transport(t) => t.caption().to_string(),
@@ -123,7 +135,12 @@ impl Osd {
         if elapsed >= OSD_HOLD {
             return 0.0;
         }
-        let remaining = OSD_HOLD.checked_sub(elapsed).unwrap();
+        // `elapsed < OSD_HOLD` is checked above, so this never actually
+        // underflows; `unwrap_or` treats the (unreachable) alternative
+        // as "already faded" rather than asserting the invariant.
+        let Some(remaining) = OSD_HOLD.checked_sub(elapsed) else {
+            return 0.0;
+        };
         if remaining >= OSD_FADE {
             return 1.0;
         }
@@ -206,7 +223,11 @@ mod tests {
         let o = Osd::brightness(0.5);
         let t0 = o.raised_at;
         // Just before the fade begins: still fully opaque.
-        let before_fade = (t0 + OSD_HOLD).checked_sub(OSD_FADE).unwrap() - Duration::from_millis(1);
+        let before_fade = (t0 + OSD_HOLD)
+            .checked_sub(OSD_FADE)
+            .unwrap()
+            .checked_sub(Duration::from_millis(1))
+            .unwrap();
         assert_eq!(o.alpha_at(before_fade), 1.0);
         // Halfway through the fade: partly transparent, not yet gone.
         let mid = (t0 + OSD_HOLD).checked_sub(OSD_FADE / 2).unwrap();
