@@ -17,8 +17,18 @@ use crate::model::AccountConfig;
 pub trait ProbeTransport {
     /// Attempt an IMAP `LOGIN` (or `AUTHENTICATE XOAUTH2`) to the account's
     /// incoming server. `Ok(())` on a successful greeting + auth.
+    ///
+    /// # Errors
+    ///
+    /// Returns the server's or transport's reason when the connection,
+    /// TLS handshake, or authentication fails.
     fn imap_login(&self, cfg: &AccountConfig) -> Result<(), String>;
     /// Attempt an SMTP connect + `EHLO` (+ `AUTH`) to the outgoing server.
+    ///
+    /// # Errors
+    ///
+    /// Returns the server's or transport's reason when the connection,
+    /// TLS handshake, or authentication fails.
     fn smtp_handshake(&self, cfg: &AccountConfig) -> Result<(), String>;
 }
 
@@ -165,6 +175,15 @@ mod live_probe {
     /// Run `fut` to completion on a short-lived current-thread runtime. The
     /// probe is called from the synchronous UI-save path, so it owns its
     /// runtime rather than assuming one exists.
+    ///
+    /// # Panics
+    /// Panics if the OS refuses a single current-thread tokio runtime. The
+    /// probe cannot report "your account works" without actually running the
+    /// round-trips, so there is no honest value to return here.
+    #[allow(
+        clippy::expect_used,
+        reason = "without a runtime the probe cannot perform the round-trips it exists to perform; reporting a validation result anyway would be a lie about the account"
+    )]
     fn block_on<F: std::future::Future>(fut: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -173,6 +192,13 @@ mod live_probe {
             .block_on(fut)
     }
 
+    /// # Panics
+    /// Never in practice: the bundled ring provider always advertises the
+    /// default protocol versions.
+    #[allow(
+        clippy::expect_used,
+        reason = "the bundled ring provider always supports the default protocol versions; a TLS config with no usable version is not something the probe can degrade to"
+    )]
     fn tls_config() -> Arc<rustls::ClientConfig> {
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -407,6 +433,13 @@ mod tests {
     fn invalid_config_short_circuits_before_network() {
         // A blank IMAP host is a config error; the probe must never be reached.
         struct PanicProbe;
+        // Panicking IS the assertion here: the test proves the probe is never
+        // reached, so returning Err instead would let a regression that does
+        // call it pass silently.
+        #[allow(
+            clippy::panic_in_result_fn,
+            reason = "the panic is the assertion — an Err return would let a regression that reaches the probe pass silently"
+        )]
         impl ProbeTransport for PanicProbe {
             fn imap_login(&self, _cfg: &AccountConfig) -> Result<(), String> {
                 panic!("probe reached despite invalid config");
