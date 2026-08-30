@@ -1,5 +1,7 @@
-//! Permissions & Roles pane — a read-only view of the **real** per-workspace
-//! capability grants the compositor persists.
+//! Personal Privacy & Security pane. Device posture is read from the real
+//! kernel/session state; workspace grants remain a read-only cross-workspace
+//! summary because their authority and mutation UI belong to the contextual
+//! Workspace Settings surface.
 //!
 //! The compositor writes every workspace's granted capabilities to
 //! `~/.config/qos/state.json` (its `WorkspaceTree`); the FUSE mount and the
@@ -17,10 +19,11 @@
 //! has been approved for anything — it shows an honest empty state, never a
 //! fabricated permission.
 
-use crate::widgets::{El, caption, card, cards, hgap, rows, status_pill, vgap};
+use crate::widgets::{El, caption, card, cards, hgap, rows, status_pill, value_row, vgap};
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::process::Command;
 use ui::widget::{Row, Spacer, Text, Widget};
 use vello::peniko::Color;
 
@@ -31,6 +34,85 @@ fn state_path() -> Option<PathBuf> {
 
 fn load_text() -> Option<String> {
     std::fs::read_to_string(state_path()?).ok()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DeviceSecurity {
+    disk_encryption: &'static str,
+    secure_boot: &'static str,
+    firewall: &'static str,
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let out = Command::new(program).args(args).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// `lsblk` reports every ancestor of `/`; any `crypt` layer means the live
+/// root filesystem is encrypted. An unavailable probe stays unknown rather
+/// than guessing from a partition name.
+fn disk_encryption_status() -> &'static str {
+    let Some(source) = command_stdout("findmnt", &["-no", "SOURCE", "/"]) else {
+        return "Unavailable";
+    };
+    let Some(chain) = command_stdout("lsblk", &["-s", "-n", "-o", "TYPE", &source]) else {
+        return "Unavailable";
+    };
+    if chain.lines().any(|line| line.trim() == "crypt") {
+        "Encrypted"
+    } else {
+        "Not encrypted"
+    }
+}
+
+fn secure_boot_status() -> &'static str {
+    let Ok(entries) = std::fs::read_dir("/sys/firmware/efi/efivars") else {
+        return "Unavailable";
+    };
+    let Some(path) = entries.flatten().map(|e| e.path()).find(|p| {
+        p.file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("SecureBoot-"))
+    }) else {
+        return "Disabled";
+    };
+    // EFI variable files start with four attribute bytes, followed by the
+    // one-byte SecureBoot value.
+    match std::fs::read(path).ok().and_then(|v| v.get(4).copied()) {
+        Some(1) => "Enabled",
+        Some(_) => "Disabled",
+        None => "Unavailable",
+    }
+}
+
+fn firewall_status() -> &'static str {
+    if command_stdout("firewall-cmd", &["--state"]).as_deref() == Some("running") {
+        return "Active · firewalld";
+    }
+    if command_stdout("nft", &["list", "ruleset"]).is_some_and(|s| !s.trim().is_empty()) {
+        return "Active · nftables";
+    }
+    "Not active"
+}
+
+fn device_security() -> DeviceSecurity {
+    DeviceSecurity {
+        disk_encryption: disk_encryption_status(),
+        secure_boot: secure_boot_status(),
+        firewall: firewall_status(),
+    }
+}
+
+fn kill_label(state: os_actions::KillState, present: bool) -> &'static str {
+    use os_actions::KillState;
+    match state {
+        KillState::HardwareBlocked => "Blocked by hardware",
+        KillState::SoftwareBlocked => "Blocked by software",
+        KillState::Allowed => "Available",
+        KillState::Unavailable if present => "Present · no kill switch reported",
+        KillState::Unavailable => "Not available",
+    }
 }
 
 /// Minimal projection of `state.json`: only the fields this pane reads. Serde
@@ -248,15 +330,76 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
 
     let mut panel: Vec<El> = Vec::new();
 
+    let privacy = os_actions::get_privacy_status();
+    let security = device_security();
+    let microphone_present = privacy.microphone_muted.is_some();
+    panel.push(card(
+        "Privacy hardware",
+        rows(vec![
+            value_row(
+                "Camera",
+                kill_label(privacy.camera_kill, privacy.camera_present),
+            ),
+            value_row(
+                "Microphone",
+                kill_label(privacy.microphone_kill, microphone_present),
+            ),
+            value_row(
+                "Microphone mute",
+                match privacy.microphone_muted {
+                    Some(true) => "Muted",
+                    Some(false) => "Listening allowed",
+                    None => "Unavailable",
+                },
+            ),
+        ]),
+    ));
+
+    let active = privacy.active_media;
+    let usage_rows: Vec<El> = if active.is_empty() {
+        vec![caption(
+            "No application is using the camera or microphone now.",
+        )]
+    } else {
+        active
+            .iter()
+            .map(|usage| {
+                value_row(
+                    &usage.label,
+                    match usage.kind {
+                        os_actions::MediaKind::Camera => "Using camera",
+                        os_actions::MediaKind::Microphone => "Using microphone",
+                    },
+                )
+            })
+            .collect()
+    };
+    panel.push(card("Active privacy use", rows(usage_rows)));
+
+    panel.push(card(
+        "Device security",
+        rows(vec![
+            value_row("Disk encryption", security.disk_encryption),
+            value_row("Secure Boot", security.secure_boot),
+            value_row("Firewall", security.firewall),
+            caption(
+                "Detailed firewall policy belongs in Firewall; disk recovery and \n+                 repartitioning belong in Backups and Disks. This page reports \n+                 their effective device state without copying their editors.",
+            ),
+        ]),
+    ));
+
     // Intro: what these grants are and where they come from.
     panel.push(card(
-        "App permissions",
+        "Workspace privacy grants",
         rows(vec![Box::new(
             Text::new(
                 "Apps run sandboxed to the workspace they launch in. When an app \
                  reaches beyond it — a file, the camera or microphone, screen \
                  sharing, or the network — the compositor asks you, and an \
-                 approval is recorded here as a capability the sandbox enforces.",
+                 approval is recorded as a capability the sandbox enforces. This
+                 personal overview is intentionally read-only: change a grant in
+                 the named workspace's Settings, where its owner and your role are
+                 visible.",
             )
             .with_size(12.0),
         )]),
@@ -266,7 +409,7 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
         // Honest empty state — no app has been granted anything (or the
         // compositor has not written its state file yet).
         panel.push(card(
-            "No app permissions yet",
+            "No workspace privacy grants",
             rows(vec![
                 Box::new(
                     Text::new(
@@ -321,7 +464,7 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
             "These grants are enforced by the compositor (file access, \
              collaboration, devices) and by the FUSE mount, not by this panel. \
              This is a read-only view of the list they apply; revoke a grant in \
-             the workspace that owns it.",
+                     Workspace Settings for the workspace that owns it.",
         )]),
     ));
 

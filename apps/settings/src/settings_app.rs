@@ -561,7 +561,7 @@ impl AppWidget for SettingsApp {
     }
 
     fn app_title(&self) -> &'static str {
-        "Settings"
+        "Personal Settings"
     }
 
     fn app_icon(&self) -> IconDescriptor {

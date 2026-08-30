@@ -25,6 +25,18 @@ pub enum VpnRoute {
     Import,
 }
 
+/// Safe destinations inside the firewall tool. Settings may show status and
+/// the emergency on/off posture, while editing zones and rules stays in the
+/// dedicated expert workspace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FirewallRoute {
+    #[default]
+    Overview,
+    Zones,
+    Rules,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "tool", rename_all = "snake_case")]
 pub enum ToolIntent {
@@ -33,6 +45,10 @@ pub enum ToolIntent {
         route: VpnRoute,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         profile: Option<String>,
+    },
+    Firewall {
+        #[serde(default)]
+        route: FirewallRoute,
     },
 }
 
@@ -56,12 +72,14 @@ impl ToolIntent {
                 }
                 Ok(())
             }
+            Self::Firewall { .. } => Ok(()),
         }
     }
 
     pub fn package_id(&self) -> &'static str {
         match self {
             Self::Vpn { .. } => "dev.qos.vpn",
+            Self::Firewall { .. } => "dev.qos.firewall",
         }
     }
 }
@@ -172,5 +190,17 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn firewall_intent_selects_only_a_typed_route() {
+        let intent = ToolIntent::Firewall {
+            route: FirewallRoute::Rules,
+        };
+        assert_eq!(intent.package_id(), "dev.qos.firewall");
+        let json = serde_json::to_value(intent).unwrap();
+        assert_eq!(json["tool"], "firewall");
+        assert_eq!(json["route"], "rules");
+        assert!(json.get("program").is_none());
     }
 }
