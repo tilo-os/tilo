@@ -354,15 +354,27 @@ impl Shell {
         use test_support::Mods;
         // Normalize to lowercase so `Cmd+K` and `Cmd+k` hit the same branch.
         let logical = press.logical.as_str();
-        let lower = logical.to_ascii_lowercase();
-
-        if press.mods.contains(Mods::CMD) && (lower == "k") {
+        let shortcut = settings_store::hardware::ShortcutConfig::load();
+        let pressed = |action: settings_store::hardware::ShortcutAction| {
+            shortcut.bindings.get(&action).is_some_and(|chord| {
+                let needs_cmd =
+                    chord.modifiers.contains("Super") || chord.modifiers.contains("Ctrl");
+                needs_cmd == press.mods.contains(Mods::CMD)
+                    && chord.modifiers.contains("Shift") == press.mods.contains(Mods::SHIFT)
+                    && chord.modifiers.contains("Alt") == press.mods.contains(Mods::ALT)
+                    && chord.key.eq_ignore_ascii_case(logical)
+            })
+        };
+        if pressed(settings_store::hardware::ShortcutAction::Search) {
             self.open_search();
             return true;
         }
-
-        if press.mods.contains(Mods::CMD) && logical.eq_ignore_ascii_case("Tab") {
+        if pressed(settings_store::hardware::ShortcutAction::WorkspaceOverview) {
             self.toggle_overview();
+            return true;
+        }
+        if pressed(settings_store::hardware::ShortcutAction::QuickSettings) {
+            self.toggle_quick_settings();
             return true;
         }
 
