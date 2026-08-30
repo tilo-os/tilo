@@ -32,7 +32,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
-use ui::widget::{Button, ButtonFace, ButtonStyle, ModalDialog, Text, Widget};
+use ui::widget::{Button, ButtonFace, ButtonStyle, ModalDialog, Text, TextInput, Widget};
 
 use crate::charts::{self, Series, with_alpha};
 use crate::layout;
@@ -262,8 +262,10 @@ pub struct MonitorApp {
     tab: Tab,
     sort_key: SortKey,
     sort_desc: bool,
-    filter: String,
-    search_focused: bool,
+    /// Shared local editor for the process filter. Monitor owns filtering and
+    /// toolbar composition; the toolkit owns caret, selection, clipboard, IME
+    /// and accessibility behavior.
+    search_input: TextInput,
     selected_pid: Option<u32>,
     scroll_off: f32,
     /// Horizontal scroll of the process table, in logical px, when its
@@ -421,8 +423,10 @@ impl MonitorApp {
             tab: Tab::Processes,
             sort_key: SortKey::Cpu,
             sort_desc: true,
-            filter: String::new(),
-            search_focused: false,
+            search_input: TextInput::local()
+                .with_id("monitor.search")
+                .with_placeholder("Search processes…")
+                .with_plain_chrome(),
             selected_pid,
             scroll_off: 0.0,
             table_scroll_x: 0.0,
@@ -510,7 +514,7 @@ impl MonitorApp {
 
     /// The filtered + sorted process list currently displayed.
     fn visible_processes(&self) -> Vec<ProcessInfo> {
-        let f = self.filter.to_lowercase();
+        let f = self.search_input.value().to_lowercase();
         let mut v: Vec<ProcessInfo> = self
             .model
             .processes
@@ -551,7 +555,7 @@ impl MonitorApp {
     fn visible_rows(&self) -> Vec<Row> {
         if self.tree_mode {
             let forest = Forest::build(&self.model.processes);
-            let filter = self.filter.to_lowercase();
+            let filter = self.search_input.value().to_lowercase();
             forest.flatten(&FlattenOpts {
                 sum_mode: self.sum_mode,
                 sort_key: self.sort_key,
@@ -2478,7 +2482,8 @@ impl MonitorApp {
         };
         let radius = search_r.height() / 2.0;
         charts::fill_rrect(scene, t, search_r, radius, c.surfaces.base);
-        let border = if self.search_focused {
+        let search_focused = self.search_input.is_focused();
+        let border = if search_focused {
             c.border_focus
         } else {
             c.border_standard
@@ -2489,7 +2494,7 @@ impl MonitorApp {
             search_r,
             radius,
             border,
-            if self.search_focused { 1.6 } else { 1.0 },
+            if search_focused { 1.6 } else { 1.0 },
         );
         let icon_r = Rect::new(
             search_r.x0 + 10.0,
@@ -2499,39 +2504,14 @@ impl MonitorApp {
         );
         icons::draw_icon(scene, t, icon_r, Icon::Search, c.text_dim, 1.6);
         let tx = icon_r.x1 + 8.0;
-        let ty = search_r.center().y - f64::from(fs) / 2.0 - 1.0;
-        if self.filter.is_empty() && !self.search_focused {
-            let placeholder = Self::truncate(tr, "Search processes…", fs, search_r.x1 - tx - 12.0);
-            tr.draw_text(
-                scene,
-                &placeholder,
-                fs,
-                c.text_dim,
-                t * Affine::translate((tx, ty)),
-                None,
-            );
-        } else {
-            let shown = Self::truncate(tr, &self.filter, fs, search_r.x1 - tx - 12.0);
-            tr.draw_text(
-                scene,
-                &shown,
-                fs,
-                c.text_primary,
-                t * Affine::translate((tx, ty)),
-                None,
-            );
-            if self.search_focused {
-                let (cw, _) = tr.measure(&shown, fs, None);
-                let caret_x = tx + f64::from(cw) + 1.0;
-                scene.stroke(
-                    &Stroke::new(1.5),
-                    t,
-                    c.accent[5],
-                    None,
-                    &Line::new((caret_x, search_r.y0 + 8.0), (caret_x, search_r.y1 - 8.0)),
-                );
-            }
-        }
+        self.search_input.apply_layout_external(Rect::new(
+            tx,
+            search_r.y0,
+            search_r.x1 - 8.0,
+            search_r.y1,
+        ));
+        let presence = PresenceCtx::empty();
+        self.search_input.draw(scene, t, tr, theme, &presence);
         self.hit.search = search_r;
 
         // Count label centred in the slack between the search box and the pill
@@ -3442,7 +3422,7 @@ impl MonitorApp {
 
         // Lose search focus unless the search box itself is clicked.
         let clicked_search = self.hit.search.contains(p);
-        self.search_focused = clicked_search;
+        self.search_input.set_focus(clicked_search);
 
         // Back affordance in the narrow pushed detail pane → return to table.
         if self.hit.detail_back.contains(p) {
@@ -3628,7 +3608,7 @@ impl MonitorApp {
     fn on_key(
         &mut self,
         key: &Key,
-        text: Option<&str>,
+        _text: Option<&str>,
         ctrl: bool,
         doc: &mut AutoCommit,
         path: &ObjId,
@@ -3678,41 +3658,6 @@ impl MonitorApp {
 
         // The stop-confirmation modal is handled in `handle_event` before
         // dispatch reaches here, so `on_key` never runs with a confirm pending.
-
-        // Search editing.
-        if self.search_focused {
-            match key {
-                Key::Named(NamedKey::Escape | NamedKey::Enter) => {
-                    self.search_focused = false;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.filter.pop();
-                    self.scroll_off = 0.0;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.filter.push(' ');
-                    *handled = true;
-                }
-                _ => {
-                    if let Some(txt) = text {
-                        let mut pushed = false;
-                        for ch in txt.chars() {
-                            if !ch.is_control() {
-                                self.filter.push(ch);
-                                pushed = true;
-                            }
-                        }
-                        if pushed {
-                            self.scroll_off = 0.0;
-                            *handled = true;
-                        }
-                    }
-                }
-            }
-            return;
-        }
 
         // Global keys.
         match key {
@@ -3771,7 +3716,7 @@ impl MonitorApp {
                     "2" => self.tab = Tab::Resources,
                     "/" => {
                         self.tab = Tab::Processes;
-                        self.search_focused = true;
+                        self.search_input.set_focus(true);
                     }
                     "c" | "C" => self.set_sort(SortKey::Cpu),
                     "m" | "M" => self.set_sort(SortKey::Mem),
@@ -4031,9 +3976,9 @@ impl Widget for MonitorApp {
         doc: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         // A pending stop confirmation is modal: while it's up the shared
         // dialog captures every event (typing, clicks, Esc) and nothing leaks
@@ -4041,6 +3986,75 @@ impl Widget for MonitorApp {
         if self.confirm_stop.is_some() {
             self.route_confirm_event(event, scale_factor, modifiers, doc, path, handled);
             return;
+        }
+
+        let search_rect = self.hit.search;
+        self.search_input.apply_layout_external(Rect::new(
+            search_rect.x0 + 34.0,
+            search_rect.y0,
+            search_rect.x1 - 8.0,
+            search_rect.y1,
+        ));
+        let left_press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        );
+        if left_press {
+            self.search_input
+                .set_focus(search_rect.contains(self.last_cursor));
+        }
+
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+        {
+            let ctrl = modifiers.state().control_key();
+            if ctrl
+                && matches!(&key.logical_key, Key::Character(s) if matches!(s.as_str(), "k" | "K" | "/"))
+            {
+                // Keep the host's global-search chords available even when
+                // the local process filter owns keyboard focus.
+                return;
+            }
+            if self.search_input.is_focused()
+                && matches!(
+                    &key.logical_key,
+                    Key::Named(NamedKey::Escape | NamedKey::Enter)
+                )
+            {
+                self.search_input.set_focus(false);
+                *handled = true;
+                return;
+            }
+        }
+
+        let route_to_search = self.search_input.is_focused()
+            || matches!(event, WindowEvent::CursorMoved { .. })
+            || (left_press && search_rect.contains(self.last_cursor));
+        if route_to_search {
+            let mut input_handled = false;
+            self.search_input.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                doc,
+                path,
+                &mut input_handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if self.search_input.take_dirty().is_some() {
+                self.scroll_off = 0.0;
+                input_handled = true;
+            }
+            if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
+                *handled = true;
+                return;
+            }
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -4150,6 +4164,33 @@ impl Widget for MonitorApp {
         self.rect
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.search_input.ime_cursor_rect()
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.search_input.ime_purpose()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.search_input.cursor_shape(point)
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.search_input
+            .is_focused()
+            .then(|| self.search_input.accessibility())
+            .flatten()
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
+    }
+
     /// A live monitor keeps the redraw loop pumping so the throttled
     /// sysinfo refresh and the chart histories keep advancing.
     fn needs_animation_frame(&self) -> bool {
@@ -4218,7 +4259,7 @@ mod tests {
     fn filter_narrows_the_list() {
         let mut a = app();
         let all = a.visible_processes().len();
-        a.filter = "browser".into();
+        a.search_input.set_text("browser");
         let some = a.visible_processes().len();
         assert!(some >= 1 && some < all);
         assert!(a.visible_processes().iter().all(|p| {
@@ -4423,7 +4464,7 @@ mod tests {
         let mut handled2 = false;
         a.on_key(&slash, Some("/"), false, &mut doc, &root, &mut handled2);
         assert!(
-            handled2 && a.search_focused,
+            handled2 && a.search_input.is_focused(),
             "bare / still focuses local search"
         );
     }
@@ -4809,7 +4850,7 @@ mod tests {
     #[test]
     fn filter_works_over_the_tree() {
         let mut a = app();
-        a.filter = "rustc".into();
+        a.search_input.set_text("rustc");
         let rows = a.visible_rows();
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"rustc"), "match present: {names:?}");
@@ -5069,6 +5110,22 @@ mod tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn synth_text(text: &str) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(text.into());
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(text.into());
         WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event: ev,
@@ -5453,45 +5510,22 @@ mod tests {
     fn search_click_focus_and_keyboard_editing_filters() {
         let mut a = app();
         a.hit.search = Rect::new(0.0, 0.0, 300.0, 30.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h && a.search_focused, "clicking the search box focuses it");
+        dispatch_ev(&mut a, &synth_cursor(50.0, 15.0));
+        let h = dispatch_ev(&mut a, &synth_press());
+        assert!(
+            h && a.search_input.is_focused(),
+            "clicking the search box focuses its shared editor"
+        );
         for ch in "brow".chars() {
             let s = ch.to_string();
-            let mut hk = false;
-            a.on_key(
-                &Key::Character(s.as_str().into()),
-                Some(s.as_str()),
-                false,
-                &mut doc,
-                &root,
-                &mut hk,
-            );
+            let hk = dispatch_ev(&mut a, &synth_text(&s));
             assert!(hk, "typed char handled");
         }
-        assert_eq!(a.filter, "brow");
-        let mut hsp = false;
-        a.on_key(
-            &Key::Named(NamedKey::Space),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut hsp,
-        );
-        assert_eq!(a.filter, "brow ");
-        let mut hbs = false;
-        a.on_key(
-            &Key::Named(NamedKey::Backspace),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut hbs,
-        );
-        assert_eq!(a.filter, "brow");
+        assert_eq!(a.search_input.value(), "brow");
+        assert!(dispatch_ev(&mut a, &synth_text(" ")));
+        assert_eq!(a.search_input.value(), "brow ");
+        assert!(dispatch_ev(&mut a, &synth_key(NamedKey::Backspace)));
+        assert_eq!(a.search_input.value(), "brow");
         assert!(
             a.visible_processes()
                 .iter()
@@ -5500,16 +5534,11 @@ mod tests {
                     || p.pid.to_string().contains("brow")),
             "typed filter actually narrows the list"
         );
-        let mut hesc = false;
-        a.on_key(
-            &Key::Named(NamedKey::Escape),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut hesc,
+        let hesc = dispatch_ev(&mut a, &synth_key(NamedKey::Escape));
+        assert!(
+            hesc && !a.search_input.is_focused(),
+            "Escape leaves the search box"
         );
-        assert!(hesc && !a.search_focused, "Escape leaves the search box");
     }
 
     /// On a narrow window, selecting a row through the real click path pushes
