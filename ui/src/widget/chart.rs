@@ -54,6 +54,24 @@ fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
 
+/// Widens a sample index/count to `f64` for plot math, through `u32` (exact
+/// in `f64`) with a saturating fallback rather than an `as` cast — a series
+/// never approaches `u32::MAX` samples.
+fn count_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
+/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
+/// operand magnitude.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
 /// One labelled data series. `data` is sampled left-to-right across the
 /// plot; `color` is the line/area tint; `legend` is the label shown in the
 /// chart's legend strip (empty string = omit from the legend).
@@ -73,6 +91,7 @@ impl Series {
         }
     }
 
+    #[must_use]
     pub fn with_legend(mut self, legend: impl Into<String>) -> Self {
         self.legend = legend.into();
         self
@@ -82,14 +101,14 @@ impl Series {
 /// Map sample `i` of a series (value `v`) into a point inside `plot`,
 /// scaling against `ceil` (the shared series max, floored away from zero).
 /// `n` is the series length. Shared by [`Chart`] and [`Sparkline`].
-fn map_point(plot: Rect, i: usize, v: f32, n: usize, ceil: f32) -> Point {
-    let dx = if n > 1 {
-        plot.width() / (n as f64 - 1.0)
+fn map_point(plot: Rect, idx: usize, value: f32, len: usize, ceil: f32) -> Point {
+    let dx = if len > 1 {
+        plot.width() / (count_f64(len) - 1.0)
     } else {
         0.0
     };
-    let x = plot.x0 + dx * i as f64;
-    let frac = f64::from((v / ceil).clamp(0.0, 1.0));
+    let x = plot.x0 + dx * count_f64(idx);
+    let frac = f64::from((value / ceil).clamp(0.0, 1.0));
     // y-down: the baseline is `plot.y1`, larger values rise toward `y0`.
     let y = plot.y1 - frac * plot.height();
     Point::new(x, y)
@@ -154,6 +173,7 @@ impl Chart {
     }
 
     /// Builder: drop a translucent area fill under each series line.
+    #[must_use]
     pub fn with_area(mut self, on: bool) -> Self {
         self.area = on;
         self
@@ -161,12 +181,14 @@ impl Chart {
 
     /// Builder: pin the vertical-axis maximum (so multiple charts share a
     /// scale). Without this the max is derived from the largest sample.
+    #[must_use]
     pub fn with_max(mut self, max: f32) -> Self {
         self.max = Some(max);
         self
     }
 
     /// Builder: a title drawn at the top-left of the header strip.
+    #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
         self
@@ -174,6 +196,7 @@ impl Chart {
 
     /// Builder: the high / low axis tick labels (drawn right-aligned at the
     /// top and bottom of the plot, e.g. `"100%"` / `"0%"`).
+    #[must_use]
     pub fn with_axis_labels(mut self, hi: impl Into<String>, lo: impl Into<String>) -> Self {
         self.axis_hi = hi.into();
         self.axis_lo = lo.into();
@@ -181,6 +204,7 @@ impl Chart {
     }
 
     /// Builder: intrinsic layout height in logical pixels.
+    #[must_use]
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height;
         self
@@ -232,7 +256,7 @@ impl Chart {
                 title,
                 tokens.typography.scale.sm,
                 tokens.colors.text_primary,
-                transform * Affine::translate((rect.x0, rect.y0 + 2.0)),
+                translated(transform, rect.x0, rect.y0 + 2.0),
                 None,
             );
         }
@@ -251,7 +275,7 @@ impl Chart {
                 &s.legend,
                 legend_size,
                 tokens.colors.text_dim,
-                transform * Affine::translate((lx, rect.y0 + 4.0)),
+                translated(transform, lx, rect.y0 + 4.0),
                 None,
             );
             lx -= 8.0;
@@ -266,7 +290,7 @@ impl Chart {
         // Horizontal grid rules.
         let grid = with_alpha(tokens.colors.border_standard, GRID_ALPHA);
         for i in 0..=GRID_DIVISIONS {
-            let y = plot.y0 + plot.height() * (i as f64 / GRID_DIVISIONS as f64);
+            let y = plot.y0 + plot.height() * (count_f64(i) / count_f64(GRID_DIVISIONS));
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -284,7 +308,7 @@ impl Chart {
                 axis_hi,
                 legend_size,
                 tokens.colors.text_dim,
-                transform * Affine::translate((plot.x1 - f64::from(tw), plot.y0 - 1.0)),
+                translated(transform, plot.x1 - f64::from(tw), plot.y0 - 1.0),
                 None,
             );
         }
@@ -295,7 +319,7 @@ impl Chart {
                 axis_lo,
                 legend_size,
                 tokens.colors.text_dim,
-                transform * Affine::translate((plot.x1 - f64::from(tw), plot.y1 - 12.0)),
+                translated(transform, plot.x1 - f64::from(tw), plot.y1 - 12.0),
                 None,
             );
         }
@@ -433,12 +457,14 @@ impl Sparkline {
     }
 
     /// Builder: pin the vertical max.
+    #[must_use]
     pub fn with_max(mut self, max: f32) -> Self {
         self.max = Some(max);
         self
     }
 
     /// Builder: intrinsic size in logical pixels.
+    #[must_use]
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.width = width;
         self.height = height;
