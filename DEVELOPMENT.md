@@ -32,6 +32,13 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `gstreamer-1.0` `gstreamer-app-1.0` | `gstreamer1-devel` `gstreamer1-plugins-base-devel` | media apps |
 | `openssl` | `openssl-devel` | |
 | `capnp` (binary) | `capnproto` | runtime-collab schema |
+| `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
+| `alacritty` (binary) | `alacritty` | the Wayland handshake test drives a real client |
+| `rust-analyzer` (binary) | `rustup component add rust-analyzer` | the code editor's language-server test drives a real server |
+
+The last three are test *subjects*: those suites fail rather than skip without
+them, which is deliberate. They belong wherever `cargo` runs — inside the
+container if you build in one, since that is the `/usr` the sandbox binds.
 
 ### If you build in a container (optional)
 
