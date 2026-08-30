@@ -1427,14 +1427,31 @@ fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: &Modifiers) -> bo
 }
 
 fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
-    if let WindowEvent::KeyboardInput { event, .. } = event
-        && event.state == ElementState::Pressed
-        && modifiers.state().super_key()
-        && let Key::Character(s) = &event.logical_key
-    {
-        return s.eq_ignore_ascii_case("l");
+    let WindowEvent::KeyboardInput { event, .. } = event else {
+        return false;
+    };
+    if event.state != ElementState::Pressed {
+        return false;
     }
-    false
+    let key = match &event.logical_key {
+        Key::Character(s) => s.as_str(),
+        Key::Named(NamedKey::Tab) => "tab",
+        Key::Named(NamedKey::Escape) => "escape",
+        _ => return false,
+    };
+    let config = settings_store::hardware::ShortcutConfig::load();
+    let Some(chord) = config
+        .bindings
+        .get(&settings_store::hardware::ShortcutAction::Lock)
+    else {
+        return false;
+    };
+    let state = modifiers.state();
+    (chord.modifiers.contains("Super") == state.super_key())
+        && (chord.modifiers.contains("Ctrl") == state.control_key())
+        && (chord.modifiers.contains("Alt") == state.alt_key())
+        && (chord.modifiers.contains("Shift") == state.shift_key())
+        && chord.key.eq_ignore_ascii_case(key)
 }
 
 /// Map a live winit key event to the lock screen's normalised [`LockKey`]

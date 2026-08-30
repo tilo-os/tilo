@@ -284,6 +284,11 @@ fn apply_scanout_command(
                 "DRM present: resumed after re-modesetting every output"
             );
         }
+        ScanoutCommand::SetCursorSize(size) => {
+            for entry in scanouts.iter_mut() {
+                entry.scanout.set_cursor_size(size);
+            }
+        }
     }
 }
 

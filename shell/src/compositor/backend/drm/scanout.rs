@@ -71,6 +71,7 @@ pub struct ConnectorSnapshot {
     pub connector_id: u32,
     pub handle: connector::Handle,
     pub mode: Mode,
+    pub connector_name: String,
     /// Physical panel size in millimetres, when the connector reports one. `None` for virtual connectors, which report 0×0.
     pub physical_mm: Option<(u32, u32)>,
 }
@@ -132,13 +133,27 @@ impl CardHandle {
             if info.state() != connector::State::Connected {
                 continue;
             }
-            let Some(mode) = pick_mode(info.modes()) else {
+            let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+            let output_config = settings_store::hardware::DisplayConfig::load();
+            if output_config
+                .outputs
+                .get(&connector_name)
+                .is_some_and(|c| !c.enabled)
+            {
+                continue;
+            }
+            let requested = output_config
+                .outputs
+                .get(&connector_name)
+                .and_then(|c| c.mode);
+            let Some(mode) = pick_configured_mode(info.modes(), requested) else {
                 continue;
             };
             out.push(ConnectorSnapshot {
                 connector_id: u32::from(ch),
                 handle: ch,
                 mode,
+                connector_name,
                 physical_mm: info.size().filter(|&(w, h)| w > 0 && h > 0),
             });
         }
@@ -171,6 +186,7 @@ impl CardHandle {
             Ok(scanout) => Some(ScanoutBuild {
                 device_id: self.device_id,
                 connector_id: snapshot.connector_id,
+                connector_name: snapshot.connector_name.clone(),
                 physical_mm: snapshot.physical_mm,
                 crtc,
                 scanout,
@@ -337,6 +353,7 @@ pub struct DrmScanout {
     cursor_buffer: Option<DumbBuffer>,
     /// True when the KMS cursor plane is driving the pointer; when false we composite the software cursor into the framebuffer.
     hw_cursor_active: bool,
+    cursor_size: u32,
 }
 
 impl DrmScanout {
@@ -375,7 +392,7 @@ impl DrmScanout {
         for &ch in res.connectors() {
             if let Ok(info) = card.get_connector(ch, true)
                 && info.state() == connector::State::Connected
-                && let Some(m) = pick_mode(info.modes())
+                && let Some(m) = pick_configured_mode(info.modes(), None)
             {
                 chosen = Some((info, m));
                 break;
@@ -438,21 +455,24 @@ impl DrmScanout {
         );
 
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
-        let (cursor_buffer, hw_cursor_active) = match Self::setup_hw_cursor(&card, crtc) {
-            Ok(buf) => {
-                // Centre it so a fresh boot shows the pointer before input arrives.
-                #[allow(deprecated)]
-                let _ = card.move_cursor(crtc, ((width / 2) as i32, (height / 2) as i32));
-                tracing::info!("DRM scanout: hardware cursor plane active");
-                (Some(buf), true)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "DRM scanout: hardware cursor unavailable ({e}); using software cursor"
-                );
-                (None, false)
-            }
-        };
+        let cursor_size =
+            super::input_config::AccessibilityInputSettings::load().effective_cursor_size();
+        let (cursor_buffer, hw_cursor_active) =
+            match Self::setup_hw_cursor(&card, crtc, cursor_size) {
+                Ok(buf) => {
+                    // Centre it so a fresh boot shows the pointer before input arrives.
+                    #[allow(deprecated)]
+                    let _ = card.move_cursor(crtc, ((width / 2) as i32, (height / 2) as i32));
+                    tracing::info!("DRM scanout: hardware cursor plane active");
+                    (Some(buf), true)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "DRM scanout: hardware cursor unavailable ({e}); using software cursor"
+                    );
+                    (None, false)
+                }
+            };
 
         Ok(Self {
             card,
@@ -469,11 +489,16 @@ impl DrmScanout {
             dirtyfb_unsupported: false,
             cursor_buffer,
             hw_cursor_active,
+            cursor_size,
         })
     }
 
     /// Allocate the 64×64 ARGB cursor buffer, paint the arrow, bind via `set_cursor2` (hotspot at top-left, matching the bitmap); caller must keep the buffer alive.
-    fn setup_hw_cursor(card: &Card, crtc: crtc::Handle) -> Result<DumbBuffer, String> {
+    fn setup_hw_cursor(
+        card: &Card,
+        crtc: crtc::Handle,
+        cursor_size: u32,
+    ) -> Result<DumbBuffer, String> {
         let mut cbuf = card
             .create_dumb_buffer((CURSOR_DIM, CURSOR_DIM), DrmFourcc::Argb8888, 32)
             .map_err(|e| format!("create cursor dumb buffer: {e}"))?;
@@ -482,13 +507,24 @@ impl DrmScanout {
             let mut map = card
                 .map_dumb_buffer(&mut cbuf)
                 .map_err(|e| format!("map cursor buffer: {e}"))?;
-            paint_cursor_argb(map.as_mut(), pitch);
+            paint_cursor_argb(map.as_mut(), pitch, cursor_size);
         }
         // Hotspot (0,0): the arrow's tip is the buffer's top-left pixel, so plane position == pointer position; virtual GPUs (virtio-gpu/QXL) use it to place the host pointer.
         #[allow(deprecated)]
         card.set_cursor2(crtc, Some(&cbuf), (0, 0))
             .map_err(|e| format!("set_cursor2: {e}"))?;
         Ok(cbuf)
+    }
+
+    pub fn set_cursor_size(&mut self, cursor_size: u32) {
+        let cursor_size = cursor_size.clamp(24, CURSOR_DIM);
+        self.cursor_size = cursor_size;
+        if let Some(buffer) = self.cursor_buffer.as_mut() {
+            let pitch = buffer.pitch() as usize;
+            if let Ok(mut map) = self.card.map_dumb_buffer(buffer) {
+                paint_cursor_argb(map.as_mut(), pitch, cursor_size);
+            }
+        }
     }
 
     /// Presentation interval from the mode's raw timing (`pixel_clock / (htotal * vtotal)`),
@@ -616,7 +652,7 @@ impl DrmScanout {
             if !self.hw_cursor_active
                 && let Some((px, py)) = cursor
             {
-                draw_cursor(dst, pitch, dw, dh, px as i32, py as i32);
+                draw_cursor(dst, pitch, dw, dh, px as i32, py as i32, self.cursor_size);
             }
         }
 
@@ -780,6 +816,8 @@ pub struct ScanoutBuild {
     pub device_id: u64,
     /// DRM connector handle (raw u32) for this output.
     pub connector_id: u32,
+    /// Stable DRM connector name (`eDP-1`, `HDMI-A-1`) used by Settings.
+    pub connector_name: String,
     /// Physical panel size in mm, when reported — the one input to scale derivation that resolution alone cannot supply (see [`super::scale`]).
     pub physical_mm: Option<(u32, u32)>,
     /// The crtc this output was modeset onto, so a later hotplug can pick one still free.
@@ -836,7 +874,10 @@ fn pick_crtc(
 
 /// Choose a scanout mode: trust the first *reasonable* mode (>= 1024 wide), since the kernel lists
 /// the EDID-preferred one first. The PREFERRED flag itself is not trusted — virtio-gpu flags a 640x480 default while advertising up to 5120x2160; fallback caps at 1920x1080.
-fn pick_mode(modes: &[Mode]) -> Option<Mode> {
+fn pick_configured_mode(
+    modes: &[Mode],
+    requested: Option<settings_store::hardware::OutputMode>,
+) -> Option<Mode> {
     for m in modes {
         let (w, h) = m.size();
         tracing::debug!(
@@ -844,6 +885,24 @@ fn pick_mode(modes: &[Mode]) -> Option<Mode> {
             h,
             preferred = m.mode_type().contains(ModeTypeFlags::PREFERRED),
             "DRM scanout: candidate mode"
+        );
+    }
+    if let Some(wanted) = requested {
+        if let Some(found) = modes.iter().find(|m| {
+            let (w, h) = m.size();
+            u32::from(w) == wanted.width
+                && u32::from(h) == wanted.height
+                // Sysfs exposes geometry but not refresh. A zero refresh in
+                // the typed contract therefore means "any advertised rate"
+                // rather than inventing a value in Settings.
+                && (wanted.refresh_mhz == 0
+                    || m.vrefresh().saturating_mul(1000) == wanted.refresh_mhz)
+        }) {
+            return Some(*found);
+        }
+        tracing::warn!(
+            ?wanted,
+            "configured DRM mode disappeared; retaining a safe advertised mode"
         );
     }
     let first_reasonable = modes.first().filter(|m| m.size().0 >= 1024);
@@ -887,7 +946,7 @@ const CURSOR: [&str; 18] = [
 ];
 
 /// Paint the arrow into a 64×64 ARGB8888 cursor buffer (`[B, G, R, A]`, little-endian), transparent where blank; `pitch` is the row stride in bytes.
-fn paint_cursor_argb(dst: &mut [u8], pitch: usize) {
+fn paint_cursor_argb(dst: &mut [u8], pitch: usize, cursor_size: u32) {
     for b in dst.iter_mut() {
         *b = 0;
     }
@@ -898,19 +957,33 @@ fn paint_cursor_argb(dst: &mut [u8], pitch: usize) {
                 b'.' => (0xFFu8, 0xFFu8, 0xFFu8),
                 _ => continue,
             };
-            let o = row * pitch + col * 4;
-            if o + 4 <= dst.len() {
-                dst[o] = b;
-                dst[o + 1] = g;
-                dst[o + 2] = r;
-                dst[o + 3] = 0xFF;
+            let scale = (cursor_size.clamp(24, CURSOR_DIM) as usize).div_ceil(24);
+            for yy in row * scale..(row + 1) * scale {
+                for xx in col * scale..(col + 1) * scale {
+                    let o = yy * pitch + xx * 4;
+                    if o + 4 <= dst.len() {
+                        dst[o] = b;
+                        dst[o + 1] = g;
+                        dst[o + 2] = r;
+                        dst[o + 3] = 0xFF;
+                    }
+                }
             }
         }
     }
 }
 
 /// Composite the software cursor into an XRGB8888 buffer at `(px, py)` (the hot-spot), little-endian `[B, G, R, X]`; used only when the hardware cursor plane is unavailable.
-fn draw_cursor(dst: &mut [u8], pitch: usize, dw: usize, dh: usize, px: i32, py: i32) {
+fn draw_cursor(
+    dst: &mut [u8],
+    pitch: usize,
+    dw: usize,
+    dh: usize,
+    px: i32,
+    py: i32,
+    cursor_size: u32,
+) {
+    let scale = (cursor_size.clamp(24, CURSOR_DIM) as usize).div_ceil(24);
     for (row, line) in CURSOR.iter().enumerate() {
         let y = py + row as i32;
         if y < 0 || y as usize >= dh {
@@ -922,16 +995,21 @@ fn draw_cursor(dst: &mut [u8], pitch: usize, dw: usize, dh: usize, px: i32, py: 
                 b'.' => (0xFFu8, 0xFFu8, 0xFFu8),
                 _ => continue,
             };
-            let x = px + col as i32;
-            if x < 0 || x as usize >= dw {
-                continue;
-            }
-            let o = y as usize * pitch + x as usize * 4;
-            if o + 4 <= dst.len() {
-                dst[o] = b;
-                dst[o + 1] = g;
-                dst[o + 2] = r;
-                dst[o + 3] = 0xFF;
+            for yy in 0..scale {
+                for xx in 0..scale {
+                    let x = px + (col * scale + xx) as i32;
+                    let y = py + (row * scale + yy) as i32;
+                    if x < 0 || y < 0 || x as usize >= dw || y as usize >= dh {
+                        continue;
+                    }
+                    let o = y as usize * pitch + x as usize * 4;
+                    if o + 4 <= dst.len() {
+                        dst[o] = b;
+                        dst[o + 1] = g;
+                        dst[o + 2] = r;
+                        dst[o + 3] = 0xFF;
+                    }
+                }
             }
         }
     }
@@ -946,7 +1024,7 @@ mod tests {
         // 64×64 ARGB, tight pitch.
         let pitch = (CURSOR_DIM * 4) as usize;
         let mut buf = vec![0xCDu8; pitch * CURSOR_DIM as usize];
-        paint_cursor_argb(&mut buf, pitch);
+        paint_cursor_argb(&mut buf, pitch, 24);
 
         // Top-left pixel is the arrow tip ('#'): opaque black [B,G,R,A].
         assert_eq!(&buf[0..4], &[0, 0, 0, 0xFF], "tip should be opaque black");
@@ -972,7 +1050,7 @@ mod tests {
         let (w, h) = (32usize, 32usize);
         let pitch = w * 4;
         let mut dst = vec![0u8; pitch * h];
-        draw_cursor(&mut dst, pitch, w, h, 4, 4);
+        draw_cursor(&mut dst, pitch, w, h, 4, 4, 24);
         // The tip pixel at (4,4) is black (outline) and opaque.
         let o = 4 * pitch + 4 * 4;
         assert_eq!(&dst[o..o + 4], &[0, 0, 0, 0xFF]);
@@ -986,8 +1064,8 @@ mod tests {
         let (w, h) = (20usize, 20usize);
         let pitch = w * 4;
         let mut dst = vec![0u8; pitch * h];
-        draw_cursor(&mut dst, pitch, w, h, 18, 18);
-        draw_cursor(&mut dst, pitch, w, h, -3, -3);
+        draw_cursor(&mut dst, pitch, w, h, 18, 18, 24);
+        draw_cursor(&mut dst, pitch, w, h, -3, -3, 24);
     }
 
     #[test]
