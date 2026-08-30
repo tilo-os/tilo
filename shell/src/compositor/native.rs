@@ -2129,6 +2129,7 @@ pub fn run() -> ! {
             pacing::FrameClock::fallback(Instant::now())
         };
     let frame_period = frame_clock.interval();
+    let mut projection_capture = super::projection_capture::ProjectionCapture::default();
 
     // Move presentation onto its own thread where the backend supports it.
     // Headless declines: its bytes are read back synchronously by `snapshot`.
@@ -2771,6 +2772,19 @@ pub fn run() -> ! {
                 scene
             };
             metrics.mark_scene(t_scene_start.elapsed());
+            // The lock screen is never transmitted: a receiver session may
+            // remain connected while the seat locks, but remote observers do
+            // not get password entry, notification counts, or unlock timing.
+            if !session.is_locked() && frame_builder.host().projection_capture_requested() {
+                let viewport = frame_builder.viewport();
+                let _ = projection_capture.submit_scene(
+                    &scene,
+                    (
+                        viewport.0.round().max(1.0) as u32,
+                        viewport.1.round().max(1.0) as u32,
+                    ),
+                );
+            }
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {

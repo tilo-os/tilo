@@ -26,6 +26,7 @@ pub mod native;
 pub mod output_globals;
 pub mod pacing;
 pub mod present;
+pub mod projection_capture;
 pub mod remote_seat;
 pub mod render_node;
 pub mod selection;
