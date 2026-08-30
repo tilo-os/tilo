@@ -233,7 +233,7 @@ impl CommandPalette {
         let mut score = 0i32;
         let mut prev_match = false;
         for ch in text.to_lowercase().chars() {
-            if qi < q.len() && ch == q[qi] {
+            if q.get(qi) == Some(&ch) {
                 qi += 1;
                 // Reward consecutive matches.
                 score += if prev_match { 3 } else { 1 };
@@ -265,7 +265,7 @@ impl CommandPalette {
             .filter(|(_, e)| matches!(e.kind, PaletteKind::Command(_)) == want_command)
             .filter_map(|(i, e)| Self::fuzzy_match(&self.query, &e.label).map(|s| (i, s)))
             .collect();
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
         self.filtered = scored.into_iter().map(|(i, _)| i).collect();
         if self.selected >= self.filtered.len() {
             self.selected = self.filtered.len().saturating_sub(1);
@@ -309,8 +309,10 @@ impl CommandPalette {
                     if let Ok(n) = self.query.trim().parse::<usize>() {
                         self.chosen = Some(PaletteKind::LineJump(n.max(1)));
                     }
-                } else if let Some(&idx) = self.filtered.get(self.selected) {
-                    self.chosen = Some(self.all_entries[idx].kind.clone());
+                } else if let Some(&idx) = self.filtered.get(self.selected)
+                    && let Some(entry) = self.all_entries.get(idx)
+                {
+                    self.chosen = Some(entry.kind.clone());
                 }
                 self.close();
                 true
@@ -378,7 +380,22 @@ impl CommandPalette {
             &panel,
         );
 
-        // Input row.
+        self.draw_input_row(scene, transform, text_renderer, theme, x0, y0);
+        self.draw_result_rows(scene, transform, text_renderer, theme, x0, y0);
+    }
+
+    /// Draw the query input row: prompt + query (or placeholder), the caret,
+    /// and the divider separating it from the results below.
+    fn draw_input_row(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        x0: f64,
+        y0: f64,
+    ) {
+        let c = &theme.tokens.colors;
         let prompt = if self.goto_mode {
             ": "
         } else if self.command_mode {
@@ -432,10 +449,24 @@ impl CommandPalette {
             None,
             &Rect::new(x0, y0 + INPUT_H, x0 + WIDTH, y0 + INPUT_H + 1.0),
         );
+    }
 
-        // Result rows.
+    /// Draw the result rows, or the "no matches"/"type a line number" hint
+    /// when there are none.
+    fn draw_result_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        x0: f64,
+        y0: f64,
+    ) {
+        let c = &theme.tokens.colors;
         for (vi, &idx) in self.filtered.iter().take(MAX_ROWS).enumerate() {
-            let entry = &self.all_entries[idx];
+            let Some(entry) = self.all_entries.get(idx) else {
+                continue;
+            };
             let ry = y0 + INPUT_H + vi as f64 * ROW_H + 4.0;
             let row_rect = Rect::new(x0 + 4.0, ry, x0 + WIDTH - 4.0, ry + ROW_H);
             if vi == self.selected {
