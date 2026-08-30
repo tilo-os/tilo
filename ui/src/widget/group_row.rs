@@ -23,13 +23,13 @@ use crate::widget::{
 };
 
 /// Idle time before the strip snaps to the nearest group's left edge.
-const SNAP_IDLE_MS: u64 = 200;
+const SNAP_IDLE_MS: u32 = 200;
 /// Snap-animation duration (cubic-out).
-const SNAP_ANIM_MS: u64 = 200;
+const SNAP_ANIM_MS: u32 = 200;
 /// "Make space" slide duration for groups a new insertion pushes along —
 /// matches `window_group.rs`'s spawn fade (420ms cubic-out), which runs
 /// at the same moment, so the two read as one event.
-const MAKE_SPACE_ANIM_MS: u64 = 420;
+const MAKE_SPACE_ANIM_MS: u32 = 420;
 
 /// Touchpad px per wheel detent for the discrete jump gestures; also the
 /// scale for hi-res wheel notches reported as pixel deltas.
@@ -55,7 +55,15 @@ impl WheelJumpAccum {
         self.accum += detents;
         let whole = self.accum.trunc();
         self.accum -= whole;
-        whole as i32
+        // Real scroll deltas never approach i32 range; clamping first
+        // makes the narrowing cast below a lossless, saturating no-op.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "clamped into i32 range on the line above, so this cast cannot truncate"
+        )]
+        {
+            whole.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+        }
     }
 }
 
@@ -114,6 +122,13 @@ pub struct CrossStripDetach {
     pub release_point: Point,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag (structure_dirty, scroll_dirty, hidden, shift_armed) is an independent, \
+              per-frame invalidation signal read and cleared on its own schedule, not a \
+              combinatorial config API — folding them into an enum or bitflags would not make \
+              any call site clearer"
+)]
 pub struct GroupRow {
     pub groups: Vec<WindowGroup>,
     /// One resize handle per gap: `max(0, groups.len() - 1)`.
@@ -265,6 +280,7 @@ impl GroupRow {
 
     /// Reserve a canvas-x gutter before the first group so it pans with
     /// `scroll_x` too (set to the wheel-disc width).
+    #[must_use]
     pub fn with_leading_inset(mut self, px: f64) -> Self {
         self.leading_inset = px;
         self
@@ -300,10 +316,10 @@ impl GroupRow {
     /// width minus the leading gutter, then [`DEFAULT_STRIP_USABLE_PX`]
     /// before any layout has run.
     pub fn usable_at(&self, x: f64) -> f64 {
-        if !self.output_spans.is_empty() {
+        if let Some(&first) = self.output_spans.first() {
             // Last span whose left edge is at or before `x`; the first
             // span for anything left of the whole arrangement.
-            let mut chosen = self.output_spans[0];
+            let mut chosen = first;
             for span in &self.output_spans {
                 if x >= span.x {
                     chosen = *span;
@@ -395,10 +411,11 @@ impl GroupRow {
             return 1.0;
         };
         let elapsed = self.shift_hold.unwrap_or_else(|| anim.started.elapsed());
-        if elapsed >= Duration::from_millis(MAKE_SPACE_ANIM_MS) {
+        if elapsed >= Duration::from_millis(u64::from(MAKE_SPACE_ANIM_MS)) {
             return 1.0;
         }
-        let raw = (elapsed.as_secs_f64() / (MAKE_SPACE_ANIM_MS as f64 / 1000.0)).clamp(0.0, 1.0);
+        let raw =
+            (elapsed.as_secs_f64() / (f64::from(MAKE_SPACE_ANIM_MS) / 1000.0)).clamp(0.0, 1.0);
         1.0 - (1.0 - raw).powi(3)
     }
 
@@ -655,7 +672,7 @@ impl GroupRow {
         // Pending snap: idle gate hasn't fired yet. Keep redraws pumping
         // so `tick_snap` runs the moment it clears.
         if let Some(t) = self.last_wheel_at
-            && t.elapsed() < Duration::from_millis(SNAP_IDLE_MS + SNAP_ANIM_MS)
+            && t.elapsed() < Duration::from_millis(u64::from(SNAP_IDLE_MS + SNAP_ANIM_MS))
             && !self.is_aligned_to_group()
         {
             return true;
@@ -732,7 +749,7 @@ impl GroupRow {
             && let Some(last_wheel) = self.last_wheel_at
         {
             let idle = now.saturating_duration_since(last_wheel);
-            if idle >= Duration::from_millis(SNAP_IDLE_MS) {
+            if idle >= Duration::from_millis(u64::from(SNAP_IDLE_MS)) {
                 if self.is_aligned_to_group() {
                     self.last_wheel_at = None;
                 } else if let Some(target) = self.nearest_group_edge() {
@@ -743,8 +760,13 @@ impl GroupRow {
                         // Anchor `started` at the moment the idle
                         // gate was met, not `now` — so the very tick
                         // that detects idle already applies the
-                        // curve's first eased frame.
-                        let started = last_wheel + Duration::from_millis(SNAP_IDLE_MS);
+                        // curve's first eased frame. Falls back to
+                        // `last_wheel` (skipping the idle delay) rather
+                        // than panicking in the astronomically unlikely
+                        // case this addition would overflow `Instant`.
+                        let started = last_wheel
+                            .checked_add(Duration::from_millis(u64::from(SNAP_IDLE_MS)))
+                            .unwrap_or(last_wheel);
                         self.snap_anim = Some(SnapAnim {
                             from: self.scroll_x,
                             to: target,
@@ -758,13 +780,14 @@ impl GroupRow {
         }
         if let Some(anim) = self.snap_anim {
             let elapsed = now.saturating_duration_since(anim.started);
-            let total = Duration::from_millis(SNAP_ANIM_MS);
+            let total = Duration::from_millis(u64::from(SNAP_ANIM_MS));
             if elapsed >= total {
                 self.scroll_x = anim.to;
                 self.snap_anim = None;
                 self.last_wheel_at = None;
             } else {
-                let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0)).clamp(0.0, 1.0);
+                let raw =
+                    (elapsed.as_secs_f64() / (f64::from(SNAP_ANIM_MS) / 1000.0)).clamp(0.0, 1.0);
                 let eased = crate::ease_out(raw);
                 self.scroll_x = anim.from + (anim.to - anim.from) * eased;
             }
@@ -816,13 +839,17 @@ impl GroupRow {
         // Detach from src. We have to keep the mutable borrow scoped so
         // we can reborrow `dst` afterwards.
         let detached = {
-            let src_group = &mut self.groups[src];
+            let Some(src_group) = self.groups.get_mut(src) else {
+                return false;
+            };
             src_group.detach_tab(tab_id)
         };
         let Some((desc, host)) = detached else {
             return false;
         };
-        let dst_group = &mut self.groups[dst];
+        let Some(dst_group) = self.groups.get_mut(dst) else {
+            return false;
+        };
         dst_group.insert_detached_tab(target_idx, desc, host);
         true
     }
@@ -842,17 +869,20 @@ impl GroupRow {
                 return None;
             }
         }
-        if release_point.x < self.groups[0].get_rect().x0 {
+        let first = self.groups.first()?;
+        if release_point.x < first.get_rect().x0 {
             return Some(0);
         }
-        for i in 1..self.groups.len() {
-            let left = self.groups[i - 1].get_rect().x1;
-            let right = self.groups[i].get_rect().x0;
+        for (j, pair) in self.groups.windows(2).enumerate() {
+            let [a, b] = pair else { continue };
+            let left = a.get_rect().x1;
+            let right = b.get_rect().x0;
             if release_point.x >= left && release_point.x <= right {
-                return Some(i);
+                return Some(j.saturating_add(1));
             }
         }
-        if release_point.x > self.groups.last().unwrap().get_rect().x1 {
+        let last = self.groups.last()?;
+        if release_point.x > last.get_rect().x1 {
             return Some(self.groups.len());
         }
         None
@@ -865,13 +895,15 @@ impl GroupRow {
             return false;
         }
         let detached = {
-            let src_group = &mut self.groups[src];
+            let Some(src_group) = self.groups.get_mut(src) else {
+                return false;
+            };
             src_group.detach_tab(tab_id)
         };
         let Some((desc, host)) = detached else {
             return false;
         };
-        let src_now_empty = self.groups[src].tab_count() == 0;
+        let src_now_empty = self.groups.get(src).is_some_and(|g| g.tab_count() == 0);
         let new_id = self
             .groups
             .iter()
@@ -888,7 +920,11 @@ impl GroupRow {
         self.structure_dirty = true;
         if src_now_empty {
             // Shifts by 1 iff the new group was inserted at or left of src.
-            let src_after = if clamped <= src { src + 1 } else { src };
+            let src_after = if clamped <= src {
+                src.saturating_add(1)
+            } else {
+                src
+            };
             if src_after < self.groups.len() {
                 self.groups.remove(src_after);
             }
@@ -933,7 +969,7 @@ impl GroupRow {
         }
         // Removing `src` shifts every later slot left by one.
         let final_idx = if insert_at > src {
-            insert_at - 1
+            insert_at.saturating_sub(1)
         } else {
             insert_at
         };
@@ -977,10 +1013,11 @@ impl GroupRow {
                     .groups
                     .iter()
                     .position(|g| g.bar_grab_hit(self.last_cursor))
+                    && let Some(group_id) = self.groups.get(idx).map(|g| g.id)
                 {
                     self.group_drag = Some(GroupDrag {
                         src_idx: idx,
-                        group_id: self.groups[idx].id,
+                        group_id,
                         start: self.last_cursor,
                         moved: false,
                     });
@@ -1093,7 +1130,7 @@ impl Widget for GroupRow {
             .iter_mut()
             .map(|g| g.build_layout(taffy, theme, node_map))
             .collect();
-        self.node_ids = group_nodes.clone();
+        self.node_ids.clone_from(&group_nodes);
         // The moment any child group is maximized, the row collapses to
         // that single group via `display: None` on siblings; handles are
         // skipped since there are no visible gaps. Multiple simultaneous
@@ -1123,7 +1160,8 @@ impl Widget for GroupRow {
         // `[g0, h0, g1, h1, …, g_{N-1}]`. Omitted entirely while any group
         // is maximized (no visible gaps to mark).
         self.handle_node_ids.clear();
-        let mut children: Vec<NodeId> = Vec::with_capacity(group_nodes.len() + desired_handles);
+        let mut children: Vec<NodeId> =
+            Vec::with_capacity(group_nodes.len().saturating_add(desired_handles));
         if maximized_idx.is_some() {
             for gn in &group_nodes {
                 children.push(*gn);
@@ -1131,8 +1169,11 @@ impl Widget for GroupRow {
         } else {
             for (i, gn) in group_nodes.iter().enumerate() {
                 children.push(*gn);
-                if i + 1 < group_nodes.len() {
-                    let hn = self.handles[i].build_layout(taffy, theme, node_map);
+                if i.saturating_add(1) < group_nodes.len() {
+                    let Some(h) = self.handles.get_mut(i) else {
+                        continue;
+                    };
+                    let hn = h.build_layout(taffy, theme, node_map);
                     self.handle_node_ids.push(hn);
                     children.push(hn);
                 }
@@ -1224,8 +1265,8 @@ impl Widget for GroupRow {
             local_x.push(f64::from(cl.location.x));
             let left = self.leading_inset + f64::from(cl.location.x);
             let right = left + f64::from(cl.size.width);
-            if spans_aligned {
-                spans.push((self.groups[i].id, left, right));
+            if spans_aligned && let Some(g) = self.groups.get(i) {
+                spans.push((g.id, left, right));
             }
             if right > content_w {
                 content_w = right;
@@ -1320,10 +1361,18 @@ impl Widget for GroupRow {
             self.groups.len().saturating_sub(1),
             "ResizeHandle pool must mirror inter-group gap count after build_layout",
         );
-        for i in 0..self.handles.len() {
-            let left = self.groups[i].get_rect();
-            let right = self.groups[i + 1].get_rect();
-            self.handles[i].set_neighbour_rects(left, right);
+        for (i, h) in self.handles.iter_mut().enumerate() {
+            let Some(left) = self.groups.get(i).map(WindowGroup::get_rect) else {
+                continue;
+            };
+            let Some(right) = self
+                .groups
+                .get(i.saturating_add(1))
+                .map(WindowGroup::get_rect)
+            else {
+                continue;
+            };
+            h.set_neighbour_rects(left, right);
         }
     }
 
@@ -1360,115 +1409,161 @@ impl Widget for GroupRow {
         let maximized_idx = self
             .fullscreen_idx()
             .or_else(|| self.groups.iter().position(|g| g.maximized));
+        self.draw_groups(scene, transform, tr, theme, presence, maximized_idx);
+        self.draw_handles(scene, transform, tr, theme, presence, maximized_idx);
+        self.draw_reorder_capsule(scene, transform, theme);
+
+        scene.pop_layer();
+    }
+
+    /// Paints either the sole maximized group, or every group eased in
+    /// from its make-space-slide offset (see [`Self::shift_offset_for`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::draw's own signature"
+    )]
+    fn draw_groups(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        maximized_idx: Option<usize>,
+    ) {
         if let Some(max_i) = maximized_idx {
             if let Some(g) = self.groups.get_mut(max_i) {
                 g.draw(scene, transform, tr, theme, presence);
             }
-        } else {
-            // A group a fresh insertion pushed along paints where it
-            // used to be and eases to its new spot, so the strip is seen
-            // opening a gap rather than having always had one.
-            let remaining = 1.0 - self.shift_anim_t();
-            let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
-                self.shift_anim
-                    .as_ref()
-                    .map(|a| a.offsets.clone())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            for g in &mut self.groups {
-                let dx = offsets
-                    .iter()
-                    .find(|(id, _)| *id == g.id)
-                    .map_or(0.0, |(_, from)| from * remaining);
-                let t = if dx.abs() > f64::EPSILON {
-                    transform * Affine::translate((dx, 0.0))
-                } else {
-                    transform
-                };
-                g.draw(scene, t, tr, theme, presence);
-            }
+            return;
         }
-        // Painted after the groups so the accent rule sits on top.
-        // Skipped during a tab-drag (drop-zone capsule takes priority)
-        // and while any group is maximized (handle rects are stale).
-        // During a make-space slide, each handle travels with the group
-        // on its right — otherwise two adjacent white cards read as one
-        // wide window mid-slide.
+        // A group a fresh insertion pushed along paints where it used to
+        // be and eases to its new spot, so the strip is seen opening a
+        // gap rather than having always had one.
+        let remaining = 1.0 - self.shift_anim_t();
+        let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
+            self.shift_anim
+                .as_ref()
+                .map(|a| a.offsets.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for g in &mut self.groups {
+            let dx = offsets
+                .iter()
+                .find(|(id, _)| *id == g.id)
+                .map_or(0.0, |(_, from)| from * remaining);
+            let t = if dx.abs() > f64::EPSILON {
+                shift_transform(transform, dx)
+            } else {
+                transform
+            };
+            g.draw(scene, t, tr, theme, presence);
+        }
+    }
+
+    /// Painted after the groups so the accent rule sits on top. Skipped
+    /// during a tab-drag (drop-zone capsule takes priority) and while
+    /// any group is maximized (handle rects are stale). During a
+    /// make-space slide, each handle travels with the group on its
+    /// right — otherwise two adjacent white cards read as one wide
+    /// window mid-slide.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::draw's own signature"
+    )]
+    fn draw_handles(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        maximized_idx: Option<usize>,
+    ) {
         let any_drag = self
             .groups
             .iter()
             .any(super::window_group::WindowGroup::drag_in_flight);
-        if !any_drag && maximized_idx.is_none() {
-            let remaining = 1.0 - self.shift_anim_t();
-            let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
-                self.shift_anim
-                    .as_ref()
-                    .map(|a| a.offsets.clone())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            for (i, h) in self.handles.iter_mut().enumerate() {
-                // A group with nothing on screen has no border to be one
-                // side of. Still-opening counts as shown: it's already a
-                // card with real edges at the width it's waiting to fill.
-                let shown = |g: Option<&WindowGroup>| {
-                    g.is_some_and(|g| Widget::presented(g) || Widget::opening(g))
-                };
-                if !shown(self.groups.get(i)) || !shown(self.groups.get(i + 1)) {
-                    continue;
-                }
-                let dx = self
-                    .groups
-                    .get(i + 1)
-                    .and_then(|g| offsets.iter().find(|(id, _)| *id == g.id))
-                    .map_or(0.0, |(_, from)| from * remaining);
-                let t = if dx.abs() > f64::EPSILON {
-                    transform * Affine::translate((dx, 0.0))
-                } else {
-                    transform
-                };
-                h.draw(scene, t, tr, theme, presence);
-            }
+        if any_drag || maximized_idx.is_some() {
+            return;
         }
+        let remaining = 1.0 - self.shift_anim_t();
+        let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
+            self.shift_anim
+                .as_ref()
+                .map(|a| a.offsets.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for (i, h) in self.handles.iter_mut().enumerate() {
+            // A group with nothing on screen has no border to be one
+            // side of. Still-opening counts as shown: it's already a
+            // card with real edges at the width it's waiting to fill.
+            let shown = |g: Option<&WindowGroup>| {
+                g.is_some_and(|g| Widget::presented(g) || Widget::opening(g))
+            };
+            let next_i = i.saturating_add(1);
+            if !shown(self.groups.get(i)) || !shown(self.groups.get(next_i)) {
+                continue;
+            }
+            let dx = self
+                .groups
+                .get(next_i)
+                .and_then(|g| offsets.iter().find(|(id, _)| *id == g.id))
+                .map_or(0.0, |(_, from)| from * remaining);
+            let t = if dx.abs() > f64::EPSILON {
+                shift_transform(transform, dx)
+            } else {
+                transform
+            };
+            h.draw(scene, t, tr, theme, presence);
+        }
+    }
 
-        // Painted only while a group drag is past its threshold.
-        if let (Some(_), Some(ins)) = (
+    /// Painted only while a group drag is past its threshold.
+    fn draw_reorder_capsule(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let (Some(_), Some(ins)) = (
             self.group_drag.filter(|d| d.moved),
             self.group_reorder_target,
-        ) && !self.groups.is_empty()
-        {
-            let gap_x = if ins == 0 {
-                self.groups[0].get_rect().x0 - 5.0
-            } else if ins >= self.groups.len() {
-                self.groups.last().unwrap().get_rect().x1 + 5.0
-            } else {
-                f64::midpoint(
-                    self.groups[ins - 1].get_rect().x1,
-                    self.groups[ins].get_rect().x0,
-                )
-            };
-            let y0 = self.rect.y0;
-            let y1 = self.rect.y1;
-            if y1 > y0 {
-                let thickness = 4.0;
-                let capsule = RoundedRect::from_rect(
-                    Rect::new(gap_x - thickness / 2.0, y0, gap_x + thickness / 2.0, y1),
-                    thickness / 2.0,
-                );
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    &capsule,
-                );
-            }
+        ) else {
+            return;
+        };
+        if self.groups.is_empty() {
+            return;
         }
-
-        scene.pop_layer();
+        let gap_x = if ins == 0 {
+            self.groups.first().map_or(0.0, |g| g.get_rect().x0 - 5.0)
+        } else if ins >= self.groups.len() {
+            self.groups.last().map_or(0.0, |g| g.get_rect().x1 + 5.0)
+        } else {
+            let left = self
+                .groups
+                .get(ins.saturating_sub(1))
+                .map(WindowGroup::get_rect);
+            let right = self.groups.get(ins).map(WindowGroup::get_rect);
+            left.zip(right)
+                .map_or(0.0, |(l, r)| f64::midpoint(l.x1, r.x0))
+        };
+        let y0 = self.rect.y0;
+        let y1 = self.rect.y1;
+        if y1 <= y0 {
+            return;
+        }
+        let thickness = 4.0;
+        let capsule = RoundedRect::from_rect(
+            Rect::new(gap_x - thickness / 2.0, y0, gap_x + thickness / 2.0, y1),
+            thickness / 2.0,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.accent[6],
+            None,
+            &capsule,
+        );
     }
 
     fn handle_event(
@@ -1536,63 +1631,122 @@ impl Widget for GroupRow {
         // A bare wheel NEVER moves the strip — that only happens via
         // `scroll_group_into_view_animated`, not this event path.
 
-        // Resize handles dispatch FIRST so a press in the gap claims the
-        // event before adjacent groups see it. Skipped during any
-        // child's tab-drag, which owns the gap itself.
+        self.dispatch_to_handles(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            root,
+            handled,
+            focus_target,
+            taffy,
+        );
+        self.apply_pending_handle_resizes();
+        self.dispatch_to_groups(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            root,
+            handled,
+            focus_target,
+            taffy,
+        );
+        self.prune_closed_groups();
+        self.resolve_tab_detaches(handled);
+    }
+
+    /// Resize handles dispatch FIRST so a press in the gap claims the
+    /// event before adjacent groups see it. Skipped during any child's
+    /// tab-drag, which owns the gap itself.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own signature"
+    )]
+    fn dispatch_to_handles(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) {
         let any_drag_inflight = self
             .groups
             .iter()
             .any(super::window_group::WindowGroup::drag_in_flight);
-        if !any_drag_inflight {
-            for (i, h) in self.handles.iter_mut().enumerate() {
-                let Some(&node_id) = self.handle_node_ids.get(i) else {
-                    break;
-                };
-                h.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
-                if *handled {
-                    break;
-                }
+        if any_drag_inflight {
+            return;
+        }
+        for (i, h) in self.handles.iter_mut().enumerate() {
+            let Some(&node_id) = self.handle_node_ids.get(i) else {
+                break;
+            };
+            h.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if *handled {
+                break;
             }
         }
+    }
 
-        // Applied before the group dispatch loop so a mid-drag
-        // CursorMoved sees the updated widths this same frame.
-        for i in 0..self.handles.len() {
-            if let Some((new_left, new_right)) = self.handles[i].take_pending() {
-                if i < self.groups.len() {
-                    self.groups[i].set_width_px(new_left);
+    /// Applied before the group dispatch loop so a mid-drag CursorMoved
+    /// sees the updated widths this same frame.
+    fn apply_pending_handle_resizes(&mut self) {
+        for (i, h) in self.handles.iter_mut().enumerate() {
+            if let Some((new_left, new_right)) = h.take_pending() {
+                if let Some(g) = self.groups.get_mut(i) {
+                    g.set_width_px(new_left);
                 }
-                if i + 1 < self.groups.len() {
-                    self.groups[i + 1].set_width_px(new_right);
+                if let Some(g) = self.groups.get_mut(i.saturating_add(1)) {
+                    g.set_width_px(new_right);
                 }
             }
-            if self.handles[i].take_pending_commit() {
+            if h.take_pending_commit() {
                 // End-of-drag: mirrors `WindowGroup::end_resize`.
-                if i < self.groups.len() {
-                    self.groups[i].stamp_pending_width_change();
+                if let Some(g) = self.groups.get_mut(i) {
+                    g.stamp_pending_width_change();
                 }
-                if i + 1 < self.groups.len() {
-                    self.groups[i + 1].stamp_pending_width_change();
+                if let Some(g) = self.groups.get_mut(i.saturating_add(1)) {
+                    g.stamp_pending_width_change();
                 }
             }
         }
+    }
 
-        // Stop dispatch once a child claims the event, but the detach
-        // sweep below still runs regardless — that claim is for
-        // pointer-capture/focus, a separate concern. `groups` can grow
-        // mid-frame (detach sweep pushes a new `WindowGroup`), briefly
-        // outrunning `node_ids`; `.get` skips the new one until its next
-        // layout pass assigns a node_id.
+    /// Stop dispatch once a child claims the event, but the detach sweep
+    /// after this still runs regardless — that claim is for
+    /// pointer-capture/focus, a separate concern. `groups` can grow
+    /// mid-frame (detach sweep pushes a new `WindowGroup`), briefly
+    /// outrunning `node_ids`; `.get` skips the new one until its next
+    /// layout pass assigns a node_id.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own signature"
+    )]
+    fn dispatch_to_groups(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) {
         for (i, g) in self.groups.iter_mut().enumerate() {
             let Some(&node_id) = self.node_ids.get(i) else {
                 break;
@@ -1612,9 +1766,11 @@ impl Widget for GroupRow {
                 break;
             }
         }
+    }
 
-        // Collected highest-index-first so removals don't shift indices
-        // out from under the loop.
+    /// Collected highest-index-first so removals don't shift indices out
+    /// from under the loop.
+    fn prune_closed_groups(&mut self) {
         let mut prune: Vec<usize> = self
             .groups
             .iter()
@@ -1622,29 +1778,38 @@ impl Widget for GroupRow {
             .filter(|(_, g)| g.close_complete())
             .map(|(i, _)| i)
             .collect();
-        if !prune.is_empty() {
-            // `node_ids` deliberately stays stale (pre-prune length)
-            // until the next `build_layout`; the debug_assert below pins
-            // that so a future path popping a slot early trips loudly.
-            let prune_count = prune.len();
-            prune.sort_unstable_by(|a, b| b.cmp(a));
-            for i in prune {
-                self.groups.remove(i);
-            }
-            debug_assert_eq!(
-                self.node_ids.len(),
-                self.groups.len() + prune_count,
-                "GroupRow parallel-vec invariant violated: node_ids.len() ({}) \
-                 must equal pre-prune groups.len() (post-prune {} + pruned {}). \
-                 node_ids stays at the pre-prune length until structure_dirty \
-                 triggers a build_layout rebuild.",
-                self.node_ids.len(),
-                self.groups.len(),
-                prune_count,
-            );
-            self.structure_dirty = true;
+        if prune.is_empty() {
+            return;
         }
+        // `node_ids` deliberately stays stale (pre-prune length) until
+        // the next `build_layout`; the debug_assert below pins that so a
+        // future path popping a slot early trips loudly.
+        let prune_count = prune.len();
+        prune.sort_unstable_by(|a, b| b.cmp(a));
+        for i in prune {
+            self.groups.remove(i);
+        }
+        debug_assert_eq!(
+            self.node_ids.len(),
+            self.groups.len().saturating_add(prune_count),
+            "GroupRow parallel-vec invariant violated: node_ids.len() ({}) \
+             must equal pre-prune groups.len() (post-prune {} + pruned {}). \
+             node_ids stays at the pre-prune length until structure_dirty \
+             triggers a build_layout rebuild.",
+            self.node_ids.len(),
+            self.groups.len(),
+            prune_count,
+        );
+        self.structure_dirty = true;
+    }
 
+    /// A release outside our vertical band is plausibly aimed at a
+    /// sibling strip, which we can't resolve from here — detach and
+    /// stash for the shell-side harvester (`pending_cross_strip_detach`).
+    /// Only ONE detach diverts per frame; the gesture pipeline doesn't
+    /// model dragging two tabs at once. Remaining in-row detaches are
+    /// resolved by [`Self::resolve_one_tab_detach`].
+    fn resolve_tab_detaches(&mut self, handled: &mut bool) {
         // CursorMoved only reclassifies on motion, so a child that
         // dropped its `pending_drag` internally could otherwise leave
         // this stuck once every drag has cleared.
@@ -1664,18 +1829,16 @@ impl Widget for GroupRow {
             }
         }
 
-        // A release outside our vertical band is plausibly aimed at a
-        // sibling strip, which we can't resolve from here — detach and
-        // stash for the shell-side harvester (`pending_cross_strip_detach`).
-        // Only ONE detach diverts per frame; the gesture pipeline doesn't
-        // model dragging two tabs at once.
         let mut diverted: Option<usize> = None;
         for (idx, &(src_idx, tab_id, release_point)) in detaches.iter().enumerate() {
             let out_of_band = release_point.y < self.rect.y0 || release_point.y > self.rect.y1;
             if !out_of_band {
                 continue;
             }
-            if let Some((desc, host)) = self.groups[src_idx].detach_tab(tab_id) {
+            let Some(src_group) = self.groups.get_mut(src_idx) else {
+                continue;
+            };
+            if let Some((desc, host)) = src_group.detach_tab(tab_id) {
                 self.pending_cross_strip_detach = Some(CrossStripDetach {
                     tab_id,
                     desc,
@@ -1698,103 +1861,141 @@ impl Widget for GroupRow {
         }
 
         for (src_idx, tab_id, release_point) in detaches {
-            // Closing groups excluded: `insert_detached_tab` doesn't
-            // clear `closing_at`, so a spliced tab would be pruned with
-            // it at fade-end. Falls through to the gap-based path instead.
-            let target_idx = self
+            self.resolve_one_tab_detach(src_idx, tab_id, release_point, handled);
+        }
+    }
+
+    /// One in-row detach's landing spot: an existing sibling's tab bar,
+    /// its tile area (edge bands split off a new group, the centre band
+    /// splices into its tab list), a closing sibling's former gap, or —
+    /// failing all of those — the plain inter-group gap. Falls back to
+    /// re-inserting into `src_idx` if nothing resolved at all.
+    fn resolve_one_tab_detach(
+        &mut self,
+        src_idx: usize,
+        tab_id: u64,
+        release_point: Point,
+        handled: &mut bool,
+    ) {
+        // Closing groups excluded: `insert_detached_tab` doesn't clear
+        // `closing_at`, so a spliced tab would be pruned with it at
+        // fade-end. Falls through to the gap-based path instead.
+        let target_idx = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(i, g)| *i != src_idx && !g.is_closing() && g.bar_rect().contains(release_point))
+            .map(|(i, _)| i);
+        if let Some(tgt_idx) = target_idx {
+            let Some(drop_idx) = self
                 .groups
-                .iter()
-                .enumerate()
-                .find(|(i, g)| {
-                    *i != src_idx && !g.is_closing() && g.bar_rect().contains(release_point)
-                })
-                .map(|(i, _)| i);
-            if let Some(tgt_idx) = target_idx {
-                let drop_idx = self.groups[tgt_idx].drop_index_for(release_point);
-                let detached = self.groups[src_idx].detach_tab(tab_id);
-                if let Some((desc, host)) = detached {
-                    self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
-                    *handled = true;
-                }
-                continue;
-            }
-            // Tile-area drop: three horizontal bands. Edge bands (25% of
-            // width, capped at 48px — the gap alone is too thin to hit)
-            // create a new group to that side; the centre band splices
-            // into the sibling's tab list.
-            let tile_target_idx = self
-                .groups
-                .iter()
-                .enumerate()
-                .find(|(i, g)| {
-                    *i != src_idx
-                        && !g.is_closing()
-                        && g.get_rect().contains(release_point)
-                        && !g.bar_rect().contains(release_point)
-                })
-                .map(|(i, _)| i);
-            if let Some(tgt_idx) = tile_target_idx {
-                let tgt_rect = self.groups[tgt_idx].get_rect();
-                let edge_band = (tgt_rect.width() * 0.25).min(48.0);
-                let in_left_band = release_point.x < tgt_rect.x0 + edge_band;
-                let in_right_band = release_point.x > tgt_rect.x1 - edge_band;
-                if in_left_band || in_right_band {
-                    let gap_idx = if in_left_band { tgt_idx } else { tgt_idx + 1 };
-                    if self.split_tab_into_new_group(src_idx, tab_id, gap_idx) {
-                        *handled = true;
-                    }
-                    continue;
-                }
-                let drop_idx = if release_point.x < tgt_rect.center().x {
-                    0
-                } else {
-                    self.groups[tgt_idx].tabs().len()
-                };
-                let detached = self.groups[src_idx].detach_tab(tab_id);
-                if let Some((desc, host)) = detached {
-                    self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
-                    *handled = true;
-                }
-                continue;
-            }
-            // A *closing* sibling's bar rect still exists geometrically,
-            // so `gap_index_for` returns `None`; fall back to the
-            // left-of-closing-group gap instead of dropping the tab.
-            let closing_target = self
-                .groups
-                .iter()
-                .enumerate()
-                .find(|(i, g)| {
-                    *i != src_idx && g.is_closing() && g.bar_rect().contains(release_point)
-                })
-                .map(|(i, _)| i);
-            if let Some(tgt_idx) = closing_target {
-                if self.split_tab_into_new_group(src_idx, tab_id, tgt_idx) {
-                    *handled = true;
-                }
-                continue;
-            }
-            // Deliberately does NOT refuse a single-tab source dropped
-            // into an adjacent gap: with one group, gap_idx is always 0
-            // or 1, so refusing would block every drag-out from a
-            // single-tab row even though the flow produces correct state.
-            if let Some(gap_idx) = self.gap_index_for(release_point)
-                && self.split_tab_into_new_group(src_idx, tab_id, gap_idx)
+                .get(tgt_idx)
+                .map(|g| g.drop_index_for(release_point))
+            else {
+                return;
+            };
+            let Some(src_group) = self.groups.get_mut(src_idx) else {
+                return;
+            };
+            let moved_tab = src_group.detach_tab(tab_id);
+            if let Some((desc, host)) = moved_tab
+                && let Some(tgt) = self.groups.get_mut(tgt_idx)
             {
+                tgt.insert_detached_tab(drop_idx, desc, host);
                 *handled = true;
-                continue;
             }
-            // No target resolved (e.g. release over a closing sibling's
-            // content): treat as cancel. Each branch above detaches
-            // lazily inside its own path, so an unmatched release already
-            // leaves the source intact — this is a defensive guard against
-            // a future refactor moving the detach earlier.
-            let tab_in_source = self.groups[src_idx].tabs().iter().any(|t| t.id == tab_id);
-            if !tab_in_source {
-                let recovered = self.groups.iter_mut().find_map(|g| g.detach_tab(tab_id));
-                if let Some((desc, host)) = recovered {
-                    self.groups[src_idx].insert_detached_tab(0, desc, host);
+            return;
+        }
+        // Tile-area drop: three horizontal bands. Edge bands (25% of
+        // width, capped at 48px — the gap alone is too thin to hit)
+        // create a new group to that side; the centre band splices into
+        // the sibling's tab list.
+        let tile_target_idx = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(i, g)| {
+                *i != src_idx
+                    && !g.is_closing()
+                    && g.get_rect().contains(release_point)
+                    && !g.bar_rect().contains(release_point)
+            })
+            .map(|(i, _)| i);
+        if let Some(tgt_idx) = tile_target_idx {
+            let Some(tgt_rect) = self.groups.get(tgt_idx).map(WindowGroup::get_rect) else {
+                return;
+            };
+            let edge_band = (tgt_rect.width() * 0.25).min(48.0);
+            let in_left_band = release_point.x < tgt_rect.x0 + edge_band;
+            let in_right_band = release_point.x > tgt_rect.x1 - edge_band;
+            if in_left_band || in_right_band {
+                let gap_idx = if in_left_band {
+                    tgt_idx
+                } else {
+                    tgt_idx.saturating_add(1)
+                };
+                if self.split_tab_into_new_group(src_idx, tab_id, gap_idx) {
+                    *handled = true;
                 }
+                return;
+            }
+            let drop_idx = if release_point.x < tgt_rect.center().x {
+                0
+            } else {
+                self.groups.get(tgt_idx).map_or(0, |g| g.tabs().len())
+            };
+            let Some(src_group) = self.groups.get_mut(src_idx) else {
+                return;
+            };
+            let moved_tab = src_group.detach_tab(tab_id);
+            if let Some((desc, host)) = moved_tab
+                && let Some(tgt) = self.groups.get_mut(tgt_idx)
+            {
+                tgt.insert_detached_tab(drop_idx, desc, host);
+                *handled = true;
+            }
+            return;
+        }
+        // A *closing* sibling's bar rect still exists geometrically, so
+        // `gap_index_for` returns `None`; fall back to the
+        // left-of-closing-group gap instead of dropping the tab.
+        let closing_target = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(i, g)| *i != src_idx && g.is_closing() && g.bar_rect().contains(release_point))
+            .map(|(i, _)| i);
+        if let Some(tgt_idx) = closing_target {
+            if self.split_tab_into_new_group(src_idx, tab_id, tgt_idx) {
+                *handled = true;
+            }
+            return;
+        }
+        // Deliberately does NOT refuse a single-tab source dropped into
+        // an adjacent gap: with one group, gap_idx is always 0 or 1, so
+        // refusing would block every drag-out from a single-tab row
+        // even though the flow produces correct state.
+        if let Some(gap_idx) = self.gap_index_for(release_point)
+            && self.split_tab_into_new_group(src_idx, tab_id, gap_idx)
+        {
+            *handled = true;
+            return;
+        }
+        // No target resolved (e.g. release over a closing sibling's
+        // content): treat as cancel. Each branch above detaches lazily
+        // inside its own path, so an unmatched release already leaves
+        // the source intact — this is a defensive guard against a
+        // future refactor moving the detach earlier.
+        let tab_in_source = self
+            .groups
+            .get(src_idx)
+            .is_some_and(|g| g.tabs().iter().any(|t| t.id == tab_id));
+        if !tab_in_source {
+            let recovered = self.groups.iter_mut().find_map(|g| g.detach_tab(tab_id));
+            if let Some((desc, host)) = recovered
+                && let Some(src_group) = self.groups.get_mut(src_idx)
+            {
+                src_group.insert_detached_tab(0, desc, host);
             }
         }
     }
@@ -1906,6 +2107,18 @@ impl Widget for GroupRow {
     }
 }
 
+/// `base` shifted right by `dx` px. Wrapped so the one
+/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
+/// `Mul` is pure floating-point matrix composition and cannot panic or
+/// overflow.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
+)]
+fn shift_transform(base: Affine, dx: f64) -> Affine {
+    base * Affine::translate((dx, 0.0))
+}
+
 /// Zero-area rects are skipped — a name means "on screen now".
 fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
     if let Some(id) = w.test_id() {
@@ -1928,6 +2141,25 @@ fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
 mod tests {
     use super::*;
     use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
+
+    /// Narrows a fixture viewport width to the `f32` taffy layout expects.
+    /// Test fixtures only ever pass small literal pixel constants (hundreds
+    /// to low thousands), far inside `f32`'s exact-integer range, so this
+    /// cannot lose precision.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "test fixture viewport widths are small literal pixel constants, always exactly representable in f32"
+    )]
+    fn px32(v: f64) -> f32 {
+        v as f32
+    }
+
+    /// `t` minus `ms` milliseconds, saturating rather than panicking in
+    /// the astronomically unlikely case the subtraction would underflow
+    /// `Instant`'s valid range.
+    fn earlier(t: Instant, ms: u64) -> Instant {
+        t.checked_sub(Duration::from_millis(ms)).unwrap_or(t)
+    }
 
     fn make_group(id: u64, tab_ids: &[u64]) -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = tab_ids
@@ -2108,7 +2340,7 @@ mod tests {
         let r0 = row.groups[0].get_rect();
         let r1 = row.groups[1].get_rect();
         let row_rect = row.rect;
-        let y = (row_rect.y0 + row_rect.y1) / 2.0;
+        let y = f64::midpoint(row_rect.y0, row_rect.y1);
 
         assert_eq!(row.gap_index_for(Point::new(r0.x0 - 4.0, y)), Some(0));
         assert_eq!(row.gap_index_for(Point::new(r1.x1 + 4.0, y)), Some(2));
@@ -2124,7 +2356,7 @@ mod tests {
         );
         // Only assert if the layout actually left a gap.
         if r1.x0 > r0.x1 {
-            let mid = (r0.x1 + r1.x0) / 2.0;
+            let mid = f64::midpoint(r0.x1, r1.x0);
             assert_eq!(row.gap_index_for(Point::new(mid, y)), Some(1));
         }
     }
@@ -2157,7 +2389,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(viewport_w as f32),
+                    width: Dimension::length(px32(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -2168,7 +2400,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(viewport_w as f32),
+                    width: AvailableSpace::Definite(px32(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -2192,7 +2424,7 @@ mod tests {
         let groups: Vec<WindowGroup> = tab_specs
             .iter()
             .enumerate()
-            .map(|(i, ids)| make_group(100 + i as u64 * 100, ids))
+            .map(|(i, ids)| make_group((i as u64).saturating_mul(100).saturating_add(100), ids))
             .collect();
         let mut row = GroupRow::new(groups);
         row.set_output_spans(&one_display(usable));
@@ -2203,7 +2435,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(viewport_w as f32),
+                    width: Dimension::length(px32(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -2214,7 +2446,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(viewport_w as f32),
+                    width: AvailableSpace::Definite(px32(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -2235,7 +2467,10 @@ mod tests {
         let g = &row.groups[idx];
         let bar = g.bar_rect();
         let last = g.tab_rects().last().copied().unwrap_or(bar);
-        Point::new((last.x1 + bar.x1) / 2.0, (bar.y0 + bar.y1) / 2.0)
+        Point::new(
+            f64::midpoint(last.x1, bar.x1),
+            f64::midpoint(bar.y0, bar.y1),
+        )
     }
 
     fn press_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, p: Point) {
@@ -2243,7 +2478,7 @@ mod tests {
             row,
             taffy,
             root,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
@@ -2252,7 +2487,7 @@ mod tests {
             row,
             taffy,
             root,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -2260,14 +2495,14 @@ mod tests {
         );
     }
 
-    fn dispatch_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, ev: WindowEvent) {
+    fn dispatch_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, ev: &WindowEvent) {
         let modifiers = Modifiers::default();
         let mut state = AutoCommit::new();
         let path = automerge::ROOT.clone();
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         row.handle_event(
-            &ev,
+            ev,
             1.0,
             &modifiers,
             &mut state,
@@ -2304,7 +2539,7 @@ mod tests {
             &mut row,
             &taffy,
             root,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(past.x, past.y),
             },
@@ -2322,7 +2557,7 @@ mod tests {
             &mut row,
             &taffy,
             root,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -2352,7 +2587,7 @@ mod tests {
             &mut row,
             &taffy,
             root,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(target.x, target.y),
             },
@@ -2361,7 +2596,7 @@ mod tests {
             &mut row,
             &taffy,
             root,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -2379,7 +2614,7 @@ mod tests {
             &mut row,
             &taffy,
             root,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -2519,7 +2754,7 @@ mod tests {
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[7]]);
         let g0_rect = row.groups[0].get_rect();
-        let release = Point::new(g0_rect.x1 + 10.0, (g0_rect.y0 + g0_rect.y1) / 2.0);
+        let release = Point::new(g0_rect.x1 + 10.0, f64::midpoint(g0_rect.y0, g0_rect.y1));
         // Mimics what `TabBar::handle_event` does on an out-of-rect release.
         row.groups[0].bar_mut().pending_detach = Some((7, release));
 
@@ -2625,8 +2860,8 @@ mod tests {
         // Gap between group 0 and group 1 (gap_idx == 1).
         let r0 = row.groups[0].get_rect();
         let r1 = row.groups[1].get_rect();
-        let mid_y = (row.rect.y0 + row.rect.y1) / 2.0;
-        let mid_gap = Point::new((r0.x1 + r1.x0) / 2.0, mid_y);
+        let mid_y = f64::midpoint(row.rect.y0, row.rect.y1);
+        let mid_gap = Point::new(f64::midpoint(r0.x1, r1.x0), mid_y);
 
         fire_cursor_moved(&mut row, &taffy, root, mid_gap);
 
@@ -2643,8 +2878,8 @@ mod tests {
         start_drag(&mut row, 0, 1);
         let r0 = row.groups[0].get_rect();
         let r1 = row.groups[1].get_rect();
-        let mid_y = (row.rect.y0 + row.rect.y1) / 2.0;
-        let mid_gap = Point::new((r0.x1 + r1.x0) / 2.0, mid_y);
+        let mid_y = f64::midpoint(row.rect.y0, row.rect.y1);
+        let mid_gap = Point::new(f64::midpoint(r0.x1, r1.x0), mid_y);
         fire_cursor_moved(&mut row, &taffy, root, mid_gap);
         assert!(
             row.hover_gap_idx.is_some(),
@@ -2686,7 +2921,7 @@ mod tests {
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         // Already-elapsed timestamp: ready-to-prune on the very next tick.
-        row.groups[0].set_closing_at_for_tests(Instant::now() - Duration::from_millis(200));
+        row.groups[0].set_closing_at_for_tests(earlier(Instant::now(), 200));
         assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
         let event = WindowEvent::CursorMoved {
@@ -2778,7 +3013,10 @@ mod tests {
         assert_eq!(b_tabs_before, vec![10, 11]);
 
         let b_bar = row.groups[1].bar_rect();
-        let release = Point::new((b_bar.x0 + b_bar.x1) / 2.0, (b_bar.y0 + b_bar.y1) / 2.0);
+        let release = Point::new(
+            f64::midpoint(b_bar.x0, b_bar.x1),
+            f64::midpoint(b_bar.y0, b_bar.y1),
+        );
         row.groups[0].bar_mut().pending_detach = Some((1, release));
 
         let mut doc = AutoCommit::new();
@@ -2805,7 +3043,7 @@ mod tests {
         let b_idx = row
             .groups
             .iter()
-            .position(|g| g.is_closing())
+            .position(WindowGroup::is_closing)
             .expect("B should still be present (mid-fade)");
         let b_tabs_after: Vec<u64> = row.groups[b_idx].tabs().iter().map(|t| t.id).collect();
         assert_eq!(
@@ -2850,7 +3088,7 @@ mod tests {
 
         let release_left = Point::new(
             b_rect.x0 + (b_rect.width() * 0.25),
-            (b_bar.y1 + b_rect.y1) / 2.0,
+            f64::midpoint(b_bar.y1, b_rect.y1),
         );
         assert!(b_rect.contains(release_left));
         assert!(!b_bar.contains(release_left));
@@ -2898,7 +3136,7 @@ mod tests {
         let b_bar = row.groups[1].bar_rect();
         let release_right = Point::new(
             b_rect.x0 + (b_rect.width() * 0.75),
-            (b_bar.y1 + b_rect.y1) / 2.0,
+            f64::midpoint(b_bar.y1, b_rect.y1),
         );
         assert!(b_rect.contains(release_right));
         assert!(!b_bar.contains(release_right));
@@ -2946,7 +3184,10 @@ mod tests {
         // Inside B's outer rect but BELOW its bar rect — its content area.
         let b_rect = row.groups[1].get_rect();
         let b_bar = row.groups[1].bar_rect();
-        let release = Point::new((b_rect.x0 + b_rect.x1) / 2.0, (b_bar.y1 + b_rect.y1) / 2.0);
+        let release = Point::new(
+            f64::midpoint(b_rect.x0, b_rect.x1),
+            f64::midpoint(b_bar.y1, b_rect.y1),
+        );
         assert!(
             b_rect.contains(release),
             "precondition: release is inside B's outer rect",
@@ -3001,7 +3242,7 @@ mod tests {
         let b_idx = row
             .groups
             .iter()
-            .position(|g| g.is_closing())
+            .position(WindowGroup::is_closing)
             .expect("B should still be present mid-fade");
         let b_tabs_after: Vec<u64> = row.groups[b_idx].tabs().iter().map(|t| t.id).collect();
         assert_eq!(
@@ -3020,8 +3261,8 @@ mod tests {
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         let r0 = row.groups[0].get_rect();
         let r1 = row.groups[1].get_rect();
-        let mid_y = (row.rect.y0 + row.rect.y1) / 2.0;
-        let mid_gap = Point::new((r0.x1 + r1.x0) / 2.0, mid_y);
+        let mid_y = f64::midpoint(row.rect.y0, row.rect.y1);
+        let mid_gap = Point::new(f64::midpoint(r0.x1, r1.x0), mid_y);
 
         fire_cursor_moved(&mut row, &taffy, root, mid_gap);
 
@@ -3033,7 +3274,7 @@ mod tests {
 
     /// The prune sweep removes faded groups from `self.groups` while
     /// `node_ids` stays stale until the next `build_layout`; the
-    /// production debug_assert pins that. Gated since the asserts
+    /// production `debug_assert` pins that. Gated since the asserts
     /// exercised are themselves debug-only.
     #[cfg(debug_assertions)]
     #[test]
@@ -3044,8 +3285,8 @@ mod tests {
         // Non-adjacent prune indices (0, 2) verify the
         // highest-index-first sort doesn't shift slots under the loop.
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-        row.groups[0].set_closing_at_for_tests(Instant::now() - Duration::from_millis(500));
-        row.groups[2].set_closing_at_for_tests(Instant::now() - Duration::from_millis(500));
+        row.groups[0].set_closing_at_for_tests(earlier(Instant::now(), 500));
+        row.groups[2].set_closing_at_for_tests(earlier(Instant::now(), 500));
 
         let groups_pre = row.groups.len();
         let node_ids_pre = row.node_ids.len();
@@ -3108,7 +3349,12 @@ mod tests {
         use taffy::{AvailableSpace, Size as TSize, TaffyTree};
 
         let groups: Vec<WindowGroup> = (0..count)
-            .map(|i| make_group(100 + i as u64 * 100, &[i as u64 + 1]))
+            .map(|i| {
+                make_group(
+                    (i as u64).saturating_mul(100).saturating_add(100),
+                    &[(i as u64).saturating_add(1)],
+                )
+            })
             .collect();
         let mut row = GroupRow::new(groups);
         let theme = Theme::dark();
@@ -3118,7 +3364,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(viewport_w as f32),
+                    width: Dimension::length(px32(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -3129,7 +3375,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(viewport_w as f32),
+                    width: AvailableSpace::Definite(px32(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -3222,7 +3468,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(viewport_w as f32),
+                    width: Dimension::length(px32(viewport_w)),
                     height: Dimension::length(1080.0),
                 },
                 ..Default::default()
@@ -3233,7 +3479,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(viewport_w as f32),
+                    width: AvailableSpace::Definite(px32(viewport_w)),
                     height: AvailableSpace::Definite(1080.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -3247,7 +3493,12 @@ mod tests {
     /// compositor actually lays out.
     fn strip_at(count: usize, viewport_w: f64, leading_inset: f64, permille: u16) -> GroupRow {
         let groups: Vec<WindowGroup> = (0..count)
-            .map(|i| make_group(100 + i as u64 * 100, &[i as u64 + 1]))
+            .map(|i| {
+                make_group(
+                    (i as u64).saturating_mul(100).saturating_add(100),
+                    &[(i as u64).saturating_add(1)],
+                )
+            })
             .collect();
         let mut row = GroupRow::new(groups);
         row.set_leading_inset(leading_inset);
@@ -3261,7 +3512,7 @@ mod tests {
     }
 
     fn set_strip_permille(row: &mut GroupRow, permille: u16) {
-        for g in row.groups.iter_mut() {
+        for g in &mut row.groups {
             g.set_width(WindowWidth::Fraction(permille));
         }
     }
@@ -3427,8 +3678,8 @@ mod tests {
             make_row_with_groups_with_taffy(&[&[1], &[10]]),
         ] {
             let pre_rect_0 = row.groups[0].get_rect();
-            let cy = (row.rect.y0 + row.rect.y1) / 2.0;
-            let cx = (row.rect.x0 + row.rect.x1) / 2.0;
+            let cy = f64::midpoint(row.rect.y0, row.rect.y1);
+            let cx = f64::midpoint(row.rect.x0, row.rect.x1);
             let mut state = AutoCommit::new();
             let root_obj = automerge::ROOT.clone();
             let modifiers = Modifiers::default();
@@ -3488,7 +3739,7 @@ mod tests {
         // 400 is closer to 608 than to 0: exercises the second group's edge.
         row.set_scroll_x_for_test(400.0);
         let base = Instant::now();
-        row.set_last_wheel_at_for_test(base - Duration::from_millis(250));
+        row.set_last_wheel_at_for_test(earlier(base, 250));
 
         // First tick after idle: snap kicks off and advances ~25% of the
         // way (50 ms into a 200 ms cubic-out curve). scroll_x must have
@@ -3522,7 +3773,7 @@ mod tests {
         row.set_scroll_x_for_test(400.0);
         let base = Instant::now();
         // Only 100 ms since the last wheel — inside the idle window.
-        row.set_last_wheel_at_for_test(base - Duration::from_millis(100));
+        row.set_last_wheel_at_for_test(earlier(base, 100));
 
         row.tick_snap_at(base);
         assert_eq!(
@@ -3541,7 +3792,7 @@ mod tests {
         // Stage an in-flight snap directly to skip a real idle window.
         row.set_scroll_x_for_test(300.0);
         let base = Instant::now();
-        row.set_last_wheel_at_for_test(base - Duration::from_millis(250));
+        row.set_last_wheel_at_for_test(earlier(base, 250));
         row.tick_snap_at(base);
         assert!(
             row.snap_anim.is_some(),
@@ -3549,8 +3800,8 @@ mod tests {
         );
 
         // Cursor must be inside the row's rect for the handler to claim it.
-        let cy = (row.rect.y0 + row.rect.y1) / 2.0;
-        let cx = (row.rect.x0 + row.rect.x1) / 2.0;
+        let cy = f64::midpoint(row.rect.y0, row.rect.y1);
+        let cx = f64::midpoint(row.rect.x0, row.rect.x1);
         let mut state = AutoCommit::new();
         let root_obj = automerge::ROOT.clone();
         let modifiers = Modifiers::default();
@@ -3611,12 +3862,45 @@ mod tests {
         );
     }
 
+    /// Rebuilds a full taffy tree and lays `row` out on it — mimics
+    /// `App`'s `RedrawRequested` path after a structural mutation, so a
+    /// group spliced in by the previous drop actually gets a rect
+    /// before the test drives its next interaction.
+    fn relayout_via_new_taffy_tree(row: &mut GroupRow) -> (TaffyTree<()>, NodeId) {
+        use taffy::AvailableSpace;
+        let theme = Theme::dark();
+        let mut new_taffy: TaffyTree<()> = TaffyTree::new();
+        let mut new_node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let new_root_child = row.build_layout(&mut new_taffy, &theme, &mut new_node_map);
+        let new_root = new_taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(2000.0),
+                    height: Dimension::length(600.0),
+                },
+                ..Default::default()
+            },
+            &[new_root_child],
+        );
+        new_taffy
+            .compute_layout_with_measure(
+                new_root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(2000.0),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        row.apply_layout(&new_taffy, new_root_child, Point::ORIGIN);
+        (new_taffy, new_root_child)
+    }
+
     /// Two detach+drop sequences in a row, to catch a freeze at the
-    /// GroupRow level. If it hangs or panics, the bug is here; if it
-    /// passes, look one layer up (App tick, taffy rebuild).
+    /// `GroupRow` level. If it hangs or panics, the bug is here; if it
+    /// passes, look one layer up (`App` tick, taffy rebuild).
     #[test]
     fn two_sequential_splits_do_not_hang() {
-        use taffy::AvailableSpace;
         // One 4-tab group, matching the live shell's bootstrap_default
         // Home workspace.
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1, 2, 3, 4]]);
@@ -3626,7 +3910,6 @@ mod tests {
         let release_1 = Point::new(g0_rect.x1 + 30.0, g0_rect.y0 + 6.0);
         row.groups[0].bar_mut_for_tests().pending_detach = Some((4, release_1));
 
-        let theme = Theme::dark();
         let modifiers = winit::event::Modifiers::default();
         let mut state = automerge::AutoCommit::new();
         let root_obj = automerge::ROOT;
@@ -3653,32 +3936,7 @@ mod tests {
             row.take_structure_dirty(),
             "split must flag structure_dirty"
         );
-        let mut new_taffy: TaffyTree<()> = TaffyTree::new();
-        let mut new_node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let new_root_child = row.build_layout(&mut new_taffy, &theme, &mut new_node_map);
-        let new_root = new_taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::length(2000.0),
-                    height: Dimension::length(600.0),
-                },
-                ..Default::default()
-            },
-            &[new_root_child],
-        );
-        new_taffy
-            .compute_layout_with_measure(
-                new_root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(2000.0),
-                    height: AvailableSpace::Definite(600.0),
-                },
-                |_, _, _, _, _| taffy::Size::ZERO,
-            )
-            .unwrap();
-        row.apply_layout(&new_taffy, new_root_child, Point::ORIGIN);
-        let taffy = new_taffy;
-        let root = new_root_child;
+        let (taffy, root) = relayout_via_new_taffy_tree(&mut row);
 
         // DROP #2: tab 3 dropped into the gap between groups 0/1 → 3rd group.
         let g0_rect = row.groups[0].get_rect();
@@ -3687,7 +3945,7 @@ mod tests {
         eprintln!("  g0 bar_rect={:?}", row.groups[0].bar_rect());
         eprintln!("  g1 bar_rect={:?}", row.groups[1].bar_rect());
         eprintln!("  row.rect={:?}", row.rect);
-        let gap_mid = (g0_rect.x1 + g1_rect.x0) / 2.0;
+        let gap_mid = f64::midpoint(g0_rect.x1, g1_rect.x0);
         let release_2 = Point::new(gap_mid, g0_rect.y0 + 6.0);
         eprintln!("  release_2={release_2:?}");
         eprintln!(
@@ -3826,8 +4084,8 @@ mod tests {
         assert_eq!(pre_right_w, 800.0);
 
         let handle_rect = row.handle_at(0).unwrap().get_rect();
-        let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
-        let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+        let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
+        let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
         let dev = unsafe { std::mem::zeroed() };
         let modifiers = Modifiers::default();
@@ -3963,8 +4221,8 @@ mod tests {
         let (mut row, taffy, root) = relayout_row_owned(row, 2000.0);
 
         let handle_rect = row.handle_at(0).unwrap().get_rect();
-        let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
-        let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+        let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
+        let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
         let dev = unsafe { std::mem::zeroed() };
         let modifiers = Modifiers::default();
@@ -4050,8 +4308,8 @@ mod tests {
         assert!(row.groups[0].drag_in_flight());
 
         let handle_rect = row.handle_at(0).unwrap().get_rect();
-        let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
-        let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+        let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
+        let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
         let dev = unsafe { std::mem::zeroed() };
         let modifiers = Modifiers::default();
@@ -4082,6 +4340,8 @@ mod tests {
 
     #[test]
     fn maximized_group_hides_siblings_and_absorbs_row_width() {
+        use taffy::AvailableSpace;
+
         // Three groups verifies BOTH a left-of-max and right-of-max
         // sibling collapse, not just one.
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
@@ -4096,7 +4356,6 @@ mod tests {
         let mut taffy_new: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let new_root = row.build_layout(&mut taffy_new, &theme, &mut node_map);
-        use taffy::AvailableSpace;
         let viewport = taffy_new.parent_node(
             Style {
                 size: Size {
@@ -4159,10 +4418,11 @@ mod tests {
         row.groups[1].maximized = true;
         let theme = Theme::dark();
         let relayout = |row: &mut GroupRow| -> TaffyTree<()> {
+            use taffy::AvailableSpace;
+
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let root = row.build_layout(&mut taffy, &theme, &mut node_map);
-            use taffy::AvailableSpace;
             let viewport = taffy.parent_node(
                 Style {
                     size: Size {
@@ -4194,8 +4454,7 @@ mod tests {
         for (i, g) in row.groups.iter().enumerate() {
             assert!(
                 g.get_rect().width() > 0.0,
-                "group {} must regain positive width after un-maximize",
-                i,
+                "group {i} must regain positive width after un-maximize",
             );
         }
         assert_eq!(
@@ -4209,11 +4468,12 @@ mod tests {
     /// tree + runs a full layout pass at a fixed 2000×600 viewport, exactly
     /// like `unmaximize_restores_siblings_and_handles`.
     fn relayout_row(row: &mut GroupRow) {
+        use taffy::AvailableSpace;
+
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let root = row.build_layout(&mut taffy, &theme, &mut node_map);
-        use taffy::AvailableSpace;
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
@@ -4289,7 +4549,7 @@ mod tests {
     #[test]
     fn exiting_fullscreen_restores_prior_layout_exactly() {
         let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-        let before: Vec<Rect> = row.groups.iter().map(|g| g.get_rect()).collect();
+        let before: Vec<Rect> = row.groups.iter().map(WindowGroup::get_rect).collect();
         let handles_before = row.handle_node_ids.len();
         assert_eq!(handles_before, 2);
 
@@ -4300,7 +4560,7 @@ mod tests {
         relayout_row(&mut row);
 
         assert!(!row.is_fullscreen(), "exit clears the fullscreen promotion");
-        let after: Vec<Rect> = row.groups.iter().map(|g| g.get_rect()).collect();
+        let after: Vec<Rect> = row.groups.iter().map(WindowGroup::get_rect).collect();
         for (i, (b, a)) in before.iter().zip(after.iter()).enumerate() {
             assert!(
                 (b.x0 - a.x0).abs() < 0.5
@@ -4319,7 +4579,7 @@ mod tests {
     #[test]
     fn hidden_row_collapses_and_restores() {
         let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        let before: Vec<Rect> = row.groups.iter().map(|g| g.get_rect()).collect();
+        let before: Vec<Rect> = row.groups.iter().map(WindowGroup::get_rect).collect();
         assert!(before.iter().all(|r| r.width() > 0.0));
 
         row.set_fullscreen(None, true);
@@ -4334,7 +4594,7 @@ mod tests {
 
         row.set_fullscreen(None, false);
         relayout_row(&mut row);
-        let after: Vec<Rect> = row.groups.iter().map(|g| g.get_rect()).collect();
+        let after: Vec<Rect> = row.groups.iter().map(WindowGroup::get_rect).collect();
         for (i, (b, a)) in before.iter().zip(after.iter()).enumerate() {
             assert!(
                 (b.width() - a.width()).abs() < 0.5,
