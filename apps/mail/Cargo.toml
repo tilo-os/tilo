@@ -32,7 +32,6 @@ uuid.workspace = true
 # without ever touching the user's real account store under `~/.config/qos`.
 tempfile.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
