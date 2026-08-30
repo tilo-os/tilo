@@ -70,16 +70,19 @@ impl<Row> ColumnDef<Row> {
         }
     }
 
+    #[must_use]
     pub fn sortable(mut self, v: bool) -> Self {
         self.sortable = v;
         self
     }
 
+    #[must_use]
     pub fn with_text_render(mut self, f: CellTextRender<Row>) -> Self {
         self.text_render = Some(f);
         self
     }
 
+    #[must_use]
     pub fn with_render(mut self, f: CellRender<Row>) -> Self {
         self.render_cell = f;
         self
@@ -177,7 +180,7 @@ impl<Row> DataTable<Row> {
             resize: None,
             last_cursor: None,
             viewport_h: 0.0,
-            row_height: ROW_HEIGHT as f32,
+            row_height: px(ROW_HEIGHT),
             scroll_y: 0.0,
             selectable: false,
             selection: crate::selection::SelectionModel::new(),
@@ -189,6 +192,7 @@ impl<Row> DataTable<Row> {
         }
     }
 
+    #[must_use]
     pub fn selectable(mut self, v: bool) -> Self {
         self.selectable = v;
         self
@@ -206,21 +210,25 @@ impl<Row> DataTable<Row> {
         &mut self.selection
     }
 
+    #[must_use]
     pub fn with_selection(mut self, sel: crate::selection::SelectionModel) -> Self {
         self.selection = sel;
         self
     }
 
+    #[must_use]
     pub fn on_row_click<F: FnMut(usize, bool, bool) + 'static>(mut self, f: F) -> Self {
         self.on_row_click = Some(Box::new(f));
         self
     }
 
+    #[must_use]
     pub fn on_activate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_activate = Some(Box::new(f));
         self
     }
 
+    #[must_use]
     pub fn on_header_click<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_header_click = Some(Box::new(f));
         self
@@ -239,6 +247,13 @@ impl<Row> DataTable<Row> {
         if rel < 0.0 {
             return None;
         }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "rel >= 0.0 is checked above and row_height is always > 0 \
+                      (default ROW_HEIGHT or set_viewport's max(1.0) clamp); \
+                      this cast is the intended floor-to-row-index conversion"
+        )]
         let idx = (rel / f64::from(self.row_height)) as usize;
         if idx < self.view.len() {
             Some(idx)
@@ -259,7 +274,7 @@ impl<Row> DataTable<Row> {
 
     /// Rows in current sort order.
     pub fn view_rows(&self) -> Vec<&Row> {
-        self.view.iter().map(|&i| &self.rows[i]).collect()
+        self.view.iter().filter_map(|&i| self.rows.get(i)).collect()
     }
 
     pub fn sort_state(&self) -> Option<(&str, bool)> {
@@ -302,7 +317,10 @@ impl<Row> DataTable<Row> {
             let cmp = &s.cmp;
             let ascending = s.ascending;
             self.view.sort_by(|&a, &b| {
-                let o = cmp(&rows[a], &rows[b]);
+                let (Some(ra), Some(rb)) = (rows.get(a), rows.get(b)) else {
+                    return Ordering::Equal;
+                };
+                let o = cmp(ra, rb);
                 if ascending { o } else { o.reverse() }
             });
         }
@@ -367,10 +385,22 @@ impl<Row> DataTable<Row> {
         if self.viewport_h <= 0.0 || self.row_height <= 0.0 {
             return (0, len);
         }
-        let first = (self.scroll_y / self.row_height).floor() as isize;
-        let start = first.saturating_sub(2).max(0) as usize;
-        let visible = (self.viewport_h / self.row_height).ceil() as usize;
-        let end = (start + visible + 4).min(len);
+        // scroll_y and row_height are both non-negative (enforced by
+        // set_scroll_y/set_viewport), so these floored/ceiled quotients are
+        // already integral and >= 0 — the casts below only narrow that
+        // already-integral value, bounded by the on-screen row count.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "scroll_y/row_height >= 0 is enforced by set_scroll_y/set_viewport; \
+                      floor()/ceil() already yields an integral, non-negative value"
+        )]
+        let (first, visible) = (
+            (self.scroll_y / self.row_height).floor() as usize,
+            (self.viewport_h / self.row_height).ceil() as usize,
+        );
+        let start = first.saturating_sub(2);
+        let end = start.saturating_add(visible).saturating_add(4).min(len);
         (start, end)
     }
 
@@ -383,12 +413,12 @@ impl<Row> DataTable<Row> {
     }
 
     fn content_body_h(&self) -> f64 {
-        f64::from(self.row_height) * self.view.len() as f64
+        f64::from(self.row_height) * count_f64(self.view.len())
     }
 
     /// `content - viewport`, floored at 0.
     pub fn max_scroll_y(&self) -> f32 {
-        (self.content_body_h() - self.body_viewport_h()).max(0.0) as f32
+        px((self.content_body_h() - self.body_viewport_h()).max(0.0))
     }
 
     fn v_metrics(&self) -> ScrollMetrics {
@@ -483,64 +513,16 @@ impl<Row> DataTable<Row> {
         }
         None
     }
-}
 
-const HEADER_HEIGHT: f64 = 28.0;
-const ROW_HEIGHT: f64 = 24.0;
-const CELL_PADDING_X: f64 = 8.0;
-
-impl<Row: 'static> Widget for DataTable<Row> {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let height = HEADER_HEIGHT + ROW_HEIGHT * self.view.len().max(1) as f64;
-        let node = taffy.leaf_node(Style {
-            // A bare `auto` leaf with no measure collapses to zero
-            // under compute_layout_with_measure.
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(height as f32),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        // User-resized widths in `col_widths_px` override the declared `ColumnWidth`.
-        self.col_rects = compute_column_rects(&self.columns, self.rect, &self.col_widths_px);
-    }
-
-    fn draw(
-        &mut self,
+    /// Header background, bottom border, column labels and the active sort arrow.
+    fn draw_header(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-
         let header_rect = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -576,7 +558,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 &col.header,
                 text_size,
                 tokens.colors.text_primary,
-                transform * Affine::translate((cr.x0 + CELL_PADDING_X, label_y)),
+                translated(transform, cr.x0 + CELL_PADDING_X, label_y),
                 None,
             );
             if let Some(s) = &self.sort
@@ -588,22 +570,37 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     arrow,
                     text_size,
                     tokens.colors.text_dim,
-                    transform * Affine::translate((cr.x1 - 16.0, label_y)),
+                    translated(transform, cr.x1 - 16.0, label_y),
                     None,
                 );
             }
         }
+    }
 
+    /// Row backgrounds (selection fill / zebra stripe) and per-column cell
+    /// content, windowed to [`Self::visible_row_range`] plus overscan.
+    fn draw_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
         let (vis_start, vis_end) = self.visible_row_range();
         let row_h = f64::from(self.row_height);
         for ri in vis_start..vis_end {
             let Some(&row_idx) = self.view.get(ri) else {
                 break;
             };
+            let Some(row) = self.rows.get(row_idx) else {
+                continue;
+            };
             // Internal virtualization subtracts scroll_y; when driven by an
             // outer Scrollable, scroll_y stays 0 and the whole rect is
             // translated instead — both paths render correctly.
-            let y0 = self.rect.y0 + HEADER_HEIGHT + (ri as f64) * row_h - f64::from(self.scroll_y);
+            let y0 =
+                self.rect.y0 + HEADER_HEIGHT + count_f64(ri) * row_h - f64::from(self.scroll_y);
             let y1 = y0 + row_h;
             if y1 <= self.rect.y0 + HEADER_HEIGHT {
                 continue;
@@ -636,19 +633,290 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1.min(self.rect.y1)),
                     None => continue,
                 };
-                (col.render_cell)(&self.rows[row_idx], scene, theme, text_renderer, cell_rect);
+                (col.render_cell)(row, scene, theme, text_renderer, cell_rect);
                 if let Some(tr) = &col.text_render {
-                    tr(
-                        &self.rows[row_idx],
-                        scene,
-                        text_renderer,
-                        cell_rect,
-                        theme,
-                        selected,
-                    );
+                    tr(row, scene, text_renderer, cell_rect, theme, selected);
                 }
             }
         }
+    }
+
+    /// `WindowEvent::CursorMoved` — drag-resize/drag-scroll tracking, else
+    /// scrollbar hover.
+    fn on_cursor_moved(&mut self, pt: Point, handled: &mut bool) {
+        self.last_cursor = Some(pt);
+        if self.resize.is_some() {
+            self.drag_resize(px(pt.x));
+            *handled = true;
+            return;
+        }
+        // An active scrollbar drag owns the move.
+        if self.vbar.is_dragging() {
+            if let Some(track) = self.v_track()
+                && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), pt)
+            {
+                self.set_scroll_y(px(target));
+            }
+            *handled = true;
+            return;
+        }
+        if let Some(track) = self.v_track() {
+            self.vbar.update_hover(track, self.v_metrics(), pt);
+        } else {
+            self.vbar.set_hover(false);
+        }
+    }
+
+    /// `WindowEvent::MouseInput { state: Pressed, button: Left }` — scrollbar,
+    /// then column resize handles, then header sort, then row selection, in
+    /// that priority order.
+    fn on_left_press(
+        &mut self,
+        modifiers: &winit::event::Modifiers,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        let Some(pt) = self.last_cursor else { return };
+        // 0. Built-in scrollbar wins over the body beneath it.
+        if let Some(track) = self.v_track() {
+            match self.vbar.press(track, self.v_metrics(), pt) {
+                PressOutcome::Thumb => {
+                    *handled = true;
+                    return;
+                }
+                PressOutcome::Page(target) => {
+                    self.set_scroll_y(px(target));
+                    *handled = true;
+                    return;
+                }
+                PressOutcome::Miss => {}
+            }
+        }
+        // 1. Column resize handles win over everything.
+        for i in 0..self.columns.len() {
+            if let Some(handle) = self.resize_handle_rect_for(i)
+                && handle.contains(pt)
+            {
+                let Some(key) = self.columns.get(i).map(|c| c.key.clone()) else {
+                    continue;
+                };
+                self.begin_resize(&key, px(pt.x));
+                *handled = true;
+                return;
+            }
+        }
+        // 2. Header click → sort (host-owned via on_header_click, else internal toggle).
+        let in_header = pt.y >= self.rect.y0
+            && pt.y < self.rect.y0 + HEADER_HEIGHT
+            && pt.x >= self.rect.x0
+            && pt.x <= self.rect.x1;
+        if in_header {
+            if let Some(i) = self
+                .col_rects
+                .iter()
+                .position(|c| pt.x >= c.x0 && pt.x < c.x1)
+                && self.columns.get(i).is_some_and(|c| c.sortable)
+            {
+                if let Some(cb) = &mut self.on_header_click {
+                    cb(i);
+                } else {
+                    self.toggle_sort(i);
+                }
+                *handled = true;
+            }
+            return;
+        }
+        // 3. Body-row selection.
+        if self.selectable
+            && let Some(ri) = self.row_at(pt)
+        {
+            let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+            let shift = modifiers.state().shift_key();
+            self.selection.apply_click(ri, ctrl, shift);
+            *focus_target = Some(node_id);
+            if let Some(cb) = &mut self.on_row_click {
+                cb(ri, ctrl, shift);
+            }
+            // Internal double-click → activate (long-lived hosts).
+            let now = std::time::Instant::now();
+            let is_double = matches!(
+                self.last_click_row,
+                Some((pri, t)) if pri == ri && now.duration_since(t) < crate::gesture::multi_click_interval()
+            );
+            if is_double {
+                self.last_click_row = None;
+                if let Some(cb) = &mut self.on_activate {
+                    cb(ri);
+                }
+            } else {
+                self.last_click_row = Some((ri, now));
+            }
+            *handled = true;
+        }
+    }
+
+    /// `WindowEvent::MouseInput { state: Released, button: Left }` — ends any
+    /// in-progress column resize or scrollbar drag.
+    fn on_left_release(&mut self, handled: &mut bool) {
+        let mut did = false;
+        if self.resize.is_some() {
+            self.end_resize();
+            did = true;
+        }
+        if self.vbar.release() {
+            did = true;
+        }
+        if did {
+            *handled = true;
+        }
+    }
+
+    /// `WindowEvent::MouseWheel` — only live when this table owns its scroll
+    /// internally (an outer `Scrollable` otherwise consumes the wheel first).
+    fn on_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
+        if self.internal_scroll() {
+            const LINE_PX: f32 = 60.0;
+            let dy = match delta {
+                MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
+                MouseScrollDelta::PixelDelta(pp) => px(-pp.y),
+            };
+            let next = (self.scroll_y + dy).clamp(0.0, self.max_scroll_y());
+            self.set_scroll_y(next);
+            *handled = true;
+        }
+    }
+
+    /// `WindowEvent::KeyboardInput`, guarded by the caller to only fire while
+    /// selectable, focused and on key-down: arrow navigation, Enter-to-activate,
+    /// Ctrl+A select-all.
+    fn on_key(
+        &mut self,
+        ke: &winit::event::KeyEvent,
+        modifiers: &winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
+        use winit::keyboard::{Key, NamedKey};
+        let shift = modifiers.state().shift_key();
+        let len = self.view.len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.selection.primary();
+        match &ke.logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let next = cur.map_or(0, |c| c.saturating_add(1).min(len.saturating_sub(1)));
+                self.selection.move_to(next, shift);
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let next = cur.map_or(0, |c| c.saturating_sub(1));
+                self.selection.move_to(next, shift);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(c) = cur
+                    && let Some(cb) = &mut self.on_activate
+                {
+                    cb(c);
+                }
+                *handled = true;
+            }
+            Key::Character(s) if (s == "a" || s == "A") && modifiers.state().control_key() => {
+                self.selection.select_all(len);
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+const HEADER_HEIGHT: f64 = 28.0;
+const ROW_HEIGHT: f64 = 24.0;
+const CELL_PADDING_X: f64 = 8.0;
+
+/// Widens a row/column count to `f64` for layout math, through `u32` (exact
+/// in `f64`) with a saturating fallback rather than an `as` cast — a
+/// `DataTable` never approaches `u32::MAX` rows or columns.
+fn count_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
+/// vello/taffy; table content stays far below `f32::MAX`.
+#[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen-space pixel values in this widget never approach f32::MAX"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
+}
+
+/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
+/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
+/// operand magnitude.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+impl<Row: 'static> Widget for DataTable<Row> {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let height = HEADER_HEIGHT + ROW_HEIGHT * count_f64(self.view.len().max(1));
+        let node = taffy.leaf_node(Style {
+            // A bare `auto` leaf with no measure collapses to zero
+            // under compute_layout_with_measure.
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(px(height)),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        );
+        // User-resized widths in `col_widths_px` override the declared `ColumnWidth`.
+        self.col_rects = compute_column_rects(&self.columns, self.rect, &self.col_widths_px);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+
+        self.draw_header(scene, transform, text_renderer, theme);
+        self.draw_rows(scene, transform, text_renderer, theme);
 
         // Focus ring, so arrow-key navigation reads as a focused control.
         if self.is_focused {
@@ -679,178 +947,29 @@ impl<Row: 'static> Widget for DataTable<Row> {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_cursor = Some(pt);
-                if self.resize.is_some() {
-                    self.drag_resize(pt.x as f32);
-                    *handled = true;
-                    return;
-                }
-                // An active scrollbar drag owns the move.
-                if self.vbar.is_dragging() {
-                    if let Some(track) = self.v_track()
-                        && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), pt)
-                    {
-                        self.set_scroll_y(target as f32);
-                    }
-                    *handled = true;
-                    return;
-                }
-                if let Some(track) = self.v_track() {
-                    self.vbar.update_hover(track, self.v_metrics(), pt);
-                } else {
-                    self.vbar.set_hover(false);
-                }
+                self.on_cursor_moved(pt, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                let Some(pt) = self.last_cursor else { return };
-                // 0. Built-in scrollbar wins over the body beneath it.
-                if let Some(track) = self.v_track() {
-                    match self.vbar.press(track, self.v_metrics(), pt) {
-                        PressOutcome::Thumb => {
-                            *handled = true;
-                            return;
-                        }
-                        PressOutcome::Page(target) => {
-                            self.set_scroll_y(target as f32);
-                            *handled = true;
-                            return;
-                        }
-                        PressOutcome::Miss => {}
-                    }
-                }
-                // 1. Column resize handles win over everything.
-                for i in 0..self.columns.len() {
-                    if let Some(handle) = self.resize_handle_rect_for(i)
-                        && handle.contains(pt)
-                    {
-                        let key = self.columns[i].key.clone();
-                        self.begin_resize(&key, pt.x as f32);
-                        *handled = true;
-                        return;
-                    }
-                }
-                // 2. Header click → sort (host-owned via on_header_click, else internal toggle).
-                let in_header = pt.y >= self.rect.y0
-                    && pt.y < self.rect.y0 + HEADER_HEIGHT
-                    && pt.x >= self.rect.x0
-                    && pt.x <= self.rect.x1;
-                if in_header {
-                    if let Some(i) = self
-                        .col_rects
-                        .iter()
-                        .position(|c| pt.x >= c.x0 && pt.x < c.x1)
-                        && self.columns.get(i).is_some_and(|c| c.sortable)
-                    {
-                        if let Some(cb) = &mut self.on_header_click {
-                            cb(i);
-                        } else {
-                            self.toggle_sort(i);
-                        }
-                        *handled = true;
-                    }
-                    return;
-                }
-                // 3. Body-row selection.
-                if self.selectable
-                    && let Some(ri) = self.row_at(pt)
-                {
-                    let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    let shift = modifiers.state().shift_key();
-                    self.selection.apply_click(ri, ctrl, shift);
-                    *focus_target = Some(node_id);
-                    if let Some(cb) = &mut self.on_row_click {
-                        cb(ri, ctrl, shift);
-                    }
-                    // Internal double-click → activate (long-lived hosts).
-                    let now = std::time::Instant::now();
-                    let is_double = matches!(
-                        self.last_click_row,
-                        Some((pri, t)) if pri == ri && now.duration_since(t) < crate::gesture::multi_click_interval()
-                    );
-                    if is_double {
-                        self.last_click_row = None;
-                        if let Some(cb) = &mut self.on_activate {
-                            cb(ri);
-                        }
-                    } else {
-                        self.last_click_row = Some((ri, now));
-                    }
-                    *handled = true;
-                }
+                self.on_left_press(modifiers, handled, focus_target, node_id);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                let mut did = false;
-                if self.resize.is_some() {
-                    self.end_resize();
-                    did = true;
-                }
-                if self.vbar.release() {
-                    did = true;
-                }
-                if did {
-                    *handled = true;
-                }
+                self.on_left_release(handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Wrapped in a `Scrollable`, the parent consumes the wheel first.
-                if self.internal_scroll() {
-                    const LINE_PX: f32 = 60.0;
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
-                        MouseScrollDelta::PixelDelta(pp) => -pp.y as f32,
-                    };
-                    let next = (self.scroll_y + dy).clamp(0.0, self.max_scroll_y());
-                    if next != self.scroll_y {
-                        self.set_scroll_y(next);
-                    }
-                    *handled = true;
-                }
+                self.on_wheel(delta, handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
             {
-                use winit::keyboard::{Key, NamedKey};
-                let shift = modifiers.state().shift_key();
-                let len = self.view.len();
-                if len == 0 {
-                    return;
-                }
-                let cur = self.selection.primary();
-                match &ke.logical_key {
-                    Key::Named(NamedKey::ArrowDown) => {
-                        let next = cur.map_or(0, |c| (c + 1).min(len - 1));
-                        self.selection.move_to(next, shift);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        let next = cur.map_or(0, |c| c.saturating_sub(1));
-                        self.selection.move_to(next, shift);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        if let Some(c) = cur
-                            && let Some(cb) = &mut self.on_activate
-                        {
-                            cb(c);
-                        }
-                        *handled = true;
-                    }
-                    Key::Character(s)
-                        if (s == "a" || s == "A") && modifiers.state().control_key() =>
-                    {
-                        self.selection.select_all(len);
-                        *handled = true;
-                    }
-                    _ => {}
-                }
+                self.on_key(ke, modifiers, handled);
             }
             _ => {}
         }
@@ -898,7 +1017,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             ..Default::default()
         });
         if let Some(i) = selected_pos {
-            node = node.with_position(i + 1, self.view.len());
+            node = node.with_position(i.saturating_add(1), self.view.len());
         }
         if let Some(desc) = description {
             node = node.with_description(desc);
@@ -917,11 +1036,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     .map(|(ci, col)| {
                         AccessNode::new(Role::Cell)
                             .with_name(col.header.clone())
-                            .with_position(ci + 1, col_count)
+                            .with_position(ci.saturating_add(1), col_count)
                     })
                     .collect();
                 AccessNode::new(Role::Row)
-                    .with_position(ri + 1, row_count)
+                    .with_position(ri.saturating_add(1), row_count)
                     .with_state(AccessState {
                         selected,
                         ..Default::default()
@@ -939,7 +1058,7 @@ fn compute_column_rects<Row>(
     host: Rect,
     overrides: &HashMap<String, f32>,
 ) -> Vec<Rect> {
-    let total_w = host.width() as f32;
+    let total_w = px(host.width());
     let mut fixed_sum = 0.0_f32;
     let mut flex_sum = 0.0_f32;
     for c in columns {
@@ -1162,17 +1281,17 @@ mod tests {
         t: &mut DataTable<R>,
         tree: &TaffyTree<()>,
         node: NodeId,
-        ev: WindowEvent,
-        mods: &winit::event::Modifiers,
+        ev: &WindowEvent,
+        mods: winit::event::Modifiers,
     ) {
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         t.handle_event(
-            &ev,
+            ev,
             1.0,
-            mods,
+            &mods,
             &mut doc,
             &root,
             &mut handled,
@@ -1204,22 +1323,22 @@ mod tests {
             &mut t,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (50.0, 85.0).into(),
             },
-            &mods,
+            mods,
         );
         dispatch(
             &mut t,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            &mods,
+            mods,
         );
 
         assert!(t.selection().is_selected(2), "row 2 selected");
@@ -1246,22 +1365,22 @@ mod tests {
             &mut t,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (20.0, 10.0).into(),
             },
-            &mods,
+            mods,
         );
         dispatch(
             &mut t,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            &mods,
+            mods,
         );
 
         assert_eq!(*hits.borrow(), vec![0], "header click reported column 0");
@@ -1279,22 +1398,22 @@ mod tests {
             &mut t,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (50.0, 85.0).into(),
             },
-            &mods,
+            mods,
         );
         dispatch(
             &mut t,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            &mods,
+            mods,
         );
         assert!(
             t.selection().is_empty(),
@@ -1304,6 +1423,7 @@ mod tests {
 
     #[test]
     fn keyboard_arrows_move_selection_when_focused() {
+        use winit::keyboard::NamedKey;
         let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
         t.set_rows(rows4());
         t.set_focus(true);
@@ -1325,9 +1445,8 @@ mod tests {
                 is_synthetic: false,
             }
         };
-        use winit::keyboard::NamedKey;
-        dispatch(&mut t, &tree, node, key(NamedKey::ArrowDown), &mods); // → 0
-        dispatch(&mut t, &tree, node, key(NamedKey::ArrowDown), &mods); // → 1
+        dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 0
+        dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 1
         assert_eq!(t.selection().primary(), Some(1));
         assert!(t.selection().is_selected(1));
     }
@@ -1345,8 +1464,8 @@ mod tests {
                 .collect(),
         );
         let _laid = lay_out(&mut t);
-        t.set_viewport(5.0 * ROW_HEIGHT as f32, ROW_HEIGHT as f32);
-        t.set_scroll_y(10.0 * ROW_HEIGHT as f32); // scrolled past 10 rows
+        t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
+        t.set_scroll_y(10.0 * px(ROW_HEIGHT)); // scrolled past 10 rows
         let rect = t.get_rect();
         let p = Point::new(rect.x0 + 5.0, rect.y0 + HEADER_HEIGHT + 1.0);
         assert_eq!(
@@ -1374,7 +1493,7 @@ mod tests {
                 .collect(),
         );
         let (tree, node) = lay_out(&mut t);
-        t.set_viewport(5.0 * ROW_HEIGHT as f32, ROW_HEIGHT as f32);
+        t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
         (t, tree, node)
     }
 
@@ -1406,7 +1525,7 @@ mod tests {
         t.set_rows(rows4());
         let _ = lay_out(&mut t);
         // Viewport taller than the 4 rows → content fits → no bar.
-        t.set_viewport(50.0 * ROW_HEIGHT as f32, ROW_HEIGHT as f32);
+        t.set_viewport(50.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
         assert!(
             t.scrollbar_thumb().is_none(),
             "no bar when rows fit the viewport"
@@ -1439,29 +1558,29 @@ mod tests {
         let (mut t, tree, node) = scrolling_table();
         let thumb = t.scrollbar_thumb().unwrap();
         let x = bar_x(&t);
-        let mid_y = (thumb.y0 + thumb.y1) / 2.0;
+        let mid_y = thumb.y0.midpoint(thumb.y1);
         let mods = winit::event::Modifiers::default();
 
         dispatch(
             &mut t,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, mid_y).into(),
             },
-            &mods,
+            mods,
         );
         dispatch(
             &mut t,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            &mods,
+            mods,
         );
         assert!(t.vbar.is_dragging(), "press on thumb begins a drag");
         assert!(t.wants_pointer_capture(), "drag captures the pointer");
@@ -1472,11 +1591,11 @@ mod tests {
             &mut t,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, mid_y + 50.0).into(),
             },
-            &mods,
+            mods,
         );
         assert!(
             t.scroll_y > 0.0,
@@ -1491,11 +1610,11 @@ mod tests {
             &mut t,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, mid_y - 50.0).into(),
             },
-            &mods,
+            mods,
         );
         assert!(t.scroll_y < after, "drag up decreases scroll_y");
 
@@ -1503,12 +1622,12 @@ mod tests {
             &mut t,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             },
-            &mods,
+            mods,
         );
         assert!(!t.vbar.is_dragging(), "release ends the drag");
     }
@@ -1525,26 +1644,26 @@ mod tests {
             &mut t,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, below_y).into(),
             },
-            &mods,
+            mods,
         );
         dispatch(
             &mut t,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            &mods,
+            mods,
         );
         assert!(!t.vbar.is_dragging(), "track click is not a drag");
         // Paged by ≈ one viewport (120 px) × PAGE_FRACTION.
-        let expected = 120.0 * crate::widget::scrollbar::PAGE_FRACTION as f32;
+        let expected = 120.0 * px(crate::widget::scrollbar::PAGE_FRACTION);
         assert!(
             (t.scroll_y - expected).abs() < 1.0,
             "page step ≈ viewport*frac ({expected}), got {}",
@@ -1562,7 +1681,7 @@ mod tests {
             delta: MouseScrollDelta::LineDelta(0.0, -1.0),
             phase: winit::event::TouchPhase::Moved,
         };
-        dispatch(&mut t, &tree, node, wheel, &mods);
+        dispatch(&mut t, &tree, node, &wheel, mods);
         assert!(
             t.scroll_y > 0.0,
             "wheel down increases scroll_y: {}",
@@ -1577,28 +1696,28 @@ mod tests {
         let (mut t, tree, node) = scrolling_table();
         let thumb = t.scrollbar_thumb().unwrap();
         let x = bar_x(&t);
-        let mid_y = (thumb.y0 + thumb.y1) / 2.0;
+        let mid_y = thumb.y0.midpoint(thumb.y1);
         let mods = winit::event::Modifiers::default();
         dispatch(
             &mut t,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, mid_y).into(),
             },
-            &mods,
+            mods,
         );
         dispatch(
             &mut t,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            &mods,
+            mods,
         );
         assert!(
             t.selection().is_empty(),
