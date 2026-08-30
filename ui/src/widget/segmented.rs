@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -41,7 +41,20 @@ pub enum SegmentTone {
     Negative,
 }
 
-const SEGMENT_HEIGHT: f64 = 28.0;
+const SEGMENT_HEIGHT: f32 = 28.0;
+
+/// Narrows a layout/measurement value to `f32` for vello/taffy. Every call
+/// site in this file is a pixel size or offset for a small on-screen
+/// control, always many orders of magnitude below `f32::MAX`, so the
+/// truncation the lint warns about can't actually occur here.
+#[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen-space pixel values in these widgets never approach f32::MAX"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
+}
 
 pub struct TriStateControl {
     labels: [String; 3],
@@ -83,6 +96,7 @@ impl TriStateControl {
     }
 
     /// Out-of-range values are clamped.
+    #[must_use]
     pub fn with_selected(mut self, idx: usize) -> Self {
         self.selected = idx.min(2);
         self
@@ -102,11 +116,15 @@ impl TriStateControl {
         self.choice.take()
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "i ranges over exactly the 3 fixed segments (0..=2)"
+    )]
     fn recompute_segments(&mut self) {
         let w = self.rect.width() / 3.0;
-        for i in 0..3 {
+        for (i, seg) in self.seg_rects.iter_mut().enumerate() {
             let x0 = self.rect.x0 + i as f64 * w;
-            self.seg_rects[i] = Rect::new(x0, self.rect.y0, x0 + w, self.rect.y1);
+            *seg = Rect::new(x0, self.rect.y0, x0 + w, self.rect.y1);
         }
     }
 
@@ -132,7 +150,7 @@ impl Widget for TriStateControl {
             flex_shrink: 0.0,
             size: taffy::Size {
                 width: percent(1.0_f32),
-                height: length(SEGMENT_HEIGHT as f32),
+                height: length(SEGMENT_HEIGHT),
             },
             ..Default::default()
         });
@@ -149,7 +167,7 @@ impl Widget for TriStateControl {
         // 3 × 56, so it works in an auto slot.
         taffy::Size {
             width: 168.0,
-            height: SEGMENT_HEIGHT as f32,
+            height: SEGMENT_HEIGHT,
         }
     }
 
@@ -192,8 +210,12 @@ impl Widget for TriStateControl {
             &track,
         );
 
-        let active = self.seg_rects[self.selected];
-        let tone = self.tones[self.selected];
+        let Some(&active) = self.seg_rects.get(self.selected) else {
+            return;
+        };
+        let Some(&tone) = self.tones.get(self.selected) else {
+            return;
+        };
         let fill = Self::tone_color(theme, tone);
         let alpha = if tone == SegmentTone::Neutral {
             0.18
@@ -213,7 +235,7 @@ impl Widget for TriStateControl {
         let active_ground = over(theme.tokens.colors.surfaces.raised, fill, alpha);
 
         let text_size = theme.tokens.typography.scale.sm;
-        for i in 0..3 {
+        for (i, (label, seg_rect)) in self.labels.iter().zip(self.seg_rects.iter()).enumerate() {
             let on = i == self.selected;
             let col = if on && tone != SegmentTone::Neutral {
                 theme
@@ -229,15 +251,15 @@ impl Widget for TriStateControl {
             } else {
                 theme.text_dim
             };
-            let (tw, _) = text_renderer.measure(&self.labels[i], text_size, None);
-            let cx = self.seg_rects[i].center().x - f64::from(tw) / 2.0;
+            let (tw, _) = text_renderer.measure(label, text_size, None);
+            let cx = seg_rect.center().x - f64::from(tw) / 2.0;
             let cy = self.rect.y0 + (self.rect.height() - f64::from(text_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
-                &self.labels[i],
+                label,
                 text_size,
                 col,
-                transform * Affine::translate((cx, cy)),
+                transform.pre_translate(Vec2::new(cx, cy)),
                 None,
             );
         }
@@ -305,7 +327,7 @@ impl Widget for TriStateControl {
                         checked: Some(i == self.selected),
                         ..Default::default()
                     })
-                    .with_position(i + 1, count)
+                    .with_position(i.saturating_add(1), count)
             })
             .collect();
         Some(
@@ -368,6 +390,7 @@ impl ColorSwatchPicker {
         }
     }
 
+    #[must_use]
     pub fn with_selected(mut self, idx: usize) -> Self {
         self.selected = Some(idx);
         self
@@ -385,12 +408,17 @@ impl ColorSwatchPicker {
         self.palette.len().div_ceil(self.columns)
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "row/column indices are bounded by the on-screen swatch \
+                  grid, far below f64's exact-integer range"
+    )]
     fn recompute_swatches(&mut self) {
         self.swatch_rects.clear();
         let pad = 8.0;
         for i in 0..self.palette.len() {
-            let r = (i / self.columns) as f64;
-            let c = (i % self.columns) as f64;
+            let r = i.checked_div(self.columns).unwrap_or(0) as f64;
+            let c = i.checked_rem(self.columns).unwrap_or(0) as f64;
             let x = self.rect.x0 + pad + c * self.cell;
             let y = self.rect.y0 + pad + r * self.cell;
             self.swatch_rects.push(Rect::new(
@@ -400,6 +428,21 @@ impl ColorSwatchPicker {
                 y + self.cell - 2.0,
             ));
         }
+    }
+
+    /// `(width, height)` of the swatch grid in px — shared by `build_layout`
+    /// and `measure` so they can't disagree.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "column/row counts describe a small, on-screen swatch grid, \
+                  far below f32's exact-integer range"
+    )]
+    fn grid_size(&self) -> (f32, f32) {
+        let pad = 8.0_f32;
+        let cell = px(self.cell);
+        let w = self.columns as f32 * cell + pad * 2.0;
+        let h = self.rows() as f32 * cell + pad * 2.0;
+        (w, h)
     }
 }
 
@@ -418,9 +461,7 @@ impl Widget for ColorSwatchPicker {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let pad = 8.0_f32;
-        let w = self.columns as f32 * self.cell as f32 + pad * 2.0;
-        let h = self.rows() as f32 * self.cell as f32 + pad * 2.0;
+        let (w, h) = self.grid_size();
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: taffy::Size {
@@ -439,11 +480,8 @@ impl Widget for ColorSwatchPicker {
         _a: taffy::Size<taffy::AvailableSpace>,
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let pad = 8.0_f32;
-        taffy::Size {
-            width: self.columns as f32 * self.cell as f32 + pad * 2.0,
-            height: self.rows() as f32 * self.cell as f32 + pad * 2.0,
-        }
+        let (width, height) = self.grid_size();
+        taffy::Size { width, height }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -484,15 +522,14 @@ impl Widget for ColorSwatchPicker {
             &panel,
         );
 
-        for (i, sr) in self.swatch_rects.iter().enumerate() {
+        for (i, (&rgb, sr)) in self
+            .palette
+            .iter()
+            .zip(self.swatch_rects.iter())
+            .enumerate()
+        {
             let shape = RoundedRect::from_rect(*sr, 6.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                packed_color(self.palette[i]),
-                None,
-                &shape,
-            );
+            scene.fill(Fill::NonZero, transform, packed_color(rgb), None, &shape);
             if self.selected == Some(i) {
                 scene.stroke(
                     &Stroke::new(2.5),
@@ -575,7 +612,7 @@ impl Widget for ColorSwatchPicker {
                         selected: self.selected == Some(i),
                         ..Default::default()
                     })
-                    .with_position(i + 1, count)
+                    .with_position(i.saturating_add(1), count)
             })
             .collect();
         Some(
