@@ -167,7 +167,7 @@ pub fn changed_on_disk(path: &Path, stamp: &Stamp) -> bool {
 /// source files do not contain NUL; ELF objects, images and archives do, within
 /// the first few bytes.
 fn looks_like_text(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(8192)];
+    let head = bytes.get(..bytes.len().min(8192)).unwrap_or(bytes);
     !head.contains(&0)
 }
 
@@ -214,7 +214,7 @@ pub fn human_bytes(n: u64) -> String {
     if u == 0 {
         format!("{n} {}", UNITS[0])
     } else {
-        format!("{v:.1} {}", UNITS[u])
+        format!("{v:.1} {}", UNITS.get(u).unwrap_or(&"?"))
     }
 }
 
