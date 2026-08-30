@@ -115,7 +115,6 @@ members = [
     "apps/sheets",
     "apps/slides",
     "apps/snippets",
-    "apps/software_store",
     "apps/store",
     "apps/themes",
     "apps/totp",

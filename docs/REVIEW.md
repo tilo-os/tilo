@@ -177,9 +177,7 @@ desktop installer than a forced step-wizard.
 | sheets | 🟢 | Real formula engine + real `.xlsx`/`.ods` codecs (calamine); empty on live. |
 | slides | 🟢 | Real deck editor, one blank slide on live; sample=shots. |
 | snippets | 🟠 | Real store but seeds a 14-item starter library on live (borderline — presets vs content). |
-| software_store | 🟠 | Real flatpak/Flathub backend, but a hardcoded sample catalog w/ **fake ratings** is the live storefront. |
-
-| store | 🟠 | Real registry+Flathub backend + real install, but shopfront half-wired: **dead search box + dead filter chips**, placeholder icons, no scroll, `"[All]"` literal, stray "update" debug label. |
+| store | 🟠 | Unified verified-registry + Flatpak/Flathub backend with live search, detail, remotes, install/update/open/remove and serialized off-frame I/O. Remaining storefront gap: placeholder icons and a fixed first page instead of scrolling/virtualization. |
 | terminal | 🟢 | Fully real PTY (`$SHELL`), selection, SGR, OSC52. Title→OS chrome. No issues. |
 | themes | 🟢 | Real theme apply (writes shared settings.json compositor reads). Nits: app-drawn header (S5), idle redraw. |
 | totp | 🟢 | Real RFC-6238 + XChaCha20 vault + portal QR import; starts empty. Nit: header (S5). |
@@ -199,8 +197,8 @@ desktop installer than a forced step-wizard.
 ## Fix plan (prioritized)
 1. **firewall safety (S6)** — read real zones/rules (`firewall-cmd --list`/import) before displaying or applying. Do first.
 2. **The 7 reds → real or honestly-empty:** vpn + remote (real WireGuard/OpenVPN / SSH+VNC, or start empty + mark simulation clearly), video_editor (real media import via portal + real preview/export, or gate honestly), code_editor (real open/save via portal), feeds (delete the live seed — the real RSS/Atom/Gemini worker already exists), chat (real MoQ/collab backend + empty channels).
-3. **S1 live-seed sweep (mechanical, high-ROI):** stop seeding sample data in live constructors — feeds, firewall, remote, video_editor, vpn, snippets, software_store, store, diffmerge, backups, calendar, ebook, api_tester, chat. Move the seed behind `--shots` (the good apps already do this). Often a 1-line change.
-4. **Dead controls:** store (search + filter chips), tube (Invidious setting), store detail sheet.
+3. **S1 live-seed sweep (mechanical, high-ROI):** stop seeding sample data in live constructors — feeds, firewall, remote, video_editor, vpn, snippets, store, diffmerge, backups, calendar, ebook, api_tester, chat. Move the seed behind `--shots` (the good apps already do this). Often a 1-line change.
+4. **Dead controls:** tube (Invidious setting).
 5. **Chrome:** video-player immersive §1e; strip app-drawn name/logo headers (S5) across ~11 apps; land the shared `ui` sidebar/card unification (Card/CardGrid built) + migrate the bespoke-sidebar offenders (file-explorer 1122 LOC, backups, firewall).
 6. **Feature gaps vs product.md:** maps live-tile fix + traffic; portal Open/Save-As where missing (word-processor, typst, code_editor, hex_editor); mail/music/tube `--features live` default-on decision.
 
