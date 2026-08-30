@@ -6916,14 +6916,40 @@ impl Widget for ShellOverlayHost {
                                 st.overlays.ws_settings = true;
                             }
                             1 => {
-                                let privacy = &st.quick_settings.privacy;
-                                let camera = format!("camera: {:?}", privacy.camera_kill);
-                                let microphone =
-                                    format!("microphone: {:?}", privacy.microphone_kill);
-                                st.push_notification(
-                                    "Privacy",
-                                    &format!("{camera} · {microphone}"),
-                                );
+                                let active = st.quick_settings.privacy.active_media.clone();
+                                if active.is_empty() {
+                                    let privacy = &st.quick_settings.privacy;
+                                    let camera = format!("camera: {:?}", privacy.camera_kill);
+                                    let microphone =
+                                        format!("microphone: {:?}", privacy.microphone_kill);
+                                    st.push_notification(
+                                        "Privacy",
+                                        &format!("{camera} · {microphone}"),
+                                    );
+                                } else {
+                                    let mut failed = Vec::new();
+                                    let mut seen = std::collections::BTreeSet::new();
+                                    for use_ in &active {
+                                        if seen.insert(use_.client_id)
+                                            && os_actions::revoke_media_client(use_.client_id)
+                                                .is_err()
+                                        {
+                                            failed.push(use_.label.clone());
+                                        }
+                                    }
+                                    if failed.is_empty() {
+                                        st.quick_settings.privacy.active_media.clear();
+                                        st.push_notification(
+                                            "Camera and microphone access stopped",
+                                            "The active PipeWire clients were disconnected.",
+                                        );
+                                    } else {
+                                        st.push_notification(
+                                            "Could not stop all access",
+                                            &format!("Still active: {}", failed.join(", ")),
+                                        );
+                                    }
+                                }
                             }
                             _ => {
                                 self.power_menu_open = true;
@@ -9901,8 +9927,10 @@ impl ShellOverlayHost {
                     transform,
                     if blocked {
                         colors.semantic.danger
-                    } else {
+                    } else if !qs.privacy.active_media.is_empty() {
                         colors.semantic.success
+                    } else {
+                        colors.text_dim.with_alpha_factor(0.45)
                     },
                     None,
                     &vello::kurbo::Circle::new(Point::new(tile.x1 - 12.0, tile.y0 + 12.0), 4.0),
@@ -9925,6 +9953,7 @@ impl ShellOverlayHost {
             }
             let action_label = match i {
                 0 => "Settings",
+                1 if !qs.privacy.active_media.is_empty() => "Stop access",
                 1 => "Privacy",
                 _ => "Power",
             };
