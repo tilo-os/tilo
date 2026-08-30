@@ -36,12 +36,6 @@ anyhow.workspace = true
 base64.workspace = true
 
 [dev-dependencies]
-# Clipboard round-trip assertions in the selection tests. Production code
-# copies/pastes through `ui::clipboard_copy` / `ui::clipboard_paste`
-# (and `ui::clipboard_copy_primary` for the mouse primary selection), so
-# arboard is only a test dependency now — the shared `ui` helper replaced
-# the terminal's former direct use.
-arboard.workspace = true
 # Serialises the tests that touch the shared system clipboard / primary
 # selection so they don't race each other under the default parallel runner
 # (selecting text sets the primary selection, which a middle-click paste test

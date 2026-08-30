@@ -43,6 +43,16 @@ categories = ["gui"]
 license = "Apache-2.0"
 repository = "https://github.com/rust-windowing/winit"
 
+[package.metadata.cargo-machete]
+# Build-script, target-cfg, and feature-forwarding dependencies which source
+# scanning cannot see. Keep this metadata-only delta separate from fork code.
+ignored = [
+    "cfg_aliases",
+    "ndk",
+    "wayland-backend",
+    "wayland-protocols",
+]
+
 [package.metadata.docs.rs]
 features = [
     "rwh_04",
