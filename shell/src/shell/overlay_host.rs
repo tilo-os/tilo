@@ -432,7 +432,9 @@ fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> 
 fn peer_fingerprint(peer_id: &str) -> String {
     let chars: Vec<char> = peer_id.chars().collect();
     let tail_start = chars.len().saturating_sub(8);
-    let tail: Vec<char> = chars.get(tail_start..).map_or_else(Vec::new, <[char]>::to_vec);
+    let tail: Vec<char> = chars
+        .get(tail_start..)
+        .map_or_else(Vec::new, <[char]>::to_vec);
     if tail.len() <= 4 {
         return tail.into_iter().collect();
     }
@@ -736,10 +738,13 @@ fn draw_filter_chip(
         label,
         text_size,
         text_color,
-        transform.pre_translate((
+        transform.pre_translate(
+            (
                 rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
                 rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-            ).into()),
+            )
+                .into(),
+        ),
         None,
     );
 }
@@ -1228,10 +1233,13 @@ impl ShellOverlayHost {
             &caption,
             size,
             colors.text_dim,
-            transform.pre_translate((
+            transform.pre_translate(
+                (
                     rect.center().x - f64::from(cw) / 2.0,
                     rect.y1 - 12.0 - f64::from(ch),
-                ).into()),
+                )
+                    .into(),
+            ),
             None,
             TextWeight::Medium,
         );
@@ -1330,10 +1338,7 @@ impl ShellOverlayHost {
 
     /// Install the closure that carries out [`PeerSyncRequest`]s. Without
     /// one, `/invite` and `/connect` push to a queue nothing drains.
-    pub fn with_peer_sync_bridge(
-        mut self,
-        bridge: PeerSyncBridge,
-    ) -> Self {
+    pub fn with_peer_sync_bridge(mut self, bridge: PeerSyncBridge) -> Self {
         self.set_peer_sync_bridge(bridge);
         self
     }
@@ -1341,10 +1346,7 @@ impl ShellOverlayHost {
     /// [`Self::with_peer_sync_bridge`] for a host that is already
     /// built — the native compositor constructs its host inside a
     /// `FrameBuilder` before it has a network handle to bridge to.
-    pub fn set_peer_sync_bridge(
-        &mut self,
-        bridge: PeerSyncBridge,
-    ) {
+    pub fn set_peer_sync_bridge(&mut self, bridge: PeerSyncBridge) {
         self.peer_sync_bridge = Some(bridge);
     }
 
@@ -8244,7 +8246,8 @@ impl ShellOverlayHost {
                 &access,
                 tokens.typography.scale.base,
                 colors.text_dim,
-                transform.pre_translate((content.x0, here_rect.y0 + f64::from(name_h) + 6.0).into()),
+                transform
+                    .pre_translate((content.x0, here_rect.y0 + f64::from(name_h) + 6.0).into()),
                 None,
             );
         } else {
@@ -8343,10 +8346,13 @@ impl ShellOverlayHost {
                     &with,
                     with_size,
                     colors.text_dim,
-                    transform.pre_translate((
+                    transform.pre_translate(
+                        (
                             content.x1 - f64::from(with_w),
                             sy + (row_h - f64::from(with_h)) / 2.0,
-                        ).into()),
+                        )
+                            .into(),
+                    ),
                     None,
                 );
                 let what_x = content.x0 + glyph + 8.0;
@@ -8371,10 +8377,13 @@ impl ShellOverlayHost {
                     &more,
                     tokens.typography.scale.sm,
                     colors.text_tertiary,
-                    transform.pre_translate((
+                    transform.pre_translate(
+                        (
                             content.x0 + glyph + 8.0,
                             sy + (row_h - f64::from(more_h)) / 2.0,
-                        ).into()),
+                        )
+                            .into(),
+                    ),
                     None,
                 );
             }
@@ -8825,10 +8834,13 @@ impl ShellOverlayHost {
             copy_label,
             tokens.typography.scale.sm,
             colors.text_primary,
-            transform.pre_translate((
+            transform.pre_translate(
+                (
                     copy_btn.x0 + (copy_btn.width() - f64::from(cw)) / 2.0,
                     copy_btn.y0 + 8.0,
-                ).into()),
+                )
+                    .into(),
+            ),
             None,
         );
 
@@ -9342,10 +9354,13 @@ impl ShellOverlayHost {
                     label,
                     body_size,
                     colors.text_primary,
-                    transform.pre_translate((
+                    transform.pre_translate(
+                        (
                             f64::midpoint(brect.x0, brect.x1) - f64::from(tw) / 2.0,
                             f64::midpoint(brect.y0, brect.y1) - f64::from(th) / 2.0,
-                        ).into()),
+                        )
+                            .into(),
+                    ),
                     None,
                 );
                 self.peer_sync_prompt_rects.push((which, brect));
@@ -9421,10 +9436,13 @@ impl ShellOverlayHost {
                 &text,
                 chip_text_size,
                 if is_active { active_text } else { idle_text },
-                transform.pre_translate((
+                transform.pre_translate(
+                    (
                         f64::midpoint(seg.x0, seg.x1) - f64::from(tw) / 2.0,
                         f64::midpoint(seg.y0, seg.y1) - f64::from(th) / 2.0,
-                    ).into()),
+                    )
+                        .into(),
+                ),
                 None,
             );
         }
@@ -10057,10 +10075,13 @@ impl ShellOverlayHost {
                 label,
                 type_scale.xs,
                 colors.text_primary,
-                transform.pre_translate((
+                transform.pre_translate(
+                    (
                         chip.center().x - f64::from(label_w) / 2.0,
                         chip.center().y - f64::from(label_h) / 2.0,
-                    ).into()),
+                    )
+                        .into(),
+                ),
                 None,
                 TextWeight::Medium,
             );
@@ -10266,10 +10287,13 @@ impl ShellOverlayHost {
                     } else {
                         colors.text_primary
                     },
-                    transform.pre_translate((
+                    transform.pre_translate(
+                        (
                             action.center().x - f64::from(lw) / 2.0,
                             action.center().y - f64::from(lh) / 2.0,
-                        ).into()),
+                        )
+                            .into(),
+                    ),
                     None,
                     TextWeight::Medium,
                 );
@@ -10839,10 +10863,13 @@ impl ShellOverlayHost {
             label,
             size,
             color,
-            transform.pre_translate((
+            transform.pre_translate(
+                (
                     rect.center().x - f64::from(w) / 2.0,
                     rect.center().y - f64::from(h) / 2.0,
-                ).into()),
+                )
+                    .into(),
+            ),
             None,
             TextWeight::Semibold,
         );
@@ -11061,10 +11088,13 @@ impl ShellOverlayHost {
                     &initial,
                     size,
                     colors.text_dim,
-                    transform.pre_translate((
+                    transform.pre_translate(
+                        (
                             center.x - f64::from(iw) / 2.0,
                             center.y - f64::from(ih) / 2.0,
-                        ).into()),
+                        )
+                            .into(),
+                    ),
                     None,
                     TextWeight::Semibold,
                 );
@@ -11177,10 +11207,13 @@ impl ShellOverlayHost {
                     label,
                     btn_size,
                     colors.text_primary,
-                    transform.pre_translate((
+                    transform.pre_translate(
+                        (
                             rect.center().x - f64::from(tw) / 2.0,
                             rect.center().y - f64::from(th) / 2.0,
-                        ).into()),
+                        )
+                            .into(),
+                    ),
                     None,
                     TextWeight::Medium,
                 );
@@ -11227,10 +11260,13 @@ impl ShellOverlayHost {
             chevron,
             size,
             colors.text_dim,
-            transform.pre_translate((
+            transform.pre_translate(
+                (
                     row.x1 - 12.0 - f64::from(cw),
                     row.center().y - f64::from(ch) / 2.0,
-                ).into()),
+                )
+                    .into(),
+            ),
             None,
         );
     }
