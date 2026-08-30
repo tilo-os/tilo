@@ -15,6 +15,8 @@ path = "src/lib.rs"
 
 [dependencies]
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 # Bluetooth is the one control here that cannot be a shell-out: a scan lives
 # as long as its D-Bus connection, and pairing needs an agent object BlueZ
 # calls back into. See src/bluez.rs.

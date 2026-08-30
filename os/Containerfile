@@ -553,6 +553,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     foot \
     wl-clipboard \
     NetworkManager \
+    NetworkManager-openvpn \
+    ModemManager \
+    fwupd \
     fuse3 \
     cage \
     && dnf clean all && ${DROP_RPMDB_WAL}
@@ -1279,6 +1282,7 @@ RUN systemctl enable cups.socket
 RUN systemctl enable chronyd.service && \
     systemctl enable firewalld.service && \
     systemctl enable bluetooth.service && \
+    systemctl enable ModemManager.service && \
     systemctl enable power-profiles-daemon.service && \
     systemctl enable systemd-homed.service && \
     systemctl enable qos-power.service

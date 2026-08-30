@@ -1,0 +1,13 @@
+[Unit]
+Description=Set battery charge cap to %i percent
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/qos-battery-cap %i
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=no
+ReadWritePaths=/sys/class/power_supply
+CapabilityBoundingSet=
