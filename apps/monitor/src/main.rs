@@ -285,20 +285,20 @@ fn bench_frame(
 
 fn synth_cursor(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: unsafe { winit::event::DeviceId::dummy() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(x, y),
     }
 }
 fn synth_click(state: ElementState) -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { winit::event::DeviceId::dummy() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button: MouseButton::Left,
     }
 }
 fn synth_wheel(dy: f32) -> WindowEvent {
     WindowEvent::MouseWheel {
-        device_id: unsafe { winit::event::DeviceId::dummy() },
+        device_id: winit::event::DeviceId::dummy(),
         delta: MouseScrollDelta::LineDelta(0.0, dy),
         phase: TouchPhase::Moved,
     }

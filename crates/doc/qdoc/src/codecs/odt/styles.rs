@@ -244,7 +244,7 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
 }
 
 #[derive(Default, Clone)]
-pub(super) struct ParaStyle {
+pub(crate) struct ParaStyle {
     pub parent: Option<String>,
     pub align: Option<String>,
     pub outline_level: Option<i64>,
@@ -283,13 +283,13 @@ pub(super) fn map_num_format(v: &str) -> &'static str {
 /// The captured numbering of one `text:list-style` level (level 0 is what the
 /// model preserves): its canonical format + start value.
 #[derive(Default)]
-pub(super) struct ListNumbering {
+pub(crate) struct ListNumbering {
     pub num_format: Option<&'static str>,
     pub num_start: Option<i64>,
 }
 
 #[derive(Default)]
-pub(super) struct StyleRegistry {
+pub(crate) struct StyleRegistry {
     /// `text`-family style name → inline marks.
     pub text: HashMap<String, Vec<(String, MarkValue)>>,
     /// `paragraph`-family style name → paragraph style.
