@@ -1,6 +1,7 @@
 //! Wi-Fi control via `nmcli`.
 
 use crate::process::{run, run_capture};
+use std::sync::OnceLock;
 
 pub const HOTSPOT_PROFILE: &str = "qOS Hotspot";
 
@@ -415,16 +416,579 @@ fn parse_proc_net_wireless(raw: &str) -> Option<u8> {
     best
 }
 
-/// Connect to a Wi-Fi SSID. `Some(pw)` appends a `password <pw>` clause; `None` omits it
-/// (open networks or already-known SSIDs). Synchronous: nmcli blocks until association
-/// completes or fails.
+/// Connect to a Wi-Fi SSID. Passwords travel on nmcli's `--ask` stdin,
+/// never argv (which is readable through `/proc`).
 pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
-    let mut args: Vec<&str> = vec!["device", "wifi", "connect", ssid];
-    if let Some(pw) = password {
-        args.push("password");
-        args.push(pw);
+    if let Some(password) = password {
+        if password.chars().any(|c| matches!(c, '\n' | '\r')) {
+            return Err("Wi-Fi password contains an invalid line break".into());
+        }
+        let input = format!("{password}\n");
+        crate::process::run_with_input(
+            "nmcli",
+            &["--ask", "--wait", "30", "device", "wifi", "connect", ssid],
+            input.as_bytes(),
+            std::time::Duration::from_secs(35),
+        )?;
+        Ok(())
+    } else {
+        run(
+            "nmcli",
+            &["--wait", "30", "device", "wifi", "connect", ssid],
+        )
     }
-    run("nmcli", &args)
+}
+
+/// NetworkManager's connectivity result, including the portal state used by
+/// captive-portal helpers. Values intentionally mirror the daemon rather than
+/// deriving "online" from a local address.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConnectivityState {
+    #[default]
+    Unknown,
+    Offline,
+    Portal,
+    Limited,
+    Full,
+}
+
+impl ConnectivityState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Connectivity not checked",
+            Self::Offline => "Offline",
+            Self::Portal => "Sign-in required",
+            Self::Limited => "Limited connectivity",
+            Self::Full => "Connected to the internet",
+        }
+    }
+}
+
+pub fn get_connectivity() -> Result<ConnectivityState, String> {
+    let out = run_capture("nmcli", &["-t", "networking", "connectivity", "check"])?;
+    Ok(parse_connectivity(&out))
+}
+
+/// Return NetworkManager's configured connectivity-check URI. Opening this
+/// URI is the standard captive-portal flow: an intercepting network redirects
+/// it to its login page. qOS does not guess a gateway or hard-code a vendor URL.
+pub fn captive_portal_uri() -> Result<String, String> {
+    static RT: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
+    let runtime = RT
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .ok_or("could not start NetworkManager runtime")?;
+    runtime.block_on(async {
+        let connection = zbus::Connection::system()
+            .await
+            .map_err(|e| format!("cannot reach NetworkManager: {e}"))?;
+        let proxy = zbus::Proxy::new(
+            &connection,
+            "org.freedesktop.NetworkManager",
+            "/org/freedesktop/NetworkManager",
+            "org.freedesktop.NetworkManager",
+        )
+        .await
+        .map_err(|e| format!("cannot bind NetworkManager: {e}"))?;
+        let uri: String = proxy
+            .get_property("ConnectivityCheckUri")
+            .await
+            .map_err(|e| format!("NetworkManager has no connectivity-check URI: {e}"))?;
+        if !(uri.starts_with("https://") || uri.starts_with("http://")) {
+            return Err("NetworkManager returned an unsafe connectivity-check URI".into());
+        }
+        Ok(uri)
+    })
+}
+
+fn parse_connectivity(out: &str) -> ConnectivityState {
+    match out.trim().to_ascii_lowercase().as_str() {
+        "none" => ConnectivityState::Offline,
+        "portal" => ConnectivityState::Portal,
+        "limited" => ConnectivityState::Limited,
+        "full" => ConnectivityState::Full,
+        _ => ConnectivityState::Unknown,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedNetworkProfile {
+    pub name: String,
+    pub uuid: String,
+    pub kind: String,
+    pub autoconnect: bool,
+}
+
+pub fn list_saved_network_profiles() -> Result<Vec<SavedNetworkProfile>, String> {
+    let out = run_capture(
+        "nmcli",
+        &[
+            "-t",
+            "--escape",
+            "yes",
+            "-f",
+            "NAME,UUID,TYPE,AUTOCONNECT",
+            "connection",
+            "show",
+        ],
+    )?;
+    Ok(parse_saved_profiles(&out))
+}
+
+fn parse_saved_profiles(out: &str) -> Vec<SavedNetworkProfile> {
+    out.lines()
+        .filter_map(|line| {
+            let fields = split_terse(line);
+            let [name, uuid, kind, autoconnect] = fields.as_slice() else {
+                return None;
+            };
+            matches!(
+                kind.as_str(),
+                "802-11-wireless" | "802-3-ethernet" | "gsm" | "cdma"
+            )
+            .then(|| SavedNetworkProfile {
+                name: name.clone(),
+                uuid: uuid.clone(),
+                kind: kind.clone(),
+                autoconnect: autoconnect == "yes",
+            })
+        })
+        .collect()
+}
+
+fn validate_uuid(uuid: &str) -> Result<(), String> {
+    let valid = uuid.len() == 36
+        && uuid.bytes().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        });
+    valid
+        .then_some(())
+        .ok_or("invalid NetworkManager profile UUID".into())
+}
+
+pub fn forget_network_profile(uuid: &str) -> Result<(), String> {
+    validate_uuid(uuid)?;
+    run("nmcli", &["connection", "delete", "uuid", uuid])
+}
+
+pub fn set_network_autoconnect(uuid: &str, enabled: bool) -> Result<(), String> {
+    validate_uuid(uuid)?;
+    run(
+        "nmcli",
+        &[
+            "connection",
+            "modify",
+            "uuid",
+            uuid,
+            "connection.autoconnect",
+            if enabled { "yes" } else { "no" },
+        ],
+    )
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IpConfiguration {
+    pub automatic: bool,
+    pub addresses: Vec<String>,
+    pub gateway: Option<String>,
+    pub dns: Vec<String>,
+}
+
+fn valid_ip_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'/' | b'%'))
+}
+
+/// Apply one profile's IPv4 settings through NetworkManager. The UUID is the
+/// stable identity; user-facing names are never used as selectors. Empty DNS
+/// means "use DHCP-provided DNS".
+pub fn configure_ipv4(uuid: &str, config: &IpConfiguration) -> Result<(), String> {
+    validate_uuid(uuid)?;
+    if config.addresses.iter().any(|v| !valid_ip_token(v))
+        || config
+            .gateway
+            .as_deref()
+            .is_some_and(|v| !valid_ip_token(v))
+        || config.dns.iter().any(|v| !valid_ip_token(v))
+    {
+        return Err("invalid IP address, prefix, gateway, or DNS server".into());
+    }
+    if !config.automatic && config.addresses.is_empty() {
+        return Err("manual IPv4 needs at least one address with a prefix".into());
+    }
+    let addresses = config.addresses.join(",");
+    let gateway = config.gateway.as_deref().unwrap_or("");
+    let dns = config.dns.join(",");
+    run(
+        "nmcli",
+        &[
+            "connection",
+            "modify",
+            "uuid",
+            uuid,
+            "ipv4.method",
+            if config.automatic { "auto" } else { "manual" },
+            "ipv4.addresses",
+            &addresses,
+            "ipv4.gateway",
+            gateway,
+            "ipv4.dns",
+            &dns,
+            "ipv4.ignore-auto-dns",
+            if config.dns.is_empty() { "no" } else { "yes" },
+        ],
+    )
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HotspotBand {
+    #[default]
+    Automatic,
+    TwoPointFourGhz,
+    FiveGhz,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HotspotConfiguration {
+    pub ssid: String,
+    pub password: String,
+    pub band: HotspotBand,
+}
+
+impl HotspotConfiguration {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.ssid.is_empty() || self.ssid.len() > 32 || self.ssid.chars().any(char::is_control) {
+            return Err("hotspot name must be 1–32 bytes".into());
+        }
+        if !(8..=63).contains(&self.password.len()) || self.password.chars().any(char::is_control) {
+            return Err("hotspot password must be 8–63 printable characters".into());
+        }
+        Ok(())
+    }
+
+    /// Standard Wi-Fi QR payload. Escaping follows the WIFI schema used by
+    /// Android and iOS scanners; the plaintext is returned only on explicit
+    /// request and is never logged or persisted by this crate.
+    pub fn qr_payload(&self) -> Result<String, String> {
+        self.validate()?;
+        let escape = |value: &str| {
+            value
+                .replace('\\', "\\\\")
+                .replace(';', "\\;")
+                .replace(',', "\\,")
+                .replace(':', "\\:")
+        };
+        Ok(format!(
+            "WIFI:T:WPA;S:{};P:{};;",
+            escape(&self.ssid),
+            escape(&self.password)
+        ))
+    }
+}
+
+pub fn configure_hotspot(config: &HotspotConfiguration) -> Result<(), String> {
+    config.validate()?;
+    let profiles = run_capture("nmcli", &["-t", "-f", "NAME", "connection", "show"])?;
+    if !profiles.lines().any(|name| name == HOTSPOT_PROFILE) {
+        run(
+            "nmcli",
+            &[
+                "connection",
+                "add",
+                "type",
+                "wifi",
+                "ifname",
+                "*",
+                "con-name",
+                HOTSPOT_PROFILE,
+                "ssid",
+                config.ssid.as_str(),
+                "802-11-wireless.mode",
+                "ap",
+            ],
+        )?;
+    }
+    let band = match config.band {
+        HotspotBand::Automatic => "remove wifi.band".to_string(),
+        HotspotBand::TwoPointFourGhz => "set wifi.band bg".to_string(),
+        HotspotBand::FiveGhz => "set wifi.band a".to_string(),
+    };
+    // `nmcli connection edit` accepts values on stdin. Quoting keeps editor
+    // metacharacters data, while keeping the WPA key out of `/proc/*/cmdline`.
+    let quote = |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
+    let script = format!(
+        "set wifi.ssid {}\nset wifi.mode ap\n{band}\nset wifi-sec.key-mgmt wpa-psk\nset wifi-sec.psk {}\nsave persistent\nquit\n",
+        quote(&config.ssid),
+        quote(&config.password),
+    );
+    crate::process::run_with_input(
+        "nmcli",
+        &["connection", "edit", HOTSPOT_PROFILE],
+        script.as_bytes(),
+        std::time::Duration::from_secs(15),
+    )?;
+    run("nmcli", &["connection", "up", HOTSPOT_PROFILE])
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HotspotClient {
+    pub mac: String,
+    pub signal_dbm: Option<i32>,
+}
+
+pub fn list_hotspot_clients() -> Result<Vec<HotspotClient>, String> {
+    let iface = run_capture(
+        "nmcli",
+        &[
+            "-g",
+            "GENERAL.DEVICES",
+            "connection",
+            "show",
+            HOTSPOT_PROFILE,
+        ],
+    )?
+    .trim()
+    .to_string();
+    if iface.is_empty()
+        || iface
+            .bytes()
+            .any(|b| !b.is_ascii_alphanumeric() && b != b'_' && b != b'-')
+    {
+        return Ok(Vec::new());
+    }
+    let out = run_capture("iw", &["dev", &iface, "station", "dump"])?;
+    Ok(parse_hotspot_clients(&out))
+}
+
+fn parse_hotspot_clients(out: &str) -> Vec<HotspotClient> {
+    let mut clients = Vec::new();
+    for block in out.split("Station ").skip(1) {
+        let mac = block
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        if mac.len() != 17 {
+            continue;
+        }
+        let signal_dbm = block.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix("signal:")?
+                .split_ascii_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        });
+        clients.push(HotspotClient { mac, signal_dbm });
+    }
+    clients
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn networkmanager_connectivity_keeps_portal_distinct_from_limited() {
+        assert_eq!(parse_connectivity("portal\n"), ConnectivityState::Portal);
+        assert_eq!(parse_connectivity("limited\n"), ConnectivityState::Limited);
+        assert_eq!(parse_connectivity("full\n"), ConnectivityState::Full);
+    }
+
+    #[test]
+    fn saved_profiles_preserve_escaped_colons_and_autoconnect() {
+        let parsed = parse_saved_profiles(
+            "Office\\: Lab:12345678-1234-1234-1234-123456789abc:802-11-wireless:yes\n",
+        );
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Office: Lab");
+        assert!(parsed[0].autoconnect);
+    }
+
+    #[test]
+    fn hotspot_qr_escapes_schema_delimiters() {
+        let config = HotspotConfiguration {
+            ssid: "qOS; Guest".into(),
+            password: "hello:world".into(),
+            band: HotspotBand::Automatic,
+        };
+        assert_eq!(
+            config.qr_payload().unwrap(),
+            "WIFI:T:WPA;S:qOS\\; Guest;P:hello\\:world;;"
+        );
+    }
+
+    #[test]
+    fn station_dump_yields_clients_without_inventing_names() {
+        let clients =
+            parse_hotspot_clients("Station aa:bb:cc:dd:ee:ff (on wlan0)\n\tsignal: -51 dBm\n");
+        assert_eq!(clients[0].mac, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(clients[0].signal_dbm, Some(-51));
+    }
+
+    #[test]
+    fn manual_ipv4_validation_rejects_shellish_and_missing_addresses() {
+        assert!(!valid_ip_token("1.2.3.4;reboot"));
+        let config = IpConfiguration {
+            automatic: false,
+            ..Default::default()
+        };
+        // Validate the pure precondition without invoking nmcli by using a
+        // syntactically valid UUID; it fails before spawning.
+        let err = configure_ipv4("12345678-1234-1234-1234-123456789abc", &config).unwrap_err();
+        assert!(err.contains("at least one address"));
+    }
+}
+
+/// Create a NetworkManager WWAN profile without handling SIM secrets in the
+/// UI process. PIN/password flags are `not-saved`; NetworkManager's registered
+/// secret agent owns prompting and custody when activation needs them.
+pub fn create_mobile_profile(name: &str, apn: &str) -> Result<(), String> {
+    let safe = |v: &str, max: usize| {
+        !v.trim().is_empty() && v.len() <= max && !v.chars().any(char::is_control)
+    };
+    if !safe(name, 64) || !safe(apn, 100) {
+        return Err("invalid mobile profile name or APN".into());
+    }
+    run(
+        "nmcli",
+        &[
+            "connection",
+            "add",
+            "type",
+            "gsm",
+            "ifname",
+            "*",
+            "con-name",
+            name,
+            "apn",
+            apn,
+        ],
+    )?;
+    run(
+        "nmcli",
+        &[
+            "connection",
+            "modify",
+            name,
+            "gsm.pin-flags",
+            "2",
+            "gsm.password-flags",
+            "2",
+        ],
+    )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnterpriseWifiConfiguration {
+    pub profile_name: String,
+    pub ssid: String,
+    pub identity: String,
+    pub anonymous_identity: Option<String>,
+    pub ca_certificate: String,
+}
+
+impl EnterpriseWifiConfiguration {
+    fn validate(&self) -> Result<(), String> {
+        let safe = |value: &str, max: usize| {
+            !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+        };
+        if !safe(&self.profile_name, 64) || !safe(&self.ssid, 32) || !safe(&self.identity, 253) {
+            return Err("enterprise Wi-Fi name, SSID, or identity is invalid".into());
+        }
+        let ca = std::path::Path::new(&self.ca_certificate);
+        if !ca.is_absolute() || !ca.is_file() {
+            return Err("choose an existing absolute CA certificate file".into());
+        }
+        if self
+            .anonymous_identity
+            .as_deref()
+            .is_some_and(|value| !safe(value, 253))
+        {
+            return Err("anonymous identity is invalid".into());
+        }
+        Ok(())
+    }
+}
+
+/// Configure the broadly deployed PEAP/MSCHAPv2 enterprise profile using
+/// NetworkManager's standard 802.1X setting. A CA certificate is mandatory;
+/// qOS never offers the dangerously convenient "do not validate" mode.
+/// The password is fed to `nmcli --ask` on stdin and marked not-saved.
+pub fn connect_enterprise_wifi(
+    config: &EnterpriseWifiConfiguration,
+    password: &str,
+) -> Result<(), String> {
+    config.validate()?;
+    if password.is_empty() || password.chars().any(|c| matches!(c, '\n' | '\r')) {
+        return Err("enterprise Wi-Fi password is empty or invalid".into());
+    }
+    let existing = run_capture("nmcli", &["-t", "-f", "NAME", "connection", "show"])?;
+    if !existing.lines().any(|name| name == config.profile_name) {
+        run(
+            "nmcli",
+            &[
+                "connection",
+                "add",
+                "type",
+                "wifi",
+                "con-name",
+                &config.profile_name,
+                "ssid",
+                &config.ssid,
+            ],
+        )?;
+    }
+    let anonymous = config.anonymous_identity.as_deref().unwrap_or("");
+    run(
+        "nmcli",
+        &[
+            "connection",
+            "modify",
+            &config.profile_name,
+            "wifi-sec.key-mgmt",
+            "wpa-eap",
+            "802-1x.eap",
+            "peap",
+            "802-1x.identity",
+            &config.identity,
+            "802-1x.anonymous-identity",
+            anonymous,
+            "802-1x.phase2-auth",
+            "mschapv2",
+            "802-1x.ca-cert",
+            &config.ca_certificate,
+            "802-1x.password-flags",
+            "2",
+        ],
+    )?;
+    let input = format!("{password}\n");
+    crate::process::run_with_input(
+        "nmcli",
+        &[
+            "--ask",
+            "--wait",
+            "45",
+            "connection",
+            "up",
+            &config.profile_name,
+        ],
+        input.as_bytes(),
+        std::time::Duration::from_secs(50),
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

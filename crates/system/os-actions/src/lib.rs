@@ -28,6 +28,7 @@ pub mod bluetooth;
 pub mod bluez;
 pub mod display;
 pub mod firmware;
+pub mod modem;
 pub mod network;
 pub mod power;
 pub mod privacy;
@@ -40,22 +41,36 @@ pub use audio::{
     VolumeState, get_source_state, get_volume, get_volume_state, set_mute, set_volume, toggle_mute,
     toggle_source_mute,
 };
-pub use battery::{BatteryInfo, set_charge_limit};
+pub use battery::{
+    BatteryInfo, ChargeCapBackend, ChargeCapCapability, charge_capability, set_charge_limit,
+};
 pub use bluetooth::{
     BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth,
 };
-pub use display::{get_brightness, set_brightness};
-pub use firmware::{
-    FirmwareUpdate, get_firmware_updates, install_firmware_updates, refresh_firmware_metadata,
+pub use display::{
+    AmbientBrightnessController, ambient_lux, get_brightness, has_ambient_light_sensor,
+    set_brightness,
 };
+pub use firmware::{
+    FirmwareEvent, FirmwareInstallOutcome, FirmwareUpdate, get_firmware_updates,
+    refresh_firmware_metadata, start_firmware_install,
+};
+pub use modem::unlock_mobile_sim;
 pub use network::{
-    HOTSPOT_PROFILE, LinkKind, LinkStatus, RadioState, VpnConnectionInfo, WifiNetworkInfo,
-    WiredInfo, connect_wifi, get_link_status, get_radio_state, get_wifi, get_wired,
-    import_vpn_config, list_vpn_connections, list_wifi_networks, set_airplane_mode, set_hotspot,
-    set_mobile_broadband, set_vpn_connection, set_wifi, set_wired,
+    ConnectivityState, EnterpriseWifiConfiguration, HOTSPOT_PROFILE, HotspotBand, HotspotClient,
+    HotspotConfiguration, IpConfiguration, LinkKind, LinkStatus, RadioState, SavedNetworkProfile,
+    VpnConnectionInfo, WifiNetworkInfo, WiredInfo, captive_portal_uri, configure_hotspot,
+    configure_ipv4, connect_enterprise_wifi, connect_wifi, create_mobile_profile,
+    forget_network_profile, get_connectivity, get_link_status, get_radio_state, get_wifi,
+    get_wired, import_vpn_config, list_hotspot_clients, list_saved_network_profiles,
+    list_vpn_connections, list_wifi_networks, set_airplane_mode, set_hotspot, set_mobile_broadband,
+    set_network_autoconnect, set_vpn_connection, set_wifi, set_wired,
 };
 pub use power::{PowerProfile, get_power_profile, set_power_profile};
-pub use privacy::{KillState, PrivacyStatus, get_privacy_status};
+pub use privacy::{
+    ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
+    monitor_media_usage, revoke_media_client,
+};
 pub use session::{SessionAction, perform_session_action};
 pub use time::{get_ntp, now_clock, now_date, set_ntp};
 pub use tool_intent::{
