@@ -7338,10 +7338,6 @@ fn app_kind_filter() -> Vec<crate::shell::search::ResourceKind> {
     vec![ResourceKind::Application, ResourceKind::HostApplication]
 }
 
-fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    draw_scrim_at(scene, transform, rect, 1.0, theme);
-}
-
 /// [`draw_scrim`] scaled by `openness` so the palette/overview scrim
 /// fades with its surface.
 fn draw_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
