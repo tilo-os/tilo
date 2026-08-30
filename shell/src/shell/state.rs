@@ -618,12 +618,14 @@ impl Collaborator {
     }
 
     /// Record the live session this person is here through.
+    #[must_use]
     pub fn with_session(mut self, peer: u64) -> Self {
         self.session = Some(peer);
         self
     }
 
     /// Like [`Collaborator::new`] but attributed to a specific tab.
+    #[must_use]
     pub fn with_active_tab(id: impl Into<String>, name: impl Into<String>, tab: u64) -> Self {
         let mut c = Self::new(id, name);
         c.active_tab = Some(tab);
@@ -631,24 +633,28 @@ impl Collaborator {
     }
 
     /// Attach an explicit `#rrggbb` / `#rrggbbaa` override for this peer.
+    #[must_use]
     pub fn with_cursor_color(mut self, hex: impl Into<String>) -> Self {
         self.cursor_color = Some(hex.into());
         self
     }
 
     /// Attach an avatar reference (URL or initials fragment).
+    #[must_use]
     pub fn with_avatar(mut self, avatar: impl Into<String>) -> Self {
         self.avatar = Some(avatar.into());
         self
     }
 
     /// Attach a role id pointing into the workspace's role table.
+    #[must_use]
     pub fn with_role(mut self, role_id: impl Into<String>) -> Self {
         self.role_id = Some(role_id.into());
         self
     }
 
     /// Mark this collaborator as invited rather than arrived.
+    #[must_use]
     pub fn as_invited(mut self) -> Self {
         self.invited = true;
         self
