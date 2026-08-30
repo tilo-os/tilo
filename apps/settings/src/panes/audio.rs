@@ -87,6 +87,9 @@ fn stream_volume_key(id: u32) -> String {
 fn stream_muted_key(id: u32) -> String {
     format!("audio.stream.{id}.muted")
 }
+fn device_profile_key(id: u32) -> String {
+    format!("audio.device.{id}.profile")
+}
 
 /// The picker entry meaning "no explicit device — follow the default". Choosing
 /// it clears the stream's `target.object` metadata.
@@ -343,6 +346,7 @@ pub struct AudioPane {
     last_stream_sink: HashMap<u32, String>,
     last_stream_vol: HashMap<u32, f32>,
     last_stream_mute: HashMap<u32, bool>,
+    last_device_profile: HashMap<u32, String>,
     initial_volume: f32,
     initial_input: f32,
     initial_prefs: AudioPrefs,
@@ -403,13 +407,39 @@ impl AudioPane {
         let initial = os_actions::get_volume().unwrap_or(0.5);
         let initial_input = get_source_volume().unwrap_or(0.75);
         let prefs = SystemPrefs::load().audio;
-        let devices = list_audio_devices();
-        let last_sink = devices.default_sink().map(str::to_string);
-        let last_source = devices.default_source().map(str::to_string);
+        let mut devices = list_audio_devices();
         // Enumerate the PipeWire graph for the per-application streams (and the
         // devices they route to). Empty on a host with no PipeWire, so the
         // Applications card simply shows its empty state.
-        let graph = media::audio::enumerate();
+        let mut graph = media::audio::enumerate();
+        // Re-apply a remembered physical route when it is present. The action
+        // is made against the current PipeWire node id; the persisted value is
+        // only a preference, never treated as proof that hardware exists.
+        if let Some(name) = prefs.output_device.as_deref()
+            && let Some(dev) = graph.sinks.iter().find(|d| d.description == name)
+        {
+            let id = dev.id;
+            if RealGraphControl.set_default_sink(id).is_ok() {
+                for sink in &mut graph.sinks {
+                    sink.is_default = sink.id == id;
+                }
+            }
+        }
+        if let Some(name) = prefs.input_device.as_deref()
+            && let Some(dev) = graph.sources.iter().find(|d| d.description == name)
+        {
+            let id = dev.id;
+            if RealGraphControl.set_default_source(id).is_ok() {
+                for source in &mut graph.sources {
+                    source.is_default = source.id == id;
+                }
+            }
+        }
+        if !graph.sinks.is_empty() || !graph.sources.is_empty() {
+            devices = devices_from_graph(&graph);
+        }
+        let last_sink = devices.default_sink().map(str::to_string);
+        let last_source = devices.default_source().map(str::to_string);
         Self {
             dispatcher: dispatcher_or_real(None),
             input: Arc::new(RealInput),
@@ -424,6 +454,7 @@ impl AudioPane {
             last_stream_sink: HashMap::new(),
             last_stream_vol: HashMap::new(),
             last_stream_mute: HashMap::new(),
+            last_device_profile: HashMap::new(),
             initial_volume: initial,
             initial_input,
             initial_prefs: prefs.clone(),
@@ -470,6 +501,7 @@ impl AudioPane {
             last_stream_sink: HashMap::new(),
             last_stream_vol: HashMap::new(),
             last_stream_mute: HashMap::new(),
+            last_device_profile: HashMap::new(),
             initial_volume,
             initial_input,
             initial_prefs: AudioPrefs::default(),
@@ -576,6 +608,39 @@ impl AudioPane {
         ));
         let input = card("Input", rows(input_rows));
 
+        let mut hardware_rows = Vec::new();
+        for hw in &self.graph.hardware {
+            let selectable: Vec<_> = hw.profiles.iter().filter(|p| p.available).collect();
+            if selectable.len() < 2 {
+                continue;
+            }
+            let options = selectable.iter().map(|p| p.description.clone()).collect();
+            let active = hw
+                .active_profile
+                .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
+                .map(|p| p.description.as_str())
+                .unwrap_or("Choose a profile");
+            hardware_rows.push(choice_row_described(
+                &hw.description,
+                "PipeWire device profile",
+                Box::new(
+                    Dropdown::new(options, &device_profile_key(hw.id))
+                        .with_id(&format!("audio.profile.{}", hw.id))
+                        .with_placeholder(active),
+                ),
+            ));
+        }
+        for sink in &self.graph.sinks {
+            if let Some(codec) = &sink.codec {
+                hardware_rows.push(crate::widgets::value_row(
+                    &format!("{} codec", sink.description),
+                    codec,
+                ));
+            }
+        }
+        let hardware =
+            (!hardware_rows.is_empty()).then(|| card("Device capabilities", rows(hardware_rows)));
+
         // --- Applications card: one block per playback stream, with a picker
         //     that routes just that app to a chosen sink, plus per-app volume +
         //     mute. This is the per-application routing surface — the music app
@@ -628,7 +693,12 @@ impl AudioPane {
             ]),
         );
 
-        crate::widgets::cards(vec![output, input, apps, recording, sounds])
+        let mut cards = vec![output, input];
+        if let Some(hardware) = hardware {
+            cards.push(hardware);
+        }
+        cards.extend([apps, recording, sounds]);
+        crate::widgets::cards(cards)
     }
 
     /// Build one streams card (Applications or Recording). Each stream becomes
@@ -867,6 +937,16 @@ impl Widget for AudioPane {
                 let _ = state.put(root, INPUT_DEVICE_KEY, name);
             }
             self.last_prefs = self.initial_prefs.clone();
+            for hw in &self.graph.hardware {
+                if let Some(active) = hw
+                    .active_profile
+                    .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
+                {
+                    let _ = state.put(root, device_profile_key(hw.id), active.description.clone());
+                    self.last_device_profile
+                        .insert(hw.id, active.description.clone());
+                }
+            }
             self.needs_seed = false;
         }
         if let Some(new) = read_f64(state, root, VOLUME_KEY) {
@@ -960,6 +1040,29 @@ impl Widget for AudioPane {
         }
         for s in &streams {
             self.dispatch_stream(state, root, s);
+        }
+        for hw in &self.graph.hardware {
+            let Some(choice) = read_str(state, root, &device_profile_key(hw.id)) else {
+                continue;
+            };
+            if self.last_device_profile.get(&hw.id) == Some(&choice) {
+                continue;
+            }
+            let Some(profile) = hw
+                .profiles
+                .iter()
+                .find(|p| p.available && p.description == choice)
+            else {
+                continue;
+            };
+            match self.gctl.set_device_profile(hw.id, profile.index) {
+                Ok(()) => {
+                    self.last_device_profile.insert(hw.id, choice);
+                }
+                Err(e) => {
+                    warn!(target: "qos::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed")
+                }
+            }
         }
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -1299,7 +1402,8 @@ Video
     // --- Per-application routing -------------------------------------------
 
     use media::audio::{
-        AudioDevice as GDevice, AudioGraph as G, AudioStream as GStream, GraphControl,
+        AudioDevice as GDevice, AudioGraph as G, AudioHardwareDevice, AudioStream as GStream,
+        DeviceProfile, GraphControl,
     };
 
     /// Records every graph edit the pane dispatches, so a routing/volume/mute
@@ -1336,6 +1440,9 @@ Video
         fn set_node_mute(&self, id: u32, m: bool) -> Result<(), String> {
             self.push(format!("mute({id},{m})"))
         }
+        fn set_device_profile(&self, id: u32, profile: u32) -> Result<(), String> {
+            self.push(format!("profile({id},{profile})"))
+        }
     }
 
     /// Two sinks (the default "Speakers", and "Headphones" as a routing target)
@@ -1351,6 +1458,8 @@ Video
                     is_default: true,
                     volume: Some(0.8),
                     muted: Some(false),
+                    channels: 2,
+                    codec: None,
                 },
                 GDevice {
                     id: 91,
@@ -1360,6 +1469,8 @@ Video
                     is_default: false,
                     volume: Some(1.0),
                     muted: Some(false),
+                    channels: 2,
+                    codec: None,
                 },
             ],
             sources: vec![],
@@ -1374,6 +1485,7 @@ Video
                 muted: Some(false),
             }],
             record_streams: vec![],
+            hardware: vec![],
         }
     }
 
@@ -1386,6 +1498,41 @@ Video
             0.75,
         )
         .with_graph(graph_two_sinks_one_stream(), gctl)
+    }
+
+    #[test]
+    fn selecting_reported_profile_dispatches_real_pipewire_index() {
+        let rec = Arc::new(RecordingGraph::default());
+        let mut graph = graph_two_sinks_one_stream();
+        graph.hardware.push(AudioHardwareDevice {
+            id: 7,
+            description: "Headset".into(),
+            active_profile: Some(1),
+            profiles: vec![
+                DeviceProfile {
+                    index: 1,
+                    name: "a2dp".into(),
+                    description: "High Fidelity".into(),
+                    available: true,
+                },
+                DeviceProfile {
+                    index: 2,
+                    name: "hfp".into(),
+                    description: "Headset microphone".into(),
+                    available: true,
+                },
+            ],
+        });
+        let disp = Arc::new(RecordingDispatcher::default());
+        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
+            .with_graph(graph, rec.clone());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, device_profile_key(7), "Headset microphone");
+        pane.sync(&mut doc, &root);
+        pane.sync(&mut doc, &root);
+        assert_eq!(rec.calls(), vec!["profile(7,2)"]);
     }
 
     #[test]

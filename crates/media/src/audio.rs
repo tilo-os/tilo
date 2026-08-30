@@ -56,6 +56,30 @@ pub struct AudioDevice {
     /// channel volume, matching what `wpctl` displays), if known.
     pub volume: Option<f32>,
     pub muted: Option<bool>,
+    /// Number of channels reported by Props.channelVolumes. Balance and
+    /// channel-test controls must not appear unless this is at least two.
+    pub channels: usize,
+    /// Active Bluetooth codec when the PipeWire BlueZ node advertises it.
+    /// Informational: codec selection is exposed only through real profiles.
+    pub codec: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceProfile {
+    pub index: u32,
+    pub name: String,
+    pub description: String,
+    pub available: bool,
+}
+
+/// A PipeWire Device (sound card / Bluetooth transport) and the profiles the
+/// daemon says can actually be selected with `wpctl set-profile`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioHardwareDevice {
+    pub id: u32,
+    pub description: String,
+    pub active_profile: Option<u32>,
+    pub profiles: Vec<DeviceProfile>,
 }
 
 /// A per-application stream node (one app's playback or capture).
@@ -99,6 +123,7 @@ pub struct AudioGraph {
     pub sources: Vec<AudioDevice>,
     pub playback_streams: Vec<AudioStream>,
     pub record_streams: Vec<AudioStream>,
+    pub hardware: Vec<AudioHardwareDevice>,
 }
 
 impl AudioGraph {
@@ -143,9 +168,14 @@ impl AudioGraph {
                 .join(",")
         };
         format!(
-            "sink[{}]|src[{}]|pb[{}]|rec[{}]",
+            "sink[{}]|src[{}]|hw[{}]|pb[{}]|rec[{}]",
             dev(&self.sinks),
             dev(&self.sources),
+            self.hardware
+                .iter()
+                .map(|d| format!("{}:{}", d.id, d.profiles.len()))
+                .collect::<Vec<_>>()
+                .join(","),
             st(&self.playback_streams),
             st(&self.record_streams),
         )
@@ -234,6 +264,18 @@ fn node_volume_mute(obj: &Value) -> (Option<f32>, Option<bool>) {
     (None, None)
 }
 
+fn node_channel_count(obj: &Value) -> usize {
+    obj.get("info")
+        .and_then(|i| i.get("params"))
+        .and_then(|p| p.get("Props"))
+        .and_then(Value::as_array)
+        .and_then(|a| {
+            a.iter()
+                .find_map(|e| e.get("channelVolumes").and_then(Value::as_array))
+        })
+        .map_or(0, Vec::len)
+}
+
 /// Parse a `pw-dump` JSON document into an [`AudioGraph`]. Robust against the
 /// surrounding graph: it reads the default-device metadata, the `Link` objects
 /// (to resolve where each stream is actually routed), and the audio `Node`s,
@@ -288,6 +330,68 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
     // Pass 3 — the audio nodes: sinks, sources, and streams.
     let mut graph = AudioGraph::default();
     for o in &objs {
+        let is_device = o
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.ends_with("Device"));
+        if is_device {
+            let Some(id) = o.get("id").and_then(as_u32) else {
+                continue;
+            };
+            let props = o.get("info").and_then(|i| i.get("props"));
+            let description = props
+                .and_then(|p| p.get("device.description"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    props
+                        .and_then(|p| p.get("device.name"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("Audio device")
+                .to_string();
+            let params = o.get("info").and_then(|i| i.get("params"));
+            let active_profile = params
+                .and_then(|p| p.get("Profile"))
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(|p| p.get("index"))
+                .and_then(as_u32);
+            let profiles = params
+                .and_then(|p| p.get("EnumProfile"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|p| {
+                    let index = p.get("index").and_then(as_u32)?;
+                    let name = p
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let description = p
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&name)
+                        .to_string();
+                    let available =
+                        !matches!(p.get("available").and_then(Value::as_str), Some("no"));
+                    Some(DeviceProfile {
+                        index,
+                        name,
+                        description,
+                        available,
+                    })
+                })
+                .collect();
+            graph.hardware.push(AudioHardwareDevice {
+                id,
+                description,
+                active_profile,
+                profiles,
+            });
+            continue;
+        }
         let is_node = o
             .get("type")
             .and_then(|t| t.as_str())
@@ -329,6 +433,10 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
                     is_default,
                     volume,
                     muted,
+                    channels: node_channel_count(o),
+                    codec: getp("api.bluez5.codec")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 };
                 if media_class == "Audio/Sink" {
                     graph.sinks.push(dev);
@@ -439,6 +547,14 @@ pub fn wpctl_set_mute_args(node_id: u32, muted: bool) -> Vec<String> {
     ]
 }
 
+pub fn wpctl_set_profile_args(device_id: u32, profile_index: u32) -> Vec<String> {
+    vec![
+        "set-profile".into(),
+        device_id.to_string(),
+        profile_index.to_string(),
+    ]
+}
+
 /// Side-effect interface for editing the audio graph. The production impl
 /// ([`RealGraphControl`]) shells out to `wpctl` / `pw-metadata`; tests inject a
 /// recorder so the settings pane's dispatch can be asserted without a daemon.
@@ -455,6 +571,7 @@ pub trait GraphControl: Send + Sync {
     fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String>;
     /// Mute or unmute a node.
     fn set_node_mute(&self, node_id: u32, muted: bool) -> Result<(), String>;
+    fn set_device_profile(&self, device_id: u32, profile_index: u32) -> Result<(), String>;
 }
 
 /// Run `bin` with `args`, mapping a missing binary or non-zero exit to the
@@ -497,6 +614,9 @@ impl GraphControl for RealGraphControl {
     fn set_node_mute(&self, node_id: u32, muted: bool) -> Result<(), String> {
         run("wpctl", &wpctl_set_mute_args(node_id, muted))
     }
+    fn set_device_profile(&self, device_id: u32, profile_index: u32) -> Result<(), String> {
+        run("wpctl", &wpctl_set_profile_args(device_id, profile_index))
+    }
 }
 
 /// A no-op [`GraphControl`] for contexts with no daemon to drive (a `--shots`
@@ -520,6 +640,9 @@ impl GraphControl for NoopGraphControl {
         Ok(())
     }
     fn set_node_mute(&self, _: u32, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_device_profile(&self, _: u32, _: u32) -> Result<(), String> {
         Ok(())
     }
 }
@@ -576,6 +699,27 @@ mod tests {
     /// `info.params.Props[].channelVolumes`/`mute`, the default metadata) are
     /// exactly as `pw-dump` emits them.
     const FIXTURE: &str = include_str!("audio_pw_dump_fixture.json");
+
+    #[test]
+    fn parses_only_real_available_device_profiles() {
+        let g = parse_pw_dump(
+            r#"[{
+          "id": 7, "type": "PipeWire:Interface:Device",
+          "info": {"props":{"device.description":"USB headset"},"params":{
+            "Profile":[{"index":2}],
+            "EnumProfile":[
+              {"index":1,"name":"off","description":"Off","available":"yes"},
+              {"index":2,"name":"a2dp","description":"High Fidelity Playback","available":"yes"},
+              {"index":3,"name":"hfp","description":"Headset","available":"no"}
+            ]}}
+        }]"#,
+        );
+        assert_eq!(g.hardware.len(), 1);
+        assert_eq!(g.hardware[0].active_profile, Some(2));
+        assert!(g.hardware[0].profiles[1].available);
+        assert!(!g.hardware[0].profiles[2].available);
+        assert_eq!(wpctl_set_profile_args(7, 2), ["set-profile", "7", "2"]);
+    }
 
     #[test]
     fn parses_sinks_sources_and_default() {

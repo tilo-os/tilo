@@ -16,6 +16,9 @@
 //!
 //! ## Dispatcher trait
 //!
+//! Bluetooth is the exception to the CLI wrappers: it uses the persistent
+//! `qos-bluez` D-Bus client because discovery and pairing are connection-bound.
+//!
 //! [`Dispatcher`] is the side-effect interface used by the click handlers. The default
 //! production impl ([`RealDispatcher`]) calls the free functions in the per-domain modules;
 //! tests substitute a recording impl so the click handler can be asserted on without
@@ -142,7 +145,7 @@ impl Dispatcher for RealDispatcher {
         network::set_wifi(enabled)
     }
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
-        bluetooth::set_bluetooth(enabled)
+        bluez::set_powered(enabled)
     }
     fn set_wired(&self, enabled: bool) -> Result<(), String> {
         network::set_wired(enabled)
