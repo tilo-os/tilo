@@ -129,7 +129,9 @@ fn collect(
             for i in 0..doc.length(obj) {
                 let child = format!("{path}[{i}]");
                 match doc.get(obj, i) {
-                    Ok(Some((Value::Object(_), id))) => collect(doc, &id, &child, depth + 1, out),
+                    Ok(Some((Value::Object(_), id))) => {
+                        collect(doc, &id, &child, depth.saturating_add(1), out);
+                    }
                     Ok(Some((Value::Scalar(s), _))) => push_scalar(&child, &s, out),
                     _ => {}
                 }
@@ -144,7 +146,9 @@ fn collect(
                     format!("{path}.{key}")
                 };
                 match doc.get(obj, &key) {
-                    Ok(Some((Value::Object(_), id))) => collect(doc, &id, &child, depth + 1, out),
+                    Ok(Some((Value::Object(_), id))) => {
+                        collect(doc, &id, &child, depth.saturating_add(1), out);
+                    }
                     Ok(Some((Value::Scalar(s), _))) => push_scalar(&child, &s, out),
                     _ => {}
                 }
@@ -153,12 +157,8 @@ fn collect(
     }
 }
 
-fn push_scalar(
-    path: &str,
-    scalar: &std::borrow::Cow<'_, automerge::ScalarValue>,
-    out: &mut Vec<(String, String)>,
-) {
-    if let automerge::ScalarValue::Str(s) = scalar.as_ref()
+fn push_scalar(path: &str, scalar: &automerge::ScalarValue, out: &mut Vec<(String, String)>) {
+    if let automerge::ScalarValue::Str(s) = scalar
         && !s.is_empty()
     {
         out.push((path.to_string(), s.to_string()));
@@ -302,7 +302,7 @@ mod tests {
             .iter()
             .map(|r| r.iter().map(std::string::ToString::to_string).collect())
             .collect();
-        for row in NAMED.len()..NAMED.len() + PADDING_ROWS {
+        for row in NAMED.len()..NAMED.len().saturating_add(PADDING_ROWS) {
             rows.push(
                 (0..3)
                     .map(|col| format!("row {row} column {col} of the same table"))
@@ -318,8 +318,8 @@ mod tests {
                 for (col, text) in cells.iter().enumerate() {
                     let id = dm.insert_block(prev.as_deref(), "cell");
                     dm.set_attr(&id, "table", "t1");
-                    dm.set_attr(&id, "row", row as i64);
-                    dm.set_attr(&id, "col", col as i64);
+                    dm.set_attr(&id, "row", i64::try_from(row).unwrap_or(i64::MAX));
+                    dm.set_attr(&id, "col", i64::try_from(col).unwrap_or(i64::MAX));
                     dm.splice_text(&id, 0, 0, text);
                     prev = Some(id);
                 }
@@ -337,8 +337,13 @@ mod tests {
             .iter()
             .find(|(_, t)| t == "beta two")
             .expect("a cell's text must be found");
+        #[allow(
+            clippy::case_sensitive_file_extension_comparisons,
+            reason = "not a filename: an automerge object-path suffix, exact-match by design"
+        )]
+        let ends_with_text = hit.0.ends_with(".text");
         assert!(
-            hit.0.ends_with(".text"),
+            ends_with_text,
             "the path must name the cell's text object, got {:?}",
             hit.0,
         );
