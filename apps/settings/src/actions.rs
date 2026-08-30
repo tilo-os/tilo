@@ -625,6 +625,33 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             ),
             "visual alerts",
         ));
+        sec = sec.with_action(bool_flip_spec(
+            "cursor_crosshair",
+            panes::accessibility::CURSOR_CROSSHAIR_KEY,
+            b(
+                panes::accessibility::CURSOR_CROSSHAIR_KEY,
+                d.accessibility.cursor_crosshair,
+            ),
+            "the pointer crosshair",
+        ));
+        sec = sec.with_action(bool_flip_spec(
+            "thick_text_caret",
+            panes::accessibility::THICK_CARET_KEY,
+            b(
+                panes::accessibility::THICK_CARET_KEY,
+                d.accessibility.thick_text_caret,
+            ),
+            "the thicker text cursor",
+        ));
+        sec = sec.with_action(bool_flip_spec(
+            "switch_control",
+            panes::accessibility::SWITCH_CONTROL_KEY,
+            b(
+                panes::accessibility::SWITCH_CONTROL_KEY,
+                d.accessibility.switch_control,
+            ),
+            "switch control",
+        ));
         root = root.with_child(sec);
     }
 
