@@ -1310,7 +1310,7 @@ mod production_path {
         let verdict =
             state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 11.0, y: 11.0 });
 
-        /// Scrubber, focus guard: focus moves to a private window and the guest's keyboard goes silent mid-stream.
+        // Scrubber, focus guard: focus moves to a private window and the guest's keyboard goes silent mid-stream.
         let elapsed = started.elapsed();
         assert!(
             elapsed < RATE_WINDOW,

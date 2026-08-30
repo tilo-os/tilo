@@ -4195,7 +4195,7 @@ mod tests {
         // runs on the UI thread. (An absolute "<16ms" bound would just measure
         // how slow an unoptimised debug draw of the sample scene is.)
         let synth_event = || WindowEvent::CursorMoved {
-            device_id: unsafe { winit::event::DeviceId::dummy() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(200.0, 200.0),
         };
         let dispatch = |a: &mut FeedsApp, doc: &mut AutoCommit| {

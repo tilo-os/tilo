@@ -8888,9 +8888,6 @@ impl ShellOverlayHost {
                 transform * Affine::translate((rect.x0 + pad, y)),
                 None,
             );
-            // Gap keeps the status from reading as one paragraph with
-            // the buttons below.
-            y += f64::from(body_size) + 16.0;
         }
 
         {

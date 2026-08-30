@@ -21,11 +21,16 @@
 /// Progress`, so the queue can compare with `>=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum Priority {
+    /// Progress chatter; only the most recent survives.
     Progress,
+    /// Ambient notification — yields to anything the user asked for.
     Notification,
+    /// Document or control text the user is reading.
     Text,
+    /// The default: something the app is saying to the user.
     #[default]
     Message,
+    /// Interrupts whatever is speaking.
     Important,
 }
 
