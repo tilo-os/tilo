@@ -966,6 +966,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         WsTab::General => "general",
         WsTab::Members => "members",
         WsTab::Permissions => "permissions",
+        WsTab::Apps => "apps",
     };
     let palette_visible = host.palette_visible();
     let palette_query = host.palette_query();
