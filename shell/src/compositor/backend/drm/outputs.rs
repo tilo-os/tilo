@@ -118,6 +118,8 @@ impl OutputRegistry {
                 // HiDPI policy lives at the compositor layer, not the
                 // backend, so scale defaults to 1.0 here.
                 scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
             };
             next_x += i32::from(mode.width);
             out.push((id, output));

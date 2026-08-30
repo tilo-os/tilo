@@ -4034,6 +4034,8 @@ mod output_geometry_tests {
                 position: (1600, 0),
                 size: (1920, 1080),
                 scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
             },
         ];
         let geo = output_geometry(&outs);

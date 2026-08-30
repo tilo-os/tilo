@@ -5,8 +5,10 @@
 //! Not zero-copy (smithay's `DrmCompositor` drives GLES, not vello); pixel order: vello's
 //! `Rgba8Unorm` swizzles to framebuffer `Xrgb8888` in [`super::paint::VelloDrmBridge::paint_into_xrgb8888`].
 
+use std::collections::BTreeMap;
+use std::io::Read as _;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use smithay::backend::session::Session;
 use smithay::reexports::drm as drm_re;
@@ -64,6 +66,7 @@ impl Card {
 pub struct CardHandle {
     card: Card,
     device_id: u64,
+    card_path: PathBuf,
 }
 
 /// One connected connector as the hotplug path sees it: enough to decide whether it is new, gone, or re-moded, and to modeset it if new.
@@ -81,7 +84,11 @@ impl CardHandle {
     pub fn open<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
         let card = DrmScanout::open_card(session, card_path)?;
         let device_id = card.dev_id();
-        Ok(Self { card, device_id })
+        Ok(Self {
+            card,
+            device_id,
+            card_path: card_path.to_path_buf(),
+        })
     }
 
     /// `dev_t` of the underlying node — the device half of an output's stable identity.
@@ -134,7 +141,11 @@ impl CardHandle {
                 continue;
             }
             let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-            let output_config = settings_store::hardware::DisplayConfig::load();
+            let lower_name = connector_name.to_ascii_lowercase();
+            if lower_name.contains("writeback") || lower_name.contains("virtual") {
+                continue;
+            }
+            let output_config = settings_store::hardware::DisplayConfig::load_effective();
             if output_config
                 .outputs
                 .get(&connector_name)
@@ -158,6 +169,110 @@ impl CardHandle {
             });
         }
         out
+    }
+
+    /// Describe every physically connected sink using the live KMS mode
+    /// table. The result is published to Settings; it intentionally reports
+    /// HDR/VRR as unavailable until this XRGB8888 scanout path can set the
+    /// corresponding DRM properties. EDID support alone is not an applicable
+    /// compositor capability.
+    pub fn display_capabilities(
+        &self,
+        profiles: &BTreeMap<String, String>,
+    ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
+        use settings_store::hardware::{DisplayOutputSnapshot, OutputDescriptor, OutputMode};
+
+        let Ok(resources) = self.card.resource_handles() else {
+            return Vec::new();
+        };
+        let config = settings_store::hardware::DisplayConfig::load_effective();
+        let card_name = self
+            .card_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("card0");
+        let mut outputs = Vec::new();
+        for &handle in resources.connectors() {
+            let Ok(info) = self.card.get_connector(handle, true) else {
+                continue;
+            };
+            if info.state() != connector::State::Connected {
+                continue;
+            }
+            let connector = format!("{}-{}", info.interface().as_str(), info.interface_id());
+            let lower_name = connector.to_ascii_lowercase();
+            if lower_name.contains("writeback") || lower_name.contains("virtual") {
+                continue;
+            }
+            let modes: Vec<OutputMode> = info
+                .modes()
+                .iter()
+                .map(|mode| {
+                    let (width, height) = mode.size();
+                    OutputMode {
+                        width: u32::from(width),
+                        height: u32::from(height),
+                        refresh_mhz: mode_refresh_mhz(mode),
+                    }
+                })
+                .collect();
+            let requested = config.outputs.get(&connector).and_then(|cfg| cfg.mode);
+            let Some(current) = pick_configured_mode(info.modes(), requested) else {
+                continue;
+            };
+            let (width, height) = current.size();
+            let current_mode = OutputMode {
+                width: u32::from(width),
+                height: u32::from(height),
+                refresh_mhz: mode_refresh_mhz(&current),
+            };
+            let sysfs = Path::new("/sys/class/drm").join(format!("{card_name}-{connector}"));
+            let sink_hdr = std::fs::read(sysfs.join("edid"))
+                .ok()
+                .map(|edid| {
+                    crate::wayland::edid::parse_hdr_display_info(&edid)
+                        .supported_transfers
+                        .iter()
+                        .any(|transfer| transfer.is_hdr())
+                })
+                .unwrap_or(false);
+            // `vrr_capable` is a standard DRM connector property exported by
+            // modern amdgpu/i915 kernels. Absence is unknown/not usable, never
+            // interpreted as support.
+            let sink_vrr = std::fs::read_to_string(sysfs.join("vrr_capable"))
+                .ok()
+                .is_some_and(|value| value.trim() == "1");
+            let upper = connector.to_ascii_uppercase();
+            let builtin =
+                upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI");
+            outputs.push(DisplayOutputSnapshot {
+                descriptor: OutputDescriptor {
+                    connector,
+                    modes,
+                    // This backend currently presents XRGB8888 dumb buffers
+                    // and does not set HDR_OUTPUT_METADATA / Colorspace.
+                    hdr: false,
+                    // Likewise it does not set the CRTC VRR_ENABLED property.
+                    vrr: false,
+                    color_profiles: profiles.keys().cloned().collect(),
+                },
+                current_mode,
+                builtin,
+                sink_hdr,
+                hdr_unavailable_reason: sink_hdr.then(|| {
+                    "Display supports HDR, but the active XRGB8888 scanout path cannot signal HDR safely"
+                        .into()
+                }),
+                sink_vrr,
+                vrr_unavailable_reason: sink_vrr.then(|| {
+                    "Display supports adaptive sync, but the active scanout path cannot enable the CRTC VRR property"
+                        .into()
+                }),
+                color_profile_labels: profiles.clone(),
+            });
+        }
+        outputs.sort_by(|a, b| a.descriptor.connector.cmp(&b.descriptor.connector));
+        outputs
     }
 
     /// Modeset one connector onto a crtc not in `used`; `None` (logged, not fatal) when no free crtc or the modeset failed, so other outputs keep working.
@@ -215,6 +330,110 @@ impl CardHandle {
     }
 }
 
+/// Discover ICC profiles from the locations used by colord and the XDG base
+/// directory spec. Files are bounded and checked for the ICC `acsp` signature
+/// before their canonical paths cross the Settings/compositor boundary.
+pub(super) fn discover_icc_profiles() -> BTreeMap<String, String> {
+    let mut roots = vec![
+        PathBuf::from("/usr/share/color/icc"),
+        PathBuf::from("/usr/local/share/color/icc"),
+        PathBuf::from("/var/lib/colord/icc"),
+    ];
+    if let Some(data) = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/share")))
+    {
+        roots.push(data.join("icc"));
+        roots.push(data.join("color/icc"));
+    }
+    let mut profiles = BTreeMap::new();
+    'roots: for root in roots {
+        let Ok(root) = root.canonicalize() else {
+            continue;
+        };
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if profiles.len() >= 128 {
+                break 'roots;
+            }
+            let path = entry.path();
+            let extension = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or_default();
+            if !extension.eq_ignore_ascii_case("icc") && !extension.eq_ignore_ascii_case("icm") {
+                continue;
+            }
+            let Ok(path) = path.canonicalize() else {
+                continue;
+            };
+            if !path.starts_with(&root) {
+                continue;
+            }
+            let Ok(metadata) = path.metadata() else {
+                continue;
+            };
+            if !metadata.is_file() || metadata.len() > 16 * 1024 * 1024 {
+                continue;
+            }
+            let Ok(mut file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            let mut header = [0u8; 40];
+            if file.read_exact(&mut header).is_err() || &header[36..40] != b"acsp" {
+                continue;
+            }
+            // Parsing and constructing the transform here makes the
+            // advertised list truthful. This function runs only on the ICC
+            // worker, never the compositor loop or Settings UI thread.
+            let Some(profile_path) = path.to_str() else {
+                continue;
+            };
+            let Some(output) = qcms::Profile::new_from_path(profile_path) else {
+                continue;
+            };
+            if qcms::Transform::new(
+                &qcms::Profile::new_sRGB(),
+                &output,
+                qcms::DataType::RGBA8,
+                qcms::Intent::Perceptual,
+            )
+            .is_none()
+            {
+                continue;
+            }
+            let label = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("ICC profile")
+                .replace(['_', '-'], " ");
+            profiles.insert(path.to_string_lossy().into_owned(), label);
+        }
+    }
+    profiles
+}
+
+/// Exact milli-Hz from raw mode timing. DRM's `vrefresh()` is an integer Hz
+/// convenience and collapses 59.94/60.00 or 23.976/24.00 into one setting.
+fn mode_refresh_mhz(mode: &Mode) -> u32 {
+    let (_, _, htotal) = mode.hsync();
+    let (_, _, vtotal) = mode.vsync();
+    let denominator = u64::from(htotal) * u64::from(vtotal);
+    if denominator == 0 {
+        return mode.vrefresh().saturating_mul(1_000);
+    }
+    // Pixel clock is kHz. kHz * 1_000_000 / pixels-per-frame = mHz.
+    (u64::from(mode.clock())
+        .saturating_mul(1_000_000)
+        .saturating_add(denominator / 2)
+        / denominator)
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
 /// Repositions the hardware cursor plane without touching the framebuffer. Lives in the
 /// runtime's dispatch state so the libinput motion handler can move the cursor at input rate,
 /// decoupled from the paint/flip cadence.
@@ -244,6 +463,7 @@ pub struct OutputCursor {
     id: OutputId,
     /// `(x, y, w, h)` of the output in global coords.
     rect: (i32, i32, u32, u32),
+    transform: settings_store::hardware::OutputTransform,
     mover: HwCursor,
 }
 
@@ -271,7 +491,12 @@ impl CursorPlanes {
         rect: (i32, i32, u32, u32),
         mover: HwCursor,
     ) -> OutputCursor {
-        OutputCursor { id, rect, mover }
+        OutputCursor {
+            id,
+            rect,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            mover,
+        }
     }
 
     /// Whether any output has a hardware cursor plane at all.
@@ -303,6 +528,16 @@ impl CursorPlanes {
         }
     }
 
+    pub fn set_transform(
+        &mut self,
+        id: OutputId,
+        transform: settings_store::hardware::OutputTransform,
+    ) {
+        if let Some(output) = self.outputs.iter_mut().find(|output| output.id == id) {
+            output.transform = transform;
+        }
+    }
+
     /// Move the cursor to global `(gx, gy)`, hiding the previously-active plane on an output crossing; outside every output (mismatched-height gap) the last position is left alone.
     pub fn move_to(&mut self, gx: f64, gy: f64) {
         let (xi, yi) = (gx as i32, gy as i32);
@@ -319,8 +554,27 @@ impl CursorPlanes {
             }
             self.active = Some(id);
         }
-        let (ox, oy, _, _) = self.outputs[i].rect;
-        self.outputs[i].mover.move_to(xi - ox, yi - oy);
+        let (ox, oy, width, height) = self.outputs[i].rect;
+        let (x, y) =
+            logical_to_physical_point(xi - ox, yi - oy, width, height, self.outputs[i].transform);
+        self.outputs[i].mover.move_to(x, y);
+    }
+}
+
+pub(crate) fn logical_to_physical_point(
+    x: i32,
+    y: i32,
+    logical_width: u32,
+    logical_height: u32,
+    transform: settings_store::hardware::OutputTransform,
+) -> (i32, i32) {
+    use settings_store::hardware::OutputTransform as T;
+    let (width, height) = (logical_width as i32, logical_height as i32);
+    match transform {
+        T::Normal => (x, y),
+        T::Rotate90 => (height.saturating_sub(1) - y, x),
+        T::Rotate180 => (width.saturating_sub(1) - x, height.saturating_sub(1) - y),
+        T::Rotate270 => (y, width.saturating_sub(1) - x),
     }
 }
 
@@ -895,8 +1149,7 @@ fn pick_configured_mode(
                 // Sysfs exposes geometry but not refresh. A zero refresh in
                 // the typed contract therefore means "any advertised rate"
                 // rather than inventing a value in Settings.
-                && (wanted.refresh_mhz == 0
-                    || m.vrefresh().saturating_mul(1000) == wanted.refresh_mhz)
+                && (wanted.refresh_mhz == 0 || mode_refresh_mhz(m) == wanted.refresh_mhz)
         }) {
             return Some(*found);
         }
@@ -1094,5 +1347,23 @@ mod tests {
         let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1280u32, 720u32)];
         assert_eq!(output_index_at(&rects, 2000, 700), Some(1));
         assert_eq!(output_index_at(&rects, 2000, 800), None);
+    }
+
+    #[test]
+    fn cursor_coordinates_follow_output_rotation() {
+        use settings_store::hardware::OutputTransform as T;
+        // Portrait logical 1080×1920 on a physical 1920×1080 panel.
+        assert_eq!(
+            logical_to_physical_point(0, 0, 1080, 1920, T::Rotate90),
+            (1919, 0)
+        );
+        assert_eq!(
+            logical_to_physical_point(1079, 1919, 1080, 1920, T::Rotate90),
+            (0, 1079)
+        );
+        assert_eq!(
+            logical_to_physical_point(0, 0, 1080, 1920, T::Rotate270),
+            (0, 1079)
+        );
     }
 }
