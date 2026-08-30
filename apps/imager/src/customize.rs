@@ -32,7 +32,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{TextInput, Toggle, ToggleFace, Widget};
 
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction, toggled_install_mode};
 use crate::model::{InstallMode, InstallProfile};
@@ -399,16 +399,14 @@ impl CustomizePanel {
             r.x0 + 14.0 + 40.0,
             r.y0 + (r.height() - 22.0) / 2.0 + 22.0,
         );
-        Self::fill_rr(
+        Toggle::paint(
             scene,
             t,
-            sw,
-            11.0,
-            if on { c.semantic.success } else { c.neutral[4] },
+            theme,
+            &ToggleFace::new(sw, on)
+                .hovered(hov)
+                .on_color(c.semantic.success),
         );
-        let knob_x = if on { sw.x1 - 20.0 } else { sw.x0 + 2.0 };
-        let knob = Rect::new(knob_x, sw.y0 + 2.0, knob_x + 18.0, sw.y1 - 2.0);
-        Self::fill_rr(scene, t, knob, 9.0, Color::WHITE);
         let tx = sw.x1 + 12.0;
         Self::txt(
             tr,
