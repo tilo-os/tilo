@@ -88,7 +88,7 @@ fn hello() {}
 
 - `?` opens the shortcuts overlay
 ";
-            panel.load_page(id, "Welcome".into(), demo.into());
+            panel.load_page(id, "Welcome", demo.into());
         }
     }
     // The full welcome body still has to round-trip for the
