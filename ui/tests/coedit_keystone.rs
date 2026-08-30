@@ -3,9 +3,8 @@
 //! of its own converged Automerge doc — never a streamed frame), and
 //! each sees the other's caret/presence.
 //!
-//! Runs against the REAL path: the production fan-out broker
-//! (`ui::collaboration::broker::serve`), two real `CollaborationManager`s
-//! over a real `UnixStream`, real `automerge` documents, and the real
+//! Runs against the production typed protocol: two real
+//! `CollaborationManager`s over Cap'n Proto Unix sockets, real `automerge` documents, and the real
 //! `ui::widget::TextInput` render pass — no mocks of the thing under test.
 //!
 //! Three proofs: converged co-edit renders identically on both peers
@@ -29,6 +28,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
 
+use crate::support::typed_collab::TypedBroker;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -254,47 +254,16 @@ fn non_background_pixels(rgba: &[u8]) -> usize {
         .count()
 }
 
-/// `QUICK_COLLAB_SOCK` / `QUICK_APP_ID` are process-global and tests in
-/// this binary run on parallel threads — serialise the env-set + connect
-/// window so two `two_peers` calls never clobber each other's socket
-/// path. The guard only spans construction; once connected the env is
-/// irrelevant.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn two_peers(
-    tag: &str,
-) -> (
-    CollaborationManager,
-    CollaborationManager,
-    std::path::PathBuf,
-) {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-    let sock = std::env::temp_dir().join(format!("quick-coedit-{tag}-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
-    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind broker socket");
-    thread::spawn(move || ui::collaboration::broker::serve(listener));
-
-    // SAFETY: env writes are serialised by ENV_LOCK across this binary's
-    // tests; the broker thread never reads env. `QUICK_APP_ID` is the id
-    // the broker attributes fanned-out frames to, so we set it per-manager.
-    unsafe {
-        std::env::set_var("QUICK_COLLAB_SOCK", &sock);
-        std::env::set_var("QUICK_APP_ID", "alice");
-    }
-    let a = CollaborationManager::new();
-    unsafe {
-        std::env::set_var("QUICK_APP_ID", "bob");
-    }
-    let b = CollaborationManager::new();
+fn two_peers() -> (CollaborationManager, CollaborationManager) {
+    let broker = TypedBroker::new();
+    let a = broker.manager("alice");
+    let b = broker.manager("bob");
 
     assert!(a.is_connected(), "peer A must connect to the broker");
     assert!(b.is_connected(), "peer B must connect to the broker");
     // Let both Hellos register on the broker before any fan-out traffic.
     thread::sleep(Duration::from_millis(150));
-    (a, b, sock)
+    (a, b)
 }
 
 fn poll_until<T>(
@@ -313,9 +282,8 @@ fn poll_until<T>(
 }
 
 #[test]
-#[serial_test::serial(quick_collab_sock)]
 fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
-    let (mut a, mut b, sock) = two_peers("render");
+    let (mut a, mut b) = two_peers();
 
     let mut a_doc = AutoCommit::new();
     a_doc.set_actor(automerge::ActorId::from(b"alice".as_slice()));
@@ -393,13 +361,11 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
 
     drop(a);
     drop(b);
-    let _ = std::fs::remove_file(&sock);
 }
 
 #[test]
-#[serial_test::serial(quick_collab_sock)]
 fn remote_caret_presence_round_trips_both_ways() {
-    let (mut a, mut b, sock) = two_peers("presence");
+    let (mut a, mut b) = two_peers();
 
     let key = PresenceKey::Widget {
         path: vec![PathSegment::Field("text".into())],
@@ -459,7 +425,6 @@ fn remote_caret_presence_round_trips_both_ways() {
 
     drop(a);
     drop(b);
-    let _ = std::fs::remove_file(&sock);
 }
 
 // ---------------------------------------------------------------------
@@ -524,7 +489,6 @@ fn sign_delta(
 }
 
 #[test]
-#[serial_test::serial(quick_collab_sock)]
 fn signed_edit_is_permission_gated() {
     // One channel owner underwrites two members: a writer (Editor) and a
     // viewer (Viewer, no write capability). Both target the same Note

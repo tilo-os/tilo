@@ -10,9 +10,6 @@
 //! panicking — `poll()` returns empty, `send()` is a no-op, no thread is
 //! spawned.
 //!
-//! The legacy JSON-over-Unix-socket dialect stays behind the
-//! `legacy-broker` feature flag (default on) so in-tree tests and the
-//! shell's production broker keep compiling until every app moves off it.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -20,11 +17,6 @@ use uuid::Uuid;
 use collab_types::SignedOp;
 
 use crate::presence::PresenceKey;
-
-#[cfg(feature = "legacy-broker")]
-use std::io::{Read, Write};
-#[cfg(feature = "legacy-broker")]
-use std::os::unix::net::UnixStream;
 
 use std::os::fd::RawFd;
 use std::sync::mpsc;
@@ -92,6 +84,53 @@ pub enum CollabRequest {
         /// Page size cap; chrome UX bounds pages to ~50 ops.
         max: u16,
     },
+}
+
+/// An explicit typed collaboration route.
+///
+/// A manager has one primary route (announced by its initial `Hello`) and may
+/// retain additional routes for discovery or cross-app work. Callers must name
+/// an additional route again when publishing, which prevents a cluster-wide
+/// discovery subscription from becoming an accidental mutation target.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RouteSpec {
+    pub app_id: String,
+    pub cluster_id: Uuid,
+    pub record: Option<String>,
+}
+
+impl RouteSpec {
+    pub fn cluster(cluster_id: Uuid) -> Self {
+        Self {
+            app_id: String::new(),
+            cluster_id,
+            record: None,
+        }
+    }
+
+    pub fn app(app_id: impl Into<String>, cluster_id: Uuid) -> Self {
+        Self {
+            app_id: app_id.into(),
+            cluster_id,
+            record: None,
+        }
+    }
+
+    pub fn record(app_id: impl Into<String>, cluster_id: Uuid, record: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            cluster_id,
+            record: Some(record.into()),
+        }
+    }
+
+    fn channel_id(&self) -> String {
+        channel_key::format(
+            &self.app_id,
+            &self.cluster_id.to_string(),
+            self.record.as_deref().unwrap_or(""),
+        )
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -305,11 +344,6 @@ enum Backend {
     /// Deltas inherit the host's on-disk store-and-forward, so an offline
     /// peer still converges.
     Relay(RelayChannel),
-    /// Legacy JSON-over-Unix-socket dialect, gated behind the
-    /// `legacy-broker` feature (default on) for tests and the shell's
-    /// existing broker.
-    #[cfg(feature = "legacy-broker")]
-    Legacy(LegacyStream),
 }
 
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions
@@ -321,9 +355,15 @@ enum Backend {
 /// `.recv()` then yields `None` and the thread exits. `_thread` is kept
 /// only so the `JoinHandle` isn't detached.
 struct SdkChannel {
-    outbound_tx: tokio_mpsc::UnboundedSender<CollabRequest>,
+    outbound_tx: tokio_mpsc::UnboundedSender<SdkCommand>,
     inbound_rx: tokio_mpsc::UnboundedReceiver<CollabEvent>,
     _thread: Option<thread::JoinHandle<()>>,
+}
+
+enum SdkCommand {
+    Primary(CollabRequest),
+    Join(RouteSpec),
+    ToRoute(RouteSpec, CollabRequest),
 }
 
 /// Owned mpsc pair + bridge-task handle for Relay mode. Unlike
@@ -346,15 +386,6 @@ impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
     }
-}
-
-#[cfg(feature = "legacy-broker")]
-struct LegacyStream {
-    stream: UnixStream,
-    /// Read buffer: the socket is non-blocking, so a `poll` can see a
-    /// frame split or several coalesced. Accumulate bytes, extract only
-    /// complete length-prefixed frames, keep the partial tail for next time.
-    rbuf: Vec<u8>,
 }
 
 /// How the shovel thread reaches the broker. `Env` is production: the
@@ -448,9 +479,8 @@ impl CollaborationManager {
         Ok(manager)
     }
 
-    /// If `legacy-broker` is on **and** `QUICK_COLLAB_SOCK` is set, uses the
-    /// legacy Unix-socket dialect; otherwise tries `runtime_collab::try_connect()`,
-    /// entering SDK mode on `Ok`, Disabled on `Err`.
+    /// Connects through `runtime_collab::try_connect()`, entering SDK mode on
+    /// `Ok` and Disabled mode on `Err`.
     ///
     /// Both modes auto-send `Hello` announcing **no record** (one document
     /// per `(app, room)`); use [`Self::for_record`] for apps that have
@@ -499,27 +529,6 @@ impl CollaborationManager {
         let identity_bytes = runtime_identity
             .map(|id| id.group_public_key().to_vec())
             .unwrap_or_default();
-
-        #[cfg(feature = "legacy-broker")]
-        if let Ok(path) = std::env::var("QUICK_COLLAB_SOCK")
-            && let Ok(stream) = UnixStream::connect(&path)
-        {
-            let mut manager = Self {
-                backend: Backend::Legacy(LegacyStream {
-                    stream,
-                    rbuf: Vec::new(),
-                }),
-                identity: None,
-            };
-            let (app_id, cluster_id) = auto_hello_env();
-            manager.send(CollabRequest::Hello {
-                app_id,
-                cluster_id,
-                record,
-                handle: presence_handle_env(),
-            });
-            return manager;
-        }
 
         match Self::spawn_sdk(SdkConnectSource::Env, identity_bytes) {
             Ok(sdk) => {
@@ -612,7 +621,7 @@ impl CollaborationManager {
         source: SdkConnectSource,
         identity_bytes: Vec<u8>,
     ) -> Result<SdkChannel, runtime_portal::NotAvailable> {
-        let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<CollabRequest>();
+        let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<SdkCommand>();
         let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
         let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
 
@@ -671,7 +680,7 @@ impl CollaborationManager {
         }
     }
 
-    /// True when connected to a live broker (SDK or legacy) — used by the
+    /// True when connected to a live broker — used by the
     /// event loop to keep ticking so the stream drains promptly.
     pub fn is_connected(&self) -> bool {
         !matches!(self.backend, Backend::Disabled)
@@ -721,24 +730,32 @@ impl CollaborationManager {
             Backend::Sdk(ch) => {
                 // Only errors when the shovel thread has exited; the
                 // next poll observes the same shutdown.
-                let _ = ch.outbound_tx.send(req);
+                let _ = ch.outbound_tx.send(SdkCommand::Primary(req));
             }
             Backend::Relay(ch) => {
                 let _ = ch.outbound_tx.send(req);
             }
-            #[cfg(feature = "legacy-broker")]
-            Backend::Legacy(l) => {
-                if let Ok(json) = serde_json::to_vec(&req) {
-                    // Block for writes so a large snapshot sends in full —
-                    // `poll` flips back to non-blocking for reads. Without
-                    // this, write_all on a non-blocking socket can truncate
-                    // mid-frame.
-                    let _ = l.stream.set_nonblocking(false);
-                    let len = json.len() as u32;
-                    let _ = l.stream.write_all(&len.to_le_bytes());
-                    let _ = l.stream.write_all(&json);
-                }
-            }
+        }
+    }
+
+    /// Join and subscribe to an additional route without publishing traffic.
+    /// Repeated joins of the same route are idempotent.
+    pub fn join_route(&mut self, route: RouteSpec) {
+        if let Backend::Sdk(ch) = &mut self.backend {
+            let _ = ch.outbound_tx.send(SdkCommand::Join(route));
+        }
+    }
+
+    /// Publish on an explicitly named additional route. The route is joined
+    /// lazily and retained, and its inbound streams feed this manager's normal
+    /// [`Self::poll`] queue.
+    pub fn send_to_route(&mut self, route: RouteSpec, req: CollabRequest) {
+        if matches!(req, CollabRequest::Hello { .. }) {
+            tracing::warn!("collab: send_to_route ignores Hello; use join_route");
+            return;
+        }
+        if let Backend::Sdk(ch) = &mut self.backend {
+            let _ = ch.outbound_tx.send(SdkCommand::ToRoute(route, req));
         }
     }
 
@@ -757,37 +774,6 @@ impl CollaborationManager {
                 let mut events = Vec::new();
                 while let Ok(evt) = ch.inbound_rx.try_recv() {
                     events.push(evt);
-                }
-                events
-            }
-            #[cfg(feature = "legacy-broker")]
-            Backend::Legacy(l) => {
-                let _ = l.stream.set_nonblocking(true);
-                let mut chunk = [0u8; 8192];
-                loop {
-                    match l.stream.read(&mut chunk) {
-                        Ok(0) => break, // EOF
-                        Ok(n) => l.rbuf.extend_from_slice(&chunk[..n]),
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(_) => break,
-                    }
-                }
-
-                let mut events = Vec::new();
-                loop {
-                    if l.rbuf.len() < 4 {
-                        break;
-                    }
-                    let len =
-                        u32::from_le_bytes([l.rbuf[0], l.rbuf[1], l.rbuf[2], l.rbuf[3]]) as usize;
-                    if l.rbuf.len() < 4 + len {
-                        break; // frame not fully arrived yet
-                    }
-                    let frame: Vec<u8> = l.rbuf[4..4 + len].to_vec();
-                    l.rbuf.drain(..4 + len);
-                    if let Ok(event) = serde_json::from_slice(&frame) {
-                        events.push(event);
-                    }
                 }
                 events
             }
@@ -1064,7 +1050,7 @@ enum InitStatus {
 fn run_shovel(
     source: SdkConnectSource,
     identity_bytes: Vec<u8>,
-    outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
+    outbound_rx: tokio_mpsc::UnboundedReceiver<SdkCommand>,
     inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
     init_tx: mpsc::SyncSender<InitStatus>,
 ) {
@@ -1104,230 +1090,284 @@ fn run_shovel(
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
     identity_bytes: Vec<u8>,
-    mut outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
+    mut outbound_rx: tokio_mpsc::UnboundedReceiver<SdkCommand>,
     inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
 ) {
-    // `channel` is set on the first Hello; every downstream RPC requires
-    // it.
-    let mut channel: Option<runtime_collab::ChannelHandle> = None;
-    let mut presence: Option<runtime_collab::PresenceHandle> = None;
+    let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
+    let mut primary: Option<String> = None;
+    let mut participant_handle: Option<String> = None;
 
-    while let Some(req) = outbound_rx.recv().await {
-        match req {
-            CollabRequest::Hello {
+    while let Some(command) = outbound_rx.recv().await {
+        match command {
+            SdkCommand::Primary(CollabRequest::Hello {
                 app_id,
                 cluster_id,
                 record,
-                ..
-            } => {
-                // `identity_bytes` is the loaded runtime-identity's pubkey when
-                // reachable, else empty (the broker's "no identity" fallback).
-                let channel_id = channel_key::format(
-                    &app_id,
-                    &cluster_id.to_string(),
-                    record.as_deref().unwrap_or(""),
-                );
-                // Without a channel every later request is silently dropped while
-                // the app still reports itself connected — so warn here.
-                let ch = match client.join_channel(&channel_id, &identity_bytes).await {
-                    Ok(ch) => ch,
-                    Err(e) => {
-                        tracing::warn!(
-                            "collab: joining channel {channel_id} failed ({e}); \
-                             this app's edits and presence will not leave it"
-                        );
-                        continue;
-                    }
+                handle,
+            }) => {
+                participant_handle = handle;
+                let spec = RouteSpec {
+                    app_id,
+                    cluster_id,
+                    record,
                 };
-
-                if let Ok(sub) = ch.subscribe().await {
-                    let itx = inbound_tx.clone();
-                    tokio::task::spawn_local(async move {
-                        loop {
-                            let Ok(evt) = sub.read().await else {
-                                break;
-                            };
-                            // Three frame kinds share this stream; only the broker
-                            // knows which, hence the tag — treating every frame as
-                            // signed would silently drop unsigned ones.
-                            let translated = match evt.kind {
-                                runtime_collab::OpKind::Signed => {
-                                    match postcard::from_bytes::<SignedOp>(&evt.op) {
-                                        Ok(envelope) => CollabEvent::SignedCRDTIncremental {
-                                            envelope: Box::new(envelope),
-                                            from_user_id: evt.from_user_id,
-                                        },
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "collab: op tagged signed but not a \
-                                                 postcard SignedOp ({e}); dropping"
-                                            );
-                                            continue;
-                                        }
-                                    }
-                                }
-                                // A delta, applied onto the document this app already holds.
-                                runtime_collab::OpKind::UnsignedIncremental => {
-                                    CollabEvent::CRDTIncremental { data: evt.op }
-                                }
-                                // A whole document, merged rather than applied —
-                                // what a late arrival adopts existing text from.
-                                runtime_collab::OpKind::UnsignedSnapshot => {
-                                    CollabEvent::CRDTUpdate { data: evt.op }
-                                }
-                            };
-                            if itx.send(translated).is_err() {
-                                break;
-                            }
-                        }
-                    });
-                }
-
-                if let Ok(ctx_stream) = ch.subscribe_context().await {
-                    let itx = inbound_tx.clone();
-                    tokio::task::spawn_local(async move {
-                        loop {
-                            let Ok(ctx) = ctx_stream.read().await else {
-                                break;
-                            };
-                            let collaborators = ctx
-                                .collaborators
-                                .into_iter()
-                                .map(|c| Collaborator {
-                                    id: c.user_id,
-                                    name: c.display_name,
-                                    color: unpack_color(c.color),
-                                    // `runtime_collab::Collaborator` doesn't carry these
-                                    // yet, so every row reads as a person and as somebody else.
-                                    is_agent: false,
-                                    is_self: false,
-                                })
-                                .collect();
-                            if itx
-                                .send(CollabEvent::Context {
-                                    collaborators,
-                                    permissions: ctx.permissions,
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    });
-                }
-
-                if let Ok(ph) = ch.presence().await {
-                    if let Ok(ps) = ph.subscribe_all().await {
-                        let itx = inbound_tx.clone();
-                        tokio::task::spawn_local(async move {
-                            loop {
-                                let Ok(evt) = ps.read().await else {
-                                    break;
-                                };
-                                let translated = translate_presence_event(evt);
-                                if itx.send(translated).is_err() {
-                                    break;
-                                }
-                            }
-                        });
-                    }
-                    presence = Some(ph);
-                }
-
-                channel = Some(ch);
+                let key = spec.channel_id();
+                ensure_sdk_route(
+                    &client,
+                    &identity_bytes,
+                    participant_handle.as_deref(),
+                    &inbound_tx,
+                    &mut routes,
+                    &spec,
+                )
+                .await;
+                primary = Some(key);
             }
-            CollabRequest::SignedSyncIncremental { envelope } => {
-                if let Some(ch) = channel.as_ref()
-                    && let Ok(bytes) = postcard::to_stdvec(&*envelope)
-                {
-                    let _ = ch.send(&bytes).await;
-                }
-            }
-            CollabRequest::SyncCRDT { data } => {
-                if let Some(ch) = channel.as_ref() {
-                    let _ = ch.send_unsigned_snapshot(&data).await;
-                }
-            }
-            CollabRequest::SyncIncremental { data } => {
-                if let Some(ch) = channel.as_ref() {
-                    let _ = ch.send_unsigned_incremental(&data).await;
-                }
-            }
-            CollabRequest::Presence { key, payload } => {
-                let Some(ph) = presence.as_ref() else {
+            SdkCommand::Primary(request) => {
+                let Some(key) = primary.as_ref() else {
+                    tracing::warn!("collab: request sent before the primary route joined");
                     continue;
                 };
-                match payload {
-                    PresencePayload::Pointer { x, y } => {
-                        // Keyed, unlike `publish_cursor(x, y)` which has nowhere to
-                        // put the pointer's coordinate-space key.
-                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
-                        let _ = ph.publish_pointer(&key_bytes, x, y).await;
-                    }
-                    PresencePayload::Caret { pos } => {
-                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
-                        let _ = ph.publish_caret(&key_bytes, pos as u64).await;
-                    }
-                    PresencePayload::Selection { start, end } => {
-                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
-                        let _ = ph
-                            .publish_selection(&key_bytes, start as u64, end as u64)
-                            .await;
-                    }
-                    PresencePayload::Typing { start, end } => {
-                        // The SDK has no dedicated typing channel yet; carry the run
-                        // as a transient selection so peers still see where someone
-                        // is editing. Swap this arm when the SDK grows `publishTyping`.
-                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
-                        let _ = ph
-                            .publish_selection(&key_bytes, start as u64, end as u64)
-                            .await;
-                    }
-                    PresencePayload::Arrived => {
-                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
-                        let _ = ph.publish_arrived(&key_bytes).await;
-                    }
-                    PresencePayload::Left => {
-                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
-                        let _ = ph.publish_left(&key_bytes).await;
-                    }
+                if let Some(route) = routes.get(key) {
+                    dispatch_sdk_request(route, request, &inbound_tx).await;
                 }
             }
-            CollabRequest::FetchScrollback {
-                artifact,
-                before_seq,
-                max,
-            } => {
-                let Some(ch) = channel.as_ref() else { continue };
-                match ch.fetch_scrollback(before_seq, u32::from(max)).await {
-                    Ok(batch) => {
-                        let mut ops = Vec::with_capacity(batch.ops.len());
-                        for op_bytes in batch.ops {
-                            if let Ok(env) = postcard::from_bytes::<SignedOp>(&op_bytes) {
-                                ops.push(Box::new(env));
-                            }
-                        }
-                        let _ = inbound_tx.send(CollabEvent::ScrollbackBatch {
-                            artifact,
-                            ops,
-                            exhausted: batch.done,
-                        });
-                    }
-                    Err(_) => {
-                        // Signal exhaustion so callers unstick their
-                        // paging state instead of hanging.
-                        let _ = inbound_tx.send(CollabEvent::ScrollbackBatch {
-                            artifact,
-                            ops: Vec::new(),
-                            exhausted: true,
-                        });
-                    }
+            SdkCommand::Join(spec) => {
+                ensure_sdk_route(
+                    &client,
+                    &identity_bytes,
+                    participant_handle.as_deref(),
+                    &inbound_tx,
+                    &mut routes,
+                    &spec,
+                )
+                .await;
+            }
+            SdkCommand::ToRoute(spec, request) => {
+                let key = spec.channel_id();
+                ensure_sdk_route(
+                    &client,
+                    &identity_bytes,
+                    participant_handle.as_deref(),
+                    &inbound_tx,
+                    &mut routes,
+                    &spec,
+                )
+                .await;
+                if let Some(route) = routes.get(&key) {
+                    dispatch_sdk_request(route, request, &inbound_tx).await;
                 }
             }
         }
     }
 }
 
+struct SdkRoute {
+    channel: runtime_collab::ChannelHandle,
+    presence: Option<runtime_collab::PresenceHandle>,
+}
+
+async fn ensure_sdk_route(
+    client: &runtime_collab::CollabClient,
+    identity_bytes: &[u8],
+    participant_handle: Option<&str>,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+    routes: &mut std::collections::HashMap<String, SdkRoute>,
+    spec: &RouteSpec,
+) {
+    let channel_id = spec.channel_id();
+    if routes.contains_key(&channel_id) {
+        return;
+    }
+    let channel = match client
+        .join_channel_as(
+            &channel_id,
+            identity_bytes,
+            participant_handle.unwrap_or(""),
+        )
+        .await
+    {
+        Ok(channel) => channel,
+        Err(error) => {
+            tracing::warn!(
+                "collab: joining channel {channel_id} failed ({error}); route unavailable"
+            );
+            return;
+        }
+    };
+
+    if let Ok(stream) = channel.subscribe().await {
+        let tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(event) = stream.read().await {
+                let translated = match event.kind {
+                    runtime_collab::OpKind::Signed => {
+                        match postcard::from_bytes::<SignedOp>(&event.op) {
+                            Ok(envelope) => CollabEvent::SignedCRDTIncremental {
+                                envelope: Box::new(envelope),
+                                from_user_id: event.from_user_id,
+                            },
+                            Err(error) => {
+                                tracing::warn!(
+                                    "collab: signed op is not postcard SignedOp ({error}); dropping"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    runtime_collab::OpKind::UnsignedIncremental => {
+                        CollabEvent::CRDTIncremental { data: event.op }
+                    }
+                    runtime_collab::OpKind::UnsignedSnapshot => {
+                        CollabEvent::CRDTUpdate { data: event.op }
+                    }
+                };
+                if tx.send(translated).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    if let Ok(stream) = channel.subscribe_context().await {
+        let tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(context) = stream.read().await {
+                let collaborators = context
+                    .collaborators
+                    .into_iter()
+                    .map(|collaborator| Collaborator {
+                        id: collaborator.user_id,
+                        name: collaborator.display_name,
+                        color: unpack_color(collaborator.color),
+                        is_agent: false,
+                        is_self: false,
+                    })
+                    .collect();
+                if tx
+                    .send(CollabEvent::Context {
+                        collaborators,
+                        permissions: context.permissions,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+
+    if let Ok(stream) = channel.subscribe_actions().await {
+        let tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(action) = stream.read().await {
+                if tx
+                    .send(CollabEvent::ActionArrived {
+                        type_id: action.type_id,
+                        payload: action.payload,
+                        from_user_id: action.from_user_id,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+
+    let presence = match channel.presence().await {
+        Ok(handle) => {
+            if let Ok(stream) = handle.subscribe_all().await {
+                let tx = inbound_tx.clone();
+                tokio::task::spawn_local(async move {
+                    while let Ok(event) = stream.read().await {
+                        if tx.send(translate_presence_event(event)).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            Some(handle)
+        }
+        Err(_) => None,
+    };
+
+    routes.insert(channel_id, SdkRoute { channel, presence });
+}
+
+async fn dispatch_sdk_request(
+    route: &SdkRoute,
+    request: CollabRequest,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
+    match request {
+        CollabRequest::Hello { .. } => {}
+        CollabRequest::SignedSyncIncremental { envelope } => {
+            if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
+                let _ = route.channel.send(&bytes).await;
+            }
+        }
+        CollabRequest::SyncCRDT { data } => {
+            let _ = route.channel.send_unsigned_snapshot(&data).await;
+        }
+        CollabRequest::SyncIncremental { data } => {
+            let _ = route.channel.send_unsigned_incremental(&data).await;
+        }
+        CollabRequest::Presence { key, payload } => {
+            let Some(presence) = route.presence.as_ref() else {
+                return;
+            };
+            let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+            match payload {
+                PresencePayload::Pointer { x, y } => {
+                    let _ = presence.publish_pointer(&key_bytes, x, y).await;
+                }
+                PresencePayload::Caret { pos } => {
+                    let _ = presence.publish_caret(&key_bytes, pos as u64).await;
+                }
+                PresencePayload::Selection { start, end }
+                | PresencePayload::Typing { start, end } => {
+                    let _ = presence
+                        .publish_selection(&key_bytes, start as u64, end as u64)
+                        .await;
+                }
+                PresencePayload::Arrived => {
+                    let _ = presence.publish_arrived(&key_bytes).await;
+                }
+                PresencePayload::Left => {
+                    let _ = presence.publish_left(&key_bytes).await;
+                }
+            }
+        }
+        CollabRequest::FetchScrollback {
+            artifact,
+            before_seq,
+            max,
+        } => {
+            let (ops, exhausted) = match route
+                .channel
+                .fetch_scrollback(before_seq, u32::from(max))
+                .await
+            {
+                Ok(batch) => (
+                    batch
+                        .ops
+                        .into_iter()
+                        .filter_map(|bytes| postcard::from_bytes::<SignedOp>(&bytes).ok())
+                        .map(Box::new)
+                        .collect(),
+                    batch.done,
+                ),
+                Err(_) => (Vec::new(), true),
+            };
+            let _ = inbound_tx.send(CollabEvent::ScrollbackBatch {
+                artifact,
+                ops,
+                exhausted,
+            });
+        }
+    }
+}
 /// Bridge task for [`Backend::Relay`]: shuttles between the toolkit's
 /// synchronous `send`/`poll` and the session's async publish/recv —
 /// outbound [`CollabRequest`]s map onto `publish_*`, inbound
@@ -1508,198 +1548,6 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                 user_id: evt.user_id,
                 key,
                 payload,
-            }
-        }
-    }
-}
-
-/// Standalone N-peer fan-out broker for `QUICK_COLLAB_SOCK`. Carries no
-/// Automerge knowledge, just relays opaque frames: `Hello` registers
-/// `user_id` and is swallowed; `Sync*` and `Presence` forward verbatim
-/// to every *other* connected peer, `Presence` attributed with the
-/// sender's `user_id`.
-///
-/// Late-join convergence happens at the app layer (a new peer
-/// broadcasts `Arrived`, existing peers reply with a full `SyncCRDT`),
-/// so the broker needs no special case for it.
-#[cfg(feature = "legacy-broker")]
-pub mod broker {
-    use std::collections::HashMap;
-    use std::io::{Read, Write};
-    use std::os::unix::net::{UnixListener, UnixStream};
-    use std::path::Path;
-    use std::sync::mpsc;
-    use std::sync::{Arc, Mutex};
-    use std::thread;
-
-    use super::{CollabEvent, CollabRequest};
-
-    fn read_frame(s: &mut UnixStream) -> Option<Vec<u8>> {
-        let mut len_buf = [0u8; 4];
-        s.read_exact(&mut len_buf).ok()?;
-        let len = u32::from_le_bytes(len_buf) as usize;
-        let mut buf = vec![0u8; len];
-        s.read_exact(&mut buf).ok()?;
-        Some(buf)
-    }
-
-    fn write_frame(s: &mut UnixStream, bytes: &[u8]) {
-        let len = bytes.len() as u32;
-        let _ = s.write_all(&len.to_le_bytes());
-        let _ = s.write_all(bytes);
-    }
-
-    /// A connected peer's write side + attributed identity.
-    struct Peer {
-        user_id: String,
-        write: UnixStream,
-    }
-
-    /// Bind `path` (removing any stale inode first) and serve forever.
-    /// Convenience entry point for the in-tree test relay.
-    pub fn serve_path<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
-        let path = path.as_ref();
-        let _ = std::fs::remove_file(path);
-        let listener = UnixListener::bind(path)?;
-        serve(listener);
-        Ok(())
-    }
-
-    /// Serve on an already-bound listener until it stops yielding
-    /// connections. Blocks the calling thread; spawns one reader thread
-    /// per peer plus an accept thread.
-    pub fn serve(listener: UnixListener) {
-        let peers: Arc<Mutex<HashMap<usize, Peer>>> = Arc::new(Mutex::new(HashMap::new()));
-        let (fwd_tx, fwd_rx) = mpsc::channel::<(usize, Vec<u8>)>();
-
-        // Accept on a side thread so the forwarding loop owns the calling
-        // thread; per-connection reader threads keep a silent peer from
-        // stalling accept for the others.
-        let accept_peers = Arc::clone(&peers);
-        thread::spawn(move || {
-            let mut next_idx = 0usize;
-            for conn in listener.incoming() {
-                let Ok(mut stream) = conn else { continue };
-                let idx = next_idx;
-                next_idx += 1;
-                let tx = fwd_tx.clone();
-                let peers = Arc::clone(&accept_peers);
-                thread::spawn(move || {
-                    let Ok(write) = stream.try_clone() else {
-                        return;
-                    };
-                    // First frame establishes identity; if it isn't a `Hello`,
-                    // fall back to `peer-{idx}` and treat the frame as data.
-                    match read_frame(&mut stream) {
-                        Some(frame) => {
-                            if let Ok(CollabRequest::Hello { app_id, handle, .. }) =
-                                serde_json::from_slice::<CollabRequest>(&frame)
-                            {
-                                // Announced handle when there is one, else the app id.
-                                let user_id =
-                                    handle.filter(|h| !h.trim().is_empty()).unwrap_or(app_id);
-                                peers.lock().unwrap().insert(idx, Peer { user_id, write });
-                            } else {
-                                peers.lock().unwrap().insert(
-                                    idx,
-                                    Peer {
-                                        user_id: format!("peer-{idx}"),
-                                        write,
-                                    },
-                                );
-                                let _ = tx.send((idx, frame));
-                            }
-                        }
-                        None => return, // closed before saying anything
-                    }
-
-                    while let Some(frame) = read_frame(&mut stream) {
-                        if tx.send((idx, frame)).is_err() {
-                            break;
-                        }
-                    }
-                    // Peer closed — stop writing to it.
-                    peers.lock().unwrap().remove(&idx);
-                });
-            }
-        });
-
-        // Forwarding loop. Never returns while the accept thread holds a
-        // `fwd_tx` clone (i.e. for the life of the process).
-        while let Ok((src_idx, frame)) = fwd_rx.recv() {
-            let Ok(req) = serde_json::from_slice::<CollabRequest>(&frame) else {
-                continue;
-            };
-
-            let user_id = peers
-                .lock()
-                .unwrap()
-                .get(&src_idx)
-                .map_or_else(|| format!("peer-{src_idx}"), |p| p.user_id.clone());
-
-            let event = match req {
-                CollabRequest::Hello { .. } => continue,
-                CollabRequest::SyncIncremental { data } => CollabEvent::CRDTIncremental { data },
-                CollabRequest::SyncCRDT { data } => CollabEvent::CRDTUpdate { data },
-                CollabRequest::Presence { key, payload } => CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key,
-                    payload,
-                },
-                CollabRequest::SignedSyncIncremental { envelope } => {
-                    // This test broker does NOT enforce roles — it just routes
-                    // verbatim. Production fan-out (`shell::shell::collab_broker`)
-                    // validates every envelope first; this is not the production
-                    // security boundary.
-                    CollabEvent::SignedCRDTIncremental {
-                        envelope,
-                        from_user_id: user_id,
-                    }
-                }
-                CollabRequest::FetchScrollback { artifact, .. } => {
-                    // This test broker holds no op log, so the answer is always
-                    // "empty + exhausted"; production wires through
-                    // `shell::shell::collab_broker`, which does hold the log.
-                    CollabEvent::ScrollbackBatch {
-                        artifact,
-                        ops: Vec::new(),
-                        exhausted: true,
-                    }
-                }
-            };
-
-            let Ok(bytes) = serde_json::to_vec(&event) else {
-                continue;
-            };
-
-            let mut guard = peers.lock().unwrap();
-            let recipients = guard.len().saturating_sub(1);
-            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                let kind = match &event {
-                    CollabEvent::CRDTUpdate { data } => format!("CRDTUpdate({}B)", data.len()),
-                    CollabEvent::CRDTIncremental { data } => {
-                        format!("CRDTIncremental({}B)", data.len())
-                    }
-                    CollabEvent::SignedCRDTIncremental {
-                        envelope,
-                        from_user_id,
-                    } => {
-                        format!(
-                            "SignedCRDTIncremental(from={from_user_id}, {}B payload)",
-                            envelope.payload.len()
-                        )
-                    }
-                    CollabEvent::RemotePresenceUpdate { payload, .. } => {
-                        format!("Presence({payload:?})")
-                    }
-                    other => format!("{other:?}"),
-                };
-                eprintln!("[broker] peer{src_idx} -> {kind} -> {recipients} peer(s)");
-            }
-            for (idx, peer) in guard.iter_mut() {
-                if *idx != src_idx {
-                    write_frame(&mut peer.write, &bytes);
-                }
             }
         }
     }
@@ -2278,7 +2126,6 @@ mod tests {
         // test that reads or writes these two variables.
         unsafe {
             std::env::set_var("QOS_SVC_COLLAB_FD", fd.to_string());
-            std::env::remove_var("QUICK_COLLAB_SOCK");
         }
 
         let started = Instant::now();
@@ -2307,7 +2154,6 @@ mod tests {
         // SAFETY: the crate is single-threaded per-test module here.
         unsafe {
             std::env::remove_var("QOS_SVC_COLLAB_FD");
-            std::env::remove_var("QUICK_COLLAB_SOCK");
         }
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");

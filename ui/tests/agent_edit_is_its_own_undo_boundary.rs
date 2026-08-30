@@ -7,18 +7,14 @@
 //! `[stale_baseline, after]` — a range that *contains* the agent's work — so
 //! one Ctrl+Z reverts both.
 //!
-//! The event reaches the app the way a real one does: down a Unix socket, as
-//! the framed JSON the legacy broker speaks, drained by the same
+//! The event reaches the app through the typed action subscription, drained by the same
 //! `App::pump_collab_presence` a running window calls every frame.
-
-use std::io::Write;
-use std::os::unix::net::{UnixListener, UnixStream};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc};
 
+use crate::support::typed_collab::TypedBroker;
 use ui::app::App;
-use ui::collaboration::CollabEvent;
 use ui::permissions::UserId;
 use ui::state::State;
 use ui::widget::{Container, Widget};
@@ -115,48 +111,20 @@ impl Widget for AgentTarget {
     }
 }
 
-fn write_frame(s: &mut UnixStream, bytes: &[u8]) {
-    let len = bytes.len() as u32;
-    s.write_all(&len.to_le_bytes()).expect("frame length");
-    s.write_all(bytes).expect("frame body");
-    s.flush().expect("flush");
-}
-
-/// Stand up an `App` wired to a socket we hold the other end of, so we can
-/// hand it any `CollabEvent` the broker could.
-fn app_on_a_socket(tag: &str) -> (App, UnixStream) {
-    let socket_path =
-        std::env::temp_dir().join(format!("quick-undo-seam-{tag}-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path).expect("bind broker socket");
-
-    // SAFETY: the `quick_collab_sock` serial group holds every test that
-    // touches this variable, so no other thread reads it meanwhile.
-    unsafe {
-        std::env::set_var("QUICK_COLLAB_SOCK", &socket_path);
-    }
-
-    let app = App::new(State::new(), Box::new(AgentTarget::new()));
-    let (broker_side, _) = listener.accept().expect("app connects on construction");
-
-    unsafe {
-        std::env::remove_var("QUICK_COLLAB_SOCK");
-    }
-    let _ = std::fs::remove_file(&socket_path);
-    (app, broker_side)
+fn typed_app() -> (App, TypedBroker) {
+    let broker = TypedBroker::new();
+    let app = App::with_collaboration_manager(
+        State::new(),
+        Box::new(AgentTarget::new()),
+        broker.manager("person"),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    (app, broker)
 }
 
 /// Send the agent's action and pump until `done` reports it landed.
-fn deliver_agents_action(app: &mut App, broker: &mut UnixStream, done: impl Fn(&mut App) -> bool) {
-    let event = CollabEvent::ActionArrived {
-        type_id: AGENT_ACTION.to_string(),
-        payload: b"the agent wrote this".to_vec(),
-        from_user_id: AGENT.to_string(),
-    };
-    write_frame(
-        broker,
-        &serde_json::to_vec(&event).expect("encode the event"),
-    );
+fn deliver_agents_action(app: &mut App, broker: &TypedBroker, done: impl Fn(&mut App) -> bool) {
+    broker.inject_action(AGENT, AGENT_ACTION, b"the agent wrote this");
     for _ in 0..50 {
         app.pump_collab_presence();
         if done(app) {
@@ -167,13 +135,12 @@ fn deliver_agents_action(app: &mut App, broker: &mut UnixStream, done: impl Fn(&
 }
 
 #[test]
-#[serial_test::serial(quick_collab_sock)]
 fn one_ctrl_z_after_an_agent_edit_reverts_only_the_keystroke() {
-    let (mut app, mut broker) = app_on_a_socket("arrived");
+    let (mut app, broker) = typed_app();
     let me = app.local_author().clone();
     assert_ne!(me.0, AGENT, "precondition: the agent is somebody else");
 
-    deliver_agents_action(&mut app, &mut broker, |a| {
+    deliver_agents_action(&mut app, &broker, |a| {
         a.state_mut_for_test()
             .doc
             .get(&ROOT, "agent")
@@ -216,11 +183,10 @@ fn one_ctrl_z_after_an_agent_edit_reverts_only_the_keystroke() {
 /// The other half: the agent's edit is a boundary of its own, attributed to
 /// the agent — not something unreachable with no entry at all.
 #[test]
-#[serial_test::serial(quick_collab_sock)]
 fn an_agents_edit_lands_as_its_own_attributed_boundary() {
-    let (mut app, mut broker) = app_on_a_socket("attributed");
+    let (mut app, broker) = typed_app();
 
-    deliver_agents_action(&mut app, &mut broker, |a| {
+    deliver_agents_action(&mut app, &broker, |a| {
         a.state_mut_for_test().peek_last_undo().is_some()
     });
 

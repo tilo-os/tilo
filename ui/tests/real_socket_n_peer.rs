@@ -1,5 +1,5 @@
-//! N-peer end-to-end test across a real Unix socket, exercising the
-//! production broker (`broker::serve`, the same code path the binary runs).
+//! N-peer end-to-end test across real Unix sockets speaking the production
+//! Cap'n Proto collaboration protocol.
 //!
 //! Generalizes `real_socket_two_peer.rs` to three peers, asserting the two
 //! properties that matter for N > 2:
@@ -10,48 +10,19 @@
 //!      arrives at C tagged with the id each announced — so the two are
 //!      distinct — and A never receives its own presence back.
 //!
-//! Everything is one `#[test]` so the process-global `QUICK_COLLAB_SOCK`
-//! and `QUICK_APP_ID` env vars aren't raced by parallel tests in this binary.
-
 use std::thread;
 use std::time::Duration;
 
-use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
+use crate::support::typed_collab::TypedBroker;
+use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
 
 #[test]
-#[serial_test::serial(quick_collab_sock)]
 fn n_peer_fanout_and_per_peer_attribution() {
-    let socket_path =
-        std::env::temp_dir().join(format!("quick-collab-n-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&socket_path);
-
-    let listener =
-        std::os::unix::net::UnixListener::bind(&socket_path).expect("bind broker listener");
-
-    // Run the production broker on a side thread; it serves until the
-    // process exits (which kills the thread).
-    thread::spawn(move || ui::collaboration::broker::serve(listener));
-
-    // SAFETY: only this thread mutates env, and it does so between
-    // manager constructions — this is the single test in this binary, so
-    // nothing else in the process reads the environment concurrently.
-    //
-    // `QUICK_APP_ID` must be set per peer: an app with none falls back to
-    // a single process-wide identity (see `auto_hello_env`), so three
-    // peers need three separate launches with three separate ids.
-    unsafe {
-        std::env::set_var("QUICK_COLLAB_SOCK", &socket_path);
-    }
-
-    let announce = |id: &str| {
-        // SAFETY: as above.
-        unsafe { std::env::set_var("QUICK_APP_ID", id) };
-        CollaborationManager::new()
-    };
-    let mut a = announce("peer-a");
-    let mut b = announce("peer-b");
-    let mut c = announce("peer-c");
+    let broker = TypedBroker::new();
+    let mut a = broker.manager("peer-a");
+    let mut b = broker.manager("peer-b");
+    let mut c = broker.manager("peer-c");
 
     // Give the broker time to register all three Hello handshakes.
     thread::sleep(Duration::from_millis(150));
@@ -136,5 +107,4 @@ fn n_peer_fanout_and_per_peer_attribution() {
     drop(a);
     drop(b);
     drop(c);
-    let _ = std::fs::remove_file(&socket_path);
 }
