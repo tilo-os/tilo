@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+
+case "${1:-}" in
+  5[0-9]|[6-9][0-9]|100) limit="$1" ;;
+  *) echo "charge cap must be an integer from 50 through 100" >&2; exit 2 ;;
+esac
+
+found=0
+for battery in /sys/class/power_supply/BAT*; do
+  [ -d "$battery" ] || continue
+  for attribute in charge_control_end_threshold charge_stop_threshold; do
+    target="$battery/$attribute"
+    [ -f "$target" ] || continue
+    printf '%s\n' "$limit" > "$target"
+    found=1
+  done
+done
+[ "$found" -eq 1 ] || { echo "this battery driver exposes no charge cap" >&2; exit 3; }

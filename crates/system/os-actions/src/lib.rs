@@ -23,28 +23,45 @@
 //! `RealQsActions` for source compatibility.
 
 pub mod audio;
+pub mod battery;
 pub mod bluetooth;
 pub mod bluez;
 pub mod display;
+pub mod firmware;
 pub mod network;
 pub mod power;
+pub mod privacy;
 mod process;
+pub mod session;
 pub mod time;
+pub mod tool_intent;
 
 pub use audio::{
     VolumeState, get_source_state, get_volume, get_volume_state, set_mute, set_volume, toggle_mute,
     toggle_source_mute,
 };
+pub use battery::{BatteryInfo, set_charge_limit};
 pub use bluetooth::{
     BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth,
 };
 pub use display::{get_brightness, set_brightness};
+pub use firmware::{
+    FirmwareUpdate, get_firmware_updates, install_firmware_updates, refresh_firmware_metadata,
+};
 pub use network::{
-    LinkKind, LinkStatus, WifiNetworkInfo, WiredInfo, connect_wifi, get_link_status, get_wifi,
-    get_wired, list_wifi_networks, set_wifi,
+    HOTSPOT_PROFILE, LinkKind, LinkStatus, RadioState, VpnConnectionInfo, WifiNetworkInfo,
+    WiredInfo, connect_wifi, get_link_status, get_radio_state, get_wifi, get_wired,
+    import_vpn_config, list_vpn_connections, list_wifi_networks, set_airplane_mode, set_hotspot,
+    set_mobile_broadband, set_vpn_connection, set_wifi, set_wired,
 };
 pub use power::{PowerProfile, get_power_profile, set_power_profile};
+pub use privacy::{KillState, PrivacyStatus, get_privacy_status};
+pub use session::{SessionAction, perform_session_action};
 pub use time::{get_ntp, now_clock, now_date, set_ntp};
+pub use tool_intent::{
+    TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, VpnRoute,
+    open_tool, tool_intent_from_env,
+};
 
 use std::time::Duration;
 
@@ -59,6 +76,22 @@ pub trait Dispatcher {
     fn set_volume(&self, pct: f32) -> Result<(), String>;
     fn set_wifi(&self, enabled: bool) -> Result<(), String>;
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String>;
+    fn set_wired(&self, enabled: bool) -> Result<(), String> {
+        let _ = enabled;
+        Err("wired networking is not supported by this dispatcher".into())
+    }
+    fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
+        network::set_airplane_mode(enabled)
+    }
+    fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
+        network::set_hotspot(enabled)
+    }
+    fn set_mobile_broadband(&self, enabled: bool) -> Result<(), String> {
+        network::set_mobile_broadband(enabled)
+    }
+    fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
+        network::set_vpn_connection(name, enabled)
+    }
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
     fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String>;
     /// Toggle the default audio sink mute state. Default impl delegates to
@@ -91,6 +124,9 @@ impl Dispatcher for RealDispatcher {
     }
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
         bluetooth::set_bluetooth(enabled)
+    }
+    fn set_wired(&self, enabled: bool) -> Result<(), String> {
+        network::set_wired(enabled)
     }
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
         network::connect_wifi(ssid, password)
@@ -172,6 +208,12 @@ mod dispatcher_tests {
                 .push(format!("set_bluetooth({enabled})"));
             Ok(())
         }
+        fn set_wired(&self, enabled: bool) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("set_wired({enabled})"));
+            Ok(())
+        }
         fn connect_wifi(&self, ssid: &str, _password: Option<&str>) -> Result<(), String> {
             self.calls
                 .borrow_mut()
@@ -197,18 +239,20 @@ mod dispatcher_tests {
         d.set_volume(75.0).unwrap();
         d.set_wifi(false).unwrap();
         d.set_bluetooth(true).unwrap();
+        d.set_wired(true).unwrap();
         d.connect_wifi("MyNet", Some("hunter2")).unwrap();
         d.set_power_profile(PowerProfile::Performance).unwrap();
         d.toggle_mute().unwrap();
 
         let calls = d.calls();
-        assert_eq!(calls.len(), 7);
+        assert_eq!(calls.len(), 8);
         assert_eq!(calls[0], "set_brightness(60.00)");
         assert_eq!(calls[1], "set_volume(75.00)");
         assert_eq!(calls[2], "set_wifi(false)");
         assert_eq!(calls[3], "set_bluetooth(true)");
-        assert_eq!(calls[4], "connect_wifi(MyNet)");
-        assert_eq!(calls[5], "set_power_profile(performance)");
-        assert_eq!(calls[6], "toggle_mute()");
+        assert_eq!(calls[4], "set_wired(true)");
+        assert_eq!(calls[5], "connect_wifi(MyNet)");
+        assert_eq!(calls[6], "set_power_profile(performance)");
+        assert_eq!(calls[7], "toggle_mute()");
     }
 }

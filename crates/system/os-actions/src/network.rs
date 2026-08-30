@@ -2,6 +2,145 @@
 
 use crate::process::{run, run_capture};
 
+pub const HOTSPOT_PROFILE: &str = "qOS Hotspot";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RadioState {
+    pub airplane_mode: bool,
+    pub wifi_available: bool,
+    pub wifi_enabled: bool,
+    pub wwan_available: bool,
+    pub wwan_enabled: bool,
+    pub hotspot_active: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VpnConnectionInfo {
+    pub name: String,
+    pub active: bool,
+    pub kind: String,
+}
+
+pub fn get_radio_state() -> Result<RadioState, String> {
+    let radios = run_capture("nmcli", &["-t", "-f", "WIFI,WWAN", "radio"])?;
+    let devices = run_capture("nmcli", &["-t", "-f", "TYPE,STATE", "device", "status"])?;
+    let active = run_capture(
+        "nmcli",
+        &["-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
+    )
+    .unwrap_or_default();
+    Ok(parse_radio_state(&radios, &devices, &active))
+}
+
+fn parse_radio_state(radios: &str, devices: &str, active: &str) -> RadioState {
+    let values: Vec<&str> = radios.lines().flat_map(|l| l.split(':')).collect();
+    let wifi_enabled = values.first().is_some_and(|v| *v == "enabled");
+    let wwan_enabled = values.get(1).is_some_and(|v| *v == "enabled");
+    let wifi_available = devices.lines().any(|l| l.starts_with("wifi:"));
+    let wwan_available = devices
+        .lines()
+        .any(|l| l.starts_with("gsm:") || l.starts_with("cdma:"));
+    let hotspot_active = active.lines().any(|l| {
+        let fields = split_terse(l);
+        fields.first().is_some_and(|v| v == HOTSPOT_PROFILE)
+            && fields.get(1).is_some_and(|v| v == "802-11-wireless")
+    });
+    RadioState {
+        airplane_mode: (wifi_available || wwan_available)
+            && (!wifi_available || !wifi_enabled)
+            && (!wwan_available || !wwan_enabled),
+        wifi_available,
+        wifi_enabled,
+        wwan_available,
+        wwan_enabled,
+        hotspot_active,
+    }
+}
+
+pub fn set_airplane_mode(enabled: bool) -> Result<(), String> {
+    if enabled {
+        run("nmcli", &["radio", "all", "off"])
+    } else {
+        // Restore radios individually so Bluetooth remains owned by BlueZ and
+        // NetworkManager never changes an unrelated subsystem.
+        run("nmcli", &["radio", "wifi", "on"])?;
+        let _ = run("nmcli", &["radio", "wwan", "on"]);
+        Ok(())
+    }
+}
+
+pub fn set_mobile_broadband(enabled: bool) -> Result<(), String> {
+    run(
+        "nmcli",
+        &["radio", "wwan", if enabled { "on" } else { "off" }],
+    )
+}
+
+/// Activate the qOS hotspot. NetworkManager creates the profile and a random
+/// WPA credential on first use; qOS never receives or logs that secret.
+pub fn set_hotspot(enabled: bool) -> Result<(), String> {
+    if enabled {
+        let profiles = run_capture("nmcli", &["-t", "-f", "NAME", "connection", "show"])?;
+        if !profiles.lines().any(|name| name == HOTSPOT_PROFILE) {
+            return run(
+                "nmcli",
+                &["device", "wifi", "hotspot", "con-name", HOTSPOT_PROFILE],
+            );
+        }
+    }
+    run(
+        "nmcli",
+        &[
+            "connection",
+            if enabled { "up" } else { "down" },
+            HOTSPOT_PROFILE,
+        ],
+    )
+}
+
+pub fn list_vpn_connections() -> Result<Vec<VpnConnectionInfo>, String> {
+    let all = run_capture("nmcli", &["-t", "-f", "NAME,TYPE", "connection", "show"])?;
+    let active = run_capture(
+        "nmcli",
+        &["-t", "-f", "NAME", "connection", "show", "--active"],
+    )
+    .unwrap_or_default();
+    let active: Vec<&str> = active.lines().collect();
+    Ok(all
+        .lines()
+        .filter_map(|line| {
+            let fields = split_terse(line);
+            let name = fields.first()?.trim();
+            let kind = fields.get(1)?.trim();
+            matches!(kind, "vpn" | "wireguard").then(|| VpnConnectionInfo {
+                name: name.to_string(),
+                active: active.contains(&name),
+                kind: kind.to_string(),
+            })
+        })
+        .collect())
+}
+
+pub fn set_vpn_connection(name: &str, enabled: bool) -> Result<(), String> {
+    if name.is_empty() || name.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
+        return Err("invalid VPN connection name".into());
+    }
+    run(
+        "nmcli",
+        &["connection", if enabled { "up" } else { "down" }, name],
+    )
+}
+
+pub fn import_vpn_config(kind: &str, path: &str) -> Result<(), String> {
+    if !matches!(kind, "wireguard" | "openvpn") {
+        return Err("unsupported VPN type".into());
+    }
+    run(
+        "nmcli",
+        &["connection", "import", "type", kind, "file", path],
+    )
+}
+
 /// One Wi-Fi network entry returned by [`list_wifi_networks`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetworkInfo {
@@ -401,6 +540,23 @@ pub fn get_wired() -> Result<WiredInfo, String> {
         info.ipv4 = ipv4;
     }
     Ok(info)
+}
+
+/// Connect or disconnect the primary Ethernet interface.  This is scoped to
+/// one device; unlike `nmcli networking off`, it cannot accidentally disable
+/// Wi-Fi, VPN, or the entire NetworkManager service.
+pub fn set_wired(enabled: bool) -> Result<(), String> {
+    let status = run_capture(
+        "nmcli",
+        &["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
+    )?;
+    let (device, connected) = parse_nmcli_wired_status(&status)
+        .ok_or_else(|| "no wired network interface found".to_string())?;
+    if connected == enabled {
+        return Ok(());
+    }
+    let verb = if enabled { "connect" } else { "disconnect" };
+    run("nmcli", &["device", verb, &device])
 }
 
 /// First ethernet device + connected flag, from terse `nmcli -t -f DEVICE,TYPE,STATE device
