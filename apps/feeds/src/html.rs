@@ -10,6 +10,11 @@
 use crate::model::{BlockKind, ContentBlock};
 
 /// Convert an HTML fragment into renderable blocks.
+// `flush!` resets `kind` after emitting a block, which is right at every
+// call site but the last one before the function returns. Rewriting the
+// macro to skip the reset there would trade a correct invariant for a
+// warning.
+#[allow(unused_assignments)]
 pub fn to_blocks(html: &str) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
     let mut buf = String::new();
