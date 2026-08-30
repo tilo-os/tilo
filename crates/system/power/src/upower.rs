@@ -8,6 +8,7 @@
 use zbus::Connection;
 
 use crate::battery::{BatterySnapshot, BatteryState};
+use crate::history::PowerSourceKind;
 
 const DEST: &str = "org.freedesktop.UPower";
 const MGR_PATH: &str = "/org/freedesktop/UPower";
@@ -19,10 +20,20 @@ const DEVICE_IFACE: &str = "org.freedesktop.UPower.Device";
 
 /// `org.freedesktop.UPower.Device.Type` code for a battery.
 const DEVICE_TYPE_BATTERY: u32 = 2;
+const DEVICE_TYPE_UPS: u32 = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PowerHistorySample {
+    pub kind: PowerSourceKind,
+    pub capacity: u32,
+    pub health: Option<u32>,
+    pub on_ac: bool,
+}
 
 /// A connected handle to `UPower`.
 #[derive(Clone)]
 pub struct UPowerMonitor {
+    connection: zbus::Connection,
     manager: zbus::Proxy<'static>,
     display: zbus::Proxy<'static>,
 }
@@ -39,7 +50,11 @@ impl UPowerMonitor {
     pub async fn with_connection(conn: &Connection) -> zbus::Result<Self> {
         let manager = zbus::Proxy::new(conn, DEST, MGR_PATH, MGR_IFACE).await?;
         let display = zbus::Proxy::new(conn, DEST, DISPLAY_DEVICE_PATH, DEVICE_IFACE).await?;
-        Ok(Self { manager, display })
+        Ok(Self {
+            connection: conn.clone(),
+            manager,
+            display,
+        })
     }
 
     /// Whether the lid is currently closed. Machines without a lid report
@@ -70,7 +85,7 @@ impl UPowerMonitor {
             .get_property("IsPresent")
             .await
             .unwrap_or(false);
-        if dev_type != DEVICE_TYPE_BATTERY || !present {
+        if !matches!(dev_type, DEVICE_TYPE_BATTERY | DEVICE_TYPE_UPS) || !present {
             return Ok(BatterySnapshot::absent());
         }
         let percentage: f64 = self.display.get_property("Percentage").await.unwrap_or(0.0);
@@ -80,6 +95,83 @@ impl UPowerMonitor {
             percent: percentage.round().clamp(0.0, 100.0) as u8,
             state: BatteryState::from_upower(state_code),
         })
+    }
+
+    /// Read the aggregate power source using UPower's display-device
+    /// contract. No model, serial, process, or application metadata crosses
+    /// into the durable history record.
+    pub async fn history_sample(&self) -> zbus::Result<Option<PowerHistorySample>> {
+        let dev_type: u32 = self.display.get_property("Type").await.unwrap_or(0);
+        let kind = match dev_type {
+            DEVICE_TYPE_BATTERY => PowerSourceKind::Battery,
+            DEVICE_TYPE_UPS => PowerSourceKind::Ups,
+            _ => return Ok(None),
+        };
+        let present: bool = self
+            .display
+            .get_property("IsPresent")
+            .await
+            .unwrap_or(false);
+        if !present {
+            return Ok(None);
+        }
+        let percentage: f64 = self.display.get_property("Percentage").await.unwrap_or(0.0);
+        let health: f64 = self.display.get_property("Capacity").await.unwrap_or(0.0);
+        Ok(Some(PowerHistorySample {
+            kind,
+            capacity: percentage.round().clamp(0.0, 100.0) as u32,
+            health: (health > 0.0).then(|| health.round().clamp(0.0, 100.0) as u32),
+            on_ac: !self.on_battery().await.unwrap_or(false),
+        }))
+    }
+
+    /// Return one anonymous aggregate for each power-source class. UPower's
+    /// display device is the canonical aggregate battery; UPS devices are
+    /// averaged without persisting their object paths or vendor metadata.
+    pub async fn history_samples(&self) -> zbus::Result<Vec<PowerHistorySample>> {
+        let mut samples = Vec::new();
+        if let Some(display) = self.history_sample().await? {
+            samples.push(display);
+        }
+        if samples
+            .iter()
+            .any(|sample| sample.kind == PowerSourceKind::Ups)
+        {
+            return Ok(samples);
+        }
+
+        let paths: Vec<zbus::zvariant::OwnedObjectPath> =
+            self.manager.call("EnumerateDevices", &()).await?;
+        let mut percentages = Vec::new();
+        let mut health_values = Vec::new();
+        let mut draining = false;
+        for path in paths {
+            let device = zbus::Proxy::new(&self.connection, DEST, path, DEVICE_IFACE).await?;
+            let kind: u32 = device.get_property("Type").await.unwrap_or(0);
+            let present: bool = device.get_property("IsPresent").await.unwrap_or(false);
+            if kind != DEVICE_TYPE_UPS || !present {
+                continue;
+            }
+            let percentage: f64 = device.get_property("Percentage").await.unwrap_or(0.0);
+            percentages.push(percentage.clamp(0.0, 100.0));
+            let health: f64 = device.get_property("Capacity").await.unwrap_or(0.0);
+            if health > 0.0 {
+                health_values.push(health.clamp(0.0, 100.0));
+            }
+            let state: u32 = device.get_property("State").await.unwrap_or(0);
+            draining |= BatteryState::from_upower(state).is_discharging();
+        }
+        if !percentages.is_empty() {
+            let mean =
+                |values: &[f64]| (values.iter().sum::<f64>() / values.len() as f64).round() as u32;
+            samples.push(PowerHistorySample {
+                kind: PowerSourceKind::Ups,
+                capacity: mean(&percentages),
+                health: (!health_values.is_empty()).then(|| mean(&health_values)),
+                on_ac: !draining,
+            });
+        }
+        Ok(samples)
     }
 }
 
@@ -127,5 +219,17 @@ mod tests {
         }
         // OnBattery is a plain bool either way.
         let _ = m.on_battery().await.expect("OnBattery");
+    }
+
+    #[tokio::test]
+    async fn history_samples_are_anonymous_and_in_range() {
+        let Some(monitor) = monitor_or_skip("history samples").await else {
+            return;
+        };
+        let samples = monitor.history_samples().await.expect("history samples");
+        for sample in samples {
+            assert!(sample.capacity <= 100);
+            assert!(sample.health.is_none_or(|health| health <= 100));
+        }
     }
 }

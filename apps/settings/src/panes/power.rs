@@ -162,12 +162,9 @@ impl PowerPane {
     pub fn new() -> Self {
         let profile = os_actions::get_power_profile().unwrap_or(PowerProfile::Balanced);
         let battery = BatteryInfo::from_system();
-        let history = if battery.present {
-            os_actions::record_battery_history(&battery)
-                .unwrap_or_else(|_| os_actions::load_battery_history())
-        } else {
-            os_actions::load_battery_history()
-        };
+        // The shell-owned UPower monitor is the single history writer.
+        // Settings only reads the canonical atomic file.
+        let history = os_actions::load_battery_history();
         Self {
             dispatcher: dispatcher_or_real(None),
             battery,

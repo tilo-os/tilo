@@ -2384,6 +2384,9 @@ pub fn run() -> ! {
         if settings_watch.changed(Instant::now()) {
             tracing::info!("compositor: settings changed on disk; re-applying");
             backend.reload_input_settings();
+            let policy = qos_power_mgmt::config::load_policy();
+            session.set_suspend_timeout(policy.idle_suspend);
+            power_bridge.update_policy(policy);
             outputs_dirty = true;
         }
 
@@ -2473,6 +2476,10 @@ pub fn run() -> ! {
                     // A resumed panel is scanning out whatever was left in its buffers, so the next frame must be a full one.
                     outputs_dirty = false;
                     session_changed = true;
+                }
+                qos_power_mgmt::PowerSignal::IdleSuspendChanged(timeout) => {
+                    session.set_suspend_timeout(timeout);
+                    tracing::info!(target: "qos::power", ?timeout, "live idle-suspend timeout updated");
                 }
                 qos_power_mgmt::PowerSignal::Notify(n) => {
                     let inc = power_notification_to_incoming(&notif_bridge, n);

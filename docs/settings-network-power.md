@@ -41,15 +41,15 @@ met.
   the privileged service returns, Settings re-reads hardware state and reports
   firmware clamp/rejection instead of showing an optimistic value.
 - Saver, balanced and performance can each have an idle-suspend timeout. The
-  compositor resolves the current power-profiles-daemon profile when loading
-  its session power policy; old settings files continue to use the legacy
+  shell-owned power service subscribes to power-profiles-daemon's
+  `ActiveProfile` property over D-Bus and pushes the resolved timeout into the
+  live compositor state machine. Settings-file changes update both the session
+  timer and the service's lid/battery policy; old files retain the legacy
   timeout.
 - Charge/health history is per-user state, contains only minute, percentage,
   health estimate and AC state, coalesces samples within 15 minutes, and is
-  bounded to 30 days/2,880 points. It stores no device names or serials.
-
-The current history sampler runs when Settings reads the battery. A future
-UPower history provider can feed the same bounded schema without changing the
-UI. Likewise, profile-specific idle changes are loaded with the compositor's
-power policy; live policy reload on an already-running compositor remains a
-separate session-lifecycle improvement.
+  bounded to 30 days/2,880 points. The existing shell-owned UPower monitor is
+  the sole writer; battery and UPS aggregates use separate files, written
+  atomically with mode `0600`. It stores no device names, serials, application
+  activity, or per-process data. Settings reads the same canonical battery
+  history and never races it as a second writer.

@@ -37,9 +37,11 @@
 pub mod battery;
 pub mod bridge;
 pub mod config;
+pub mod history;
 pub mod inhibit;
 pub mod logind;
 pub mod policy;
+pub mod profiles;
 pub mod service;
 pub mod sysfs;
 pub mod upower;
@@ -47,9 +49,14 @@ pub mod upower;
 pub use battery::{BatteryEvent, BatteryMonitor, BatterySnapshot, BatteryState};
 pub use bridge::{PowerBridge, PowerCommand, PowerNotification, PowerSignal};
 pub use config::{default_policy, load_policy, policy_from_settings_json};
+pub use history::{
+    BatteryHistory, BatteryHistoryPoint, PowerSourceKind, load_battery_history, load_ups_history,
+    record_power_history,
+};
 pub use inhibit::{InhibitRegistry, InhibitToken};
 pub use logind::{LogindInhibitor, LogindManager};
 pub use policy::{PowerAction, PowerPolicy};
+pub use profiles::PowerProfilesMonitor;
 pub use service::PowerService;
 pub use sysfs::{battery_snapshot as sysfs_battery_snapshot, on_battery as sysfs_on_battery};
 pub use upower::UPowerMonitor;
