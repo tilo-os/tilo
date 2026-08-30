@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
@@ -521,89 +521,19 @@ impl LspClient {
         let stdin = Arc::new(Mutex::new(stdin));
         let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let (tx, rx) = mpsc::channel();
-        let reader_pending = pending.clone();
-        // The reader answers the server's own requests itself, so it needs the
-        // write half too. Both ends are behind the same mutex, so a reply can
-        // never interleave with a half-written request from the UI thread.
-        let reader_stdin = stdin.clone();
-        std::thread::Builder::new()
-            .name("code-editor-lsp".into())
-            .spawn(move || {
-                let mut reader = MessageReader::new(BufReader::new(stdout));
-                loop {
-                    if let Ok(Some(msg)) = reader.next_message() {
-                        let routed = route_message(&msg, &reader_pending);
-                        if let Some(reply) = routed.reply {
-                            let bytes = encode(&reply);
-                            if let Ok(mut w) = reader_stdin.lock() {
-                                let _ = w.write_all(&bytes);
-                                let _ = w.flush();
-                            }
-                        }
-                        if let Some(ev) = routed.event
-                            && tx.send(ev).is_err()
-                        {
-                            break;
-                        }
-                    } else {
-                        let _ = tx.send(LspEvent::Exited);
-                        break;
-                    }
-                }
-            })
-            .map_err(|e| format!("failed to start the {prog} reader thread: {e}"))?;
+        let events = spawn_reader_thread(&prog, stdout, stdin.clone(), pending.clone())?;
 
         let mut client = LspClient {
             child,
             stdin,
-            events: rx,
+            events,
             pending,
             next_id: 1,
             server_name: prog,
             root: root.to_path_buf(),
             progress: HashMap::new(),
         };
-
-        // Kick the handshake. `initialize` is a request; once its response
-        // lands (surfaced as `Initialized` by the router) we send `initialized`
-        // — but rust-analyzer tolerates an eager `initialized`, and buffering
-        // the notification here keeps the client simple.
-        //
-        // `window.workDoneProgress` is the capability that makes indexing
-        // visible: without it the server never sends `$/progress`, and a
-        // multi-minute index is silent.
-        let folder_name = root.file_name().map_or_else(
-            || root.display().to_string(),
-            |s| s.to_string_lossy().to_string(),
-        );
-        client.send_request_raw(
-            "initialize",
-            &json!({
-                "processId": std::process::id(),
-                "rootUri": root_uri,
-                "rootPath": root.display().to_string(),
-                "workspaceFolders": [ { "uri": root_uri, "name": folder_name } ],
-                "capabilities": {
-                    "window": { "workDoneProgress": true },
-                    "workspace": {
-                        "configuration": true,
-                        "workspaceFolders": true,
-                        "didChangeConfiguration": { "dynamicRegistration": true }
-                    },
-                    "textDocument": {
-                        "synchronization": { "didSave": true },
-                        "hover": { "contentFormat": ["plaintext", "markdown"] },
-                        "completion": { "completionItem": { "snippetSupport": false } },
-                        "publishDiagnostics": {},
-                        "definition": {}
-                    }
-                }
-            }),
-            None,
-        );
-        client.send_notification("initialized", &json!({}));
-
+        send_initialize_handshake(&mut client, root, &root_uri);
         Ok(client)
     }
 
@@ -776,6 +706,88 @@ impl LspClient {
             let _ = stdin.flush();
         }
     }
+}
+
+/// Spawn the background thread that reads framed JSON-RPC messages off the
+/// server's stdout, answers server-initiated requests over `reader_stdin`
+/// (both ends are behind the same mutex, so a reply can never interleave
+/// with a half-written request from the UI thread), and forwards
+/// editor-visible events. Returns the receiving end of that event channel.
+fn spawn_reader_thread(
+    prog: &str,
+    stdout: ChildStdout,
+    reader_stdin: Arc<Mutex<ChildStdin>>,
+    reader_pending: Arc<Mutex<HashMap<i64, Pending>>>,
+) -> Result<Receiver<LspEvent>, String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("code-editor-lsp".into())
+        .spawn(move || {
+            let mut reader = MessageReader::new(BufReader::new(stdout));
+            loop {
+                if let Ok(Some(msg)) = reader.next_message() {
+                    let routed = route_message(&msg, &reader_pending);
+                    if let Some(reply) = routed.reply {
+                        let bytes = encode(&reply);
+                        if let Ok(mut w) = reader_stdin.lock() {
+                            let _ = w.write_all(&bytes);
+                            let _ = w.flush();
+                        }
+                    }
+                    if let Some(ev) = routed.event
+                        && tx.send(ev).is_err()
+                    {
+                        break;
+                    }
+                } else {
+                    let _ = tx.send(LspEvent::Exited);
+                    break;
+                }
+            }
+        })
+        .map_err(|e| format!("failed to start the {prog} reader thread: {e}"))?;
+    Ok(rx)
+}
+
+/// Kick the `initialize`/`initialized` handshake. `initialize` is a request;
+/// once its response lands (surfaced as `Initialized` by the router) the
+/// editor treats the server as ready — but rust-analyzer tolerates an eager
+/// `initialized` sent before that response, which keeps the client simple.
+///
+/// `window.workDoneProgress` is the capability that makes indexing visible:
+/// without it the server never sends `$/progress`, and a multi-minute index
+/// is silent.
+fn send_initialize_handshake(client: &mut LspClient, root: &Path, root_uri: &str) {
+    let folder_name = root.file_name().map_or_else(
+        || root.display().to_string(),
+        |s| s.to_string_lossy().to_string(),
+    );
+    client.send_request_raw(
+        "initialize",
+        &json!({
+            "processId": std::process::id(),
+            "rootUri": root_uri,
+            "rootPath": root.display().to_string(),
+            "workspaceFolders": [ { "uri": root_uri, "name": folder_name } ],
+            "capabilities": {
+                "window": { "workDoneProgress": true },
+                "workspace": {
+                    "configuration": true,
+                    "workspaceFolders": true,
+                    "didChangeConfiguration": { "dynamicRegistration": true }
+                },
+                "textDocument": {
+                    "synchronization": { "didSave": true },
+                    "hover": { "contentFormat": ["plaintext", "markdown"] },
+                    "completion": { "completionItem": { "snippetSupport": false } },
+                    "publishDiagnostics": {},
+                    "definition": {}
+                }
+            }
+        }),
+        None,
+    );
+    client.send_notification("initialized", &json!({}));
 }
 
 impl Drop for LspClient {
