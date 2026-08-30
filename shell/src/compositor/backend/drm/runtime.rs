@@ -2081,6 +2081,7 @@ mod tests {
             crtc: crtc(id + 1),
             position: (0, 0),
             scale: 1.0,
+            transform: settings_store::hardware::OutputTransform::Normal,
             refresh: None,
         }
     }
