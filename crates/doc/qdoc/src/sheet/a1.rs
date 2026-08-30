@@ -15,23 +15,25 @@ pub fn col_to_index(letters: &str) -> Option<u32> {
         if !c.is_ascii_uppercase() {
             return None;
         }
-        idx = idx
-            .checked_mul(26)?
-            .checked_add((c as u32) - ('A' as u32) + 1)?;
+        // `c` is ASCII upper-case, so the offset from `A` always exists; the
+        // multiply and add reject a run that would leave the u32 range.
+        let offset = u32::from(c).checked_sub(u32::from('A'))?;
+        idx = idx.checked_mul(26)?.checked_add(offset)?.checked_add(1)?;
     }
     Some(idx)
 }
 
 /// Renders a 1-based column index back into its letter run (`1` → `"A"`, `27` → `"AA"`); a zero index (invalid) renders as an empty string.
 pub fn index_to_col(mut idx: u32) -> String {
-    if idx == 0 {
-        return String::new();
-    }
     let mut out = Vec::new();
-    while idx > 0 {
-        let rem = (idx - 1) % 26;
-        out.push(b'A' + rem as u8);
-        idx = (idx - 1) / 26;
+    // Step to a 0-based digit each round; a zero index has no digits at all, so
+    // the loop condition is also what makes the subtraction safe.
+    while let Some(zero_based) = idx.checked_sub(1) {
+        // `% 26` keeps the remainder below 26, so it is entirely its low byte
+        // and `A` + it stays inside `A`..=`Z`.
+        let [digit, ..] = (zero_based % 26).to_le_bytes();
+        out.push(b'A'.saturating_add(digit));
+        idx = zero_based / 26;
     }
     out.reverse();
     String::from_utf8(out).unwrap_or_default()

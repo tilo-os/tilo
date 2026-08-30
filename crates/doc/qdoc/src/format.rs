@@ -34,7 +34,13 @@ pub enum CodecError {
 pub trait FormatProvider: Send + Sync {
     fn schema_id(&self) -> &str;
     fn detect(&self, head: &[u8]) -> Confidence;
+    /// # Errors
+    /// Returns [`CodecError`] if `bytes` are malformed, exceed the codec's
+    /// resource bounds, or use a construct the codec refuses to import.
     fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError>;
+    /// # Errors
+    /// Returns [`CodecError`] if the document cannot be serialised into this
+    /// format, or if writing its container fails.
     fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError>;
 }
 
