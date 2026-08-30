@@ -524,6 +524,216 @@ pub struct SavedNetworkProfile {
     pub autoconnect: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MeteredPolicy {
+    #[default]
+    Automatic,
+    Metered,
+    Unmetered,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MacPolicy {
+    Permanent,
+    Random,
+    #[default]
+    Stable,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProxyConfiguration {
+    pub automatic_url: Option<String>,
+    pub browser_only: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConnectionPolicy {
+    pub metered: MeteredPolicy,
+    pub mac: Option<MacPolicy>,
+    pub proxy: ProxyConfiguration,
+}
+
+pub fn configure_connection_policy(uuid: &str, policy: &ConnectionPolicy) -> Result<(), String> {
+    validate_uuid(uuid)?;
+    if let Some(url) = policy.proxy.automatic_url.as_deref()
+        && !(url.starts_with("https://") || url.starts_with("http://"))
+    {
+        return Err("automatic proxy URL must use HTTP or HTTPS".into());
+    }
+    let metered = match policy.metered {
+        MeteredPolicy::Automatic => "unknown",
+        MeteredPolicy::Metered => "yes",
+        MeteredPolicy::Unmetered => "no",
+    };
+    run(
+        "nmcli",
+        &[
+            "connection",
+            "modify",
+            "uuid",
+            uuid,
+            "connection.metered",
+            metered,
+        ],
+    )?;
+    let proxy_method = if policy.proxy.automatic_url.is_some() {
+        "auto"
+    } else {
+        "none"
+    };
+    run(
+        "nmcli",
+        &[
+            "connection",
+            "modify",
+            "uuid",
+            uuid,
+            "proxy.method",
+            proxy_method,
+            "proxy.pac-url",
+            policy.proxy.automatic_url.as_deref().unwrap_or(""),
+            "proxy.browser-only",
+            if policy.proxy.browser_only {
+                "yes"
+            } else {
+                "no"
+            },
+        ],
+    )?;
+    if let Some(mac) = policy.mac {
+        let value = match mac {
+            MacPolicy::Permanent => "permanent",
+            MacPolicy::Random => "random",
+            MacPolicy::Stable => "stable-ssid",
+        };
+        run(
+            "nmcli",
+            &[
+                "connection",
+                "modify",
+                "uuid",
+                uuid,
+                "802-11-wireless.cloned-mac-address",
+                value,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConnectionDiagnostics {
+    pub network_manager_state: String,
+    pub connectivity: ConnectivityState,
+    pub device: Option<String>,
+    pub address: Option<String>,
+    pub gateway: Option<String>,
+    pub dns: Vec<String>,
+    pub recommendations: Vec<String>,
+}
+
+/// NetworkManager state/connectivity come directly from its D-Bus API. IP
+/// detail remains NM-owned and is read through its standard client, avoiding
+/// route/proc guesses and a second network model.
+pub fn connection_diagnostics() -> Result<ConnectionDiagnostics, String> {
+    static RT: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
+    let rt = RT
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .ok_or("could not start NetworkManager runtime")?;
+    let (state, connectivity) = rt.block_on(async {
+        let c = zbus::Connection::system()
+            .await
+            .map_err(|e| format!("cannot reach NetworkManager: {e}"))?;
+        let p = zbus::Proxy::new(
+            &c,
+            "org.freedesktop.NetworkManager",
+            "/org/freedesktop/NetworkManager",
+            "org.freedesktop.NetworkManager",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let state: u32 = p.get_property("State").await.map_err(|e| e.to_string())?;
+        let connectivity: u32 = p
+            .get_property("Connectivity")
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>((state, connectivity))
+    })?;
+    let connectivity = match connectivity {
+        1 => ConnectivityState::Offline,
+        2 => ConnectivityState::Portal,
+        3 => ConnectivityState::Limited,
+        4 => ConnectivityState::Full,
+        _ => ConnectivityState::Unknown,
+    };
+    let network_manager_state = match state {
+        10 => "Asleep",
+        20 => "Disconnected",
+        30..=50 => "Connecting",
+        60 => "Connected (local)",
+        70 => "Connected (site)",
+        80 => "Connected",
+        _ => "Unknown",
+    }
+    .to_string();
+    let detail = run_capture(
+        "nmcli",
+        &[
+            "-t",
+            "-f",
+            "GENERAL.DEVICE,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS",
+            "device",
+            "show",
+        ],
+    )
+    .unwrap_or_default();
+    let mut out = ConnectionDiagnostics {
+        network_manager_state,
+        connectivity,
+        ..Default::default()
+    };
+    for line in detail.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() || value == "--" {
+            continue;
+        }
+        if key.ends_with("DEVICE") && out.device.is_none() {
+            out.device = Some(value.into());
+        } else if key.contains("ADDRESS") && out.address.is_none() {
+            out.address = Some(value.into());
+        } else if key.ends_with("GATEWAY") && out.gateway.is_none() {
+            out.gateway = Some(value.into());
+        } else if key.contains("DNS") {
+            out.dns.push(value.into());
+        }
+    }
+    match out.connectivity {
+        ConnectivityState::Portal => out
+            .recommendations
+            .push("Open the network sign-in page, then run diagnostics again.".into()),
+        ConnectivityState::Limited if out.gateway.is_none() => out
+            .recommendations
+            .push("No default gateway was received; check DHCP or the manual IP settings.".into()),
+        ConnectivityState::Limited if out.dns.is_empty() => out
+            .recommendations
+            .push("No DNS server was received; check DNS settings on this connection.".into()),
+        ConnectivityState::Offline => out.recommendations.push(
+            "No connection is active; check the cable, radio, or selected mobile SIM.".into(),
+        ),
+        _ => {}
+    }
+    Ok(out)
+}
+
 pub fn list_saved_network_profiles() -> Result<Vec<SavedNetworkProfile>, String> {
     let out = run_capture(
         "nmcli",
@@ -850,6 +1060,21 @@ mod profile_tests {
         let err = configure_ipv4("12345678-1234-1234-1234-123456789abc", &config).unwrap_err();
         assert!(err.contains("at least one address"));
     }
+
+    #[test]
+    fn connection_policy_rejects_unsafe_pac_before_invoking_networkmanager() {
+        // This must fail during validation, before an external process can run.
+        let policy = ConnectionPolicy {
+            proxy: ProxyConfiguration {
+                automatic_url: Some("file:///tmp/proxy.pac".into()),
+                browser_only: false,
+            },
+            ..Default::default()
+        };
+        let err = configure_connection_policy("12345678-1234-1234-1234-123456789abc", &policy)
+            .unwrap_err();
+        assert!(err.contains("HTTP or HTTPS"));
+    }
 }
 
 /// Create a NetworkManager WWAN profile without handling SIM secrets in the
@@ -891,13 +1116,72 @@ pub fn create_mobile_profile(name: &str, apn: &str) -> Result<(), String> {
     )
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnterpriseWifiConfiguration {
     pub profile_name: String,
     pub ssid: String,
     pub identity: String,
     pub anonymous_identity: Option<String>,
     pub ca_certificate: String,
+    pub method: EnterpriseEapMethod,
+    pub phase2_auth: Option<String>,
+    pub client_certificate: Option<String>,
+    pub private_key: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CertificateInfo {
+    pub subject: String,
+    pub expires: String,
+    pub sha256_fingerprint: String,
+}
+
+pub fn inspect_certificate(path: &str) -> Result<CertificateInfo, String> {
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() || !p.is_file() {
+        return Err("certificate must be an existing absolute file".into());
+    }
+    let out = run_capture(
+        "openssl",
+        &[
+            "x509",
+            "-in",
+            path,
+            "-noout",
+            "-subject",
+            "-enddate",
+            "-fingerprint",
+            "-sha256",
+        ],
+    )?;
+    let field = |prefix: &str| {
+        out.lines()
+            .find_map(|l| l.trim().strip_prefix(prefix))
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let info = CertificateInfo {
+        subject: field("subject=").ok_or("certificate has no subject")?,
+        expires: field("notAfter=").ok_or("certificate has no expiry")?,
+        sha256_fingerprint: field("sha256 Fingerprint=")
+            .or_else(|| field("SHA256 Fingerprint="))
+            .ok_or("certificate has no SHA-256 fingerprint")?,
+    };
+    run(
+        "openssl",
+        &["x509", "-in", path, "-noout", "-checkend", "0"],
+    )
+    .map_err(|_| format!("certificate expired at {}", info.expires))?;
+    Ok(info)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EnterpriseEapMethod {
+    #[default]
+    Peap,
+    Ttls,
+    Tls,
 }
 
 impl EnterpriseWifiConfiguration {
@@ -911,6 +1195,24 @@ impl EnterpriseWifiConfiguration {
         let ca = std::path::Path::new(&self.ca_certificate);
         if !ca.is_absolute() || !ca.is_file() {
             return Err("choose an existing absolute CA certificate file".into());
+        }
+        if self.method == EnterpriseEapMethod::Tls {
+            for (label, path) in [
+                ("client certificate", self.client_certificate.as_deref()),
+                ("private key", self.private_key.as_deref()),
+            ] {
+                if !path.is_some_and(|p| {
+                    let p = std::path::Path::new(p);
+                    p.is_absolute() && p.is_file()
+                }) {
+                    return Err(format!("choose an existing absolute {label} file"));
+                }
+            }
+        } else if !matches!(
+            self.phase2_auth.as_deref().unwrap_or("mschapv2"),
+            "mschapv2" | "pap" | "chap"
+        ) {
+            return Err("unsupported enterprise inner-authentication method".into());
         }
         if self
             .anonymous_identity
@@ -932,7 +1234,13 @@ pub fn connect_enterprise_wifi(
     password: &str,
 ) -> Result<(), String> {
     config.validate()?;
-    if password.is_empty() || password.chars().any(|c| matches!(c, '\n' | '\r')) {
+    let _ca = inspect_certificate(&config.ca_certificate)?;
+    if let Some(client) = config.client_certificate.as_deref() {
+        let _ = inspect_certificate(client)?;
+    }
+    if config.method != EnterpriseEapMethod::Tls
+        && (password.is_empty() || password.chars().any(|c| matches!(c, '\n' | '\r')))
+    {
         return Err("enterprise Wi-Fi password is empty or invalid".into());
     }
     let existing = run_capture("nmcli", &["-t", "-f", "NAME", "connection", "show"])?;
@@ -952,6 +1260,16 @@ pub fn connect_enterprise_wifi(
         )?;
     }
     let anonymous = config.anonymous_identity.as_deref().unwrap_or("");
+    let method = match config.method {
+        EnterpriseEapMethod::Peap => "peap",
+        EnterpriseEapMethod::Ttls => "ttls",
+        EnterpriseEapMethod::Tls => "tls",
+    };
+    let phase2 = if config.method == EnterpriseEapMethod::Tls {
+        ""
+    } else {
+        config.phase2_auth.as_deref().unwrap_or("mschapv2")
+    };
     run(
         "nmcli",
         &[
@@ -961,16 +1279,22 @@ pub fn connect_enterprise_wifi(
             "wifi-sec.key-mgmt",
             "wpa-eap",
             "802-1x.eap",
-            "peap",
+            method,
             "802-1x.identity",
             &config.identity,
             "802-1x.anonymous-identity",
             anonymous,
             "802-1x.phase2-auth",
-            "mschapv2",
+            phase2,
             "802-1x.ca-cert",
             &config.ca_certificate,
+            "802-1x.client-cert",
+            config.client_certificate.as_deref().unwrap_or(""),
+            "802-1x.private-key",
+            config.private_key.as_deref().unwrap_or(""),
             "802-1x.password-flags",
+            "2",
+            "802-1x.private-key-password-flags",
             "2",
         ],
     )?;

@@ -211,6 +211,12 @@ impl PowerActionPref {
 fn default_suspend_minutes() -> u32 {
     15
 }
+fn default_saver_suspend_minutes() -> u32 {
+    10
+}
+fn default_performance_suspend_minutes() -> u32 {
+    30
+}
 fn default_lid_action() -> PowerActionPref {
     PowerActionPref::Suspend
 }
@@ -240,6 +246,15 @@ pub struct PowerPrefs {
     /// Idle minutes before the session suspends; `0` disables idle-suspend.
     #[serde(default = "default_suspend_minutes")]
     pub suspend_minutes: u32,
+    /// Profile-specific idle suspend. The compositor resolves the active
+    /// power-profiles-daemon profile and falls back to `suspend_minutes` for
+    /// legacy settings files.
+    #[serde(default = "default_saver_suspend_minutes")]
+    pub saver_suspend_minutes: u32,
+    #[serde(default = "default_suspend_minutes")]
+    pub balanced_suspend_minutes: u32,
+    #[serde(default = "default_performance_suspend_minutes")]
+    pub performance_suspend_minutes: u32,
     /// Idle minutes before the screen blanks; `0` disables blanking.
     pub blank_minutes: u32,
     /// What to do when the lid closes.
@@ -264,6 +279,9 @@ impl Default for PowerPrefs {
         Self {
             auto_suspend: true,
             suspend_minutes: default_suspend_minutes(),
+            saver_suspend_minutes: default_saver_suspend_minutes(),
+            balanced_suspend_minutes: default_suspend_minutes(),
+            performance_suspend_minutes: default_performance_suspend_minutes(),
             blank_minutes: 10,
             lid_close_action: default_lid_action(),
             power_key_action: default_power_key_action(),
