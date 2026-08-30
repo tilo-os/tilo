@@ -28,7 +28,6 @@ tokio-util.workspace = true
 # workspace's lock file (transitive via shell).
 nix = { version = "0.30", features = ["fs"] }
 thiserror.workspace = true
-futures = { workspace = true, default-features = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
