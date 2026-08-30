@@ -456,14 +456,21 @@ impl Widget for MainPanel {
                 (self.rect.height() - 2.0 * PADDING_PX - TITLE_HEIGHT - TITLE_TO_EDITOR_GAP)
                     .max(0.0);
             let max_scroll = (content_h - viewport_h).max(0.0);
-            // A layout pass can land before the editor's text has been shaped,
-            // and then every block rect is degenerate and `content_h` is 0.
-            // Clamping against that throws the reader back to the top of the
-            // document with nothing to explain it — and the position is gone,
-            // not restored on the next frame. A document with blocks always
-            // measures taller than zero once it has been measured at all, so
-            // that is the signal; an empty one has no blocks and 0 is right.
-            let measured = self.editor.blocks().is_empty() || content_h > 0.0;
+            // A layout pass can land before the editor's text has been shaped.
+            // Every block rect is then degenerate, `content_h` collapses, and
+            // clamping against it throws the reader back to the top of the
+            // document with nothing to explain it — the position is gone, not
+            // restored on the next frame. Ask whether anything was measured at
+            // all rather than whether the total came out at exactly zero: a
+            // partial pass yields a small non-zero height that clamps just as
+            // destructively. An empty document has no blocks, and 0 is right
+            // for it.
+            let measured = self.editor.blocks().is_empty()
+                || self
+                    .editor
+                    .blocks()
+                    .iter()
+                    .any(|b| b.line.get_rect().height() > 0.0);
             if measured {
                 let clamped = self.scroll_y.clamp(0.0, max_scroll);
                 if clamped != self.scroll_y {
