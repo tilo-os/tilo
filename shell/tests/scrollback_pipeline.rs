@@ -78,22 +78,19 @@ fn drain_until_signed(stream: &mut UnixStream, want: usize, timeout: Duration) -
             break;
         }
         let before = Instant::now();
-        match read_event(stream, remain) {
-            Some(ev) => {
-                fruitless = 0;
-                if matches!(ev, CollabEvent::SignedCRDTIncremental { .. }) {
-                    signed += 1;
-                }
-                out.push(ev);
+        if let Some(ev) = read_event(stream, remain) {
+            fruitless = 0;
+            if matches!(ev, CollabEvent::SignedCRDTIncremental { .. }) {
+                signed += 1;
             }
-            None => {
-                if before.elapsed() >= remain {
-                    break;
-                }
-                fruitless += 1;
-                if fruitless >= 8 {
-                    break;
-                }
+            out.push(ev);
+        } else {
+            if before.elapsed() >= remain {
+                break;
+            }
+            fruitless += 1;
+            if fruitless >= 8 {
+                break;
             }
         }
     }
@@ -104,8 +101,7 @@ fn unique_socket(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!("qos-broker-sb-{label}-{pid}-{nanos}.sock"))
 }
 
@@ -668,18 +664,18 @@ fn cooperative_scrollback_round_trip() {
             2,
         )),
     ];
-    net.handle_scrollback_response_message(99u64, artifact, synthetic_ops.clone());
+    net.handle_scrollback_response_message(99u64, artifact, synthetic_ops);
 
     // The drain thread is on a 100 ms cadence, so poll with a generous
     // timeout for the follow-up ScrollbackBatch.
     let mut got: Option<CollabEvent> = None;
     let deadline = Instant::now() + REPLY_BACKSTOP;
     while Instant::now() < deadline {
-        if let Some(ev) = read_event(&mut app, Duration::from_millis(200)) {
-            if matches!(ev, CollabEvent::ScrollbackBatch { .. }) {
-                got = Some(ev);
-                break;
-            }
+        if let Some(ev) = read_event(&mut app, Duration::from_millis(200))
+            && matches!(ev, CollabEvent::ScrollbackBatch { .. })
+        {
+            got = Some(ev);
+            break;
         }
     }
     let event = got.expect("follow-up ScrollbackBatch from cooperative path");

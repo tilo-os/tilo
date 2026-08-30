@@ -1027,7 +1027,7 @@ impl VideoEditorApp {
         let want_kind = if self
             .project
             .media(bd.media)
-            .map_or(true, |m| m.kind.is_visual())
+            .is_none_or(|m| m.kind.is_visual())
         {
             TrackKind::Video
         } else {
@@ -1415,7 +1415,7 @@ impl VideoEditorApp {
         let is_video = self
             .project
             .media(clip.media)
-            .map_or(true, |m| m.kind.is_visual());
+            .is_none_or(|m| m.kind.is_visual());
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
         // Static header + four property rows consume a fixed block; the
@@ -3629,7 +3629,7 @@ impl VideoEditorApp {
             return;
         };
         let media = self.project.media(clip.media).cloned();
-        let is_video = media.as_ref().map_or(true, |m| m.kind.is_visual());
+        let is_video = media.as_ref().is_none_or(|m| m.kind.is_visual());
         let track_name = self
             .project
             .track(clip.track)
@@ -5469,7 +5469,7 @@ mod tests {
             },
         );
     }
-    /// A full click at (x,y): move (sets last_mouse, as the live loop does),
+    /// A full click at (x,y): move (sets `last_mouse`, as the live loop does),
     /// then press.
     fn click(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
         move_to(app, doc, x, y);
@@ -5590,12 +5590,7 @@ mod tests {
         let (mid, row) = app
             .bin_item_rects(&r)
             .into_iter()
-            .find(|(m, _)| {
-                app.project
-                    .media(*m)
-                    .map(|mm| mm.kind.is_visual())
-                    .unwrap_or(false)
-            })
+            .find(|(m, _)| app.project.media(*m).is_some_and(|mm| mm.kind.is_visual()))
             .expect("a visual bin item");
         let (tid, _k, lane) = app
             .lane_rects(&r)
@@ -5696,7 +5691,7 @@ mod tests {
         let peaks = app.waveforms.peaks(mid).unwrap();
         assert_eq!(peaks.len(), crate::waveform::WAVE_BUCKETS);
         assert!(
-            peaks.iter().cloned().fold(0.0, f32::max) > 0.9,
+            peaks.iter().copied().fold(0.0, f32::max) > 0.9,
             "a real signal is present"
         );
         std::fs::remove_file(&f).ok();

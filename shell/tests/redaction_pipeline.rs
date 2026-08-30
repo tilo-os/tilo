@@ -59,8 +59,7 @@ fn unique_socket(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!("qos-broker-rd-{label}-{pid}-{nanos}.sock"))
 }
 
@@ -642,7 +641,7 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
     write_frame(
         &mut buggy_peer,
         &CollabRequest::SignedSyncIncremental {
-            envelope: Box::new(target.clone()),
+            envelope: Box::new(target),
         },
     );
 
@@ -716,7 +715,7 @@ fn redaction_of_mls_encrypted_op_succeeds() {
         artifact,
         editor_att,
         OpClass::Splice,
-        ciphertext.clone(),
+        ciphertext,
         2,
         EncryptionMetadata { epoch: 7, channel },
     );

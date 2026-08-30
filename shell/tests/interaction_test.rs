@@ -104,10 +104,8 @@ fn test_click_interaction_in_sandbox() {
                 }
                 WaylandEvent::Frame {
                     surface_id, app_id, ..
-                } if app_id == "click-test" => {
-                    if captured_surface_id.is_none() {
-                        captured_surface_id = Some(surface_id);
-                    }
+                } if app_id == "click-test" && captured_surface_id.is_none() => {
+                    captured_surface_id = Some(surface_id);
                 }
                 _ => {}
             }
@@ -123,14 +121,11 @@ fn test_click_interaction_in_sandbox() {
     let test_x = 123.0;
     let test_y = 45.0;
 
-    println!(
-        "DEBUG: Sending Motion to ID {} at {},{}",
-        surface_id, test_x, test_y
-    );
+    println!("DEBUG: Sending Motion to ID {surface_id} at {test_x},{test_y}");
     input_tx
         .send(WaylandInput::Motion {
-            x: test_x as f64,
-            y: test_y as f64,
+            x: test_x,
+            y: test_y,
             surface_id: Some(surface_id),
             surface_width: 256.0,
             surface_height: 256.0,
@@ -162,14 +157,13 @@ fn test_click_interaction_in_sandbox() {
     thread::sleep(Duration::from_secs(2));
 
     // 6. Verify Log
-    let log_path = format!("/tmp/quick-desktop-app-{}.log", tab_id);
+    let log_path = format!("/tmp/quick-desktop-app-{tab_id}.log");
     let log_content = fs::read_to_string(&log_path).unwrap_or_default();
-    let expected_pattern = format!("EVENT:CLICK AT {:.1},{:.1}", test_x, test_y);
-    println!("DEBUG: Final Client Log:\n{}", log_content);
+    let expected_pattern = format!("EVENT:CLICK AT {test_x:.1},{test_y:.1}");
+    println!("DEBUG: Final Client Log:\n{log_content}");
 
     assert!(
         log_content.contains(&expected_pattern),
-        "Client did not log click at expected coordinates! Expected: {}",
-        expected_pattern
+        "Client did not log click at expected coordinates! Expected: {expected_pattern}"
     );
 }

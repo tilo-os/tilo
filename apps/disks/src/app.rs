@@ -3845,7 +3845,7 @@ mod tests {
     }
 
     fn center(r: Rect) -> Point {
-        Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+        Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
     }
 
     #[test]

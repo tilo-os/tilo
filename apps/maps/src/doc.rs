@@ -55,7 +55,7 @@ mod tests {
         let loaded = MapsDoc::load(&doc).expect("loads back");
         assert_eq!(loaded.places.len(), model.places.len());
         assert_eq!(loaded.selected, model.selected);
-        assert_eq!(loaded.route.is_some(), true);
+        assert!(loaded.route.is_some());
         assert_eq!(loaded.transit.len(), model.transit.len());
     }
 

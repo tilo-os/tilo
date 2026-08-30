@@ -77,7 +77,7 @@ pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
             .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::UNIX_EPOCH);
-        if best.as_ref().map_or(true, |(m, _)| modified > *m) {
+        if best.as_ref().is_none_or(|(m, _)| modified > *m) {
             best = Some((modified, path));
         }
     }

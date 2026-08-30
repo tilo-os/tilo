@@ -702,7 +702,7 @@ mod tests {
 
         /// The headline contract: two real iroh endpoints, bound in-process,
         /// exchange genuinely *encoded* audio over QUIC. Peer A synthesises a
-        /// PCM tone, Opus-encodes it through GStreamer, publishes the packets
+        /// PCM tone, Opus-encodes it through `GStreamer`, publishes the packets
         /// over the network transport; peer B receives them off the wire and
         /// Opus-decodes them back to PCM. No mock, no loopback shortcut — the
         /// bytes cross two endpoints and both codecs run.

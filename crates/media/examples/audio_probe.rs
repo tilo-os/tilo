@@ -5,12 +5,12 @@
 //! running daemon (not just the unit fixtures).
 //!
 //! Usage:
-//!   cargo run -p media --example audio_probe                     # enumerate
-//!   cargo run -p media --example audio_probe route <stream> <sink-serial>
-//!   cargo run -p media --example audio_probe unroute <stream>
-//!   cargo run -p media --example audio_probe default <sink-id>
-//!   cargo run -p media --example audio_probe volume <node-id> <0.0-1.0>
-//!   cargo run -p media --example audio_probe mute <node-id> <0|1>
+//!   cargo run -p media --example `audio_probe`                     # enumerate
+//!   cargo run -p media --example `audio_probe` route <stream> <sink-serial>
+//!   cargo run -p media --example `audio_probe` unroute <stream>
+//!   cargo run -p media --example `audio_probe` default <sink-id>
+//!   cargo run -p media --example `audio_probe` volume <node-id> <0.0-1.0>
+//!   cargo run -p media --example `audio_probe` mute <node-id> <0|1>
 
 use media::audio::{AudioEnumerator, GraphControl, RealEnumerator, RealGraphControl};
 

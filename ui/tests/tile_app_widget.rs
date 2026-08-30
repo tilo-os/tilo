@@ -16,7 +16,7 @@ impl Widget for DummyApp {
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let n = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(n, self as *mut dyn Widget);
+        node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
         n
     }
     fn apply_layout(&mut self, _t: &taffy::TaffyTree, _n: taffy::NodeId, _o: vello::kurbo::Point) {}
@@ -42,7 +42,7 @@ impl Widget for DummyApp {
         _taffy: &taffy::TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DummyApp"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -54,7 +54,7 @@ impl AppWidget for DummyApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Terminal
     }
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "test"
     }
     fn app_icon(&self) -> IconDescriptor {

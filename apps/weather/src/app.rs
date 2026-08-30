@@ -885,7 +885,7 @@ mod interaction_tests {
         // Expanding via the rail's chip restores the full list.
         h.redraw();
         let rail = h.app.nav.overview_rect();
-        h.click((rail.x0 + rail.x1) / 2.0, rail.y0 + 30.0);
+        h.click(f64::midpoint(rail.x0, rail.x1), rail.y0 + 30.0);
         assert!(
             !h.app.overview_collapsed,
             "the rail chip expands the list back"

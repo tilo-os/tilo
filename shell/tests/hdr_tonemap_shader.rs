@@ -1,6 +1,6 @@
 //! Tonemap shader spot-check: a CPU reference pass plus shader validation
 //! via naga (parse + type/binding check) rather than a real GPU dispatch,
-//! since fetching an adapter costs the OffscreenRenderer bring-up. Both
+//! since fetching an adapter costs the `OffscreenRenderer` bring-up. Both
 //! paths use the same PQ math.
 
 use shell::collab::colorimetry::{
@@ -63,7 +63,9 @@ fn cpu_tonemap_mid_gray_pq_produces_plausible_sdr_gray() {
     let r = rgba[0];
     let g = rgba[1];
     let b = rgba[2];
-    let max_delta = (r as i32 - g as i32).abs().max((g as i32 - b as i32).abs());
+    let max_delta = (i32::from(r) - i32::from(g))
+        .abs()
+        .max((i32::from(g) - i32::from(b)).abs());
     assert!(
         max_delta <= 8,
         "neutral chroma should produce near-gray, got ({r}, {g}, {b})",

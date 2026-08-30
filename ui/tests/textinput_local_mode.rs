@@ -1,4 +1,4 @@
-//! Local-mode TextInput: a `TextInput` with no CRDT `on_change_path`
+//! Local-mode `TextInput`: a `TextInput` with no CRDT `on_change_path`
 //! must still accept user edits — typed characters land in
 //! `self.text`, the dirty flag flips, and `take_dirty` returns the
 //! new value exactly once.

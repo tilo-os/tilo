@@ -3,7 +3,7 @@
 //! Builds the same widget tree as `widget_showcase` (minus overlays /
 //! percent-height widgets that don't compose into a bare Column),
 //! then runs N synthetic click → redraw cycles on the
-//! Day/Week/Month ToggleGroup. Each cycle measures the cost of:
+//! Day/Week/Month `ToggleGroup`. Each cycle measures the cost of:
 //!
 //!   - `handle_event` (click + hover)
 //!   - `compute_layout_with_measure` (taffy re-flow + measure callbacks)
@@ -407,10 +407,7 @@ fn main() {
     let total_mean = hmean + cmean + amean + dmean + rmean;
 
     println!();
-    println!(
-        "Steady-state phase timings ({} iterations, microseconds):",
-        iters
-    );
+    println!("Steady-state phase timings ({iters} iterations, microseconds):");
     println!("{:<18} {:>8} {:>8} {:>8}", "phase", "min", "mean", "max");
     println!(
         "{:<18} {:>8} {:>8} {:>8}",

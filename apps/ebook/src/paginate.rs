@@ -410,11 +410,7 @@ pub fn layout_chapter(
                     .collect();
                 let mut boundaries = hyphen_boundaries.clone();
                 boundaries.extend(unicode_boundaries.iter().copied());
-                let opening_fraction = w
-                    .chars()
-                    .next()
-                    .map(opening_punctuation_protrusion)
-                    .unwrap_or(0.0);
+                let opening_fraction = w.chars().next().map_or(0.0, opening_punctuation_protrusion);
                 if opening_fraction > 0.0
                     && let Some(first_end) = w.char_indices().nth(1).map(|(byte, _)| byte)
                 {
@@ -445,30 +441,26 @@ pub fn layout_chapter(
                         .measure_font(fragment, st.size, None, weight(bold), italic, word_family)
                         .0;
                     let end_protrusion = if byte_end == w.len() {
-                        fragment
-                            .chars()
-                            .last()
-                            .map(|character| {
-                                let fraction = if settings.composition.justified() {
-                                    punctuation_protrusion(character)
-                                } else {
-                                    0.0
-                                };
-                                if fraction == 0.0 {
-                                    0.0
-                                } else {
-                                    tr.measure_font(
-                                        &character.to_string(),
-                                        st.size,
-                                        None,
-                                        weight(bold),
-                                        italic,
-                                        word_family,
-                                    )
-                                    .0 * fraction
-                                }
-                            })
-                            .unwrap_or(0.0)
+                        fragment.chars().last().map_or(0.0, |character| {
+                            let fraction = if settings.composition.justified() {
+                                punctuation_protrusion(character)
+                            } else {
+                                0.0
+                            };
+                            if fraction == 0.0 {
+                                0.0
+                            } else {
+                                tr.measure_font(
+                                    &character.to_string(),
+                                    st.size,
+                                    None,
+                                    weight(bold),
+                                    italic,
+                                    word_family,
+                                )
+                                .0 * fraction
+                            }
+                        })
                     } else {
                         0.0
                     };
@@ -500,10 +492,10 @@ pub fn layout_chapter(
                         char_len: fragment_chars,
                         source_byte_start: source_byte_start + byte_start,
                         hyphen_break_before,
-                        hyphen_width_before: if !hyphen_break_before {
-                            0.0
-                        } else {
+                        hyphen_width_before: if hyphen_break_before {
                             hyphen_width
+                        } else {
+                            0.0
                         },
                         natural_break_before,
                         stretch_before,

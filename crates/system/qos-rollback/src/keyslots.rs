@@ -709,7 +709,7 @@ Digests:
     fn passphrases_are_hex_and_long_enough() {
         let p = new_passphrase().unwrap();
         assert_eq!(p.len(), 64);
-        assert!(p.iter().all(|b| b.is_ascii_hexdigit()));
+        assert!(p.iter().all(u8::is_ascii_hexdigit));
         // Two calls must not agree.
         assert_ne!(*p, *new_passphrase().unwrap());
     }

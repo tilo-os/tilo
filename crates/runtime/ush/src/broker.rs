@@ -557,9 +557,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         let mut s = state(dir.path());
 
-        let resp = s.handle(Request::TrustDir {
-            path: target.clone(),
-        });
+        let resp = s.handle(Request::TrustDir { path: target });
         assert!(
             matches!(resp, Response::NeedsRestart { .. }),
             "a new bind needs a new mount namespace, so the answer has to say so: {resp:?}"

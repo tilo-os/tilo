@@ -597,8 +597,7 @@ mod tests {
         for c in Category::ALL {
             assert!(
                 apps.iter().any(|a| a.category == c),
-                "no app in category {:?}",
-                c
+                "no app in category {c:?}"
             );
         }
     }

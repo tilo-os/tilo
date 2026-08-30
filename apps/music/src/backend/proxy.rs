@@ -391,16 +391,15 @@ mod tests {
         };
         // Request a range well past the first-segment boundary raw googlevideo
         // URLs refuse (~1.5 MB in).
-        let resp = match client
+        let resp = if let Ok(r) = client
             .get(&stream.url)
             .header(reqwest::header::RANGE, "bytes=1500000-1600000")
             .send()
         {
-            Ok(r) => r,
-            Err(_) => {
-                eprintln!("[proxy test] skipped — proxy fetch failed");
-                return;
-            }
+            r
+        } else {
+            eprintln!("[proxy test] skipped — proxy fetch failed");
+            return;
         };
         if !resp.status().is_success() {
             eprintln!("[proxy test] skipped — proxy returned {}", resp.status());

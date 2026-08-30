@@ -415,7 +415,7 @@ pub mod recording {
                 app_id,
                 cluster_id,
                 record_id,
-                payload: envelope.payload.clone(),
+                payload: envelope.payload,
             });
         }
 

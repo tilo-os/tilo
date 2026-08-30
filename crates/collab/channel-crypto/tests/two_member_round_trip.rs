@@ -2,7 +2,7 @@
 //! Welcome, both encrypt+decrypt application messages.
 //!
 //! The headline test: exercises every step of the minimum-viable
-//! surface — create → key-package → add_member → process_welcome →
+//! surface — create → key-package → `add_member` → `process_welcome` →
 //! encrypt → decrypt — without touching the openmls 3+-member surface.
 //! A failure here means the crate is fundamentally broken.
 
@@ -149,7 +149,7 @@ fn member_key_does_not_expose_secret_in_debug() {
     // Defence-in-depth: a developer accidentally `{:?}`-printing a
     // MemberKey must not leak signature secret bytes into logs.
     let alice = MemberKey::generate("alice-secret-name").unwrap();
-    let dbg = format!("{:?}", alice);
+    let dbg = format!("{alice:?}");
     assert!(dbg.contains("alice-secret-name"));
     // Crude guard: signing-key private bytes shouldn't be in the debug
     // output. No direct API access to them, so assert the output is

@@ -31,18 +31,15 @@ fn default_workspace_hosts_terminal_and_files_and_browser_stub() {
 
     assert!(
         kinds.contains(&AppKind::Terminal),
-        "default workspace must host a terminal (kinds={:?})",
-        kinds
+        "default workspace must host a terminal (kinds={kinds:?})"
     );
     assert!(
         kinds.contains(&AppKind::Files),
-        "default workspace must host a file-explorer (kinds={:?})",
-        kinds
+        "default workspace must host a file-explorer (kinds={kinds:?})"
     );
     assert!(
         kinds.contains(&AppKind::Browser),
-        "default workspace must include a browser stub (kinds={:?})",
-        kinds
+        "default workspace must include a browser stub (kinds={kinds:?})"
     );
 }
 
@@ -72,10 +69,10 @@ fn terminal_tab_emits_a_prompt_within_10_seconds() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         shell.tick_for_test();
-        if let Some(line0) = shell.first_terminal_line() {
-            if !line0.trim().is_empty() {
-                return;
-            }
+        if let Some(line0) = shell.first_terminal_line()
+            && !line0.trim().is_empty()
+        {
+            return;
         }
         std::thread::sleep(Duration::from_millis(50));
     }

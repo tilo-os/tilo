@@ -3,7 +3,7 @@
 //! joiner adopts a full snapshot, then an incremental text edit ("typing")
 //! propagates. This is the transport+CRDT half of "type in one window, see
 //! it in the other" — the App layer drives exactly these calls
-//! (broadcast_doc_delta -> SyncIncremental; poll -> load_incremental).
+//! (`broadcast_doc_delta` -> `SyncIncremental`; poll -> `load_incremental`).
 
 use std::os::unix::net::UnixListener;
 use std::thread;

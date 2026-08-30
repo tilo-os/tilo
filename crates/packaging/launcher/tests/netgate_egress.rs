@@ -372,10 +372,10 @@ fn serve(body: &'static str) -> u16 {
 /// `$XDG_RUNTIME_DIR/qos-netgate-test`. Deliberately not a `TempDir`:
 /// the harness' scratch root is long enough to overflow `sun_path`.
 fn runtime_scratch_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        // SAFETY: getuid always succeeds.
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })));
+    let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+        || PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })),
+        PathBuf::from,
+    );
     let dir = base.join("qos-netgate-test");
     std::fs::create_dir_all(&dir).expect("create runtime scratch dir");
     dir

@@ -109,7 +109,7 @@ fn render_group(renderer: &mut OffscreenRenderer, group: &mut WindowGroup) -> Ve
 fn pixel_hash(buf: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in buf {
-        h ^= *b as u64;
+        h ^= u64::from(*b);
         h = h.wrapping_mul(0x100000001b3);
     }
     h
@@ -137,12 +137,11 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
 #[test]
 fn window_group_visual_journey_distinguishes_all_states() {
     let (w, h) = (620u32, 200u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping window-group journey");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping window-group journey");
+        return;
     };
 
     let mut group = make_window_group();
@@ -198,12 +197,11 @@ fn window_group_visual_journey_distinguishes_all_states() {
 #[test]
 fn window_group_fresh_render_is_deterministic() {
     let (w, h) = (400u32, 120u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
+        return;
     };
     let mut g1 = make_window_group();
     let mut g2 = make_window_group();

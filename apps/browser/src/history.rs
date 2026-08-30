@@ -357,7 +357,7 @@ fn fuzzy_score(haystack: &str, needle: &str) -> Option<f64> {
         }
         {
             let idx = found?;
-            matched.push(idx)
+            matched.push(idx);
         }
     }
 

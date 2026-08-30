@@ -258,7 +258,7 @@ mod tests {
     use qos_actions::{ActionRegistry, LocalTransport};
     use ui::widget::Widget;
 
-    /// A TubeApp sitting on the watch page of a sample video that has comments.
+    /// A `TubeApp` sitting on the watch page of a sample video that has comments.
     fn watching() -> (TubeApp, String, usize) {
         let mut model = crate::sample::model();
         let v = model

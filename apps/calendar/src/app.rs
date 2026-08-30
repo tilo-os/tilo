@@ -6319,7 +6319,7 @@ mod tests {
         assert!(path.exists(), "document was written to disk");
 
         // Fresh instance + fresh doc: it must load the event back from disk.
-        let mut app2 = CalendarApp::new_with_data_path(path.clone());
+        let mut app2 = CalendarApp::new_with_data_path(path);
         let mut state2 = ui::State::new();
         app2.sync(&mut state2.doc, &state2.root);
         assert!(
@@ -6451,7 +6451,7 @@ mod tests {
         );
         // Card is centered within the content area.
         let card_cx = app.detail_rect.center().x;
-        let content_cx = (app.content_rect.x0 + app.content_rect.x1) / 2.0;
+        let content_cx = f64::midpoint(app.content_rect.x0, app.content_rect.x1);
         assert!(
             (card_cx - content_cx).abs() < 1.0,
             "modal centered over the content"
@@ -6502,7 +6502,7 @@ mod tests {
             "editor stays open — only the sidebar collapsed"
         );
         // Re-centered within the now-wider content.
-        let content_cx = (app.content_rect.x0 + app.content_rect.x1) / 2.0;
+        let content_cx = f64::midpoint(app.content_rect.x0, app.content_rect.x1);
         assert!(
             (app.detail_rect.center().x - content_cx).abs() < 1.0,
             "modal re-centers after collapse"
@@ -7141,7 +7141,7 @@ mod tests {
         let grid_x0 = area.x0 + g.gutter;
         let col_w = h.app.timeline_col_w(area, days.len(), &g);
         let x = grid_x0 + col_w * col as f64 + col_w * 0.5;
-        let offset = h.app.timeline_scroll.offset_y() as f64;
+        let offset = f64::from(h.app.timeline_scroll.offset_y());
         let y_at = |hour: f64| g.body_top + hour * g.hour_h - offset;
 
         let ids_before: HashSet<Id> = h.app.model.events.iter().map(|e| e.id).collect();
@@ -7505,7 +7505,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let full = "Team standup with the whole design org";
         // Given room for the whole string, it comes back untouched (no ellipsis).
-        let roomy = tr.measure(full, 11.0, None).0 as f64 + 10.0;
+        let roomy = f64::from(tr.measure(full, 11.0, None).0) + 10.0;
         assert_eq!(elide_to_width(&mut tr, full, 11.0, roomy), full);
         // Under a tight budget it must ellipsize AND the result must measure
         // within the budget — proving the cut is width-driven, not a fixed
@@ -7515,7 +7515,7 @@ mod tests {
         assert!(cut.ends_with('…'), "ellipsized: {cut:?}");
         assert!(cut.chars().count() < full.chars().count());
         assert!(
-            tr.measure(&cut, 11.0, None).0 as f64 <= tight,
+            f64::from(tr.measure(&cut, 11.0, None).0) <= tight,
             "the ellipsized line fits the budget: {cut:?}"
         );
     }
@@ -7548,7 +7548,7 @@ mod tests {
             .iter()
             .filter(|e| !e.all_day)
             .map(|e| e.title.clone())
-            .find(|tit| tr.measure(tit, 11.0, None).0 as f64 > block_text_w)
+            .find(|tit| f64::from(tr.measure(tit, 11.0, None).0) > block_text_w)
             .expect("demo has a title too long for a narrow week column");
         let drawn = elide_to_width(&mut tr, &long, 11.0, block_text_w);
         assert!(
@@ -7749,7 +7749,7 @@ mod tests {
         );
 
         // Header stays clickable so the list can be re-expanded.
-        app.apply_action(Action::ToggleAccountCollapsed(acc_id.clone()), &mut state);
+        app.apply_action(Action::ToggleAccountCollapsed(acc_id), &mut state);
         assert!(
             !app.accounts.accounts[0].collapsed,
             "clicking again re-expands it"
@@ -8152,8 +8152,7 @@ mod tests {
             .blocks()
             .iter()
             .map(|b| b.text().to_string())
-            .collect::<Vec<_>>()
-            .join("");
+            .collect::<String>();
         assert!(
             joined.trim().is_empty(),
             "notes start empty, not seeded: {joined:?}"
@@ -8606,7 +8605,7 @@ mod tests {
         assert!(path.exists(), "the document was written to disk");
 
         // Fresh instance + fresh doc must load the named event back.
-        let mut app2 = CalendarApp::new_with_data_path(path.clone());
+        let mut app2 = CalendarApp::new_with_data_path(path);
         let mut doc2 = AutoCommit::new();
         app2.sync(&mut doc2, &automerge::ROOT);
         let ev = app2

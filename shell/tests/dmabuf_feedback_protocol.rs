@@ -54,7 +54,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
         state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -63,14 +63,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
             interface,
             version,
         } = event
+            && interface == "zwp_linux_dmabuf_v1"
         {
-            if interface == "zwp_linux_dmabuf_v1" {
-                state.dmabuf_version = Some(version);
-                // Bind at `min(version, 4)`, so a v3 compositor still binds successfully
-                // and then never sends feedback — the failure the assertions below catch.
-                state.dmabuf =
-                    Some(registry.bind::<ZwpLinuxDmabufV1, _, _>(name, version.min(4), qh, ()));
-            }
+            state.dmabuf_version = Some(version);
+            // Bind at `min(version, 4)`, so a v3 compositor still binds successfully
+            // and then never sends feedback — the failure the assertions below catch.
+            state.dmabuf =
+                Some(registry.bind::<ZwpLinuxDmabufV1, _, _>(name, version.min(4), qh, ()));
         }
     }
 }
@@ -80,7 +79,7 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for ClientAppState {
         _: &mut Self,
         _: &ZwpLinuxDmabufV1,
         _: zwp_linux_dmabuf_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -92,7 +91,7 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for ClientAppState {
         state: &mut Self,
         _: &ZwpLinuxDmabufFeedbackV1,
         event: zwp_linux_dmabuf_feedback_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {

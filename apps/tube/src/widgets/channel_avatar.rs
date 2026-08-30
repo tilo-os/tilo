@@ -249,8 +249,8 @@ mod tests {
         scene.encoding().draw_tags.clone()
     }
 
-    /// A resolved avatar paints a circle-clipped IMAGE (BEGIN_CLIP < IMAGE <
-    /// END_CLIP) — proof the real creator photo reaches the scene.
+    /// A resolved avatar paints a circle-clipped IMAGE (`BEGIN_CLIP` < IMAGE <
+    /// `END_CLIP`) — proof the real creator photo reaches the scene.
     #[test]
     fn resolved_avatar_paints_circle_clipped_image() {
         let mut av = ChannelAvatar::new(None, "http://x/a.png", "Blender", 40.0)

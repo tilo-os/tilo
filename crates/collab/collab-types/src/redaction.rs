@@ -326,7 +326,7 @@ mod tests {
         );
         match parse_redact_payload(&op) {
             Err(RedactionError::WrongOpClass { actual }) => {
-                assert_eq!(actual, OpClass::Splice)
+                assert_eq!(actual, OpClass::Splice);
             }
             other => panic!("expected WrongOpClass, got {other:?}"),
         }
@@ -355,7 +355,7 @@ mod tests {
         );
         match parse_redact_payload(&op) {
             Err(RedactionError::ReasonTooLong(n)) => {
-                assert_eq!(n, MAX_REDACTION_REASON_BYTES + 1)
+                assert_eq!(n, MAX_REDACTION_REASON_BYTES + 1);
             }
             other => panic!("expected ReasonTooLong, got {other:?}"),
         }

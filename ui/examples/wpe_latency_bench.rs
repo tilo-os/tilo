@@ -1,4 +1,4 @@
-//! Black-box latency + throughput benchmark for the WPE WebKit engine
+//! Black-box latency + throughput benchmark for the WPE `WebKit` engine
 //! behind `ui::webview` (feature `webview-wpe`).
 //!
 //! Treats the engine purely through the [`ui::webview::WebViewEngine`]

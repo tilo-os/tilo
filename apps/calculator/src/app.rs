@@ -1801,7 +1801,11 @@ mod tests {
             "a just-made edit must not seal a checkpoint mid-burst"
         );
         // Once the coalesce window has elapsed the widget asks to checkpoint.
-        app.last_edit_time = Some(std::time::Instant::now() - COMMIT_COALESCE);
+        app.last_edit_time = Some(
+            std::time::Instant::now()
+                .checked_sub(COMMIT_COALESCE)
+                .unwrap(),
+        );
         assert!(
             app.needs_commit(),
             "after the pause the edit must seal into a checkpoint"

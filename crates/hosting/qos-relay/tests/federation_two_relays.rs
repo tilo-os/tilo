@@ -4,7 +4,7 @@
 //!
 //! The whole delivery hits the SAME `WorkspaceRuntime::fanout_delta`
 //! device peers use — the only new code is a one-line filter that
-//! suppresses PeerRelay → PeerRelay echoes. This test proves the
+//! suppresses `PeerRelay` → `PeerRelay` echoes. This test proves the
 //! reuse: no new fan-out, no new transport, no new store path.
 
 use std::time::Duration;
@@ -78,7 +78,7 @@ async fn op_on_relay1_reaches_device_on_relay2() {
     // handshake + PeerRelayHello exchange + Subscribe. Reconnect
     // starts with a 1s backoff on failed initial dial, but on a
     // clean localhost dial this is normally under 500ms.
-    tokio::time::sleep(Duration::from_millis(3000)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     // p1 publishes on relay1.
     let payload = b"federated-delta".to_vec();

@@ -38,13 +38,11 @@ fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
 }
 
 fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(dir).map_or(0, |rd| {
+        rd.flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+            .count()
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

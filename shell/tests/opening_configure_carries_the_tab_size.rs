@@ -37,7 +37,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
         state: &mut Self,
         _: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -57,7 +57,7 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
         _: &mut Self,
         base: &xdg_wm_base::XdgWmBase,
         event: xdg_wm_base::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -74,7 +74,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
         _: &mut Self,
         surface: &xdg_surface::XdgSurface,
         event: xdg_surface::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -89,7 +89,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
         state: &mut Self,
         _: &xdg_toplevel::XdgToplevel,
         event: xdg_toplevel::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {

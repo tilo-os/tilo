@@ -543,7 +543,7 @@ mod tests {
     fn nvme_partitions_classify_correctly() {
         let t = Topology::sample();
         let nvme = &t.drives[0];
-        let roles: Vec<_> = nvme.partitions.iter().map(|p| p.role()).collect();
+        let roles: Vec<_> = nvme.partitions.iter().map(super::Partition::role).collect();
         assert_eq!(roles[0], PartRole::Efi);
         assert_eq!(roles[1], PartRole::Root);
         assert_eq!(roles[2], PartRole::Home);

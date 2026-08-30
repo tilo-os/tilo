@@ -43,7 +43,7 @@
 //!     -- --exact netns_viewer_process --include-ignored
 //! ```
 //!
-//! Not automated in-tree: `ip netns add`/veth bridging need CAP_NET_ADMIN
+//! Not automated in-tree: `ip netns add`/veth bridging need `CAP_NET_ADMIN`
 //! and CI runners aren't root, so `--include-ignored` instead runs the
 //! in-process variant (real UDP, shared netns), still exercising the
 //! substream + framing contract end-to-end.
@@ -105,7 +105,7 @@ impl RemoteInputSink for HostInputRecorder {
 }
 
 /// Host and viewer as threads in one process over real UDP loopback
-/// sockets, exercising SurfaceStream framing + latency measurement
+/// sockets, exercising `SurfaceStream` framing + latency measurement
 /// without privileged netns setup. `#[ignore]`d for its 3s measurement
 /// window; run with `--include-ignored` or the netns-exec variants above.
 #[test]
@@ -189,7 +189,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     // and measure latency, sending input packets back.
     let viewer_stop = stop.clone();
     let recv_count = received_count.clone();
-    let session_for_origin = session.clone();
+    let session_for_origin = session;
     let viewer_thread = thread::spawn(move || {
         video_sock_viewer
             .set_nonblocking(true)
@@ -232,8 +232,8 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
             let now = Instant::now();
             if now >= next_input_at {
                 let ev = InputEvent::PointerMotion {
-                    x: input_count as f64,
-                    y: (input_count as f64) * 2.0,
+                    x: f64::from(input_count),
+                    y: f64::from(input_count) * 2.0,
                 };
                 let bytes = serde_json::to_vec(&ev).expect("input serde");
                 let _ = input_send.send_to(&bytes, input_addr);
@@ -277,7 +277,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     );
 }
 
-/// Netns host role, run inside a namespace with the TWO_NETNS_* env vars
+/// Netns host role, run inside a namespace with the `TWO_NETNS`_* env vars
 /// set (recipe in the module header). Encodes gradient frames at ~30 fps
 /// to `TWO_NETNS_VIDEO_ADDR` and listens on `TWO_NETNS_INPUT_ADDR`.
 #[test]
@@ -384,7 +384,7 @@ fn netns_viewer_process() {
         }
         if Instant::now() >= next_input_at {
             let ev = InputEvent::PointerMotion {
-                x: frames_decoded as f64,
+                x: f64::from(frames_decoded),
                 y: 0.0,
             };
             let bytes = serde_json::to_vec(&ev).expect("serde");

@@ -280,7 +280,7 @@ mod tests {
         let ev = InputEvent::PointerMotion { x: 10.0, y: 20.0 };
         assert!(registry.route_to(peer, surface, ev.clone(), &mut sink));
         assert_eq!(sink.events.len(), 1);
-        assert_eq!(sink.events[0], (peer, surface, ev.clone()));
+        assert_eq!(sink.events[0], (peer, surface, ev));
 
         // Flip to read-only: next event drops.
         registry.set_read_only(peer, surface, true);
@@ -410,7 +410,7 @@ mod tests {
         let mse: f64 = orig_rgb
             .iter()
             .zip(&decoded_rgb)
-            .map(|(a, b)| (*a as f64 - *b as f64).powi(2))
+            .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
             .sum::<f64>()
             / orig_rgb.len() as f64;
         let psnr = if mse == 0.0 {
@@ -642,7 +642,7 @@ mod tests {
         assert!(!tracker.is_empty_for(SURFACE));
     }
 
-    /// A RemoteDesktop `NotifyPointerMotionAbsolute` must reach the real smithay seat, mirroring the peer-sync motion test above.
+    /// A `RemoteDesktop` `NotifyPointerMotionAbsolute` must reach the real smithay seat, mirroring the peer-sync motion test above.
     #[test]
     fn apply_remote_desktop_absolute_motion_reaches_seat() {
         use crate::compositor::state::State;
@@ -673,7 +673,7 @@ mod tests {
         assert_eq!((loc2.x, loc2.y), (150.0, 175.0));
     }
 
-    /// A RemoteDesktop `NotifyKeyboardKeycode` reaches the seat keyboard, appearing in `pressed_keys()` after press and clearing on release.
+    /// A `RemoteDesktop` `NotifyKeyboardKeycode` reaches the seat keyboard, appearing in `pressed_keys()` after press and clearing on release.
     #[test]
     fn apply_remote_desktop_keycode_reaches_keyboard() {
         use crate::compositor::state::State;

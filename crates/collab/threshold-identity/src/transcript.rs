@@ -88,7 +88,7 @@ mod tests {
             package_bytes: vec![4, 5, 6],
         };
         let t1 = PairingTranscript::new(123_456, vec![a.clone(), b.clone()]);
-        let t2 = PairingTranscript::new(123_456, vec![b.clone(), a.clone()]);
+        let t2 = PairingTranscript::new(123_456, vec![b, a]);
         assert_eq!(t1.compute_hash().unwrap(), t2.compute_hash().unwrap());
     }
 

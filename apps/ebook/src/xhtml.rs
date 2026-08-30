@@ -269,11 +269,11 @@ mod tests {
 
     #[test]
     fn parses_lists_quotes_and_hr() {
-        let src = r#"<body>
+        let src = r"<body>
             <ul><li>a</li><li>b</li></ul>
             <blockquote><p>quoted</p></blockquote>
             <hr/>
-        </body>"#;
+        </body>";
         let blocks = parse_xhtml(src);
         let li = blocks
             .iter()
@@ -281,7 +281,7 @@ mod tests {
             .count();
         assert_eq!(li, 2);
         assert!(blocks.iter().any(|b| matches!(b, Block::Quote { .. })));
-        assert!(blocks.iter().any(|b| b.is_separator()));
+        assert!(blocks.iter().any(super::super::model::Block::is_separator));
     }
 
     #[test]

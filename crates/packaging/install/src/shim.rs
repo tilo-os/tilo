@@ -290,7 +290,7 @@ mod tests {
             "../evil".to_string(),
             "a/b".to_string(),
             ".hidden".to_string(),
-            "".to_string(),
+            String::new(),
         ];
         for name in bad_names {
             let commands = vec![name.clone()];

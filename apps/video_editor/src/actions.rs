@@ -894,7 +894,7 @@ mod tests {
             .expect("a track with two clips");
         let _ = track;
 
-        let mut plan = project.clone();
+        let mut plan = project;
         let moved_ids = plan.ripple_delete(id);
         let moved: Vec<Clip> = moved_ids
             .iter()
@@ -1114,7 +1114,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert!(
             (VideoDoc::load_project(&state.doc).clip(id).unwrap().start - (before_start + 7.0))

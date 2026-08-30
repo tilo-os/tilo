@@ -5,12 +5,12 @@
 //! Complements the unit tests in each module by walking the flow
 //! the shell + firstboot code will implement:
 //!
-//! 1. User A's primary device mints an EnrollmentToken authorising
+//! 1. User A's primary device mints an `EnrollmentToken` authorising
 //!    a new phone with `member` capabilities.
 //! 2. The phone generates its own device keypair.
-//! 3. The token is decoded and verified; a DeviceCert is signed by
+//! 3. The token is decoded and verified; a `DeviceCert` is signed by
 //!    the primary and handed to the phone.
-//! 4. Both devices open a WorkspaceDirectory and exchange
+//! 4. Both devices open a `WorkspaceDirectory` and exchange
 //!    authenticated deltas.
 //! 5. Convergence: both devices see the same list, and each side
 //!    verifies the other's cert chains to the same user identity
@@ -64,7 +64,7 @@ fn full_enrollment_and_directory_sync_flow() {
         user_public_key: user.public_key,
         device_public_key: phone_dev.public_key,
         device_label: phone_dev.label.clone(),
-        capabilities: decoded.capabilities.clone(),
+        capabilities: decoded.capabilities,
         issued_at_ns: 1_600_000,
         expires_at_ns: None,
         signature: [0u8; 64],

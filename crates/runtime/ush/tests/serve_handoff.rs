@@ -27,7 +27,7 @@ fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
     let mut buf = [0u8; 4096];
     while Instant::now() < deadline {
         // SAFETY: as above; `buf` is a live local buffer.
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
         if n > 0 {
             seen.push_str(&String::from_utf8_lossy(&buf[..n as usize]));
             if seen.contains(needle) {
@@ -166,7 +166,7 @@ fn run_handoff() {
     store.ensure().expect("store");
 
     let serve_socket = socket.clone();
-    let serve_store = store.clone();
+    let serve_store = store;
     std::thread::spawn(move || {
         let _ = ush::supervisor::serve(&serve_socket, serve_store, PathBuf::from("/"));
     });
@@ -216,7 +216,7 @@ fn run_handoff() {
 
     // Wait for a prompt before typing: the first layer mirrors ~22k
     // directories and runs `/etc/profile.d`, so early writes are lost.
-    let prompt = read_until(fd, "]#", Duration::from_secs(240));
+    let prompt = read_until(fd, "]#", Duration::from_mins(4));
     assert!(
         prompt.contains("]#"),
         "no prompt appeared within the timeout. What came back:\n{prompt}"
@@ -228,10 +228,10 @@ fn run_handoff() {
     let marker = "USH_HANDOFF_OK";
     let script = "printf 'USH%s_OK-%s\\n' _HANDOFF \"$(whoami)\"\n".to_string();
     // SAFETY: `fd` is a live pty master.
-    let written = unsafe { libc::write(fd, script.as_ptr() as *const libc::c_void, script.len()) };
+    let written = unsafe { libc::write(fd, script.as_ptr().cast::<libc::c_void>(), script.len()) };
     assert!(written > 0, "could not write to the pty");
 
-    let seen = read_until(fd, marker, Duration::from_secs(60));
+    let seen = read_until(fd, marker, Duration::from_mins(1));
     assert!(
         seen.contains(marker),
         "no shell answered on the pty within the timeout. What came back:\n{seen}"

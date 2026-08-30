@@ -691,7 +691,7 @@ mod tests {
             let back = cache_from_str(&s);
             match (st, back) {
                 (CacheState::Downloading(a), CacheState::Downloading(b)) => {
-                    assert!((a - b).abs() < 1e-4)
+                    assert!((a - b).abs() < 1e-4);
                 }
                 (a, b) => assert_eq!(a, b),
             }

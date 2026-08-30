@@ -408,7 +408,7 @@ mod tests {
             DeviceCapabilities::primary(),
         );
         let hello = Hello {
-            cert: client.cert.clone(),
+            cert: client.cert,
             client_nonce: [0u8; 32],
         };
         assert!(matches!(
@@ -445,7 +445,7 @@ mod tests {
         revs.insert(rev).unwrap();
 
         let hello = Hello {
-            cert: client.cert.clone(),
+            cert: client.cert,
             client_nonce: [0u8; 32],
         };
         assert!(matches!(

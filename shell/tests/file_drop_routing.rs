@@ -190,8 +190,10 @@ fn tab_count(chrome: &Chrome, group_id: GroupId) -> usize {
         .iter()
         .flat_map(|s| s.window_groups.iter())
         .find(|g| g.id == group_id)
-        .map(|g| g.tabs.len())
-        .unwrap_or_else(|| panic!("group {group_id} must exist in the persisted tree"))
+        .map_or_else(
+            || panic!("group {group_id} must exist in the persisted tree"),
+            |g| g.tabs.len(),
+        )
 }
 
 fn group_center(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: usize) -> Point {

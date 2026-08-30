@@ -9,8 +9,8 @@
 //! the falloff to the rect's own dimensions shows up here immediately as
 //! a shadow that is fat on one surface and invisible on the next.
 //!
-//! Run:  cargo run -p ui --example soft_shadow_shots
-//! Out:  $SOFT_SHADOW_SHOTS_OUT (default /tmp/soft_shadow_shots) —
+//! Run:  cargo run -p ui --example `soft_shadow_shots`
+//! Out:  $`SOFT_SHADOW_SHOTS_OUT` (default /`tmp/soft_shadow_shots`) —
 //!       shadow-sheet.png, plus one shadow-<name>.png per case.
 
 use std::path::PathBuf;
@@ -44,8 +44,7 @@ const CASES: &[(&str, f64, f64, f64, f64, f32, f64)] = &[
 
 fn out_dir() -> PathBuf {
     std::env::var("SOFT_SHADOW_SHOTS_OUT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/soft_shadow_shots"))
+        .map_or_else(|_| PathBuf::from("/tmp/soft_shadow_shots"), PathBuf::from)
 }
 
 /// Paint one case centred in `canvas`: the shadow through the production
@@ -84,7 +83,7 @@ fn main() {
             (h + spread * 4.0 + off * 2.0).ceil() as u32,
         );
         let mut scene = Scene::new();
-        let canvas = Rect::new(0.0, 0.0, cw as f64, ch as f64);
+        let canvas = Rect::new(0.0, 0.0, f64::from(cw), f64::from(ch));
         paint(&mut scene, canvas, *w, *h, *spread, *off, *i, *r);
         let mut renderer = OffscreenRenderer::new(cw, ch);
         let path = dir.join(format!("shadow-{name}.png"));

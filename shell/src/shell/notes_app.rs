@@ -1005,7 +1005,7 @@ mod tests {
         app.selection.cursor = 11;
         let copied = app
             .selected_str()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .unwrap_or_default();
         clipboard_copy(&copied);
         app.selection = Selection::collapsed(app.body.text.len());

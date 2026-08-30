@@ -23,9 +23,10 @@ const W: u32 = 1600;
 const H: u32 = 900;
 
 fn shot_dir() -> std::path::PathBuf {
-    std::env::var("QOS_SHOT_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("qos-expand-shots"))
+    std::env::var("QOS_SHOT_DIR").map_or_else(
+        |_| std::env::temp_dir().join("qos-expand-shots"),
+        std::path::PathBuf::from,
+    )
 }
 
 struct Driver {
@@ -112,7 +113,7 @@ fn render_expand_to_fullscreen() {
     // printed the outcome instead of asserting it.
     let mut held = false;
     if let Some(row) = fb.host_mut().group_row_mut_for_tests(strip_id) {
-        for g in row.groups.iter_mut() {
+        for g in &mut row.groups {
             held |= g
                 .bar_mut_for_tests()
                 .hold_reveal_at(std::time::Duration::from_secs(1));
@@ -142,8 +143,7 @@ fn render_expand_to_fullscreen() {
     let maximized = fb
         .host_mut()
         .group_at_for_tests(strip_id, 0)
-        .map(|g| g.maximized)
-        .unwrap_or(false);
+        .is_some_and(|g| g.maximized);
     assert!(
         maximized,
         "the Expand click must maximize the group — the shots below are of \

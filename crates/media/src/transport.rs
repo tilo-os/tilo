@@ -302,7 +302,7 @@ mod tests {
         };
         host.publish(&state);
         let got = host.latest().expect("state present after publish");
-        assert_eq!(got.playing, true);
+        assert!(got.playing);
         assert_eq!(got.position_ms, 7_250);
         assert!((got.rate - 1.5).abs() < 1e-6);
         assert_eq!(got.epoch_ms, 1_700_000);

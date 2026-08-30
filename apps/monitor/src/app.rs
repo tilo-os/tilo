@@ -4489,7 +4489,7 @@ mod tests {
         // the right of the columns band (within rounding): full width shown.
         let cols = layout::process_columns(a.table_cols_w);
         let content_w = layout::process_columns_total_w(&cols);
-        let last_right_in_view = content_w - a.table_scroll_x as f64; // relative to band left
+        let last_right_in_view = content_w - f64::from(a.table_scroll_x); // relative to band left
         assert!(
             (last_right_in_view - a.table_cols_w).abs() < 1.0,
             "last column right edge {last_right_in_view} must align to band width {}",
@@ -4554,7 +4554,7 @@ mod tests {
         // the right of the columns band (within 1px rounding).
         let cols = layout::process_columns(a.table_cols_w);
         let content_w = layout::process_columns_total_w(&cols);
-        let last_right_in_band = content_w - a.table_scroll_x as f64;
+        let last_right_in_band = content_w - f64::from(a.table_scroll_x);
         assert!(
             (last_right_in_band - a.table_cols_w).abs() < 1.0,
             "last column right edge {last_right_in_band} reaches band width {}",
@@ -4679,7 +4679,7 @@ mod tests {
             .context
             .items()
             .iter()
-            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect();
         assert!(
             labels.iter().any(|l| l.starts_with("Stop")),
@@ -4700,7 +4700,7 @@ mod tests {
     }
 
     /// Clicking the "Stop" item in the open menu dispatches a SIGTERM via the
-    /// production action path (the menu callback records the action, on_click
+    /// production action path (the menu callback records the action, `on_click`
     /// drains + applies it). Stop is ungated, so the row drops with no modal.
     #[test]
     fn context_menu_stop_dispatches_sigterm() {
@@ -4717,7 +4717,7 @@ mod tests {
             .context
             .items()
             .iter()
-            .position(|i| i.label().map(|l| l.starts_with("Stop")).unwrap_or(false))
+            .position(|i| i.label().is_some_and(|l| l.starts_with("Stop")))
             .unwrap();
         let rect = a
             .context_menu_item_rects()
@@ -4753,7 +4753,7 @@ mod tests {
             .context
             .items()
             .iter()
-            .position(|i| i.label().map(|l| l.starts_with("Kill")).unwrap_or(false))
+            .position(|i| i.label().is_some_and(|l| l.starts_with("Kill")))
             .unwrap();
         let rect = a
             .context_menu_item_rects()
@@ -4918,7 +4918,7 @@ mod tests {
         let wide_table_h = a.table_viewport.height();
         // The four cards fill the content width (within one gap of it).
         let content_w = 1280.0 - 2.0 * OUTER_PAD;
-        let filled = wide.iter().map(|r| r.width()).sum::<f64>() + 3.0 * GAP;
+        let filled = wide.iter().map(vello::kurbo::Rect::width).sum::<f64>() + 3.0 * GAP;
         assert!(
             (filled - content_w).abs() < 2.0,
             "cards fill the width: {filled} vs {content_w}"
@@ -5520,7 +5520,7 @@ mod tests {
         a.tree_mode = false;
         draw_at(&mut a, 520.0, 900.0);
         assert!(a.is_narrow());
-        let (pid, rect) = a.hit.rows.first().cloned().expect("rows laid out");
+        let (pid, rect) = a.hit.rows.first().copied().expect("rows laid out");
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mut h = false;
@@ -5618,7 +5618,7 @@ mod tests {
         a.tree_mode = false;
         draw_at(&mut a, 520.0, 900.0);
         assert!(a.is_narrow());
-        let (pid, rect) = a.hit.rows.first().cloned().expect("rows");
+        let (pid, rect) = a.hit.rows.first().copied().expect("rows");
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mut hr = false;

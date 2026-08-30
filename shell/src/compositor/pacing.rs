@@ -241,7 +241,7 @@ mod tests {
         // The 59.94 variant: 148.352 MHz over the same totals.
         let i = interval_from_mode_timing(148_352, 2200, 1125).expect("valid mode");
         assert!(
-            i > Duration::from_nanos(16_680_000) && i < Duration::from_nanos(16_690_000),
+            i > Duration::from_micros(16680) && i < Duration::from_micros(16690),
             "59.94 Hz timing must land near 16.683 ms, got {i:?}"
         );
         // Degenerate timings must not divide by zero.
@@ -283,11 +283,11 @@ mod tests {
     fn deadlines_stay_phase_locked_across_a_late_frame() {
         // Present on time, then present 4 ms late. The next deadline must land on the original grid (2 * interval from the start), not 4 ms after the late presentation.
         let t0 = Instant::now();
-        let interval = Duration::from_micros(10_000);
+        let interval = Duration::from_millis(10);
         let mut clock = FrameClock::new(interval, t0);
         clock.note_presented(t0);
         assert_eq!(clock.next_deadline(), t0 + interval);
-        clock.note_presented(t0 + interval + Duration::from_micros(4_000));
+        clock.note_presented(t0 + interval + Duration::from_millis(4));
         assert_eq!(
             clock.next_deadline(),
             t0 + 2 * interval,
@@ -304,10 +304,10 @@ mod tests {
     fn a_frame_that_overruns_several_intervals_skips_them_instead_of_bursting() {
         // A 50 ms stall on a 10 ms clock: must resume at the next future deadline and report 4 missed ones, not hand out five consecutive zero-length budgets.
         let t0 = Instant::now();
-        let interval = Duration::from_micros(10_000);
+        let interval = Duration::from_millis(10);
         let mut clock = FrameClock::new(interval, t0);
         clock.note_presented(t0);
-        let stalled_until = t0 + Duration::from_micros(50_000);
+        let stalled_until = t0 + Duration::from_millis(50);
         clock.note_presented(stalled_until);
         assert_eq!(
             clock.skipped_deadlines(),
@@ -334,7 +334,7 @@ mod tests {
         let mut clock = FrameClock::new(interval, t0);
         clock.note_presented(t0);
         assert!(
-            !clock.due(t0 + Duration::from_micros(8_000)),
+            !clock.due(t0 + Duration::from_millis(8)),
             "half an interval in is not a presentation opportunity"
         );
         assert!(clock.due(t0 + interval));
@@ -372,13 +372,13 @@ mod tests {
         let spin = FrameClock::new(Duration::ZERO, t0);
         assert_eq!(
             spin.interval(),
-            Duration::from_nanos(1_000_000_000 / MAX_REFRESH_HZ as u64),
+            Duration::from_nanos(1_000_000_000 / u64::from(MAX_REFRESH_HZ)),
             "a zero interval must clamp to the fastest supported rate"
         );
-        let frozen = FrameClock::new(Duration::from_secs(3600), t0);
+        let frozen = FrameClock::new(Duration::from_hours(1), t0);
         assert_eq!(
             frozen.interval(),
-            Duration::from_nanos(1_000_000_000 / MIN_REFRESH_HZ as u64),
+            Duration::from_nanos(1_000_000_000 / u64::from(MIN_REFRESH_HZ)),
             "an absurd interval must clamp to the slowest supported rate"
         );
     }
@@ -397,7 +397,7 @@ mod tests {
         );
         assert_eq!(
             clock.park(woken_early),
-            interval - Duration::from_millis(2),
+            interval.checked_sub(Duration::from_millis(2)).unwrap(),
             "an early wakeup must park only the remainder of the interval; \
              parking a whole one from the wakeup overshoots the deadline by \
              however far in it woke"
@@ -437,7 +437,7 @@ mod tests {
         let t0 = Instant::now();
         let interval = Duration::from_micros(16_667);
         let mut clock = FrameClock::new(interval, t0);
-        let work = Duration::from_micros(3_000);
+        let work = Duration::from_millis(3);
         let mut now = t0;
         let mut presents = Vec::new();
         for i in 0..200u32 {
@@ -445,8 +445,13 @@ mod tests {
             presents.push(now);
             clock.note_presented(now);
             now += clock.park(now);
-            let offset = Duration::from_micros(500 + (i as u64 % 7) * 1_500);
-            let spurious = now.min(clock.next_deadline() - Duration::from_micros(1)) + offset;
+            let offset = Duration::from_micros(500 + (u64::from(i) % 7) * 1_500);
+            let spurious = now.min(
+                clock
+                    .next_deadline()
+                    .checked_sub(Duration::from_micros(1))
+                    .unwrap(),
+            ) + offset;
             if spurious < clock.next_deadline() {
                 now = spurious + clock.park(spurious);
             }
@@ -496,7 +501,7 @@ mod tests {
         let t0 = Instant::now();
         let interval = Duration::from_micros(6_944);
         let mut clock = FrameClock::new(interval, t0);
-        let work = Duration::from_micros(5_000);
+        let work = Duration::from_millis(5);
         let mut now = t0;
         let mut presents = Vec::new();
         for _ in 0..600 {

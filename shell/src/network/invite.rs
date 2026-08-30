@@ -18,7 +18,7 @@ pub struct PeerInviteToken {
     /// Inviter-local routing handle. The durable shared identity is `room_id`.
     pub workspace_id: u64,
     pub room_id: String,
-    /// z-base-32 iroh EndpointId. The historic field name remains in v1 JSON
+    /// z-base-32 iroh `EndpointId`. The historic field name remains in v1 JSON
     /// so existing UI/debug tooling can display it without another migration.
     pub owner_peer_id: String,
     /// Fresh direct and relay dialing information for the endpoint.

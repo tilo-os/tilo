@@ -361,11 +361,11 @@ mod tests {
         assert_eq!(fast_rate, REPEAT_RATE_MAX);
         assert_eq!(
             slow_delay,
-            Duration::from_millis(REPEAT_DELAY_MAX_MS as u64)
+            Duration::from_millis(u64::from(REPEAT_DELAY_MAX_MS))
         );
         assert_eq!(
             fast_delay,
-            Duration::from_millis(REPEAT_DELAY_MIN_MS as u64)
+            Duration::from_millis(u64::from(REPEAT_DELAY_MIN_MS))
         );
         assert!(
             fast_rate > slow_rate && fast_delay < slow_delay,
@@ -540,7 +540,7 @@ mod tests {
         // The loop runs at the display's cadence; stat'ing 144 times a second for a rarely-edited file is waste.
         let path = scratch("ratelimit");
         std::fs::write(&path, "{}").expect("write");
-        let mut w = SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
+        let mut w = SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_hours(1));
         let now = Instant::now();
         assert!(!w.changed(now), "baseline");
         std::fs::remove_file(&path).expect("remove");

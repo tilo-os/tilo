@@ -510,8 +510,8 @@ mod tests {
         let reference = Mat3 {
             m: [
                 [1.660491, -0.587641, -0.072850],
-                [-0.124550, 1.132900, -0.008349],
-                [-0.018151, -0.100579, 1.118730],
+                [-0.124550, 1.132_9, -0.008349],
+                [-0.018151, -0.100579, 1.118_73],
             ],
         };
         let derived = bt2020_to_bt709_matrix();
@@ -644,15 +644,18 @@ mod tests {
     #[test]
     fn sdr_white_pq_code_round_trips_to_203_nits() {
         let code = map_sdr_pixel_to_pq_bt2020([255, 255, 255]);
-        let nits: Vec<f32> = code.iter().map(|c| pq_eotf(*c as f32 / 1023.0)).collect();
+        let nits: Vec<f32> = code
+            .iter()
+            .map(|c| pq_eotf(f32::from(*c) / 1023.0))
+            .collect();
         for (i, n) in nits.iter().enumerate() {
             assert!(
                 approx(*n, SDR_REFERENCE_WHITE_NITS, 6.0),
                 "white channel {i} decodes to {n} nits, expected ~203"
             );
         }
-        let max_delta =
-            code.iter().copied().max().unwrap() as i32 - code.iter().copied().min().unwrap() as i32;
+        let max_delta = i32::from(code.iter().copied().max().unwrap())
+            - i32::from(code.iter().copied().min().unwrap());
         assert!(
             max_delta <= 3,
             "SDR white PQ codes should be neutral, got {code:?}"

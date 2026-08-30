@@ -615,9 +615,8 @@ impl SoftwareStore {
             return;
         }
         let all_done = self.update_batch.iter().all(|id| {
-            self.app_by_id(id).map_or(true, |app| {
-                matches!(self.live_state(&app), InstallState::Installed)
-            })
+            self.app_by_id(id)
+                .is_none_or(|app| matches!(self.live_state(&app), InstallState::Installed))
         });
         if all_done {
             self.update_batch.clear();
@@ -4935,8 +4934,7 @@ mod tests {
                 .hit_targets
                 .iter()
                 .find(|h| pred(&h.action))
-                .map(|h| h.rect.center())
-                .unwrap_or_else(|| panic!("no hit-target matched"))
+                .map_or_else(|| panic!("no hit-target matched"), |h| h.rect.center())
         }
     }
 
@@ -5149,7 +5147,7 @@ mod tests {
             assert!(
                 matches!(
                     d.app.batch_status(id),
-                    Some(BatchRowStatus::InProgress { .. }) | Some(BatchRowStatus::Queued)
+                    Some(BatchRowStatus::InProgress { .. } | BatchRowStatus::Queued)
                 ),
                 "{id} should be in-progress or queued after Update All, got {:?}",
                 d.app.batch_status(id)
@@ -5223,7 +5221,7 @@ mod tests {
         // Force completion: backdate the start instant beyond the duration.
         s.install_start.insert(
             id.into(),
-            Instant::now() - INSTALL_DURATION - Duration::from_secs(1),
+            Instant::now().checked_sub(INSTALL_DURATION).unwrap() - Duration::from_secs(1),
         );
         s.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
@@ -5302,11 +5300,17 @@ mod tests {
         let vscode = "com.visualstudio.code";
         s.apply(Action::Update(gimp.into()), &mut doc);
         s.apply(Action::Update(vscode.into()), &mut doc);
-        s.install_start
-            .insert(gimp.into(), Instant::now() - INSTALL_DURATION.mul_f64(0.30));
+        s.install_start.insert(
+            gimp.into(),
+            Instant::now()
+                .checked_sub(INSTALL_DURATION.mul_f64(0.30))
+                .unwrap(),
+        );
         s.install_start.insert(
             vscode.into(),
-            Instant::now() - INSTALL_DURATION.mul_f64(0.80),
+            Instant::now()
+                .checked_sub(INSTALL_DURATION.mul_f64(0.80))
+                .unwrap(),
         );
         s.sync(&mut doc, &automerge::ROOT);
 
@@ -5418,7 +5422,7 @@ mod tests {
             .unwrap();
         s.install_start.insert(
             running.clone(),
-            Instant::now() - INSTALL_DURATION - Duration::from_secs(1),
+            Instant::now().checked_sub(INSTALL_DURATION).unwrap() - Duration::from_secs(1),
         );
         s.sync(&mut doc, &automerge::ROOT);
         // Still at most the window active, and a previously-queued app moved
@@ -5441,7 +5445,7 @@ mod tests {
         // Force completion: backdate beyond the duration, then sync to finalize.
         s.install_start.insert(
             gimp.into(),
-            Instant::now() - INSTALL_DURATION - Duration::from_secs(1),
+            Instant::now().checked_sub(INSTALL_DURATION).unwrap() - Duration::from_secs(1),
         );
         s.sync(&mut doc, &automerge::ROOT);
         // It finalised to Installed, but because the batch still holds it (a

@@ -911,8 +911,7 @@ mod tests {
     #[cfg(feature = "audio")]
     fn have_audio_server() -> bool {
         let run = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
-        run.map(|d| d.join("pipewire-0").exists() || d.join("pulse/native").exists())
-            .unwrap_or(false)
+        run.is_some_and(|d| d.join("pipewire-0").exists() || d.join("pulse/native").exists())
             || std::env::var_os("PULSE_SERVER").is_some()
     }
 
@@ -1116,8 +1115,8 @@ mod tests {
         let bits: u16 = 16;
         let n = secs * rate;
         let block_align = channels * bits / 8;
-        let byte_rate = rate * block_align as u32;
-        let data_len = n * block_align as u32;
+        let byte_rate = rate * u32::from(block_align);
+        let data_len = n * u32::from(block_align);
         let mut v = Vec::with_capacity(44 + data_len as usize);
         v.extend_from_slice(b"RIFF");
         v.extend_from_slice(&(36 + data_len).to_le_bytes());

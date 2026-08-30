@@ -350,7 +350,7 @@ mod tests {
         )
         .unwrap();
         let key = ThumbKey::of_hash([7u8; 32], 128);
-        let png2 = png.clone();
+        let png2 = png;
         svc.request_encoded(key, FileCategory::Image, move || Some(png2));
         svc.block_until_idle(Duration::from_secs(5));
         let state = svc.request_encoded(key, FileCategory::Image, || {

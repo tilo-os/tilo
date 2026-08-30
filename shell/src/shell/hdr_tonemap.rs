@@ -291,7 +291,7 @@ mod tests {
         let g = rgba[1];
         let b = rgba[2];
         assert!(
-            (r as i32 - g as i32).abs() <= 6 && (g as i32 - b as i32).abs() <= 6,
+            (i32::from(r) - i32::from(g)).abs() <= 6 && (i32::from(g) - i32::from(b)).abs() <= 6,
             "neutral chroma should produce ~gray, got ({r}, {g}, {b})",
         );
         assert!(r > 10, "PQ mid-code shouldn't crush to black: got {r}");
@@ -338,7 +338,7 @@ mod tests {
         for i in 0..20 {
             let x = i as f32 / 10.0;
             let y = hable(x);
-            assert!(y >= 0.0 && y <= 1.0, "hable({x}) out of range: {y}");
+            assert!((0.0..=1.0).contains(&y), "hable({x}) out of range: {y}");
             assert!(y >= prev, "hable not monotonic at {x}: prev={prev} y={y}");
             prev = y;
         }

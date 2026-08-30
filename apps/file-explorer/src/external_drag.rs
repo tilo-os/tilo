@@ -90,7 +90,9 @@ mod tests {
 
     #[test]
     fn a_drag_is_unclaimed_until_the_host_takes_it() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         end();
         assert_eq!(unclaimed(), None);
         begin(vec![PathBuf::from("/w/photo.png")]);
@@ -113,7 +115,9 @@ mod tests {
 
     #[test]
     fn a_new_drag_forgets_the_previous_hand_off() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         begin(vec![PathBuf::from("/a")]);
         let _ = hand_off();
         begin(vec![PathBuf::from("/b")]);

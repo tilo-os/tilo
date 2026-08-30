@@ -303,7 +303,7 @@ impl Session {
         // Keep the same connection active if it still exists.
         if let Some(pos) = active_id.and_then(|id| self.connections.iter().position(|c| c.id == id))
         {
-            self.active = pos
+            self.active = pos;
         } else {
             self.active = 0;
             // The active connection vanished: drop its stale view state.

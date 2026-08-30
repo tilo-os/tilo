@@ -102,10 +102,9 @@ fn render(case: Case) -> Option<Frame> {
                 height: AvailableSpace::MaxContent,
             },
             |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&ptr| unsafe { (*ptr).measure(known, available, &mut text_renderer) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
+                    (*ptr).measure(known, available, &mut text_renderer)
+                })
             },
         )
         .expect("typography gallery layout");

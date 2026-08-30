@@ -817,7 +817,7 @@ mod tests {
         slave.flush().unwrap();
         let mut buf = [0u8; 32];
         // SAFETY: `fd` is the descriptor just received and still open.
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
         assert!(n > 0, "nothing came back through the received descriptor");
         assert!(String::from_utf8_lossy(&buf[..n as usize]).contains("hello"));
         // SAFETY: we own `fd` now.

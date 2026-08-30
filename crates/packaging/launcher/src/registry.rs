@@ -243,7 +243,7 @@ mod tests {
         // never ran `qos-install`. The palette must still have something to list.
         let system = store_with(&["dev.qos.notes", "dev.qos.calculator"]);
         let user = tempfile::tempdir().expect("tempdir");
-        let all = with_stores(system.path(), user.path(), || list_installed()).expect("read");
+        let all = with_stores(system.path(), user.path(), list_installed).expect("read");
         let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["dev.qos.notes", "dev.qos.calculator"]);
         // And a lookup by id resolves to the system payload.
@@ -260,7 +260,7 @@ mod tests {
     fn both_stores_merge_and_a_user_install_shadows_the_system_one() {
         let system = store_with(&["dev.qos.notes", "dev.qos.calculator"]);
         let user = store_with(&["dev.qos.notes", "dev.qos.mine"]);
-        let all = with_stores(system.path(), user.path(), || list_installed()).expect("read");
+        let all = with_stores(system.path(), user.path(), list_installed).expect("read");
         let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -349,7 +349,7 @@ mod tests {
         // "nothing preinstalled", not a failure hiding the user's own installs.
         let system = tempfile::tempdir().expect("tempdir");
         let user = store_with(&["dev.qos.mine"]);
-        let all = with_stores(system.path(), user.path(), || list_installed()).expect("read");
+        let all = with_stores(system.path(), user.path(), list_installed).expect("read");
         let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["dev.qos.mine"]);
     }

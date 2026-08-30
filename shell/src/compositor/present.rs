@@ -222,17 +222,23 @@ mod tests {
     impl Presenter for Blocking {
         // Every lock here recovers from poisoning rather than panicking — a failing test that poisons the gate shouldn't also print an unrelated `PoisonError` backtrace over the real assertion failure.
         fn present(&mut self, _scene: &Scene, _output: OutputId) {
-            let _held = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+            let _held = self
+                .gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.seen.fetch_add(1, Ordering::Release);
         }
         fn resize(&mut self, size: (u32, u32)) {
             self.resizes
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(size);
         }
         fn set_dpms(&mut self, on: bool) {
-            self.dpms.lock().unwrap_or_else(|e| e.into_inner()).push(on);
+            self.dpms
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(on);
         }
     }
 

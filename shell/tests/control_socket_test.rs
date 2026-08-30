@@ -89,15 +89,14 @@ fn spawn_with_control() -> (Child, PathBuf) {
         }
     });
 
-    match rx.recv_timeout(Duration::from_secs(15)) {
-        Ok(()) => (child, socket_path),
-        Err(_) => {
-            let _ = child.kill();
-            panic!(
-                "timed out waiting for `test_control listening on` \
-                 line on the compositor's stderr"
-            );
-        }
+    if let Ok(()) = rx.recv_timeout(Duration::from_secs(15)) {
+        (child, socket_path)
+    } else {
+        let _ = child.kill();
+        panic!(
+            "timed out waiting for `test_control listening on` \
+             line on the compositor's stderr"
+        );
     }
 }
 
@@ -207,7 +206,7 @@ fn click_at_returns_ok_response() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Uses `wheel_disc` (a stable test_id) so the test doesn't depend on
+/// Uses `wheel_disc` (a stable `test_id`) so the test doesn't depend on
 /// path-key strings that may shift.
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
@@ -223,8 +222,7 @@ fn click_named_known_target_grows_workspace_registry() {
     let before_count = before
         .get("targets")
         .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+        .map_or(0, std::vec::Vec::len);
     assert!(before_count > 0, "bootstrap layout should expose widgets");
 
     // press+release with no movement no-ops on the drag-rotation path, so
@@ -241,8 +239,7 @@ fn click_named_known_target_grows_workspace_registry() {
     let after_count = after
         .get("targets")
         .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+        .map_or(0, std::vec::Vec::len);
     assert!(
         after_count > 0,
         "list_targets after a click should still return widgets; got empty array"

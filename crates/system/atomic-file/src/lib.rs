@@ -138,7 +138,7 @@ mod tests {
         write(&d.path().join("a.json"), b"x").unwrap();
         let left: Vec<String> = fs::read_dir(d.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.ends_with(".tmp"))
             .collect();
@@ -155,7 +155,7 @@ mod tests {
             t.file_name().unwrap().to_string_lossy().starts_with('.'),
             "temp file should be hidden: {t:?}"
         );
-        assert!(t.extension().unwrap() == "tmp");
+        assert_eq!(t.extension().unwrap(), "tmp");
     }
 
     #[test]

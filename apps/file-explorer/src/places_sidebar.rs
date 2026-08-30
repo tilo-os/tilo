@@ -890,7 +890,7 @@ mod tests {
         let (tree, node) = lay_out(&mut sb);
         // Click the first System row (the workspace) and expect a navigation.
         let y = sb.sys_first_y() + ROW_H / 2.0;
-        let x = (sb.row_x0() + sb.row_x1()) / 2.0;
+        let x = f64::midpoint(sb.row_x0(), sb.row_x1());
         dispatch(
             &mut sb,
             &tree,

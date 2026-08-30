@@ -853,7 +853,7 @@ mod tests {
         assert!(out.starts_with('\u{2026}'), "trimmed from the front: {out}");
         assert!(out.ends_with(":682"), "the line number survives: {out}");
         assert!(
-            (t.measure(&out, 12.0, None).0 as f64) <= 120.0,
+            f64::from(t.measure(&out, 12.0, None).0) <= 120.0,
             "and it actually fits: {out}"
         );
     }
@@ -865,7 +865,7 @@ mod tests {
         let out = ellipsize_back(&mut t, &long, 12.0, 100.0);
         assert!(out.ends_with('\u{2026}'), "trimmed from the back");
         assert!(out.starts_with('a'));
-        assert!((t.measure(&out, 12.0, None).0 as f64) <= 100.0);
+        assert!(f64::from(t.measure(&out, 12.0, None).0) <= 100.0);
     }
 
     #[test]

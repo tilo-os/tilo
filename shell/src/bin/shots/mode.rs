@@ -21,7 +21,7 @@ use super::scenario::{self, JsonDirSink, NullSink, Scenario, SnapshotSink};
 // =====================================================================
 
 pub mod offscreen {
-    use super::*;
+    use super::{Color, OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, scenario};
 
     /// `SnapshotSink` that renders into a PNG file per snapshot under
     /// `dir`, using the supplied `OffscreenRenderer`.
@@ -34,7 +34,7 @@ pub mod offscreen {
         pub first_paint_seen: bool,
     }
 
-    impl<'a> SnapshotSink for PngDirSink<'a> {
+    impl SnapshotSink for PngDirSink<'_> {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
             let scene = driver.paint();
             let path = self.dir.join(format!("{name}.png"));
@@ -120,7 +120,7 @@ pub mod offscreen {
 // =====================================================================
 
 pub mod headless {
-    use super::*;
+    use super::{JsonDirSink, Path, Scenario, ShellDriver, scenario};
 
     pub fn run_scenario(
         driver: &mut ShellDriver,
@@ -147,7 +147,7 @@ pub mod headless {
 // =====================================================================
 
 pub mod recording {
-    use super::*;
+    use super::{OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, scenario};
 
     use std::fs::File;
     use std::io::Write;
@@ -216,7 +216,7 @@ pub mod recording {
         pub frames_per_step: u32,
     }
 
-    impl<'a> RecordingSink<'a> {
+    impl RecordingSink<'_> {
         fn encode_current(&mut self, driver: &mut ShellDriver) {
             let scene = driver.paint();
             let rgba = self.renderer.render_rgba(&scene);
@@ -234,7 +234,7 @@ pub mod recording {
         }
     }
 
-    impl<'a> SnapshotSink for RecordingSink<'a> {
+    impl SnapshotSink for RecordingSink<'_> {
         fn capture(&mut self, driver: &mut ShellDriver, _name: &str) {
             // Encode the frame as offered. The step-driven outer loop
             // encodes every step too, so a plain `Snapshot` contributes
@@ -280,7 +280,7 @@ pub mod recording {
 // =====================================================================
 
 pub mod window {
-    use super::*;
+    use super::{NullSink, Scenario, ShellDriver, scenario};
 
     use shell::shell::{build_nirios_root, persist, sync_tab_presence_from_tree};
     use ui::presence::PresenceKey;
@@ -296,7 +296,7 @@ pub mod window {
     /// is "drive the shell into a state, then leave it open".
     ///
     /// Caveat: chrome state (overlay flags, palette query) is **not**
-    /// persisted — only the WorkspaceTree itself is. So a pre-rolled
+    /// persisted — only the `WorkspaceTree` itself is. So a pre-rolled
     /// `OpenPalette` will not be visible on the live binary's first
     /// frame; a pre-rolled `SwitchWorkspace(1)` will. Useful for
     /// scripted "open the live binary on workspace 2 with these tabs".
@@ -315,7 +315,7 @@ pub mod window {
             let mut sink = NullSink;
             scenario::run(&mut driver, scenario, &mut sink);
             let chrome = driver.chrome();
-            if let Err(e) = persist::save_tree_to(&*chrome.tree(), &path) {
+            if let Err(e) = persist::save_tree_to(&chrome.tree(), &path) {
                 eprintln!("shots: pre-roll persist failed: {e}");
             }
         }

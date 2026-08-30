@@ -46,7 +46,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
         state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -89,7 +89,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for ClientAppState {
         _: &mut Self,
         _: &wl_compositor::WlCompositor,
         _: wl_compositor::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -101,7 +101,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for ClientAppState {
         _: &mut Self,
         _: &wl_surface::WlSurface,
         _: wl_surface::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -113,7 +113,7 @@ impl Dispatch<WpFractionalScaleManagerV1, ()> for ClientAppState {
         _: &mut Self,
         _: &WpFractionalScaleManagerV1,
         _: wp_fractional_scale_manager_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -125,7 +125,7 @@ impl Dispatch<WpViewporter, ()> for ClientAppState {
         _: &mut Self,
         _: &WpViewporter,
         _: wp_viewporter::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -137,7 +137,7 @@ impl Dispatch<WpFractionalScaleV1, ()> for ClientAppState {
         state: &mut Self,
         _: &WpFractionalScaleV1,
         event: wp_fractional_scale_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
