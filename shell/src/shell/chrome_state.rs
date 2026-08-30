@@ -85,6 +85,8 @@ pub struct OverlayFlags {
     /// Pure UI state — the history shown is derived from
     /// `WorkspaceTree::doc`, which is shared and replicated.
     pub room_activity: bool,
+    /// Device-local wireless display picker (Win+P).
+    pub projection: bool,
 }
 
 /// Seeded by which chord opened the palette: `Ctrl+K` →
