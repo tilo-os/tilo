@@ -80,6 +80,30 @@ struct ContextEnvelope {
     permissions: Vec<String>,
 }
 
+/// One subscription onto the broker fanout, addressable by [`Self::send`]
+/// regardless of which envelope type it carries — lets
+/// [`CapnpBrokerState::fanout_to_route`] share one delivery loop
+/// ([`retain_deliverable`]) across `op`/`presence`/`cursor`/`context`
+/// instead of repeating the same retain-and-send closure four times.
+trait Subscriber {
+    type Msg: Clone;
+    fn peer_id(&self) -> u64;
+    fn send(&self, msg: Self::Msg) -> bool;
+}
+
+/// Drops every subscriber in `subs` whose receiver has gone away, and
+/// sends `env` to the rest — except `except`, which is skipped (kept
+/// subscribed) rather than sent to, so a peer never echoes its own op
+/// back to itself.
+fn retain_deliverable<S: Subscriber>(subs: &mut Vec<S>, except: u64, env: &S::Msg) {
+    subs.retain(|s| {
+        if s.peer_id() == except {
+            return true;
+        }
+        s.send(env.clone())
+    });
+}
+
 /// One subscription onto the broker fanout. Slot-indexed inside a
 /// [`ChannelSubscribers`] table so it can be dropped en masse when
 /// the connection tears down.
@@ -87,17 +111,60 @@ struct OpSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<OpEnvelope>,
 }
+
+impl Subscriber for OpSub {
+    type Msg = OpEnvelope;
+    fn peer_id(&self) -> u64 {
+        self.peer_id
+    }
+    fn send(&self, msg: OpEnvelope) -> bool {
+        self.tx.send(msg).is_ok()
+    }
+}
+
 struct PresenceSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<PresenceEnvelope>,
 }
+
+impl Subscriber for PresenceSub {
+    type Msg = PresenceEnvelope;
+    fn peer_id(&self) -> u64 {
+        self.peer_id
+    }
+    fn send(&self, msg: PresenceEnvelope) -> bool {
+        self.tx.send(msg).is_ok()
+    }
+}
+
 struct CursorSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<CursorEnvelope>,
 }
+
+impl Subscriber for CursorSub {
+    type Msg = CursorEnvelope;
+    fn peer_id(&self) -> u64 {
+        self.peer_id
+    }
+    fn send(&self, msg: CursorEnvelope) -> bool {
+        self.tx.send(msg).is_ok()
+    }
+}
+
 struct ContextSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<ContextEnvelope>,
+}
+
+impl Subscriber for ContextSub {
+    type Msg = ContextEnvelope;
+    fn peer_id(&self) -> u64 {
+        self.peer_id
+    }
+    fn send(&self, msg: ContextEnvelope) -> bool {
+        self.tx.send(msg).is_ok()
+    }
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
@@ -166,8 +233,8 @@ impl CapnpBrokerState {
 
     /// Converts once into the transport-neutral peer presence envelope.
     /// Peer replication does not embed either local RPC dialect.
-    fn publish_presence(&self, route: &CrdtRoute, key: PresenceKey, payload: PresencePayload) {
-        let Some(presence) = crate::shell::collab_presence::to_peer(&key, &payload) else {
+    fn publish_presence(&self, route: &CrdtRoute, key: &PresenceKey, payload: &PresencePayload) {
+        let Some(presence) = crate::shell::collab_presence::to_peer(key, payload) else {
             tracing::warn!(
                 channel = %route.channel_key(),
                 "capnp broker: presence would not encode; peers will \
@@ -205,51 +272,10 @@ impl CapnpBrokerState {
             .filter(|(k, _)| route.delivers_to(&CrdtRoute::from_channel_key(k)))
             .map(|(_, subs)| subs);
         match event {
-            CollabEvent::SignedCRDTIncremental {
-                envelope,
-                from_user_id,
-            } => {
-                let op_bytes = match postcard::to_stdvec(&**envelope) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "capnp fanout: postcard(SignedOp) failed");
-                        return;
-                    }
-                };
-                let env = OpEnvelope {
-                    op_bytes,
-                    from_user_id: from_user_id.clone(),
-                    kind: OpKind::Signed,
-                };
-                for subs in channels {
-                    subs.op.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(env.clone()).is_ok()
-                    });
-                }
-            }
-            CollabEvent::CRDTIncremental { data } | CollabEvent::CRDTUpdate { data } => {
-                // Empty `from_user_id`, matching JSON; kind tags delta vs.
-                // whole-document.
-                let kind = match event {
-                    CollabEvent::CRDTUpdate { .. } => OpKind::UnsignedSnapshot,
-                    _ => OpKind::UnsignedIncremental,
-                };
-                let env = OpEnvelope {
-                    op_bytes: data.clone(),
-                    from_user_id: String::new(),
-                    kind,
-                };
-                for subs in channels {
-                    subs.op.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(env.clone()).is_ok()
-                    });
-                }
+            CollabEvent::SignedCRDTIncremental { .. }
+            | CollabEvent::CRDTIncremental { .. }
+            | CollabEvent::CRDTUpdate { .. } => {
+                Self::fanout_op_event(channels, except, event);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 let key_bytes = default_pointer_key_bytes();
@@ -264,18 +290,8 @@ impl CapnpBrokerState {
                     y: *y,
                 };
                 for subs in channels {
-                    subs.presence.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(presence_env.clone()).is_ok()
-                    });
-                    subs.cursor.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(cursor_env.clone()).is_ok()
-                    });
+                    retain_deliverable(&mut subs.presence, except, &presence_env);
+                    retain_deliverable(&mut subs.cursor, except, &cursor_env);
                 }
             }
             CollabEvent::RemotePresenceUpdate {
@@ -296,12 +312,7 @@ impl CapnpBrokerState {
                     payload: payload.clone(),
                 };
                 for subs in channels {
-                    subs.presence.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(env.clone()).is_ok()
-                    });
+                    retain_deliverable(&mut subs.presence, except, &env);
                 }
             }
             CollabEvent::Context {
@@ -313,12 +324,7 @@ impl CapnpBrokerState {
                     permissions: permissions.clone(),
                 };
                 for subs in channels {
-                    subs.context.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(env.clone()).is_ok()
-                    });
+                    retain_deliverable(&mut subs.context, except, &env);
                 }
             }
             CollabEvent::ActionArrived { type_id, .. } => {
@@ -332,6 +338,53 @@ impl CapnpBrokerState {
                 // Per-request in the capnp schema, not a stream; apps
                 // wanting late history repeat `fetchScrollbackFor`.
             }
+        }
+    }
+
+    /// The three [`CollabEvent`] variants [`Self::fanout_to_route`] fans
+    /// out as an [`OpEnvelope`] on `subs.op`: a signed CRDT op
+    /// (postcard-encoded from its envelope) or an unsigned
+    /// incremental/whole-document update. No-op for any other variant.
+    fn fanout_op_event(
+        channels: impl Iterator<Item = &mut ChannelSubscribers>,
+        except: u64,
+        event: &CollabEvent,
+    ) {
+        let env = match event {
+            CollabEvent::SignedCRDTIncremental {
+                envelope,
+                from_user_id,
+            } => {
+                let op_bytes = match postcard::to_stdvec(&**envelope) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "capnp fanout: postcard(SignedOp) failed");
+                        return;
+                    }
+                };
+                OpEnvelope {
+                    op_bytes,
+                    from_user_id: from_user_id.clone(),
+                    kind: OpKind::Signed,
+                }
+            }
+            CollabEvent::CRDTIncremental { data } | CollabEvent::CRDTUpdate { data } => {
+                // Empty `from_user_id`, matching JSON; kind tags delta vs.
+                // whole-document.
+                let kind = match event {
+                    CollabEvent::CRDTUpdate { .. } => OpKind::UnsignedSnapshot,
+                    _ => OpKind::UnsignedIncremental,
+                };
+                OpEnvelope {
+                    op_bytes: data.clone(),
+                    from_user_id: String::new(),
+                    kind,
+                }
+            }
+            _ => return,
+        };
+        for subs in channels {
+            retain_deliverable(&mut subs.op, except, &env);
         }
     }
 
@@ -789,8 +842,8 @@ impl presence_handle::Server for CapnpPresenceHandle {
             };
             state.publish_presence(
                 &full_route,
-                PresenceKey::pointer_default(),
-                PresencePayload::Pointer { x, y },
+                &PresenceKey::pointer_default(),
+                &PresencePayload::Pointer { x, y },
             );
             if let Some(t) = state.peer_table.upgrade() {
                 t.fanout_to_route(&event, peer_id, &route);
@@ -949,7 +1002,7 @@ fn publish_keyed_presence(
         );
         return;
     };
-    state.publish_presence(full_route, key.clone(), payload.clone());
+    state.publish_presence(full_route, &key, &payload);
     let event = CollabEvent::RemotePresenceUpdate {
         user_id: state.participant_id(route),
         key,
