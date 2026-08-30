@@ -190,7 +190,7 @@ impl client::Handler for Handler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        _server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
@@ -335,7 +335,7 @@ mod tests {
     // into the grid, and that a keystroke sent upstream is echoed back.
 
     use russh::server::{self, Auth, Msg, Server as _, Session};
-    use russh::{Channel, ChannelId, CryptoVec};
+    use russh::{Channel, ChannelId};
 
     #[derive(Clone)]
     struct TestServer;
@@ -363,9 +363,11 @@ mod tests {
         async fn channel_open_session(
             &mut self,
             _channel: Channel<Msg>,
+            reply: server::ChannelOpenHandle,
             _session: &mut Session,
-        ) -> Result<bool, Self::Error> {
-            Ok(true)
+        ) -> Result<(), Self::Error> {
+            reply.accept().await;
+            Ok(())
         }
 
         async fn shell_request(
@@ -374,7 +376,7 @@ mod tests {
             session: &mut Session,
         ) -> Result<(), Self::Error> {
             session.channel_success(channel)?;
-            session.data(channel, CryptoVec::from(b"qos-remote ready\r\n".to_vec()))?;
+            session.data(channel, b"qos-remote ready\r\n".to_vec())?;
             Ok(())
         }
 
@@ -388,7 +390,7 @@ mod tests {
             // pipe works end-to-end.
             let mut echo = b"echo:".to_vec();
             echo.extend_from_slice(data);
-            session.data(channel, CryptoVec::from(echo))?;
+            session.data(channel, echo)?;
             Ok(())
         }
     }
