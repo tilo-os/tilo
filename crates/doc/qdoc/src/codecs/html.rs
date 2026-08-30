@@ -571,7 +571,7 @@ fn import_html(src: &str, doc: &mut DocMut) {
                 attrs,
                 self_closing,
             } => handle_open_tag(doc, &mut st, &name, &attrs, self_closing),
-            Token::Close { name } => handle_close_tag(doc, &mut st, &name),
+            Token::Close { name } => handle_close_tag(&mut st, &name),
             Token::Text(t) => handle_text(doc, &mut st, &t),
         }
     }
@@ -776,7 +776,7 @@ fn open_inline_tag(st: &mut ImportState, name: &str, attrs: &str) {
     }
 }
 
-fn handle_close_tag(doc: &mut DocMut, st: &mut ImportState, name: &str) {
+fn handle_close_tag(st: &mut ImportState, name: &str) {
     match name {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "td" | "th" => {
             finish_inline_now(st);

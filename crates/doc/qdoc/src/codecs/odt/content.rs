@@ -824,7 +824,7 @@ impl BodyState {
 
     /// Closing events: property scope ends, and the span/link/list/table/paragraph closes that
     /// anchor their deferred marks.
-    fn handle_end(&mut self, e: &quick_xml::events::BytesEnd, doc: &mut DocMut) {
+    fn handle_end(&mut self, e: &quick_xml::events::BytesEnd) {
         match e.name().as_ref() {
             b"office:text" => self.in_text = false,
             b"text:h" => {
@@ -988,7 +988,7 @@ pub(crate) fn parse_body(
         match ev {
             Event::Start(e) => st.handle_start(&e, doc, reg, pos_before),
             Event::Empty(e) => st.handle_empty(&e, doc, reg, s, pos_before, pos_after()),
-            Event::End(e) => st.handle_end(&e, doc),
+            Event::End(e) => st.handle_end(&e),
             Event::Text(t) => st.handle_text(&t, doc)?,
             Event::Eof => break,
             _ => {}
@@ -1024,7 +1024,7 @@ fn apply_deferred_marks(
     mut open_comments: BTreeMap<String, (String, String, usize)>,
     mut comment_ranges: Vec<(String, usize, usize, String)>,
     mut open_bookmarks: BTreeMap<String, (String, usize)>,
-    bookmark_ranges: Vec<(String, usize, usize, String)>,
+    mut bookmark_ranges: Vec<(String, usize, usize, String)>,
     mut open_changes: BTreeMap<String, (String, ChangeKind, String, usize)>,
     mut change_ranges: Vec<(String, usize, usize, ChangeKind, String)>,
 ) {
