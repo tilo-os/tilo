@@ -121,7 +121,7 @@ impl Action for FeedsAction {
                         site_url: crate::fetch::derive_site_url(url),
                         folder: parse_opt_id(folder),
                         order: *order,
-                        kind: FeedKind::from_str(kind),
+                        kind: FeedKind::from_key(kind),
                     };
                     FeedsDoc::upsert_feed(doc, &feed);
                 }
