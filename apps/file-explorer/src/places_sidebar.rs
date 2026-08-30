@@ -22,15 +22,15 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::command::{push, CommandSink, FileCommand};
+use crate::command::{CommandSink, FileCommand, push};
 use crate::favorites::Favorite;
-use ui::icons::{draw_icon, Icon, LUCIDE_DEFAULT_STROKE_PX};
-use ui::presence::PresenceCtx;
 use ui::ColorCompat;
+use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::drag::{DragController, ListMetrics};
 use ui::widget::Widget;
+use ui::widget::drag::{DragController, ListMetrics};
 
 /// Sidebar width in logical px (kept equal to the historical value so parity
 /// tests + layout expectations hold).
@@ -60,7 +60,7 @@ impl FavBand {
         ListMetrics::uniform(self.origin_y, self.row_h, 0.0, self.count)
     }
     pub fn center_x(&self) -> f64 {
-        (self.x0 + self.x1) / 2.0
+        f64::midpoint(self.x0, self.x1)
     }
     /// Vertical centre of favourite row `i`.
     pub fn row_center_y(&self, i: usize) -> f64 {
@@ -81,7 +81,12 @@ pub struct FavState {
 
 impl FavState {
     pub fn new(favorites: Vec<Favorite>) -> Self {
-        Self { favorites, drag: DragController::vertical(), pressed: None, band: None }
+        Self {
+            favorites,
+            drag: DragController::vertical(),
+            pressed: None,
+            band: None,
+        }
     }
 }
 
@@ -140,10 +145,8 @@ impl PlacesSidebar {
         let mut entries: Vec<(Icon, String, PathBuf)> = roots
             .into_iter()
             .map(|p| {
-                let label = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Workspace".to_string());
+                // Shared with the breadcrumb, which names the same place.
+                let label = crate::model::workspace_label(&p);
                 (Icon::CloudDownload, label, p)
             })
             .collect();
@@ -175,8 +178,12 @@ impl PlacesSidebar {
         self.sys_header_y() + HEADER_H
     }
 
-    fn row_x0(&self) -> f64 { self.rect.x0 + PAD }
-    fn row_x1(&self) -> f64 { self.rect.x1 - PAD }
+    fn row_x0(&self) -> f64 {
+        self.rect.x0 + PAD
+    }
+    fn row_x1(&self) -> f64 {
+        self.rect.x1 - PAD
+    }
 
     fn fav_row_rect(&self, i: usize) -> Rect {
         let y0 = self.fav_first_y() + i as f64 * ROW_H;
@@ -246,16 +253,42 @@ impl PlacesSidebar {
         if ghost {
             let mut a = accent;
             a = Color::from_rgba8(a.r(), a.g(), a.b(), 0xe0);
-            scene.fill(Fill::NonZero, transform, a, None, &RoundedRect::from_rect(pill, tokens.radii.md as f64));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                a,
+                None,
+                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
+            );
         } else if active {
-            scene.fill(Fill::NonZero, transform, accent, None, &RoundedRect::from_rect(pill, tokens.radii.md as f64));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                accent,
+                None,
+                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
+            );
         } else if hovered {
-            scene.fill(Fill::NonZero, transform, tokens.colors.surface_white_10, None, &RoundedRect::from_rect(pill, tokens.radii.md as f64));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                tokens.colors.surface_white_10,
+                None,
+                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
+            );
         }
 
         let selected = active || ghost;
-        let icon_color = if selected { Color::WHITE } else { tokens.colors.text_dim };
-        let text_color = if selected { Color::WHITE } else { tokens.colors.text_primary };
+        let icon_color = if selected {
+            Color::WHITE
+        } else {
+            tokens.colors.text_dim
+        };
+        let text_color = if selected {
+            Color::WHITE
+        } else {
+            tokens.colors.text_primary
+        };
         let icon_x = rect.x0 + 10.0;
         let icon_y = rect.y0 + (ROW_H - ICON_PX) / 2.0;
         draw_icon(
@@ -280,14 +313,23 @@ impl PlacesSidebar {
         );
     }
 
-    fn draw_header(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, y: f64, label: &str) {
+    fn draw_header(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+        label: &str,
+    ) {
         let size = theme.tokens.typography.scale.xs;
         tr.draw_text(
             scene,
             &label.to_uppercase(),
             size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((self.row_x0() + 2.0, y + (HEADER_H - size as f64) / 2.0)),
+            transform
+                * Affine::translate((self.row_x0() + 2.0, y + (HEADER_H - f64::from(size)) / 2.0)),
             None,
         );
         let _ = scene;
@@ -309,21 +351,24 @@ impl Widget for PlacesSidebar {
         // dead strip. So take `percent(1.0)` and let the shell own the width.
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // Publish the favourites band so the app / demo can drive a drag in the
         // same coordinate space the reflow uses.
@@ -341,7 +386,13 @@ impl Widget for PlacesSidebar {
     ) {
         let tokens = &theme.tokens;
         // Panel background (a hair lighter than the content) + a quiet divider.
-        scene.fill(Fill::NonZero, transform, tokens.colors.surface_white_5, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surface_white_5,
+            None,
+            &self.rect,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -353,7 +404,14 @@ impl Widget for PlacesSidebar {
         // Favourites header — only when there are favourites to head (an empty
         // section header reads as a bug).
         if self.fav_count() > 0 {
-            self.draw_header(scene, transform, tr, theme, self.rect.y0 + TOP, "Favourites");
+            self.draw_header(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.rect.y0 + TOP,
+                "Favourites",
+            );
         }
 
         // Favourite rows (with live reflow + ghost while dragging). Compute the
@@ -373,12 +431,27 @@ impl Widget for PlacesSidebar {
                 if drag_active && Some(i) == from_idx {
                     continue; // painted as the floating ghost below
                 }
-                let shift = if drag_active { favs.drag.item_shift(i, &metrics) } else { 0.0 };
+                let shift = if drag_active {
+                    favs.drag.item_shift(i, &metrics)
+                } else {
+                    0.0
+                };
                 let mut rect = self.fav_row_rect(i);
                 rect = Rect::new(rect.x0, rect.y0 + shift, rect.x1, rect.y1 + shift);
                 let active = !drag_active && fav.path == self.active;
                 let hovered = self.hover_fav == Some(i) && !active;
-                self.draw_row(scene, transform, tr, theme, rect, fav.icon(), &fav.label, active, hovered, false);
+                self.draw_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    rect,
+                    fav.icon(),
+                    &fav.label,
+                    active,
+                    hovered,
+                    false,
+                );
             }
         }
 
@@ -388,16 +461,31 @@ impl Widget for PlacesSidebar {
             let rect = self.sys_row_rect(i);
             let active = *path == self.active;
             let hovered = self.hover_sys == Some(i) && !active;
-            self.draw_row(scene, transform, tr, theme, rect, *icon, label, active, hovered, false);
+            self.draw_row(
+                scene, transform, tr, theme, rect, *icon, label, active, hovered, false,
+            );
         }
 
         // Floating ghost of the dragged favourite.
         if drag_active {
             let favs = self.favs.borrow();
-            if let (Some(fi), Some(ghost)) = (from_idx, favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics)) {
-                if let Some(fav) = favs.favorites.get(fi) {
-                    self.draw_row(scene, transform, tr, theme, ghost, fav.icon(), &fav.label, false, false, true);
-                }
+            if let (Some(fi), Some(ghost)) = (
+                from_idx,
+                favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics),
+            ) && let Some(fav) = favs.favorites.get(fi)
+            {
+                self.draw_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    ghost,
+                    fav.icon(),
+                    &fav.label,
+                    false,
+                    false,
+                    true,
+                );
             }
         }
     }
@@ -428,7 +516,11 @@ impl Widget for PlacesSidebar {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 let pt = self.last_cursor;
                 if let Some(i) = self.favorite_at(pt) {
                     let metrics = self.metrics();
@@ -443,7 +535,11 @@ impl Widget for PlacesSidebar {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
                 // A right-press over a favourite asks for its own menu (Open +
                 // Remove from Favourites). The app opens it at the cursor once it
                 // drains this command. System rows have no menu.
@@ -455,7 +551,11 @@ impl Widget for PlacesSidebar {
                     }
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
                 let mut favs = self.favs.borrow_mut();
                 if !favs.drag.is_pending() {
                     return;
@@ -464,22 +564,17 @@ impl Widget for PlacesSidebar {
                 let pressed = favs.pressed.take();
                 let commit = favs.drag.commit();
                 drop(favs);
-                match commit {
-                    Some((from, to)) => {
-                        push(&self.sink, FileCommand::ReorderFavorite { from, to });
-                        *handled = true;
-                    }
-                    None => {
-                        if !was_active {
-                            if let Some(i) = pressed {
-                                let path = self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
-                                if let Some(p) = path {
-                                    push(&self.sink, FileCommand::Navigate(p));
-                                }
-                            }
+                if let Some((from, to)) = commit {
+                    push(&self.sink, FileCommand::ReorderFavorite { from, to });
+                    *handled = true;
+                } else {
+                    if !was_active && let Some(i) = pressed {
+                        let path = self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
+                        if let Some(p) = path {
+                            push(&self.sink, FileCommand::Navigate(p));
                         }
-                        *handled = true;
                     }
+                    *handled = true;
                 }
             }
             _ => {}
@@ -492,9 +587,15 @@ impl Widget for PlacesSidebar {
         self.favs.borrow().drag.is_pending()
     }
 
-    fn name(&self) -> &str { "PlacesSidebar" }
-    fn test_id(&self) -> Option<&str> { Some("places_sidebar") }
-    fn get_rect(&self) -> Rect { self.rect }
+    fn name(&self) -> &'static str {
+        "PlacesSidebar"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("places_sidebar")
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 /// Test / demo helper: begin an active favourite drag from index `from` toward
@@ -534,7 +635,10 @@ mod tests {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
-                    size: Size { width: Dimension::length(SIDEBAR_WIDTH as f32), height: Dimension::length(700.0) },
+                    size: Size {
+                        width: Dimension::length(SIDEBAR_WIDTH as f32),
+                        height: Dimension::length(700.0),
+                    },
                     ..Default::default()
                 },
                 &[node],
@@ -552,13 +656,28 @@ mod tests {
         (tree, node)
     }
 
-    fn dispatch(sb: &mut PlacesSidebar, tree: &TaffyTree<()>, node: NodeId, ev: WindowEvent) -> bool {
+    fn dispatch(
+        sb: &mut PlacesSidebar,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        ev: WindowEvent,
+    ) -> bool {
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mods = winit::event::Modifiers::default();
-        sb.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, tree);
+        sb.handle_event(
+            &ev,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            tree,
+        );
         handled
     }
 
@@ -569,7 +688,10 @@ mod tests {
     #[test]
     fn dragging_a_favourite_down_pushes_a_reorder_command() {
         let sink = new_sink();
-        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
+        let store = new_store(favorites::defaults(
+            Path::new("/home/u"),
+            &favorites::UserDirs::default(),
+        ));
         let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
         let (tree, node) = lay_out(&mut sb);
 
@@ -578,11 +700,48 @@ mod tests {
         let start_y = band.row_center_y(1);
         let end_y = band.row_center_y(3);
         let x = band.center_x();
-        dispatch(&mut sb, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, start_y).into() });
-        dispatch(&mut sb, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left });
-        dispatch(&mut sb, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, end_y).into() });
-        assert!(store.borrow().drag.is_active(), "the pointer travel promoted a drag");
-        dispatch(&mut sb, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Released, button: MouseButton::Left });
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (x, start_y).into(),
+            },
+        );
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (x, end_y).into(),
+            },
+        );
+        assert!(
+            store.borrow().drag.is_active(),
+            "the pointer travel promoted a drag"
+        );
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
 
         let cmds = sink.borrow();
         assert_eq!(cmds.len(), 1, "exactly one command emitted");
@@ -598,39 +757,93 @@ mod tests {
     #[test]
     fn a_plain_click_navigates_instead_of_reordering() {
         let sink = new_sink();
-        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
+        let store = new_store(favorites::defaults(
+            Path::new("/home/u"),
+            &favorites::UserDirs::default(),
+        ));
         let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
         let (tree, node) = lay_out(&mut sb);
         let band = store.borrow().band.unwrap();
         let y = band.row_center_y(2); // Downloads
         let x = band.center_x();
         // Press + release with no travel between → a click, not a drag.
-        dispatch(&mut sb, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, y).into() });
-        dispatch(&mut sb, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left });
-        dispatch(&mut sb, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Released, button: MouseButton::Left });
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (x, y).into(),
+            },
+        );
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
         let cmds = sink.borrow();
         assert_eq!(cmds.len(), 1);
-        assert!(matches!(&cmds[0], FileCommand::Navigate(p) if p.ends_with("Downloads")), "click navigates: {:?}", cmds[0]);
+        assert!(
+            matches!(&cmds[0], FileCommand::Navigate(p) if p.ends_with("Downloads")),
+            "click navigates: {:?}",
+            cmds[0]
+        );
     }
 
     #[test]
     fn right_pressing_a_favourite_requests_its_menu() {
         let sink = new_sink();
-        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
+        let store = new_store(favorites::defaults(
+            Path::new("/home/u"),
+            &favorites::UserDirs::default(),
+        ));
         let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
         let (tree, node) = lay_out(&mut sb);
         let band = store.borrow().band.unwrap();
         // Right-press over favourite row 1 (Documents).
         let y = band.row_center_y(1);
         let x = band.center_x();
-        dispatch(&mut sb, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, y).into() });
-        let handled = dispatch(&mut sb, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Right });
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (x, y).into(),
+            },
+        );
+        let handled = dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+            },
+        );
         assert!(handled, "a right-press over a favourite is consumed");
         let cmds = sink.borrow();
         assert_eq!(cmds.len(), 1);
         assert!(
             matches!(&cmds[0], FileCommand::OpenFavoriteMenu(p) if p.ends_with("Documents")),
-            "right-press asks for the favourite's menu: {:?}", cmds[0],
+            "right-press asks for the favourite's menu: {:?}",
+            cmds[0],
         );
     }
 
@@ -640,7 +853,10 @@ mod tests {
         // it. It sits in the System section (near Root) and points at the XDG
         // home-trash files dir.
         let sink = new_sink();
-        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
+        let store = new_store(favorites::defaults(
+            Path::new("/home/u"),
+            &favorites::UserDirs::default(),
+        ));
         let sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink);
         if let Some(trash) = crate::fileops::trash_dir() {
             let entry = sb.system.iter().find(|(_, label, _)| label == "Trash");
@@ -653,12 +869,18 @@ mod tests {
     #[test]
     fn workspace_roots_are_clickable_system_places() {
         let sink = new_sink();
-        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
+        let store = new_store(favorites::defaults(
+            Path::new("/home/u"),
+            &favorites::UserDirs::default(),
+        ));
         let ws = PathBuf::from("/var/workspace");
         let mut sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink.clone())
             .with_workspaces(vec![ws.clone()]);
         // The workspace leads the System section with a cloud emblem.
-        assert_eq!(sb.system[0].1, "workspace", "labelled by the mount's folder name");
+        assert_eq!(
+            sb.system[0].1, "workspace",
+            "labelled by the mount's folder name"
+        );
         assert_eq!(sb.system[0].2, ws);
         assert!(
             sb.system.iter().any(|(_, label, _)| label == "Root"),
@@ -668,9 +890,26 @@ mod tests {
         let (tree, node) = lay_out(&mut sb);
         // Click the first System row (the workspace) and expect a navigation.
         let y = sb.sys_first_y() + ROW_H / 2.0;
-        let x = (sb.row_x0() + sb.row_x1()) / 2.0;
-        dispatch(&mut sb, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, y).into() });
-        dispatch(&mut sb, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left });
+        let x = f64::midpoint(sb.row_x0(), sb.row_x1());
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (x, y).into(),
+            },
+        );
+        dispatch(
+            &mut sb,
+            &tree,
+            node,
+            WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
         let cmds = sink.borrow();
         assert!(
             matches!(&cmds[0], FileCommand::Navigate(p) if *p == ws),
@@ -681,11 +920,21 @@ mod tests {
     #[test]
     fn debug_begin_drag_activates_a_reflow() {
         let sink = new_sink();
-        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
+        let store = new_store(favorites::defaults(
+            Path::new("/home/u"),
+            &favorites::UserDirs::default(),
+        ));
         let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink);
         let _ = lay_out(&mut sb);
-        assert!(debug_begin_drag(&store, 4, 1), "band was laid out → drag begins");
+        assert!(
+            debug_begin_drag(&store, 4, 1),
+            "band was laid out → drag begins"
+        );
         assert!(store.borrow().drag.is_active());
-        assert_eq!(store.borrow().drag.insertion(), Some(1), "gap sits at the drop row");
+        assert_eq!(
+            store.borrow().drag.insertion(),
+            Some(1),
+            "gap sits at the drop row"
+        );
     }
 }

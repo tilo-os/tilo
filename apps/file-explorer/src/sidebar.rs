@@ -1,5 +1,5 @@
 //! Sidebar shortcuts builder — returns the tiered structure of labelled
-//! destinations matching the `nirios-concept` FilesApp sidebar: a
+//! destinations matching the `nirios-concept` `FilesApp` sidebar: a
 //! **Favorites** group (user xdg-dirs) and a **System** group (root).
 //!
 //! Replaces the flat list that originally mirrored the iced
@@ -45,7 +45,11 @@ pub fn build_tiers(home: Option<&Path>) -> Vec<SidebarTier> {
             entries: vec![
                 (Icon::Home, "Home".into(), home.to_path_buf()),
                 (Icon::FileText, "Documents".into(), home.join("Documents")),
-                (Icon::CloudDownload, "Downloads".into(), home.join("Downloads")),
+                (
+                    Icon::CloudDownload,
+                    "Downloads".into(),
+                    home.join("Downloads"),
+                ),
                 (Icon::Image, "Pictures".into(), home.join("Pictures")),
                 (Icon::Music, "Music".into(), home.join("Music")),
                 (Icon::Film, "Videos".into(), home.join("Videos")),
@@ -71,10 +75,7 @@ pub fn build_shortcuts(home: Option<&Path>) -> Vec<Shortcut> {
 
 /// Returns the index of the shortcut whose path equals `current`, if any.
 /// Used by list rendering to mark the active shortcut (AUDIT.md S2).
-pub fn active_shortcut_index(
-    shortcuts: &[Shortcut],
-    current: &Path,
-) -> Option<usize> {
+pub fn active_shortcut_index(shortcuts: &[Shortcut], current: &Path) -> Option<usize> {
     shortcuts.iter().position(|(_, _, p)| p == current)
 }
 
@@ -113,7 +114,14 @@ mod tests {
         // the glyph is a themed vector [`Icon`], not a font codepoint.
         assert_eq!(
             labels,
-            vec!["Home", "Documents", "Downloads", "Pictures", "Music", "Videos"]
+            vec![
+                "Home",
+                "Documents",
+                "Downloads",
+                "Pictures",
+                "Music",
+                "Videos"
+            ]
         );
         let icons: Vec<Icon> = tiers[0].entries.iter().map(|(i, _, _)| *i).collect();
         assert_eq!(

@@ -20,16 +20,31 @@ use crate::units::Units;
 
 /// A job for the network worker.
 pub enum Request {
-    Forecast { location_id: LocationId, lat: f64, lon: f64, units: Units },
-    AirQuality { location_id: LocationId, lat: f64, lon: f64 },
-    Geocode { seq: u64, query: String },
+    Forecast {
+        location_id: LocationId,
+        lat: f64,
+        lon: f64,
+        units: Units,
+    },
+    AirQuality {
+        location_id: LocationId,
+        lat: f64,
+        lon: f64,
+    },
+    Geocode {
+        seq: u64,
+        query: String,
+    },
 }
 
 /// A completed job (or an error string for the status line).
 pub enum Response {
     Forecast(WeatherSnapshot),
     AirQuality(AirQuality),
-    Geocode { seq: u64, results: Vec<SavedLocation> },
+    Geocode {
+        seq: u64,
+        results: Vec<SavedLocation>,
+    },
     Error(String),
 }
 
@@ -50,7 +65,10 @@ impl WeatherService {
             .name("weather-net".to_string())
             .spawn(move || worker(req_rx, res_tx));
 
-        Self { tx: req_tx, rx: res_rx }
+        Self {
+            tx: req_tx,
+            rx: res_rx,
+        }
     }
 
     /// Queue a job. Errors (worker gone) are swallowed — the UI keeps its
@@ -65,7 +83,7 @@ impl WeatherService {
         loop {
             match self.rx.try_recv() {
                 Ok(r) => out.push(r),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         out
@@ -73,7 +91,10 @@ impl WeatherService {
 }
 
 fn worker(req_rx: Receiver<Request>, res_tx: Sender<Response>) {
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             let _ = res_tx.send(Response::Error(format!("tokio init: {e}")));
@@ -87,25 +108,32 @@ fn worker(req_rx: Receiver<Request>, res_tx: Sender<Response>) {
 
     while let Ok(req) = req_rx.recv() {
         match req {
-            Request::Forecast { location_id, lat, lon, units } => {
+            Request::Forecast {
+                location_id,
+                lat,
+                lon,
+                units,
+            } => {
                 let url = api::forecast_url(lat, lon, units);
                 match rt.block_on(fetch(client.as_ref(), &url)) {
-                    Ok(body) => {
-                        match api::parse_forecast(&body, location_id, units, now_secs()) {
-                            Ok(snap) => {
-                                let _ = res_tx.send(Response::Forecast(snap));
-                            }
-                            Err(e) => {
-                                let _ = res_tx.send(Response::Error(e));
-                            }
+                    Ok(body) => match api::parse_forecast(&body, location_id, units, now_secs()) {
+                        Ok(snap) => {
+                            let _ = res_tx.send(Response::Forecast(snap));
                         }
-                    }
+                        Err(e) => {
+                            let _ = res_tx.send(Response::Error(e));
+                        }
+                    },
                     Err(e) => {
                         let _ = res_tx.send(Response::Error(e));
                     }
                 }
             }
-            Request::AirQuality { location_id, lat, lon } => {
+            Request::AirQuality {
+                location_id,
+                lat,
+                lon,
+            } => {
                 let url = api::air_quality_url(lat, lon);
                 match rt.block_on(fetch(client.as_ref(), &url)) {
                     Ok(body) => match api::parse_air_quality(&body, location_id, now_secs()) {
@@ -157,6 +185,5 @@ async fn fetch(client: Option<&reqwest::Client>, url: &str) -> Result<String, St
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }

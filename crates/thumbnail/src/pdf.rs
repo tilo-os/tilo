@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 
 use pdfium_render::prelude::*;
 
-use crate::generate::{rgba_to_thumb, RgbaThumb};
+use crate::generate::{RgbaThumb, rgba_to_thumb};
 
 /// Serialises all pdfium access — the shared library handle is `!Sync` and
 /// callers may drive several worker threads.
@@ -27,7 +27,7 @@ fn shared_pdfium() -> Option<&'static Pdfium> {
     let addr = *ADDR.get_or_init(|| match find_pdfium() {
         Some(bindings) => {
             let handle: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
-            handle as *const Pdfium as usize
+            std::ptr::from_ref::<Pdfium>(handle) as usize
         }
         None => 0,
     });
@@ -42,12 +42,11 @@ fn shared_pdfium() -> Option<&'static Pdfium> {
 /// Locate a usable pdfium without ever bundling one (same search order the PDF
 /// viewer uses: `QOS_PDFIUM_LIB`, common system paths, `~/.local/lib/pdfium`).
 fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
-    if let Ok(path) = std::env::var("QOS_PDFIUM_LIB") {
-        if !path.is_empty() {
-            if let Ok(b) = Pdfium::bind_to_library(&path) {
-                return Some(b);
-            }
-        }
+    if let Ok(path) = std::env::var("QOS_PDFIUM_LIB")
+        && !path.is_empty()
+        && let Ok(b) = Pdfium::bind_to_library(&path)
+    {
+        return Some(b);
     }
     let mut candidates: Vec<String> = vec![
         "/usr/lib64/libpdfium.so".into(),
@@ -59,10 +58,10 @@ fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
         candidates.push(format!("{home}/.local/lib/pdfium/libpdfium.so"));
     }
     for cand in candidates {
-        if Path::new(&cand).exists() {
-            if let Ok(b) = Pdfium::bind_to_library(&cand) {
-                return Some(b);
-            }
+        if Path::new(&cand).exists()
+            && let Ok(b) = Pdfium::bind_to_library(&cand)
+        {
+            return Some(b);
         }
     }
     Pdfium::bind_to_system_library().ok()

@@ -42,9 +42,7 @@ mod tests {
     use taffy::{NodeId, TaffyTree};
     use ui::widget::Widget;
     use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{
-        Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr,
-    };
+    use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
 
     fn device_id() -> DeviceId {
         // winit exposes no public DeviceId constructor; tests only need a value.
@@ -62,7 +60,11 @@ mod tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = Some(SmolStr::new(c));
-        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     /// Pump one event through the production `Widget::handle_event`, returning
@@ -71,7 +73,17 @@ mod tests {
         let taffy = TaffyTree::<()>::new();
         let mut handled = false;
         let mut focus = None;
-        app.handle_event(ev, 1.0, mods, doc, &ROOT, &mut handled, &mut focus, NodeId::new(0), &taffy);
+        app.handle_event(
+            ev,
+            1.0,
+            mods,
+            doc,
+            &ROOT,
+            &mut handled,
+            &mut focus,
+            NodeId::new(0),
+            &taffy,
+        );
         handled
     }
 
@@ -123,7 +135,11 @@ mod tests {
         let before = doc.text(&src).unwrap();
 
         let mut peer = AutoCommit::load(&base).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads(), "precondition: replicas share a base");
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "precondition: replicas share a base"
+        );
 
         // No modifiers → the keystroke falls through to the focused editor, which
         // splices it into the bound source object on the CRDT-native text path.
@@ -140,8 +156,16 @@ mod tests {
         );
 
         peer.merge(&mut doc).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads(), "byte-identical convergence after merge");
-        assert_eq!(peer.text(&src).unwrap(), after, "the peer sees the same source text");
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "byte-identical convergence after merge"
+        );
+        assert_eq!(
+            peer.text(&src).unwrap(),
+            after,
+            "the peer sees the same source text"
+        );
     }
 
     /// Switching documents (Ctrl+]) is a bulk edit of the *same* `root["source"]`
@@ -155,12 +179,22 @@ mod tests {
         let text_before = doc.text(&src_before).unwrap();
 
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(send(&mut app, &mut doc, &char_event("]"), &ctrl), "Ctrl+] consumed");
+        assert!(
+            send(&mut app, &mut doc, &char_event("]"), &ctrl),
+            "Ctrl+] consumed"
+        );
 
         let keys: Vec<String> = doc.keys(&ROOT).collect();
-        assert_eq!(keys, vec!["source".to_string()], "still only the source key: {keys:?}");
+        assert_eq!(
+            keys,
+            vec!["source".to_string()],
+            "still only the source key: {keys:?}"
+        );
         let src_after = source_id(&doc);
-        assert_eq!(src_before, src_after, "same Text object, spliced in place — not replaced");
+        assert_eq!(
+            src_before, src_after,
+            "same Text object, spliced in place — not replaced"
+        );
         assert_ne!(
             doc.text(&src_after).unwrap(),
             text_before,

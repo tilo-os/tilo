@@ -4,7 +4,7 @@
 //! renders end-to-end (declare providers → query → merge/rank → grouped,
 //! selectable overlay) without opening a window.
 //!
-//! Run:  cargo run -p ui --example search_showcase
+//! Run:  cargo run -p ui --example ui-shots -- search_showcase
 //! Out:  $SEARCH_SHOWCASE_OUT (default /tmp/search_showcase) —
 //!       search-{dark,light}-populated.png, search-dark-selected.png,
 //!       search-dark-empty.png
@@ -22,7 +22,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use ui::icons::Icon;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
-use ui::search::{fuzzy_score, SearchRegistry, SearchResult};
+use ui::search::{SearchRegistry, SearchResult, fuzzy_score};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{SearchField, SearchResultsView, Widget};
@@ -62,7 +62,11 @@ fn registry() -> SearchRegistry {
         &[
             ("Alice Ng", Some("alice@example.com"), "contact:alice"),
             ("Alan Turing", Some("Computing"), "contact:alan"),
-            ("Priya Natarajan", Some("priya@example.com"), "contact:priya"),
+            (
+                "Priya Natarajan",
+                Some("priya@example.com"),
+                "contact:priya",
+            ),
         ],
     );
     provider(
@@ -155,9 +159,10 @@ fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
     println!("wrote {} ({}x{})", out.display(), WIDTH, height);
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
-    let dir = std::env::var("SEARCH_SHOWCASE_OUT").unwrap_or_else(|_| "/tmp/search_showcase".into());
+    let dir =
+        std::env::var("SEARCH_SHOWCASE_OUT").unwrap_or_else(|_| "/tmp/search_showcase".into());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
 

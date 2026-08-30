@@ -9,20 +9,20 @@
 //!   - 20 % hover-edge crossings — these mutate hover state on
 //!     exactly one widget per event, so only that widget's cache
 //!     should invalidate.
-//!   -  5 % clicks on a ToggleGroup — mutates `selected`, re-
-//!     emits the picker, every other widget hits its cache.
+//!   -  5 % clicks on a `ToggleGroup` — mutates `selected`, re-
+//!      emits the picker, every other widget hits its cache.
 //!   -  5 % "complex" events (spinner-style animation ticks where
 //!      every animating widget marks itself dirty).
 //!
 //! The bench tallies:
 //!   - "no-op" events that didn't request a redraw (proves Unit 2).
-//!   - draw_to_scene mean cost across redrawing events.
+//!   - `draw_to_scene` mean cost across redrawing events.
 //!   - vello render mean cost.
 //!   - effective throughput Hz = 1 / total mean per event.
 //!
 //! Run with:
 //! ```
-//! cargo run -p quick-ui --release --example dashboard_perf_bench
+//! cargo run -p ui --release --example ui-perf -- dashboard_perf_bench
 //! ```
 //! Override iterations: `QUICK_UI_DASH_ITERS=2000`.
 
@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use automerge::AutoCommit;
+use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::i18n::I18nManager;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
@@ -41,16 +42,16 @@ use ui::widget::{
     Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
     ToggleGroup, Widget,
 };
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{
+    DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+};
 
 /// One panel of the dashboard: header + a column of mixed widgets.
 fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
-    let mut col = Column::new()
-        .push(Box::new(Text::new(title_key).with_size(18.0)));
+    let mut col = Column::new().push(Box::new(Text::new(title_key).with_size(18.0)));
 
     // Twenty rows. To exercise the Unit 2 redraw gate, only
     // widgets whose `needs_redraw` is genuinely opt-in show up
@@ -61,28 +62,31 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
         let row_idx = idx * 20 + i;
         let label_key = leak_label(&format!("dash_lbl_{row_idx}"));
         match i % 3 {
-            0 => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Button::new(
-                        leak_label(&format!("dash_btn_{row_idx}")),
-                        leak_label(&format!("dash_btnlbl_{row_idx}")),
-                        None,
-                    ))),
-            )),
-            1 => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Badge::count((i as u32) * 3))),
-            )),
-            _ => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Avatar::from_initials(
-                        &format!("U{i}"),
-                        24.0,
-                    ))),
-            )),
+            0 => {
+                col = col.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(label_key)))
+                        .push(Box::new(Button::new(
+                            leak_label(&format!("dash_btn_{row_idx}")),
+                            leak_label(&format!("dash_btnlbl_{row_idx}")),
+                            None,
+                        ))),
+                ));
+            }
+            1 => {
+                col = col.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(label_key)))
+                        .push(Box::new(Badge::count((i as u32) * 3))),
+                ));
+            }
+            _ => {
+                col = col.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(label_key)))
+                        .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
+                ));
+            }
         }
     }
 
@@ -127,8 +131,7 @@ fn build_tree(include_animated: bool) -> Box<dyn Widget> {
 
     let mut panels = Row::new();
     let titles = [
-        "dash_p0", "dash_p1", "dash_p2", "dash_p3",
-        "dash_p4", "dash_p5", "dash_p6", "dash_p7",
+        "dash_p0", "dash_p1", "dash_p2", "dash_p3", "dash_p4", "dash_p5", "dash_p6", "dash_p7",
     ];
     for (i, t) in titles.iter().enumerate() {
         panels = panels.push(panel(t, i));
@@ -163,6 +166,12 @@ struct Phase {
     total_us: u128,
 }
 
+// One call site: this is the whole benchmark's "run one entire frame" step,
+// and each parameter is a distinct piece of frame state (widget tree,
+// layout engine, render targets, timing out-param). Bundling would trade
+// named parameters for an equally large ad-hoc struct with no behavioural
+// change.
+#[allow(clippy::too_many_arguments)]
 fn full_draw(
     root: &mut Box<dyn Widget>,
     taffy: &mut TaffyTree<()>,
@@ -204,9 +213,16 @@ fn full_draw(
     // does. Without this the bench's `draw_with_presence` walks
     // see `viewport == None` and skip the culling short-circuit,
     // masking the Item 1 win in the benchmark output.
-    let vp = vello::kurbo::Rect::new(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+    let vp = vello::kurbo::Rect::new(0.0, 0.0, f64::from(canvas_w), f64::from(canvas_h));
     let prev_vp = presence.push_viewport(vp);
-    root.draw_with_presence(scene, Affine::IDENTITY, text_renderer, theme, presence, perms);
+    root.draw_with_presence(
+        scene,
+        Affine::IDENTITY,
+        text_renderer,
+        theme,
+        presence,
+        perms,
+    );
     presence.pop_viewport(prev_vp);
     phase.draw_us = t_draw.elapsed().as_micros();
 
@@ -228,24 +244,42 @@ fn dispatch(
     let mut focus_target: Option<NodeId> = None;
     let modifiers = Modifiers::default();
     root.handle_event(
-        event, 1.0, &modifiers, doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, taffy,
+        event,
+        1.0,
+        &modifiers,
+        doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        taffy,
     );
 }
 
 fn make_cursor(x: f64, y: f64) -> WindowEvent {
     let device_id: DeviceId = unsafe { std::mem::zeroed() };
-    WindowEvent::CursorMoved { device_id, position: PhysicalPosition::new(x, y) }
+    WindowEvent::CursorMoved {
+        device_id,
+        position: PhysicalPosition::new(x, y),
+    }
 }
 
 fn make_click_press() -> WindowEvent {
     let device_id: DeviceId = unsafe { std::mem::zeroed() };
-    WindowEvent::MouseInput { device_id, state: ElementState::Pressed, button: MouseButton::Left }
+    WindowEvent::MouseInput {
+        device_id,
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    }
 }
 
 fn make_click_release() -> WindowEvent {
     let device_id: DeviceId = unsafe { std::mem::zeroed() };
-    WindowEvent::MouseInput { device_id, state: ElementState::Released, button: MouseButton::Left }
+    WindowEvent::MouseInput {
+        device_id,
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    }
 }
 
 fn make_wheel(dy: f32) -> WindowEvent {
@@ -257,7 +291,7 @@ fn make_wheel(dy: f32) -> WindowEvent {
     }
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     I18nManager::init("en-US");
     // Register every label key so `Text::new(key)` resolves
     // through i18n without panicking.
@@ -280,11 +314,14 @@ fn main() {
     let static_mode = std::env::var("QUICK_UI_DASH_STATIC").is_ok();
     let include_animated = !static_mode;
     let (canvas_w, canvas_h) = (1800u32, 1200u32);
-    println!("mode: {}", if static_mode {
-        "static (no spinners / indeterminate bars — gate-skipped events should dominate)"
-    } else {
-        "animated (header contains spinners + indeterminate progress)"
-    });
+    println!(
+        "mode: {}",
+        if static_mode {
+            "static (no spinners / indeterminate bars — gate-skipped events should dominate)"
+        } else {
+            "animated (header contains spinners + indeterminate progress)"
+        }
+    );
 
     let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
     let theme = Theme::dark();
@@ -301,7 +338,11 @@ fn main() {
 
     // Count the total widget tree size for the report.
     fn count_widgets(w: &dyn Widget) -> usize {
-        1 + w.children().iter().map(|c| count_widgets(*c)).sum::<usize>()
+        1 + w
+            .children()
+            .iter()
+            .map(|c| count_widgets(*c))
+            .sum::<usize>()
     }
     let tree_size = count_widgets(root.as_ref());
     println!("dashboard widget tree: {tree_size} widgets");
@@ -310,14 +351,25 @@ fn main() {
     for _ in 0..2 {
         let mut warm = Phase::default();
         full_draw(
-            &mut root, &mut taffy, &node_map, root_node,
-            &mut text_renderer, &presence, &perms, &theme,
-            &mut scene, &mut renderer, canvas_w, canvas_h, &mut warm,
+            &mut root,
+            &mut taffy,
+            &node_map,
+            root_node,
+            &mut text_renderer,
+            &presence,
+            &perms,
+            &theme,
+            &mut scene,
+            &mut renderer,
+            canvas_w,
+            canvas_h,
+            &mut warm,
         );
     }
     println!(
         "after warm-up: root.needs_redraw()={} root.is_layout_dirty()={}",
-        root.needs_redraw(), root.is_layout_dirty()
+        root.needs_redraw(),
+        root.is_layout_dirty()
     );
     fn dirty_culprits(w: &dyn Widget, depth: usize, out: &mut Vec<(String, usize)>) {
         if w.needs_redraw() {
@@ -331,7 +383,7 @@ fn main() {
     dirty_culprits(root.as_ref(), 0, &mut culprits);
     println!("dirty culprits after warmup: {} widgets", culprits.len());
     for (name, d) in culprits.iter().take(8) {
-        println!("  {} (depth {})", name, d);
+        println!("  {name} (depth {d})");
     }
     let (warm_hits, warm_misses) = text_renderer.cache_stats();
     println!(
@@ -372,14 +424,30 @@ fn main() {
     if frozen {
         // Prime the cursor at the frozen position so the first
         // event doesn't trigger a hover-state change.
-        let p = (canvas_w as f64 - 5.0, canvas_h as f64 - 5.0);
-        dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(p.0, p.1));
+        let p = (f64::from(canvas_w) - 5.0, f64::from(canvas_h) - 5.0);
+        dispatch(
+            &mut root,
+            &taffy,
+            root_node,
+            &mut doc,
+            &make_cursor(p.0, p.1),
+        );
         // Draw one frame to clear pending dirty flags.
         let mut warm = Phase::default();
         full_draw(
-            &mut root, &mut taffy, &node_map, root_node,
-            &mut text_renderer, &presence, &perms, &theme,
-            &mut scene, &mut renderer, canvas_w, canvas_h, &mut warm,
+            &mut root,
+            &mut taffy,
+            &node_map,
+            root_node,
+            &mut text_renderer,
+            &presence,
+            &perms,
+            &theme,
+            &mut scene,
+            &mut renderer,
+            canvas_w,
+            canvas_h,
+            &mut warm,
         );
     }
 
@@ -396,21 +464,63 @@ fn main() {
             dispatch(&mut root, &taffy, root_node, &mut doc, &make_wheel(dy));
         } else if frozen {
             // Identical no-op event — see comment above.
-            let p = (canvas_w as f64 - 5.0, canvas_h as f64 - 5.0);
-            dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(p.0, p.1));
+            let p = (f64::from(canvas_w) - 5.0, f64::from(canvas_h) - 5.0);
+            dispatch(
+                &mut root,
+                &taffy,
+                root_node,
+                &mut doc,
+                &make_cursor(p.0, p.1),
+            );
         } else {
             let pick = i % 20;
             match pick {
-                0..=13 => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pa.0 + (i as f64).sin() * 4.0, pa.1)),
-                14 | 15 => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pb.0, pb.1)),
-                16 => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pc.0, pc.1)),
+                0..=13 => dispatch(
+                    &mut root,
+                    &taffy,
+                    root_node,
+                    &mut doc,
+                    &make_cursor(pa.0 + (i as f64).sin() * 4.0, pa.1),
+                ),
+                14 | 15 => dispatch(
+                    &mut root,
+                    &taffy,
+                    root_node,
+                    &mut doc,
+                    &make_cursor(pb.0, pb.1),
+                ),
+                16 => dispatch(
+                    &mut root,
+                    &taffy,
+                    root_node,
+                    &mut doc,
+                    &make_cursor(pc.0, pc.1),
+                ),
                 17 => {
                     let p = if i % 40 < 20 { pd } else { pe };
-                    dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(p.0, p.1));
+                    dispatch(
+                        &mut root,
+                        &taffy,
+                        root_node,
+                        &mut doc,
+                        &make_cursor(p.0, p.1),
+                    );
                     dispatch(&mut root, &taffy, root_node, &mut doc, &make_click_press());
-                    dispatch(&mut root, &taffy, root_node, &mut doc, &make_click_release());
+                    dispatch(
+                        &mut root,
+                        &taffy,
+                        root_node,
+                        &mut doc,
+                        &make_click_release(),
+                    );
                 }
-                _ => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pa.0 + (i as f64).cos() * 4.0, pa.1)),
+                _ => dispatch(
+                    &mut root,
+                    &taffy,
+                    root_node,
+                    &mut doc,
+                    &make_cursor(pa.0 + (i as f64).cos() * 4.0, pa.1),
+                ),
             }
         }
         phase.handle_us = t_handle.elapsed().as_micros();
@@ -419,9 +529,19 @@ fn main() {
         if root.needs_redraw() {
             total_redraws += 1;
             full_draw(
-                &mut root, &mut taffy, &node_map, root_node,
-                &mut text_renderer, &presence, &perms, &theme,
-                &mut scene, &mut renderer, canvas_w, canvas_h, &mut phase,
+                &mut root,
+                &mut taffy,
+                &node_map,
+                root_node,
+                &mut text_renderer,
+                &presence,
+                &perms,
+                &theme,
+                &mut scene,
+                &mut renderer,
+                canvas_w,
+                canvas_h,
+                &mut phase,
             );
         } else {
             total_skipped += 1;
@@ -437,51 +557,76 @@ fn main() {
         v[idx]
     }
     fn mean(hist: &[Phase], f: impl Fn(&Phase) -> u128) -> u128 {
-        if hist.is_empty() { return 0; }
+        if hist.is_empty() {
+            return 0;
+        }
         hist.iter().map(&f).sum::<u128>() / hist.len() as u128
     }
 
     println!();
     println!("=== Dashboard bench ({iters} events, canvas {canvas_w}×{canvas_h}) ===");
-    println!("redrawn events:  {total_redraws}  ({:.1}%)",
-        (total_redraws as f64) / (iters as f64) * 100.0);
+    println!(
+        "redrawn events:  {total_redraws}  ({:.1}%)",
+        (total_redraws as f64) / (iters as f64) * 100.0
+    );
     println!("skipped events:  {total_skipped}  (no widget signalled dirty)");
     println!();
-    println!("{:<20} {:>8} {:>8} {:>8}", "phase", "mean us", "p95 us", "p99 us");
-    println!("{:<20} {:>8} {:>8} {:>8}", "handle_event",
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "phase", "mean us", "p95 us", "p99 us"
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "handle_event",
         mean(&histo, |p| p.handle_us),
         pct(&histo, 95.0, |p| p.handle_us),
-        pct(&histo, 99.0, |p| p.handle_us));
-    println!("{:<20} {:>8} {:>8} {:>8}", "layout (gated)",
+        pct(&histo, 99.0, |p| p.handle_us)
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "layout (gated)",
         mean(&histo, |p| p.layout_us),
         pct(&histo, 95.0, |p| p.layout_us),
-        pct(&histo, 99.0, |p| p.layout_us));
-    println!("{:<20} {:>8} {:>8} {:>8}", "draw_to_scene",
+        pct(&histo, 99.0, |p| p.layout_us)
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "draw_to_scene",
         mean(&histo, |p| p.draw_us),
         pct(&histo, 95.0, |p| p.draw_us),
-        pct(&histo, 99.0, |p| p.draw_us));
-    println!("{:<20} {:>8} {:>8} {:>8}", "vello render",
+        pct(&histo, 99.0, |p| p.draw_us)
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "vello render",
         mean(&histo, |p| p.render_us),
         pct(&histo, 95.0, |p| p.render_us),
-        pct(&histo, 99.0, |p| p.render_us));
-    println!("{:<20} {:>8} {:>8} {:>8}", "TOTAL/event",
+        pct(&histo, 99.0, |p| p.render_us)
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "TOTAL/event",
         mean(&histo, |p| p.total_us),
         pct(&histo, 95.0, |p| p.total_us),
-        pct(&histo, 99.0, |p| p.total_us));
+        pct(&histo, 99.0, |p| p.total_us)
+    );
 
     let mean_total = mean(&histo, |p| p.total_us).max(1);
     let mean_redraw_only: u128 = if total_redraws == 0 {
         0
     } else {
-        histo.iter()
+        histo
+            .iter()
             .filter(|p| p.render_us > 0 || p.draw_us > 0)
             .map(|p| p.total_us)
-            .sum::<u128>() / total_redraws as u128
+            .sum::<u128>()
+            / total_redraws as u128
     };
     println!();
     println!(
         "throughput (mean across mixed events):     {:>5} Hz   ({:.1} ms / event)",
-        1_000_000 / mean_total, (mean_total as f64) / 1000.0,
+        1_000_000 / mean_total,
+        (mean_total as f64) / 1000.0,
     );
     if total_redraws > 0 {
         println!(

@@ -19,7 +19,7 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 
-use crate::engine::{open_engine, LiveEngine};
+use crate::engine::{LiveEngine, open_engine};
 use crate::model::{ConnectionProfile, DatabaseSchema, QueryResult};
 
 /// Work handed to the background thread.
@@ -118,16 +118,13 @@ impl DbWorker {
     pub fn block_until_idle(&mut self) -> Vec<DbReply> {
         let mut out = Vec::new();
         while self.outstanding > 0 {
-            match self.rx.recv() {
-                Ok(reply) => {
-                    self.outstanding -= 1;
-                    out.push(reply);
-                }
-                Err(_) => {
-                    // Sender hung up; nothing more will arrive.
-                    self.outstanding = 0;
-                    break;
-                }
+            if let Ok(reply) = self.rx.recv() {
+                self.outstanding -= 1;
+                out.push(reply);
+            } else {
+                // Sender hung up; nothing more will arrive.
+                self.outstanding = 0;
+                break;
             }
         }
         out

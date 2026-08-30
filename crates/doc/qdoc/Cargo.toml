@@ -1,7 +1,9 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "qdoc"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "CRDT-native canonical document model and format-provider API for qOS"
 
 [dependencies]
@@ -13,6 +15,15 @@ quick-xml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

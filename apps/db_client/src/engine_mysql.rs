@@ -1,4 +1,4 @@
-//! MySQL / MariaDB execution engine: opens a real TCP connection through the
+//! `MySQL` / `MariaDB` execution engine: opens a real TCP connection through the
 //! sync `mysql` crate, introspects `information_schema` and runs arbitrary SQL
 //! returning a [`QueryResult`]. Mirrors [`crate::engine::SqliteEngine`] and
 //! [`crate::engine_pg::PostgresEngine`] so the session can hold any engine
@@ -15,7 +15,7 @@ use crate::model::{
     TableInfo, TypeClass,
 };
 
-/// A live MySQL connection. Owns the connection for the session lifetime.
+/// A live `MySQL` connection. Owns the connection for the session lifetime.
 pub struct MySqlEngine {
     conn: Conn,
 }
@@ -30,7 +30,11 @@ pub(crate) fn mysql_opts(profile: &crate::model::ConnectionProfile) -> OptsBuild
     };
     let mut b = OptsBuilder::new()
         .ip_or_hostname(Some(host))
-        .tcp_port(if profile.port == 0 { 3306 } else { profile.port })
+        .tcp_port(if profile.port == 0 {
+            3306
+        } else {
+            profile.port
+        })
         .tcp_connect_timeout(Some(Duration::from_secs(10)));
     if !profile.user.is_empty() {
         b = b.user(Some(profile.user.clone()));
@@ -54,7 +58,7 @@ impl MySqlEngine {
     }
 
     /// Introspect the connection's current database into the shared
-    /// [`DatabaseSchema`] shape. MySQL's schema namespace is the database, so
+    /// [`DatabaseSchema`] shape. `MySQL`'s schema namespace is the database, so
     /// this yields a single [`SchemaInfo`] named after it.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let db: Option<String> = self
@@ -263,13 +267,10 @@ pub(crate) fn cell_from_value(v: Value, col_type: Option<ColumnType>) -> Cell {
         Err(e) => return Cell::Blob(e.into_bytes().len()),
     };
     match col_type {
-        Some(ct) if is_integer_type(ct) => s
-            .parse::<i64>()
-            .map(Cell::Integer)
-            .unwrap_or(Cell::Text(s)),
-        Some(ct) if is_float_type(ct) => {
-            s.parse::<f64>().map(Cell::Real).unwrap_or(Cell::Text(s))
+        Some(ct) if is_integer_type(ct) => {
+            s.parse::<i64>().map(Cell::Integer).unwrap_or(Cell::Text(s))
         }
+        Some(ct) if is_float_type(ct) => s.parse::<f64>().map(Cell::Real).unwrap_or(Cell::Text(s)),
         _ => Cell::Text(s),
     }
 }
@@ -301,13 +302,13 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
         Value::NULL => Cell::Null,
         Value::Int(i) => Cell::Integer(i),
         Value::UInt(u) => {
-            if u <= i64::MAX as u64 {
+            if i64::try_from(u).is_ok() {
                 Cell::Integer(u as i64)
             } else {
                 Cell::Text(u.to_string())
             }
         }
-        Value::Float(f) => Cell::Real(f as f64),
+        Value::Float(f) => Cell::Real(f64::from(f)),
         Value::Double(d) => Cell::Real(d),
         Value::Bytes(b) => match String::from_utf8(b) {
             Ok(s) => Cell::Text(s),
@@ -319,12 +320,14 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
             } else if us == 0 {
                 Cell::Text(format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}"))
             } else {
-                Cell::Text(format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}.{us:06}"))
+                Cell::Text(format!(
+                    "{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}.{us:06}"
+                ))
             }
         }
         Value::Time(neg, days, h, mi, s, us) => {
             let sign = if neg { "-" } else { "" };
-            let hours = days * 24 + h as u32;
+            let hours = days * 24 + u32::from(h);
             if us == 0 {
                 Cell::Text(format!("{sign}{hours:02}:{mi:02}:{s:02}"))
             } else {
@@ -387,20 +390,32 @@ mod tests {
         // The text protocol hands back integer/float columns as raw bytes; the
         // column type recovers a typed numeric cell so the grid right-aligns.
         assert_eq!(
-            cell_from_value(Value::Bytes(b"42".to_vec()), Some(ColumnType::MYSQL_TYPE_LONG)),
+            cell_from_value(
+                Value::Bytes(b"42".to_vec()),
+                Some(ColumnType::MYSQL_TYPE_LONG)
+            ),
             Cell::Integer(42)
         );
         assert_eq!(
-            cell_from_value(Value::Bytes(b"1.5".to_vec()), Some(ColumnType::MYSQL_TYPE_DOUBLE)),
+            cell_from_value(
+                Value::Bytes(b"1.5".to_vec()),
+                Some(ColumnType::MYSQL_TYPE_DOUBLE)
+            ),
             Cell::Real(1.5)
         );
         // A text column stays text even when the bytes look numeric.
         assert_eq!(
-            cell_from_value(Value::Bytes(b"42".to_vec()), Some(ColumnType::MYSQL_TYPE_VAR_STRING)),
+            cell_from_value(
+                Value::Bytes(b"42".to_vec()),
+                Some(ColumnType::MYSQL_TYPE_VAR_STRING)
+            ),
             Cell::Text("42".into())
         );
         // NULL and already-typed binary-protocol values pass straight through.
-        assert_eq!(cell_from_value(Value::NULL, Some(ColumnType::MYSQL_TYPE_LONG)), Cell::Null);
+        assert_eq!(
+            cell_from_value(Value::NULL, Some(ColumnType::MYSQL_TYPE_LONG)),
+            Cell::Null
+        );
         assert_eq!(
             cell_from_value(Value::Int(7), Some(ColumnType::MYSQL_TYPE_LONG)),
             Cell::Integer(7)

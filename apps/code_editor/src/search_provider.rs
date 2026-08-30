@@ -55,9 +55,19 @@ impl FileSearchProvider {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .filter(|s| !s.is_empty())
-                .or_else(|| session.project.get(b.node).map(|_| session.project.path_of(b.node)))
+                .or_else(|| {
+                    session
+                        .project
+                        .get(b.node)
+                        .map(|_| session.project.path_of(b.node))
+                })
                 .unwrap_or_else(|| b.name.clone());
-            files.push(FileEntry { node: b.node, name: b.name.clone(), path, open: true });
+            files.push(FileEntry {
+                node: b.node,
+                name: b.name.clone(),
+                path,
+                open: true,
+            });
         }
 
         // Then every revealed file node that is not already an open tab.
@@ -83,12 +93,14 @@ impl FileSearchProvider {
 
     /// Resolve an `action_id` produced by this provider back into a node id.
     pub fn parse_action_id(action_id: &str) -> Option<NodeId> {
-        action_id.strip_prefix(ACTION_PREFIX).and_then(|rest| rest.parse::<NodeId>().ok())
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .and_then(|rest| rest.parse::<NodeId>().ok())
     }
 }
 
 impl SearchProvider for FileSearchProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         // Rows carry their own kind ("Open files" / "Project files"); this is
         // the default/diagnostic label.
         "Files"
@@ -99,7 +111,9 @@ impl SearchProvider for FileSearchProvider {
         self.files
             .iter()
             .filter(|f| {
-                q.is_empty() || f.name.to_lowercase().contains(&q) || f.path.to_lowercase().contains(&q)
+                q.is_empty()
+                    || f.name.to_lowercase().contains(&q)
+                    || f.path.to_lowercase().contains(&q)
             })
             .map(|f| {
                 let kind = if f.open { OPEN_KIND } else { PROJECT_KIND };
@@ -126,7 +140,9 @@ mod tests {
     use ui::search::SearchRegistry;
 
     fn sample_session() -> Session {
-        crate::app::CodeApp::with_sample().session_for_test().clone()
+        crate::app::CodeApp::with_sample()
+            .session_for_test()
+            .clone()
     }
 
     #[test]
@@ -136,7 +152,11 @@ mod tests {
         // Every non-folder node should be findable by browsing.
         let browse = provider.search("");
         assert!(!browse.is_empty(), "the sample project has revealed files");
-        assert!(browse.iter().all(|r| r.kind == OPEN_KIND || r.kind == PROJECT_KIND));
+        assert!(
+            browse
+                .iter()
+                .all(|r| r.kind == OPEN_KIND || r.kind == PROJECT_KIND)
+        );
     }
 
     #[test]
@@ -144,9 +164,17 @@ mod tests {
         let session = sample_session();
         let mut registry = SearchRegistry::new();
         registry.register(Box::new(FileSearchProvider::new(&session)));
-        let hit = registry.query("").into_iter().next().expect("something is browsable");
-        let node = FileSearchProvider::parse_action_id(&hit.action_id).expect("action_id parses to a node");
-        assert!(session.project.get(node).is_some(), "the id resolves to a real project node");
+        let hit = registry
+            .query("")
+            .into_iter()
+            .next()
+            .expect("something is browsable");
+        let node = FileSearchProvider::parse_action_id(&hit.action_id)
+            .expect("action_id parses to a node");
+        assert!(
+            session.project.get(node).is_some(),
+            "the id resolves to a real project node"
+        );
     }
 
     #[test]
@@ -168,7 +196,10 @@ mod tests {
         // already the active tab), then activate it.
         let (action_id, node) = {
             let providers = app.search_providers();
-            assert!(!providers.is_empty(), "code_editor publishes a search provider");
+            assert!(
+                !providers.is_empty(),
+                "code_editor publishes a search provider"
+            );
             let hit = providers[0]
                 .search("")
                 .into_iter()
@@ -179,6 +210,10 @@ mod tests {
         };
 
         app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(app.active_file_node(), Some(node), "activation opened/focused the chosen file");
+        assert_eq!(
+            app.active_file_node(),
+            Some(node),
+            "activation opened/focused the chosen file"
+        );
     }
 }

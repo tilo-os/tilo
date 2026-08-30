@@ -99,7 +99,9 @@ const NEAR_BUCKETS: u32 = (2.0 / STRIP_BUCKET_SECS) as u32;
 
 /// The source-time bucket `t` (seconds) falls in.
 pub fn bucket_of(t: f64) -> u32 {
-    (t.max(0.0) / STRIP_BUCKET_SECS).floor().min(u32::MAX as f64) as u32
+    (t.max(0.0) / STRIP_BUCKET_SECS)
+        .floor()
+        .min(u32::MAX as f64) as u32
 }
 
 /// The centre time (seconds) of `bucket`.
@@ -144,7 +146,13 @@ impl Thumb {
             width,
             height,
         };
-        Self { width, height, rgba, real, image }
+        Self {
+            width,
+            height,
+            rgba,
+            real,
+            image,
+        }
     }
 
     /// The stable render handle for these pixels.
@@ -174,9 +182,9 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     ];
     let bottom = [base.r * 0.32, base.g * 0.32, base.b * 0.32];
     let mut rgba = vec![0u8; (w * h * 4) as usize];
-    let (wf, hf) = (w as f64, h as f64);
+    let (wf, hf) = (f64::from(w), f64::from(h));
     for y in 0..h {
-        let yf = y as f64 / hf;
+        let yf = f64::from(y) / hf;
         // Vertical gradient top→bottom.
         let mut r = top[0] + (bottom[0] - top[0]) * yf;
         let mut g = top[1] + (bottom[1] - top[1]) * yf;
@@ -188,7 +196,7 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
             b *= 0.82;
         }
         for x in 0..w {
-            let xf = x as f64 / wf;
+            let xf = f64::from(x) / wf;
             // Gentle corner vignette.
             let dx = (xf - 0.5) * 2.0;
             let dy = (yf - 0.5) * 2.0;
@@ -221,10 +229,14 @@ fn downscale(src: &[u8], sw: u32, sh: u32, max_w: u32, max_h: u32) -> (u32, u32,
     let mut out = vec![0u8; dw as usize * dh as usize * 4];
     for y in 0..dh {
         let y0 = (y as u64 * sh as u64 / dh as u64) as u32;
-        let y1 = (((y + 1) as u64 * sh as u64 / dh as u64) as u32).max(y0 + 1).min(sh);
+        let y1 = (((y + 1) as u64 * sh as u64 / dh as u64) as u32)
+            .max(y0 + 1)
+            .min(sh);
         for x in 0..dw {
             let x0 = (x as u64 * sw as u64 / dw as u64) as u32;
-            let x1 = (((x + 1) as u64 * sw as u64 / dw as u64) as u32).max(x0 + 1).min(sw);
+            let x1 = (((x + 1) as u64 * sw as u64 / dw as u64) as u32)
+                .max(x0 + 1)
+                .min(sw);
             let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
             let mut n = 0u32;
             for sy in y0..y1 {
@@ -348,7 +360,10 @@ impl ThumbnailCache {
             undecodable: HashSet::new(),
             failures: HashMap::new(),
             clock: 0,
-            pool: Arc::new(Pool { queue: Mutex::new(Queue::default()), wake: Condvar::new() }),
+            pool: Arc::new(Pool {
+                queue: Mutex::new(Queue::default()),
+                wake: Condvar::new(),
+            }),
             tx,
             rx,
         }
@@ -365,7 +380,11 @@ impl ThumbnailCache {
                         self.swatch_pending.remove(&id);
                         self.swatch.insert(id, t);
                     } else {
-                        self.frames.entry(id).or_default().slots.insert(bucket, Slot::Ready(t));
+                        self.frames
+                            .entry(id)
+                            .or_default()
+                            .slots
+                            .insert(bucket, Slot::Ready(t));
                     }
                 }
                 None => {
@@ -373,7 +392,11 @@ impl ThumbnailCache {
                     // is never re-requested.
                     self.swatch_pending.remove(&id);
                     if bucket != SWATCH_BUCKET {
-                        self.frames.entry(id).or_default().slots.insert(bucket, Slot::Failed);
+                        self.frames
+                            .entry(id)
+                            .or_default()
+                            .slots
+                            .insert(bucket, Slot::Failed);
                     }
                     let n = self.failures.entry(id).or_insert(0);
                     *n += 1;
@@ -417,7 +440,7 @@ impl ThumbnailCache {
             .or_insert_with(|| Arc::new(representative(palette, THUMB_W, THUMB_H)));
         #[cfg(feature = "decode")]
         {
-            let already_real = self.swatch.get(&id).map(|t| t.real).unwrap_or(false);
+            let already_real = self.swatch.get(&id).is_some_and(|t| t.real);
             if !already_real && !self.undecodable.contains(&id) {
                 self.request(id, source, SWATCH_BUCKET, at);
             }
@@ -464,7 +487,11 @@ impl ThumbnailCache {
     fn touch(&mut self, id: MediaId, bucket: u32) {
         self.clock += 1;
         let clock = self.clock;
-        self.frames.entry(id).or_default().touched.insert(bucket, clock);
+        self.frames
+            .entry(id)
+            .or_default()
+            .touched
+            .insert(bucket, clock);
     }
 
     /// Queue a decode for `(id, bucket)` unless it is already known or in
@@ -479,7 +506,11 @@ impl ThumbnailCache {
             if self.swatch_pending.contains(&id) {
                 return;
             }
-        } else if self.frames.get(&id).is_some_and(|f| f.slots.contains_key(&bucket)) {
+        } else if self
+            .frames
+            .get(&id)
+            .is_some_and(|f| f.slots.contains_key(&bucket))
+        {
             return;
         }
 
@@ -494,7 +525,12 @@ impl ThumbnailCache {
             if q.jobs.len() >= MAX_QUEUED {
                 return;
             }
-            q.jobs.push_back(Job { id, path: source.abs_path.clone(), bucket, at });
+            q.jobs.push_back(Job {
+                id,
+                path: source.abs_path.clone(),
+                bucket,
+                at,
+            });
             if q.live_workers < MAX_WORKERS {
                 q.live_workers += 1;
                 let pool = self.pool.clone();
@@ -507,7 +543,11 @@ impl ThumbnailCache {
         if bucket == SWATCH_BUCKET {
             self.swatch_pending.insert(id);
         } else {
-            self.frames.entry(id).or_default().slots.insert(bucket, Slot::Pending);
+            self.frames
+                .entry(id)
+                .or_default()
+                .slots
+                .insert(bucket, Slot::Pending);
         }
     }
 
@@ -581,7 +621,11 @@ impl ThumbnailCache {
                 Some(th) => Slot::Ready(Arc::new(th)),
                 None => Slot::Failed,
             };
-            self.frames.entry(id).or_default().slots.insert(bucket, slot);
+            self.frames
+                .entry(id)
+                .or_default()
+                .slots
+                .insert(bucket, slot);
         }
         self.evict(id);
     }
@@ -607,14 +651,10 @@ impl ThumbnailCache {
             }
             let lo = want.saturating_sub(NEAR_BUCKETS);
             let hi = want.saturating_add(NEAR_BUCKETS);
-            let below = f
-                .slots
-                .range(lo..want)
-                .rev()
-                .find_map(|(b, s)| match s {
-                    Slot::Ready(th) => Some((want - b, th)),
-                    _ => None,
-                });
+            let below = f.slots.range(lo..want).rev().find_map(|(b, s)| match s {
+                Slot::Ready(th) => Some((want - b, th)),
+                _ => None,
+            });
             let above = f.slots.range(want..=hi).find_map(|(b, s)| match s {
                 Slot::Ready(th) => Some((b - want, th)),
                 _ => None,
@@ -652,7 +692,9 @@ impl ThumbnailCache {
     /// nothing. Scrubbing a long clip visits unboundedly many buckets, so both
     /// halves have to be pruned, not just the pixels.
     fn evict(&mut self, id: MediaId) {
-        let Some(f) = self.frames.get_mut(&id) else { return };
+        let Some(f) = self.frames.get_mut(&id) else {
+            return;
+        };
         // A pending slot is in flight and must survive; anything settled is
         // fair game.
         let mut settled: Vec<u32> = f
@@ -750,7 +792,14 @@ fn run_worker(pool: Arc<Pool>, tx: Sender<Outcome>) {
             // A source that cannot even be opened must not keep a stale engine.
             session = None;
         }
-        if tx.send(Outcome { id: job.id, bucket: job.bucket, thumb }).is_err() {
+        if tx
+            .send(Outcome {
+                id: job.id,
+                bucket: job.bucket,
+                thumb,
+            })
+            .is_err()
+        {
             return; // the cache is gone
         }
     }
@@ -781,7 +830,11 @@ impl Session {
         // seeks. A thumbnail is a picture; it must never make a sound.
         engine.set_muted(true);
         engine.set_volume(0.0);
-        let mut session = Session { path: path.to_path_buf(), engine, last_pts: None };
+        let mut session = Session {
+            path: path.to_path_buf(),
+            engine,
+            last_pts: None,
+        };
         session.await_preroll();
         Some(session)
     }
@@ -868,7 +921,10 @@ mod tests {
     use super::*;
 
     fn projected(path: &str) -> MediaSource {
-        MediaSource { abs_path: path.into(), hydration: crate::media::Hydration::Projected }
+        MediaSource {
+            abs_path: path.into(),
+            hydration: crate::media::Hydration::Projected,
+        }
     }
 
     #[test]
@@ -878,12 +934,19 @@ mod tests {
         assert!(!t.real, "a generated frame is not a real decode");
         assert!(t.rgba.chunks(4).all(|px| px[3] == 255), "opaque");
         // Not a flat black frame — the palette contributes visible colour.
-        assert!(t.rgba.chunks(4).any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8));
+        assert!(
+            t.rgba
+                .chunks(4)
+                .any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8)
+        );
         // The top row is lighter than the bottom row (the vertical gradient).
-        let top_lum: u32 = t.rgba[0..4].iter().take(3).map(|&v| v as u32).sum();
+        let top_lum: u32 = t.rgba[0..4].iter().take(3).map(|&v| u32::from(v)).sum();
         let last = (17 * 32 * 4) as usize;
-        let bot_lum: u32 = t.rgba[last..last + 3].iter().map(|&v| v as u32).sum();
-        assert!(top_lum > bot_lum, "gradient runs light→dark ({top_lum} vs {bot_lum})");
+        let bot_lum: u32 = t.rgba[last..last + 3].iter().map(|&v| u32::from(v)).sum();
+        assert!(
+            top_lum > bot_lum,
+            "gradient runs light→dark ({top_lum} vs {bot_lum})"
+        );
     }
 
     #[test]
@@ -894,8 +957,14 @@ mod tests {
         cache.ensure(id, 2, &projected("/some/where.mp4"), 1.0);
         let t = cache.get(id).expect("a thumbnail was generated");
         assert_eq!((t.width, t.height), (THUMB_W, THUMB_H));
-        assert!(!t.real, "an un-hydrated source caches a representative frame");
-        assert!(!cache.has_pending(), "nothing was decodable, so nothing is in flight");
+        assert!(
+            !t.real,
+            "an un-hydrated source caches a representative frame"
+        );
+        assert!(
+            !cache.has_pending(),
+            "nothing was decodable, so nothing is in flight"
+        );
     }
 
     #[test]
@@ -913,7 +982,8 @@ mod tests {
         assert_eq!(first.data.id(), t.image().data.id());
         // …and a *fresh* blob over the same bytes would not, which is exactly
         // the miss the old draw path caused.
-        let fresh = Blob::new(Arc::new(t.rgba.as_ref().clone()) as Arc<dyn AsRef<[u8]> + Send + Sync>);
+        let fresh =
+            Blob::new(Arc::new(t.rgba.as_ref().clone()) as Arc<dyn AsRef<[u8]> + Send + Sync>);
         assert_ne!(fresh.id(), first.data.id());
         // The handle points at the thumbnail's own pixels, not a copy.
         assert_eq!(first.data.as_ref(), t.rgba.as_slice());
@@ -931,16 +1001,31 @@ mod tests {
         let src = projected("/not/decodable.mp4");
         cache.ensure(id, 0, &src, 0.5);
         cache.swatch_pending.insert(id);
-        cache.frames.entry(id).or_default().slots.insert(7, Slot::Pending);
+        cache
+            .frames
+            .entry(id)
+            .or_default()
+            .slots
+            .insert(7, Slot::Pending);
         assert!(cache.has_pending(), "the requested frames are in flight");
 
-        cache.tx.send(Outcome { id, bucket: SWATCH_BUCKET, thumb: None }).unwrap();
+        cache
+            .tx
+            .send(Outcome {
+                id,
+                bucket: SWATCH_BUCKET,
+                thumb: None,
+            })
+            .unwrap();
         cache.drain();
         assert!(
             !cache.has_pending(),
             "a failed decode is a terminal state, not an endless request"
         );
-        assert!(cache.is_undecodable(id), "the source is written off, not retried");
+        assert!(
+            cache.is_undecodable(id),
+            "the source is written off, not retried"
+        );
         assert!(
             matches!(cache.frames[&id].slots[&7], Slot::Failed),
             "outstanding strip requests settle too, rather than hanging"
@@ -950,7 +1035,10 @@ mod tests {
         // resurrect the request — that is the loop that burned CPU.
         cache.ensure(id, 0, &src, 0.5);
         cache.ensure_strip(id, 0, &src, 0.0, 4.0, 12);
-        assert!(!cache.has_pending(), "a written-off source is never re-requested");
+        assert!(
+            !cache.has_pending(),
+            "a written-off source is never re-requested"
+        );
 
         // And the bin still shows the representative frame, permanently.
         let t = cache.get(id).expect("the representative frame survives");
@@ -965,11 +1053,26 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         cache.ensure(id, 0, &projected("/broken.mp4"), 0.5);
         for b in 0..FAILURES_BEFORE_GIVING_UP {
-            cache.frames.entry(id).or_default().slots.insert(b, Slot::Pending);
-            cache.tx.send(Outcome { id, bucket: b, thumb: None }).unwrap();
+            cache
+                .frames
+                .entry(id)
+                .or_default()
+                .slots
+                .insert(b, Slot::Pending);
+            cache
+                .tx
+                .send(Outcome {
+                    id,
+                    bucket: b,
+                    thumb: None,
+                })
+                .unwrap();
             cache.drain();
         }
-        assert!(cache.is_undecodable(id), "a source that never answers is given up on");
+        assert!(
+            cache.is_undecodable(id),
+            "a source that never answers is given up on"
+        );
         assert!(!cache.has_pending());
     }
 
@@ -981,8 +1084,14 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         cache.warm_blocking(id, 2, &projected("/nope.mp4"), 1.0, 0.0, 4.0, 6);
         let t = cache.get(id).expect("a representative frame");
-        assert!(!t.real, "nothing was decoded, and it does not pretend otherwise");
-        assert!(!cache.has_pending(), "a blocking warm leaves nothing in flight");
+        assert!(
+            !t.real,
+            "nothing was decoded, and it does not pretend otherwise"
+        );
+        assert!(
+            !cache.has_pending(),
+            "a blocking warm leaves nothing in flight"
+        );
         assert!(
             !cache.is_undecodable(id),
             "un-hydrated is not the same as undecodable — the bytes may arrive"
@@ -994,9 +1103,19 @@ mod tests {
         let mut cache = ThumbnailCache::new();
         let id = uuid::Uuid::new_v4();
         cache.ensure(id, 0, &projected("/clip.mp4"), 0.5);
-        cache.tx.send(Outcome { id, bucket: 3, thumb: None }).unwrap();
+        cache
+            .tx
+            .send(Outcome {
+                id,
+                bucket: 3,
+                thumb: None,
+            })
+            .unwrap();
         cache.drain();
-        assert!(!cache.is_undecodable(id), "a single failed bucket is not a verdict");
+        assert!(
+            !cache.is_undecodable(id),
+            "a single failed bucket is not a verdict"
+        );
         // The bucket itself is terminal, though — never asked for again.
         assert!(matches!(cache.frames[&id].slots[&3], Slot::Failed));
         assert!(!cache.has_pending());
@@ -1041,7 +1160,10 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         cache.ensure_strip(id, 0, &projected("/clip.mp4"), 4.0, 8.0, 8);
         let touched: Vec<u32> = cache.frames[&id].touched.keys().copied().collect();
-        assert!(touched.len() >= 4, "distinct time buckets, not one: {touched:?}");
+        assert!(
+            touched.len() >= 4,
+            "distinct time buckets, not one: {touched:?}"
+        );
         for b in &touched {
             let t = bucket_time(*b);
             assert!(
@@ -1058,7 +1180,10 @@ mod tests {
         cache.ensure(id, 3, &projected("/clip.mp4"), 0.5);
         // Nothing decoded: the strip shows the representative, marked as such.
         let t = cache.frame_at(id, 12.0).expect("something to draw");
-        assert!(!t.real, "an undecoded cell must not claim to be a real frame");
+        assert!(
+            !t.real,
+            "an undecoded cell must not claim to be a real frame"
+        );
 
         // With one real frame present, a nearby time reuses it (still real,
         // still this source) rather than jumping back to the gradient.
@@ -1078,7 +1203,10 @@ mod tests {
         // Far away in the clip, though, that frame says nothing — the strip
         // falls back to the representative rather than showing the wrong shot.
         let far = cache.frame_at(id, 90.0).expect("something to draw");
-        assert!(!far.real, "a distant cell must not borrow an unrelated frame");
+        assert!(
+            !far.real,
+            "a distant cell must not borrow an unrelated frame"
+        );
     }
 
     #[test]
@@ -1109,7 +1237,12 @@ mod tests {
         let stuck = cache
             .frames
             .get(&id)
-            .map(|f| f.slots.values().filter(|s| matches!(s, Slot::Pending)).count())
+            .map(|f| {
+                f.slots
+                    .values()
+                    .filter(|s| matches!(s, Slot::Pending))
+                    .count()
+            })
             .unwrap_or(0);
         assert_eq!(stuck, 0, "a refused request leaves nothing pending");
         // Draining the backlog and asking again does queue the work. One cell
@@ -1118,7 +1251,10 @@ mod tests {
         cache.pool.queue.lock().unwrap().jobs.clear();
         cache.ensure_strip(id, 0, &local, 0.0, 10.0, 1);
         #[cfg(feature = "decode")]
-        assert!(cache.has_pending(), "with room in the queue the work is taken");
+        assert!(
+            cache.has_pending(),
+            "with room in the queue the work is taken"
+        );
     }
 
     #[test]
@@ -1171,7 +1307,11 @@ mod tests {
             "a scrolled timeline must not grow without bound ({ready} kept)"
         );
         // The most recent buckets are the ones kept.
-        assert!(cache.frame_at(id, bucket_time(MAX_FRAMES_PER_SOURCE as u32 + 19)).is_some());
+        assert!(
+            cache
+                .frame_at(id, bucket_time(MAX_FRAMES_PER_SOURCE as u32 + 19))
+                .is_some()
+        );
     }
 
     #[test]
@@ -1181,7 +1321,10 @@ mod tests {
         let (dw, dh, out) = downscale(&src, w, h, THUMB_W, THUMB_H);
         assert!(dw <= THUMB_W && dh <= THUMB_H, "{dw}x{dh} fits the box");
         assert_eq!(out.len(), (dw * dh * 4) as usize);
-        assert!((dw as f64 / dh as f64 - 16.0 / 9.0).abs() < 0.05, "aspect kept");
+        assert!(
+            (dw as f64 / dh as f64 - 16.0 / 9.0).abs() < 0.05,
+            "aspect kept"
+        );
         // A flat source averages to the same flat value — no smearing.
         assert!(out.iter().all(|&v| v == 200));
         // Already-small frames pass through untouched.

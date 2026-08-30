@@ -35,7 +35,7 @@ const MAGIC: &[u8; 8] = b"QOSCOL\0\0";
 /// hash.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Collection {
-    /// Sorted by path (BTreeMap iteration order), so [`encode`]
+    /// Sorted by path (`BTreeMap` iteration order), so [`encode`]
     /// is deterministic.
     ///
     /// [`encode`]: Self::encode
@@ -80,8 +80,7 @@ impl Collection {
             if cursor + 4 > bytes.len() {
                 return Err(CollectionDecodeError::Truncated);
             }
-            let plen =
-                u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+            let plen = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
             cursor += 4;
             if cursor + plen + 32 > bytes.len() {
                 return Err(CollectionDecodeError::Truncated);

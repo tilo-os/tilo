@@ -9,7 +9,7 @@
 //! HUD you see here is pixel-for-pixel the one the live app paints; only the
 //! surface is offscreen.
 //!
-//! Run:  cargo run -p ui --example perf_hud_shot
+//! Run:  cargo run -p ui --example ui-shots -- perf_hud_shot
 //! Out:  $PERF_HUD_OUT (default /tmp/perf_hud/hud.png)
 //!
 //! `PERF_HUD_FRAMES=N` sets how many real frames feed the rolling graph.
@@ -30,13 +30,12 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-#[path = "common/gallery_scene.rs"]
-mod gallery_scene;
+use super::gallery_scene;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
 
     let out = std::env::var("PERF_HUD_OUT").unwrap_or_else(|_| "/tmp/perf_hud/hud.png".to_string());
@@ -112,5 +111,8 @@ fn main() {
     );
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
     r.render_png(&scene, theme.bg_app, &out);
-    println!("wrote {} ({WIDTH}x{HEIGHT} px, {frames} frames)", out.display());
+    println!(
+        "wrote {} ({WIDTH}x{HEIGHT} px, {frames} frames)",
+        out.display()
+    );
 }

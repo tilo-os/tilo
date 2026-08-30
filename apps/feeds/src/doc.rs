@@ -307,7 +307,10 @@ impl FeedsDoc {
 
     /// True once the reading settings have been written at least once.
     pub fn has_settings(doc: &AutoCommit) -> bool {
-        matches!(doc.get(&ROOT, "settings"), Ok(Some((Value::Object(ObjType::Map), _))))
+        matches!(
+            doc.get(&ROOT, "settings"),
+            Ok(Some((Value::Object(ObjType::Map), _)))
+        )
     }
 
     pub fn write_settings(doc: &mut AutoCommit, s: &ReadSettings) {
@@ -332,11 +335,19 @@ impl FeedsDoc {
             font_scale: Self::get_f64(doc, &obj, "font_scale", default.font_scale as f64) as f32,
             font: {
                 let s = Self::get_str(doc, &obj, "font");
-                if s.is_empty() { default.font } else { ReadFont::from_str(&s) }
+                if s.is_empty() {
+                    default.font
+                } else {
+                    ReadFont::from_str(&s)
+                }
             },
             theme: {
                 let s = Self::get_str(doc, &obj, "theme");
-                if s.is_empty() { default.theme } else { ReadTheme::from_str(&s) }
+                if s.is_empty() {
+                    default.theme
+                } else {
+                    ReadTheme::from_str(&s)
+                }
             },
         }
         .clamped()
@@ -348,13 +359,10 @@ impl FeedsDoc {
     pub fn load(doc: &AutoCommit) -> Store {
         let mut store = Store::new();
 
-        if let Ok(Some((Value::Object(ObjType::Map), folders))) =
-            doc.get(&ROOT, "folders")
-        {
+        if let Ok(Some((Value::Object(ObjType::Map), folders))) = doc.get(&ROOT, "folders") {
             for key in doc.keys(&folders) {
                 let Ok(id) = key.parse::<Id>() else { continue };
-                let Ok(Some((Value::Object(ObjType::Map), obj))) =
-                    doc.get(&folders, key.as_str())
+                let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&folders, key.as_str())
                 else {
                     continue;
                 };
@@ -367,13 +375,10 @@ impl FeedsDoc {
             }
         }
 
-        if let Ok(Some((Value::Object(ObjType::Map), feeds))) =
-            doc.get(&ROOT, "feeds")
-        {
+        if let Ok(Some((Value::Object(ObjType::Map), feeds))) = doc.get(&ROOT, "feeds") {
             for key in doc.keys(&feeds) {
                 let Ok(id) = key.parse::<Id>() else { continue };
-                let Ok(Some((Value::Object(ObjType::Map), obj))) =
-                    doc.get(&feeds, key.as_str())
+                let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&feeds, key.as_str())
                 else {
                     continue;
                 };
@@ -394,21 +399,19 @@ impl FeedsDoc {
             }
         }
 
-        if let Ok(Some((Value::Object(ObjType::Map), articles))) =
-            doc.get(&ROOT, "articles")
-        {
+        if let Ok(Some((Value::Object(ObjType::Map), articles))) = doc.get(&ROOT, "articles") {
             for key in doc.keys(&articles) {
                 let Ok(id) = key.parse::<Id>() else { continue };
-                let Ok(Some((Value::Object(ObjType::Map), obj))) =
-                    doc.get(&articles, key.as_str())
+                let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&articles, key.as_str())
                 else {
                     continue;
                 };
                 let feed_s = Self::get_str(doc, &obj, "feed");
-                let Ok(feed_id) = feed_s.parse::<Id>() else { continue };
+                let Ok(feed_id) = feed_s.parse::<Id>() else {
+                    continue;
+                };
                 let content = Self::get_str(doc, &obj, "content");
-                let blocks: Vec<ContentBlock> =
-                    serde_json::from_str(&content).unwrap_or_default();
+                let blocks: Vec<ContentBlock> = serde_json::from_str(&content).unwrap_or_default();
                 store.articles.push(Article {
                     id,
                     feed_id,
@@ -520,7 +523,10 @@ mod tests {
         FeedsDoc::remove_feed(&mut doc, feed_id);
 
         let loaded = FeedsDoc::load(&doc);
-        assert!(loaded.feeds.is_empty(), "the feed is deleted from the document");
+        assert!(
+            loaded.feeds.is_empty(),
+            "the feed is deleted from the document"
+        );
         assert!(
             loaded.articles.is_empty(),
             "the feed's articles are deleted too"
@@ -535,7 +541,11 @@ mod tests {
         // Defaults read back even before any write.
         assert_eq!(FeedsDoc::read_settings(&doc), ReadSettings::default());
 
-        let s = ReadSettings { font_scale: 1.3, font: ReadFont::Serif, theme: ReadTheme::Sepia };
+        let s = ReadSettings {
+            font_scale: 1.3,
+            font: ReadFont::Serif,
+            theme: ReadTheme::Sepia,
+        };
         FeedsDoc::write_settings(&mut doc, &s);
         assert!(FeedsDoc::has_settings(&doc));
         let loaded = FeedsDoc::read_settings(&doc);
@@ -574,21 +584,30 @@ mod tests {
             FeedsDoc::seed(&mut doc, &store);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-seeding the same store grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-seeding the same store grew the document {a} -> {b}"
+        );
     }
 
     #[test]
     fn repeated_write_settings_keeps_doc_bounded() {
         use crate::model::{ReadFont, ReadTheme};
         let mut doc = AutoCommit::new();
-        let s = ReadSettings { font_scale: 1.3, font: ReadFont::Serif, theme: ReadTheme::Sepia };
+        let s = ReadSettings {
+            font_scale: 1.3,
+            font: ReadFont::Serif,
+            theme: ReadTheme::Sepia,
+        };
         FeedsDoc::write_settings(&mut doc, &s);
         let a = doc.save().len();
         for _ in 0..50 {
             FeedsDoc::write_settings(&mut doc, &s);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-writing unchanged settings grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-writing unchanged settings grew the document {a} -> {b}"
+        );
     }
 }
-

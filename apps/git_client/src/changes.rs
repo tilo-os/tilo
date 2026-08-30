@@ -91,23 +91,54 @@ impl ChangesColumn {
 
         let mut y = list_area.y0 - scroll;
         y = Self::section(
-            scene, tr, t, theme, list_area, "Staged Changes", &model.staged,
-            ChangeArea::Staged, selected, y, true, &mut regions,
+            scene,
+            tr,
+            t,
+            theme,
+            list_area,
+            "Staged Changes",
+            &model.staged,
+            ChangeArea::Staged,
+            selected,
+            y,
+            true,
+            &mut regions,
         );
         y = Self::section(
-            scene, tr, t, theme, list_area, "Unstaged Changes", &model.unstaged,
-            ChangeArea::Unstaged, selected, y, false, &mut regions,
+            scene,
+            tr,
+            t,
+            theme,
+            list_area,
+            "Unstaged Changes",
+            &model.unstaged,
+            ChangeArea::Unstaged,
+            selected,
+            y,
+            false,
+            &mut regions,
         );
         let _ = Self::section(
-            scene, tr, t, theme, list_area, "Untracked Files", &model.untracked,
-            ChangeArea::Untracked, selected, y, false, &mut regions,
+            scene,
+            tr,
+            t,
+            theme,
+            list_area,
+            "Untracked Files",
+            &model.untracked,
+            ChangeArea::Untracked,
+            selected,
+            y,
+            false,
+            &mut regions,
         );
 
         scene.pop_layer();
 
         // Commit box pinned to the bottom. Returns the rect the owner uses to
         // position the commit-message TextInput.
-        let commit_input = Self::commit_box(scene, tr, t, theme, area, model, message, &mut regions);
+        let commit_input =
+            Self::commit_box(scene, tr, t, theme, area, model, message, &mut regions);
 
         // Build closures that resolve a click to a hit. Returned as a
         // boxed list so the app can route without knowing geometry.
@@ -144,36 +175,81 @@ impl ChangesColumn {
         let c = &theme.tokens.colors;
         // Section header with count + bulk action.
         draw::text_weighted(
-            scene, tr, t, title, 12.0, c.text_dim, area.x0 + 14.0, y + 8.0, None,
+            scene,
+            tr,
+            t,
+            title,
+            12.0,
+            c.text_dim,
+            area.x0 + 14.0,
+            y + 8.0,
+            None,
             TextWeight::Semibold,
         );
         // Count badge.
         let count = files.len().to_string();
-        let cx = area.x0 + 14.0
-            + tr.measure_weighted(title, 12.0, None, TextWeight::Semibold).0 as f64
+        let cx = area.x0
+            + 14.0
+            + f64::from(
+                tr.measure_weighted(title, 12.0, None, TextWeight::Semibold)
+                    .0,
+            )
             + 8.0;
         draw::pill(
-            scene, tr, t, cx, y + 6.0, 16.0, &count, c.text_primary, c.surface_white_10, None,
+            scene,
+            tr,
+            t,
+            cx,
+            y + 6.0,
+            16.0,
+            &count,
+            c.text_primary,
+            c.surface_white_10,
+            None,
         );
 
         if !files.is_empty() {
-            let label = if is_staged { "Unstage all" } else { "Stage all" };
-            let lw = tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0 as f64;
+            let label = if is_staged {
+                "Unstage all"
+            } else {
+                "Stage all"
+            };
+            let lw = f64::from(tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0);
             let lx = area.x1 - lw - 14.0;
             draw::text_weighted(
-                scene, tr, t, label, 11.0, theme.accent_primary, lx, y + 9.0, None,
+                scene,
+                tr,
+                t,
+                label,
+                11.0,
+                theme.accent_primary,
+                lx,
+                y + 9.0,
+                None,
                 TextWeight::Medium,
             );
             regions.push(HitRegion {
                 rect: Rect::new(lx - 4.0, y, area.x1, y + SECTION_H),
-                hit: if is_staged { ChangesHit::UnstageAll } else { ChangesHit::StageAll },
+                hit: if is_staged {
+                    ChangesHit::UnstageAll
+                } else {
+                    ChangesHit::StageAll
+                },
             });
         }
         y += SECTION_H;
 
         if files.is_empty() {
             draw::text(
-                scene, tr, t, "— nothing here —", 12.0, c.neutral[5], area.x0 + 20.0, y + 2.0, None,
+                scene,
+                tr,
+                t,
+                "— nothing here —",
+                12.0,
+                c.neutral[5],
+                area.x0 + 20.0,
+                y + 2.0,
+                None,
             );
             return y + 22.0;
         }
@@ -184,7 +260,8 @@ impl ChangesColumn {
             if is_sel {
                 draw::fill_rect(scene, t, rrect, c.accent[2]);
                 draw::fill_rect(
-                    scene, t,
+                    scene,
+                    t,
                     Rect::new(area.x0, y, area.x0 + 3.0, y + ROW_H),
                     theme.accent_primary,
                 );
@@ -198,14 +275,29 @@ impl ChangesColumn {
             // Name (bold) + dir (dim).
             let name = f.name();
             draw::text_weighted(
-                scene, tr, t, name, 12.5, c.text_primary, area.x0 + 32.0, y + 7.0, None,
+                scene,
+                tr,
+                t,
+                name,
+                12.5,
+                c.text_primary,
+                area.x0 + 32.0,
+                y + 7.0,
+                None,
                 TextWeight::Medium,
             );
-            let nw = tr.measure_weighted(name, 12.5, None, TextWeight::Medium).0 as f64;
+            let nw = f64::from(tr.measure_weighted(name, 12.5, None, TextWeight::Medium).0);
             let dir = f.dir();
             if !dir.is_empty() {
                 draw::text(
-                    scene, tr, t, dir, 11.0, c.neutral[5], area.x0 + 36.0 + nw, y + 8.0,
+                    scene,
+                    tr,
+                    t,
+                    dir,
+                    11.0,
+                    c.neutral[5],
+                    area.x0 + 36.0 + nw,
+                    y + 8.0,
                     Some((area.width() - 130.0 - nw) as f32),
                 );
             }
@@ -213,20 +305,41 @@ impl ChangesColumn {
             // +/- counts.
             if f.additions > 0 || f.deletions > 0 {
                 let counts = format!("+{} -{}", f.additions, f.deletions);
-                draw::mono(scene, tr, t, &counts, 10.5, c.text_dim, area.x0 + 36.0 + nw, y + 18.0);
+                draw::mono(
+                    scene,
+                    tr,
+                    t,
+                    &counts,
+                    10.5,
+                    c.text_dim,
+                    area.x0 + 36.0 + nw,
+                    y + 18.0,
+                );
             }
 
             // Stage / unstage chevron button on the right.
             let chev = if is_staged { "−" } else { "+" };
             let brect = Rect::new(area.x1 - 28.0, y + 4.0, area.x1 - 8.0, y + ROW_H - 4.0);
             draw::fill_round(scene, t, brect, 4.0, c.surface_white_10);
-            let chw = draw::mono_width(tr, chev, 14.0) as f64;
+            let chw = f64::from(draw::mono_width(tr, chev, 14.0));
             draw::mono(
-                scene, tr, t, chev, 14.0,
-                if is_staged { draw::del_fg(theme) } else { draw::add_fg(theme) },
-                brect.x0 + (brect.width() - chw) / 2.0, brect.y0 + 1.0,
+                scene,
+                tr,
+                t,
+                chev,
+                14.0,
+                if is_staged {
+                    draw::del_fg(theme)
+                } else {
+                    draw::add_fg(theme)
+                },
+                brect.x0 + (brect.width() - chw) / 2.0,
+                brect.y0 + 1.0,
             );
-            regions.push(HitRegion { rect: brect, hit: ChangesHit::ToggleStage(change_area, i) });
+            regions.push(HitRegion {
+                rect: brect,
+                hit: ChangesHit::ToggleStage(change_area, i),
+            });
 
             // Row select region (everything left of the chevron).
             regions.push(HitRegion {
@@ -253,52 +366,119 @@ impl ChangesColumn {
         let c = &theme.tokens.colors;
         let box_rect = Rect::new(area.x0, area.y1 - COMMIT_BOX_H, area.x1, area.y1);
         draw::fill_rect(scene, t, box_rect, c.surfaces.base);
-        draw::hline(scene, t, box_rect.y0, box_rect.x0, box_rect.x1, c.border_standard);
+        draw::hline(
+            scene,
+            t,
+            box_rect.y0,
+            box_rect.x0,
+            box_rect.x1,
+            c.border_standard,
+        );
 
         // Author identity row.
         let ax = box_rect.x0 + 12.0;
         let ay = box_rect.y0 + 12.0;
-        draw::avatar(scene, tr, t, theme, ax, ay, 22.0, &model.author_name, draw::author_color(theme, &model.author_email));
+        draw::avatar(
+            scene,
+            tr,
+            t,
+            theme,
+            ax,
+            ay,
+            22.0,
+            &model.author_name,
+            draw::author_color(theme, &model.author_email),
+        );
         let who = if model.author_name.is_empty() {
             "Set git identity".to_string()
         } else {
             format!("{} <{}>", model.author_name, model.author_email)
         };
-        draw::text(scene, tr, t, &who, 11.5, c.text_dim, ax + 30.0, ay + 4.0, Some((box_rect.width() - 60.0) as f32));
+        draw::text(
+            scene,
+            tr,
+            t,
+            &who,
+            11.5,
+            c.text_dim,
+            ax + 30.0,
+            ay + 4.0,
+            Some((box_rect.width() - 60.0) as f32),
+        );
 
         // Message input area. The owning app positions + draws a toolkit
         // TextInput here (it paints its own frame, text and caret), and a
         // click in this rect focuses it — so we only reserve the rect and its
         // focus region here.
-        let input = Rect::new(box_rect.x0 + 12.0, ay + 32.0, box_rect.x1 - 12.0, box_rect.y1 - 52.0);
-        regions.push(HitRegion { rect: input, hit: ChangesHit::FocusMessage });
+        let input = Rect::new(
+            box_rect.x0 + 12.0,
+            ay + 32.0,
+            box_rect.x1 - 12.0,
+            box_rect.y1 - 52.0,
+        );
+        regions.push(HitRegion {
+            rect: input,
+            hit: ChangesHit::FocusMessage,
+        });
 
         // Commit button.
         let enabled = !model.staged.is_empty() && !message.trim().is_empty();
-        let brect = Rect::new(box_rect.x1 - 150.0, box_rect.y1 - 42.0, box_rect.x1 - 12.0, box_rect.y1 - 12.0);
-        let bg = if enabled { theme.accent_primary } else { c.surface_white_10 };
+        let brect = Rect::new(
+            box_rect.x1 - 150.0,
+            box_rect.y1 - 42.0,
+            box_rect.x1 - 12.0,
+            box_rect.y1 - 12.0,
+        );
+        let bg = if enabled {
+            theme.accent_primary
+        } else {
+            c.surface_white_10
+        };
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
         draw::fill_round(scene, t, brect, 6.0, bg);
         let staged_n = model.staged.len();
         let label = if staged_n == 0 {
             "Commit".to_string()
         } else {
-            format!("Commit {staged_n} file{}", if staged_n == 1 { "" } else { "s" })
+            format!(
+                "Commit {staged_n} file{}",
+                if staged_n == 1 { "" } else { "s" }
+            )
         };
-        let lw = tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold).0 as f64;
+        let lw = f64::from(
+            tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold)
+                .0,
+        );
         draw::text_weighted(
-            scene, tr, t, &label, 12.0, fg,
-            brect.x0 + (brect.width() - lw) / 2.0, brect.y0 + 7.0, None, TextWeight::Semibold,
+            scene,
+            tr,
+            t,
+            &label,
+            12.0,
+            fg,
+            brect.x0 + (brect.width() - lw) / 2.0,
+            brect.y0 + 7.0,
+            None,
+            TextWeight::Semibold,
         );
         if enabled {
-            regions.push(HitRegion { rect: brect, hit: ChangesHit::Commit });
+            regions.push(HitRegion {
+                rect: brect,
+                hit: ChangesHit::Commit,
+            });
         }
 
         // Branch indicator on the left of the button row.
         draw::text(
-            scene, tr, t,
-            &format!("on {}", model.head), 11.5, c.text_dim,
-            box_rect.x0 + 12.0, box_rect.y1 - 34.0, None,
+            scene,
+            tr,
+            t,
+            &format!("on {}", model.head),
+            11.5,
+            c.text_dim,
+            box_rect.x0 + 12.0,
+            box_rect.y1 - 34.0,
+            None,
         );
 
         input

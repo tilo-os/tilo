@@ -1,41 +1,26 @@
 //! Host-side thumbnail generation + caching for the FUSE mount.
 //!
-//! A thumbnail is **metadata the host generates ahead of (or independent of)
-//! the content bytes**. This module owns the filesystem side of that: it wraps
-//! the shared [`thumbnail`] generator + content-addressed cache, generating a
-//! small PNG preview from a file's *local* content and caching it under
-//! `<cache-dir>/thumbs` (so it survives a remount and the read-only root stays
-//! read-only). [`crate::fs::QuickFS`] drives it: it serves the PNG through the
-//! `user.qos.thumb` xattr and records the thumbnail blob's hash on the namespace
-//! node so the pointer gossips and a peer sees a preview before it fetches the
-//! file.
+//! A thumbnail is metadata generated ahead of (or independent of) the content
+//! bytes: a small PNG preview cached under `<cache-dir>/thumbs`, served
+//! through the `user.qos.thumb` xattr and gossiped via the namespace node.
 //!
-//! Only the light, pure-Rust preview types are host-generated here (raster
-//! images and EPUB covers) — the `thumbnail` crate is linked with default
-//! features so the OS daemon never pulls pdfium or the gstreamer stack. PDF and
-//! video previews are the client's job.
+//! Only light, pure-Rust preview types are host-generated (raster images,
+//! EPUB covers) — `thumbnail` uses default features so the daemon never
+//! pulls pdfium or gstreamer; PDF/video previews are the client's job.
 
 use std::path::Path;
 
 use thumbnail::{FileCategory, ThumbCache, ThumbKey};
 
-/// A file larger than this is never read whole just to make a thumbnail — a
-/// pathological source must not stall the FUSE thread or blow up memory.
+/// A file larger than this is never read whole just to make a thumbnail — a pathological source must not stall the FUSE thread or blow up memory.
 const MAX_SOURCE_BYTES: usize = 96 * 1024 * 1024;
 
-/// Longest-edge target for host-generated previews. Smaller than the file
-/// manager's grid size on purpose: a host thumbnail is **metadata** — it must
-/// stay small enough to ride the `user.qos.thumb` xattr (bounded to
-/// [`MAX_XATTR_THUMB`]) and gossip cheaply as a blob a peer fetches before the
-/// file itself. A client that wants a crisper preview generates one locally
-/// once it has the content.
+/// Longest-edge target for host-generated previews — smaller than the file
+/// manager's grid, on purpose: it must stay under [`MAX_XATTR_THUMB`] to ride the xattr.
 pub const HOST_EDGE: u32 = 160;
 
-/// The largest thumbnail (encoded PNG bytes) that can be served through the
-/// `user.qos.thumb` xattr. The kernel caps a single xattr value at 64 KiB
-/// (`XATTR_SIZE_MAX`), so a larger preview cannot be delivered that way at all —
-/// the driver reports it absent (`ENODATA`) and the client falls back to local
-/// generation. [`HOST_EDGE`] keeps real previews comfortably under this.
+/// The largest thumbnail servable via the xattr — the kernel caps a single
+/// xattr at 64 KiB (`XATTR_SIZE_MAX`); larger reports absent (`ENODATA`).
 pub const MAX_XATTR_THUMB: usize = 60 * 1024;
 
 /// The host's thumbnail generator + on-disk cache for one mount.
@@ -45,8 +30,7 @@ pub struct ThumbProvider {
 }
 
 impl ThumbProvider {
-    /// Open a provider whose cache lives under `dir` (created if missing).
-    /// Typically `<cache-dir>/thumbs`.
+    /// Open a provider whose cache lives under `dir` (created if missing; typically `<cache-dir>/thumbs`).
     pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         Ok(Self {
             cache: ThumbCache::open(dir)?,
@@ -54,7 +38,6 @@ impl ThumbProvider {
         })
     }
 
-    /// The target longest edge of generated thumbnails.
     pub fn edge(&self) -> u32 {
         self.edge
     }
@@ -65,13 +48,12 @@ impl ThumbProvider {
 
     /// The cached PNG for a content hash, without generating anything.
     pub fn cached(&self, content_hash: [u8; 32]) -> Option<Vec<u8>> {
-        self.cache.get(&self.key(content_hash)).map(|a| a.as_ref().clone())
+        self.cache
+            .get(&self.key(content_hash))
+            .map(|a| a.as_ref().clone())
     }
 
-    /// Generate a PNG thumbnail from a file's `bytes` (category chosen by the
-    /// caller), cache it content-addressed under `content_hash`, and return it.
-    /// `None` for a non-previewable category, an oversized source, or a decode
-    /// failure.
+    /// Generate a PNG thumbnail from `bytes`, cache it under `content_hash`. `None` for non-previewable, oversized, or undecodable input.
     pub fn generate(
         &self,
         content_hash: [u8; 32],
@@ -87,9 +69,7 @@ impl ThumbProvider {
         Some(png)
     }
 
-    /// Adopt an already-encoded PNG thumbnail (e.g. a blob hydrated from a peer
-    /// that generated it), validating it decodes before caching it under
-    /// `content_hash`. `None` if the bytes are not a decodable image.
+    /// Adopt an already-encoded PNG (e.g. hydrated from a peer), validating it decodes before caching. `None` if not decodable.
     pub fn adopt(&self, content_hash: [u8; 32], png: Vec<u8>) -> Option<Vec<u8>> {
         thumbnail::decode_png(&png)?;
         self.cache.put(&self.key(content_hash), png.clone());
@@ -131,7 +111,11 @@ mod tests {
             assert!(decoded.is_valid());
             assert_eq!(decoded.max_edge(), HOST_EDGE);
             // Small enough to ride the xattr metadata channel.
-            assert!(png.len() <= MAX_XATTR_THUMB, "host preview fits the xattr: {} bytes", png.len());
+            assert!(
+                png.len() <= MAX_XATTR_THUMB,
+                "host preview fits the xattr: {} bytes",
+                png.len()
+            );
             // Second lookup hits the cache.
             assert_eq!(provider.cached(content_hash).unwrap(), png, "cache hit");
             png
@@ -151,11 +135,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let provider = ThumbProvider::open(dir.path()).unwrap();
         assert!(
-            provider.generate([1u8; 32], FileCategory::Archive, b"PK\x03\x04").is_none(),
+            provider
+                .generate([1u8; 32], FileCategory::Archive, b"PK\x03\x04")
+                .is_none(),
             "a non-previewable type is never generated"
         );
         assert!(
-            provider.generate([2u8; 32], FileCategory::Image, b"not an image").is_none(),
+            provider
+                .generate([2u8; 32], FileCategory::Image, b"not an image")
+                .is_none(),
             "undecodable bytes yield no thumbnail"
         );
     }

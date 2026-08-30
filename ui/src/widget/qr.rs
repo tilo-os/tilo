@@ -1,27 +1,18 @@
 //! QR-code widget.
 //!
-//! Wraps the `qrcode` crate (a small, pure-Rust QR encoder) and paints
-//! the resulting module matrix as a grid of square Vello fills. The
-//! widget is intentionally minimal:
+//! Wraps the `qrcode` crate and paints the resulting module matrix as a
+//! grid of square Vello fills.
 //!
-//! - One module = one logical pixel-quantised square. We compute the
-//!   per-module side from the widget's allotted width / matrix size
-//!   and paint dark modules opaque, light modules transparent (the
-//!   widget's background fill handles the light field).
-//! - A configurable "quiet zone" of empty modules wraps the matrix so
-//!   any consumer scanner accepts the result. Defaults to four modules
-//!   per the QR spec.
-//! - No animation, no caching layer. The matrix encoding is a few
-//!   hundred microseconds for the payload sizes we care about
-//!   (~200–400 bytes); re-encoding on every paint keeps the widget
-//!   completely declarative ("show this payload"). If the payload
-//!   becomes hot, a future revision can move encoding into `sync`.
+//! - A configurable "quiet zone" of empty modules wraps the matrix so any
+//!   consumer scanner accepts the result. Defaults to four modules per
+//!   the QR spec.
+//! - No animation, no caching layer. Encoding is a few hundred
+//!   microseconds for the payload sizes we care about (~200-400 bytes),
+//!   so re-encoding on every paint keeps the widget declarative ("show
+//!   this payload").
 //!
-//! The Phase 8 identity flow uses this widget twice:
-//! - Screen 3 ("Pair another device"): encodes the pairing-channel
-//!   JSON payload (nonce + initiator pubkey + DKG round-1 packet).
-//! - Screen 5 ("Mint channel invite"): encodes the `qos://invite/...`
-//!   URL the recipient pastes into their shell on screen 6.
+//! The identity-flow ceremony uses this widget to encode both the
+//! pairing-channel handshake payload and the `qos://invite/...` URL.
 
 use std::collections::HashMap;
 
@@ -36,18 +27,15 @@ use winit::event::WindowEvent;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Default quiet-zone size in modules (the standard requires ≥4).
 pub const DEFAULT_QUIET_MODULES: usize = 4;
 
-/// QR-code rendering widget.
-///
-/// Holds the source bytes plus the cached encoded matrix. Re-encodes
-/// when the payload changes via [`set_payload`]; consumers that want
-/// to swap the QR live (the pairing-channel screen updates the
-/// payload every few seconds as the broker rotates the nonce) call
-/// `set_payload` and the next paint emits a fresh matrix.
+/// Holds the source bytes plus the cached encoded matrix. Re-encodes when
+/// the payload changes via [`set_payload`] — the pairing-channel screen
+/// calls it every few seconds as the broker rotates the nonce.
 pub struct QrWidget {
     rect: Rect,
     payload: Vec<u8>,
@@ -65,10 +53,8 @@ pub struct QrWidget {
 }
 
 impl QrWidget {
-    /// Construct a QR widget that will encode `payload` at the default
-    /// error-correction level (`EcLevel::M`, ~15% damage tolerance —
-    /// the QR spec's medium tier, suitable for on-screen reads where
-    /// the camera lens is clean).
+    /// Encodes at `EcLevel::M` (~15% damage tolerance), the QR spec's
+    /// medium tier — suitable for on-screen reads with a clean lens.
     pub fn new(payload: impl Into<Vec<u8>>) -> Self {
         let mut w = Self {
             rect: Rect::ZERO,
@@ -83,10 +69,8 @@ impl QrWidget {
         w
     }
 
-    /// Replace the encoded payload. Recomputes the matrix on the spot;
-    /// subsequent paints emit the new modules. A failure to encode
-    /// (most commonly: payload too large for the chosen EC level) is
-    /// stored in `self.error` for inline display.
+    /// A failure to encode (most commonly: payload too large for the
+    /// chosen EC level) is stored in `self.error` for inline display.
     pub fn set_payload(&mut self, payload: impl Into<Vec<u8>>) {
         self.payload = payload.into();
         match QrCode::with_error_correction_level(&self.payload, self.error_correction) {
@@ -107,25 +91,21 @@ impl QrWidget {
         }
     }
 
-    /// Current quiet zone in modules.
     pub fn quiet_modules(&self) -> usize {
         self.quiet_modules
     }
 
-    /// Total side length in modules (matrix + 2× quiet zone). Used by
-    /// tests and the layout pass.
+    /// Matrix + 2× quiet zone.
     pub fn total_modules(&self) -> usize {
         self.matrix_size + 2 * self.quiet_modules
     }
 
-    /// Last encoding error, if any.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
 
-    /// True if a dark module sits at `(x, y)` within the matrix (no
-    /// quiet-zone offset). Used by tests to inspect the encoded
-    /// pattern without poking the private `matrix` Vec directly.
+    /// `(x, y)` within the matrix, no quiet-zone offset. Used by tests to
+    /// inspect the encoded pattern without poking `matrix` directly.
     pub fn module(&self, x: usize, y: usize) -> bool {
         if x >= self.matrix_size || y >= self.matrix_size {
             return false;
@@ -143,30 +123,26 @@ impl Widget for QrWidget {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // QR is rendered as a square. We pick a default 240×240
-        // logical-pixel box; callers can wrap us in a sized container
-        // to enlarge. The actual module side gets recomputed in draw
-        // from the resolved rect, so the widget scales cleanly.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(240.0),
-                    height: Dimension::length(240.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        // Default 240x240 box; callers can wrap us in a sized container.
+        // The module side recomputes in draw from the resolved rect.
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(240.0),
+                height: Dimension::length(240.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -178,15 +154,13 @@ impl Widget for QrWidget {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Light field background — keeps the QR readable on dark
-        // themes (a black-on-black QR scanner can't see).
+        // Fixed white/black regardless of theme, so a dark theme never
+        // paints a black-on-black QR a scanner can't see.
         let light = Color::from_rgb8(0xFF, 0xFF, 0xFF);
         let dark = Color::from_rgb8(0, 0, 0);
         scene.fill(Fill::NonZero, transform, light, None, &self.rect);
 
         if let Some(err) = &self.error {
-            // Paint the failure inline so we don't render an
-            // unreadable blank square.
             let msg = format!("QR error: {err}");
             text_renderer.draw_text(
                 scene,
@@ -237,7 +211,7 @@ impl Widget for QrWidget {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "QrWidget"
     }
 
@@ -263,8 +237,7 @@ mod tests {
 
     #[test]
     fn encodes_pairing_payload_size() {
-        // The pairing-channel payload is JSON ~500-700 bytes
-        // (initiator pubkey + DKG round-1 ~200 bytes + envelope).
+        // The pairing-channel payload is JSON ~500-700 bytes.
         let blob = vec![b'A'; 600];
         let w = QrWidget::new(blob);
         assert!(
@@ -279,7 +252,6 @@ mod tests {
         let mut w = QrWidget::new(b"first".to_vec());
         let first_size = w.matrix_size;
         w.set_payload(vec![b'X'; 200]);
-        // Different payload should grow the matrix.
         assert!(
             w.matrix_size >= first_size,
             "longer payload should not shrink the QR"

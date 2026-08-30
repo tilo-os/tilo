@@ -44,10 +44,13 @@ mod real {
 
         // And it must be a real picture, not an empty one.
         assert_eq!((frame.width, frame.height), (1920, 1080));
-        let rgba = frame.to_rgba().expect("the RGBA path yields a paintable buffer");
+        let rgba = frame
+            .to_rgba()
+            .expect("the RGBA path yields a paintable buffer");
         assert_eq!(rgba.len(), 1920 * 1080 * 4);
         assert!(
-            rgba.chunks_exact(4).any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8),
+            rgba.chunks_exact(4)
+                .any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8),
             "the decoded picture is entirely black; nothing was actually decoded"
         );
     }
@@ -105,7 +108,9 @@ mod hermetic {
     #[test]
     fn a_software_only_config_still_produces_frames_with_no_gstreamer_linked() {
         let mut e = MediaEngine::with_config(EngineConfig::default().software_only());
-        e.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         assert!(e.latest_frame().is_some());
         assert!(!e.hw_report().is_hardware());
     }

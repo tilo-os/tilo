@@ -25,8 +25,8 @@
 //! The pure Automerge plumbing ([`SyncSession`]) is always compiled and
 //! unit-tested, so the convergence contract holds even without the network.
 
-use automerge::sync::{State as SyncState, SyncDoc};
 use automerge::AutoCommit;
+use automerge::sync::{State as SyncState, SyncDoc};
 
 /// A two-party Automerge sync session. Wraps `automerge::sync::State` so a
 /// replica can generate and apply sync messages against a peer. One session
@@ -39,14 +39,18 @@ pub struct SyncSession {
 
 impl SyncSession {
     pub fn new() -> Self {
-        Self { state: SyncState::new() }
+        Self {
+            state: SyncState::new(),
+        }
     }
 
     /// Produce the next outbound sync message for `doc`, or `None` when this
     /// side has nothing further to send (the peer is up to date as far as we
     /// know).
     pub fn generate(&mut self, doc: &mut AutoCommit) -> Option<Vec<u8>> {
-        doc.sync().generate_sync_message(&mut self.state).map(|m| m.encode())
+        doc.sync()
+            .generate_sync_message(&mut self.state)
+            .map(automerge::sync::Message::encode)
     }
 
     /// Apply an inbound sync message to `doc`. Returns whether it decoded.
@@ -133,13 +137,19 @@ impl LoopbackSync {
         // saved DIRECTLY — `base.clone().save()` re-bases onto a fresh actor
         // and silently breaks the merge lineage (proven by the sync tests).
         let peer = AutoCommit::load(&base.save()).unwrap_or_default();
-        Self { peer, connected: false }
+        Self {
+            peer,
+            connected: false,
+        }
     }
 
     /// A loopback peer starting empty (a fresh device that will pull the whole
     /// library on the first sync).
     pub fn empty() -> Self {
-        Self { peer: AutoCommit::new(), connected: false }
+        Self {
+            peer: AutoCommit::new(),
+            connected: false,
+        }
     }
 
     /// Borrow the simulated remote replica (for tests / inspection).
@@ -221,7 +231,9 @@ pub mod live {
             if !environment_supports_p2p() {
                 return None;
             }
-            Some(Self { _base_heads: base.get_heads() })
+            Some(Self {
+                _base_heads: base.get_heads(),
+            })
         }
     }
 
@@ -301,8 +313,11 @@ mod tests {
         });
         let changed = transport.sync(&mut local);
         assert!(changed, "pulling a remote change reports a local update");
-        let names: Vec<String> =
-            doc::load_library(&local).playlists.iter().map(|p| p.name.clone()).collect();
+        let names: Vec<String> = doc::load_library(&local)
+            .playlists
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
         assert!(names.iter().any(|n| n == "From the server"));
     }
 

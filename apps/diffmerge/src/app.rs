@@ -19,11 +19,10 @@ use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -171,8 +170,8 @@ impl DiffMergeApp {
     }
 
     fn content_rect(&self) -> Rect {
-        // No bottom status strip: the summary floats as a transient bubble
-        // (see `draw_status_bubble`), so the content spans to the window bottom.
+        // Content spans to the window bottom; the summary floats as a
+        // transient bubble (see `draw_status_bubble`), not a bottom strip.
         Rect::new(
             self.rect.x0,
             self.rect.y0 + TOOLBAR_H,
@@ -227,7 +226,11 @@ impl DiffMergeApp {
                 self.diff.set_inputs(&l.label, &l.text, &r.label, &r.text);
                 let (base, ours, theirs) = samples::merge_triple();
                 self.merge.set_inputs(
-                    &base.label, &base.text, &ours.label, &ours.text, &theirs.label,
+                    &base.label,
+                    &base.text,
+                    &ours.label,
+                    &ours.text,
+                    &theirs.label,
                     &theirs.text,
                 );
                 self.pending_left = None;
@@ -246,7 +249,8 @@ impl DiffMergeApp {
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::DiffmergeAction) {
-        self.actions.dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, &action);
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -288,7 +292,9 @@ impl DiffMergeApp {
     /// status bar, and clears the in-flight channel. Never blocks — a still
     /// pending picker leaves the channel installed for the next frame.
     fn drain_portal(&mut self) {
-        let Some(rx) = self.portal_rx.as_ref() else { return };
+        let Some(rx) = self.portal_rx.as_ref() else {
+            return;
+        };
         match rx.try_recv() {
             Ok(outcome) => {
                 self.portal_rx = None;
@@ -327,10 +333,10 @@ impl DiffMergeApp {
     /// `false`. Pure w.r.t. the portal (reads the file, mutates model state) so
     /// the two-file flow is unit-testable without a host dialog.
     fn consume_pick(&mut self, path: &Path) -> bool {
-        let label = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.display().to_string());
+        let label = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().to_string(),
+        );
         let content = fs::read_to_string(path)
             .unwrap_or_else(|e| format!("<could not read {}: {e}>", path.display()));
         match self.pending_left.take() {
@@ -348,7 +354,13 @@ impl DiffMergeApp {
         }
     }
 
-    fn draw_toolbar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_toolbar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         self.tool_hits.clear();
         let c = &theme.tokens.colors;
         let r = self.rect;
@@ -359,7 +371,10 @@ impl DiffMergeApp {
             transform,
             c.border_standard,
             None,
-            &Line::new(Point::new(r.x0, r.y0 + TOOLBAR_H), Point::new(r.x1, r.y0 + TOOLBAR_H)),
+            &Line::new(
+                Point::new(r.x0, r.y0 + TOOLBAR_H),
+                Point::new(r.x1, r.y0 + TOOLBAR_H),
+            ),
         );
 
         // Mode segmented control (shared pill-style segmented control). The OS
@@ -369,7 +384,7 @@ impl DiffMergeApp {
         let seg_h = 28.0;
         let mode_labels: [&str; 2] = ["Diff", "3-way merge"];
         let mode_actions = [Action::ModeDiff, Action::ModeMerge];
-        let selected = if self.mode == Mode::Merge { 1 } else { 0 };
+        let selected = usize::from(self.mode == Mode::Merge);
         let mut mode_rects: Vec<Rect> = Vec::with_capacity(mode_labels.len());
         let mut x = r.x0 + 16.0;
         for label in mode_labels {
@@ -389,7 +404,10 @@ impl DiffMergeApp {
                 .radius(6.0),
         );
         for (rect, action) in mode_rects.iter().zip(mode_actions) {
-            self.tool_hits.push(ToolHit { rect: *rect, action });
+            self.tool_hits.push(ToolHit {
+                rect: *rect,
+                action,
+            });
         }
 
         // Right-aligned action buttons.
@@ -435,7 +453,11 @@ impl DiffMergeApp {
                     .unwrap_or_default();
                 format!(
                     "+{} additions   −{} deletions   ~{} modifications   {} change block(s){}",
-                    m.added, m.removed, m.modified, m.blocks.len(), active
+                    m.added,
+                    m.removed,
+                    m.modified,
+                    m.blocks.len(),
+                    active
                 )
             }
             Mode::Merge => {
@@ -450,12 +472,16 @@ impl DiffMergeApp {
         }
     }
 
-    /// Draw the transient floating status bubble at the bottom-right of the
-    /// window — the reclaimed home of the old full-width bottom status strip.
-    /// It surfaces on a real change to the summary (poked only when the string
+    /// Surfaces on a real change to the summary (poked only when the string
     /// differs) or while the pointer hovers the bottom-right reveal band, then
-    /// fades. All colours come from the theme (via `draw_pill`).
-    fn draw_status_bubble(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    /// fades.
+    fn draw_status_bubble(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let now = std::time::Instant::now();
         let label = self.status_text();
         // Poke only on a genuine change to the summary, never every frame.
@@ -468,7 +494,12 @@ impl DiffMergeApp {
         let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
         let margin = 14.0;
         let r = self.rect;
-        let rect = Rect::new(r.x1 - margin - w, r.y1 - margin - h, r.x1 - margin, r.y1 - margin);
+        let rect = Rect::new(
+            r.x1 - margin - w,
+            r.y1 - margin - h,
+            r.x1 - margin,
+            r.y1 - margin,
+        );
 
         // Reveal zone: the bottom-right corner band (plus the pill), so nudging
         // the pointer there re-surfaces the summary on demand.
@@ -550,17 +581,17 @@ impl Widget for DiffMergeApp {
                 &[content],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // Drive the active view to the content rect directly so mode switches
         // don't require a taffy rebuild to position correctly.
@@ -619,7 +650,12 @@ impl Widget for DiffMergeApp {
 
         // Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
         if let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
             ..
         } = event
         {
@@ -684,12 +720,32 @@ impl Widget for DiffMergeApp {
         match self.mode {
             Mode::Diff => {
                 if let Some(n) = self.diff_node {
-                    self.diff.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
+                    self.diff.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        n,
+                        taffy,
+                    );
                 }
             }
             Mode::Merge => {
                 if let Some(n) = self.merge_node {
-                    self.merge.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
+                    self.merge.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        n,
+                        taffy,
+                    );
                 }
                 // A chip click on the merge panel queues its resolution; dispatch
                 // it through the shared action path so the chip and Ctrl+K produce
@@ -702,7 +758,7 @@ impl Widget for DiffMergeApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DiffMergeApp"
     }
 
@@ -743,8 +799,7 @@ impl Widget for DiffMergeApp {
         // Keep frames coming while a host-portal open is in flight, and while
         // the floating status bubble is lingering / fading (so it animates out
         // and hides on its own). Idle otherwise.
-        self.portal_rx.is_some()
-            || self.status_bubble.needs_frame(std::time::Instant::now())
+        self.portal_rx.is_some() || self.status_bubble.needs_frame(std::time::Instant::now())
     }
 
     fn mark_drawn(&mut self) {
@@ -766,14 +821,10 @@ impl Widget for DiffMergeApp {
     }
 }
 
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portal::{inject_for_test, PortalOutcome};
+    use crate::portal::{PortalOutcome, inject_for_test};
 
     fn app_with_state() -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
@@ -812,7 +863,10 @@ mod tests {
         let (mut app, _st) = app_with_state();
         let left = write_temp("left.txt", "alpha\nbeta\ngamma\n");
         let needs_right = app.consume_pick(&left);
-        assert!(needs_right, "after the left file, the right one is still needed");
+        assert!(
+            needs_right,
+            "after the left file, the right one is still needed"
+        );
         let (label, content) = app.pending_left.clone().expect("left file is stashed");
         assert_eq!(label, "left.txt");
         assert_eq!(content, "alpha\nbeta\ngamma\n");
@@ -832,13 +886,23 @@ mod tests {
         // The per-frame sync drains the portal channel and builds the diff.
         app.sync(&mut st.doc, &st.root);
 
-        assert_eq!(app.mode, Mode::Diff, "a completed pair switches to Diff mode");
+        assert_eq!(
+            app.mode,
+            Mode::Diff,
+            "a completed pair switches to Diff mode"
+        );
         assert!(app.pending_left.is_none(), "the pending-left slot clears");
-        assert!(app.portal_rx.is_none(), "the portal channel clears after delivering");
+        assert!(
+            app.portal_rx.is_none(),
+            "the portal channel clears after delivering"
+        );
         let m = app.diff.model();
         assert_eq!(m.left_lines, 3, "the stashed left file is compared");
         assert_eq!(m.right_lines, 4, "the portal-chosen right file is compared");
-        assert!(m.added + m.modified >= 1, "the differing files yield change blocks");
+        assert!(
+            m.added + m.modified >= 1,
+            "the differing files yield change blocks"
+        );
         std::fs::remove_dir_all(right.parent().unwrap()).ok();
     }
 
@@ -850,8 +914,14 @@ mod tests {
         app.pending_left = Some(("left.txt".into(), "x\n".into()));
         app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
         app.sync(&mut st.doc, &st.root);
-        assert!(app.pending_left.is_none(), "cancel abandons the half-finished pair");
-        assert!(app.portal_rx.is_none(), "the portal channel clears after a cancel");
+        assert!(
+            app.pending_left.is_none(),
+            "cancel abandons the half-finished pair"
+        );
+        assert!(
+            app.portal_rx.is_none(),
+            "the portal channel clears after a cancel"
+        );
     }
 
     /// A portal failure (e.g. no desktop portal running) surfaces on the
@@ -898,9 +968,15 @@ mod tests {
             .expect("a chip click queues a resolution");
         app.perform_action(&mut state.doc, action);
 
-        assert!(app.last_dispatched().is_some(), "the affordance dispatched an envelope");
+        assert!(
+            app.last_dispatched().is_some(),
+            "the affordance dispatched an envelope"
+        );
         let after_merged = crate::doc::MergeDoc::merged_text(&state.doc);
-        assert_ne!(before_merged, after_merged, "the action mutated the merged output");
+        assert_ne!(
+            before_merged, after_merged,
+            "the action mutated the merged output"
+        );
         assert_eq!(
             crate::doc::MergeDoc::resolutions(&state.doc),
             vec![(hunk, "theirs".to_string())],
@@ -923,7 +999,10 @@ mod tests {
             "the host recorded an undo boundary for the dispatched action"
         );
         let entry = state.peek_last_undo().expect("one undo boundary recorded");
-        assert_eq!(entry.before, before_heads, "bracket starts at the pre-action heads");
+        assert_eq!(
+            entry.before, before_heads,
+            "bracket starts at the pre-action heads"
+        );
         assert_eq!(
             entry.author.as_ref(),
             Some(&local_author),
@@ -965,7 +1044,11 @@ mod tests {
             .iter()
             .find(|r| r.id.as_str() == format!("diffmerge.conflict:{hunk}"))
             .expect("the conflict resource");
-        let spec = conflict.actions.iter().find(|a| a.id == "take-theirs").unwrap();
+        let spec = conflict
+            .actions
+            .iter()
+            .find(|a| a.id == "take-theirs")
+            .unwrap();
         let from_spec = match &spec.input {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
             _ => panic!("take-theirs is immediate"),
@@ -996,7 +1079,10 @@ mod tests {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size { width: Dimension::length(w), height: Dimension::length(h) },
+                    size: Size {
+                        width: Dimension::length(w),
+                        height: Dimension::length(h),
+                    },
                     ..Default::default()
                 },
                 &[child],

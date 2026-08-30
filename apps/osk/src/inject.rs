@@ -164,7 +164,7 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
 
     // --- keycodes: name every code we use; <I N> = code N. ---
     keymap.push_str("xkb_keycodes \"qos-osk\" {\n");
-    keymap.push_str(&format!("minimum = {};\n", KEYCODE_BASE));
+    keymap.push_str(&format!("minimum = {KEYCODE_BASE};\n"));
     keymap.push_str(&format!("maximum = {};\n", max_code.max(KEYCODE_BASE)));
     for (_, code) in &assigned {
         keymap.push_str(&format!("<I{code}> = {code};\n"));
@@ -178,10 +178,7 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
     // --- symbols: one single-level key per code → exactly one keysym. ---
     keymap.push_str("xkb_symbols \"qos-osk\" {\n");
     for (sym, code) in &assigned {
-        keymap.push_str(&format!(
-            "key <I{code}> {{ [ {} ] }};\n",
-            sym.keysym_name()
-        ));
+        keymap.push_str(&format!("key <I{code}> {{ [ {} ] }};\n", sym.keysym_name()));
     }
     keymap.push_str("};\n");
 
@@ -301,7 +298,7 @@ mod wayland {
             _: &mut Self,
             _: &wl_seat::WlSeat,
             _: wl_seat::Event,
-            _: &(),
+            (): &(),
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
@@ -313,7 +310,7 @@ mod wayland {
             _: &mut Self,
             _: &ZwpVirtualKeyboardManagerV1,
             _: <ZwpVirtualKeyboardManagerV1 as wayland_client::Proxy>::Event,
-            _: &(),
+            (): &(),
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
@@ -325,7 +322,7 @@ mod wayland {
             _: &mut Self,
             _: &ZwpVirtualKeyboardV1,
             _: <ZwpVirtualKeyboardV1 as wayland_client::Proxy>::Event,
-            _: &(),
+            (): &(),
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
@@ -344,8 +341,7 @@ mod wayland {
 
             // The manager is the protocol that may be missing — its absence is
             // the expected "degrade to null" path.
-            let manager: ZwpVirtualKeyboardManagerV1 =
-                globals.bind(&qh, 1..=1, ()).ok()?;
+            let manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).ok()?;
             // A seat is required to create the keyboard.
             let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=8, ()).ok()?;
 
@@ -369,9 +365,9 @@ mod wayland {
         /// re-uploading a fresh keymap (via a `memfd`) if any is missing.
         /// Returns the keycode assigned to each requested symbol, in order.
         fn ensure_keymap(&mut self, needed: &[Symbol]) -> Option<Vec<u32>> {
-            let all_present = needed.iter().all(|s| {
-                self.current_keymap.iter().any(|(sym, _)| sym == s)
-            });
+            let all_present = needed
+                .iter()
+                .all(|s| self.current_keymap.iter().any(|(sym, _)| sym == s));
             if !all_present || self.current_keymap.is_empty() {
                 let (keymap_str, assigned) = build_keymap(needed);
                 self.upload_keymap(&keymap_str)?;
@@ -564,8 +560,8 @@ mod tests {
 
         // Each symbol gets a keycode declaration and a symbols line with the
         // right keysym name.
-        assert!(keymap.contains(&format!("<I{}> = {}", KEYCODE_BASE, KEYCODE_BASE)));
-        assert!(keymap.contains(&format!("key <I{}> {{ [ U0068 ] }}", KEYCODE_BASE)));
+        assert!(keymap.contains(&format!("<I{KEYCODE_BASE}> = {KEYCODE_BASE}")));
+        assert!(keymap.contains(&format!("key <I{KEYCODE_BASE}> {{ [ U0068 ] }}")));
         assert!(keymap.contains(&format!("key <I{}> {{ [ U0069 ] }}", KEYCODE_BASE + 1)));
         assert!(keymap.contains(&format!("key <I{}> {{ [ space ] }}", KEYCODE_BASE + 2)));
         assert!(keymap.contains(&format!("key <I{}> {{ [ BackSpace ] }}", KEYCODE_BASE + 3)));
@@ -588,8 +584,8 @@ mod tests {
         assert!(keymap.contains("xkb_keycodes"));
         assert!(keymap.contains("xkb_symbols"));
         // Range is well-formed even with nothing declared.
-        assert!(keymap.contains(&format!("minimum = {};", KEYCODE_BASE)));
-        assert!(keymap.contains(&format!("maximum = {};", KEYCODE_BASE)));
+        assert!(keymap.contains(&format!("minimum = {KEYCODE_BASE};")));
+        assert!(keymap.contains(&format!("maximum = {KEYCODE_BASE};")));
     }
 
     #[test]
@@ -641,7 +637,7 @@ mod tests {
         let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap = xkb::Keymap::new_from_string(
             &ctx,
-            keymap_str.clone(),
+            keymap_str,
             xkb::KEYMAP_FORMAT_TEXT_V1,
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         )

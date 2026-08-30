@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::cache::{bucket_of, bucket_ms_for_fps, FrameCache, FrameKey, SourceKey};
+use crate::cache::{FrameCache, FrameKey, SourceKey, bucket_ms_for_fps, bucket_of};
 use crate::engine::{EngineConfig, MediaEngine};
 use crate::frame::Frame;
 use crate::hw::HwReport;
@@ -100,7 +100,10 @@ impl EngineSession {
     }
 
     fn key_for(&self, time_ms: u64) -> FrameKey {
-        FrameKey { source: self.key.clone(), bucket: bucket_of(time_ms, self.bucket_ms) }
+        FrameKey {
+            source: self.key.clone(),
+            bucket: bucket_of(time_ms, self.bucket_ms),
+        }
     }
 
     /// The frame at `time_ms` if it is already cached. Never seeks, never
@@ -292,7 +295,9 @@ mod tests {
         let b = Source::Workspace(p.clone());
         assert_eq!(session_key(&a), session_key(&b), "one file, one pipeline");
 
-        let other = Source::Remote { url: "https://cdn.test/v.mp4".into() };
+        let other = Source::Remote {
+            url: "https://cdn.test/v.mp4".into(),
+        };
         assert_ne!(session_key(&a), session_key(&other));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
@@ -301,7 +306,8 @@ mod tests {
     fn asking_twice_for_a_source_returns_the_same_session_not_a_second_pipeline() {
         // The bug this pool exists to fix: a whole engine per thumbnail.
         let p = scratch("reuse");
-        let mut pool = SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
+        let mut pool =
+            SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
         let src = Source::LocalFile(p.clone());
         let a = pool.session(&src);
         let b = pool.session(&src);
@@ -314,7 +320,8 @@ mod tests {
     fn distinct_sources_get_distinct_sessions_up_to_the_cap() {
         let base = scratch("cap");
         let dir = base.parent().unwrap().to_path_buf();
-        let mut pool = SessionPool::new(EngineConfig::default().silent(), 2, Duration::from_secs(30));
+        let mut pool =
+            SessionPool::new(EngineConfig::default().silent(), 2, Duration::from_secs(30));
         let mut handles = Vec::new();
         for i in 0..2 {
             let p = dir.join(format!("c{i}.mp4"));
@@ -328,14 +335,19 @@ mod tests {
         let p = dir.join("c2.mp4");
         std::fs::write(&p, b"x").unwrap();
         let _third = pool.session(&Source::LocalFile(p));
-        assert!(pool.len() <= 2, "the cap bounds live pipelines, got {}", pool.len());
+        assert!(
+            pool.len() <= 2,
+            "the cap bounds live pipelines, got {}",
+            pool.len()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn closing_a_source_drops_its_session() {
         let p = scratch("close");
-        let mut pool = SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
+        let mut pool =
+            SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
         let src = Source::LocalFile(p.clone());
         let _ = pool.session(&src);
         assert_eq!(pool.len(), 1);
@@ -352,7 +364,10 @@ mod tests {
         let _ = pool.session(&Source::LocalFile(p.clone()));
         assert_eq!(pool.len(), 1);
         pool.prune();
-        assert!(pool.is_empty(), "an idle session is closed rather than held open");
+        assert!(
+            pool.is_empty(),
+            "an idle session is closed rather than held open"
+        );
 
         // With a generous limit the same session survives.
         let mut pool = SessionPool::new(
@@ -377,11 +392,19 @@ mod tests {
             key,
             EngineConfig::default().silent(),
         );
-        assert_eq!(s.bucket_ms(), 1, "unknown frame rate never conflates two times");
+        assert_eq!(
+            s.bucket_ms(),
+            1,
+            "unknown frame rate never conflates two times"
+        );
         s.set_fps(30.0);
         assert_eq!(s.bucket_ms(), bucket_ms_for_fps(30.0));
         s.set_fps(30.0);
-        assert_eq!(s.bucket_ms(), bucket_ms_for_fps(30.0), "an unchanged rate is a no-op");
+        assert_eq!(
+            s.bucket_ms(),
+            bucket_ms_for_fps(30.0),
+            "an unchanged rate is a no-op"
+        );
         s.set_fps(60.0);
         assert_eq!(s.bucket_ms(), bucket_ms_for_fps(60.0));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();

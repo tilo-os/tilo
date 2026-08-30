@@ -9,14 +9,12 @@
 //! Concretely: after the author publishes, the author's inbound
 //! channel receives ZERO envelopes over the window.
 
-mod common;
-
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn author_never_receives_echo_through_federation() {
@@ -71,13 +69,14 @@ async fn author_never_receives_echo_through_federation() {
     // it back via relay2.
     let mut echoes = 0usize;
     for _ in 0..5 {
-        if let Ok(Some(env)) =
-            tokio::time::timeout(Duration::from_millis(300), c.recv()).await
+        if let Ok(Some(env)) = tokio::time::timeout(Duration::from_millis(300), c.recv()).await
+            && matches!(env, Envelope::Delta { .. })
         {
-            if matches!(env, Envelope::Delta { .. }) {
-                echoes += 1;
-            }
+            echoes += 1;
         }
     }
-    assert_eq!(echoes, 0, "author received {echoes} echo(es) via federation");
+    assert_eq!(
+        echoes, 0,
+        "author received {echoes} echo(es) via federation"
+    );
 }

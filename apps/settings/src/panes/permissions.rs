@@ -17,7 +17,7 @@
 //! has been approved for anything — it shows an honest empty state, never a
 //! fabricated permission.
 
-use crate::widgets::{caption, card, cards, hgap, rows, status_pill, vgap, El};
+use crate::widgets::{El, caption, card, cards, hgap, rows, status_pill, vgap};
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -126,12 +126,16 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         Scope::Device(d) if d == "microphone" => {
             ("Microphone", "Capture audio".to_string(), Tint::Microphone)
         }
-        Scope::Device(d) if d == "screencast" => {
-            ("Screen sharing", "Stream this workspace".to_string(), Tint::Screen)
-        }
-        Scope::Device(d) if d == "remote-desktop" => {
-            ("Remote control", "Inject pointer & keyboard".to_string(), Tint::Remote)
-        }
+        Scope::Device(d) if d == "screencast" => (
+            "Screen sharing",
+            "Stream this workspace".to_string(),
+            Tint::Screen,
+        ),
+        Scope::Device(d) if d == "remote-desktop" => (
+            "Remote control",
+            "Inject pointer & keyboard".to_string(),
+            Tint::Remote,
+        ),
         Scope::NetHost(h) => {
             let detail = if h == "*" {
                 "Any host".to_string()
@@ -142,7 +146,12 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         }
         _ => return None,
     };
-    Some(CapView { kind, detail, expiry, tint })
+    Some(CapView {
+        kind,
+        detail,
+        expiry,
+        tint,
+    })
 }
 
 /// Project the whole state document into per-workspace, per-app grants,
@@ -177,7 +186,10 @@ fn project(state_json: &str) -> Vec<WsGrants> {
                 AppGrants { app, caps }
             })
             .collect();
-        out.push(WsGrants { name: ws.name, apps });
+        out.push(WsGrants {
+            name: ws.name,
+            apps,
+        });
     }
     out
 }
@@ -199,7 +211,9 @@ fn cap_row(view: &CapView, c: &ui::tokens::colors::Colors) -> El {
             .push(status_pill(view.kind, view.tint.color(c)))
             .push(hgap(10.0))
             .push(Box::new(
-                Text::new(&view.detail).with_size(12.0).with_color(c.text_dim),
+                Text::new(&view.detail)
+                    .with_size(12.0)
+                    .with_color(c.text_dim),
             ))
             .push(Box::new(Spacer::new()))
             .push(status_pill(view.expiry, c.neutral[5])),
@@ -210,7 +224,9 @@ fn cap_row(view: &CapView, c: &ui::tokens::colors::Colors) -> El {
 fn app_block(grants: &AppGrants, c: &ui::tokens::colors::Colors) -> El {
     let mut items: Vec<El> = Vec::new();
     items.push(Box::new(
-        Text::new(&grants.app).with_size(13.0).with_color(c.text_primary),
+        Text::new(&grants.app)
+            .with_size(13.0)
+            .with_color(c.text_primary),
     ));
     for cap in &grants.caps {
         items.push(cap_row(cap, c));
@@ -321,7 +337,7 @@ mod tests {
     use ui::Theme;
 
     fn count_named(w: &dyn Widget, name: &str) -> usize {
-        let mut n = if w.name() == name { 1 } else { 0 };
+        let mut n = usize::from(w.name() == name);
         for c in w.children() {
             n += count_named(c, name);
         }
@@ -379,7 +395,11 @@ mod tests {
         // The file grant carries the real path + mode; the camera grant its kind.
         let kinds: Vec<&str> = all[0].apps[0].caps.iter().map(|c| c.kind).collect();
         assert!(kinds.contains(&"Camera") && kinds.contains(&"Files"));
-        let file = all[0].apps[0].caps.iter().find(|c| c.kind == "Files").unwrap();
+        let file = all[0].apps[0]
+            .caps
+            .iter()
+            .find(|c| c.kind == "Files")
+            .unwrap();
         assert!(file.detail.contains("/var/workspace/Photos"));
         assert!(file.detail.contains("read-only"));
     }
@@ -389,10 +409,22 @@ mod tests {
         let g = |scope, verb| {
             cap_view(&CapOverride::grant(Subject::app("a"), scope, verb)).map(|v| v.kind)
         };
-        assert_eq!(g(Scope::Device("camera".into()), Verb::Read), Some("Camera"));
-        assert_eq!(g(Scope::Device("microphone".into()), Verb::Read), Some("Microphone"));
-        assert_eq!(g(Scope::Device("screencast".into()), Verb::Read), Some("Screen sharing"));
-        assert_eq!(g(Scope::Device("remote-desktop".into()), Verb::Write), Some("Remote control"));
+        assert_eq!(
+            g(Scope::Device("camera".into()), Verb::Read),
+            Some("Camera")
+        );
+        assert_eq!(
+            g(Scope::Device("microphone".into()), Verb::Read),
+            Some("Microphone")
+        );
+        assert_eq!(
+            g(Scope::Device("screencast".into()), Verb::Read),
+            Some("Screen sharing")
+        );
+        assert_eq!(
+            g(Scope::Device("remote-desktop".into()), Verb::Write),
+            Some("Remote control")
+        );
         assert_eq!(g(Scope::NetHost("*".into()), Verb::Write), Some("Network"));
         // Read vs write is reflected in the file detail.
         let rw = cap_view(&CapOverride::grant(
@@ -403,13 +435,15 @@ mod tests {
         .unwrap();
         assert!(rw.detail.contains("read & write"));
         // A restriction (not a grant) renders nothing.
-        assert!(cap_view(&CapOverride::new(
-            Subject::app("a"),
-            Scope::Device("camera".into()),
-            Effect::Restrict,
-            Verb::Read,
-        ))
-        .is_none());
+        assert!(
+            cap_view(&CapOverride::new(
+                Subject::app("a"),
+                Scope::Device("camera".into()),
+                Effect::Restrict,
+                Verb::Read,
+            ))
+            .is_none()
+        );
     }
 
     #[test]
@@ -418,7 +452,11 @@ mod tests {
         // for each (4 badges), built from the real projection.
         let mut pane = build_view(Some(&sample_state()));
         build_layout_of(&mut pane);
-        assert_eq!(count_named(pane.as_ref(), "Badge"), 4, "two pills per grant");
+        assert_eq!(
+            count_named(pane.as_ref(), "Badge"),
+            4,
+            "two pills per grant"
+        );
         // Intro + one workspace + enforcement cards are all present.
         assert!(count_named(pane.as_ref(), "Card") >= 3);
     }
@@ -428,18 +466,24 @@ mod tests {
         // No state document → an honest empty pane with zero grant pills.
         let mut pane = build_view(None);
         build_layout_of(&mut pane);
-        assert_eq!(count_named(pane.as_ref(), "Badge"), 0, "no grant pills when empty");
+        assert_eq!(
+            count_named(pane.as_ref(), "Badge"),
+            0,
+            "no grant pills when empty"
+        );
     }
 
     #[test]
     fn workspace_without_app_grants_is_omitted() {
         // A workspace whose only capability is room membership (a person
         // subject) holds no *app* grant and must not render a card.
-        let membership =
-            CapOverride::membership(Subject::person("alice"), "room-1", Verb::Write);
+        let membership = CapOverride::membership(Subject::person("alice"), "room-1", Verb::Write);
         let caps = serde_json::to_string(&vec![membership]).unwrap();
         let json = format!(r#"{{"workspaces":[{{"name":"Empty","capabilities":{caps}}}]}}"#);
-        assert!(project(&json).is_empty(), "no app grants → no workspace card");
+        assert!(
+            project(&json).is_empty(),
+            "no app grants → no workspace card"
+        );
     }
 
     #[test]

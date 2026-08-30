@@ -1,18 +1,14 @@
 //! Inline permission prompt — the bar that pops in at the top of the
 //! active strip when a sandboxed app requests a capability.
 //!
-//! Mirrors the concept's notification-bar pattern: app icon + capability
-//! description + four-action button cluster. Buttons:
-//!   - Allow         — grant for this single request (Once)
-//!   - This session  — grant until shell restart (Session)
-//!   - Always allow  — persist; only enabled for the workspace owner
-//!   - Deny          — don't grant; subsequent requests prompt again
+//! App icon + capability description + four-action button cluster: Allow
+//! (this request only), This session (until shell restart), Always allow
+//! (persists; owner-only), Deny (subsequent requests prompt again).
 //!
-//! The widget is render-only relative to the CRDT — its content is fed
-//! by a parent (the portal request flow lands in Phase 4 Task 4.3).
-//! The user's choice is exposed via [`PermissionPrompt::pending_choice`]
-//! as a one-shot output; the parent drains it each frame and applies
-//! the resulting [`Capability`] grant to the active workspace.
+//! Render-only relative to the CRDT — its content is fed by a parent. The
+//! user's choice is exposed via [`PermissionPrompt::pending_choice`] as a
+//! one-shot output; the parent drains it each frame and applies the
+//! resulting [`Capability`] grant.
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -26,43 +22,31 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Fixed bar height matching the concept's notification-bar pattern.
 pub const PROMPT_HEIGHT: f64 = 80.0;
-
-/// Padding inside the bar, applied uniformly on the left/right of the
-/// icon + label cluster.
 const PADDING_X: f64 = 16.0;
-
-/// Horizontal gap between successive button pills.
 const BUTTON_GAP: f64 = 8.0;
-
-/// Width of each action button. Four buttons of equal width keeps the
-/// layout legible regardless of label length (labels are short and
-/// driven by `i18n` keys).
+/// Four buttons of equal width keeps the layout legible regardless of
+/// label length.
 const BUTTON_WIDTH: f64 = 110.0;
-
-/// Height of each action button.
 const BUTTON_HEIGHT: f64 = 36.0;
-
-/// Width of the leading app icon square.
 const ICON_SIZE: f64 = 36.0;
 
-/// User's response to a [`PermissionPrompt`]. Mirrors the variants of
-/// [`crate`]'s consumer-facing `GrantScope` (the shell's
-/// `quick_shell::shell::state::GrantScope`) plus an explicit
+/// Mirrors the variants of the shell's consumer-facing
+/// `quick_shell::shell::state::GrantScope` plus an explicit
 /// [`PromptChoice::Deny`] for the negative path. Held one-shot on
 /// [`PermissionPrompt::pending_choice`] until the host drains it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PromptChoice {
-    /// Grant for this single request — don't persist on the workspace.
+    /// Don't persist on the workspace.
     Allow,
     /// Hold until shell restart.
     Session,
     /// Persist; owner-only.
     Always,
-    /// Reject. Subsequent requests prompt again.
+    /// Subsequent requests prompt again.
     Deny,
 }
 
@@ -76,37 +60,26 @@ pub enum PromptChoice {
 #[derive(Clone, Debug)]
 pub struct PermissionPrompt {
     rect: Rect,
-    /// Wayland app-id of the requesting client (e.g. `org.gnome.gedit`).
     pub app_id: String,
-    /// Human-readable description of the requested capability, shown
-    /// in the middle slot of the bar (e.g. `"Camera access"`).
     pub capability_label: String,
-    /// `true` when the active user is the workspace owner. Owners
-    /// see the `Always` button enabled; invited collaborators see
-    /// it dimmed and clicks through it are dropped.
+    /// Owners see the `Always` button enabled; invited collaborators see it
+    /// dimmed and clicks through it are dropped.
     pub is_owner: bool,
-    /// One-shot output: set when the user clicks an enabled action
-    /// button. The host drains it each frame.
     pub pending_choice: Option<PromptChoice>,
 
-    // Hit-test rects updated each draw pass (or by `apply_layout_helper`
-    // in tests). All four are `Rect::ZERO` until the first layout call.
+    // Updated each draw pass (or by `apply_layout_helper` in tests). All
+    // four are `Rect::ZERO` until the first layout call.
     allow_rect: Rect,
     session_rect: Rect,
     always_rect: Rect,
     deny_rect: Rect,
-    /// Last-known cursor position in logical pixels. Tracked for
-    /// hover-state contrast and to disambiguate `MouseInput` events
-    /// (which carry no position payload).
+    /// For hover-state contrast and to disambiguate `MouseInput` events (no position payload).
     last_cursor: Point,
-    /// 0..=3 — index of the button currently under the cursor, or
-    /// `None` when the cursor is outside every button rect. Drives
-    /// the per-button hover background.
+    /// `None` outside every button rect. Drives the per-button hover background.
     hover_idx: Option<u8>,
 }
 
 impl PermissionPrompt {
-    /// Construct a prompt for the given app + capability description.
     /// `is_owner` controls whether the `Always` button is interactive.
     pub fn new(app_id: String, capability_label: String, is_owner: bool) -> Self {
         Self {
@@ -124,34 +97,25 @@ impl PermissionPrompt {
         }
     }
 
-    /// Convenience helper — owner-prompt construction used by
-    /// internal call-sites that always want the `Always` button
-    /// enabled.
+    /// For call-sites that always want the `Always` button enabled.
     pub fn for_owner(app_id: impl Into<String>, capability_label: impl Into<String>) -> Self {
         Self::new(app_id.into(), capability_label.into(), true)
     }
 
-    /// Override the bar's screen-space rect outside a taffy pass.
-    /// Used by hosts that paint the prompt as an absolutely-positioned
-    /// overlay (the shell renders it at the top of the active strip
-    /// without going through `build_layout` / `apply_layout`).
+    /// For hosts that paint the prompt as an absolutely-positioned overlay
+    /// without going through `build_layout` / `apply_layout`.
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
         self.apply_layout_helper();
     }
 
-    /// Recompute the four button hit-test rects from the current
-    /// `self.rect`. Exposed so tests can drive
-    /// `apply_layout_helper(); handle_event(...)` without spinning
-    /// up a full taffy pass.
+    /// Exposed so tests can drive layout without a full taffy pass.
     pub fn apply_layout_helper(&mut self) {
         let by = self.rect.y0 + (PROMPT_HEIGHT - BUTTON_HEIGHT) / 2.0;
         let by1 = by + BUTTON_HEIGHT;
-        // Buttons right-aligned: rightmost is Deny, then Always,
-        // Session, Allow as we move left. Visual order on-screen is
-        // left-to-right [Allow, Session, Always, Deny] — first the
-        // positive variants, then the negative. Compute from the
-        // right edge so a narrower bar still keeps the buttons inside.
+        // Computed from the right edge inward (Deny, Always, Session, Allow)
+        // so a narrower bar keeps the buttons inside; on-screen this reads
+        // left-to-right as [Allow, Session, Always, Deny].
         let right_edge = self.rect.x1 - PADDING_X;
         let deny_x1 = right_edge;
         let deny_x0 = deny_x1 - BUTTON_WIDTH;
@@ -167,16 +131,19 @@ impl PermissionPrompt {
         self.deny_rect = Rect::new(deny_x0, by, deny_x1, by1);
     }
 
-    /// Test/host accessor for the `Allow` button rect.
-    pub fn allow_rect(&self) -> Rect { self.allow_rect }
-    /// Test/host accessor for the `Session` button rect.
-    pub fn session_rect(&self) -> Rect { self.session_rect }
-    /// Test/host accessor for the `Always` button rect. Even when the
-    /// button is disabled this rect is non-zero — hosts use it to
-    /// hit-test for tooltip-style "owner-only" affordances.
-    pub fn always_rect(&self) -> Rect { self.always_rect }
-    /// Test/host accessor for the `Deny` button rect.
-    pub fn deny_rect(&self) -> Rect { self.deny_rect }
+    pub fn allow_rect(&self) -> Rect {
+        self.allow_rect
+    }
+    pub fn session_rect(&self) -> Rect {
+        self.session_rect
+    }
+    /// Non-zero even when disabled — hosts hit-test it for "owner-only" affordances.
+    pub fn always_rect(&self) -> Rect {
+        self.always_rect
+    }
+    pub fn deny_rect(&self) -> Rect {
+        self.deny_rect
+    }
 }
 
 fn button_label(choice: PromptChoice) -> &'static str {
@@ -188,6 +155,10 @@ fn button_label(choice: PromptChoice) -> &'static str {
     }
 }
 
+// Standard immediate-mode paint-helper signature for this vello renderer
+// (scene + transform + text_renderer + theme, plus this draw's own
+// content); every parameter is independently load-bearing.
+#[allow(clippy::too_many_arguments)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,
@@ -199,14 +170,9 @@ fn draw_button(
     is_disabled: bool,
     is_primary: bool,
 ) {
-    let radius = theme.tokens.radii.md as f64;
+    let radius = f64::from(theme.tokens.radii.md);
     let shape = RoundedRect::from_rect(rect, radius);
 
-    // Background colour: primary action (`Allow`) gets the accent
-    // tint; the rest pull from the raised surface token. Disabled
-    // buttons fade to 40% alpha (overridden by the caller via the
-    // `is_disabled` flag rather than rendered by the parent — keeps
-    // hit-test/draw symmetric).
     let mut bg = if is_primary {
         theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
     } else if is_hover {
@@ -215,8 +181,6 @@ fn draw_button(
         theme.tokens.colors.surfaces.raised
     };
     if is_disabled {
-        // 40% alpha — the brief explicitly calls out that the disabled
-        // `Always` button must render at 40% alpha for non-owners.
         bg = bg.with_alpha_factor(0.4);
     }
     scene.fill(Fill::NonZero, transform, bg, None, &shape);
@@ -228,22 +192,25 @@ fn draw_button(
     };
     scene.stroke(&Stroke::new(1.0), transform, border, None, &shape);
 
-    // Label colour mirrors the disabled/enabled split.
     let text_color = if is_disabled {
         theme.tokens.colors.text_primary.with_alpha_factor(0.4)
     } else if is_primary {
-        // Accent buttons get the white-on-accent treatment from the
-        // concept (concept ref: every `bg-indigo-500` button uses
-        // `text-white`).
-        Color::WHITE
+        // White is the intent; steps off white only when the accent is too
+        // light to carry it, rather than shipping a ratio that makes a
+        // consent decision hard to read.
+        theme.tokens.colors.ink_on_any(
+            &[bg],
+            Color::WHITE,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        )
     } else {
         theme.tokens.colors.text_primary
     };
 
     let text_size = theme.tokens.typography.scale.sm;
     let (text_w, _) = text_renderer.measure(label, text_size, None);
-    let text_x = rect.center().x - (text_w as f64 / 2.0);
-    let text_y = rect.y0 + (rect.height() - text_size as f64) / 2.0;
+    let text_x = rect.center().x - (f64::from(text_w) / 2.0);
+    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -256,11 +223,7 @@ fn draw_button(
 
 impl Widget for PermissionPrompt {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // No CRDT sync at v1 — the prompt's content is pushed by
-        // the host (Phase 4 Task 4.3's portal request flow), not
-        // pulled from the doc. Future iterations may sync the
-        // pending-grants queue itself if collaboration semantics
-        // demand it.
+        // Content is pushed by the host's portal request flow, not pulled from the doc.
     }
 
     fn build_layout(
@@ -269,28 +232,26 @@ impl Widget for PermissionPrompt {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(PROMPT_HEIGHT as f32),
-                },
-                flex_grow: 0.0,
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(PROMPT_HEIGHT as f32),
+            },
+            flex_grow: 0.0,
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.apply_layout_helper();
     }
@@ -303,11 +264,9 @@ impl Widget for PermissionPrompt {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Bar background — translucent overlay surface. Concept ref:
-        // notifications use the `surfaces.overlay` token (a darker
-        // tint than `raised`) so they read as a layer above the
-        // strip's content rather than another tile.
-        let radius = theme.tokens.radii.md as f64;
+        // `surfaces.overlay` is a darker tint than `raised` so the prompt
+        // reads as a layer above the strip's content, not another tile.
+        let radius = f64::from(theme.tokens.radii.md);
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
@@ -324,14 +283,12 @@ impl Widget for PermissionPrompt {
             &shape,
         );
 
-        // App icon — flat rounded square pulled from the accent ramp.
-        // The portal layer (Task 4.3) will surface real icons via the
-        // app's desktop-file metadata; for v1 we paint a placeholder
-        // so the bar is visually balanced.
+        // Placeholder pulled from the accent ramp until the portal layer
+        // surfaces real icons via the app's desktop-file metadata.
         let icon_x = self.rect.x0 + PADDING_X;
         let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
         let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
-        let icon_shape = RoundedRect::from_rect(icon_rect, theme.tokens.radii.sm as f64);
+        let icon_shape = RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.sm));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -340,12 +297,11 @@ impl Widget for PermissionPrompt {
             &icon_shape,
         );
 
-        // App-id label (left cluster, beneath the icon's right edge).
-        let label_x = icon_x + ICON_SIZE + theme.tokens.spacing.s2 as f64;
+        let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
         let app_id_size = theme.tokens.typography.scale.sm;
         let cap_size = theme.tokens.typography.scale.base;
         let label_y = self.rect.y0
-            + (PROMPT_HEIGHT - (app_id_size as f64 + cap_size as f64 + 4.0)) / 2.0;
+            + (PROMPT_HEIGHT - (f64::from(app_id_size) + f64::from(cap_size) + 4.0)) / 2.0;
         text_renderer.draw_text(
             scene,
             &self.app_id,
@@ -359,17 +315,13 @@ impl Widget for PermissionPrompt {
             &self.capability_label,
             cap_size,
             theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((label_x, label_y + app_id_size as f64 + 4.0)),
+            transform * Affine::translate((label_x, label_y + f64::from(app_id_size) + 4.0)),
             None,
         );
 
-        // Recompute button rects so a draw without a preceding
-        // `apply_layout` (e.g. a synthetic test path) still hit-tests
-        // correctly. Cheap — just four `Rect::new` calls.
+        // So a draw without a preceding `apply_layout` still hit-tests correctly.
         self.apply_layout_helper();
 
-        // Action buttons — left to right [Allow, Session, Always, Deny].
         let buttons = [
             (self.allow_rect, PromptChoice::Allow, true), // primary (accent)
             (self.session_rect, PromptChoice::Session, false),
@@ -414,8 +366,7 @@ impl Widget for PermissionPrompt {
                 } else if self.session_rect.contains(p) {
                     Some(1)
                 } else if self.always_rect.contains(p) {
-                    // Owner-only — non-owners get no hover affordance
-                    // on the disabled button.
+                    // Non-owners get no hover affordance on the disabled button.
                     if self.is_owner { Some(2) } else { None }
                 } else if self.deny_rect.contains(p) {
                     Some(3)
@@ -444,10 +395,7 @@ impl Widget for PermissionPrompt {
                         self.pending_choice = Some(PromptChoice::Always);
                         *handled = true;
                     }
-                    // Non-owner click on the disabled `Always` button
-                    // is intentionally dropped — leave `pending_choice`
-                    // untouched so the host's drain doesn't see a
-                    // ghost grant.
+                    // Dropped for a non-owner: `pending_choice` stays untouched.
                 } else if self.deny_rect.contains(p) {
                     self.pending_choice = Some(PromptChoice::Deny);
                     *handled = true;
@@ -457,12 +405,10 @@ impl Widget for PermissionPrompt {
         }
     }
 
-    fn name(&self) -> &str { "PermissionPrompt" }
+    fn name(&self) -> &'static str {
+        "PermissionPrompt"
+    }
 
-    /// Accessibility: a permission request is a modal, attention-demanding
-    /// dialog. `Role::Dialog` with `modal = true`; the accessible name states
-    /// what is being requested ("Camera access requested by org.gnome.gedit")
-    /// so an assertive screen-reader announcement is meaningful.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
@@ -478,16 +424,15 @@ impl Widget for PermissionPrompt {
         )
     }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    //! Coverage for the Phase 4 Task 4.2 inline-prompt widget. Tests
-    //! exercise the four button-click branches end-to-end without a
-    //! taffy pass — `apply_layout_helper` populates the hit-test
-    //! rects from a synthetic `self.rect` so we don't depend on a
-    //! GPU/text-renderer.
+    //! `apply_layout_helper` populates the hit-test rects from a synthetic
+    //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
@@ -501,11 +446,7 @@ mod tests {
     #[test]
     fn accessibility_reports_modal_dialog_with_request_name() {
         use crate::a11y::Role;
-        let p = PermissionPrompt::new(
-            "org.gnome.gedit".into(),
-            "Camera access".into(),
-            true,
-        );
+        let p = PermissionPrompt::new("org.gnome.gedit".into(), "Camera access".into(), true);
         let node = Widget::accessibility(&p).expect("prompt is not presentational");
         assert_eq!(node.role, Role::Dialog);
         assert!(node.state.modal, "a permission prompt traps focus");
@@ -530,10 +471,9 @@ mod tests {
         }
     }
 
-    /// Drive an event through the prompt with default scaffolding.
     fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -551,15 +491,11 @@ mod tests {
         );
     }
 
-    /// Build a 600x80 prompt with computed button rects so each
-    /// click-through test starts from a known geometry. `is_owner`
-    /// is the only knob — every other field is fixed.
+    /// 600x80 with computed button rects; `is_owner` is the only
+    /// knob, every other field is fixed.
     fn prompt_at(is_owner: bool) -> PermissionPrompt {
-        let mut p = PermissionPrompt::new(
-            "org.example.app".into(),
-            "Camera access".into(),
-            is_owner,
-        );
+        let mut p =
+            PermissionPrompt::new("org.example.app".into(), "Camera access".into(), is_owner);
         p.rect = Rect::new(0.0, 0.0, 600.0, 80.0);
         p.apply_layout_helper();
         p
@@ -589,8 +525,6 @@ mod tests {
         let center = p.always_rect().center();
         dispatch(&mut p, &cursor_at(center));
         dispatch(&mut p, &left_press());
-        // Non-owner cannot escalate to `Always` — the click is
-        // silently dropped, leaving the host's drain to see nothing.
         assert_eq!(p.pending_choice, None);
     }
 
@@ -614,8 +548,8 @@ mod tests {
 
     #[test]
     fn click_outside_button_rects_does_not_set_choice() {
-        // Click on the icon (left edge of the bar) — far from any
-        // button rect. The prompt must not fabricate a choice.
+        // Click on the icon (left edge of the bar), far from any
+        // button rect.
         let mut p = prompt_at(true);
         dispatch(&mut p, &cursor_at(Point::new(20.0, 40.0)));
         dispatch(&mut p, &left_press());
@@ -624,19 +558,16 @@ mod tests {
 
     #[test]
     fn build_layout_emits_fixed_height_node() {
-        // Pin the bar's intrinsic height — overlay-host wires the
-        // prompt at the top of a strip and depends on the height
-        // being exactly `PROMPT_HEIGHT` so the strip's content
-        // shifts down by the right amount.
+        // The overlay-host depends on this being exactly `PROMPT_HEIGHT` so
+        // the strip's content shifts down by the right amount.
         let mut p = prompt_at(false);
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let theme = Theme::dark();
         let node = p.build_layout(&mut taffy, &theme, &mut node_map);
         let style = taffy.style(node).unwrap();
-        // `Dimension` is opaque — compare equality against the
-        // canonical `length(...)` constructor instead of pattern-
-        // matching on a private representation.
+        // `Dimension` is opaque, so this compares against the canonical
+        // constructor rather than pattern-matching a private representation.
         assert_eq!(style.size.height, Dimension::length(PROMPT_HEIGHT as f32));
     }
 }

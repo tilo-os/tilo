@@ -22,13 +22,14 @@ fn main() -> ExitCode {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--exec" => show_exec = true,
-            "--plan" => match it.next() {
-                Some(id) => plan_id = Some(id.clone()),
-                None => {
+            "--plan" => {
+                if let Some(id) = it.next() {
+                    plan_id = Some(id.clone())
+                } else {
                     eprintln!("--plan needs a desktop-file id");
                     return ExitCode::from(2);
                 }
-            },
+            }
             "-h" | "--help" => {
                 print_help();
                 return ExitCode::SUCCESS;
@@ -91,9 +92,19 @@ fn main() -> ExitCode {
         .collect();
 
     for entry in &shown {
-        println!("{:<10}  {:<44}  {}", entry.source.label(), entry.id, entry.name);
+        println!(
+            "{:<10}  {:<44}  {}",
+            entry.source.label(),
+            entry.id,
+            entry.name
+        );
         if show_exec {
-            println!("{:<10}  {:<44}  Exec={}", "", "", entry.exec.as_deref().unwrap_or(""));
+            println!(
+                "{:<10}  {:<44}  Exec={}",
+                "",
+                "",
+                entry.exec.as_deref().unwrap_or("")
+            );
         }
     }
 

@@ -24,9 +24,9 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::{Fill, Color};
 use vello::Scene;
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -380,7 +380,11 @@ impl DbClientApp {
         let rows = self.session.connections.len() as f64;
         // When there are no connections the sidebar shows a two-line "No
         // connections yet" hint (52px) in place of the rows.
-        let empty_hint = if self.session.connections.is_empty() { 52.0 } else { 0.0 };
+        let empty_hint = if self.session.connections.is_empty() {
+            52.0
+        } else {
+            0.0
+        };
         32.0 + rows * 44.0 + empty_hint + 30.0 + 16.0
     }
 
@@ -427,13 +431,13 @@ impl Widget for DbClientApp {
             self.session.set_connections(doc_conns);
             // Open a connection the local user just added, once it has landed
             // back through the reconcile.
-            if let Some(id) = self.pending_connect_id {
-                if let Some(idx) = self.session.connections.iter().position(|c| c.id == id) {
-                    self.session.active = idx;
-                    self.session.connect_active();
-                    self.pending_connect_id = None;
-                    self.dirty = true;
-                }
+            if let Some(id) = self.pending_connect_id
+                && let Some(idx) = self.session.connections.iter().position(|c| c.id == id)
+            {
+                self.session.active = idx;
+                self.session.connect_active();
+                self.pending_connect_id = None;
+                self.dirty = true;
             }
         }
 
@@ -449,14 +453,14 @@ impl Widget for DbClientApp {
         let node = taffy
             .new_leaf(Style {
                 size: Size {
-                    width: percent(1.0),
-                    height: percent(1.0),
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
                 },
                 flex_grow: 1.0,
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -475,16 +479,19 @@ impl Widget for DbClientApp {
             AvailableSpace::Definite(v) => v,
             _ => 800.0,
         });
-        taffy::Size { width: w, height: h }
+        taffy::Size {
+            width: w,
+            height: h,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // Drop a stale user preference when the window crosses the breakpoint
         // (a resize returns the sidebar to the new layout's default), then
@@ -596,7 +603,7 @@ impl Widget for DbClientApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx_px, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 40.0, *y as f64),
+                    MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 40.0, f64::from(*y)),
                     MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y / 24.0),
                 };
                 let step = (-dy * 3.0) as isize;
@@ -610,8 +617,7 @@ impl Widget for DbClientApp {
                             .session
                             .query_result
                             .as_ref()
-                            .map(|r| r.rows.len())
-                            .unwrap_or(0);
+                            .map_or(0, |r| r.rows.len());
                         self.grid.scroll(step, total);
                         if dx_px != 0.0 {
                             self.grid.scroll_h(dx_px);
@@ -628,8 +634,7 @@ impl Widget for DbClientApp {
                             .session
                             .data_result
                             .as_ref()
-                            .map(|r| r.rows.len())
-                            .unwrap_or(0);
+                            .map_or(0, |r| r.rows.len());
                         self.data_grid.scroll(step, total);
                         if dx_px != 0.0 {
                             self.data_grid.scroll_h(dx_px);
@@ -665,12 +670,12 @@ impl Widget for DbClientApp {
                         *handled = true;
                         return;
                     }
-                    if let Key::Character(c) = logical_key {
-                        if c.eq_ignore_ascii_case("n") {
-                            self.modal.open_new();
-                            *handled = true;
-                            return;
-                        }
+                    if let Key::Character(c) = logical_key
+                        && c.eq_ignore_ascii_case("n")
+                    {
+                        self.modal.open_new();
+                        *handled = true;
+                        return;
                     }
                 }
                 // Esc closes the snippet menu, then dismisses an open overlay
@@ -710,7 +715,7 @@ impl Widget for DbClientApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DbClientApp"
     }
 
@@ -850,8 +855,13 @@ impl DbClientApp {
             if self.snippets_open {
                 let items = crate::sample::starter_queries();
                 let mut y = self.snippet_btn.y1 + 2.0;
-                for (_, sql) in items.iter() {
-                    let item = Rect::new(self.snippet_btn.x0, y, self.snippet_btn.x0 + 240.0, y + 28.0);
+                for (_, sql) in items {
+                    let item = Rect::new(
+                        self.snippet_btn.x0,
+                        y,
+                        self.snippet_btn.x0 + 240.0,
+                        y + 28.0,
+                    );
                     if item.contains(c) {
                         self.load_snippet(sql, state);
                         *handled = true;
@@ -864,53 +874,52 @@ impl DbClientApp {
             }
 
             // Header click → sort.
-            if let Some(col) = self.grid.header_hit(c) {
-                if let Some(res) = &self.session.query_result {
-                    self.grid.sort_by(col, res);
-                    *handled = true;
-                    return;
-                }
+            if let Some(col) = self.grid.header_hit(c)
+                && let Some(res) = &self.session.query_result
+            {
+                self.grid.sort_by(col, res);
+                *handled = true;
+                return;
             }
         }
 
         // Data tab grid sorting + paging.
-        if self.session.tab == MainTab::Data {
-            if let Some(col) = self.data_grid.header_hit(c) {
-                if let Some(res) = &self.session.data_result {
-                    self.data_grid.sort_by(col, res);
-                    *handled = true;
-                    return;
-                }
-            }
+        if self.session.tab == MainTab::Data
+            && let Some(col) = self.data_grid.header_hit(c)
+            && let Some(res) = &self.session.data_result
+        {
+            self.data_grid.sort_by(col, res);
+            *handled = true;
+            return;
         }
 
         // Schema tree (a sidebar widget — gated like the rest of the sidebar).
-        if self.sidebar_interactive() {
-            if let Some(click) = self.tree.hit(c) {
-                match click {
-                    TreeClick::ToggleTable(name) => {
-                        self.tree.toggle(&name);
-                    }
-                    TreeClick::SelectTable(name) => {
-                        self.session.select_table(&name);
-                        // Auto-switch to Data when picking a table from the tree.
-                        if self.session.tab == MainTab::Structure {
-                            // keep structure
-                        }
-                        self.tree.set_selected(&name);
-                        // On a narrow window the sidebar is an overlay; pick a
-                        // table and the flap steps aside to reveal its rows.
-                        if self.split_layout() == SplitLayout::Overlay {
-                            self.flap.close();
-                        }
-                    }
-                    TreeClick::ToggleSchema(name) => self.tree.toggle_schema(&name),
+        if self.sidebar_interactive()
+            && let Some(click) = self.tree.hit(c)
+        {
+            match click {
+                TreeClick::ToggleTable(name) => {
+                    self.tree.toggle(&name);
                 }
-                self.relayout();
-                self.dirty = true;
-                *handled = true;
-                return;
+                TreeClick::SelectTable(name) => {
+                    self.session.select_table(&name);
+                    // Auto-switch to Data when picking a table from the tree.
+                    if self.session.tab == MainTab::Structure {
+                        // keep structure
+                    }
+                    self.tree.set_selected(&name);
+                    // On a narrow window the sidebar is an overlay; pick a
+                    // table and the flap steps aside to reveal its rows.
+                    if self.split_layout() == SplitLayout::Overlay {
+                        self.flap.close();
+                    }
+                }
+                TreeClick::ToggleSchema(name) => self.tree.toggle_schema(&name),
             }
+            self.relayout();
+            self.dirty = true;
+            *handled = true;
+            return;
         }
 
         // Click into the editor body focuses it (editor handles caret).
@@ -959,13 +968,20 @@ impl DbClientApp {
             self.conn_rects.push((idx, row));
             let is_active = idx == active;
             if is_active {
-                scene.fill(Fill::NonZero, t, p.selection, None, &row.to_rounded_rect(6.0));
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    p.selection,
+                    None,
+                    &row.to_rounded_rect(6.0),
+                );
             } else if self.conn_hover == Some(idx) {
                 scene.fill(Fill::NonZero, t, p.hover, None, &row.to_rounded_rect(6.0));
             }
 
             // Engine chip.
-            let chip = Rect::new(row.x0 + 8.0, y + 9.0, row.x0 + 38.0, y + 31.0).to_rounded_rect(5.0);
+            let chip =
+                Rect::new(row.x0 + 8.0, y + 9.0, row.x0 + 38.0, y + 31.0).to_rounded_rect(5.0);
             let chip_color = engine_color(conn.engine, theme);
             scene.fill(Fill::NonZero, t, chip_color, None, &chip);
             tr.draw_text(
@@ -1011,10 +1027,26 @@ impl DbClientApp {
                     theme.text_dim
                 };
                 let a = 4.0;
-                scene.stroke(&Stroke::new(1.5), t, col, None,
-                    &Line::new(Point::new(dc.x - a, dc.y - a), Point::new(dc.x + a, dc.y + a)));
-                scene.stroke(&Stroke::new(1.5), t, col, None,
-                    &Line::new(Point::new(dc.x + a, dc.y - a), Point::new(dc.x - a, dc.y + a)));
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    t,
+                    col,
+                    None,
+                    &Line::new(
+                        Point::new(dc.x - a, dc.y - a),
+                        Point::new(dc.x + a, dc.y + a),
+                    ),
+                );
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    t,
+                    col,
+                    None,
+                    &Line::new(
+                        Point::new(dc.x + a, dc.y - a),
+                        Point::new(dc.x - a, dc.y + a),
+                    ),
+                );
             } else {
                 let dot_c = if conn.connected {
                     theme.tokens.colors.semantic.success
@@ -1098,21 +1130,41 @@ impl DbClientApp {
         self.tab_rects.clear();
         // Reserve space for the hamburger toggle at the left of the tab bar
         // whenever the sidebar isn't fully docked-open.
-        let toggle_inset = if self.show_toggle() { TOGGLE_SIZE + 14.0 } else { 0.0 };
+        let toggle_inset = if self.show_toggle() {
+            TOGGLE_SIZE + 14.0
+        } else {
+            0.0
+        };
         let mut x = bar.x0 + 8.0 + toggle_inset;
         for tab in MainTab::all() {
             let label = tab.label();
             let (lw, _) = tr.measure(label, 13.0, None);
-            let w = lw as f64 + 28.0;
+            let w = f64::from(lw) + 28.0;
             let tab_rect = Rect::new(x, bar.y0 + 6.0, x + w, bar.y1 - 6.0);
             self.tab_rects.push((tab, tab_rect));
             let active = tab == self.session.tab;
             if active {
-                scene.fill(Fill::NonZero, t, p.selection, None, &tab_rect.to_rounded_rect(6.0));
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    p.selection,
+                    None,
+                    &tab_rect.to_rounded_rect(6.0),
+                );
             } else if tab_rect.contains(self.cursor) {
-                scene.fill(Fill::NonZero, t, p.hover, None, &tab_rect.to_rounded_rect(6.0));
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    p.hover,
+                    None,
+                    &tab_rect.to_rounded_rect(6.0),
+                );
             }
-            let color = if active { theme.text_primary } else { theme.text_dim };
+            let color = if active {
+                theme.text_primary
+            } else {
+                theme.text_dim
+            };
             tr.draw_text(
                 scene,
                 label,
@@ -1133,7 +1185,7 @@ impl DbClientApp {
                 &crumb,
                 12.0,
                 theme.text_dim,
-                t * Affine::translate((bar.x1 - cw as f64 - 14.0, bar.y0 + 12.0)),
+                t * Affine::translate((bar.x1 - f64::from(cw) - 14.0, bar.y0 + 12.0)),
                 None,
             );
         }
@@ -1157,7 +1209,13 @@ impl DbClientApp {
                 cx + card_w / 2.0,
                 body.center().y + card_h / 2.0,
             );
-            scene.fill(Fill::NonZero, t, theme.bg_primary, None, &card.to_rounded_rect(14.0));
+            scene.fill(
+                Fill::NonZero,
+                t,
+                theme.bg_primary,
+                None,
+                &card.to_rounded_rect(14.0),
+            );
             scene.stroke(
                 &Stroke::new(1.0),
                 t,
@@ -1224,7 +1282,7 @@ impl DbClientApp {
                 title,
                 17.0,
                 theme.text_primary,
-                t * Affine::translate((cx - tw as f64 / 2.0, card.y0 + 92.0)),
+                t * Affine::translate((cx - f64::from(tw) / 2.0, card.y0 + 92.0)),
                 None,
             );
             tr.draw_text(
@@ -1258,7 +1316,7 @@ impl DbClientApp {
                 label,
                 13.0,
                 Color::WHITE,
-                t * Affine::translate((cx - lw as f64 / 2.0, btn.y0 + 9.0)),
+                t * Affine::translate((cx - f64::from(lw) / 2.0, btn.y0 + 9.0)),
                 None,
             );
             return;
@@ -1276,7 +1334,13 @@ impl DbClientApp {
     /// and an overlay sidebar dismissed. Drawn over everything (after the
     /// sidebar) so it stays reachable while the flap is open. Records its rect
     /// in `toggle_btn` for hit-testing; clears it (to `ZERO`) when hidden.
-    fn draw_sidebar_toggle(&mut self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_sidebar_toggle(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        _tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         if !self.show_toggle() {
             self.toggle_btn = Rect::ZERO;
             return;
@@ -1288,9 +1352,19 @@ impl DbClientApp {
         let btn = Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE);
         self.toggle_btn = btn;
 
-        let bg = if btn.contains(self.cursor) { p.hover } else { p.header_bg };
+        let bg = if btn.contains(self.cursor) {
+            p.hover
+        } else {
+            p.header_bg
+        };
         scene.fill(Fill::NonZero, t, bg, None, &btn.to_rounded_rect(6.0));
-        scene.stroke(&Stroke::new(1.0), t, theme.border_standard, None, &btn.to_rounded_rect(6.0));
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            theme.border_standard,
+            None,
+            &btn.to_rounded_rect(6.0),
+        );
 
         let cx = btn.x0 + TOGGLE_SIZE / 2.0;
         let cy = btn.y0 + TOGGLE_SIZE / 2.0;
@@ -1298,22 +1372,43 @@ impl DbClientApp {
         if open {
             // Close "X" while the sidebar is showing.
             let r = 5.0;
-            scene.stroke(&Stroke::new(1.6), t, theme.text_primary, None,
-                &Line::new(Point::new(cx - r, cy - r), Point::new(cx + r, cy + r)));
-            scene.stroke(&Stroke::new(1.6), t, theme.text_primary, None,
-                &Line::new(Point::new(cx + r, cy - r), Point::new(cx - r, cy + r)));
+            scene.stroke(
+                &Stroke::new(1.6),
+                t,
+                theme.text_primary,
+                None,
+                &Line::new(Point::new(cx - r, cy - r), Point::new(cx + r, cy + r)),
+            );
+            scene.stroke(
+                &Stroke::new(1.6),
+                t,
+                theme.text_primary,
+                None,
+                &Line::new(Point::new(cx + r, cy - r), Point::new(cx - r, cy + r)),
+            );
         } else {
             // Three-line hamburger when collapsed.
             let half = 6.0;
             for i in 0..3 {
-                let ly = cy - 5.0 + i as f64 * 5.0;
-                scene.stroke(&Stroke::new(1.6), t, theme.text_primary, None,
-                    &Line::new(Point::new(cx - half, ly), Point::new(cx + half, ly)));
+                let ly = cy - 5.0 + f64::from(i) * 5.0;
+                scene.stroke(
+                    &Stroke::new(1.6),
+                    t,
+                    theme.text_primary,
+                    None,
+                    &Line::new(Point::new(cx - half, ly), Point::new(cx + half, ly)),
+                );
             }
         }
     }
 
-    fn draw_query_tab(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_query_tab(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let p = theme.db();
         // Toolbar.
         let toolbar = Rect::new(
@@ -1325,9 +1420,18 @@ impl DbClientApp {
         scene.fill(Fill::NonZero, t, p.panel_bg, None, &toolbar);
 
         // Run button.
-        let run = Rect::new(toolbar.x0 + 10.0, toolbar.y0 + 6.0, toolbar.x0 + 160.0, toolbar.y1 - 6.0);
+        let run = Rect::new(
+            toolbar.x0 + 10.0,
+            toolbar.y0 + 6.0,
+            toolbar.x0 + 160.0,
+            toolbar.y1 - 6.0,
+        );
         self.run_btn = run;
-        let run_color = if self.run_hover { theme.accent_hover } else { theme.accent_primary };
+        let run_color = if self.run_hover {
+            theme.accent_hover
+        } else {
+            theme.accent_primary
+        };
         scene.fill(Fill::NonZero, t, run_color, None, &run.to_rounded_rect(6.0));
         tr.draw_text(
             scene,
@@ -1347,14 +1451,25 @@ impl DbClientApp {
         );
 
         // Snippets button.
-        let snip = Rect::new(run.x1 + 8.0, toolbar.y0 + 6.0, run.x1 + 118.0, toolbar.y1 - 6.0);
+        let snip = Rect::new(
+            run.x1 + 8.0,
+            toolbar.y0 + 6.0,
+            run.x1 + 118.0,
+            toolbar.y1 - 6.0,
+        );
         self.snippet_btn = snip;
         let snip_color = if snip.contains(self.cursor) || self.snippets_open {
             p.hover
         } else {
             theme.bg_primary
         };
-        scene.fill(Fill::NonZero, t, snip_color, None, &snip.to_rounded_rect(6.0));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            snip_color,
+            None,
+            &snip.to_rounded_rect(6.0),
+        );
         scene.stroke(
             &Stroke::new(1.0),
             t,
@@ -1402,7 +1517,13 @@ impl DbClientApp {
         }
     }
 
-    fn draw_snippet_menu(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_snippet_menu(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let p = theme.db();
         let items = crate::sample::starter_queries();
         let menu = Rect::new(
@@ -1411,10 +1532,22 @@ impl DbClientApp {
             self.snippet_btn.x0 + 240.0,
             self.snippet_btn.y1 + 2.0 + items.len() as f64 * 28.0,
         );
-        scene.fill(Fill::NonZero, t, theme.bg_primary, None, &menu.to_rounded_rect(8.0));
-        scene.stroke(&Stroke::new(1.0), t, theme.border_standard, None, &menu.to_rounded_rect(8.0));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.bg_primary,
+            None,
+            &menu.to_rounded_rect(8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            theme.border_standard,
+            None,
+            &menu.to_rounded_rect(8.0),
+        );
         let mut y = menu.y0;
-        for (name, _) in items.iter() {
+        for (name, _) in items {
             let item = Rect::new(menu.x0, y, menu.x1, y + 28.0);
             if item.contains(self.cursor) {
                 scene.fill(Fill::NonZero, t, p.hover, None, &item);
@@ -1431,7 +1564,13 @@ impl DbClientApp {
         }
     }
 
-    fn draw_data_tab(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_data_tab(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let p = theme.db();
         let toolbar = Rect::new(
             self.main_rect.x0,
@@ -1446,9 +1585,7 @@ impl DbClientApp {
                 let total = self.session.selected_table_rows();
                 let from = self.session.data_offset + 1;
                 let to = (self.session.data_offset + res.rows.len()).min(total as usize);
-                let info = format!(
-                    "{name}   ·   rows {from}–{to} of {total}",
-                );
+                let info = format!("{name}   ·   rows {from}–{to} of {total}");
                 tr.draw_text(
                     scene,
                     &info,
@@ -1472,7 +1609,13 @@ impl DbClientApp {
         }
     }
 
-    fn draw_structure_tab(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_structure_tab(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let content = Rect::new(
             self.main_rect.x0 + 8.0,
             self.main_rect.y0 + TABBAR_H + 8.0,
@@ -1520,7 +1663,13 @@ impl DbClientApp {
     /// window — the reclaimed home of the old permanent bottom status strip. It
     /// shows on a status change or while the pointer hovers the bottom-right
     /// band, then fades. All colours come from the theme (via `draw_pill`).
-    fn draw_status_bubble(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_status_bubble(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let now = Instant::now();
         let label = self.status_bubble_label();
         // Poke only when the summary actually changes (a connect, a query
@@ -1573,8 +1722,8 @@ fn engine_color(engine: Engine, theme: &Theme) -> Color {
 mod responsive_tests {
     use super::*;
 
-    /// Drive the real layout passes (build_layout → compute_layout →
-    /// apply_layout) so assertions exercise the production geometry path, not
+    /// Drive the real layout passes (`build_layout` → `compute_layout` →
+    /// `apply_layout`) so assertions exercise the production geometry path, not
     /// a hand-recomputed copy.
     fn lay_out(app: &mut DbClientApp, w: f64, h: f64) {
         let theme = Theme::dark();
@@ -1595,8 +1744,14 @@ mod responsive_tests {
 
     #[test]
     fn breakpoint_resolves_from_allocated_width() {
-        assert_eq!(SplitLayout::from_width(BREAKPOINT, BREAKPOINT), SplitLayout::Docked);
-        assert_eq!(SplitLayout::from_width(BREAKPOINT - 1.0, BREAKPOINT), SplitLayout::Overlay);
+        assert_eq!(
+            SplitLayout::from_width(BREAKPOINT, BREAKPOINT),
+            SplitLayout::Docked
+        );
+        assert_eq!(
+            SplitLayout::from_width(BREAKPOINT - 1.0, BREAKPOINT),
+            SplitLayout::Overlay
+        );
     }
 
     #[test]
@@ -1605,7 +1760,10 @@ mod responsive_tests {
         lay_out(&mut app, 1280.0, 800.0);
         assert_eq!(app.split_layout(), SplitLayout::Docked);
         // Sidebar is docked at full width; the main panel is inset past it.
-        assert!(app.sidebar_rect.width() > SIDEBAR_W - 1.0, "docked sidebar is full width");
+        assert!(
+            app.sidebar_rect.width() > SIDEBAR_W - 1.0,
+            "docked sidebar is full width"
+        );
         assert!(
             app.main_rect.x0 > app.rect.x0 + SIDEBAR_W - 1.0,
             "docked main panel is inset past the sidebar"
@@ -1620,14 +1778,24 @@ mod responsive_tests {
         app.snap_flap_for_width(720.0); // shots/live default for narrow
         lay_out(&mut app, 720.0, 900.0);
         assert_eq!(app.split_layout(), SplitLayout::Overlay);
-        assert!(!app.flap.is_open(SplitLayout::Overlay), "narrow sidebar is closed by default");
+        assert!(
+            !app.flap.is_open(SplitLayout::Overlay),
+            "narrow sidebar is closed by default"
+        );
         // Main panel spans the full width; sidebar is slid off-screen left.
         assert!(
             (app.main_rect.width() - app.rect.width()).abs() < 1.0,
             "overlay content spans full width while the flap is closed"
         );
-        assert!(app.sidebar_rect.x1 <= app.rect.x0 + 1.0, "closed overlay sidebar is off-screen");
-        assert_eq!(app.scrim_rect.width(), 0.0, "closed overlay paints no scrim");
+        assert!(
+            app.sidebar_rect.x1 <= app.rect.x0 + 1.0,
+            "closed overlay sidebar is off-screen"
+        );
+        assert_eq!(
+            app.scrim_rect.width(),
+            0.0,
+            "closed overlay paints no scrim"
+        );
         // The hamburger toggle is offered so the sidebar can be summoned.
         assert!(app.show_toggle(), "narrow layout offers the summon toggle");
     }
@@ -1646,7 +1814,10 @@ mod responsive_tests {
             "revealed overlay sidebar is flush at the left edge"
         );
         // A scrim now covers the content body.
-        assert!(app.scrim_rect.width() > 0.0, "open overlay flap dims the content with a scrim");
+        assert!(
+            app.scrim_rect.width() > 0.0,
+            "open overlay flap dims the content with a scrim"
+        );
     }
 
     #[test]
@@ -1659,8 +1830,14 @@ mod responsive_tests {
         app.flap.snap(true); // settle the reconciled docked-open default
         lay_out(&mut app, 1280.0, 800.0);
         assert_eq!(app.split_layout(), SplitLayout::Docked);
-        assert!(app.flap.is_open(SplitLayout::Docked), "widening returns to the docked-open default");
-        assert!(app.main_rect.x0 > app.rect.x0 + 1.0, "docked content is inset by the restored sidebar");
+        assert!(
+            app.flap.is_open(SplitLayout::Docked),
+            "widening returns to the docked-open default"
+        );
+        assert!(
+            app.main_rect.x0 > app.rect.x0 + 1.0,
+            "docked content is inset by the restored sidebar"
+        );
     }
 }
 
@@ -1674,7 +1851,10 @@ mod honesty_tests {
         // live engine, no schema.
         let app = DbClientApp::build(Session::new(), false);
         assert!(!app.demo, "live build is not the demo build");
-        assert!(app.session.connections.is_empty(), "no fabricated connections");
+        assert!(
+            app.session.connections.is_empty(),
+            "no fabricated connections"
+        );
         assert!(!app.session.connected, "no live engine on a fresh machine");
         assert_eq!(app.session.schema.table_count(), 0, "no fabricated schema");
     }
@@ -1684,9 +1864,15 @@ mod honesty_tests {
         // The demo builder is the sole source of the sample database.
         let app = DbClientApp::new_demo();
         assert!(app.demo, "demo build is flagged");
-        assert!(!app.session.connections.is_empty(), "demo seeds sample connections");
+        assert!(
+            !app.session.connections.is_empty(),
+            "demo seeds sample connections"
+        );
         assert!(app.session.connected, "demo opens the sample engine");
-        assert!(app.session.schema.table_count() >= 4, "demo has the sample schema");
+        assert!(
+            app.session.schema.table_count() >= 4,
+            "demo has the sample schema"
+        );
     }
 }
 
@@ -1696,9 +1882,7 @@ mod behavior_tests {
     use automerge::ROOT;
     use qos_actions::Action;
     use winit::event::{DeviceId, KeyEvent};
-    use winit::keyboard::{
-        KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr,
-    };
+    use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
 
     use crate::model::ConnectionProfile;
 
@@ -1714,7 +1898,11 @@ mod behavior_tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = Some(SmolStr::new(c));
-        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     fn enter_event() -> WindowEvent {
@@ -1725,14 +1913,33 @@ mod behavior_tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
-        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
-    fn send(app: &mut DbClientApp, doc: &mut AutoCommit, ev: &WindowEvent, mods: &Modifiers) -> bool {
+    fn send(
+        app: &mut DbClientApp,
+        doc: &mut AutoCommit,
+        ev: &WindowEvent,
+        mods: &Modifiers,
+    ) -> bool {
         let taffy = TaffyTree::<()>::new();
         let mut handled = false;
         let mut focus = None;
-        app.handle_event(ev, 1.0, mods, doc, &ROOT, &mut handled, &mut focus, NodeId::new(0), &taffy);
+        app.handle_event(
+            ev,
+            1.0,
+            mods,
+            doc,
+            &ROOT,
+            &mut handled,
+            &mut focus,
+            NodeId::new(0),
+            &taffy,
+        );
         handled
     }
 
@@ -1754,15 +1961,32 @@ mod behavior_tests {
         let before = crate::doc::EditorDoc::read_sql(&doc);
 
         let mut peer = AutoCommit::load(&base).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads(), "precondition: replicas share a base");
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "precondition: replicas share a base"
+        );
 
-        assert!(send(&mut app, &mut doc, &char_event("Z"), &Modifiers::default()));
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &char_event("Z"),
+            &Modifiers::default()
+        ));
         doc.commit();
         let after = crate::doc::EditorDoc::read_sql(&doc);
-        assert_eq!(after.chars().count(), before.chars().count() + 1, "one char inserted");
+        assert_eq!(
+            after.chars().count(),
+            before.chars().count() + 1,
+            "one char inserted"
+        );
 
         peer.merge(&mut doc).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads(), "byte-identical convergence");
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "byte-identical convergence"
+        );
     }
 
     /// Running a query is external: Ctrl+Enter dispatches work to the engine
@@ -1774,7 +1998,10 @@ mod behavior_tests {
         let before = doc.get_heads();
 
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(send(&mut app, &mut doc, &enter_event(), &ctrl), "Ctrl+Enter runs the query");
+        assert!(
+            send(&mut app, &mut doc, &enter_event(), &ctrl),
+            "Ctrl+Enter runs the query"
+        );
         assert_eq!(
             doc.get_heads(),
             before,
@@ -1804,7 +2031,11 @@ mod behavior_tests {
             app.take_committed_action().is_some(),
             "the action host recorded an undo boundary for the CRUD"
         );
-        assert_eq!(app.pending_connect_id, Some(id), "the app will open it on reconcile");
+        assert_eq!(
+            app.pending_connect_id,
+            Some(id),
+            "the app will open it on reconcile"
+        );
 
         let bytes = doc.save();
         assert!(
@@ -1821,11 +2052,20 @@ mod behavior_tests {
         let mut doc = AutoCommit::new();
         // A peer (or a prior session) added a connection to the document.
         let p = ConnectionProfile::new("Team DB", Engine::MySql);
-        crate::actions::add_connection_action(&p).apply(&mut doc).unwrap();
+        crate::actions::add_connection_action(&p)
+            .apply(&mut doc)
+            .unwrap();
 
         app.sync(&mut doc, &ROOT);
-        assert_eq!(app.session.connections.len(), 1, "the document connection is listed");
+        assert_eq!(
+            app.session.connections.len(),
+            1,
+            "the document connection is listed"
+        );
         assert_eq!(app.session.connections[0].name, "Team DB");
-        assert!(!app.session.connected, "a peer-added connection is not auto-opened");
+        assert!(
+            !app.session.connected,
+            "a peer-added connection is not auto-opened"
+        );
     }
 }

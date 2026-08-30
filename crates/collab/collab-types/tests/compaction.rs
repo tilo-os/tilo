@@ -1,25 +1,29 @@
-//! Phase 6 integration tests: op-log compaction + scrollback.
+//! Op-log compaction + scrollback integration tests.
 //!
 //! Exercises [`ChannelState::record_validated_op`],
 //! [`ChannelState::apply_compaction`], and
-//! [`ChannelState::scrollback_for`] against the same fixture shape the
-//! validator tests use. These are unit-grade in the test-harness sense
-//! (no I/O, no broker) but live in `tests/` because they cover the
+//! [`ChannelState::scrollback_for`] against the validator tests' fixture
+//! shape. Live in `tests/` (not unit tests) because they cover the
 //! validator's *public* API.
 
 use std::time::SystemTime;
 
-use ed25519_dalek::SigningKey;
 use collab_types::{
-    ArtifactId, ArtifactKind, AttestationId, ChannelState, CompactionCheckpoint,
-    CompactionError, Ed25519PublicKey, OpClass, Role, RoleAttestation, SignedOp,
-    encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event, sign_op,
+    ArtifactId, ArtifactKind, AttestationId, ChannelState, CompactionCheckpoint, CompactionError,
+    Ed25519PublicKey, OpClass, Role, RoleAttestation, SignedOp, encode_compaction_payload,
+    generate_keypair, hash_op_prefix, sign_event, sign_op,
 };
+use ed25519_dalek::SigningKey;
 
-/// Reuse the validator-test convention: build a minimal channel state
-/// with one owner, one Editor author, one Note artifact, and pre-
-/// registered authorised signer.
-fn minimal_state() -> (ChannelState, SigningKey, Ed25519PublicKey, ArtifactId, AttestationId) {
+/// Reuse the validator-test convention: a minimal channel state with one
+/// owner, one Editor author, one Note artifact, pre-registered signer.
+fn minimal_state() -> (
+    ChannelState,
+    SigningKey,
+    Ed25519PublicKey,
+    ArtifactId,
+    AttestationId,
+) {
     let (owner_sk, owner_pk) = generate_keypair();
     let (author_sk, author_pk) = generate_keypair();
     let artifact = ArtifactId::new();
@@ -98,8 +102,8 @@ fn op_log_evicts_oldest_at_capacity() {
 #[test]
 fn default_max_in_memory_ops_matches_constant() {
     // ChannelState::default() must use DEFAULT_MAX_IN_MEMORY_OPS so a
-    // freshly-constructed state has a sensible bound. Surfaced as a
-    // test so the constant + Default impl stay in sync.
+    // fresh state has a sensible bound — surfaced as a test so the
+    // constant + Default impl stay in sync.
     let state = ChannelState::default();
     assert_eq!(
         state.max_in_memory_ops,
@@ -192,9 +196,8 @@ fn apply_compaction_only_touches_matching_artifact() {
 
 #[test]
 fn apply_compaction_empty_prefix_succeeds() {
-    // A checkpoint covering up_to_seq=0 (the first checkpoint a
-    // channel might issue before any mutation ops) must succeed
-    // with zero evictions, not error on "no matching ops".
+    // A checkpoint covering up_to_seq=0 (the first a channel might issue
+    // before any mutation) must succeed with zero evictions, not error.
     let (mut state, sk, author, artifact, att_id) = minimal_state();
     state.record_validated_op(make_signed_op(&sk, author, artifact, att_id, 5));
 
@@ -301,10 +304,9 @@ fn parse_compaction_payload_round_trip() {
     };
     let bytes = encode_compaction_payload(&cp).expect("encode");
     let (_, sk, author, _artifact, att_id) = minimal_state();
-    // The op's `artifact` should match the checkpoint's `artifact`;
-    // role-table-wise, a Compaction op should be authored by an
-    // Owner. We don't validate here (separate test); just round-trip
-    // payload bytes through `parse_compaction_payload`.
+    // The op's `artifact` should match the checkpoint's `artifact`; a
+    // Compaction op should be Owner-authored (not validated here — just
+    // round-tripping payload bytes through `parse_compaction_payload`).
     let mut op = SignedOp::new_unsigned(
         bytes,
         cp.artifact,

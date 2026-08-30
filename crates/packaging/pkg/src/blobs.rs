@@ -1,27 +1,16 @@
-//! Content-addressed blob storage abstracted behind a small
-//! synchronous trait.
+//! Content-addressed blob storage abstracted behind a small synchronous trait.
 //!
-//! ## Why not iroh-blobs directly?
+//! Why not iroh-blobs directly: `qos-pkg` packages must also be
+//! produceable as Flatpaks with no iroh runtime, and `iroh-blobs` is
+//! async-tokio with a large surface that would force every consumer
+//! (CLI, build tools, tests) into a tokio runtime. The on-wire
+//! BLAKE3-rooted content addressing is identical either way — a
+//! "Collection" is just `(name → hash)` pairs, encoded here as a
+//! small deterministic blob (see [`Collection`]).
 //!
-//! The spec calls for the payload to live as "an iroh-blobs
-//! Collection", which it does on a live qOS node. At the
-//! foundation-layer (this crate), however:
-//!
-//! 1. `qos-pkg` packages MUST also be produceable as Flatpaks
-//!    where there is no iroh runtime — so the on-disk format
-//!    cannot require iroh-blobs to read.
-//! 2. `iroh-blobs` is async-tokio and has a large surface — pulling
-//!    it in here would force every consumer (CLI, build tools,
-//!    tests) into a tokio runtime.
-//! 3. The on-wire BLAKE3-rooted content addressing is identical
-//!    in both worlds. The "Collection" structure is just a list
-//!    of `(name → hash)` pairs; we encode that here as a small
-//!    deterministic blob (see [`Collection`]).
-//!
-//! The `iroh-blobs`-backed adapter lives in the loader (a
-//! follow-on crate); it implements [`BlobStore`] over a real
-//! iroh `Store` so a node can ingest a `.qpkg` and re-serve its
-//! blobs to peers.
+//! The iroh-blobs-backed adapter lives in the loader (a follow-on
+//! crate), implementing [`BlobStore`] over a real iroh `Store` so a
+//! node can ingest a `.qpkg` and re-serve its blobs to peers.
 
 use std::collections::BTreeMap;
 
@@ -65,16 +54,13 @@ impl std::fmt::Display for BlobHash {
     }
 }
 
-/// A blob-store backend. Synchronous, errors propagated as
-/// `BlobStoreError`. The in-memory implementation is enough for
-/// tests + the CLI; the loader provides an iroh-blobs adapter.
+/// A blob-store backend, synchronous, errors as `BlobStoreError`; the
+/// in-memory impl suffices for tests + CLI, the loader provides an iroh-blobs adapter.
 pub trait BlobStore {
-    /// Insert `bytes`; return the BLAKE3 hash. Idempotent —
-    /// re-inserting the same bytes returns the same hash.
+    /// Insert `bytes`; return the BLAKE3 hash. Idempotent — re-inserting the same bytes returns the same hash.
     fn put(&mut self, bytes: &[u8]) -> Result<BlobHash, BlobStoreError>;
 
-    /// Borrow the bytes for `hash`. `None` if the hash is not
-    /// present.
+    /// Borrow the bytes for `hash`; `None` if not present.
     fn get(&self, hash: &BlobHash) -> Result<Option<Vec<u8>>, BlobStoreError>;
 
     /// Whether `hash` is present.
@@ -83,9 +69,8 @@ pub trait BlobStore {
     }
 }
 
-/// Errors from a `BlobStore`. The in-memory impl is infallible
-/// but disk-backed impls (FsStore in the loader) can fail with
-/// I/O errors that surface here.
+/// Errors from a `BlobStore`; the in-memory impl is infallible but
+/// disk-backed impls (`FsStore` in the loader) can surface I/O errors here.
 #[derive(Debug, Error)]
 pub enum BlobStoreError {
     #[error("I/O error: {0}")]
@@ -94,8 +79,8 @@ pub enum BlobStoreError {
     Missing(BlobHash),
 }
 
-/// A trivial in-memory `BlobStore` — used by the CLI, tests, and
-/// the canonical `.qpkg` builder. Persistence is the loader's job.
+/// A trivial in-memory `BlobStore` — used by the CLI, tests, and the
+/// canonical .qpkg builder; persistence is the loader's job.
 #[derive(Debug, Default, Clone)]
 pub struct MemoryBlobStore {
     blobs: BTreeMap<BlobHash, Vec<u8>>,
@@ -107,8 +92,7 @@ impl MemoryBlobStore {
         Self::default()
     }
 
-    /// Snapshot every (hash, bytes) pair. Used when serialising
-    /// a `.qpkg` to tar.
+    /// Snapshot every (hash, bytes) pair; used when serialising a .qpkg to tar.
     pub fn iter(&self) -> impl Iterator<Item = (&BlobHash, &Vec<u8>)> {
         self.blobs.iter()
     }
@@ -142,22 +126,19 @@ impl BlobStore for MemoryBlobStore {
 
 /// The payload "collection": payload-relative path → blob hash.
 ///
-/// This stands in for iroh-blobs' `Collection` at the wire-stable
-/// layer. The on-disk encoding is deterministic (BTreeMap so the
-/// hash is reproducible) and shaped as a small JSON-free
-/// length-prefixed blob via serde + bincode-style postcard
-/// (we use the bytes encoding of `Vec<(String, [u8;32])>` so
-/// the format does not depend on a serde framework choice at the
-/// canonical layer).
+/// Stands in for iroh-blobs' `Collection` at the wire-stable layer.
+/// Deterministic on-disk encoding (`BTreeMap`, so the hash is
+/// reproducible) as a length-prefixed `Vec<(String, [u8;32])>` blob —
+/// hand-encoded rather than via serde, so the format doesn't depend
+/// on a framework choice at the canonical layer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collection {
     pub entries: BTreeMap<String, BlobHash>,
 }
 
 impl Collection {
-    /// Build a collection from an unsorted iterator. Entries are
-    /// stored sorted by path so the collection's own hash is
-    /// stable across iteration orders.
+    /// Build a collection from an unsorted iterator; entries are stored
+    /// sorted by path so the collection's own hash is stable across iteration orders.
     pub fn from_entries<I: IntoIterator<Item = (String, BlobHash)>>(it: I) -> Self {
         Self {
             entries: it.into_iter().collect(),
@@ -175,8 +156,7 @@ impl Collection {
     ///     [u8; 32] hash
     /// ```
     ///
-    /// Hand-rolled (not postcard / serde) so the wire format is
-    /// independent of serde framework version churn.
+    /// Hand-rolled (not postcard/serde) so the wire format doesn't churn with serde framework versions.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 4 + self.entries.len() * (4 + 32));
         out.extend_from_slice(b"QOSCOL\0\0");
@@ -190,8 +170,7 @@ impl Collection {
         out
     }
 
-    /// Decode bytes produced by [`Self::encode`]. Strict — any
-    /// extra trailing bytes or malformed lengths are rejected.
+    /// Decode bytes produced by [`Self::encode`]; strict — extra trailing bytes or malformed lengths are rejected.
     pub fn decode(bytes: &[u8]) -> Result<Self, CollectionDecodeError> {
         if bytes.len() < 12 || &bytes[0..8] != b"QOSCOL\0\0" {
             return Err(CollectionDecodeError::BadMagic);
@@ -225,8 +204,7 @@ impl Collection {
         Ok(Self { entries: out })
     }
 
-    /// Hash of the encoded form. This is the "collection root"
-    /// that the signed manifest binds into.
+    /// Hash of the encoded form — the "collection root" the signed manifest binds into.
     pub fn root_hash(&self) -> BlobHash {
         BlobHash::of(&self.encode())
     }

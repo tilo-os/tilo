@@ -56,11 +56,7 @@ impl Sampler {
     /// elapsed wall time.
     pub fn refresh(&mut self, model: &mut MonitorModel) {
         let now = Instant::now();
-        let dt = self
-            .last
-            .map(|l| (now - l).as_secs_f32())
-            .unwrap_or(1.0)
-            .max(0.05);
+        let dt = self.last.map_or(1.0, |l| (now - l).as_secs_f32()).max(0.05);
 
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
@@ -68,7 +64,12 @@ impl Sampler {
         self.networks.refresh();
 
         let m = &mut model.metrics;
-        m.cores = self.sys.cpus().iter().map(|c| c.cpu_usage()).collect();
+        m.cores = self
+            .sys
+            .cpus()
+            .iter()
+            .map(sysinfo::Cpu::cpu_usage)
+            .collect();
         if let Some(c) = self.sys.cpus().first() {
             let brand = c.brand().trim().to_string();
             if !brand.is_empty() {
@@ -123,9 +124,8 @@ impl Sampler {
             let user = p
                 .user_id()
                 .and_then(|uid| self.users.get_user_by_id(uid))
-                .map(|u| u.name().to_string())
-                .unwrap_or_else(|| "—".to_string());
-            let threads = p.tasks().map(|t| t.len()).unwrap_or(1).max(1);
+                .map_or_else(|| "—".to_string(), |u| u.name().to_string());
+            let threads = p.tasks().map_or(1, std::collections::HashSet::len).max(1);
             let mem = p.memory();
             // Full command line (argv joined); fall back to the bare name when
             // the kernel exposes no argv (kernel threads, zombies).
@@ -145,7 +145,7 @@ impl Sampler {
             let pid_u32 = pid.as_u32();
             procs.push(ProcessInfo {
                 pid: pid_u32,
-                ppid: p.parent().map(|pp| pp.as_u32()),
+                ppid: p.parent().map(sysinfo::Pid::as_u32),
                 name,
                 user,
                 cpu: p.cpu_usage(),
@@ -195,7 +195,7 @@ impl Default for Sampler {
 fn count_open_files(pid: u32) -> Option<usize> {
     std::fs::read_dir(format!("/proc/{pid}/fd"))
         .ok()
-        .map(|it| it.filter(|e| e.is_ok()).count())
+        .map(|it| it.filter(std::result::Result::is_ok).count())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -221,14 +221,31 @@ mod tests {
         assert!(m.mem_total > 0, "real memory total sampled");
         assert!(!model.processes.is_empty(), "real process list sampled");
         // Throughput deltas are non-negative, finite, and pushed to histories.
-        assert!(m.net_rx >= 0.0 && m.net_rx.is_finite(), "net rx is a real rate");
-        assert!(m.disk_read >= 0.0 && m.disk_read.is_finite(), "disk read is a real rate");
-        assert_eq!(m.net_rx_hist.last(), m.net_rx, "net rx history tracks the throughput");
-        assert_eq!(m.disk_read_hist.last(), m.disk_read, "disk read history tracks the throughput");
+        assert!(
+            m.net_rx >= 0.0 && m.net_rx.is_finite(),
+            "net rx is a real rate"
+        );
+        assert!(
+            m.disk_read >= 0.0 && m.disk_read.is_finite(),
+            "disk read is a real rate"
+        );
+        assert_eq!(
+            m.net_rx_hist.last(),
+            m.net_rx,
+            "net rx history tracks the throughput"
+        );
+        assert_eq!(
+            m.disk_read_hist.last(),
+            m.disk_read,
+            "disk read history tracks the throughput"
+        );
         // A second refresh recomputes deltas over real elapsed wall time.
         s.refresh(&mut model);
         assert!(model.metrics.net_tx >= 0.0 && model.metrics.net_tx.is_finite());
-        assert_eq!(model.metrics.disk_write_hist.last(), model.metrics.disk_write);
+        assert_eq!(
+            model.metrics.disk_write_hist.last(),
+            model.metrics.disk_write
+        );
     }
 
     /// `signal`/`kill` route through the real process handle: an unknown pid
@@ -236,8 +253,14 @@ mod tests {
     #[test]
     fn signal_and_kill_reject_unknown_pid() {
         let s = Sampler::new();
-        assert!(!s.signal(u32::MAX, StopKind::Term), "no such process to SIGTERM");
-        assert!(!s.signal(u32::MAX, StopKind::Kill), "no such process to SIGKILL");
+        assert!(
+            !s.signal(u32::MAX, StopKind::Term),
+            "no such process to SIGTERM"
+        );
+        assert!(
+            !s.signal(u32::MAX, StopKind::Kill),
+            "no such process to SIGKILL"
+        );
         assert!(!s.kill(u32::MAX), "no such process to hard-kill");
     }
 }

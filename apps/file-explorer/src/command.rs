@@ -12,8 +12,8 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
-use vello::kurbo::Point;
 use std::rc::Rc;
+use vello::kurbo::Point;
 
 use crate::model::{SortBy, SortOrder, ViewMode};
 
@@ -36,7 +36,11 @@ pub enum FileCommand {
     Refresh,
     /// A pointer press on entry `index` with modifier state — drives
     /// selection (and, via the app's double-click detection, opening).
-    Click { index: usize, ctrl: bool, shift: bool },
+    Click {
+        index: usize,
+        ctrl: bool,
+        shift: bool,
+    },
     /// A right-press landed on displayed entry `Some(index)` (or empty space,
     /// `None`). Selects the target so the context menu that follows acts on
     /// what was clicked, not a stale selection — unless the target is already
@@ -103,14 +107,24 @@ pub enum FileCommand {
     /// at the app level because the content pane — and the view that saw
     /// the press — is rebuilt when the click changes the selection, so
     /// state parked in the view would not survive to the first move.
-    ArmDrag { path: PathBuf, is_dir: bool, at: Point },
-    BeginDrag { path: PathBuf, is_dir: bool },
+    ArmDrag {
+        path: PathBuf,
+        is_dir: bool,
+        at: Point,
+    },
+    BeginDrag {
+        path: PathBuf,
+        is_dir: bool,
+    },
     /// Add a folder to the favourites / places list.
     AddFavorite(PathBuf),
     /// Remove a folder from the favourites list.
     RemoveFavorite(PathBuf),
     /// Move favourite `from` to index `to` (drag-to-reorder drop).
-    ReorderFavorite { from: usize, to: usize },
+    ReorderFavorite {
+        from: usize,
+        to: usize,
+    },
     /// Increase / decrease the icon/row zoom level (Ctrl +/-, Ctrl-scroll).
     ZoomIn,
     ZoomOut,

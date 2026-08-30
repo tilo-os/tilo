@@ -1,18 +1,12 @@
-//! Per-workspace Wayland bridge socket — v1.
+//! Per-workspace Wayland bridge socket.
 //!
 //! Spawns a UNIX listener at `$XDG_RUNTIME_DIR/nirios-ws-<ws_id>` and,
-//! for each accepted connection, opens a parallel connection to the
-//! main wayland socket and shovels bytes both ways. Future Phase 3+
-//! work tags each bridge connection with a workspace id (smithay
-//! `Client::UserData`) and filters protocol messages — v1 just gives
-//! us the socket-path infrastructure so apps inside the bwrap sandbox
-//! see a `WAYLAND_DISPLAY` they can bind to.
-//!
-//! See `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`
-//! Phase 3 (lines 231-291). The full Phase 3 implements message-filtering at
-//! the bridge boundary with smithay `Client` UserData tagging — this v1
-//! delivers only listen+proxy plus the spawn-helper integration so the bwrap
-//! sandbox argv is wired end-to-end.
+//! for each accepted connection, opens a parallel connection to the main
+//! wayland socket and shovels bytes both ways, so apps inside the bwrap
+//! sandbox see a `WAYLAND_DISPLAY` they can bind to. Message-filtering at
+//! the bridge boundary (tagging connections with a workspace id via
+//! smithay `Client::UserData`) is not yet implemented — this delivers
+//! only listen+proxy plus the spawn-helper integration.
 
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -28,15 +22,9 @@ use std::time::Duration;
 /// Lifetime: created via [`BridgeSocket::bind`], started via
 /// [`BridgeSocket::start`]. Drop signals the accept loop to shut down
 /// (via [`Self::shutdown`]) and joins the loop's thread with a short
-/// timeout before unlinking the bridge socket file on the host.
-///
-/// C-10 / D-4: previously the accept loop was an unconditional
-/// `for client in listener.incoming() {}` with no escape and the
-/// `JoinHandle` was just dropped on Drop, leaking the thread + the
-/// listener socket on workspace deletion. The shutdown flag is checked
-/// after every accept(); to escape a currently-blocking accept(),
-/// Drop also connects to the bridge path once to nudge the loop into
-/// re-checking the flag (the wakeup connection is dropped immediately).
+/// timeout before unlinking the bridge socket file on the host. The
+/// accept loop itself is non-blocking, polling the shutdown flag between
+/// `accept()` attempts, so nothing needs to be woken up.
 pub struct BridgeSocket {
     pub workspace_id: u64,
     pub bridge_path: PathBuf,
@@ -46,7 +34,7 @@ pub struct BridgeSocket {
     /// [`Self::shutdown`] / [`Drop`]; the loop bails on the next
     /// iteration.
     shutdown: Arc<AtomicBool>,
-    /// JoinHandle for the accept-loop thread. Joined in Drop with a
+    /// `JoinHandle` for the accept-loop thread. Joined in Drop with a
     /// short timeout so workspace deletion doesn't block on a hung
     /// upstream.
     accept_thread: Option<thread::JoinHandle<()>>,
@@ -65,7 +53,7 @@ impl BridgeSocket {
         runtime_dir: &Path,
         upstream_wayland_socket: &Path,
     ) -> io::Result<Self> {
-        let bridge_path = runtime_dir.join(format!("nirios-ws-{}", workspace_id));
+        let bridge_path = runtime_dir.join(format!("nirios-ws-{workspace_id}"));
         // Best-effort cleanup of stale.
         let _ = std::fs::remove_file(&bridge_path);
         let listener = UnixListener::bind(&bridge_path)?;
@@ -147,11 +135,11 @@ impl BridgeSocket {
 
 impl Drop for BridgeSocket {
     fn drop(&mut self) {
-        // C-10 / D-4: signal the accept loop and join its thread before
-        // unlinking the socket file. We give the join a short budget
-        // (1s) — long enough for an idle non-blocking accept loop to
-        // notice the flag at its 20ms cadence, short enough that an
-        // unresponsive relay thread can't block workspace teardown.
+        // Signal the accept loop and join its thread before unlinking the
+        // socket file. Join budget (1s) is long enough for an idle
+        // non-blocking accept loop to notice the flag at its 20ms
+        // cadence, short enough that an unresponsive relay thread can't
+        // block workspace teardown.
         self.shutdown.store(true, Ordering::SeqCst);
         if let Some(handle) = self.accept_thread.take() {
             let join_deadline = std::time::Instant::now() + Duration::from_secs(1);
@@ -182,9 +170,8 @@ impl Drop for BridgeSocket {
 /// the dropped `UnixStream` closes its half of the connection, which
 /// surfaces to the other relay thread as EOF.
 ///
-/// v1 uses [`std::io::copy`] per direction because the bar for this
-/// commit is "weston-info round-trips through the bridge", not a
-/// production-grade buffered relay with timeouts.
+/// Uses [`std::io::copy`] per direction — a plain relay, not a
+/// production-grade buffered one with timeouts.
 fn relay(client: UnixStream, upstream: UnixStream) -> io::Result<()> {
     let client2 = client.try_clone()?;
     let upstream2 = upstream.try_clone()?;
@@ -293,10 +280,8 @@ mod tests {
         upstream_thread.join().expect("upstream thread");
     }
 
-    /// C-10: signalling shutdown causes the accept loop to exit
-    /// promptly without waiting for an external client. Before the
-    /// fix the loop ran `listener.incoming()` with no escape — there
-    /// was no way to break out of accept short of yanking the FD.
+    /// Signalling shutdown causes the accept loop to exit promptly
+    /// without waiting for an external client.
     #[test]
     fn shutdown_flag_breaks_accept_loop() {
         let runtime = tempfile::tempdir().unwrap();
@@ -327,10 +312,8 @@ mod tests {
         handle.join().expect("clean join after shutdown");
     }
 
-    /// D-4: Drop joins the accept-loop thread once shutdown is
-    /// signalled (it's set automatically inside Drop). Before the
-    /// fix the JoinHandle was just discarded, orphaning the thread.
-    /// We verify the join completes within Drop's 1s budget.
+    /// Drop joins the accept-loop thread once shutdown is signalled
+    /// (set automatically inside Drop), within its 1s budget.
     #[test]
     fn drop_joins_accept_thread_when_shutdown_signalled() {
         let runtime = tempfile::tempdir().unwrap();
@@ -344,8 +327,7 @@ mod tests {
             bridge
                 .accept_thread
                 .as_ref()
-                .map(|h| !h.is_finished())
-                .unwrap_or(false),
+                .is_some_and(|h| !h.is_finished()),
             "accept thread should be running before drop"
         );
         let started = Instant::now();

@@ -1,14 +1,15 @@
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
+use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use taffy::style_helpers::{length, percent};
+use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style};
-use taffy::style_helpers::{length, percent};
-use crate::widget::Widget;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
 
 pub struct Row {
     children: Vec<Box<dyn Widget>>,
@@ -19,13 +20,19 @@ pub struct Row {
     /// the right choice for a toolbar of fixed-size buttons.
     no_wrap: bool,
     /// When set, the row grows to fill the remaining main-axis space of
-    /// its parent (flex_grow:1) and stretches its children to its height —
+    /// its parent (`flex_grow:1`) and stretches its children to its height —
     /// the right choice for a sidebar|content body row.
     fill_height: bool,
     /// Subtree cache — same pattern as `Column::subtree_cache`.
     /// See that field for the gory rationale.
     subtree_cache: Scene,
     cache_rect: vello::kurbo::Rect,
+}
+
+impl Default for Row {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Row {
@@ -47,14 +54,11 @@ impl Row {
         self
     }
 
-    /// Keep all children on a single line (disable the default flex-wrap).
     pub fn no_wrap(mut self) -> Self {
         self.no_wrap = true;
         self
     }
 
-    /// Grow to fill the remaining vertical space of a parent column and
-    /// stretch children to the row's full height.
     pub fn with_fill_remaining_height(mut self) -> Self {
         self.fill_height = true;
         self
@@ -91,17 +95,27 @@ impl Widget for Row {
         changed
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let child_nodes: Vec<NodeId> = self.children
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let child_nodes: Vec<NodeId> = self
+            .children
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
-            
-        let node = taffy.new_with_children(
+
+        let node = taffy.parent_node(
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Row,
-                flex_wrap: if self.no_wrap { taffy::FlexWrap::NoWrap } else { taffy::FlexWrap::Wrap },
+                flex_wrap: if self.no_wrap {
+                    taffy::FlexWrap::NoWrap
+                } else {
+                    taffy::FlexWrap::Wrap
+                },
                 // Stretch children to the row height when it is a fill-body
                 // row (so the file list spans the available height);
                 // otherwise centre them (toolbar/button rows).
@@ -117,56 +131,94 @@ impl Widget for Row {
                     height: length(theme.gap_standard),
                 },
                 size: taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: taffy::Dimension::auto(),
                 },
                 ..Default::default()
             },
-            &child_nodes
-        ).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+            &child_nodes,
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         // See `Column::apply_layout` for why we max() against
         // content_size — covers taffy under-reporting under a
         // constrained-height parent.
-        let w = layout.size.width.max(layout.content_size.width) as f64;
-        let h = layout.size.height.max(layout.content_size.height) as f64;
+        let w = f64::from(layout.size.width.max(layout.content_size.width));
+        let h = f64::from(layout.size.height.max(layout.content_size.height));
         self.rect = vello::kurbo::Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + w,
-            origin.y + layout.location.y as f64 + h,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + w,
+            origin.y + f64::from(layout.location.y) + h,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
-        let children = taffy.children(node).unwrap();
+        let children = taffy.children(node).unwrap_or_default();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
             child_widget.apply_layout(taffy, *child_node, new_origin);
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
         for child in &mut self.children {
             child.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
-        let child_nodes = taffy.children(node_id).unwrap();
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let child_nodes = taffy.children(node_id).unwrap_or_default();
         // Same pointer-capture short-circuit as `Column::handle_event` —
         // a dragging child gets exclusive event routing so the drag
         // survives the cursor wandering through peer widgets.
         if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
             let cnode = child_nodes[idx];
-            self.children[idx].handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, cnode, taffy);
+            self.children[idx].handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cnode,
+                taffy,
+            );
             return;
         }
         for (child_widget, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child_widget.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
+            child_widget.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
             if *handled {
                 break;
             }
@@ -192,23 +244,43 @@ impl Widget for Row {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(|c| c.as_ref()).collect()
+        self.children
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children.iter_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).collect()
+        self.children
+            .iter_mut()
+            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+            .collect()
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
 
-    fn name(&self) -> &str { "Row" }
+    fn name(&self) -> &'static str {
+        "Row"
+    }
 
-    fn is_focused(&self) -> bool { false }
-    fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
-    fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
+    fn is_focused(&self) -> bool {
+        false
+    }
+    fn needs_commit(&self) -> bool {
+        self.children().iter().any(|c| c.needs_commit())
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            child.on_commit();
+        }
+    }
 
+    // `.any` would short-circuit and skip `take_structure_dirty()` on later
+    // children once one reports dirty, leaving their flags uncleared --
+    // the non-short-circuiting `.fold` below is required, not incidental.
+    #[allow(clippy::unnecessary_fold)]
     fn take_structure_dirty(&mut self) -> bool {
         self.children
             .iter_mut()
@@ -220,7 +292,9 @@ impl Widget for Row {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -237,47 +311,63 @@ impl Widget for Row {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         // Subtree cache — see `Column::draw_with_presence` for the
         // `Affine::IDENTITY` rebuild requirement.
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild = self.cache_rect == vello::kurbo::Rect::ZERO
-            || size_changed
-            || any_child_dirty;
-        if !needs_rebuild {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            scene.append(&self.subtree_cache, Some(transform * Affine::translate((dx, dy))));
-        } else {
+        let needs_rebuild =
+            self.cache_rect == vello::kurbo::Rect::ZERO || size_changed || any_child_dirty;
+        if needs_rebuild {
             // Drop the active viewport for the recursion — see
             // `Column::draw_with_presence` for why.
             let prev_vp = presence.viewport.replace(None);
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
             for child in &mut self.children {
-                child.draw_with_presence(&mut local, Affine::IDENTITY, text_renderer, theme, presence, permissions);
+                child.draw_with_presence(
+                    &mut local,
+                    Affine::IDENTITY,
+                    text_renderer,
+                    theme,
+                    presence,
+                    permissions,
+                );
             }
             scene.append(&local, Some(transform));
             self.subtree_cache = local;
             self.cache_rect = self.rect;
             presence.viewport.set(prev_vp);
+        } else {
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            scene.append(
+                &self.subtree_cache,
+                Some(transform * Affine::translate((dx, dy))),
+            );
         }
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }

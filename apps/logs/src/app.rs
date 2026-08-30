@@ -38,16 +38,16 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::ColorCompat;
 
 use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::responsive::{Pane, PushNav};
-use crate::theme_ext::{tint, ThemeColors};
+use crate::theme_ext::{ThemeColors, tint};
 
 const PAD: f64 = 16.0;
 const HEADER_H: f64 = 60.0;
@@ -56,7 +56,7 @@ const ROW_H: f64 = 30.0;
 const LIST_HEADER_H: f64 = 26.0;
 const CONTROL_H: f64 = 34.0;
 const DROPDOWN_ITEM_H: f64 = 30.0;
-const POLL_INTERVAL: Duration = Duration::from_millis(1000);
+const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Which transient popup is open, if any.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -96,7 +96,7 @@ pub struct LogsApp {
     entries: Vec<LogEntry>,
     /// Distinct units present, in first-seen order (for the dropdown).
     units: Vec<String>,
-    /// Distinct boots: (boot_id, human label).
+    /// Distinct boots: (`boot_id`, human label).
     boots: Vec<(String, String)>,
 
     // ---- per-frame caches, refreshed from the doc on sync ----
@@ -281,8 +281,7 @@ impl LogsApp {
             .effective_selected()
             .and_then(|abs| self.filtered_pos(abs))
             .unwrap_or(0) as isize;
-        let new_pos =
-            (cur_pos + delta).clamp(0, self.filtered.len() as isize - 1) as usize;
+        let new_pos = (cur_pos + delta).clamp(0, self.filtered.len() as isize - 1) as usize;
         let abs = self.filtered[new_pos];
         self.sel_raw = abs as i64;
         LogsDoc::set_selected(doc, root, abs as i64);
@@ -330,7 +329,7 @@ impl LogsApp {
         let chips_x0 = (x0 + w - PAD - chips_total).max(boot_trigger.x1 + 16.0);
         let chips: Vec<Rect> = (0..8)
             .map(|i| {
-                let cx = chips_x0 + i as f64 * (chip_w + chip_gap);
+                let cx = chips_x0 + f64::from(i) * (chip_w + chip_gap);
                 Rect::new(cx, fy, cx + chip_w, fy + CONTROL_H)
             })
             .collect();
@@ -340,12 +339,12 @@ impl LogsApp {
         // it and is only laid out (non-zero) while a filter is active.
         let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
         let live_pill = Rect::new(x0 + w - PAD - 124.0, hy, x0 + w - PAD, hy + 30.0);
-        let clear_btn = if !self.filter.is_clear() {
+        let clear_btn = if self.filter.is_clear() {
+            Rect::ZERO
+        } else {
             let cy = header.y0 + (HEADER_H - 26.0) / 2.0;
             let x1 = live_pill.x0 - 12.0;
             Rect::new(x1 - 104.0, cy, x1, cy + 26.0)
-        } else {
-            Rect::ZERO
         };
 
         // Content area between the filter bar and the window bottom.
@@ -443,10 +442,22 @@ fn fill_rect(scene: &mut Scene, t: Affine, r: Rect, c: Color) {
     scene.fill(Fill::NonZero, t, c, None, &r);
 }
 fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: impl Into<f64>, c: Color) {
-    scene.fill(Fill::NonZero, t, c, None, &RoundedRect::from_rect(r, radius.into()));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        c,
+        None,
+        &RoundedRect::from_rect(r, radius.into()),
+    );
 }
 fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: impl Into<f64>, c: Color, w: f64) {
-    scene.stroke(&Stroke::new(w), t, c, None, &RoundedRect::from_rect(r, radius.into()));
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        c,
+        None,
+        &RoundedRect::from_rect(r, radius.into()),
+    );
 }
 fn fill_circle(scene: &mut Scene, t: Affine, center: Point, radius: f64, c: Color) {
     scene.fill(Fill::NonZero, t, c, None, &Circle::new(center, radius));
@@ -481,7 +492,7 @@ fn text_at(
 
 /// Vertically-centred Y for a single line of `size` inside `rect`.
 fn vcenter(rect: Rect, size: f32) -> f64 {
-    rect.y0 + (rect.height() - size as f64 * 1.25) / 2.0
+    rect.y0 + (rect.height() - f64::from(size) * 1.25) / 2.0
 }
 
 /// Trim `s` with a trailing ellipsis until it fits `max_w` px at `size`.
@@ -491,23 +502,24 @@ fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64, mono: bool) -> S
     }
     let measure = |tr: &mut TextRenderer, t: &str| {
         if mono {
-            tr.measure_styled(t, size, None, TextWeight::Regular, false, true).0
+            tr.measure_styled(t, size, None, TextWeight::Regular, false, true)
+                .0
         } else {
             tr.measure(t, size, None).0
         }
     };
-    if (measure(tr, s) as f64) <= max_w {
+    if f64::from(measure(tr, s)) <= max_w {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
-    let full = measure(tr, s) as f64;
+    let full = f64::from(measure(tr, s));
     let mut keep = (((max_w / full) * chars.len() as f64) as usize).min(chars.len());
     loop {
         if keep == 0 {
             return "…".to_string();
         }
         let cand: String = chars[..keep].iter().collect::<String>() + "…";
-        if (measure(tr, &cand) as f64) <= max_w {
+        if f64::from(measure(tr, &cand)) <= max_w {
             return cand;
         }
         keep -= 1;
@@ -515,11 +527,27 @@ fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64, mono: bool) -> S
 }
 
 impl LogsApp {
-    fn draw_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, reg: &Regions) {
+    fn draw_header(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, t, reg.header, c.surfaces.raised);
         // bottom hairline
-        line(scene, t, reg.header.x0, reg.header.y1, reg.header.x1, reg.header.y1, c.border_standard, 1.0);
+        line(
+            scene,
+            t,
+            reg.header.x0,
+            reg.header.y1,
+            reg.header.x1,
+            reg.header.y1,
+            c.border_standard,
+            1.0,
+        );
 
         // The OS owns the window title/app-name — the header draws only its
         // functional controls (the entry counts, an optional Clear-filters
@@ -528,12 +556,36 @@ impl LogsApp {
         // Clear-filters button — right-aligned, just left of the live pill,
         // shown only while a filter is active (its rect is zero otherwise).
         if !self.filter.is_clear() && reg.clear_btn.width() > 0.0 {
-            fill_round(scene, t, reg.clear_btn, theme.tokens.radii.md, tint(theme.accent_primary, 40));
-            stroke_round(scene, t, reg.clear_btn, theme.tokens.radii.md, theme.accent_primary, 1.0);
+            fill_round(
+                scene,
+                t,
+                reg.clear_btn,
+                theme.tokens.radii.md,
+                tint(theme.accent_primary, 40),
+            );
+            stroke_round(
+                scene,
+                t,
+                reg.clear_btn,
+                theme.tokens.radii.md,
+                theme.accent_primary,
+                1.0,
+            );
             let bsz = theme.tokens.typography.scale.sm;
             let label = "Clear filters";
             let (bw, _) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
-            text_at(tr, scene, t, label, bsz, theme.accent_primary, reg.clear_btn.center().x - bw as f64 / 2.0, vcenter(reg.clear_btn, bsz), TextWeight::Semibold, false);
+            text_at(
+                tr,
+                scene,
+                t,
+                label,
+                bsz,
+                theme.accent_primary,
+                reg.clear_btn.center().x - f64::from(bw) / 2.0,
+                vcenter(reg.clear_btn, bsz),
+                TextWeight::Semibold,
+                false,
+            );
         }
 
         // Counts, just left of whichever right-aligned control is present.
@@ -555,7 +607,7 @@ impl LogsApp {
             &counts,
             theme.tokens.typography.scale.sm,
             theme.text_dim,
-            counts_anchor - 14.0 - cw as f64,
+            counts_anchor - 14.0 - f64::from(cw),
             vcenter(reg.header, theme.tokens.typography.scale.sm),
             TextWeight::Medium,
             false,
@@ -563,13 +615,30 @@ impl LogsApp {
 
         // Live-tail pill.
         let on = self.live_tail;
-        let pill_bg = if on { theme.accent_primary } else { c.surface_white_5 };
+        let pill_bg = if on {
+            theme.accent_primary
+        } else {
+            c.surface_white_5
+        };
         fill_round(scene, t, reg.live_pill, theme.tokens.radii.full, pill_bg);
         if !on {
-            stroke_round(scene, t, reg.live_pill, theme.tokens.radii.full, c.border_standard, 1.0);
+            stroke_round(
+                scene,
+                t,
+                reg.live_pill,
+                theme.tokens.radii.full,
+                c.border_standard,
+                1.0,
+            );
         }
         let dot_c = if on { Color::WHITE } else { theme.text_dim };
-        fill_circle(scene, t, Point::new(reg.live_pill.x0 + 16.0, reg.live_pill.center().y), 4.0, dot_c);
+        fill_circle(
+            scene,
+            t,
+            Point::new(reg.live_pill.x0 + 16.0, reg.live_pill.center().y),
+            4.0,
+            dot_c,
+        );
         let label = if on { "Live tail" } else { "Live tail" };
         let lc = if on { Color::WHITE } else { theme.text_dim };
         text_at(
@@ -586,20 +655,59 @@ impl LogsApp {
         );
     }
 
-    fn draw_filter_bar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, reg: &Regions) {
+    fn draw_filter_bar(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         let tc = Self::theme_colors(theme);
         fill_rect(scene, t, reg.filter, c.surfaces.base);
-        line(scene, t, reg.filter.x0, reg.filter.y1, reg.filter.x1, reg.filter.y1, c.border_standard, 1.0);
+        line(
+            scene,
+            t,
+            reg.filter.x0,
+            reg.filter.y1,
+            reg.filter.x1,
+            reg.filter.y1,
+            c.border_standard,
+            1.0,
+        );
 
         // --- Search box ---
         let focused = self.focused;
-        fill_round(scene, t, reg.search, theme.tokens.radii.md, c.surfaces.raised);
-        let border = if focused { c.border_focus } else { c.border_standard };
-        stroke_round(scene, t, reg.search, theme.tokens.radii.md, border, if focused { 1.5 } else { 1.0 });
+        fill_round(
+            scene,
+            t,
+            reg.search,
+            theme.tokens.radii.md,
+            c.surfaces.raised,
+        );
+        let border = if focused {
+            c.border_focus
+        } else {
+            c.border_standard
+        };
+        stroke_round(
+            scene,
+            t,
+            reg.search,
+            theme.tokens.radii.md,
+            border,
+            if focused { 1.5 } else { 1.0 },
+        );
         // search glyph
         let gy = reg.search.center().y;
-        fill_circle(scene, t, Point::new(reg.search.x0 + 16.0, gy - 1.0), 4.5, Color::TRANSPARENT);
+        fill_circle(
+            scene,
+            t,
+            Point::new(reg.search.x0 + 16.0, gy - 1.0),
+            4.5,
+            Color::TRANSPARENT,
+        );
         stroke_round(
             scene,
             t,
@@ -608,19 +716,65 @@ impl LogsApp {
             theme.text_dim,
             1.4,
         );
-        line(scene, t, reg.search.x0 + 18.5, gy + 2.5, reg.search.x0 + 22.0, gy + 6.0, theme.text_dim, 1.4);
+        line(
+            scene,
+            t,
+            reg.search.x0 + 18.5,
+            gy + 2.5,
+            reg.search.x0 + 22.0,
+            gy + 6.0,
+            theme.text_dim,
+            1.4,
+        );
         let text_x = reg.search.x0 + 30.0;
         let sz = theme.tokens.typography.scale.base;
         if self.filter.search.is_empty() {
-            text_at(tr, scene, t, "Search messages, units…", sz, theme.text_dim, text_x, vcenter(reg.search, sz), TextWeight::Regular, false);
+            text_at(
+                tr,
+                scene,
+                t,
+                "Search messages, units…",
+                sz,
+                theme.text_dim,
+                text_x,
+                vcenter(reg.search, sz),
+                TextWeight::Regular,
+                false,
+            );
         } else {
-            let shown = elide(tr, &self.filter.search, sz, reg.search.x1 - text_x - 22.0, false);
-            text_at(tr, scene, t, &shown, sz, theme.text_primary, text_x, vcenter(reg.search, sz), TextWeight::Regular, false);
+            let shown = elide(
+                tr,
+                &self.filter.search,
+                sz,
+                reg.search.x1 - text_x - 22.0,
+                false,
+            );
+            text_at(
+                tr,
+                scene,
+                t,
+                &shown,
+                sz,
+                theme.text_primary,
+                text_x,
+                vcenter(reg.search, sz),
+                TextWeight::Regular,
+                false,
+            );
             // caret
             if focused {
                 let (sw, _) = tr.measure(&shown, sz, None);
-                let cx = text_x + sw as f64 + 1.0;
-                line(scene, t, cx, reg.search.y0 + 8.0, cx, reg.search.y1 - 8.0, c.border_focus, 1.5);
+                let cx = text_x + f64::from(sw) + 1.0;
+                line(
+                    scene,
+                    t,
+                    cx,
+                    reg.search.y0 + 8.0,
+                    cx,
+                    reg.search.y1 - 8.0,
+                    c.border_focus,
+                    1.5,
+                );
             }
         }
 
@@ -630,7 +784,17 @@ impl LogsApp {
         } else {
             self.filter.unit.clone()
         };
-        self.draw_dropdown_trigger(scene, t, tr, theme, reg.unit_trigger, "Unit", &unit_label, self.popup == Some(Popup::Unit), !self.filter.unit.is_empty());
+        self.draw_dropdown_trigger(
+            scene,
+            t,
+            tr,
+            theme,
+            reg.unit_trigger,
+            "Unit",
+            &unit_label,
+            self.popup == Some(Popup::Unit),
+            !self.filter.unit.is_empty(),
+        );
 
         let boot_label = if self.filter.boot.is_empty() {
             "All boots".to_string()
@@ -638,10 +802,22 @@ impl LogsApp {
             self.boots
                 .iter()
                 .find(|(id, _)| id == &self.filter.boot)
-                .map(|(_, l)| l.clone())
-                .unwrap_or_else(|| self.filter.boot.chars().take(8).collect())
+                .map_or_else(
+                    || self.filter.boot.chars().take(8).collect(),
+                    |(_, l)| l.clone(),
+                )
         };
-        self.draw_dropdown_trigger(scene, t, tr, theme, reg.boot_trigger, "Boot", &boot_label, self.popup == Some(Popup::Boot), !self.filter.boot.is_empty());
+        self.draw_dropdown_trigger(
+            scene,
+            t,
+            tr,
+            theme,
+            reg.boot_trigger,
+            "Boot",
+            &boot_label,
+            self.popup == Some(Popup::Boot),
+            !self.filter.boot.is_empty(),
+        );
 
         // --- Severity threshold chips ---
         for (i, chip) in reg.chips.iter().enumerate() {
@@ -655,7 +831,11 @@ impl LogsApp {
                 stroke_round(scene, t, *chip, theme.tokens.radii.md, tint(col, 90), 1.0);
             }
             let tag = p.tag();
-            let label_c = if active { contrast_on(col) } else { theme.text_dim };
+            let label_c = if active {
+                contrast_on(col)
+            } else {
+                theme.text_dim
+            };
             let sz = theme.tokens.typography.scale.xs;
             let (lw, _) = tr.measure_weighted(tag, sz, None, TextWeight::Bold);
             text_at(
@@ -665,7 +845,7 @@ impl LogsApp {
                 tag,
                 sz,
                 label_c,
-                chip.center().x - lw as f64 / 2.0,
+                chip.center().x - f64::from(lw) / 2.0,
                 vcenter(*chip, sz),
                 TextWeight::Bold,
                 false,
@@ -674,43 +854,190 @@ impl LogsApp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_dropdown_trigger(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, kind: &str, label: &str, open: bool, active: bool) {
+    fn draw_dropdown_trigger(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        kind: &str,
+        label: &str,
+        open: bool,
+        active: bool,
+    ) {
         let c = &theme.tokens.colors;
         fill_round(scene, t, rect, theme.tokens.radii.md, c.surfaces.raised);
-        let border = if open { c.border_focus } else if active { theme.accent_primary } else { c.border_standard };
-        stroke_round(scene, t, rect, theme.tokens.radii.md, border, if open || active { 1.5 } else { 1.0 });
+        let border = if open {
+            c.border_focus
+        } else if active {
+            theme.accent_primary
+        } else {
+            c.border_standard
+        };
+        stroke_round(
+            scene,
+            t,
+            rect,
+            theme.tokens.radii.md,
+            border,
+            if open || active { 1.5 } else { 1.0 },
+        );
         let sz = theme.tokens.typography.scale.sm;
         // kind caption
-        text_at(tr, scene, t, kind, theme.tokens.typography.scale.xs, theme.text_dim, rect.x0 + 12.0, rect.y0 + 4.0, TextWeight::Semibold, false);
+        text_at(
+            tr,
+            scene,
+            t,
+            kind,
+            theme.tokens.typography.scale.xs,
+            theme.text_dim,
+            rect.x0 + 12.0,
+            rect.y0 + 4.0,
+            TextWeight::Semibold,
+            false,
+        );
         let val = elide(tr, label, sz, rect.width() - 38.0, false);
-        text_at(tr, scene, t, &val, sz, theme.text_primary, rect.x0 + 12.0, rect.y0 + 16.0, TextWeight::Medium, false);
+        text_at(
+            tr,
+            scene,
+            t,
+            &val,
+            sz,
+            theme.text_primary,
+            rect.x0 + 12.0,
+            rect.y0 + 16.0,
+            TextWeight::Medium,
+            false,
+        );
         // chevron
         let cxp = rect.x1 - 16.0;
         let cyp = rect.center().y + 2.0;
-        line(scene, t, cxp - 4.0, cyp - 3.0, cxp, cyp + 2.0, theme.text_dim, 1.4);
-        line(scene, t, cxp + 4.0, cyp - 3.0, cxp, cyp + 2.0, theme.text_dim, 1.4);
+        line(
+            scene,
+            t,
+            cxp - 4.0,
+            cyp - 3.0,
+            cxp,
+            cyp + 2.0,
+            theme.text_dim,
+            1.4,
+        );
+        line(
+            scene,
+            t,
+            cxp + 4.0,
+            cyp - 3.0,
+            cxp,
+            cyp + 2.0,
+            theme.text_dim,
+            1.4,
+        );
     }
 
-    fn draw_list(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, reg: &Regions) {
+    fn draw_list(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         let tc = Self::theme_colors(theme);
         let sel = self.effective_selected();
 
         // List frame (header + body) as one card.
-        let card = Rect::new(reg.list_header.x0, reg.list_header.y0, reg.list_header.x1, reg.list_body.y1);
+        let card = Rect::new(
+            reg.list_header.x0,
+            reg.list_header.y0,
+            reg.list_header.x1,
+            reg.list_body.y1,
+        );
         fill_round(scene, t, card, theme.tokens.radii.lg, c.surfaces.raised);
-        stroke_round(scene, t, card, theme.tokens.radii.lg, c.border_standard, 1.0);
+        stroke_round(
+            scene,
+            t,
+            card,
+            theme.tokens.radii.lg,
+            c.border_standard,
+            1.0,
+        );
 
         // Column header.
-        fill_round(scene, t, Rect::new(reg.list_header.x0, reg.list_header.y0, reg.list_header.x1, reg.list_header.y1), 0.0, c.surfaces.base);
+        fill_round(
+            scene,
+            t,
+            Rect::new(
+                reg.list_header.x0,
+                reg.list_header.y0,
+                reg.list_header.x1,
+                reg.list_header.y1,
+            ),
+            0.0,
+            c.surfaces.base,
+        );
         let cols = column_x(reg.list_header);
         let hsz = theme.tokens.typography.scale.xs;
         let hy = vcenter(reg.list_header, hsz);
-        text_at(tr, scene, t, "TIME", hsz, theme.text_dim, cols.time_x, hy, TextWeight::Semibold, false);
-        text_at(tr, scene, t, "LEVEL", hsz, theme.text_dim, cols.tag_x, hy, TextWeight::Semibold, false);
-        text_at(tr, scene, t, "UNIT", hsz, theme.text_dim, cols.unit_x, hy, TextWeight::Semibold, false);
-        text_at(tr, scene, t, "MESSAGE", hsz, theme.text_dim, cols.msg_x, hy, TextWeight::Semibold, false);
-        line(scene, t, reg.list_header.x0 + 8.0, reg.list_header.y1, reg.list_header.x1 - 8.0, reg.list_header.y1, c.border_standard, 1.0);
+        text_at(
+            tr,
+            scene,
+            t,
+            "TIME",
+            hsz,
+            theme.text_dim,
+            cols.time_x,
+            hy,
+            TextWeight::Semibold,
+            false,
+        );
+        text_at(
+            tr,
+            scene,
+            t,
+            "LEVEL",
+            hsz,
+            theme.text_dim,
+            cols.tag_x,
+            hy,
+            TextWeight::Semibold,
+            false,
+        );
+        text_at(
+            tr,
+            scene,
+            t,
+            "UNIT",
+            hsz,
+            theme.text_dim,
+            cols.unit_x,
+            hy,
+            TextWeight::Semibold,
+            false,
+        );
+        text_at(
+            tr,
+            scene,
+            t,
+            "MESSAGE",
+            hsz,
+            theme.text_dim,
+            cols.msg_x,
+            hy,
+            TextWeight::Semibold,
+            false,
+        );
+        line(
+            scene,
+            t,
+            reg.list_header.x0 + 8.0,
+            reg.list_header.y1,
+            reg.list_header.x1 - 8.0,
+            reg.list_header.y1,
+            c.border_standard,
+            1.0,
+        );
 
         // Empty state.
         if self.filtered.is_empty() {
@@ -726,15 +1053,48 @@ impl LogsApp {
                 };
                 let tsz = theme.tokens.typography.scale.lg;
                 let (tw, _) = tr.measure(title, tsz, None);
-                text_at(tr, scene, t, title, tsz, c.text_primary, cx - tw as f64 / 2.0, cy - 24.0, TextWeight::Semibold, false);
+                text_at(
+                    tr,
+                    scene,
+                    t,
+                    title,
+                    tsz,
+                    c.text_primary,
+                    cx - f64::from(tw) / 2.0,
+                    cy - 24.0,
+                    TextWeight::Semibold,
+                    false,
+                );
                 let ssz = theme.tokens.typography.scale.sm;
                 let (sw, _) = tr.measure(subtitle, ssz, None);
-                text_at(tr, scene, t, subtitle, ssz, theme.text_dim, cx - sw as f64 / 2.0, cy + 2.0, TextWeight::Regular, false);
+                text_at(
+                    tr,
+                    scene,
+                    t,
+                    subtitle,
+                    ssz,
+                    theme.text_dim,
+                    cx - f64::from(sw) / 2.0,
+                    cy + 2.0,
+                    TextWeight::Regular,
+                    false,
+                );
             } else {
                 let msg = "No entries match the current filters.";
                 let sz = theme.tokens.typography.scale.base;
                 let (mw, _) = tr.measure(msg, sz, None);
-                text_at(tr, scene, t, msg, sz, theme.text_dim, cx - mw as f64 / 2.0, cy - 10.0, TextWeight::Regular, false);
+                text_at(
+                    tr,
+                    scene,
+                    t,
+                    msg,
+                    sz,
+                    theme.text_dim,
+                    cx - f64::from(mw) / 2.0,
+                    cy - 10.0,
+                    TextWeight::Regular,
+                    false,
+                );
             }
             return;
         }
@@ -742,12 +1102,12 @@ impl LogsApp {
         // Clip + draw rows.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &reg.list_body);
         let body = reg.list_body;
-        let first = (self.scroll as f64 / ROW_H).floor().max(0.0) as usize;
+        let first = (f64::from(self.scroll) / ROW_H).floor().max(0.0) as usize;
         let visible = (body.height() / ROW_H).ceil() as usize + 2;
         for pos in first..(first + visible).min(self.filtered.len()) {
             let abs = self.filtered[pos];
             let e = &self.entries[abs];
-            let row_y0 = body.y0 + pos as f64 * ROW_H - self.scroll as f64;
+            let row_y0 = body.y0 + pos as f64 * ROW_H - f64::from(self.scroll);
             let row = Rect::new(body.x0, row_y0, body.x1, row_y0 + ROW_H);
             if row.y1 < body.y0 || row.y0 > body.y1 {
                 continue;
@@ -757,7 +1117,12 @@ impl LogsApp {
             let col = e.priority.color(&tc);
             if is_sel {
                 fill_rect(scene, t, row, tint(theme.accent_primary, 46));
-                fill_rect(scene, t, Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1), theme.accent_primary);
+                fill_rect(
+                    scene,
+                    t,
+                    Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
+                    theme.accent_primary,
+                );
             } else if is_hover {
                 fill_rect(scene, t, row, c.surface_white_5);
             } else if pos % 2 == 1 {
@@ -769,16 +1134,64 @@ impl LogsApp {
             fill_circle(scene, t, Point::new(cols.dot_cx, row.center().y), 4.5, col);
             // time (mono, dim)
             let tsz = theme.tokens.typography.scale.sm;
-            text_at(tr, scene, t, &e.timestamp(), tsz, theme.text_dim, cols.time_x, vcenter(row, tsz), TextWeight::Regular, true);
+            text_at(
+                tr,
+                scene,
+                t,
+                &e.timestamp(),
+                tsz,
+                theme.text_dim,
+                cols.time_x,
+                vcenter(row, tsz),
+                TextWeight::Regular,
+                true,
+            );
             // level tag (colored)
-            text_at(tr, scene, t, e.priority.tag(), theme.tokens.typography.scale.xs, col, cols.tag_x, vcenter(row, theme.tokens.typography.scale.xs), TextWeight::Bold, true);
+            text_at(
+                tr,
+                scene,
+                t,
+                e.priority.tag(),
+                theme.tokens.typography.scale.xs,
+                col,
+                cols.tag_x,
+                vcenter(row, theme.tokens.typography.scale.xs),
+                TextWeight::Bold,
+                true,
+            );
             // unit (accent-tinted)
             let unit_shown = elide(tr, e.unit_short(), tsz, cols.unit_w - 6.0, false);
-            text_at(tr, scene, t, &unit_shown, tsz, theme.text_primary, cols.unit_x, vcenter(row, tsz), TextWeight::Medium, false);
+            text_at(
+                tr,
+                scene,
+                t,
+                &unit_shown,
+                tsz,
+                theme.text_primary,
+                cols.unit_x,
+                vcenter(row, tsz),
+                TextWeight::Medium,
+                false,
+            );
             // message
             let msg_shown = elide(tr, &e.message, tsz, cols.msg_w, false);
-            let msg_c = if is_sel { theme.text_primary } else { tint(theme.text_primary, 220) };
-            text_at(tr, scene, t, &msg_shown, tsz, msg_c, cols.msg_x, vcenter(row, tsz), TextWeight::Regular, false);
+            let msg_c = if is_sel {
+                theme.text_primary
+            } else {
+                tint(theme.text_primary, 220)
+            };
+            text_at(
+                tr,
+                scene,
+                t,
+                &msg_shown,
+                tsz,
+                msg_c,
+                cols.msg_x,
+                vcenter(row, tsz),
+                TextWeight::Regular,
+                false,
+            );
         }
         scene.pop_layer();
 
@@ -789,12 +1202,25 @@ impl LogsApp {
             let frac_v = body.height() / content;
             let thumb_h = (frac_v * body.height()).max(28.0);
             let max_scroll = (content - body.height()).max(1.0);
-            let ty0 = body.y0 + (self.scroll as f64 / max_scroll) * (body.height() - thumb_h);
-            fill_round(scene, t, Rect::new(track_x, ty0, track_x + 3.0, ty0 + thumb_h), 1.5, tint(Color::WHITE, 70));
+            let ty0 = body.y0 + (f64::from(self.scroll) / max_scroll) * (body.height() - thumb_h);
+            fill_round(
+                scene,
+                t,
+                Rect::new(track_x, ty0, track_x + 3.0, ty0 + thumb_h),
+                1.5,
+                tint(Color::WHITE, 70),
+            );
         }
     }
 
-    fn draw_detail(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, reg: &Regions) {
+    fn draw_detail(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         let tc = Self::theme_colors(theme);
         let d = reg.detail;
@@ -816,7 +1242,18 @@ impl LogsApp {
         let Some(abs) = self.effective_selected() else {
             let msg = "Select an entry to inspect its fields.";
             let sz = theme.tokens.typography.scale.base;
-            text_at(tr, scene, t, msg, sz, theme.text_dim, inner_x, y.max(d.center().y), TextWeight::Regular, false);
+            text_at(
+                tr,
+                scene,
+                t,
+                msg,
+                sz,
+                theme.text_dim,
+                inner_x,
+                y.max(d.center().y),
+                TextWeight::Regular,
+                false,
+            );
             scene.pop_layer();
             return;
         };
@@ -827,42 +1264,108 @@ impl LogsApp {
         let badge_label = e.priority.long().to_uppercase();
         let bsz = theme.tokens.typography.scale.xs;
         let (blw, _) = tr.measure_weighted(&badge_label, bsz, None, TextWeight::Bold);
-        let badge = Rect::new(inner_x, y, inner_x + blw as f64 + 24.0, y + 22.0);
+        let badge = Rect::new(inner_x, y, inner_x + f64::from(blw) + 24.0, y + 22.0);
         fill_round(scene, t, badge, theme.tokens.radii.full, tint(col, 235));
-        text_at(tr, scene, t, &badge_label, bsz, contrast_on(col), badge.x0 + 12.0, vcenter(badge, bsz), TextWeight::Bold, false);
+        text_at(
+            tr,
+            scene,
+            t,
+            &badge_label,
+            bsz,
+            contrast_on(col),
+            badge.x0 + 12.0,
+            vcenter(badge, bsz),
+            TextWeight::Bold,
+            false,
+        );
         // transport tag to the right of the badge
         if !e.transport.is_empty() {
-            text_at(tr, scene, t, &e.transport, bsz, theme.text_dim, badge.x1 + 10.0, vcenter(badge, bsz), TextWeight::Medium, true);
+            text_at(
+                tr,
+                scene,
+                t,
+                &e.transport,
+                bsz,
+                theme.text_dim,
+                badge.x1 + 10.0,
+                vcenter(badge, bsz),
+                TextWeight::Medium,
+                true,
+            );
         }
         y = badge.y1 + 14.0;
 
         // Unit title.
         let title_sz = theme.tokens.typography.scale.lg;
         let title = elide(tr, &e.unit, title_sz, inner_w, false);
-        text_at(tr, scene, t, &title, title_sz, theme.text_primary, inner_x, y, TextWeight::Semibold, false);
-        y += title_sz as f64 * 1.5;
+        text_at(
+            tr,
+            scene,
+            t,
+            &title,
+            title_sz,
+            theme.text_primary,
+            inner_x,
+            y,
+            TextWeight::Semibold,
+            false,
+        );
+        y += f64::from(title_sz) * 1.5;
 
         // Timestamp.
         let tssz = theme.tokens.typography.scale.sm;
-        text_at(tr, scene, t, &e.timestamp_full(), tssz, theme.text_dim, inner_x, y, TextWeight::Regular, true);
-        y += tssz as f64 * 1.6 + 6.0;
+        text_at(
+            tr,
+            scene,
+            t,
+            &e.timestamp_full(),
+            tssz,
+            theme.text_dim,
+            inner_x,
+            y,
+            TextWeight::Regular,
+            true,
+        );
+        y += f64::from(tssz) * 1.6 + 6.0;
 
         // Message (wrapped).
         let msz = theme.tokens.typography.scale.base;
         let (_, mh) = tr.measure(&e.message, msz, Some(inner_w as f32));
-        tr.draw_text(scene, &e.message, msz, theme.text_primary, t * Affine::translate((inner_x, y)), Some(inner_w as f32));
-        y += mh as f64 + 14.0;
+        tr.draw_text(
+            scene,
+            &e.message,
+            msz,
+            theme.text_primary,
+            t * Affine::translate((inner_x, y)),
+            Some(inner_w as f32),
+        );
+        y += f64::from(mh) + 14.0;
 
         // Divider.
-        line(scene, t, inner_x, y, inner_x + inner_w, y, c.border_standard, 1.0);
+        line(
+            scene,
+            t,
+            inner_x,
+            y,
+            inner_x + inner_w,
+            y,
+            c.border_standard,
+            1.0,
+        );
         y += 12.0;
 
         // Field table.
         let mut fields: Vec<(String, String)> = vec![
-            ("PRIORITY".into(), format!("{} ({})", e.priority.tag(), e.priority.level())),
+            (
+                "PRIORITY".into(),
+                format!("{} ({})", e.priority.tag(), e.priority.level()),
+            ),
             ("UNIT".into(), e.unit.clone()),
             ("IDENTIFIER".into(), e.identifier.clone()),
-            ("PID".into(), e.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into())),
+            (
+                "PID".into(),
+                e.pid.map_or_else(|| "—".into(), |p| p.to_string()),
+            ),
             ("HOSTNAME".into(), e.hostname.clone()),
             ("TRANSPORT".into(), e.transport.clone()),
             ("BOOT_ID".into(), e.boot_id.clone()),
@@ -881,9 +1384,31 @@ impl LogsApp {
             if v.trim().is_empty() {
                 continue;
             }
-            text_at(tr, scene, t, &k, ksz, theme.text_dim, inner_x, y + 1.0, TextWeight::Semibold, true);
+            text_at(
+                tr,
+                scene,
+                t,
+                &k,
+                ksz,
+                theme.text_dim,
+                inner_x,
+                y + 1.0,
+                TextWeight::Semibold,
+                true,
+            );
             let val = elide(tr, &v, vsz, inner_w - key_w - 8.0, false);
-            text_at(tr, scene, t, &val, vsz, theme.text_primary, inner_x + key_w, y, TextWeight::Regular, false);
+            text_at(
+                tr,
+                scene,
+                t,
+                &val,
+                vsz,
+                theme.text_primary,
+                inner_x + key_w,
+                y,
+                TextWeight::Regular,
+                false,
+            );
             y += 22.0;
         }
 
@@ -893,19 +1418,66 @@ impl LogsApp {
     /// The Back affordance at the top of the pushed detail pane (narrow
     /// windows only): a pill with a left chevron + "Back" that returns to
     /// the list.
-    fn draw_back_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect) {
+    fn draw_back_button(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.cursor);
-        let bg = if hovered { c.surface_white_10 } else { c.surface_white_5 };
+        let bg = if hovered {
+            c.surface_white_10
+        } else {
+            c.surface_white_5
+        };
         fill_round(scene, t, rect, theme.tokens.radii.full, bg);
-        stroke_round(scene, t, rect, theme.tokens.radii.full, c.border_standard, 1.0);
+        stroke_round(
+            scene,
+            t,
+            rect,
+            theme.tokens.radii.full,
+            c.border_standard,
+            1.0,
+        );
         // Left chevron.
         let cyp = rect.center().y;
         let cxp = rect.x0 + 18.0;
-        line(scene, t, cxp + 4.0, cyp - 5.0, cxp - 1.0, cyp, theme.text_primary, 1.6);
-        line(scene, t, cxp - 1.0, cyp, cxp + 4.0, cyp + 5.0, theme.text_primary, 1.6);
+        line(
+            scene,
+            t,
+            cxp + 4.0,
+            cyp - 5.0,
+            cxp - 1.0,
+            cyp,
+            theme.text_primary,
+            1.6,
+        );
+        line(
+            scene,
+            t,
+            cxp - 1.0,
+            cyp,
+            cxp + 4.0,
+            cyp + 5.0,
+            theme.text_primary,
+            1.6,
+        );
         let sz = theme.tokens.typography.scale.sm;
-        text_at(tr, scene, t, "Back", sz, theme.text_primary, rect.x0 + 30.0, vcenter(rect, sz), TextWeight::Semibold, false);
+        text_at(
+            tr,
+            scene,
+            t,
+            "Back",
+            sz,
+            theme.text_primary,
+            rect.x0 + 30.0,
+            vcenter(rect, sz),
+            TextWeight::Semibold,
+            false,
+        );
     }
 }
 
@@ -933,17 +1505,31 @@ fn column_x(row: Rect) -> Cols {
     cur += unit_w + 10.0;
     let msg_x = cur;
     let msg_w = (row.x1 - rpad - msg_x).max(40.0);
-    Cols { dot_cx, time_x, tag_x, unit_x, unit_w, msg_x, msg_w }
+    Cols {
+        dot_cx,
+        time_x,
+        tag_x,
+        unit_x,
+        unit_w,
+        msg_x,
+        msg_w,
+    }
 }
 
 fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Color, w: f64) {
-    scene.stroke(&Stroke::new(w), t, c, None, &Line::new(Point::new(x0, y0), Point::new(x1, y1)));
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        c,
+        None,
+        &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
+    );
 }
 
 /// Pick a readable foreground for text sitting on a saturated severity
 /// fill: white over the dark dangers, near-black over amber.
 fn contrast_on(bg: Color) -> Color {
-    let lum = 0.299 * bg.r() as f64 + 0.587 * bg.g() as f64 + 0.114 * bg.b() as f64;
+    let lum = 0.299 * f64::from(bg.r()) + 0.587 * f64::from(bg.g()) + 0.114 * f64::from(bg.b());
     if lum > 150.0 {
         Color::from_rgb8(20, 20, 25)
     } else {
@@ -1008,7 +1594,7 @@ impl Widget for LogsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -1016,24 +1602,24 @@ impl Widget for LogsApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.clamp_scroll();
         // Seed the shot's scroll so the auto-selected entry is visible.
-        if let Some(abs) = self.effective_selected() {
-            if let Some(pos) = self.filtered_pos(abs) {
-                // Only auto-center on the very first layout (scroll == 0
-                // and nothing has been interacted with yet).
-                if self.scroll == 0.0 {
-                    let body_h = self.list_viewport_h();
-                    let top = pos as f64 * ROW_H;
-                    if top + ROW_H > body_h {
-                        self.scroll = ((top + ROW_H) - body_h) as f32 + 4.0;
-                        self.clamp_scroll();
-                    }
+        if let Some(abs) = self.effective_selected()
+            && let Some(pos) = self.filtered_pos(abs)
+        {
+            // Only auto-center on the very first layout (scroll == 0
+            // and nothing has been interacted with yet).
+            if self.scroll == 0.0 {
+                let body_h = self.list_viewport_h();
+                let top = pos as f64 * ROW_H;
+                if top + ROW_H > body_h {
+                    self.scroll = ((top + ROW_H) - body_h) as f32 + 4.0;
+                    self.clamp_scroll();
                 }
             }
         }
@@ -1067,7 +1653,13 @@ impl Widget for LogsApp {
             // off-screen pane (sliding in/out) never bleeds past the edges,
             // and skip whichever pane is fully off-screen.
             let content = Rect::new(self.rect.x0, reg.filter.y1, self.rect.x1, self.rect.y1);
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &content);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &content,
+            );
             let slide = self.push.slide();
             if slide < 0.999 {
                 self.draw_list(scene, transform, tr, theme, &reg);
@@ -1102,9 +1694,28 @@ impl Widget for LogsApp {
         let last = reg.dropdown.last().unwrap().0;
         let panel = Rect::new(first.x0, first.y0 - 4.0, first.x1, last.y1 + 4.0);
         // soft shadow
-        fill_round(scene, transform, panel.inflate(2.0, 2.0), theme.tokens.radii.md, tint(Color::BLACK, 80));
-        fill_round(scene, transform, panel, theme.tokens.radii.md, c.surfaces.overlay);
-        stroke_round(scene, transform, panel, theme.tokens.radii.md, c.border_standard, 1.0);
+        fill_round(
+            scene,
+            transform,
+            panel.inflate(2.0, 2.0),
+            theme.tokens.radii.md,
+            tint(Color::BLACK, 80),
+        );
+        fill_round(
+            scene,
+            transform,
+            panel,
+            theme.tokens.radii.md,
+            c.surfaces.overlay,
+        );
+        stroke_round(
+            scene,
+            transform,
+            panel,
+            theme.tokens.radii.md,
+            c.border_standard,
+            1.0,
+        );
 
         let active_val = match self.popup {
             Some(Popup::Unit) => self.filter.unit.clone(),
@@ -1120,14 +1731,51 @@ impl Widget for LogsApp {
             } else if is_active {
                 fill_rect(scene, transform, *irect, tint(theme.accent_primary, 40));
             }
-            let lc = if is_active { theme.accent_primary } else { theme.text_primary };
+            let lc = if is_active {
+                theme.accent_primary
+            } else {
+                theme.text_primary
+            };
             let shown = elide(tr, label, sz, irect.width() - 30.0, false);
-            text_at(tr, scene, transform, &shown, sz, lc, irect.x0 + 12.0, vcenter(*irect, sz), if is_active { TextWeight::Semibold } else { TextWeight::Regular }, false);
+            text_at(
+                tr,
+                scene,
+                transform,
+                &shown,
+                sz,
+                lc,
+                irect.x0 + 12.0,
+                vcenter(*irect, sz),
+                if is_active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
+                false,
+            );
             if is_active {
                 // check mark
                 let cy = irect.center().y;
-                line(scene, transform, irect.x1 - 18.0, cy, irect.x1 - 14.0, cy + 4.0, theme.accent_primary, 1.6);
-                line(scene, transform, irect.x1 - 14.0, cy + 4.0, irect.x1 - 8.0, cy - 4.0, theme.accent_primary, 1.6);
+                line(
+                    scene,
+                    transform,
+                    irect.x1 - 18.0,
+                    cy,
+                    irect.x1 - 14.0,
+                    cy + 4.0,
+                    theme.accent_primary,
+                    1.6,
+                );
+                line(
+                    scene,
+                    transform,
+                    irect.x1 - 14.0,
+                    cy + 4.0,
+                    irect.x1 - 8.0,
+                    cy - 4.0,
+                    theme.accent_primary,
+                    1.6,
+                );
             }
         }
     }
@@ -1168,20 +1816,24 @@ impl Widget for LogsApp {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.focused = true;
                 self.on_click(self.cursor, doc, root, handled);
             }
-            WindowEvent::KeyboardInput { event: key_event, .. } => {
-                if key_event.state == ElementState::Pressed {
-                    self.on_key(key_event, modifiers, doc, root, handled);
-                }
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
+                self.on_key(key_event, modifiers, doc, root, handled);
             }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "LogsApp"
     }
     fn test_id(&self) -> Option<&str> {
@@ -1228,7 +1880,7 @@ impl LogsApp {
         if !reg.list_body.contains(pt) {
             return None;
         }
-        let rel = pt.y - reg.list_body.y0 + self.scroll as f64;
+        let rel = pt.y - reg.list_body.y0 + f64::from(self.scroll);
         let pos = (rel / ROW_H).floor();
         if pos < 0.0 {
             return None;
@@ -1281,7 +1933,7 @@ impl LogsApp {
         if reg.live_pill.contains(pt) {
             let v = !self.live_tail;
             LogsDoc::set_live_tail(doc, root, v);
-            self.last_poll = Instant::now() - POLL_INTERVAL; // force an immediate poll
+            self.last_poll = Instant::now().checked_sub(POLL_INTERVAL).unwrap(); // force an immediate poll
             self.dirty = true;
             *handled = true;
             return;
@@ -1296,13 +1948,21 @@ impl LogsApp {
 
         // 4. Dropdown triggers.
         if reg.unit_trigger.contains(pt) {
-            self.popup = if self.popup == Some(Popup::Unit) { None } else { Some(Popup::Unit) };
+            self.popup = if self.popup == Some(Popup::Unit) {
+                None
+            } else {
+                Some(Popup::Unit)
+            };
             self.dirty = true;
             *handled = true;
             return;
         }
         if reg.boot_trigger.contains(pt) {
-            self.popup = if self.popup == Some(Popup::Boot) { None } else { Some(Popup::Boot) };
+            self.popup = if self.popup == Some(Popup::Boot) {
+                None
+            } else {
+                Some(Popup::Boot)
+            };
             self.dirty = true;
             *handled = true;
             return;
@@ -1406,7 +2066,7 @@ impl LogsApp {
                         "l" | "L" => {
                             let v = !self.live_tail;
                             LogsDoc::set_live_tail(doc, root, v);
-                            self.last_poll = Instant::now() - POLL_INTERVAL;
+                            self.last_poll = Instant::now().checked_sub(POLL_INTERVAL).unwrap();
                             *handled = true;
                         }
                         "r" | "R" => {
@@ -1485,8 +2145,8 @@ mod tests {
         assert!(!app.filtered.is_empty());
         for &i in &app.filtered {
             let e = &app.entries[i];
-            let hit = e.message.to_lowercase().contains("iroh")
-                || e.unit.to_lowercase().contains("iroh");
+            let hit =
+                e.message.to_lowercase().contains("iroh") || e.unit.to_lowercase().contains("iroh");
             assert!(hit);
         }
     }
@@ -1496,7 +2156,11 @@ mod tests {
         let (mut app, mut doc) = synced_app();
         LogsDoc::set_unit(&mut doc, &ROOT, "kernel");
         app.sync(&mut doc, &ROOT);
-        assert!(app.filtered.iter().all(|&i| app.entries[i].unit == "kernel"));
+        assert!(
+            app.filtered
+                .iter()
+                .all(|&i| app.entries[i].unit == "kernel")
+        );
     }
 
     #[test]
@@ -1568,8 +2232,14 @@ mod tests {
         // Clicking it clears the filter through the production on_click path.
         let mut handled = false;
         app.on_click(reg.clear_btn.center(), &mut doc, &ROOT, &mut handled);
-        assert!(handled, "the header Clear-filters button must be hit-tested");
+        assert!(
+            handled,
+            "the header Clear-filters button must be hit-tested"
+        );
         app.sync(&mut doc, &ROOT);
-        assert!(app.filter.is_clear(), "clicking Clear filters must reset the filter");
+        assert!(
+            app.filter.is_clear(),
+            "clicking Clear filters must reset the filter"
+        );
     }
 }

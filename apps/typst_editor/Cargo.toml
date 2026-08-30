@@ -14,15 +14,10 @@ path = "src/main.rs"
 [dependencies]
 ui = { path = "../../ui", features = ["portal"] }
 automerge.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 dirs.workspace = true
 
 # Typst compilation + raster rendering. All three pinned to the same 0.14
@@ -33,3 +28,6 @@ typst-pdf = "0.14"
 typst-assets = { version = "0.14", features = ["fonts"] }
 tiny-skia = "0.11"
 comemo = "0.5"
+
+[lints]
+workspace = true

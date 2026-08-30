@@ -26,6 +26,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Alpha (0–255) of the translucent area fill under a series line. Matches
@@ -65,7 +66,11 @@ pub struct Series {
 
 impl Series {
     pub fn new(data: Vec<f32>, color: Color) -> Self {
-        Self { data, color, legend: String::new() }
+        Self {
+            data,
+            color,
+            legend: String::new(),
+        }
     }
 
     pub fn with_legend(mut self, legend: impl Into<String>) -> Self {
@@ -78,9 +83,13 @@ impl Series {
 /// scaling against `ceil` (the shared series max, floored away from zero).
 /// `n` is the series length. Shared by [`Chart`] and [`Sparkline`].
 fn map_point(plot: Rect, i: usize, v: f32, n: usize, ceil: f32) -> Point {
-    let dx = if n > 1 { plot.width() / (n as f64 - 1.0) } else { 0.0 };
+    let dx = if n > 1 {
+        plot.width() / (n as f64 - 1.0)
+    } else {
+        0.0
+    };
     let x = plot.x0 + dx * i as f64;
-    let frac = (v / ceil).clamp(0.0, 1.0) as f64;
+    let frac = f64::from((v / ceil).clamp(0.0, 1.0));
     // y-down: the baseline is `plot.y1`, larger values rise toward `y0`.
     let y = plot.y1 - frac * plot.height();
     Point::new(x, y)
@@ -177,7 +186,6 @@ impl Chart {
         self
     }
 
-    /// Replace the series after construction.
     pub fn set_series(&mut self, series: Vec<Series>) {
         self.series = series;
     }
@@ -237,7 +245,7 @@ impl Chart {
                 continue;
             }
             let (tw, _) = text_renderer.measure(&s.legend, legend_size, None);
-            lx -= tw as f64;
+            lx -= f64::from(tw);
             text_renderer.draw_text(
                 scene,
                 &s.legend,
@@ -247,7 +255,10 @@ impl Chart {
                 None,
             );
             lx -= 8.0;
-            let dot = Circle::new(Point::new(lx, rect.y0 + 4.0 + legend_size as f64 / 2.0), 3.0);
+            let dot = Circle::new(
+                Point::new(lx, rect.y0 + 4.0 + f64::from(legend_size) / 2.0),
+                3.0,
+            );
             scene.fill(Fill::NonZero, transform, s.color, None, &dot);
             lx -= 12.0;
         }
@@ -273,7 +284,7 @@ impl Chart {
                 axis_hi,
                 legend_size,
                 tokens.colors.text_dim,
-                transform * Affine::translate((plot.x1 - tw as f64, plot.y0 - 1.0)),
+                transform * Affine::translate((plot.x1 - f64::from(tw), plot.y0 - 1.0)),
                 None,
             );
         }
@@ -284,7 +295,7 @@ impl Chart {
                 axis_lo,
                 legend_size,
                 tokens.colors.text_dim,
-                transform * Affine::translate((plot.x1 - tw as f64, plot.y1 - 12.0)),
+                transform * Affine::translate((plot.x1 - f64::from(tw), plot.y1 - 12.0)),
                 None,
             );
         }
@@ -323,26 +334,24 @@ impl Widget for Chart {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(self.height),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(self.height),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -383,7 +392,7 @@ impl Widget for Chart {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Chart"
     }
 
@@ -413,7 +422,14 @@ impl Sparkline {
     /// Construct a sparkline of `data` in `color`. Defaults to a 64×20
     /// intrinsic size and a data-derived max.
     pub fn new(data: Vec<f32>, color: Color) -> Self {
-        Self { data, color, max: None, width: 64.0, height: 20.0, rect: Rect::ZERO }
+        Self {
+            data,
+            color,
+            max: None,
+            width: 64.0,
+            height: 20.0,
+            rect: Rect::ZERO,
+        }
     }
 
     /// Builder: pin the vertical max.
@@ -429,7 +445,6 @@ impl Sparkline {
         self
     }
 
-    /// Replace the data after construction.
     pub fn set_data(&mut self, data: Vec<f32>) {
         self.data = data;
     }
@@ -478,27 +493,25 @@ impl Widget for Sparkline {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.width),
-                    height: Dimension::length(self.height),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(self.width),
+                height: Dimension::length(self.height),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -510,7 +523,14 @@ impl Widget for Sparkline {
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        Sparkline::draw_at(scene, transform, self.rect, &self.data, self.ceiling(), self.color);
+        Sparkline::draw_at(
+            scene,
+            transform,
+            self.rect,
+            &self.data,
+            self.ceiling(),
+            self.color,
+        );
     }
 
     fn handle_event(
@@ -527,7 +547,7 @@ impl Widget for Sparkline {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Sparkline"
     }
 
@@ -565,7 +585,10 @@ mod tests {
         let bottom = map_point(plot, 2, 0.0, 3, 10.0);
         let mid = map_point(plot, 1, 5.0, 3, 10.0);
         assert!((top.y - plot.y0).abs() < 1e-6, "max sits at plot top");
-        assert!((bottom.y - plot.y1).abs() < 1e-6, "zero sits at the baseline");
+        assert!(
+            (bottom.y - plot.y1).abs() < 1e-6,
+            "zero sits at the baseline"
+        );
         assert!((mid.y - 25.0).abs() < 1e-6, "half value lands mid-plot");
         // x marches evenly: dx = 100/(3-1) = 50.
         assert!((top.x - 0.0).abs() < 1e-6);
@@ -592,13 +615,31 @@ mod tests {
 
         let mut plain = Scene::new();
         Chart::draw_at(
-            &mut plain, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 120.0), &theme, &series, 5.0, false, "", "", "",
+            &mut plain,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 120.0),
+            &theme,
+            &series,
+            5.0,
+            false,
+            "",
+            "",
+            "",
         );
         let mut filled = Scene::new();
         Chart::draw_at(
-            &mut filled, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 120.0), &theme, &series, 5.0, true, "", "", "",
+            &mut filled,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 120.0),
+            &theme,
+            &series,
+            5.0,
+            true,
+            "",
+            "",
+            "",
         );
         assert!(
             count_color_tags(&filled) > count_color_tags(&plain),
@@ -619,19 +660,40 @@ mod tests {
         let empty: Vec<Series> = vec![];
         let mut grid_only = Scene::new();
         Chart::draw_at(
-            &mut grid_only, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 120.0), &theme, &empty, 1.0, false, "", "", "",
+            &mut grid_only,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 120.0),
+            &theme,
+            &empty,
+            1.0,
+            false,
+            "",
+            "",
+            "",
         );
         let grid_tags = count_color_tags(&grid_only);
-        assert!(grid_tags >= GRID_DIVISIONS + 1, "grid rules must paint");
+        assert!(grid_tags > GRID_DIVISIONS, "grid rules must paint");
 
         let series = vec![Series::new(vec![1.0, 2.0, 3.0], theme.accent_primary)];
         let mut with_line = Scene::new();
         Chart::draw_at(
-            &mut with_line, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 120.0), &theme, &series, 3.0, false, "", "", "",
+            &mut with_line,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 120.0),
+            &theme,
+            &series,
+            3.0,
+            false,
+            "",
+            "",
+            "",
         );
-        assert!(count_color_tags(&with_line) > grid_tags, "series line adds fills");
+        assert!(
+            count_color_tags(&with_line) > grid_tags,
+            "series line adds fills"
+        );
     }
 
     /// A single-point series is skipped (no line drawn) — a sparkline or
@@ -641,15 +703,23 @@ mod tests {
         let theme = Theme::dark();
         let mut one = Scene::new();
         Sparkline::draw_at(
-            &mut one, Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 64.0, 20.0), &[5.0], 5.0, theme.accent_primary,
+            &mut one,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 64.0, 20.0),
+            &[5.0],
+            5.0,
+            theme.accent_primary,
         );
         assert_eq!(count_color_tags(&one), 0, "single point draws nothing");
 
         let mut many = Scene::new();
         Sparkline::draw_at(
-            &mut many, Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 64.0, 20.0), &[5.0, 3.0, 7.0], 7.0, theme.accent_primary,
+            &mut many,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 64.0, 20.0),
+            &[5.0, 3.0, 7.0],
+            7.0,
+            theme.accent_primary,
         );
         assert!(count_color_tags(&many) >= 2, "area + line both paint");
     }

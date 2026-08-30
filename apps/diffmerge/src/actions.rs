@@ -1,23 +1,15 @@
 //! Diff's exported **actions** and the **resource tree** it publishes to Ctrl+K.
 //!
 //! The document-mutating surface of a merge is the *merge result*: the resolved
-//! output the user keeps tuning (which lives as an Automerge `Text`), plus the
-//! per-hunk resolution choices (a small map) so the take-ours/theirs/both state
-//! converges across peers. Every mutation of that surface is a
-//! [`DiffmergeAction`]: a small serializable value that deterministically
-//! mutates the CRDT. The exact same [`EncodedAction`] is what the on-panel
-//! affordances (the per-hunk chips) dispatch and what the Ctrl+K palette
-//! dispatches — one source of truth, one replay path.
+//! output (an Automerge `Text`) plus the per-hunk resolution choices (ours/
+//! theirs/both), converging across peers as [`DiffmergeAction`]s. The exact
+//! same [`EncodedAction`] is what the on-panel chips and Ctrl+K both dispatch —
+//! one source of truth, one replay path. The resource tree mirrors this: the
+//! merge owns its hunks, each exporting take-ours/theirs/both plus a prompted
+//! custom-text resolve; the root exports a "replace merged output" edit.
 //!
-//! The nested resource tree mirrors the merge: the merge owns its conflict/
-//! change hunks; each hunk exports take-ours / take-theirs / take-both, and a
-//! prompted "resolve with custom text". The merge root exports a "replace merged
-//! output" edit.
-//!
-//! Presentation and *external* data stay out of the document and never become an
-//! action: scroll, which pane is focused, the active hunk, sync-scroll and
-//! jump-to-next navigation are plain app code; loading the two/three input
-//! blobs and recomputing the diff are direct reads, not replayable.
+//! Everything else — scroll, focus, the active hunk, sync-scroll, loading the
+//! input blobs and recomputing the diff — is plain app code, never an action.
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
@@ -185,7 +177,7 @@ pub fn compose_choice(model: &MergeModel, hunk: usize, choice: HunkChoice) -> St
 /// every other hunk keeping its current resolution. Backs the per-hunk
 /// "resolve with custom text" affordance.
 pub fn compose_custom(model: &MergeModel, hunk: usize, text: &str) -> String {
-    let custom: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+    let custom: Vec<String> = text.lines().map(std::string::ToString::to_string).collect();
     let mut out = String::new();
     for (i, h) in model.hunks.iter().enumerate() {
         let lines = if i == hunk {
@@ -287,10 +279,32 @@ pub fn provide_resources(ctx: &MergeResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             format!("{tag} {ordinal}: {preview}")
         };
 
-        let mut hunk_res = Resource::new(format!("diffmerge.conflict:{i}"), "diffmerge.conflict", label);
-        hunk_res = hunk_res.with_action(immediate_choice(&ctx.model, i, HunkChoice::Ours, "take-ours", "Take ours"));
-        hunk_res = hunk_res.with_action(immediate_choice(&ctx.model, i, HunkChoice::Theirs, "take-theirs", "Take theirs"));
-        hunk_res = hunk_res.with_action(immediate_choice(&ctx.model, i, HunkChoice::Both, "take-both", "Take both"));
+        let mut hunk_res = Resource::new(
+            format!("diffmerge.conflict:{i}"),
+            "diffmerge.conflict",
+            label,
+        );
+        hunk_res = hunk_res.with_action(immediate_choice(
+            &ctx.model,
+            i,
+            HunkChoice::Ours,
+            "take-ours",
+            "Take ours",
+        ));
+        hunk_res = hunk_res.with_action(immediate_choice(
+            &ctx.model,
+            i,
+            HunkChoice::Theirs,
+            "take-theirs",
+            "Take theirs",
+        ));
+        hunk_res = hunk_res.with_action(immediate_choice(
+            &ctx.model,
+            i,
+            HunkChoice::Both,
+            "take-both",
+            "Take both",
+        ));
 
         // Resolve with custom text — a prompted merged-output edit scoped to this
         // hunk: the typed lines replace the hunk in the recomposed output.
@@ -401,8 +415,14 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Take theirs")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Replace merged output")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Take theirs")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Replace merged output")),
+            "{labels:?}"
+        );
     }
 
     /// Taking theirs through the action mutates the merged buffer (the conflict
@@ -416,7 +436,11 @@ mod tests {
         MergeDoc::set_merged(&mut doc, &ctx.model.merged_text());
         assert!(MergeDoc::merged_text(&doc).contains("OURS"));
 
-        let action = resolve_hunk_action(hunk, HunkChoice::Theirs, compose_choice(&ctx.model, hunk, HunkChoice::Theirs));
+        let action = resolve_hunk_action(
+            hunk,
+            HunkChoice::Theirs,
+            compose_choice(&ctx.model, hunk, HunkChoice::Theirs),
+        );
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
@@ -426,7 +450,11 @@ mod tests {
         assert!(merged.contains("THEIRS"), "{merged:?}");
         assert!(!merged.contains("OURS"), "{merged:?}");
         let stored = MergeDoc::resolutions(&doc);
-        assert_eq!(stored, vec![(hunk, "theirs".to_string())], "choice recorded");
+        assert_eq!(
+            stored,
+            vec![(hunk, "theirs".to_string())],
+            "choice recorded"
+        );
     }
 
     /// The collaboration guarantee: replaying the same encoded action on a
@@ -440,21 +468,33 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
-        let action = resolve_hunk_action(hunk, HunkChoice::Both, compose_choice(&ctx.model, hunk, HunkChoice::Both));
+        let action = resolve_hunk_action(
+            hunk,
+            HunkChoice::Both,
+            compose_choice(&ctx.model, hunk, HunkChoice::Both),
+        );
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(MergeDoc::merged_text(&a), MergeDoc::merged_text(&b));
     }
 
     /// Single source of truth: the palette's immediate take-theirs spec encodes
     /// byte-identically to the action a chip builds via the shared builder +
-    /// composer. And the prompted custom-resolve spec matches the SetMerged the
+    /// composer. And the prompted custom-resolve spec matches the `SetMerged` the
     /// builder produces for the same text.
     #[test]
     fn palette_and_builder_encode_identically() {
@@ -462,7 +502,11 @@ mod tests {
         let resources = provide_resources(&ctx, &AutoCommit::new());
         let conflict = &resources[0].children[0];
 
-        let spec = conflict.actions.iter().find(|a| a.id == "take-theirs").unwrap();
+        let spec = conflict
+            .actions
+            .iter()
+            .find(|a| a.id == "take-theirs")
+            .unwrap();
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&resolve_hunk_action(
             hunk,
@@ -470,12 +514,20 @@ mod tests {
             compose_choice(&ctx.model, hunk, HunkChoice::Theirs),
         ));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth"
+        );
 
         let resolve = conflict.actions.iter().find(|a| a.id == "resolve").unwrap();
         let from_spec = prompted_encode(resolve, "CUSTOM");
-        let from_builder = encode(&set_merged_action(&compose_custom(&ctx.model, hunk, "CUSTOM")));
-        assert_eq!(from_spec.payload, from_builder.payload, "custom resolve is one source of truth");
+        let from_builder = encode(&set_merged_action(&compose_custom(
+            &ctx.model, hunk, "CUSTOM",
+        )));
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "custom resolve is one source of truth"
+        );
     }
 
     /// A malformed / out-of-range hunk index doesn't wedge: the resolution is
@@ -499,10 +551,16 @@ mod tests {
     fn sample_triple_exposes_a_conflict_resource() {
         let (base, ours, theirs) = samples::merge_triple();
         let model = MergeModel::compute(&base.text, &ours.text, &theirs.text);
-        let ctx = MergeResourceCtx { title: "Merge".into(), model };
+        let ctx = MergeResourceCtx {
+            title: "Merge".into(),
+            model,
+        };
         let resources = provide_resources(&ctx, &AutoCommit::new());
         assert!(
-            resources[0].children.iter().any(|r| r.kind == "diffmerge.conflict"),
+            resources[0]
+                .children
+                .iter()
+                .any(|r| r.kind == "diffmerge.conflict"),
             "the sample merge exposes at least one hunk resource"
         );
     }

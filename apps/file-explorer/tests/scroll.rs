@@ -14,8 +14,8 @@
 
 use std::collections::HashMap;
 
-use file_explorer::model::ViewMode;
 use file_explorer::FileExplorerWidget;
+use file_explorer::model::ViewMode;
 use taffy::prelude::*;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -70,7 +70,10 @@ impl Harness {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size { width: Dimension::length(w), height: Dimension::length(h) },
+                    size: Size {
+                        width: Dimension::length(w),
+                        height: Dimension::length(h),
+                    },
                     ..Default::default()
                 },
                 &[self_node],
@@ -97,14 +100,23 @@ impl Harness {
                 .unwrap();
         }
         widget.apply_layout(&taffy, self_node, Point::ORIGIN);
-        Self { widget, taffy, self_node, tr, state, w, h }
+        Self {
+            widget,
+            taffy,
+            self_node,
+            tr,
+            state,
+            w,
+            h,
+        }
     }
 
     /// Re-run only `apply_layout` — the scroll offset lives in the Scrollable
     /// and is applied to descendants there, so this is the exact pass the App
     /// re-runs after a wheel/drag flags the layout dirty.
     fn relayout(&mut self) {
-        self.widget.apply_layout(&self.taffy, self.self_node, Point::ORIGIN);
+        self.widget
+            .apply_layout(&self.taffy, self.self_node, Point::ORIGIN);
     }
 
     /// Render the current laid-out frame to a PNG — the same offscreen path
@@ -125,7 +137,13 @@ impl Harness {
             &presence,
             &permission,
         );
-        self.widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut self.tr, &theme, &presence);
+        self.widget.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.tr,
+            &theme,
+            &presence,
+        );
         let mut renderer = OffscreenRenderer::new(self.w as u32, self.h as u32);
         renderer.render_png(&scene, vello::peniko::Color::from_rgb8(18, 18, 22), out);
     }
@@ -222,7 +240,10 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
         content_before.y1,
         viewport.y1,
     );
-    assert!(applied_offset(&h).abs() < 0.5, "{mode:?}: starts unscrolled");
+    assert!(
+        applied_offset(&h).abs() < 0.5,
+        "{mode:?}: starts unscrolled"
+    );
 
     // One wheel notch down must move the list.
     h.wheel(3.0);
@@ -289,7 +310,10 @@ fn scroll_before_after_shots() {
         h.shot(&out.join(format!("{tag}-after.png")));
 
         // The two frames must genuinely differ (the list moved).
-        assert!(applied_offset(&h) > 50.0, "{mode:?}: shot pair captured a real scroll");
+        assert!(
+            applied_offset(&h) > 50.0,
+            "{mode:?}: shot pair captured a real scroll"
+        );
     }
 }
 
@@ -310,12 +334,18 @@ fn list_scrolls_by_dragging_the_scrollbar_thumb() {
         h.mouse(ElementState::Pressed),
         "press on the scrollbar thumb must be handled (bar is present)",
     );
-    assert!(applied_offset(&h).abs() < 0.5, "no movement before the drag");
+    assert!(
+        applied_offset(&h).abs() < 0.5,
+        "no movement before the drag"
+    );
 
     h.cursor(bar_x, viewport.y0 + 250.0);
     h.relayout();
     let dragged = applied_offset(&h);
-    assert!(dragged > 0.5, "dragging the thumb down scrolls the list; got {dragged}");
+    assert!(
+        dragged > 0.5,
+        "dragging the thumb down scrolls the list; got {dragged}"
+    );
 
     h.mouse(ElementState::Released);
 

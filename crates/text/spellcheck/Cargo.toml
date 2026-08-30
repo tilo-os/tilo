@@ -10,3 +10,6 @@ description = "Self-contained English spelling engine for qOS: tokenize, check, 
 [dependencies]
 
 [dev-dependencies]
+
+[lints]
+workspace = true

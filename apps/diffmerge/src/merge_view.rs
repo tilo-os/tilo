@@ -67,6 +67,12 @@ pub struct MergeView {
     pending_action: Option<DiffmergeAction>,
 }
 
+impl Default for MergeView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MergeView {
     pub fn new() -> Self {
         Self {
@@ -100,7 +106,9 @@ impl MergeView {
         self.ours_label = ours_label.to_string();
         self.theirs_label = theirs_label.to_string();
         self.scroll_y = 0.0;
-        self.active_hunk = self.first_conflict().or_else(|| self.model.change_indices().first().copied());
+        self.active_hunk = self
+            .first_conflict()
+            .or_else(|| self.model.change_indices().first().copied());
         self.dirty = true;
         self.pending_seed = true;
     }
@@ -202,7 +210,7 @@ impl MergeView {
     fn scroll_hunk_into_view(&mut self, hunk: usize) {
         if let Some((top, bot)) = self.hunk_spans.get(hunk).copied() {
             let vh = self.source_band_height();
-            let mid = (top + bot) / 2.0;
+            let mid = f64::midpoint(top, bot);
             self.scroll_y = (mid - vh / 2.0).max(0.0).min(self.max_scroll());
         }
     }
@@ -219,7 +227,7 @@ impl MergeView {
     }
 
     fn content_height(&self) -> f64 {
-        self.hunk_spans.last().map(|(_, b)| *b).unwrap_or(0.0)
+        self.hunk_spans.last().map_or(0.0, |(_, b)| *b)
     }
 
     fn max_scroll(&self) -> f64 {
@@ -270,13 +278,15 @@ impl Widget for MergeView {
         // The merged `Text` itself stays authoritative — the actions already
         // wrote it — so this only tints the in-memory hunks.
         for (hunk, choice) in MergeDoc::resolutions(state) {
-            if let (Some(h), Some(c)) = (self.model.hunks.get_mut(hunk), HunkChoice::from_str(&choice)) {
-                if h.is_change {
-                    let res = c.to_resolution();
-                    if h.resolution != res {
-                        h.resolution = res;
-                        self.dirty = true;
-                    }
+            if let (Some(h), Some(c)) = (
+                self.model.hunks.get_mut(hunk),
+                HunkChoice::from_str(&choice),
+            ) && h.is_change
+            {
+                let res = c.to_resolution();
+                if h.resolution != res {
+                    h.resolution = res;
+                    self.dirty = true;
                 }
             }
         }
@@ -298,17 +308,17 @@ impl Widget for MergeView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_spans();
     }
@@ -332,16 +342,40 @@ impl Widget for MergeView {
         let theirs_col = Rect::new(r.x0 + 2.0 * col_w, r.y0, r.x1, r.y0 + HEADER_H);
 
         // Column headers (base / ours / theirs).
-        draw_header(scene, transform, tr, theme, base_col, &self.base_label, c.text_dim);
-        draw_header(scene, transform, tr, theme, ours_col, &self.ours_label, c.semantic.success);
-        draw_header(scene, transform, tr, theme, theirs_col, &self.theirs_label, c.semantic.info);
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            base_col,
+            &self.base_label,
+            c.text_dim,
+        );
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            ours_col,
+            &self.ours_label,
+            c.semantic.success,
+        );
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            theirs_col,
+            &self.theirs_label,
+            c.semantic.info,
+        );
 
         // Vertical separators across the source band.
         let band_top = r.y0 + HEADER_H;
         let band_h = self.source_band_height();
         let band_bot = band_top + band_h;
         for k in 1..3 {
-            let x = r.x0 + k as f64 * col_w;
+            let x = r.x0 + f64::from(k) * col_w;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -353,7 +387,13 @@ impl Widget for MergeView {
 
         // --- Source band, clipped + scrolled ---
         let band_clip = Rect::new(r.x0, band_top, r.x1, band_bot);
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &band_clip);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &band_clip,
+        );
 
         for (hi, h) in self.model.hunks.iter().enumerate() {
             let (top, _bot) = self.hunk_spans[hi];
@@ -396,14 +436,42 @@ impl Widget for MergeView {
 
             // Active hunk highlight ring.
             if Some(hi) == self.active_hunk && h.is_change {
-                let ring = RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
+                let ring =
+                    RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
                 scene.stroke(&Stroke::new(1.5), transform, c.accent[5], None, &ring);
             }
 
             // Lines for each column.
-            draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base, col_w - 2.0 * PAD_X);
-            draw_lines(scene, transform, tr, theme, r.x0 + col_w + PAD_X, y, &h.ours, col_w - 2.0 * PAD_X);
-            draw_lines(scene, transform, tr, theme, r.x0 + 2.0 * col_w + PAD_X, y, &h.theirs, col_w - 2.0 * PAD_X);
+            draw_lines(
+                scene,
+                transform,
+                tr,
+                theme,
+                r.x0 + PAD_X,
+                y,
+                &h.base,
+                col_w - 2.0 * PAD_X,
+            );
+            draw_lines(
+                scene,
+                transform,
+                tr,
+                theme,
+                r.x0 + col_w + PAD_X,
+                y,
+                &h.ours,
+                col_w - 2.0 * PAD_X,
+            );
+            draw_lines(
+                scene,
+                transform,
+                tr,
+                theme,
+                r.x0 + 2.0 * col_w + PAD_X,
+                y,
+                &h.theirs,
+                col_w - 2.0 * PAD_X,
+            );
 
             // Action chips for change hunks.
             if h.is_change {
@@ -449,8 +517,18 @@ impl Widget for MergeView {
                     };
                     let rr = RoundedRect::from_rect(chip, 5.0);
                     scene.fill(Fill::NonZero, transform, bg, None, &rr);
-                    scene.stroke(&Stroke::new(1.0), transform, with_alpha(*col, 160), None, &rr);
-                    let text_col = if selected { Color::from_rgb8(10, 14, 22) } else { *col };
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        with_alpha(*col, 160),
+                        None,
+                        &rr,
+                    );
+                    let text_col = if selected {
+                        Color::from_rgb8(10, 14, 22)
+                    } else {
+                        *col
+                    };
                     tr.draw_text(
                         scene,
                         label,
@@ -485,14 +563,24 @@ impl Widget for MergeView {
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &merged);
         // Merged header.
         let mh = Rect::new(merged.x0, merged.y0, merged.x1, merged.y0 + HEADER_H);
-        scene.fill(Fill::NonZero, transform, with_alpha(c.accent[5], 40), None, &mh);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            with_alpha(c.accent[5], 40),
+            None,
+            &mh,
+        );
         let conflicts = self.model.conflict_count();
         let header_label = if conflicts == 0 {
             "Merged result · all conflicts resolved".to_string()
         } else {
             format!("Merged result · {conflicts} conflict(s) remaining")
         };
-        let hc = if conflicts == 0 { c.semantic.success } else { c.semantic.danger };
+        let hc = if conflicts == 0 {
+            c.semantic.success
+        } else {
+            c.semantic.danger
+        };
         tr.draw_text(
             scene,
             &header_label,
@@ -504,7 +592,13 @@ impl Widget for MergeView {
 
         // Merged buffer body.
         let merged_body = Rect::new(merged.x0, merged.y0 + HEADER_H, merged.x1, merged.y1);
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &merged_body);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &merged_body,
+        );
         let lines: Vec<String> = self.model.merged_lines();
         for (i, line) in lines.iter().enumerate() {
             let ly = merged_body.y0 + 4.0 + i as f64 * ROW_H;
@@ -548,7 +642,7 @@ impl Widget for MergeView {
                 // Only scroll the source band when the cursor is above the
                 // merged divider; otherwise let the merged band stay put.
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (-*y as f64) * 60.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * 60.0,
                     MouseScrollDelta::PixelDelta(pp) => -pp.y,
                 };
                 self.scroll_by(dy);
@@ -573,7 +667,7 @@ impl Widget for MergeView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MergeView"
     }
 
@@ -598,7 +692,10 @@ fn chip_is_selected(current: Resolution, chip: HunkChoice) -> bool {
     matches!(
         (current, chip),
         (Resolution::TookOurs | Resolution::Ours, HunkChoice::Ours)
-            | (Resolution::TookTheirs | Resolution::Theirs, HunkChoice::Theirs)
+            | (
+                Resolution::TookTheirs | Resolution::Theirs,
+                HunkChoice::Theirs
+            )
             | (Resolution::TookBoth, HunkChoice::Both)
     )
 }
@@ -700,7 +797,7 @@ fn draw_code_segments(
             None,
         );
         let (w, _) = tr.measure(&seg, FONT_SIZE, None);
-        x += w as f64;
+        x += f64::from(w);
     }
 }
 

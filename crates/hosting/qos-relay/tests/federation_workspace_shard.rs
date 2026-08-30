@@ -8,14 +8,12 @@
 //! federates over no workspace at all. That's the whole shard
 //! isolation mechanism: hosted-set intersection.
 
-mod common;
-
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sharded_topology_isolates_per_workspace() {

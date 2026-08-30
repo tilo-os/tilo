@@ -2,14 +2,16 @@
 //! list/content screens, all in ONE process so the expensive vello shader
 //! compilation is paid once. Usage: `cargo run -p settings --example dump_panes -- <outdir>`.
 
+use settings::SettingsApp;
 use settings::categories::Category;
 use settings::shots::build_widget_scene;
-use settings::SettingsApp;
 use ui::offscreen::OffscreenRenderer;
 use vello::peniko::Color;
 
 fn main() {
-    let out = std::env::args().nth(1).unwrap_or_else(|| "/tmp/settings-panes".to_string());
+    let out = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/tmp/settings-panes".to_string());
     std::fs::create_dir_all(&out).unwrap();
 
     let wide = (1200u32, 760u32);

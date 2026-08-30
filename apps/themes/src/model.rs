@@ -29,7 +29,13 @@ pub const SPACING_MIN: f32 = 6.0;
 pub const SPACING_MAX: f32 = 22.0;
 
 /// Fonts offered by the typography dropdown.
-pub const FONTS: [&str; 5] = ["Inter", "JetBrains Mono", "IBM Plex Sans", "Roboto", "Source Serif"];
+pub const FONTS: [&str; 5] = [
+    "Inter",
+    "JetBrains Mono",
+    "IBM Plex Sans",
+    "Roboto",
+    "Source Serif",
+];
 
 /// Map a font-family name to a [`FontChoice`] the text renderer can shape
 /// with, so the live preview actually re-renders in the chosen family. A
@@ -89,18 +95,22 @@ pub fn parse_hex(s: &str) -> Option<Rgb> {
 /// Linearly mix two colours in straight-u8 space. `t = 0` → `a`, `t = 1` → `b`.
 pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let t = t.clamp(0.0, 1.0);
-    let lerp = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+    let lerp = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     [lerp(a[0], b[0]), lerp(a[1], b[1]), lerp(a[2], b[2])]
 }
 
 /// Relative luminance (0..1), used to pick legible on-colours.
 pub fn luminance(c: Rgb) -> f32 {
-    (0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32) / 255.0
+    (0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2])) / 255.0
 }
 
 /// Black or white, whichever contrasts better against `bg`.
 pub fn on_color(bg: Rgb) -> Rgb {
-    if luminance(bg) > 0.55 { [17, 17, 20] } else { [248, 250, 252] }
+    if luminance(bg) > 0.55 {
+        [17, 17, 20]
+    } else {
+        [248, 250, 252]
+    }
 }
 
 #[inline]
@@ -296,7 +306,11 @@ impl ThemeSpec {
             return t;
         }
 
-        let mut t = if self.dark_base { Theme::dark() } else { Theme::light() };
+        let mut t = if self.dark_base {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
         t.name = self.name.clone();
 
         // Derive the tokens the reduced spec doesn't carry so a custom palette
@@ -353,14 +367,21 @@ impl ThemeSpec {
         t.accent_primary = color(self.accent);
         t.accent_hover = color(self.accent_hover);
         t.status_success = color(self.success);
-        t.radius_standard = radius as f64;
+        t.radius_standard = f64::from(radius);
         t.padding_standard = sp;
         t.gap_standard = sp;
         t
     }
 
     /// Capture a `ui` theme's tokens into an editable spec.
-    pub fn from_theme(id: &str, name: &str, t: &Theme, dark_base: bool, builtin: bool, order: u32) -> Self {
+    pub fn from_theme(
+        id: &str,
+        name: &str,
+        t: &Theme,
+        dark_base: bool,
+        builtin: bool,
+        order: u32,
+    ) -> Self {
         Self {
             id: id.to_string(),
             name: name.to_string(),
@@ -393,22 +414,58 @@ impl ThemeSpec {
 /// The built-in preset catalog, in display order. Each entry is
 /// `(id, display name, ui constructor, dark base, specimen font)`. The ids
 /// are stable so a persisted selection keeps resolving across releases.
-type PresetEntry = (&'static str, &'static str, fn() -> Theme, bool, &'static str);
+type PresetEntry = (
+    &'static str,
+    &'static str,
+    fn() -> Theme,
+    bool,
+    &'static str,
+);
 
 const PRESET_ENTRIES: &[PresetEntry] = &[
-    ("qos-dark",          "qOS Dark",          Theme::dark,             true,  "Inter"),
-    ("qos-blue",          "qOS Blue",          Theme::qos_blue,         true,  "Inter"),
-    ("catppuccin-mocha",  "Catppuccin Mocha",  Theme::catppuccin_mocha, true,  "Inter"),
-    ("catppuccin-latte",  "Catppuccin Latte",  Theme::catppuccin_latte, false, "Inter"),
-    ("dracula",           "Dracula",           Theme::dracula,          true,  "JetBrains Mono"),
-    ("nord",              "Nord",              Theme::nord,             true,  "Inter"),
-    ("gruvbox",           "Gruvbox",           Theme::gruvbox,          true,  "JetBrains Mono"),
-    ("gruvbox-light",     "Gruvbox Light",     Theme::gruvbox_light,    false, "JetBrains Mono"),
-    ("rosepine",          "Rosé Pine",         Theme::rose_pine,        true,  "Inter"),
-    ("solarized",         "Solarized",         Theme::solarized,        true,  "Source Serif"),
-    ("oled",              "OLED",              Theme::oled,             true,  "Inter"),
-    ("beige",             "Beige",             Theme::warm_light,       false, "Inter"),
-    ("contrast",          "High Contrast",     Theme::high_contrast,    true,  "Inter"),
+    ("qos-dark", "qOS Dark", Theme::dark, true, "Inter"),
+    ("qos-blue", "qOS Blue", Theme::qos_blue, true, "Inter"),
+    (
+        "catppuccin-mocha",
+        "Catppuccin Mocha",
+        Theme::catppuccin_mocha,
+        true,
+        "Inter",
+    ),
+    (
+        "catppuccin-latte",
+        "Catppuccin Latte",
+        Theme::catppuccin_latte,
+        false,
+        "Inter",
+    ),
+    ("dracula", "Dracula", Theme::dracula, true, "JetBrains Mono"),
+    ("nord", "Nord", Theme::nord, true, "Inter"),
+    ("gruvbox", "Gruvbox", Theme::gruvbox, true, "JetBrains Mono"),
+    (
+        "gruvbox-light",
+        "Gruvbox Light",
+        Theme::gruvbox_light,
+        false,
+        "JetBrains Mono",
+    ),
+    ("rosepine", "Rosé Pine", Theme::rose_pine, true, "Inter"),
+    (
+        "solarized",
+        "Solarized",
+        Theme::solarized,
+        true,
+        "Source Serif",
+    ),
+    ("oled", "OLED", Theme::oled, true, "Inter"),
+    ("beige", "Beige", Theme::warm_light, false, "Inter"),
+    (
+        "contrast",
+        "High Contrast",
+        Theme::high_contrast,
+        true,
+        "Inter",
+    ),
 ];
 
 /// Map a built-in preset id to its canonical [`ui::Theme`] constructor — the
@@ -502,7 +559,10 @@ mod tests {
         let spec = &presets()[0];
         let theme = spec.to_theme();
         assert_eq!(rgb_of(theme.accent_primary), spec.accent);
-        assert_eq!(rgb_of(theme.tokens.colors.accent.stops[ACCENT_PRIMARY_IDX]), spec.accent);
+        assert_eq!(
+            rgb_of(theme.tokens.colors.accent.stops[ACCENT_PRIMARY_IDX]),
+            spec.accent
+        );
         assert_eq!(rgb_of(theme.tokens.colors.surfaces.base), spec.surface_base);
         assert_eq!(rgb_of(theme.text_primary), spec.text_primary);
     }
@@ -539,14 +599,20 @@ mod tests {
         // "your custom theme" the user never made.
         let cat = default_catalog();
         assert!(cat.len() >= 7);
-        assert!(cat.iter().all(|t| t.builtin), "every live default theme is a built-in preset");
+        assert!(
+            cat.iter().all(|t| t.builtin),
+            "every live default theme is a built-in preset"
+        );
     }
 
     #[test]
     fn demo_catalog_has_presets_plus_an_editable_custom() {
         let cat = demo_catalog();
         assert!(cat.len() >= 8);
-        assert!(cat.iter().any(|t| !t.builtin), "demo carries one editable custom theme");
+        assert!(
+            cat.iter().any(|t| !t.builtin),
+            "demo carries one editable custom theme"
+        );
         assert!(cat.iter().filter(|t| t.builtin).count() >= 7);
     }
 
@@ -558,7 +624,10 @@ mod tests {
         assert_eq!(font_choice("JetBrains Mono"), FontChoice::Monospace);
         assert_eq!(font_choice("Source Serif"), FontChoice::Serif);
         assert_eq!(font_choice("Inter"), FontChoice::Named("Inter".to_string()));
-        assert_eq!(font_choice("Roboto"), FontChoice::Named("Roboto".to_string()));
+        assert_eq!(
+            font_choice("Roboto"),
+            FontChoice::Named("Roboto".to_string())
+        );
     }
 
     #[test]
@@ -567,8 +636,17 @@ mod tests {
         // blue, and the canonical presets the picker offers.
         let cat = default_catalog();
         for id in [
-            "qos-dark", "qos-blue", "catppuccin-mocha", "catppuccin-latte",
-            "dracula", "nord", "gruvbox", "gruvbox-light", "solarized", "oled", "beige",
+            "qos-dark",
+            "qos-blue",
+            "catppuccin-mocha",
+            "catppuccin-latte",
+            "dracula",
+            "nord",
+            "gruvbox",
+            "gruvbox-light",
+            "solarized",
+            "oled",
+            "beige",
         ] {
             assert!(cat.iter().any(|s| s.id == id), "catalog ships {id:?}");
         }
@@ -584,8 +662,16 @@ mod tests {
         let t = dracula.to_theme();
         let want = Theme::dracula();
         assert_eq!(rgb_of(t.bg_app), rgb_of(want.bg_app), "ground");
-        assert_eq!(rgb_of(t.accent_primary), [0xFF, 0x79, 0xC6], "canonical Dracula pink");
-        assert_eq!(rgb_of(t.text_tertiary), rgb_of(want.text_tertiary), "tertiary tier survives");
+        assert_eq!(
+            rgb_of(t.accent_primary),
+            [0xFF, 0x79, 0xC6],
+            "canonical Dracula pink"
+        );
+        assert_eq!(
+            rgb_of(t.text_tertiary),
+            rgb_of(want.text_tertiary),
+            "tertiary tier survives"
+        );
         // The rich near-black popover comes from the constructor, not the default.
         assert_eq!(
             rgb_of(t.tokens.colors.surfaces.overlay),
@@ -613,8 +699,13 @@ mod tests {
         assert!(!custom.builtin);
         let t = custom.to_theme();
         // Popover is deeper than the theme's own ground…
-        let lum = |c: Color| 0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32;
-        assert!(lum(t.tokens.colors.surfaces.overlay) < lum(t.bg_app), "popover deeper than ground");
+        let lum = |c: Color| {
+            0.2126 * f32::from(c.r()) + 0.7152 * f32::from(c.g()) + 0.0722 * f32::from(c.b())
+        };
+        assert!(
+            lum(t.tokens.colors.surfaces.overlay) < lum(t.bg_app),
+            "popover deeper than ground"
+        );
         // …and the derived tertiary tier is quieter than the secondary.
         assert_ne!(rgb_of(t.text_dim), rgb_of(t.text_tertiary));
     }

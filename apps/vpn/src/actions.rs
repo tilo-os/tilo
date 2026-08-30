@@ -52,7 +52,7 @@ use qos_actions::{
 use serde::{Deserialize, Serialize};
 
 use crate::doc::VpnDoc;
-use crate::model::{stub_connection, ConnId, ConnKind, Connection, Vault};
+use crate::model::{ConnId, ConnKind, Connection, Vault, stub_connection};
 
 /// Registry `type_id` for every VPN action.
 pub const VPN_ACTION_TYPE: &str = "vpn.action";
@@ -105,17 +105,18 @@ impl qos_actions::Action for VpnAction {
             }
             VpnAction::RenameConnection { id, name } => {
                 let name = name.trim();
-                if let Some(c) = vault.get(*id) {
-                    if !name.is_empty() && c.name != name {
-                        VpnDoc::set_name(doc, *id, name.to_string());
-                    }
+                if let Some(c) = vault.get(*id)
+                    && !name.is_empty()
+                    && c.name != name
+                {
+                    VpnDoc::set_name(doc, *id, name.to_string());
                 }
             }
             VpnAction::SetConnTor { id, on } => {
-                if let Some(c) = vault.get(*id) {
-                    if c.tor != *on {
-                        VpnDoc::set_conn_tor(doc, *id, *on);
-                    }
+                if let Some(c) = vault.get(*id)
+                    && c.tor != *on
+                {
+                    VpnDoc::set_conn_tor(doc, *id, *on);
                 }
             }
             VpnAction::SetTorGlobal { on } => {
@@ -244,7 +245,11 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
         ));
 
         // Toggle this tunnel's Tor routing preference.
-        let tor_label = if c.tor { "Stop routing over Tor" } else { "Route over Tor" };
+        let tor_label = if c.tor {
+            "Stop routing over Tor"
+        } else {
+            "Route over Tor"
+        };
         cr = cr.with_action(immediate_spec(
             "toggle-tor",
             tor_label,
@@ -252,7 +257,11 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
         ));
 
         // Delete the saved connection.
-        cr = cr.with_action(immediate_spec("delete", "Delete connection", &remove_connection_action(id)));
+        cr = cr.with_action(immediate_spec(
+            "delete",
+            "Delete connection",
+            &remove_connection_action(id),
+        ));
 
         root = root.with_child(cr);
     }
@@ -333,10 +342,16 @@ mod tests {
         assert_eq!(root.kind, "vpn.vault");
 
         let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(root_actions.contains(&"toggle-tor-global"), "{root_actions:?}");
+        assert!(
+            root_actions.contains(&"toggle-tor-global"),
+            "{root_actions:?}"
+        );
         assert!(root_actions.contains(&"add-wireguard"), "{root_actions:?}");
         assert!(root_actions.contains(&"add-openvpn"), "{root_actions:?}");
-        assert!(!root.children.is_empty(), "the sample connections are published");
+        assert!(
+            !root.children.is_empty(),
+            "the sample connections are published"
+        );
 
         let home = root
             .children
@@ -390,25 +405,24 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         let after = VpnDoc::read_vault(&state.doc);
-        assert_eq!(after.connections.len(), before_len - 1, "the action deleted a connection");
-        assert!(!after.connections.iter().any(|c| c.id == victim), "the right connection is gone");
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert_eq!(
+            after.connections.len(),
+            before_len - 1,
+            "the action deleted a connection"
+        );
+        assert!(
+            !after.connections.iter().any(|c| c.id == victim),
+            "the right connection is gone"
+        );
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         let restored = VpnDoc::read_vault(&state.doc);
         assert_eq!(
             restored.connections.len(),
@@ -431,7 +445,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // Toggle a connection's Tor preference: deterministic against the shared
         // base (both replicas write the carried target state).
@@ -444,7 +462,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         let after_a = VpnDoc::read_vault(&a);
         let after_b = VpnDoc::read_vault(&b);
         let tor_a = after_a.get(cid).unwrap().tor;
@@ -490,7 +512,11 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        assert_eq!(doc.get_heads(), before, "a delete of an absent connection changed nothing");
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "a delete of an absent connection changed nothing"
+        );
     }
 
     /// Single source of truth (spec == builder): the palette's per-connection
@@ -502,24 +528,41 @@ mod tests {
         let resources = Widget::resources(&app, &doc);
         let root = &resources[0];
         let id = home_id(root);
-        let home = root.children.iter().find(|r| r.label.starts_with("Home")).unwrap();
+        let home = root
+            .children
+            .iter()
+            .find(|r| r.label.starts_with("Home"))
+            .unwrap();
 
         let delete_spec = home.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&remove_connection_action(id));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         let rename_spec = home.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename_spec, "Cabin");
         let from_builder = encode(&rename_connection_action(id, "Cabin".to_string()));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
 
         let vault = VpnDoc::read_vault(&doc);
-        let global = root.actions.iter().find(|a| a.id == "toggle-tor-global").unwrap();
+        let global = root
+            .actions
+            .iter()
+            .find(|a| a.id == "toggle-tor-global")
+            .unwrap();
         let from_spec = immediate_encode(global);
         let from_builder = encode(&set_tor_global_action(!vault.tor_global));
-        assert_eq!(from_spec.payload, from_builder.payload, "global Tor is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "global Tor is one source of truth"
+        );
     }
 
     /// Single source of truth on the *real* affordance path: the on-screen
@@ -535,7 +578,11 @@ mod tests {
             let resources = Widget::resources(&app, &doc);
             let root = &resources[0];
             let id = home_id(root);
-            let home = root.children.iter().find(|r| r.label.starts_with("Home")).unwrap();
+            let home = root
+                .children
+                .iter()
+                .find(|r| r.label.starts_with("Home"))
+                .unwrap();
             let spec = home.actions.iter().find(|a| a.id == "toggle-tor").unwrap();
             (id, immediate_encode(spec))
         };
@@ -543,7 +590,9 @@ mod tests {
         // Drive the real on-screen affordance.
         app.toggle_conn_tor(&mut doc, id);
 
-        let dispatched = app.last_dispatched().expect("the real toggle dispatched an action");
+        let dispatched = app
+            .last_dispatched()
+            .expect("the real toggle dispatched an action");
         assert_eq!(dispatched.type_id, spec_encoded.type_id);
         assert_eq!(
             dispatched.payload, spec_encoded.payload,

@@ -1,9 +1,9 @@
 //! Time-based one-time password generation — RFC 6238 (TOTP) layered on
-//! RFC 4226 (HOTP), implemented directly on the audited RustCrypto
+//! RFC 4226 (HOTP), implemented directly on the audited `RustCrypto`
 //! `hmac` + `sha1` + `sha2` primitives, with RFC 4648 base32 secret
 //! decoding via the `base32` crate.
 //!
-//! Why hand-rolled rather than `totp-rs`: the RustCrypto crates are
+//! Why hand-rolled rather than `totp-rs`: the `RustCrypto` crates are
 //! already in the workspace lockfile (so no extra fetch), and the RFC
 //! 6238 construction is ~30 lines. This keeps the shared fleet build
 //! green and gives the UI full control over the algorithm / digit /
@@ -37,8 +37,7 @@ pub fn decode_secret(secret: &str) -> Option<Vec<u8>> {
 pub fn unix_now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
 /// RFC 4226 HOTP value for an 8-byte big-endian counter. Returns the
@@ -90,7 +89,7 @@ pub fn code_at(account: &Account, unix_secs: f64) -> String {
     if key.is_empty() {
         return "•".repeat(digits as usize);
     }
-    let period = account.period.max(1) as f64;
+    let period = f64::from(account.period.max(1));
     let counter = (unix_secs / period).floor() as u64;
     let value = hotp(&key, counter, digits, account.algorithm);
     format!("{value:0width$}", width = digits as usize)
@@ -119,13 +118,17 @@ pub fn group_code(code: &str) -> String {
     if b.is_empty() {
         a.iter().collect()
     } else {
-        format!("{}\u{2009}{}", a.iter().collect::<String>(), b.iter().collect::<String>())
+        format!(
+            "{}\u{2009}{}",
+            a.iter().collect::<String>(),
+            b.iter().collect::<String>()
+        )
     }
 }
 
 /// Whole seconds remaining in the current step (1..=period).
 pub fn seconds_remaining(account: &Account, unix_secs: f64) -> u32 {
-    let period = account.period.max(1) as f64;
+    let period = f64::from(account.period.max(1));
     let within = unix_secs.rem_euclid(period);
     (period - within).ceil().max(1.0) as u32
 }
@@ -134,7 +137,7 @@ pub fn seconds_remaining(account: &Account, unix_secs: f64) -> u32 {
 /// the instant a new code begins, decaying to `0.0` just before the next
 /// rotation. Sub-second precise so the countdown ring sweeps smoothly.
 pub fn period_progress(account: &Account, unix_secs: f64) -> f64 {
-    let period = account.period.max(1) as f64;
+    let period = f64::from(account.period.max(1));
     let within = unix_secs.rem_euclid(period);
     (1.0 - within / period).clamp(0.0, 1.0)
 }
@@ -197,7 +200,13 @@ mod tests {
 
     #[test]
     fn group_code_inserts_a_thin_space() {
-        assert_eq!(group_code("123456").chars().filter(|c| c.is_ascii_digit()).count(), 6);
+        assert_eq!(
+            group_code("123456")
+                .chars()
+                .filter(char::is_ascii_digit)
+                .count(),
+            6
+        );
         assert!(group_code("123456").contains('\u{2009}'));
         assert!(group_code("12345678").contains('\u{2009}'));
     }

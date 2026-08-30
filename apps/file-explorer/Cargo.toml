@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "file-explorer"
 version = "0.2.0"
 edition = "2024"
@@ -21,10 +23,8 @@ qdoc = { path = "../../crates/doc/qdoc" }
 # back to a badge when absent). Video stays a badge here so the hermetic build
 # and `--shots` need no gstreamer stack.
 thumbnail = { path = "../../crates/thumbnail", features = ["pdf"] }
-walkdir.workspace = true
 trash = "5.2.6"
 open.workspace = true
-infer = "0.19.0"
 mime_guess = "2.0.5"
 humansize = "2.1.3"
 chrono = { workspace = true, default-features = true }
@@ -50,3 +50,10 @@ taffy.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

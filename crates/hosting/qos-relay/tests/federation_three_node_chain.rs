@@ -21,16 +21,14 @@
 //! in-process over iroh's loopback; genuine cross-machine NAT traversal
 //! is out of scope for a headless test (noted in the module docs).
 
-mod common;
-
 use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use qos_relay::{Envelope, RelayClient, apply_sync_response, send_sync_request};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {
@@ -60,10 +58,14 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
 
     // Wire the CHAIN only: R1<->R2 and R2<->R3. R1 and R3 never federate
     // directly, so R2 is the sole bridge.
-    r1.relay.add_peer_relay_at(r2.relay.node_addr(), "r2".into(), 0);
-    r2.relay.add_peer_relay_at(r1.relay.node_addr(), "r1".into(), 0);
-    r2.relay.add_peer_relay_at(r3.relay.node_addr(), "r3".into(), 0);
-    r3.relay.add_peer_relay_at(r2.relay.node_addr(), "r2".into(), 0);
+    r1.relay
+        .add_peer_relay_at(r2.relay.node_addr(), "r2".into(), 0);
+    r2.relay
+        .add_peer_relay_at(r1.relay.node_addr(), "r1".into(), 0);
+    r2.relay
+        .add_peer_relay_at(r3.relay.node_addr(), "r3".into(), 0);
+    r3.relay
+        .add_peer_relay_at(r2.relay.node_addr(), "r2".into(), 0);
 
     // Let the peer-relay handshakes + subscriptions settle.
     tokio::time::sleep(Duration::from_millis(2500)).await;
@@ -79,7 +81,9 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
     )
     .await
     .expect("A dial R1");
-    a_client.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
+    a_client
+        .send(Envelope::Subscribe { workspace_id: WS })
+        .unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(3), a_client.recv())
         .await
         .expect("A Ready");
@@ -110,7 +114,9 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
     )
     .await
     .expect("B dial R3");
-    b_client.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
+    b_client
+        .send(Envelope::Subscribe { workspace_id: WS })
+        .unwrap();
 
     // Drain everything B receives, applying live Deltas fanned out by R3
     // (once R3 has ingested the change) and any SyncResponse; nudge a
@@ -146,7 +152,10 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
         converged,
         "device on R3 must converge with the author on R1 across the two-hop chain"
     );
-    assert_eq!(read_str(&doc_b, "note").as_deref(), Some("across-the-chain"));
+    assert_eq!(
+        read_str(&doc_b, "note").as_deref(),
+        Some("across-the-chain")
+    );
     assert_eq!(
         doc_b.get_heads(),
         doc_a.get_heads(),

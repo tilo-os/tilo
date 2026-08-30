@@ -39,7 +39,7 @@ use gstreamer_video as gst_video;
 use crate::dmabuf::{ColorRange, Colorimetry, DmabufImage, DmabufPlane, YuvMatrix};
 use crate::event::{MediaEvent, VideoFrame};
 use crate::frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
-use crate::hw::{rank_for, DecoderEntry, DecoderKind, HwPolicy, HwReport};
+use crate::hw::{DecoderEntry, DecoderKind, HwPolicy, HwReport, rank_for};
 use crate::source::Source;
 
 // ---------------------------------------------------------------------------
@@ -148,7 +148,9 @@ fn sink_caps(acceptance: FrameAcceptance) -> gst::Caps {
     match acceptance {
         // The compatibility surface: system-memory RGBA, exactly what
         // `VideoFrame` has always carried.
-        FrameAcceptance::Rgba => gst::Caps::builder("video/x-raw").field("format", "RGBA").build(),
+        FrameAcceptance::Rgba => gst::Caps::builder("video/x-raw")
+            .field("format", "RGBA")
+            .build(),
         FrameAcceptance::Native => gst::Caps::from_str(
             "video/x-raw(memory:DMABuf); \
              video/x-raw, format = (string) { NV12, P010_10LE, RGBA, BGRA, BGRx, RGBx }",
@@ -327,7 +329,11 @@ impl GstState {
                             tracing::info!(
                                 "media: decoder {name} ({}, {})",
                                 kind.as_str(),
-                                if kind.is_hardware() { "hardware" } else { "software" }
+                                if kind.is_hardware() {
+                                    "hardware"
+                                } else {
+                                    "software"
+                                }
                             );
                         }
                     }
@@ -373,7 +379,10 @@ impl GstState {
     /// What the pipeline actually plugged. Empty until the first frame has
     /// prerolled — never a claim made ahead of the evidence.
     pub fn hw_report(&self) -> HwReport {
-        self.observed.lock().map(|o| o.report.clone()).unwrap_or_default()
+        self.observed
+            .lock()
+            .map(|o| o.report.clone())
+            .unwrap_or_default()
     }
 
     pub fn open(&mut self, source: &Source, volume: f32) {
@@ -413,7 +422,9 @@ impl GstState {
     /// only guaranteed to be present once the state change completes.
     pub fn wait_settled(&mut self, timeout: std::time::Duration) -> bool {
         let settled = matches!(
-            self.playbin.state(gst::ClockTime::from_mseconds(timeout.as_millis() as u64)).0,
+            self.playbin
+                .state(gst::ClockTime::from_mseconds(timeout.as_millis() as u64))
+                .0,
             Ok(gst::StateChangeSuccess::Success) | Ok(gst::StateChangeSuccess::NoPreroll)
         );
         if settled {
@@ -443,7 +454,11 @@ impl GstState {
     pub fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
         self.set_drop_policy(playing);
-        let state = if playing { gst::State::Playing } else { gst::State::Paused };
+        let state = if playing {
+            gst::State::Playing
+        } else {
+            gst::State::Paused
+        };
         let _ = self.playbin.set_state(state);
         if playing {
             // Once running, the pipeline clock owns the playhead; a stale seek
@@ -523,7 +538,9 @@ impl GstState {
 
     /// The `volume` element in the audio sink bin, when one was built.
     fn gain_element(&self) -> Option<gst::Element> {
-        let sink = self.playbin.property::<Option<gst::Element>>("audio-sink")?;
+        let sink = self
+            .playbin
+            .property::<Option<gst::Element>>("audio-sink")?;
         sink.downcast::<gst::Bin>().ok()?.by_name("qos_gain")
     }
 
@@ -531,7 +548,9 @@ impl GstState {
     /// output (its `device` property, a PipeWire target node, a tee for a
     /// meter). `None` when the audio bin could not be built.
     pub fn audio_sink(&self) -> Option<gst::Element> {
-        let sink = self.playbin.property::<Option<gst::Element>>("audio-sink")?;
+        let sink = self
+            .playbin
+            .property::<Option<gst::Element>>("audio-sink")?;
         sink.downcast::<gst::Bin>().ok()?.by_name("qos_asink")
     }
 
@@ -552,7 +571,9 @@ impl GstState {
     }
 
     pub fn duration_ms(&self) -> Option<u64> {
-        self.playbin.query_duration::<gst::ClockTime>().map(|d| d.mseconds())
+        self.playbin
+            .query_duration::<gst::ClockTime>()
+            .map(|d| d.mseconds())
     }
 
     pub fn buffering_percent(&self) -> u8 {
@@ -728,7 +749,11 @@ fn frame_from_sample(sample: &gst::Sample, acceptance: FrameAcceptance) -> Optio
 
     // A dmabuf sample carries `memory:DMABuf` in its caps features and a
     // `DMA_DRM` format described by `drm-format`.
-    if caps.features(0).map(|f| f.contains("memory:DMABuf")).unwrap_or(false) {
+    if caps
+        .features(0)
+        .map(|f| f.contains("memory:DMABuf"))
+        .unwrap_or(false)
+    {
         if acceptance == FrameAcceptance::Native {
             if let Some(img) = dmabuf_from_sample(sample, caps) {
                 return Some(Frame {
@@ -765,8 +790,16 @@ fn frame_from_sample(sample: &gst::Sample, acceptance: FrameAcceptance) -> Optio
                     Some(PlaneData {
                         bytes: Arc::new(data.to_vec()),
                         stride: info.stride()[i as usize] as u32,
-                        width: if i == 0 { info.width() } else { info.width() / 2 },
-                        height: if i == 0 { info.height() } else { info.height() / 2 },
+                        width: if i == 0 {
+                            info.width()
+                        } else {
+                            info.width() / 2
+                        },
+                        height: if i == 0 {
+                            info.height()
+                        } else {
+                            info.height() / 2
+                        },
                     })
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -886,8 +919,16 @@ fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> Option<Dmabu
     let meta = buffer.meta::<gst_video::VideoMeta>();
     let (offsets, strides): (Vec<u32>, Vec<u32>) = match &meta {
         Some(m) => (
-            m.offset().iter().take(n_planes).map(|o| *o as u32).collect(),
-            m.stride().iter().take(n_planes).map(|s| *s as u32).collect(),
+            m.offset()
+                .iter()
+                .take(n_planes)
+                .map(|o| *o as u32)
+                .collect(),
+            m.stride()
+                .iter()
+                .take(n_planes)
+                .map(|s| *s as u32)
+                .collect(),
         ),
         None => (
             (0..n_planes).map(|i| info.offset()[i] as u32).collect(),
@@ -923,7 +964,11 @@ fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> Option<Dmabu
         // drops. Duplicate it so the frame can outlive the sample.
         let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw_fd) };
         let fd = borrowed.try_clone_to_owned().ok()?;
-        planes.push(DmabufPlane { fd, offset: offsets[i], stride: strides[i] });
+        planes.push(DmabufPlane {
+            fd,
+            offset: offsets[i],
+            stride: strides[i],
+        });
     }
 
     Some(DmabufImage {
@@ -958,14 +1003,20 @@ mod tests {
         let caps = sink_caps(FrameAcceptance::Rgba);
         let s = caps.to_string();
         assert!(s.contains("RGBA"), "{s}");
-        assert!(!s.contains("DMABuf"), "RGBA-only consumers must not be offered dmabuf: {s}");
+        assert!(
+            !s.contains("DMABuf"),
+            "RGBA-only consumers must not be offered dmabuf: {s}"
+        );
     }
 
     #[test]
     fn native_acceptance_prefers_dmabuf_and_still_allows_system_memory() {
         init();
         let caps = sink_caps(FrameAcceptance::Native);
-        assert!(caps.size() >= 2, "at least a dmabuf and a system-memory structure");
+        assert!(
+            caps.size() >= 2,
+            "at least a dmabuf and a system-memory structure"
+        );
         // Best-first: the dmabuf structure has to come first or negotiation
         // will settle on system memory even when the GPU could export.
         let first = caps.structure(0).unwrap();
@@ -975,14 +1026,23 @@ mod tests {
             "first structure must be the dmabuf one, got {first} / {feat}"
         );
         let rest = caps.to_string();
-        assert!(rest.contains("NV12"), "planar system memory remains reachable: {rest}");
-        assert!(rest.contains("P010_10LE"), "10-bit remains reachable: {rest}");
+        assert!(
+            rest.contains("NV12"),
+            "planar system memory remains reachable: {rest}"
+        );
+        assert!(
+            rest.contains("P010_10LE"),
+            "10-bit remains reachable: {rest}"
+        );
     }
 
     #[test]
     fn accurate_seek_carries_the_accurate_flag_and_keyframe_seek_does_not() {
         let a = SeekMode::Accurate.flags();
-        assert!(a.contains(gst::SeekFlags::ACCURATE), "exact frame requires ACCURATE");
+        assert!(
+            a.contains(gst::SeekFlags::ACCURATE),
+            "exact frame requires ACCURATE"
+        );
         assert!(a.contains(gst::SeekFlags::FLUSH));
         assert!(
             !a.contains(gst::SeekFlags::KEY_UNIT),

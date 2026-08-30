@@ -103,7 +103,9 @@ impl LocalIdentity {
     /// Deterministic last resort: a `user@host` hash, so even with no disk and
     /// no runtime identity two different machines/users still differ.
     fn from_user_host() -> Self {
-        let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_default();
         let host = hostname();
         let seed = format!("{user}@{host}");
         let id = if seed == "@" {
@@ -135,12 +137,20 @@ fn color_from_bytes(b: &[u8]) -> usize {
     (fnv1a(b) % 8) as usize
 }
 
+/// [`color_from_bytes`], for a caller outside this module that has taken a
+/// new id and has to move the colour with it. A colour derived from an id
+/// the peer no longer authors under is a caret that disagrees with the
+/// avatar beside it.
+pub fn color_index_for(bytes: &[u8]) -> usize {
+    color_from_bytes(bytes)
+}
+
 /// 64-bit FNV-1a — a tiny, dependency-free stable hash (never used for
 /// security; only to spread ids across the colour palette / host fallback).
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for &b in bytes {
-        h ^= b as u64;
+        h ^= u64::from(b);
         h = h.wrapping_mul(0x00000100000001B3);
     }
     h
@@ -156,12 +166,16 @@ fn user_display() -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "You".to_string());
     let display: String = raw
-        .split(|c: char| c == '.' || c == '_' || c == '-' || c == ' ')
+        .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
         .map(capitalise)
         .collect::<Vec<_>>()
         .join(" ");
-    if display.is_empty() { "You".to_string() } else { display }
+    if display.is_empty() {
+        "You".to_string()
+    } else {
+        display
+    }
 }
 
 fn capitalise(p: &str) -> String {
@@ -180,11 +194,21 @@ fn initials_of(name: &str) -> String {
     if s.is_empty() { "Y".to_string() } else { s }
 }
 
+/// [`initials_of`], for a caller that has just learned the name the room
+/// gave this participant and has to move the monogram with it.
+pub fn initials_for(name: &str) -> String {
+    initials_of(name)
+}
+
 fn hostname() -> String {
     std::env::var("HOSTNAME")
         .ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
         .unwrap_or_default()
 }
 

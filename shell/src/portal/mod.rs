@@ -1,9 +1,4 @@
-//! `xdg-desktop-portal` backend over zbus — Sandbox Phase 4.3.
-//!
-//! Spec: `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`
-//! (Task 4.3, lines 335-353).
-//!
-//! ## What this module does
+//! `xdg-desktop-portal` backend over zbus.
 //!
 //! `xdg-desktop-portal` is the freedesktop.org component that sandboxed
 //! apps talk to when they need privileged operations the sandbox blocks —
@@ -11,40 +6,28 @@
 //! every request to a *backend* implementation that owns the
 //! decision-and-UI side; this is that backend for the Nirios compositor.
 //!
-//! We expose these D-Bus interfaces under the service name
+//! We expose these D-Bus interfaces under
 //! `org.freedesktop.impl.portal.desktop.qos`:
 //!
-//! - `org.freedesktop.impl.portal.FileChooser` — `OpenFile` / `SaveFile`
-//!   / `SaveFiles`.
+//! - `org.freedesktop.impl.portal.FileChooser` — `OpenFile` / `SaveFile` / `SaveFiles`.
 //! - `org.freedesktop.impl.portal.ScreenCast` — `CreateSession` /
-//!   `SelectSources` / `Start` / `OpenPipeWireRemote`, plus the
-//!   `AvailableSourceTypes` / `AvailableCursorModes` / `version`
-//!   properties.
+//!   `SelectSources` / `Start` / `OpenPipeWireRemote` + properties.
 //! - `org.freedesktop.impl.portal.RemoteDesktop` — `CreateSession` /
 //!   `SelectDevices` / `Start` / `Notify*` seat injection.
-//! - `org.freedesktop.impl.portal.Access` — `AccessDialog`. The host
-//!   portal's `Camera.AccessCamera` call ends up here with
-//!   `app_id="camera"` (this is how `xdg-desktop-portal` does it: the
-//!   Camera frontend doesn't have its own `impl.portal.Camera`
-//!   interface, it reuses `Access`).
+//! - `org.freedesktop.impl.portal.Access` — `AccessDialog`, also used by
+//!   `Camera.AccessCamera` (`app_id="camera"`), since `xdg-desktop-portal`
+//!   has no separate `impl.portal.Camera` interface.
 //!
-//! Every method shares the same shape — peek at [`flow::resolve`]: look
-//! up the caller's workspace + app id, ask the grant store whether an
-//! `Always`-scoped grant covers this capability, fast-path `Allow` if
-//! so; otherwise enqueue a `PendingGrant` and await the user's prompt
-//! choice. The result is translated back into the portal response code
-//! (0 = success, 1 = user cancelled, 2 = other error) and the
+//! Every method shares one shape — see [`flow::resolve`]: look up the
+//! caller's workspace + app id, fast-path `Allow` on an `Always`-scoped
+//! grant, otherwise enqueue a `PendingGrant` and await the user's prompt
+//! choice, translated into the portal response code (0/1/2) and the
 //! interface-specific results dict.
 //!
-//! ## Test discipline
-//!
-//! Tests construct a `PromptQueueHandle` in
-//! [`PromptResolver::AutoAllow`] mode so a `FileChooser.OpenFile` round
-//! trip never blocks on a real dialog. The companion
-//! `tests/portal_test.rs` exercises one round-trip per interface plus
-//! the "Always-grant skips the prompt" path against a private session
-//! bus brought up via `zbus::ConnectionBuilder::p2p()` — same in-process
-//! bus the upstream `xdg-desktop-portal` test fixtures use.
+//! Tests run a `PromptQueueHandle` in [`PromptResolver::AutoAllow`] mode
+//! so round trips never block on a real dialog; `tests/portal_test.rs`
+//! exercises each interface plus the "Always-grant skips the prompt"
+//! path over an in-process p2p bus.
 
 pub mod camera;
 pub mod doc_store;
@@ -56,11 +39,8 @@ pub mod remote_desktop;
 pub mod screencast;
 pub mod screencast_pipewire;
 
-// Re-export the backend types so integration tests can construct them
-// directly and register them on a custom `ConnectionBuilder`. The
-// production entry point ([`serve`]) does the same wire-up under the
-// hood; tests need it inline so the server- and client-side
-// handshake can join concurrently (see `tests/portal_test.rs`).
+// Re-exported so integration tests can construct the backend types
+// directly and register them on a custom `ConnectionBuilder` (see `tests/portal_test.rs`).
 pub use camera::AccessBackend;
 pub use doc_store::{DocumentStore, DocumentStoreHandle, HostPathStore, PublishedDoc};
 pub use file_chooser::FileChooserBackend;
@@ -95,16 +75,13 @@ use crate::shell::state::{
 
 /// Identity of the sandboxed app that issued a portal request.
 ///
-/// In production this is filled in by the connection-acceptance path
-/// from the bridge tag (Phase 3) + the per-workspace PID→app map. In
-/// tests, callers construct a `PortalCaller` directly so the round-trip
-/// is fully deterministic without spinning up a real bwrap'd app.
+/// Production fills this in from the bridge tag + per-workspace PID→app
+/// map; tests construct a `PortalCaller` directly for a deterministic round-trip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortalCaller {
     /// Workspace the caller was spawned into.
     pub workspace_id: WorkspaceId,
-    /// Wayland-style app id. Stored verbatim into [`Workspace::grants`]'s
-    /// outer key on accept.
+    /// Wayland-style app id, stored verbatim into [`Workspace::grants`]'s outer key on accept.
     pub app_id: AppId,
 }
 
@@ -117,10 +94,9 @@ impl PortalCaller {
     }
 }
 
-/// Capability *kind* — the workspace's `grants` map stores full
-/// [`Capability`] enums (with scope, path, hosts, etc.); the portal
-/// only ever asks "is there any grant of *kind* X for this app?". This
-/// is the kind-side of that filter.
+/// Capability *kind* — `grants` stores full [`Capability`] enums (scope,
+/// path, hosts, etc.), but the portal only ever asks "is there any grant
+/// of *kind* X for this app?". This is that filter's kind-side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapabilityKind {
     FilesystemRead,
@@ -157,23 +133,17 @@ impl CapabilityKind {
 /// Handle the portal hands to its interface impls so they can consult /
 /// mutate the workspace's `grants` map.
 ///
-/// Holds a [`WorkspaceTreeHandle`] — the same `Arc<parking_lot::RwLock<_>>`
-/// the shell chrome and the peer-sync replica clone from (C-3). Portal
-/// `insert` writes land on the shared tree, so the shell's Permissions
-/// tab observes them immediately and peer-sync's next `export_changes_since`
-/// ships them to other peers.
-///
-/// Cloneable so each interface impl can hold its own clone without
-/// locking-strategy concerns. The handle is just an `Arc` bump.
+/// Holds the same [`WorkspaceTreeHandle`] the shell chrome and the
+/// peer-sync replica clone from, so a portal `insert` is immediately
+/// visible in the Permissions tab and shipped by the next peer-sync tick.
 #[derive(Clone)]
 pub struct GrantStoreHandle {
     tree: WorkspaceTreeHandle,
 }
 
 impl GrantStoreHandle {
-    /// Construct a grant store over the shared workspace-tree handle.
-    /// In production the same handle is passed to `ChromeState` and
-    /// `WorkspaceTreeReplica` so every subsystem mutates the same tree.
+    /// Construct a grant store over the shared workspace-tree handle. In
+    /// production the same handle is passed to `ChromeState` and `WorkspaceTreeReplica` so every subsystem mutates the same tree.
     pub fn new(tree: WorkspaceTreeHandle) -> Self {
         Self { tree }
     }
@@ -188,12 +158,9 @@ impl GrantStoreHandle {
     }
 
     /// Lookup the strongest existing grant (`Always` > `Session` > `Once`)
-    /// of `kind` for `caller`. `None` means "no grant" → the portal
-    /// will enqueue a prompt.
+    /// of `kind` for `caller`. `None` means "no grant" → the portal will enqueue a prompt.
     ///
-    /// Acquires a read lock for the duration of the lookup. Returns
-    /// `None` if the workspace doesn't exist (drained workspace, racy
-    /// portal request) — defaults safely to deny.
+    /// Acquires a read lock; returns `None` if the workspace doesn't exist (drained workspace, racy portal request) — defaults safely to deny.
     pub fn lookup(&self, caller: &PortalCaller, kind: CapabilityKind) -> Option<GrantScope> {
         let tree = self.tree.read();
         let ws = tree
@@ -218,14 +185,11 @@ impl GrantStoreHandle {
 
     /// The authoritative "may this app do this?" check.
     ///
-    /// Unlike [`Self::lookup`], which answers "is there a grant of this
-    /// shape" for the prompt logic, this asks the capability model
-    /// directly about a concrete resource — so a filesystem grant on a
-    /// directory correctly authorises a file inside it, and a network
-    /// grant on one host does not authorise another.
-    ///
-    /// Fail-closed on every unknown: a missing workspace, an unknown
-    /// app, an expired capability all deny.
+    /// Unlike [`Self::lookup`] (which answers "is there a grant of this
+    /// shape" for the prompt logic), this asks the capability model directly
+    /// about a concrete resource, so a filesystem grant on a directory
+    /// authorises a file inside it and a network grant on one host doesn't
+    /// authorise another. Fail-closed on every unknown: a missing workspace, an unknown app, an expired capability all deny.
     pub fn permits(&self, caller: &PortalCaller, resource: &ResourceRef, verb: Verb) -> bool {
         let tree = self.tree.read();
         let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
@@ -235,13 +199,11 @@ impl GrantStoreHandle {
         ws.allows(&actor, resource, verb)
     }
 
-    /// Persist `capability` under `caller.app_id` in `caller.workspace_id`.
-    /// Used after the user clicks `Session` or `Always` on the prompt.
+    /// Persist `capability` under `caller.app_id` in `caller.workspace_id` —
+    /// used after the user clicks `Session` or `Always` on the prompt.
     ///
-    /// Acquires the write lock briefly, mutates both the cache map and
-    /// the automerge doc (via `doc_insert_grant`), then releases the
-    /// lock. Peer-sync picks up the change on the next `export_changes`
-    /// tick.
+    /// Acquires the write lock briefly, mutates both the cache map and the
+    /// automerge doc; peer-sync picks up the change on the next `export_changes` tick.
     pub fn insert(&self, caller: &PortalCaller, capability: Capability) -> bool {
         let mut tree = self.tree.write();
         let Some(ws) = tree
@@ -252,10 +214,7 @@ impl GrantStoreHandle {
             return false;
         };
         let ids = ws.grant_app(&caller.app_id, &capability);
-        // Mirror into the automerge doc so peer-sync ships the grant on
-        // the next tick, and so a restart reloads it. Tolerant of the
-        // doc not being seeded yet (e.g. a brand-new workspace not yet
-        // flushed through `seed_doc_from_cache`).
+        // Mirror into the automerge doc so peer-sync ships it and a restart reloads it; tolerant of the doc not being seeded yet.
         let written: Vec<CapOverride> = ws
             .capabilities
             .iter()
@@ -268,24 +227,19 @@ impl GrantStoreHandle {
         true
     }
 
-    /// True if `caller` already holds a filesystem grant whose path
-    /// covers `path` — an exact match or an ancestor directory. The
-    /// file-drop router calls this before recording a drop grant so a
-    /// second drop of the same file (or a file already inside a granted
-    /// directory) doesn't append a duplicate `Capability::Filesystem`.
+    /// True if `caller` already holds a filesystem grant whose path covers
+    /// `path` — an exact match or an ancestor directory. The file-drop
+    /// router calls this before recording a drop grant so a second drop of
+    /// the same file doesn't append a duplicate `Capability::Filesystem`.
     ///
-    /// Acquires a read lock for the lookup; returns `false` if the
-    /// workspace or the app has no grants (default-deny, so the caller
-    /// records the grant).
+    /// Acquires a read lock; returns `false` if the workspace or app has no grants (default-deny, so the caller records the grant).
     pub fn filesystem_path_granted(&self, caller: &PortalCaller, path: &std::path::Path) -> bool {
         let tree = self.tree.read();
         let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
             return false;
         };
-        // Asks the capability model rather than re-deriving prefix
-        // logic: `Scope::FsPath` already covers its subtree, on
-        // component boundaries, and the same rule is what the
-        // filesystem itself enforces.
+        // Asks the capability model rather than re-deriving prefix logic:
+        // `Scope::FsPath` already covers its subtree on component boundaries, the same rule the filesystem itself enforces.
         let actor = ws.actor_for_app(&caller.app_id);
         ws.allows(
             &actor,
@@ -294,17 +248,14 @@ impl GrantStoreHandle {
         )
     }
 
-    /// Direct tree-handle accessor for tests that need to assert on
-    /// multiple fields at once, or that need to construct a peer
-    /// subsystem holding the same handle. Production callers go through
-    /// [`Self::lookup`] / [`Self::insert`].
+    /// Direct tree-handle accessor for tests needing to assert on multiple
+    /// fields at once. Production callers go through [`Self::lookup`] / [`Self::insert`].
     pub fn tree_handle(&self) -> WorkspaceTreeHandle {
         self.tree.clone()
     }
 
     /// Back-compat alias for [`Self::tree_handle`]. A handful of older
-    /// tests/portals still reference `.tree()`; both now return the
-    /// shared `WorkspaceTreeHandle`.
+    /// tests/portals still reference `.tree()`; both now return the shared `WorkspaceTreeHandle`.
     // NOT cfg-gated: reachable from the shots harness, which is a release build.
     pub fn tree(&self) -> WorkspaceTreeHandle {
         self.tree.clone()
@@ -313,10 +264,8 @@ impl GrantStoreHandle {
 
 /// The longer-lived of two expiries.
 ///
-/// Delegates to [`Expiry::longest`] rather than re-deriving the order:
-/// the capability store merges a re-grant with the same rule, and two
-/// implementations of "strongest wins" would eventually disagree about
-/// whether a permanent grant is permanent.
+/// Delegates to [`Expiry::longest`] rather than re-deriving the order —
+/// two implementations of "strongest wins" would eventually disagree about whether a permanent grant is permanent.
 fn stronger_scope(a: GrantScope, b: GrantScope) -> GrantScope {
     Expiry::longest(a, b)
 }
@@ -325,15 +274,13 @@ fn stronger_scope(a: GrantScope, b: GrantScope) -> GrantScope {
 pub struct PendingGrant {
     pub caller: PortalCaller,
     pub capability: Capability,
-    /// One-shot reply channel. The shell's permission-prompt pump
-    /// fulfils this when the user clicks Allow/Session/Always/Deny;
-    /// test mode fulfils it synchronously from [`PromptResolver`].
+    /// One-shot reply channel: the shell's permission-prompt pump fulfils
+    /// this on a user click; test mode fulfils it synchronously from [`PromptResolver`].
     pub reply: oneshot::Sender<PromptOutcome>,
 }
 
-/// Outcome of a permission prompt — mirrors the widget's
-/// [`ui::widget::PromptChoice`] but keeps the portal module
-/// dependency-free from `quick_ui` for the lookup path.
+/// Outcome of a permission prompt — mirrors [`ui::widget::PromptChoice`]
+/// but keeps the portal module dependency-free from `quick_ui` for the lookup path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptOutcome {
     AllowOnce,
@@ -357,10 +304,8 @@ impl PromptOutcome {
 }
 
 /// How the prompt queue resolves pending grants. Production uses
-/// [`PromptResolver::Channel`] — the request is buffered and the shell's
-/// permission-prompt pump drains it on the main thread. Tests use
-/// [`PromptResolver::AutoAllow`] / `AutoDeny` so the round-trip
-/// completes without any GUI thread.
+/// [`PromptResolver::Channel`] (buffered, drained by the shell's
+/// permission-prompt pump); tests use `AutoAllow` / `AutoDeny` so the round-trip completes without a GUI thread.
 #[derive(Clone)]
 pub enum PromptResolver {
     /// Push onto the queue and let the prompt-pump fulfil the oneshot.
@@ -373,8 +318,7 @@ pub enum PromptResolver {
     AutoOutcome(PromptOutcome),
 }
 
-/// Handle the portal interfaces hold to push new prompts onto the
-/// queue. Cloneable so each interface impl gets its own clone.
+/// Handle the portal interfaces hold to push new prompts onto the queue; cloneable so each interface impl gets its own clone.
 #[derive(Clone)]
 pub struct PromptQueueHandle {
     resolver: PromptResolver,
@@ -389,9 +333,8 @@ impl PromptQueueHandle {
         }
     }
 
-    /// Enqueue a new request and return the reply receiver. The caller
-    /// `.await`s the receiver; the prompt path / auto-resolver fulfils
-    /// it.
+    /// Enqueue a new request and return the reply receiver; the caller
+    /// `.await`s it while the prompt path / auto-resolver fulfils it.
     pub fn enqueue(
         &self,
         caller: PortalCaller,
@@ -422,10 +365,8 @@ impl PromptQueueHandle {
         rx
     }
 
-    /// Drain pending prompts for the shell's per-frame pump to convert
-    /// into `ChromeState::pending_grants` entries. Each drained entry
-    /// still owns its reply channel — the caller is responsible for
-    /// fulfilling it.
+    /// Drain pending prompts for the shell's per-frame pump to convert into
+    /// `ChromeState::pending_grants` entries; each drained entry still owns its reply channel for the caller to fulfil.
     pub fn drain(&self) -> Vec<PendingGrant> {
         match self.pending.lock() {
             Ok(mut q) => std::mem::take(&mut *q),
@@ -433,14 +374,12 @@ impl PromptQueueHandle {
         }
     }
 
-    /// Number of queued prompts — for tests that need to assert the
-    /// queue length before the pump drains it.
+    /// Number of queued prompts — for tests asserting queue length before the pump drains it.
     pub fn queued_len(&self) -> usize {
-        self.pending.lock().map(|q| q.len()).unwrap_or(0)
+        self.pending.lock().map_or(0, |q| q.len())
     }
 
-    /// Direct accessor (test only): peek at the front entry's caller +
-    /// capability without removing it.
+    /// Direct accessor (test only): peek at the front entry's caller + capability without removing it.
     #[cfg(any(test, debug_assertions))]
     pub fn front_for_tests(&self) -> Option<(PortalCaller, Capability)> {
         let q = self.pending.lock().ok()?;
@@ -453,53 +392,30 @@ impl PromptQueueHandle {
 pub struct PortalContext {
     pub grants: GrantStoreHandle,
     pub prompts: PromptQueueHandle,
-    /// Map from a D-Bus connection's peer-credentials (unique-name) to a
-    /// `PortalCaller`. v1 keeps this as a simple in-memory map keyed by
-    /// the connection's UniqueName — production fills it in when the
-    /// per-workspace bridge spawns an app; tests poke entries directly.
+    /// D-Bus unique-name → `PortalCaller`. Production fills it in when the per-workspace bridge spawns an app; tests poke entries directly.
     pub caller_map: CallerMap,
-    /// File-picker spawn handle. The FileChooser backend calls
-    /// [`FilePickerSpawner::spawn`] on `Allow` to surface a real dialog;
-    /// tests pass a [`MockFilePickerSpawner`] that returns canned paths
-    /// without rendering anything. Defaults to a
-    /// [`NullFilePickerSpawner`] in [`PortalContext::null_spawners`] so
-    /// existing tests that don't care about the dialog keep their
-    /// fast-path behaviour (the null spawner cancels every request,
-    /// which surfaces as `response=1`).
+    /// The `FileChooser` backend calls [`FilePickerSpawner::spawn`] on
+    /// `Allow`; tests pass a [`MockFilePickerSpawner`] with canned paths.
+    /// Defaults to [`NullFilePickerSpawner`], which cancels every request (`response=1`).
     pub file_picker: FilePickerSpawnerHandle,
-    /// ScreenCast Pipewire stream provisioner. The ScreenCast backend
-    /// calls [`ScreenCastStreamProvisioner::provision_stream`] on
-    /// `Start` Allow to create a Pipewire node and return its id +
-    /// props. Production wires the real Pipewire connection; tests use
-    /// [`MockScreenCastProvisioner`] which returns a synthetic node id
-    /// without touching the system Pipewire daemon.
+    /// The `ScreenCast` backend calls
+    /// [`ScreenCastStreamProvisioner::provision_stream`] on `Start` Allow; tests use [`MockScreenCastProvisioner`] instead of the system Pipewire daemon.
     pub screencast_provisioner: ScreenCastStreamProvisionerHandle,
-    /// RemoteDesktop seat-injection sink. The RemoteDesktop backend hands
-    /// each granted `Notify*` action here; production wires a
-    /// [`ChannelInjector`] the compositor loop drains into the seat, and
-    /// `--portal-server-only` mode (no live seat) uses the null handle.
+    /// The `RemoteDesktop` backend hands each granted `Notify*` action here;
+    /// production wires a [`ChannelInjector`] the compositor loop drains, and `--portal-server-only` mode uses the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
-    /// How a picked path is made reachable by the app that asked for
-    /// it. See [`doc_store`] for why recording the grant is not enough
-    /// on its own for an app that is already running.
+    /// How a picked path is made reachable by the app that asked for it —
+    /// see [`doc_store`] for why recording the grant alone isn't enough for an app already running.
     pub documents: DocumentStoreHandle,
-    /// Print submission sink. The Print backend hands each consented
-    /// job here; production runs `lp`, tests inject a
-    /// [`RecordingSpooler`] and assert on what actually arrived.
-    ///
-    /// This is the only component in the print path that touches CUPS,
-    /// and it lives on *this* side of the sandbox — which is the whole
-    /// point of the interface.
+    /// The Print backend hands each consented job here; production runs
+    /// `lp`, tests inject a [`RecordingSpooler`] — the only component in the print path that touches CUPS, living on *this* side of the sandbox.
     pub print_spooler: PrintSpoolerHandle,
 }
 
 impl PortalContext {
-    /// Build a context wired with null spawners — the FileChooser
-    /// dialog cancels every request, the ScreenCast provisioner
-    /// returns a synthetic node-id with empty props. Used by tests
-    /// that pre-date the dialog/provisioner abstractions and only
-    /// care about the response-code path. Production callers always
-    /// inject real spawners via [`PortalContext`] field initialisers.
+    /// Build a context wired with null spawners — `FileChooser` cancels every
+    /// request, the `ScreenCast` provisioner returns a synthetic node-id.
+    /// Used by tests that only care about the response-code path; production always injects real spawners via field initialisers.
     pub fn new_with_null_spawners(
         grants: GrantStoreHandle,
         prompts: PromptQueueHandle,
@@ -515,33 +431,20 @@ impl PortalContext {
             )),
             remote_input_injector: RemoteInputInjectorHandle::null(),
             documents: DocumentStoreHandle::host_paths(),
-            // The real spooler, not a null one. Unlike the picker and
-            // the provisioner it needs no chrome, no GPU and no live
-            // seat — it is a process invocation — so there is nothing
-            // for a headless context to be missing. On a machine with
-            // no CUPS it reports no destinations and refuses
-            // submissions, which is the honest answer rather than a
-            // fabricated printer.
+            // The real spooler, not a null one — it's a process invocation, nothing
+            // a headless context is missing; no CUPS means it honestly reports no destinations.
             print_spooler: PrintSpoolerHandle::cups(),
         }
     }
 }
 
-/// In-memory lookup from a D-Bus unique-name → `PortalCaller`. Wrapped
-/// behind an `Arc<Mutex<…>>` so it's cheap to clone across interface
-/// impls + the connection-acceptance path can push entries from a
-/// different thread than the D-Bus reader. Production-time entries are
-/// added by the per-workspace bridge accept path; tests poke entries
-/// directly.
+/// In-memory D-Bus unique-name → `PortalCaller` lookup. `Arc<Mutex<…>>`
+/// so it's cheap to clone across interface impls and pushable from a different thread than the D-Bus reader.
 #[derive(Clone, Default)]
 pub struct CallerMap {
     inner: Arc<Mutex<HashMap<String, PortalCaller>>>,
-    /// Test-only forced override. When `Some`, every `lookup` call
-    /// returns this caller regardless of the key — useful in
-    /// integration tests where the underlying transport (p2p socket
-    /// pair) doesn't surface a unique-name on the request header.
-    /// Production never sets this; the bridge accept path always
-    /// keys by the real D-Bus unique-name.
+    /// Test-only forced override: every `lookup` returns this caller
+    /// regardless of key, for transports (p2p socket pairs) with no unique-name on the request header.
     forced: Arc<Mutex<Option<PortalCaller>>>,
 }
 
@@ -557,20 +460,16 @@ impl CallerMap {
     }
 
     pub fn lookup(&self, dbus_unique_name: &str) -> Option<PortalCaller> {
-        if let Ok(forced) = self.forced.lock() {
-            if let Some(c) = forced.as_ref() {
-                return Some(c.clone());
-            }
+        if let Ok(forced) = self.forced.lock()
+            && let Some(c) = forced.as_ref()
+        {
+            return Some(c.clone());
         }
         let m = self.inner.lock().ok()?;
         m.get(dbus_unique_name).cloned()
     }
 
-    /// Test-only knob: every subsequent `lookup` call (regardless of
-    /// key, even when the sender is `None`) returns `caller`. Mirrors
-    /// the bridge-tag override the production path will eventually
-    /// use; tests reach for this when the p2p transport doesn't
-    /// surface a unique-name on the message header.
+    /// Test-only knob: every subsequent `lookup` returns `caller` regardless of key, for transports that never surface one.
     pub fn force_caller_for_tests(&self, caller: PortalCaller) {
         if let Ok(mut f) = self.forced.lock() {
             *f = Some(caller);
@@ -579,11 +478,12 @@ impl CallerMap {
 }
 
 /// Shared sub-flow every interface uses: lookup or prompt, return the
-/// outcome. Stays in this module (rather than each interface file) so
-/// the "Always-grant skips the prompt" branch is asserted by one test
-/// that all three interfaces share.
+/// outcome. Kept here so "Always-grant skips the prompt" is asserted by one test all three interfaces share.
 pub mod flow {
-    use super::*;
+    use super::{
+        Capability, CapabilityKind, GRANT_ALWAYS, GRANT_ONCE, PortalCaller, PortalContext,
+        PromptOutcome,
+    };
 
     pub async fn resolve(
         ctx: &PortalContext,
@@ -591,35 +491,30 @@ pub mod flow {
         kind: CapabilityKind,
         cap_template: Capability,
     ) -> PromptOutcome {
-        // 1. Fast path — `Always`-scoped grant already present.
+        // Fast path — `Always`-scoped grant already present.
         if matches!(ctx.grants.lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        // 2. Slow path — enqueue + await user choice.
         let rx = ctx.prompts.enqueue(caller.clone(), cap_template.clone());
         match rx.await {
             Ok(outcome) => {
                 // Persist Session/Always — Once is treated as one-shot.
-                if let Some(scope) = outcome.to_scope() {
-                    if !matches!(scope, GRANT_ONCE) {
-                        let cap = super::with_scope(cap_template, scope);
-                        ctx.grants.insert(&caller, cap);
-                    }
+                if let Some(scope) = outcome.to_scope()
+                    && !matches!(scope, GRANT_ONCE)
+                {
+                    let cap = super::with_scope(cap_template, scope);
+                    ctx.grants.insert(&caller, cap);
                 }
                 outcome
             }
-            // Channel closed without a reply == treat as deny. Defensive
-            // posture: if the prompt pump shut down mid-flight we'd
-            // rather deny than hang the caller forever.
+            // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
             Err(_) => PromptOutcome::Deny,
         }
     }
 }
 
-/// Helper: rewrite a [`Capability`] template's `scope` field. Mirrors
-/// `overlay_host::with_grant_scope` — duplicated here so the portal
-/// module doesn't take a hard dep on `shell::overlay_host` (which pulls
-/// the whole UI stack).
+/// Helper: rewrite a [`Capability`] template's `scope` field. Duplicated
+/// from `overlay_host::with_grant_scope` so the portal module doesn't take a hard dep on `shell::overlay_host` (pulls the whole UI stack).
 pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
     match cap {
         Capability::Filesystem { path, mode, .. } => Capability::Filesystem { path, mode, scope },
@@ -632,40 +527,26 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
     }
 }
 
-/// The document store this session should use.
-///
-/// One place to make the choice, so the compositor and any future
-/// caller cannot disagree about which mechanism is live. Today that is
-/// the host-path store; see [`doc_store`] for what it does and does not
-/// reach, and for the design of the FUSE-backed store that replaces it
-/// for confined callers.
+/// The document store this session should use — one place to make the choice. See [`doc_store`] for what the host-path store does and doesn't reach.
 pub fn documents_for_session() -> DocumentStoreHandle {
     DocumentStoreHandle::host_paths()
 }
 
 /// Bus name we register under. xdg-desktop-portal expects backends to
-/// own `org.freedesktop.impl.portal.desktop.<vendor>`; the vendor suffix
-/// is matched against the `portals/<vendor>.portal` config file (see
-/// `os/usr/share/xdg-desktop-portal/portals/qos.portal`, its D-Bus
-/// activation `.service`, and `shell-portal.service` — all of which name
-/// `...desktop.qos`).
+/// own `org.freedesktop.impl.portal.desktop.<vendor>`; matched against
+/// `portals/<vendor>.portal` (see `os/usr/share/xdg-desktop-portal/portals/qos.portal`, its D-Bus activation `.service`, and `shell-portal.service`).
 pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.qos";
 
-/// Object path the portal's frontend dispatches to on each interface.
-/// xdg-desktop-portal hard-codes `/org/freedesktop/portal/desktop`.
+/// Object path the portal's frontend dispatches to; xdg-desktop-portal hard-codes `/org/freedesktop/portal/desktop`.
 pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 
 /// Spawn the portal server on `connection`, registering all three
 /// interfaces under [`OBJECT_PATH`] and requesting [`BUS_NAME`].
 ///
-/// Returns the connection back to the caller (kept alive by the
-/// caller) — the connection's task pool drives method dispatch.
-/// Dropping the returned [`ServerHandle`] releases the bus name and
-/// drops the connection.
-///
-/// **Tests** pass an in-process p2p connection so no real session bus
-/// is touched. **Production** passes a session-bus connection from
-/// `zbus::Connection::session()`.
+/// Returns the connection back to the caller (kept alive by the caller);
+/// dropping the returned [`ServerHandle`] releases the bus name and
+/// drops the connection. **Tests** pass an in-process p2p connection;
+/// **production** passes `zbus::Connection::session()`.
 pub async fn serve(
     connection: zbus::Connection,
     ctx: PortalContext,
@@ -682,38 +563,16 @@ pub async fn serve(
     let rd = RemoteDesktopBackend::new(ctx.clone());
     let pr = PrintBackend::new(ctx.clone());
 
-    connection
-        .object_server()
-        .at(OBJECT_PATH, fc)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, sc)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, ac)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, rd)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, pr)
-        .await?;
+    connection.object_server().at(OBJECT_PATH, fc).await?;
+    connection.object_server().at(OBJECT_PATH, sc).await?;
+    connection.object_server().at(OBJECT_PATH, ac).await?;
+    connection.object_server().at(OBJECT_PATH, rd).await?;
+    connection.object_server().at(OBJECT_PATH, pr).await?;
 
-    // `request_name` only makes sense on a real bus — p2p test
-    // connections have no broker, and failing there would mean every
-    // hermetic test needed one. So the result is *recorded* rather than
-    // swallowed: `ServerHandle::owns_name` is what the caller checks.
-    //
-    // This used to be a `tracing::debug!` and nothing else, which is the
-    // worst shape available: on a real bus, losing the name to another
-    // claimant left a portal that answered nothing, logged at a level
-    // nobody runs, and looked exactly like a portal that was working.
+    // `request_name` only makes sense on a real bus — p2p test connections
+    // have no broker, so the result is *recorded* (`ServerHandle::owns_name`) rather than swallowed.
     let owns_name = match connection.request_name(BUS_NAME).await {
-        Ok(_) => true,
+        Ok(()) => true,
         Err(e) => {
             tracing::debug!("portal: request_name did not succeed: {e}");
             false
@@ -726,12 +585,9 @@ pub async fn serve(
     })
 }
 
-/// RAII handle keeping the portal D-Bus connection alive. Drop releases
-/// the bus name and tears down the object server.
+/// RAII handle keeping the portal D-Bus connection alive; drop releases the bus name and tears down the object server.
 pub struct ServerHandle {
-    // Never read on purpose: holding the `Connection` IS the job. Drop it
-    // and zbus releases `org.freedesktop.impl.portal.desktop.nirios` and
-    // tears the object server down, so the portal stops answering.
+    // Never read on purpose: holding the `Connection` IS the job — dropping it releases the bus name and tears the object server down.
     #[allow(dead_code)]
     connection: zbus::Connection,
     owns_name: bool,
@@ -740,11 +596,8 @@ pub struct ServerHandle {
 impl ServerHandle {
     /// Did this connection actually acquire [`BUS_NAME`]?
     ///
-    /// `false` means the object server is up but nothing on the session
-    /// bus can route to it — either there is no broker (a p2p test
-    /// connection) or another process already holds the name. On a real
-    /// session the second case is the one that matters: the portal is
-    /// running and answering nobody.
+    /// `false` means the object server is up but nothing on the session bus
+    /// can route to it — no broker (a p2p test connection), or another process already holding the name.
     pub fn owns_name(&self) -> bool {
         self.owns_name
     }
@@ -753,7 +606,6 @@ impl ServerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn empty_ws(id: u64) -> Workspace {
         Workspace::test_default(WorkspaceId(id), "t")
@@ -844,22 +696,14 @@ mod tests {
         );
     }
 
-    /// C-3 Phase C integration test.
-    ///
     /// A grant inserted via the portal's [`GrantStoreHandle`] must be
-    /// immediately visible to the shell chrome (the WS-Settings
-    /// "Permissions" tab reads from `ChromeState`'s shared
-    /// `WorkspaceTreeHandle`). Before this refactor each subsystem held
-    /// an independent `WorkspaceTree` clone and the grant never reached
-    /// the shell — closes the first observable consequence in
-    /// `docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`.
+    /// immediately visible to the shell chrome (the WS-Settings "Permissions"
+    /// tab reads from `ChromeState`'s shared `WorkspaceTreeHandle`), not sitting in an independent clone.
     #[test]
     fn grant_inserted_via_portal_is_visible_in_ws_settings() {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::state::WorkspaceTreeHandleExt;
 
-        // Build the shared handle once and seed a workspace so the
-        // portal has somewhere to land grants.
         let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::test_default();
         let ws_id = WorkspaceId(1);
         {
@@ -868,12 +712,10 @@ mod tests {
             tree.workspaces.push(empty_ws(1));
         }
 
-        // Wire portal + chrome to the *same* handle.
         let portal = GrantStoreHandle::new(handle.clone());
-        let chrome = ChromeState::new_with_handle(handle.clone());
+        let chrome = ChromeState::new_with_handle(handle);
 
-        // Portal-side insert: simulate an `Allow → Session` outcome
-        // landing on the camera capability for `camera-app`.
+        // Simulate an `Allow → Session` outcome for `camera-app`.
         let caller = PortalCaller::new(ws_id, "camera-app");
         let cap = Capability::Camera {
             scope: GRANT_SESSION,
@@ -883,10 +725,7 @@ mod tests {
             "portal insert must succeed on a workspace that exists",
         );
 
-        // Shell-side read: walking the chrome's tree must surface the
-        // grant under `camera-app`. This is the production code path
-        // the Permissions tab uses (see
-        // `shell::workspace_settings::permissions_pane_rows`).
+        // The production code path the Permissions tab uses, see `shell::workspace_settings::permissions_pane_rows`.
         let st = chrome.borrow();
         let tree = st.tree();
         let ws = tree.active_workspace().expect("active workspace exists");
@@ -902,8 +741,7 @@ mod tests {
         let q = PromptQueueHandle::new(PromptResolver::AutoAllow);
         let caller = PortalCaller::new(WorkspaceId(1), "app");
         let rx = q.enqueue(caller, Capability::Screencast { scope: GRANT_ONCE });
-        // No `.await` needed — AutoAllow fills the oneshot synchronously
-        // *before* `enqueue` returns, so the receiver is already ready.
+        // No `.await` needed — AutoAllow fills the oneshot synchronously before `enqueue` returns.
         let outcome = rx.blocking_recv().expect("oneshot");
         assert_eq!(outcome, PromptOutcome::AllowOnce);
         // Nothing should have been buffered.
@@ -924,10 +762,7 @@ mod tests {
 
     #[test]
     fn flow_resolve_fast_path_always_grant_skips_prompt() {
-        // Build a store with an Always-scoped Camera grant and a
-        // Channel-mode prompt queue. The "Channel" mode would buffer
-        // any enqueued request — by asserting the queue stays empty,
-        // we prove the fast-path bypassed it.
+        // Channel mode would buffer any enqueued request, so an empty queue at the end proves the fast path bypassed it.
         let mut ws = empty_ws(21);
         ws.grant_app(
             "app",

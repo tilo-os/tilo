@@ -43,7 +43,9 @@ impl ChatPermissions {
     /// `--shots`, and any session the compositor hasn't handed a restricted
     /// context.
     pub fn permissive() -> Self {
-        Self { ctx: PermissionContext::permissive() }
+        Self {
+            ctx: PermissionContext::permissive(),
+        }
     }
 
     /// Adopt the context the compositor passed into `draw`.
@@ -60,20 +62,27 @@ impl ChatPermissions {
         self.ctx.check(&PermissionScope::path(path, Verb::Read))
     }
 
-    /// May this peer post / react / join a call in `workspace`? `Write` on the
-    /// room (a Viewer can read the channels but not write into them).
-    pub fn can_participate(&self, _workspace: &str) -> bool {
+    /// May this peer post / react / join a call here? `Write` on the room (a
+    /// Viewer can read the channels but not write into them).
+    ///
+    /// "Here" is the OS's active room, not one of chat's own workspace rows.
+    /// This took a `workspace: &str` and discarded it, which read as a
+    /// per-workspace check and was not one — callers threaded an id out of
+    /// chat's document all the way down to a parameter named with an
+    /// underscore. An argument that is carried and dropped is worse than one
+    /// that was never asked for: it describes a boundary that does not exist.
+    pub fn can_participate(&self) -> bool {
         self.ctx.check(&PermissionScope::workspace(Verb::Write))
     }
 
     /// The call-action seam, backed by the real context. Join / Speak / Camera
-    /// / ShareScreen all require Write on the workspace (you can't transmit
-    /// into a room you can't write to); Leave is always allowed so a downgraded
-    /// peer can always drop out.
-    pub fn allows(&self, workspace: &str, action: CallAction) -> bool {
+    /// / `ShareScreen` all require Write on the room (you can't transmit into a
+    /// room you can't write to); Leave is always allowed so a downgraded peer
+    /// can always drop out.
+    pub fn allows(&self, action: CallAction) -> bool {
         match action {
             CallAction::Leave => true,
-            _ => self.can_participate(workspace),
+            _ => self.can_participate(),
         }
     }
 }
@@ -96,9 +105,9 @@ mod tests {
     fn permissive_admin_allows_everything() {
         let p = ChatPermissions::permissive();
         assert!(p.can_embed("/var/workspace/design/handoff.png"));
-        assert!(p.can_participate("ws_home"));
-        assert!(p.allows("ws_home", CallAction::Join));
-        assert!(p.allows("ws_home", CallAction::ShareScreen));
+        assert!(p.can_participate());
+        assert!(p.allows(CallAction::Join));
+        assert!(p.allows(CallAction::ShareScreen));
     }
 
     #[test]
@@ -107,12 +116,12 @@ mod tests {
         // No file grant → an embed is gated (bytes never hydrate).
         assert!(!p.can_embed("/var/workspace/secret.png"));
         // No workspace-admin → can't post / react / start a call…
-        assert!(!p.can_participate("ws_home"));
-        assert!(!p.allows("ws_home", CallAction::Join));
-        assert!(!p.allows("ws_home", CallAction::Speak));
+        assert!(!p.can_participate());
+        assert!(!p.allows(CallAction::Join));
+        assert!(!p.allows(CallAction::Speak));
         // …but a View-only member can still read the room, and leaving a call
         // is never blocked.
-        assert!(p.allows("ws_home", CallAction::Leave));
+        assert!(p.allows(CallAction::Leave));
     }
 
     #[test]
@@ -122,6 +131,6 @@ mod tests {
         let p = restricted_member();
         let view_ok = p.ctx.check(&PermissionScope::workspace(Verb::Read));
         assert!(view_ok, "a member can read the workspace");
-        assert!(!p.can_participate("ws_home"), "but cannot write to it");
+        assert!(!p.can_participate(), "but cannot write to it");
     }
 }

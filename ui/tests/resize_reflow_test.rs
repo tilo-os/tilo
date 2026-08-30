@@ -2,19 +2,13 @@
 //!
 //! The compositor drives a redraw per drag-step while a window is being
 //! resized. Two properties keep that smooth and correct, and both are
-//! asserted here against the real layout + draw path:
-//!
-//! 1. **Reflow** — recomputing layout at a new available width
-//!    re-positions content. A window that gets narrower wraps its text
-//!    and pushes the content below it down; it does not clip or freeze.
-//!
-//! 2. **Coalescing / no wasted work** — once a resize settles at a
-//!    size, further redraws at that same size must not re-shape a
-//!    single label. The shaped-glyph cache is what turns a held resize
-//!    (and every static frame) from "re-run cosmic-text on every
-//!    button" into a pure cache hit. Conversely, when the width really
-//!    changes, wrapped text MUST re-shape so the user never sees stale
-//!    glyph positions.
+//! asserted here against the real layout + draw path: **reflow** —
+//! recomputing layout at a new available width re-positions content, wraps
+//! text and pushes what's below it down, rather than clipping or freezing —
+//! and **coalescing** — once a resize settles at a size, further redraws
+//! must not re-shape a single label (the shaped-glyph cache turns a held
+//! resize into a pure cache hit), while a real width change still MUST
+//! re-shape wrapped text so the user never sees stale glyph positions.
 
 use std::collections::HashMap;
 
@@ -91,7 +85,7 @@ fn layout_at(
 }
 
 /// y0 of the button Row (second child of the Column).
-fn row_top(root: &Box<dyn Widget>) -> f64 {
+fn row_top(root: &dyn Widget) -> f64 {
     root.children()[1].get_rect().y0
 }
 
@@ -164,10 +158,10 @@ fn narrowing_window_reflows_content_downward() {
     let mut h = Harness::new();
 
     h.layout(900.0);
-    let wide_row_top = row_top(&h.root);
+    let wide_row_top = row_top(h.root.as_ref());
 
     h.layout(160.0);
-    let narrow_row_top = row_top(&h.root);
+    let narrow_row_top = row_top(h.root.as_ref());
 
     assert!(
         narrow_row_top > wide_row_top,
@@ -195,7 +189,10 @@ fn settled_size_redraws_do_not_reshape() {
             misses, 0,
             "settled-size redraw #{i} must not reshape any label",
         );
-        assert!(hits > 0, "settled-size redraw #{i} must reuse cached glyphs");
+        assert!(
+            hits > 0,
+            "settled-size redraw #{i} must reuse cached glyphs"
+        );
     }
 }
 

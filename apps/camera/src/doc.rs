@@ -22,7 +22,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
 use crate::model::{
-    Facing, CaptureMode, PhotoFormat, Resolution, ScanEntry, Screen, Settings, Timer,
+    CaptureMode, Facing, PhotoFormat, Resolution, ScanEntry, Screen, Settings, Timer,
 };
 
 // ---- scalar helpers --------------------------------------------------
@@ -71,7 +71,9 @@ fn list_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
 // ---- screen / mode / facing -----------------------------------------
 
 pub fn read_screen(doc: &AutoCommit, root: &ObjId) -> Screen {
-    get_str(doc, root, "screen").and_then(|s| Screen::from_str(&s)).unwrap_or(Screen::Camera)
+    get_str(doc, root, "screen")
+        .and_then(|s| Screen::from_str(&s))
+        .unwrap_or(Screen::Camera)
 }
 
 pub fn write_screen(doc: &mut AutoCommit, root: &ObjId, screen: Screen) {
@@ -79,7 +81,7 @@ pub fn write_screen(doc: &mut AutoCommit, root: &ObjId, screen: Screen) {
 }
 
 pub fn read_mode(doc: &AutoCommit, root: &ObjId) -> CaptureMode {
-    get_str(doc, root, "mode").map(|s| CaptureMode::from_str(&s)).unwrap_or(CaptureMode::Photo)
+    get_str(doc, root, "mode").map_or(CaptureMode::Photo, |s| CaptureMode::from_str(&s))
 }
 
 pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
@@ -87,7 +89,7 @@ pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
 }
 
 pub fn read_facing(doc: &AutoCommit, root: &ObjId) -> Facing {
-    get_str(doc, root, "facing").map(|s| Facing::from_str(&s)).unwrap_or(Facing::Back)
+    get_str(doc, root, "facing").map_or(Facing::Back, |s| Facing::from_str(&s))
 }
 
 pub fn write_facing(doc: &mut AutoCommit, root: &ObjId, facing: Facing) {
@@ -98,7 +100,9 @@ pub fn write_facing(doc: &mut AutoCommit, root: &ObjId, facing: Facing) {
 
 pub fn read_settings(doc: &AutoCommit, root: &ObjId) -> Settings {
     let mut s = Settings::default();
-    let Some(m) = map_at(doc, root, "settings") else { return s };
+    let Some(m) = map_at(doc, root, "settings") else {
+        return s;
+    };
     if let Some(v) = get_str(doc, &m, "resolution") {
         s.resolution = Resolution::from_str(&v);
     }
@@ -132,7 +136,9 @@ pub fn read_settings(doc: &AutoCommit, root: &ObjId) -> Settings {
 pub fn write_settings(doc: &mut AutoCommit, root: &ObjId, s: &Settings) {
     let m = match map_at(doc, root, "settings") {
         Some(m) => m,
-        None => doc.put_object(root, "settings", ObjType::Map).expect("settings map"),
+        None => doc
+            .put_object(root, "settings", ObjType::Map)
+            .expect("settings map"),
     };
     let _ = doc.put(&m, "resolution", s.resolution.as_str());
     let _ = doc.put(&m, "photo_format", s.photo_format.as_str());
@@ -150,7 +156,9 @@ pub fn write_settings(doc: &mut AutoCommit, root: &ObjId, s: &Settings) {
 /// The set of favorited library item ids (file names).
 pub fn read_favorites(doc: &AutoCommit, root: &ObjId) -> HashSet<String> {
     let mut set = HashSet::new();
-    let Some(m) = map_at(doc, root, "favorites") else { return set };
+    let Some(m) = map_at(doc, root, "favorites") else {
+        return set;
+    };
     for key in doc.keys(&m) {
         if get_bool(doc, &m, &key).unwrap_or(false) {
             set.insert(key);
@@ -164,7 +172,9 @@ pub fn read_favorites(doc: &AutoCommit, root: &ObjId) -> HashSet<String> {
 pub fn set_favorite(doc: &mut AutoCommit, root: &ObjId, id: &str, on: bool) {
     let m = match map_at(doc, root, "favorites") {
         Some(m) => m,
-        None => doc.put_object(root, "favorites", ObjType::Map).expect("favorites map"),
+        None => doc
+            .put_object(root, "favorites", ObjType::Map)
+            .expect("favorites map"),
     };
     if on {
         let _ = doc.put(&m, id, true);
@@ -179,16 +189,23 @@ const MAX_SCANS: usize = 24;
 
 /// Read the scan history, newest first.
 pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
-    let Some(list) = list_at(doc, root, "scans") else { return Vec::new() };
+    let Some(list) = list_at(doc, root, "scans") else {
+        return Vec::new();
+    };
     let n = doc.length(&list);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else { continue };
+        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
+            continue;
+        };
         let raw = get_str(doc, &m, "raw").unwrap_or_default();
         if raw.is_empty() {
             continue;
         }
-        out.push(ScanEntry { raw, ts: get_int(doc, &m, "ts").unwrap_or(0) });
+        out.push(ScanEntry {
+            raw,
+            ts: get_int(doc, &m, "ts").unwrap_or(0),
+        });
     }
     out
 }
@@ -198,18 +215,22 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
 pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) {
     let list = match list_at(doc, root, "scans") {
         Some(l) => l,
-        None => doc.put_object(root, "scans", ObjType::List).expect("scans list"),
+        None => doc
+            .put_object(root, "scans", ObjType::List)
+            .expect("scans list"),
     };
     // Drop any existing entry with the same payload.
     let n = doc.length(&list);
     for i in (0..n).rev() {
-        if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-            if get_str(doc, &m, "raw").as_deref() == Some(raw) {
-                let _ = doc.delete(&list, i);
-            }
+        if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+            && get_str(doc, &m, "raw").as_deref() == Some(raw)
+        {
+            let _ = doc.delete(&list, i);
         }
     }
-    let m = doc.insert_object(&list, 0, ObjType::Map).expect("insert scan");
+    let m = doc
+        .insert_object(&list, 0, ObjType::Map)
+        .expect("insert scan");
     let _ = doc.put(&m, "raw", raw);
     let _ = doc.put(&m, "ts", ts);
     // Trim the tail beyond the cap.

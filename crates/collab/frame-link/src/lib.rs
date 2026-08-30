@@ -1,13 +1,10 @@
 //! `FrameLink` — a configurable-latency / throughput / drop shim for a
 //! stream of *encoded* frames.
 //!
-//! # What it is
-//!
-//! A pull-based interposer that sits between an encoder and a decoder.
-//! Callers push frames in (`push`), then drain whichever frames the shim
-//! has decided are now "delivered" (`drain_ready`). Every frame carries
-//! a byte size the throttle honours and a payload the shim passes through
-//! untouched.
+//! A pull-based interposer between an encoder and a decoder: callers
+//! push frames in (`push`), then drain whichever frames the shim has
+//! decided are now "delivered" (`drain_ready`). Every frame carries a
+//! byte size the throttle honours and a payload passed through untouched.
 //!
 //! ```text
 //!     encode ──►  FrameLink { latency, jitter, throughput, queue_cap }
@@ -20,57 +17,40 @@
 //!                  decode
 //! ```
 //!
-//! # Why pull-based
-//!
-//! Push-based (background thread + channels) would work, but it dictates
-//! the runtime (`tokio` vs. `std::thread`) and forces the caller to hand
-//! its clock to the shim. Pull-based lets tests fast-forward with a
-//! deterministic `Instant` and lets the demo binary drive the shim on the
-//! same synthetic tick that generates source frames.
-//!
-//! The [`spawn_channel`] helper wraps the pull API in an `mpsc` pair for
-//! callers who *do* want a background thread — but it's a convenience,
-//! not the core.
+//! Pull-based rather than push-based (background thread + channels)
+//! because push would dictate the runtime and force the caller to hand
+//! its clock to the shim; pull lets tests fast-forward with a
+//! deterministic `Instant` and lets the demo binary drive the shim on
+//! the same synthetic tick that generates source frames. [`spawn_channel`]
+//! wraps the pull API in an `mpsc` pair for callers who *do* want a
+//! background thread, as a convenience, not the core.
 //!
 //! # Contract
 //!
-//! Once a frame is `push`ed, it will either:
+//! Once pushed, a frame either is returned by a subsequent `drain_ready`
+//! (delivered), or is dropped — the **oldest** queued frame — when a
+//! later push exceeds the queue ceiling. Frame ordering across
+//! `drain_ready` calls matches push order (modulo drops); frames within
+//! one call are returned oldest-first.
 //!
-//! 1. Be returned by a subsequent `drain_ready` (delivered), or
-//! 2. Be dropped when a later `push` pushes the queue over the ceiling.
-//!    The dropped frame is the **oldest** — the newest reads as fresher
-//!    reality than a stale queued one.
-//!
-//! Frame ordering across `drain_ready` calls matches push order (modulo
-//! drops). Frames within a single `drain_ready` are returned oldest-first.
-//!
-//! # Metric hooks
-//!
-//! [`LinkStats`] carries the counters the spec calls out:
-//!
-//! - `frames_pushed` — everything that went in.
-//! - `frames_delivered` — everything that came out.
-//! - `frames_dropped` — deltas from queue-ceiling drops.
-//! - `total_delay_ns` / `total_token_wait_ns` — cumulative latency +
-//!   throttle wait, so the caller can print a mean.
-//!
-//! `stats()` returns a snapshot; the shim mutates its own copy internally.
+//! [`LinkStats`] carries: `frames_pushed`, `frames_delivered`,
+//! `frames_dropped` (queue-ceiling drops), `total_delay_ns`/
+//! `total_token_wait_ns` (cumulative latency + throttle wait, for a
+//! mean). `stats()` returns a snapshot.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Default queue ceiling — matches the receive-side PeerView's pending
-/// ceiling (see `shell::shell::peer_view::PENDING_CEILING`). A shim
-/// backed up beyond this many frames represents a real-world "the wire
-/// can't keep up" — the fix is drop, not buffering.
+/// Default queue ceiling — matches the receive-side `PeerView`'s pending
+/// ceiling. A shim backed up beyond this many frames represents a
+/// real-world "the wire can't keep up" — the fix is drop, not buffering.
 pub const DEFAULT_QUEUE_CAPACITY: usize = 8;
 
-/// Default jitter — 5 ms uniform-random on each side of the nominal
-/// latency. Matches the number in the task spec.
+/// Default jitter — 5 ms uniform-random on each side of the nominal latency.
 pub const DEFAULT_JITTER_MS: u32 = 5;
 
-/// Token bucket size — bytes. Set to a single frame's worth at 4K RGBA
-/// (roughly 8 MiB) so the encoder can burst-emit a keyframe without the
+/// Token bucket size in bytes — a single frame's worth at 4K RGBA
+/// (~8 MiB), so the encoder can burst-emit a keyframe without the
 /// throttle chunking it into subframe pieces.
 pub const TOKEN_BUCKET_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -84,11 +64,11 @@ pub struct LinkStats {
     pub frames_delivered: u64,
     /// Frames dropped when the queue exceeded `queue_capacity`.
     pub frames_dropped: u64,
-    /// Cumulative "latency + jitter" wait applied to delivered frames,
-    /// in nanoseconds. Divide by `frames_delivered` for a mean.
-    pub total_delay_ns: u128,
-    /// Cumulative "token bucket ran dry, frame waited" time, in
+    /// Cumulative "latency + jitter" wait applied to delivered frames, in
     /// nanoseconds. Divide by `frames_delivered` for a mean.
+    pub total_delay_ns: u128,
+    /// Cumulative "token bucket ran dry, frame waited" time, in nanoseconds.
+    /// Divide by `frames_delivered` for a mean.
     pub total_token_wait_ns: u128,
     /// Total bytes the shim has forwarded — useful for computing the
     /// effective bitrate.
@@ -96,8 +76,8 @@ pub struct LinkStats {
 }
 
 impl LinkStats {
-    /// Mean end-to-end delay (delay + token-wait) per delivered frame,
-    /// in milliseconds. `0.0` when nothing has been delivered.
+    /// Mean end-to-end delay (delay + token-wait) per delivered frame, in
+    /// milliseconds. `0.0` when nothing has been delivered.
     pub fn mean_delay_ms(&self) -> f64 {
         if self.frames_delivered == 0 {
             return 0.0;
@@ -106,10 +86,10 @@ impl LinkStats {
         (total as f64) / (self.frames_delivered as f64) / 1_000_000.0
     }
 
-    /// Effective throughput across the observed window, given the wall-
-    /// clock elapsed between the first `push` and now. Returns bits per
-    /// second. Callers pass the elapsed themselves — the stats struct
-    /// doesn't own a clock so it can be serialised.
+    /// Effective throughput across the observed window (bits per second),
+    /// given the wall-clock elapsed between the first `push` and now.
+    /// Callers pass the elapsed themselves — the stats struct doesn't own a
+    /// clock so it can be serialised.
     pub fn effective_bps(&self, elapsed: Duration) -> f64 {
         let secs = elapsed.as_secs_f64();
         if secs <= 0.0 {
@@ -119,9 +99,9 @@ impl LinkStats {
     }
 }
 
-/// Configuration surface for [`FrameLink::new`]. All fields have sensible
-/// defaults; callers typically set `latency_ms` + `throughput_kbps` and
-/// leave the rest.
+/// Configuration surface for [`FrameLink::new`]. All fields have
+/// sensible defaults; callers typically set `latency_ms` +
+/// `throughput_kbps` and leave the rest.
 #[derive(Clone, Debug)]
 pub struct LinkConfig {
     /// One-way wire latency applied to every frame (uniformly).
@@ -132,15 +112,13 @@ pub struct LinkConfig {
     pub throughput_kbps: u64,
     /// Queue ceiling — a `push` while at capacity drops the oldest.
     pub queue_capacity: usize,
-    /// Deterministic RNG seed for the jitter distribution. Different
-    /// seeds produce different jitter series but the mean is identical.
-    /// Tests pin this to `0` so assertions are reproducible.
+    /// Deterministic RNG seed for the jitter distribution. Different seeds
+    /// produce different jitter series but the mean is identical; tests pin
+    /// this to `0` for reproducible assertions.
     pub jitter_seed: u64,
-    /// Token-bucket capacity in bytes. Sets how much burst is allowed
-    /// before the throttle kicks in — a real wire with a small buffer
-    /// paces aggressively, a real wire with a big buffer bursts and
-    /// then paces. Defaults to [`TOKEN_BUCKET_BYTES`] (8 MiB) which
-    /// mimics a home-router buffer for a keyframe-sized burst.
+    /// Token-bucket capacity in bytes — how much burst is allowed before the
+    /// throttle kicks in. Defaults to [`TOKEN_BUCKET_BYTES`] (8 MiB),
+    /// mimicking a home-router buffer for a keyframe-sized burst.
     pub token_bucket_bytes: u64,
 }
 
@@ -180,10 +158,9 @@ pub struct FrameLink<T> {
 struct Envelope<T> {
     payload: T,
     size: u64,
-    /// Wall-clock instant this frame is eligible to leave the shim (i.e.
-    /// after latency + jitter). Throughput throttling is applied *on
-    /// top* of this — the frame doesn't leave until the token bucket is
-    /// also open.
+    /// Wall-clock instant this frame is eligible to leave the shim (after
+    /// latency + jitter). Throughput throttling applies *on top* — the
+    /// frame doesn't leave until the token bucket is also open.
     deliver_at: Instant,
     /// Sum of the latency + jitter this frame was assigned, for stats.
     delay_ns: u128,
@@ -192,9 +169,9 @@ struct Envelope<T> {
 }
 
 impl<T> FrameLink<T> {
-    /// Simple constructor matching the shape in the task spec: latency in
+    /// Simple constructor matching the task spec shape: latency in
     /// milliseconds, throughput in kilobits per second. Everything else
-    /// takes the default (5 ms jitter, 8-slot queue, deterministic seed).
+    /// defaults (5 ms jitter, 8-slot queue, deterministic seed).
     pub fn new(latency_ms: u32, throughput_kbps: u64) -> Self {
         Self::with_config(LinkConfig {
             latency_ms,
@@ -211,12 +188,12 @@ impl<T> FrameLink<T> {
         let bytes_per_sec = if cfg.throughput_kbps == 0 {
             0
         } else {
-            (cfg.throughput_kbps as u64) * 1000 / 8
+            cfg.throughput_kbps * 1000 / 8
         };
         let token_bucket_bytes = cfg.token_bucket_bytes.max(1);
         Self {
-            latency: Duration::from_millis(cfg.latency_ms as u64),
-            jitter: Duration::from_millis(cfg.jitter_ms as u64),
+            latency: Duration::from_millis(u64::from(cfg.latency_ms)),
+            jitter: Duration::from_millis(u64::from(cfg.jitter_ms)),
             bytes_per_sec,
             token_bucket_bytes,
             queue_capacity: cfg.queue_capacity.max(1),
@@ -232,9 +209,9 @@ impl<T> FrameLink<T> {
     /// Push a frame in. The shim time-stamps arrival with `now` and
     /// schedules delivery for `now + latency ± jitter`.
     ///
-    /// If the queue is already at `queue_capacity`, the oldest queued
-    /// frame is dropped and `stats.frames_dropped` increments. The new
-    /// frame still lands — this is drop-oldest, not drop-newest.
+    /// If the queue is already at `queue_capacity`, the oldest queued frame
+    /// is dropped and `stats.frames_dropped` increments — drop-oldest, not
+    /// drop-newest; the new frame still lands.
     #[tracing::instrument(level = "trace", skip(self, payload), fields(size))]
     pub fn push(&mut self, now: Instant, size: u64, payload: T) {
         self.stats.frames_pushed = self.stats.frames_pushed.saturating_add(1);
@@ -260,20 +237,16 @@ impl<T> FrameLink<T> {
         });
     }
 
-    /// Drain every frame the shim considers deliverable at `now`.
+    /// Drain every frame the shim considers deliverable at `now`: `now >=
+    /// deliver_at` (latency budget elapsed) AND the token bucket has at
+    /// least `size` bytes available (or the throttle is disabled).
     ///
-    /// A frame is deliverable when *both*:
-    ///
-    /// 1. `now >= deliver_at` (the latency budget has elapsed), and
-    /// 2. The token bucket has at least `size` bytes available (or the
-    ///    throttle is disabled).
-    ///
-    /// The queue is processed in-order — a stalled frame at the head
-    /// blocks its successors so the delivered order matches push order.
+    /// Processed in-order — a stalled frame at the head blocks its
+    /// successors, so delivered order matches push order.
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn drain_ready(&mut self, now: Instant) -> Vec<T> {
-        // Refill tokens against wall-clock. `0` bytes_per_sec disables
-        // the throttle — we skip the math and keep tokens saturated.
+        // Refill tokens against wall-clock. `0` bytes_per_sec disables the
+        // throttle — skip the math and keep tokens saturated.
         if self.bytes_per_sec > 0 {
             let elapsed = now.saturating_duration_since(self.last_refill);
             let earned = elapsed.as_secs_f64() * self.bytes_per_sec as f64;
@@ -289,32 +262,26 @@ impl<T> FrameLink<T> {
                 break;
             }
             let size_bytes = front.size;
-            // Two throttle regimes coexist:
-            //
-            // 1. Normal frames (`size <= bucket_size`): must have tokens
-            //    ≥ size to leave, else wait for the bucket to refill.
-            // 2. Oversize frames (`size > bucket_size`, e.g. IDR
-            //    keyframes bigger than the bucket): can't ever fit under
-            //    a strict `tokens >= size` rule, so we let them pass
-            //    once tokens are at capacity and account for the
-            //    over-drain by taking tokens negative — future frames
-            //    then wait for the debt to be paid down. Long-term
-            //    average rate matches `bytes_per_sec` either way.
+            // Two throttle regimes coexist: normal frames (`size <= bucket_size`)
+            // need tokens ≥ size to leave, else wait for refill. Oversize frames
+            // (bigger than the bucket, e.g. IDR keyframes) can never fit under a
+            // strict `tokens >= size` rule, so they pass once tokens are at
+            // capacity, taking tokens negative to account for the over-drain —
+            // future frames then wait for the debt to pay down. Long-term
+            // average rate matches `bytes_per_sec` either way.
             let oversize = self.bytes_per_sec > 0 && size_bytes > self.token_bucket_bytes;
             let can_send = if self.bytes_per_sec == 0 {
                 true
             } else if oversize {
-                // Oversize frame: only send when the bucket is full,
-                // otherwise wait so we don't burn all future budget
-                // early.
+                // Oversize frame: only send when the bucket is full, otherwise wait
+                // so we don't burn all future budget early.
                 self.tokens >= self.token_bucket_bytes as f64 - 0.5
             } else {
                 (size_bytes as f64) <= self.tokens
             };
             if !can_send {
-                // Head-of-queue is throttled. Compute the wait we're
-                // adding (for stats) then leave the queue as-is until
-                // the next `drain_ready`.
+                // Head-of-queue is throttled. Compute the wait we're adding (for
+                // stats) then leave the queue as-is until the next `drain_ready`.
                 let need = if oversize {
                     self.token_bucket_bytes as f64 - self.tokens
                 } else {
@@ -331,9 +298,8 @@ impl<T> FrameLink<T> {
             let env = self.queue.pop_front().unwrap();
             if self.bytes_per_sec > 0 {
                 self.tokens -= env.size as f64;
-                // Non-oversize frames stay at tokens >= 0 by
-                // construction; oversize frames legitimately overdraw
-                // — no clamp here, the refill accounting handles it.
+                // Non-oversize frames stay at tokens >= 0 by construction; oversize
+                // frames legitimately overdraw — no clamp here, refill accounting handles it.
             }
             self.stats.frames_delivered = self.stats.frames_delivered.saturating_add(1);
             self.stats.total_delay_ns = self.stats.total_delay_ns.saturating_add(env.delay_ns);
@@ -352,15 +318,15 @@ impl<T> FrameLink<T> {
         self.stats
     }
 
-    /// Time of the very first `push`, if any. Callers use it to compute
+    /// Time of the very first `push`, if any — callers use it to compute
     /// `stats.effective_bps(now - first_push_at)`.
     pub fn first_push_at(&self) -> Option<Instant> {
         self.first_push_at
     }
 
     /// Simple xorshift64 → uniform jitter offset in `[-jitter, +jitter]`.
-    /// Deterministic when the config's `jitter_seed` is fixed, which is
-    /// what makes property tests reproducible.
+    /// Deterministic when the config's `jitter_seed` is fixed, which is what
+    /// makes property tests reproducible.
     fn sample_jitter(&mut self) -> Duration {
         if self.jitter.is_zero() {
             return Duration::ZERO;
@@ -373,35 +339,31 @@ impl<T> FrameLink<T> {
         self.rng_state = x;
         // Map into [-jitter_ns, +jitter_ns].
         let range = self.jitter.as_nanos() as i128 * 2 + 1;
-        let raw = (x % range as u64) as i128 - self.jitter.as_nanos() as i128;
+        let raw = i128::from(x % range as u64) - self.jitter.as_nanos() as i128;
         if raw >= 0 {
             Duration::from_nanos(raw as u64)
         } else {
-            // Latency + negative jitter — clamp at zero to avoid a
-            // deliver_at in the past (which would still work but reads
-            // as "0 delay" downstream, which is misleading).
+            // Latency + negative jitter — clamp at zero to avoid a deliver_at in
+            // the past (which would still work but reads as "0 delay" downstream).
             let neg = (-raw) as u64;
             if neg >= self.latency.as_nanos() as u64 {
                 Duration::ZERO
             } else {
-                // Return the *offset* — the caller adds latency + this.
-                // We saturate by returning zero when the offset would
-                // underflow. Simpler than signed math outside.
+                // Return the *offset* — the caller adds latency + this. Saturates to
+                // zero on underflow rather than needing signed math outside.
                 Duration::ZERO
             }
         }
     }
 }
 
-/// Small helper: spawn a background thread that owns a `FrameLink` and
-/// forwards from an input channel to an output channel. Convenience for
-/// callers who want the shim on a thread instead of pumping it directly.
+/// Spawn a background thread that owns a `FrameLink` and forwards from
+/// an input channel to an output channel, for callers who want the shim
+/// on a thread instead of pumping it directly.
 ///
 /// The forwarder ticks every 1 ms (fine-grained enough for the target
-/// latency budgets we care about, coarse enough not to burn a core). It
-/// exits when the input receiver closes.
-///
-/// Returns the receive end + a stats callback the caller can poll.
+/// latency budgets, coarse enough not to burn a core); exits when the
+/// input receiver closes. Returns the receive end + a stats callback.
 pub fn spawn_channel<T: Send + 'static>(
     cfg: LinkConfig,
     input: std::sync::mpsc::Receiver<(u64, T)>,
@@ -422,7 +384,7 @@ pub fn spawn_channel<T: Send + 'static>(
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     // Flush anything the shim still holds, then exit.
-                    let now = Instant::now() + Duration::from_secs(3600);
+                    let now = Instant::now() + Duration::from_hours(1);
                     for payload in link.drain_ready(now) {
                         if out_tx.send(payload).is_err() {
                             break;
@@ -517,8 +479,8 @@ mod tests {
 
     #[test]
     fn throttle_at_2mbps_paces_delivery() {
-        // 2 Mbps throughput = 250_000 bytes/sec. A single 100_000-byte
-        // frame drains ~400 ms of tokens even from a full bucket.
+        // 2 Mbps throughput = 250_000 bytes/sec. A single 100_000-byte frame
+        // drains ~400 ms of tokens even from a full bucket.
         let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
             latency_ms: 0,
             jitter_ms: 0,
@@ -532,8 +494,8 @@ mod tests {
         for i in 0..40 {
             link.push(t0, 100_000, i);
         }
-        // Drain over a 4 s wall-clock window: at 2 Mbps we expect ~1 MB
-        // = 10 frames of 100 000 bytes to leave.
+        // Drain over a 4 s wall-clock window: at 2 Mbps we expect ~1 MB = 10
+        // frames of 100 000 bytes to leave.
         let mut delivered: Vec<u32> = Vec::new();
         let mut now = t0;
         for _ in 0..80 {
@@ -541,9 +503,9 @@ mod tests {
             delivered.extend(link.drain_ready(now));
         }
         let stats = link.stats();
-        // The initial 8 MB bucket lets a burst leave immediately (all
-        // 40 × 100 kB fit under 8 MB), so the delivered count is 40 on a
-        // 4 s window. Assert we're bytes-cap-bound, not queue-cap-bound.
+        // The initial 8 MB bucket lets a burst leave immediately (all 40 ×
+        // 100 kB fit under 8 MB), so the delivered count is 40 on a 4 s
+        // window — asserting we're bytes-cap-bound, not queue-cap-bound.
         assert!(
             stats.bytes_delivered > 0,
             "expected some bytes delivered under throttle"
@@ -554,10 +516,9 @@ mod tests {
     #[test]
     fn throttle_at_100kbps_paces_a_1mb_input() {
         // Sub-bucket frame sizes so the throttle can drain them at all.
-        // 100 kbps = 12_500 bytes/sec. Push 500 × 1_000-byte frames
-        // (500 KB total, ~40 s at cap) with a bucket that permits ~1 s
-        // of burst; drain over 20 s and check the effective rate is
-        // near the cap.
+        // 100 kbps = 12_500 bytes/sec; push 500 × 1_000-byte frames with a
+        // bucket permitting ~1 s of burst, drain over 20 s, and check the
+        // effective rate is near the cap.
         let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
             latency_ms: 0,
             jitter_ms: 0,
@@ -623,11 +584,10 @@ mod prop_tests {
     use proptest::prelude::*;
 
     proptest! {
-        // Token bucket never goes below `-max_size` under a mix of
-        // normal + oversize frames. Normal-sized frames never overdraw
-        // (invariant: `tokens >= 0`); oversize frames legitimately go
-        // negative but never by more than one frame's worth. Together
-        // they bound the deficit.
+        // Token bucket never goes below `-max_size` under a mix of normal +
+        // oversize frames: normal frames never overdraw (invariant `tokens
+        // >= 0`); oversize frames legitimately go negative but never by more
+        // than one frame's worth.
         #[test]
         fn tokens_stay_bounded_below(
             sizes in prop::collection::vec(1u64..1_000_000, 1..64),
@@ -655,16 +615,15 @@ mod prop_tests {
             for d in drain_delays_ms {
                 now += std::time::Duration::from_millis(d);
                 let _ = link.drain_ready(now);
-                // Bound: never worse than one bucket's-worth of debt
-                // (oversize frame just left with tokens fresh from
-                // capacity).
+                // Bound: never worse than one bucket's-worth of debt (oversize frame
+                // just left with tokens fresh from capacity).
                 prop_assert!(link.tokens >= -(max_size as f64));
             }
         }
 
-        // Refill rate is exactly `bytes_per_sec`. Push nothing, drain
-        // after `t` seconds, and check the bucket earned `t * bps`
-        // tokens (capped at `TOKEN_BUCKET_BYTES`).
+        // Refill rate is exactly `bytes_per_sec`: push nothing, drain after
+        // `t` seconds, and check the bucket earned `t * bps` tokens (capped
+        // at `TOKEN_BUCKET_BYTES`).
         #[test]
         fn tokens_refill_at_declared_rate(
             throughput_kbps in 100u64..10_000,
@@ -685,8 +644,8 @@ mod prop_tests {
             link.push(t0, big, ());
             let _ = link.drain_ready(t0);
             prop_assert!(link.tokens < 1.0, "tokens should be near 0, got {}", link.tokens);
-            // Wait `elapsed_ms` and drain; tokens should be
-            // ~ elapsed * bps / 1000, capped at bucket.
+            // Wait `elapsed_ms` and drain; tokens should be ~ elapsed * bps /
+            // 1000, capped at bucket.
             let later = t0 + std::time::Duration::from_millis(elapsed_ms);
             let _ = link.drain_ready(later);
             let expected =

@@ -24,7 +24,7 @@
 //! in the widget/session, not the document.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::model::{ConnectionProfile, Engine};
 use uuid::Uuid;
@@ -71,7 +71,7 @@ impl EditorDoc {
 
     /// Replace the entire buffer with `sql`. Used when seeding the default
     /// query or loading a snippet; splices the whole range so it remains a
-    /// single CRDT object (no put_object churn).
+    /// single CRDT object (no `put_object` churn).
     pub fn set_sql(doc: &mut AutoCommit, sql: &str) {
         let tid = Self::sql_text(doc);
         ui::doc::splice_text_diffed(doc, &tid, sql);
@@ -161,10 +161,10 @@ impl ConnectionsDoc {
         let list = Self::list(doc)?;
         let target = id.to_string();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, i) {
-                if str_field(doc, &row, "id").as_deref() == Some(target.as_str()) {
-                    return Some((i, row));
-                }
+            if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, i)
+                && str_field(doc, &row, "id").as_deref() == Some(target.as_str())
+            {
+                return Some((i, row));
             }
         }
         None

@@ -20,10 +20,7 @@ pub fn to_blocks(text: &str) -> Vec<ContentBlock> {
         if let Some(rest) = line.strip_prefix("```") {
             if in_pre {
                 // Closing fence — emit the accumulated code block.
-                blocks.push(ContentBlock::new(
-                    BlockKind::Code,
-                    pre_buf.join("\n"),
-                ));
+                blocks.push(ContentBlock::new(BlockKind::Code, pre_buf.join("\n")));
                 pre_buf.clear();
                 in_pre = false;
             } else {

@@ -1,14 +1,10 @@
-//! The qOS package manifest — schema, TOML parsing, and the
-//! sub-types it composes.
+//! The qOS package manifest — schema, TOML parsing, and its sub-types.
 //!
-//! The manifest is the human-authored side of a `.qpkg`. It is
-//! deserialised from TOML, validated (see [`crate::validate`]),
-//! then bound into the signed root via the canonical postcard
-//! encoding so the on-wire bytes are stable across TOML formatter
-//! whitespace differences.
-//!
-//! The shape mirrors the schema in the crate docs exactly; field
-//! renames map kebab-case TOML keys onto Rust snake_case fields.
+//! Human-authored side of a `.qpkg`; deserialised from TOML, validated
+//! (see [`crate::validate`]), then bound into the signed root via
+//! canonical postcard encoding so on-wire bytes are stable across TOML
+//! formatting differences. Field renames map kebab-case TOML keys to
+//! Rust `snake_case`.
 
 use std::path::PathBuf;
 
@@ -16,32 +12,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::Kind;
 
-/// Top-level manifest. Every field except those marked `Option`
-/// is required; missing required fields fail TOML decode with a
-/// helpful path.
+/// Top-level manifest. All fields except `Option` ones are required;
+/// missing ones fail TOML decode with a helpful path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     /// `[package]` block — id, version, kind, optional runtime.
     pub package: Package,
-    /// `[publisher]` block — identity + signature (signature is
-    /// filled by `qos-pkg sign`, empty at manifest-author time).
+    /// `[publisher]` block — identity + signature (filled by `qos-pkg sign`, empty at author time).
     pub publisher: Publisher,
     /// `[trust]` block — third-party attestations.
     #[serde(default)]
     pub trust: Trust,
     /// `[sandbox]` block — the security profile applied at load.
     pub sandbox: Sandbox,
-    /// `[entrypoint]` block — what to launch. Required for `app`;
-    /// optional for other kinds (services declare their own
-    /// systemd unit; runtimes don't have entrypoints).
+    /// `[entrypoint]` block — what to launch. Required for `app`; optional/unset for other kinds.
     #[serde(default)]
     pub entrypoint: Option<Entrypoint>,
     /// `[providers]` block — only meaningful for `format-provider`.
     #[serde(default)]
     pub providers: Providers,
-    /// `[cli]` block — commands the package publishes on the user's
-    /// PATH via the launcher's shim binary. Only meaningful when the
-    /// entrypoint declares `type = "cli"` or `type = "both"`.
+    /// `[cli]` block — commands published on PATH via the launcher's
+    /// shim. Only meaningful when the entrypoint is `cli` or `both`.
     #[serde(default)]
     pub cli: Option<Cli>,
 }
@@ -49,35 +40,28 @@ pub struct Manifest {
 /// `[package]` — the identifying metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Package {
-    /// Reverse-DNS identifier — `dev.qos.editor`. Stable across
-    /// versions; pinned in CLI / loader / sandbox profile names.
+    /// Reverse-DNS identifier — `dev.qos.editor`. Stable across versions;
+    /// pinned in CLI/loader/sandbox profile names.
     pub id: String,
-    /// Human-facing name — `"API Tester"`, `"On-Screen Keyboard"`.
-    /// Absent means "derive one from the id's trailing component",
-    /// which is what every consumer did before this field existed;
-    /// it is here because that derivation cannot produce `API` from
-    /// `api-tester` or `E-Book Reader` from `ebook`.
+    /// Human-facing name — `"API Tester"`, `"On-Screen Keyboard"`. Absent
+    /// means derive one from the id's trailing component, which can't
+    /// produce e.g. `API` from `api-tester`.
     #[serde(default)]
     pub name: Option<String>,
-    /// Freedesktop-style menu category — `Office`, `Development`,
-    /// `Network`, `System`, `Utility`, `Multimedia`, `Accessibility`.
-    /// Surfaced by the shell's Applications search provider so a
-    /// category word finds the apps in it.
+    /// Freedesktop-style menu category (`Office`, `Development`, ...);
+    /// the shell's Applications search provider surfaces packages by category.
     #[serde(default)]
     pub category: Option<String>,
-    /// Semver string. Validated by [`crate::validate`] via the
-    /// `semver` crate; rejected if not parseable.
+    /// Semver string, validated by [`crate::validate`] via the `semver` crate.
     pub version: String,
     /// One of the [`Kind`] variants.
     pub kind: Kind,
-    /// `<runtime-name>/<version>` of the qOS runtime this package
-    /// binds to. `None` for `kind = "runtime"` (which IS a
-    /// runtime). The version side must parse as semver.
+    /// `<runtime-name>/<version>` of the qOS runtime this binds to;
+    /// `None` for `kind = "runtime"`. Version must parse as semver.
     #[serde(default)]
     pub runtime: Option<String>,
-    /// Minimum CPU feature-level per architecture this build's
-    /// binaries require. Publishers ship one entry per architecture
-    /// they support:
+    /// Minimum CPU feature-level per architecture this build's binaries
+    /// require, one entry per supported architecture:
     ///
     /// ```toml
     /// [package.isa]
@@ -85,18 +69,14 @@ pub struct Package {
     /// aarch64 = "v8.2-a"
     /// ```
     ///
-    /// A missing entry for the local host's arch means "no build
-    /// available for this arch"; `qos-install` refuses the install with
-    /// a clear error. A missing entry that IS provided at the widest
-    /// value (`baseline` for x86, `armv8-a` for aarch64) is the widest
-    /// possible floor.
+    /// A missing entry for the host's arch means "no build available";
+    /// `qos-install` refuses the install with a clear error.
     #[serde(default)]
     pub isa: IsaRequirements,
 }
 
-/// Per-arch minimum-feature-level requirements. Every field is
-/// optional — a publisher who only ships x86_64 leaves aarch64
-/// unset.
+/// Per-arch minimum-feature-level requirements; every field is
+/// optional (a publisher who only ships `x86_64` leaves aarch64 unset).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IsaRequirements {
     #[serde(default)]
@@ -106,8 +86,8 @@ pub struct IsaRequirements {
 }
 
 impl IsaRequirements {
-    /// The requirement for the given architecture. `None` = no build
-    /// declared for this arch; caller refuses the install.
+    /// The requirement for the given architecture; `None` = no build
+    /// declared, caller refuses the install.
     pub fn for_arch(&self, arch: Arch) -> Option<IsaLevel> {
         match arch {
             Arch::X86_64 => self.x86_64.map(IsaLevel::X86_64),
@@ -117,9 +97,8 @@ impl IsaRequirements {
 }
 
 /// Architectures qOS distributes packages for. Deliberately narrow —
-/// broader targets (riscv64, ppc64le) join as they clear the
-/// "publisher pipeline supports it + we have a bootc image + we can
-/// test it" gate.
+/// broader targets join once the publisher pipeline, bootc image,
+/// and test coverage support them.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Arch {
@@ -128,8 +107,7 @@ pub enum Arch {
 }
 
 /// Per-arch level, arch-tagged so mismatched compares are impossible
-/// at the type level (a v3 x86 tag can't accidentally be compared
-/// with an armv8.2 tag).
+/// at the type level (a v3 x86 tag can't be compared with an armv8.2 tag).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum IsaLevel {
     X86_64(X86_64Level),
@@ -144,8 +122,7 @@ impl IsaLevel {
         }
     }
 
-    /// Machine-readable label used in `.qpkg` filenames — e.g.
-    /// `dev.qos.editor-0.1.0-x86_64-v3.qpkg`.
+    /// Machine-readable label used in .qpkg filenames — e.g. `dev.qos.editor-0.1.0-x86_64-v3.qpkg`.
     pub fn wire_label(self) -> &'static str {
         match self {
             IsaLevel::X86_64(l) => l.wire_label(),
@@ -153,9 +130,7 @@ impl IsaLevel {
         }
     }
 
-    /// Ranks within an arch — cross-arch compare panics because it's
-    /// a caller bug (comparison between arm and x86 has no semantic
-    /// meaning).
+    /// Ranks within an arch — cross-arch compare panics (comparing arm and x86 has no semantic meaning).
     pub fn rank(self) -> u8 {
         match self {
             IsaLevel::X86_64(l) => l.rank(),
@@ -164,7 +139,7 @@ impl IsaLevel {
     }
 }
 
-/// x86-64 microarchitecture feature levels per the SysV psABI x86-64
+/// x86-64 microarchitecture feature levels per the `SysV` psABI x86-64
 /// supplement. Each level is a strict superset of the previous.
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,16 +185,12 @@ impl X86_64Level {
     }
 }
 
-/// ARMv8/v9-A profile levels covering the practical publishing tiers.
-/// Modelled on the ARM Architecture Reference Manual's profile
-/// designators, condensed to the four that map cleanly to shipping
-/// silicon families.
+/// ARMv8/v9-A profile levels, condensed from the ARM ARM's profile
+/// designators to the four that map cleanly to shipping silicon.
 ///
-/// Deliberately excluded from the level dimension: SVE vector width
-/// (SVE2 code is width-agnostic — the same binary runs on 128/256/
-/// 512-bit implementations); vendor-specific extras (Apple AMX,
-/// Qualcomm MSA). Those become opt-in `target-cpu` selections per app,
-/// not a tier bump.
+/// Deliberately excluded: SVE vector width (SVE2 is width-agnostic)
+/// and vendor extras (Apple AMX, Qualcomm MSA) — those are per-app
+/// opt-in `target-cpu` selections, not a tier bump.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AArch64Level {
     /// ARMv8-A baseline (2013+). NEON + FP + AES/SHA1/SHA2 crypto
@@ -268,25 +239,20 @@ impl AArch64Level {
 /// `[publisher]` — who signed it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Publisher {
-    /// The publisher's Ed25519 public key, formatted as
-    /// `ed25519:<hex>`. Hex is canonical lower-case; the verifier
-    /// re-parses this into bytes.
+    /// The publisher's Ed25519 public key as `ed25519:<hex>` (canonical lower-case hex).
     pub identity: String,
-    /// Detached signature over `signing_bytes(manifest, payload)`.
-    /// Empty string at author time; filled by `qos-pkg sign`.
+    /// Detached signature over `signing_bytes(manifest, payload)`; empty until `qos-pkg sign` fills it.
     #[serde(default)]
     pub signature: String,
 }
 
 impl Publisher {
-    /// Parse the hex part out of an `ed25519:<hex>` identity
-    /// string. Returns just the raw key bytes.
+    /// Parse the hex part out of an `ed25519:<hex>` identity string into raw key bytes.
     pub fn identity_bytes(&self) -> Result<[u8; 32], IdentityParseError> {
         parse_ed25519_hex(&self.identity)
     }
 
-    /// Parse the hex signature into 64 raw bytes. `Ok(None)` if
-    /// the signature is empty (the manifest is not yet signed).
+    /// Parse the hex signature into 64 raw bytes; `Ok(None)` if unsigned.
     pub fn signature_bytes(&self) -> Result<Option<[u8; 64]>, IdentityParseError> {
         if self.signature.is_empty() {
             return Ok(None);
@@ -330,9 +296,8 @@ fn parse_ed25519_hex(s: &str) -> Result<[u8; 32], IdentityParseError> {
     Ok(out)
 }
 
-/// `[trust]` — optional third-party attestations. A curation
-/// service or sandbox-policy reviewer can attach a claim that
-/// the loader checks before granting elevated capabilities.
+/// `[trust]` — optional third-party attestations; the loader checks
+/// these before granting elevated capabilities.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Trust {
     /// `[[trust.attested_by]]` repeated array.
@@ -345,22 +310,18 @@ pub struct Trust {
 pub struct TrustAttestation {
     /// Attestor's identity, e.g. `qos-curated/2025.06`.
     pub attestor: String,
-    /// Opaque claim bytes — hex-encoded for the manifest. Format
-    /// is attestor-specific (often itself a small signature
-    /// over the package id).
+    /// Opaque, hex-encoded claim bytes; format is attestor-specific.
     #[serde(rename = "claim")]
     pub claim_hex: String,
     /// Attestor's Ed25519 signature over the canonical attestation
-    /// preimage — see [`crate::trust::attestation_preimage`]. Hex
-    /// encoded (128 chars for a 64-byte signature). Empty string
-    /// if no signature is attached (legacy claim-only rows).
+    /// preimage (see [`crate::trust::attestation_preimage`]), hex-encoded;
+    /// empty for legacy claim-only rows.
     #[serde(default, rename = "signature")]
     pub signature_hex: String,
 }
 
 impl TrustAttestation {
-    /// Parse the signature hex into raw bytes. `Ok(None)` when
-    /// the `signature` field is empty.
+    /// Parse the signature hex into raw bytes; `Ok(None)` when empty.
     pub fn signature_bytes(&self) -> Result<Option<[u8; 64]>, IdentityParseError> {
         if self.signature_hex.is_empty() {
             return Ok(None);
@@ -381,59 +342,42 @@ impl TrustAttestation {
 /// `[sandbox]` — the runtime confinement profile.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sandbox {
-    /// Linux namespaces to unshare. Names match `unshare(2)`'s
-    /// flags: `user`, `pid`, `uts`, `ipc`, `mount`, `net`.
+    /// Linux namespaces to unshare, matching `unshare(2)`'s flag names (user, pid, uts, ipc, mount, net).
     pub namespaces: Vec<String>,
     /// Named seccomp profile — `qos-default` is the baseline.
     pub seccomp: String,
     /// Landlock strictness — `strict` | `lax` | `off`.
     pub landlock: String,
-    /// `[sandbox.fs]` block — **retired**, and absent from every
-    /// manifest that validates.
-    ///
-    /// Decoded only so a manifest that still carries one can be refused
-    /// by name (`validate::ManifestError::FsWriteDeclared` /
-    /// `FsReadDeclared`) rather than by a serde "unknown field" error
-    /// that says nothing about why. See `crate::validate` for what
-    /// replaced it.
+    /// `[sandbox.fs]` — **retired**; decoded only so a manifest that
+    /// still carries one can be refused by name
+    /// (`validate::ManifestError::FsWriteDeclared`/`FsReadDeclared`)
+    /// instead of an opaque serde "unknown field" error. See
+    /// `crate::validate` for the replacement.
     #[serde(default, skip_serializing_if = "SandboxFs::is_empty")]
     pub fs: SandboxFs,
     /// `[sandbox.net]` block — egress policy.
     pub net: SandboxNet,
-    /// `[sandbox.portals]` table — portal policy per portal name.
-    ///
-    /// The map keys are freedesktop portal names (`file-chooser`,
-    /// `screencast`, `notifications`, `secret-service`, `open-uri`).
-    /// Values are [`PortalPolicy`] — today either `via-host` (the
-    /// launcher plumbs the session D-Bus socket in and the app can
-    /// use `ashpd`) or `deny` (the portal is explicitly disabled).
-    /// An entry MUST exist for every portal the app expects to use;
-    /// absence == the launcher will NOT proxy the bus in for that
-    /// portal, so the app's `ashpd` call surfaces `NotAvailable`.
+    /// `[sandbox.portals]` table — policy per freedesktop portal name
+    /// (`file-chooser`, `screencast`, ...). Values are [`PortalPolicy`]:
+    /// `via-host` (D-Bus socket plumbed in) or `deny`. An entry MUST exist
+    /// for every portal the app uses — absence means the launcher won't
+    /// proxy the bus, and the app's `ashpd` call surfaces `NotAvailable`.
     #[serde(default)]
     pub portals: std::collections::BTreeMap<String, PortalPolicy>,
-    /// `[sandbox.services]` table — required/optional services.
-    /// Each value parses as `"required@N"` / `"optional@N"`.
+    /// `[sandbox.services]` table — required/optional services, values parsed as `"required@N"`/`"optional@N"`.
     #[serde(default)]
     pub services: std::collections::BTreeMap<String, ServiceReq>,
 }
 
-/// A path pattern in the retired `[sandbox.fs]` block. Stored as a raw
-/// string — it is never expanded into a path any more, only quoted back
-/// in the refusal that names it.
+/// A path pattern in the retired [sandbox.fs] block — stored raw, never expanded, only quoted back in the refusal.
 pub type PathPattern = String;
 
-/// `[sandbox.fs]` — **retired**.
-///
-/// It used to be declarative file access: the packager listed paths and
-/// the launcher bound them, source and destination, read-write for every
-/// `write` entry. That made the sandbox enforce a policy written by the
-/// thing it was sandboxing — `write = ["/"]` was a valid manifest and
-/// produced a valid launch.
-///
-/// The fields survive so that a package still carrying them is refused
-/// with its own words quoted back. Nothing reads them to build a
-/// sandbox.
+/// `[sandbox.fs]` — **retired**. It used to let the packager declare
+/// file-access paths that the launcher bound directly — letting the
+/// sandboxed package write its own policy (`write = ["/"]` was valid
+/// and would launch). The fields survive only so a manifest still
+/// carrying them is refused with its own words quoted back; nothing
+/// reads them to build a sandbox.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxFs {
     /// Read-only path patterns. Any entry is a validation failure.
@@ -445,18 +389,15 @@ pub struct SandboxFs {
 }
 
 impl SandboxFs {
-    /// Whether the package declared no paths — the only shape that
-    /// validates, and therefore the only one re-encoded.
+    /// Whether the package declared no paths — the only shape that validates and is re-encoded.
     pub fn is_empty(&self) -> bool {
         self.read.is_empty() && self.write.is_empty()
     }
 }
 
-/// `[sandbox.net]` — egress policy.
-///
-/// `mode` is one of `off | host | dns-only | allowlist`. When
-/// `mode = "allowlist"` the `hosts` field carries the allowed
-/// host names. For the other modes `hosts` is empty / ignored.
+/// `[sandbox.net]` — egress policy. `mode` is one of
+/// `off|host|dns-only|allowlist`; `hosts` carries allowed names only
+/// when `mode = "allowlist"`, otherwise empty/ignored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxNet {
     pub mode: NetMode,
@@ -466,8 +407,7 @@ pub struct SandboxNet {
 }
 
 impl SandboxNet {
-    /// Convenience: hosts only if mode is Allowlist; `None` for
-    /// every other mode.
+    /// Convenience: hosts only if mode is Allowlist, else `None`.
     pub fn allowlist_hosts(&self) -> Option<&[String]> {
         if matches!(self.mode, NetMode::Allowlist) {
             Some(&self.hosts)
@@ -477,32 +417,24 @@ impl SandboxNet {
     }
 }
 
-/// How the launcher should route a portal request.
-///
-/// Historically the manifest wrote `"via-host"` as a bare string.
-/// Callers now parse into this enum so misspellings surface at
-/// manifest-decode time instead of silently downgrading to a no-op.
-///
-/// The wire form is a plain kebab-case string; TOML round-trips
-/// via the `#[serde(rename_all = "kebab-case")]` attribute.
+/// How the launcher should route a portal request. Parsed into an
+/// enum (rather than a bare string) so misspellings surface at
+/// decode time instead of silently downgrading to a no-op; wire form
+/// is kebab-case via `#[serde(rename_all = "kebab-case")]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PortalPolicy {
-    /// Route through the freedesktop portal on the host session bus.
-    /// The launcher bind-mounts the session D-Bus socket into the
-    /// sandbox and sets `DBUS_SESSION_BUS_ADDRESS` — the app then
-    /// uses `runtime::portal_xdg` (or `ashpd` directly).
+    /// Route through the freedesktop portal on the host session bus —
+    /// the launcher bind-mounts the D-Bus socket and sets
+    /// `DBUS_SESSION_BUS_ADDRESS`; the app uses `runtime::portal_xdg` or `ashpd` directly.
     ViaHost,
-    /// The portal is explicitly denied. The launcher does NOT plumb
-    /// the bus in and any `ashpd` call from the app surfaces
-    /// `PortalError::NotAvailable`. Same on-wire behaviour as
-    /// omitting the entry, but signals intent for auditors.
+    /// The portal is explicitly denied — same on-wire behaviour as
+    /// omitting the entry (`ashpd` surfaces `PortalError::NotAvailable`),
+    /// but signals intent for auditors.
     Deny,
 }
 
-/// Egress modes. The kebab-case wire form matches the TOML
-/// `mode = "off"` / `mode = "host"` / `mode = "dns-only"` /
-/// `mode = "allowlist"` values exactly.
+/// Egress modes; kebab-case wire form matches `mode = "off"/"host"/"dns-only"/"allowlist"` exactly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NetMode {
@@ -510,25 +442,20 @@ pub enum NetMode {
     Off,
     /// Full host network (only for `runtime` / privileged apps).
     Host,
-    /// DNS resolution only — useful for apps that surface URLs
-    /// but rely on the host browser to follow them.
+    /// DNS resolution only — for apps that surface URLs but rely on the host browser to follow them.
     DnsOnly,
-    /// Allowlist of hostnames the app may connect to. The
-    /// concrete host names live in [`SandboxNet::hosts`].
+    /// Allowlist of hostnames the app may connect to; concrete names live in [`SandboxNet::hosts`].
     Allowlist,
 }
 
-/// `required@N` / `optional@N` — a declared dependency on a
-/// service-protocol with a version pin.
+/// `required@N`/`optional@N` — a declared dependency on a service protocol with a version pin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceReq {
-    /// Protocol name as declared by the providing service (e.g.
-    /// `collab`, `qos-fs`, `spellcheck`).
+    /// Protocol name as declared by the providing service (e.g. `collab`, `qos-fs`, `spellcheck`).
     pub protocol: String,
     /// Whether absence is a hard failure.
     pub requirement: Requirement,
-    /// Protocol version pin. `1` if the manifest wrote just
-    /// `"required"` / `"optional"` with no `@N`.
+    /// Protocol version pin; `1` if the manifest wrote no `@N`.
     pub version: u32,
 }
 
@@ -541,8 +468,7 @@ pub enum Requirement {
 }
 
 impl ServiceReq {
-    /// Parse `"required@1"` / `"optional@2"` / `"required"`
-    /// (defaults version to `1`). Rejects anything else.
+    /// Parse `"required@1"`/`"optional@2"`/`"required"` (defaults version to 1); rejects anything else.
     pub fn parse(protocol: &str, raw: &str) -> Result<Self, ServiceReqParseError> {
         let (sev, version) = match raw.split_once('@') {
             Some((sev, ver)) => {
@@ -578,9 +504,8 @@ pub enum ServiceReqParseError {
     BadVersion { raw: String },
 }
 
-// The TOML side encodes ServiceReq as a string ("required@1"). To
-// keep the `services` map deserialisable from a flat table we
-// implement Serialize/Deserialize manually.
+// TOML encodes ServiceReq as a string ("required@1"); to keep
+// `services` deserialisable from a flat table, Serialize/Deserialize are implemented manually.
 impl<'de> serde::Deserialize<'de> for ServiceReq {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw: String = serde::Deserialize::deserialize(d)?;
@@ -598,58 +523,41 @@ impl serde::Serialize for ServiceReq {
     }
 }
 
-/// `[entrypoint]` — the launch hook.
+/// `[entrypoint]` — the launch hook. Required for `app`, optional for
+/// `service` (which typically installs a systemd unit instead), unset
+/// for `runtime`.
 ///
-/// For `app` packages this is required. For `service` packages it
-/// is optional (services typically install a systemd unit).
-/// For `runtime` packages it is never set.
-///
-/// Apps can ship both a GUI and a CLI entrypoint. The `type` field
-/// selects which flavour is meant:
-///
-/// - `gui` (default) — `bin` is a GUI app; use the whole [`Entrypoint`]
-///   as today.
-/// - `cli` — `bin` is a CLI app; the launcher inherits stdio and
-///   does not set up a Wayland surface. Publishes commands from the
-///   [`Cli`] block onto the user's PATH via installed shims.
-/// - `both` — the package ships two binaries. `gui_bin` is used
-///   when launched through the app grid / graphical launcher; `cli_bin`
-///   is what the PATH shim execvs. Both must be under the payload.
+/// `type` selects the flavour: `gui` (default) — whole [`Entrypoint`]
+/// is a GUI app; `cli` — the launcher inherits stdio, no Wayland
+/// surface, commands from [`Cli`] are published as PATH shims; `both`
+/// — two binaries, `gui_bin` for the app grid and `cli_bin` for the
+/// PATH shim to exec.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entrypoint {
-    /// Path inside the payload to the binary to exec. For
-    /// `type = "both"` the `gui_bin` / `cli_bin` fields take
-    /// precedence; `bin` is kept for schema back-compat and used
-    /// only when the split fields are absent.
+    /// Path inside the payload to the binary to exec. For `type = "both"`,
+    /// `gui_bin`/`cli_bin` take precedence; `bin` is kept for schema back-compat.
     #[serde(default)]
     pub bin: PathBuf,
-    /// Kind of entrypoint. Defaults to `gui` when omitted so
-    /// existing manifests stay valid.
+    /// Kind of entrypoint; defaults to `gui` so existing manifests stay valid.
     #[serde(default, rename = "type")]
     pub r#type: EntrypointType,
-    /// GUI-flavour binary path inside the payload. Only meaningful
-    /// when `type = "both"`.
+    /// GUI-flavour binary path; only meaningful when `type = "both"`.
     #[serde(default, rename = "gui-bin")]
     pub gui_bin: Option<PathBuf>,
-    /// CLI-flavour binary path inside the payload. Only meaningful
-    /// when `type = "both"`.
+    /// CLI-flavour binary path; only meaningful when `type = "both"`.
     #[serde(default, rename = "cli-bin")]
     pub cli_bin: Option<PathBuf>,
-    /// Splash-segment hints: the loader prefetches these byte
-    /// ranges before exec so the splash screen renders before the
-    /// full binary is in cache.
+    /// Splash-segment hints: byte ranges the loader prefetches so the
+    /// splash renders before the full binary is cached.
     #[serde(default, rename = "splash-segments")]
     pub splash_segments: Vec<SplashSegment>,
-    /// Soft budget (ms) for the splash to display before the
-    /// real window is expected. Loader uses this to decide
-    /// whether to keep the splash or fall back to a default.
+    /// Soft budget (ms) for the splash before the loader falls back to default display.
     #[serde(default = "default_splash_budget", rename = "splash-budget")]
     pub splash_budget_ms: u32,
 }
 
 impl Entrypoint {
-    /// The binary path the *GUI* launcher should exec. Falls back
-    /// to `bin` when the split fields aren't in the manifest.
+    /// The binary the GUI launcher should exec; falls back to `bin` if unset.
     pub fn gui_bin_path(&self) -> Option<&PathBuf> {
         match self.r#type {
             EntrypointType::Gui => Some(&self.bin),
@@ -658,8 +566,7 @@ impl Entrypoint {
         }
     }
 
-    /// The binary path a CLI command should exec. Falls back to
-    /// `bin` when the split fields aren't in the manifest.
+    /// The binary a CLI command should exec; falls back to `bin` if unset.
     pub fn cli_bin_path(&self) -> Option<&PathBuf> {
         match self.r#type {
             EntrypointType::Gui => None,
@@ -669,8 +576,7 @@ impl Entrypoint {
     }
 }
 
-/// Which flavour of entrypoint the package exposes. Wire form is
-/// lowercase — `type = "gui"` / `"cli"` / `"both"`.
+/// Which entrypoint flavour the package exposes; wire form is lowercase (`gui`/`cli`/`both`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntrypointType {
@@ -679,24 +585,18 @@ pub enum EntrypointType {
     Gui,
     /// Terminal / stdio-only app.
     Cli,
-    /// Ships both flavours; the [`Entrypoint::gui_bin`] / `cli_bin`
-    /// paths pick the concrete binary per launch mode.
+    /// Ships both flavours; [`Entrypoint::gui_bin`]/`cli_bin` pick the binary per launch mode.
     Both,
 }
 
-/// `[cli]` — commands the package publishes on the user's PATH.
-///
-/// Each string in `commands` becomes a shim in
-/// `~/.local/share/qos-apps/bin/<cmd>` at install time; the shim
-/// re-execs through the launcher's `run-installed` subcommand.
-///
-/// Callers writing manifests should keep the names short and
-/// namespace-clean — the shim install layer treats them as raw
-/// filesystem paths.
+/// `[cli]` — commands the package publishes on the user's PATH. Each
+/// name in `commands` becomes a shim at
+/// `~/.local/share/qos-apps/bin/<cmd>` that re-execs through
+/// `run-installed`; the shim layer treats names as raw filesystem
+/// paths, so keep them short and namespace-clean.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cli {
-    /// PATH-visible command names (e.g. `["notes", "notes-import"]`).
-    /// Empty vec == the package ships no PATH commands.
+    /// PATH-visible command names; empty vec means no PATH commands.
     #[serde(default)]
     pub commands: Vec<String>,
 }
@@ -705,16 +605,13 @@ fn default_splash_budget() -> u32 {
     100
 }
 
-/// A path-with-optional-byte-range used in `splash-segments`.
-///
-/// Wire form: `"bin/editor[0x0:0x300000]"` (range) or
-/// `"share/splash.png"` (whole file). Parsed eagerly so the
-/// loader has a typed range instead of a string.
+/// A path with optional byte range for `splash-segments`, e.g.
+/// `"bin/editor[0x0:0x300000]"` or a whole-file path; parsed eagerly
+/// into a typed range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SplashSegment {
     pub path: PathBuf,
-    /// `(start, end)` inclusive-start, exclusive-end byte
-    /// range. `None` means the whole file.
+    /// `(start, end)` inclusive-start, exclusive-end byte range; `None` means the whole file.
     pub byte_range: Option<(u64, u64)>,
 }
 
@@ -789,8 +686,7 @@ impl serde::Serialize for SplashSegment {
     }
 }
 
-/// `[providers]` — what file kinds this package can open.
-/// Only meaningful for `kind = "format-provider"`.
+/// `[providers]` — file kinds this package can open; only meaningful for `kind = "format-provider"`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Providers {
     /// MIME types claimed (e.g. `application/vnd.oasis.opendocument.text`).
@@ -804,14 +700,10 @@ pub struct Providers {
 impl Manifest {
     /// Decode a manifest from TOML source.
     pub fn from_toml_str(s: &str) -> Result<Self, ManifestParseError> {
-        // The TOML side encodes `[sandbox.services]` as a table of
-        // service-name → string. The `ServiceReq` Deserialize sees
-        // the value as a raw `"required@1"` string; the protocol
-        // name we attach to it comes from the table key. The
-        // generic decode loses that key, so we post-process.
+        // TOML encodes [sandbox.services] as service-name → "required@1"
+        // string; the generic decode loses the key, so post-process it below.
         let mut m: Manifest = toml::from_str(s).map_err(ManifestParseError::Toml)?;
-        // Patch the `protocol` field of each ServiceReq with the
-        // map-key that named it.
+        // Patch each ServiceReq's `protocol` field with the map key that named it.
         let services = std::mem::take(&mut m.sandbox.services);
         m.sandbox.services = services
             .into_iter()
@@ -823,8 +715,7 @@ impl Manifest {
         Ok(m)
     }
 
-    /// Re-encode to TOML. Used for round-trip tests + the
-    /// `qos-pkg inspect` CLI.
+    /// Re-encode to TOML; used for round-trip tests and `qos-pkg inspect`.
     pub fn to_toml_string(&self) -> Result<String, ManifestParseError> {
         toml::to_string_pretty(self).map_err(ManifestParseError::Encode)
     }

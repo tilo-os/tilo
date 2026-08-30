@@ -1,16 +1,11 @@
 # qos-agent — qOS application manifest.
 #
-# A headless participant, not a desktop app: it joins a document through
-# the compositor's collaboration broker and edits it with the host app's
-# own exported actions. It draws nothing and is never opened from the
-# launcher, so `kind = "service"` and the entrypoint is `cli` — the same
-# reasoning the on-screen keyboard's manifest spells out, minus the
-# drawing.
-#
-# `collab` is `required`, not `optional`: without the broker there is no
-# document to join and the binary has nothing to do. Everything it edits
-# arrives over that socket, so it needs no filesystem grant of its own
-# and opens no socket of its own.
+# A participant, not a window: the agent joins a room's word-processor
+# document through the compositor's collaboration broker and edits it
+# with the app's own exported actions. Nothing is ever drawn, so
+# `kind = "service"` keeps it out of the command palette and the
+# entrypoint is `cli` — the pair that decides whether the launcher hands
+# it a surface at all.
 #
 # Pack and install:
 #
@@ -23,8 +18,8 @@
 
 [package]
 id       = "dev.qos.agent"
-name     = "qOS Agent"
-category = "Utilities"
+name     = "Agent"
+category = "Utility"
 version  = "0.1.0"
 kind     = "service"
 runtime  = "qos-runtime/2026.07"
@@ -44,24 +39,31 @@ claim     = "deadbeef"
 signature = ""
 
 [sandbox]
-# `net` deliberately absent from `namespaces`: the agent speaks to the
-# broker over the compositor's Unix socket and opens no socket itself.
+# `net` is present because deciding which exported action answers an
+# instruction is a model call, and that call leaves the device.
 namespaces = [
     "user",
     "pid",
     "uts",
     "ipc",
     "mount",
+    "net",
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
 
 [sandbox.net]
-mode = "off"
+# The one host the agent talks to: `ENDPOINT` in src/model.rs.
+mode  = "allowlist"
+hosts = [
+    "api.anthropic.com",
+]
 
 [sandbox.portals]
 
 [sandbox.services]
+# Required, not optional: with no broker there is no document to join
+# and the agent has nothing to do.
 collab = "required@1"
 
 [entrypoint]

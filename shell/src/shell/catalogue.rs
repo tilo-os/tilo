@@ -1,37 +1,15 @@
-//! Apps the machine can open but has not installed yet.
-//!
-//! [`crate::shell::launcher`] enumerates what is *here*: the packages
-//! `qos-install` has unpacked and recorded. This module is the other
-//! list — what the user's configured registries offer that is not here
-//! — and the path that turns one of those into a running app.
-//!
-//! ## Nothing here does HTTP
-//!
-//! Both halves shell out to `qos-catalogue`, exactly as launching
-//! shells out to `qos-launcher`. Listing means a network round-trip
-//! and installing additionally means signature verification and
-//! archive extraction; none of that belongs inside the compositor
-//! process, and keeping it out means a hostile registry response
-//! cannot reach the code that owns every window on the machine.
-//!
-//! ## Never on the frame thread
+//! Apps the machine can open but has not installed yet — the other
+//! list, complementing [`crate::shell::launcher`]'s enumeration of
+//! what's *here*. Listing and installing both shell out to
+//! `qos-catalogue`: network round-trips, signature verification and
+//! archive extraction don't belong in the process that owns every
+//! window on the machine.
 //!
 //! [`available_apps`] answers from an in-memory cache and returns
-//! immediately, even when the cache is empty or stale — the palette
-//! calls it on every keystroke. A stale cache schedules a refresh on a
-//! worker thread and answers with what it has. An empty catalogue is a
-//! normal, correct answer: a machine with no registries configured
-//! genuinely knows about no other software.
-//!
-//! ## Opening, not installing
-//!
-//! [`install_and_launch`] is the whole of what activating an
-//! uninstalled app does: fetch it, then start it through the *same*
-//! [`crate::shell::launcher::launch`] every installed app goes
-//! through. There is no separate "installed app" launch path, so an
-//! app opened this way is sandboxed, roomed and placed identically to
-//! one that was already here — the install is a step on the way to
-//! opening, not a different kind of event.
+//! immediately even when stale or empty — the palette calls it on every
+//! keystroke. [`install_and_launch`] fetches, then starts through the
+//! *same* [`crate::shell::launcher::launch`] every installed app uses,
+//! so it's sandboxed, roomed and placed identically.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -43,26 +21,18 @@ use serde::Deserialize;
 use crate::shell::launcher::{self, LaunchEvent, LaunchEventKind};
 use crate::shell::state::{CapOverride, RoomId};
 
-/// How long a fetched catalogue is reused before a refresh is
-/// scheduled.
-///
-/// Much longer than the installed-apps TTL: that one re-reads two
-/// local files, this one talks to a network service, and the set of
-/// software a registry offers does not change between keystrokes.
-const CATALOGUE_TTL: Duration = Duration::from_secs(120);
+/// Much longer than the installed-apps TTL: that re-reads two local
+/// files, this talks to a network service.
+const CATALOGUE_TTL: Duration = Duration::from_mins(2);
 
-/// How long a failed refresh is remembered before another is tried.
-/// Without this a machine configured with an unreachable registry
-/// would start a fresh HTTP attempt every time the palette opened.
+/// Without this an unreachable registry would start a fresh HTTP
+/// attempt every time the palette opened.
 const FAILED_REFRESH_BACKOFF: Duration = Duration::from_secs(30);
 
-/// One app a registry offers that is not installed here.
-///
 /// **Wire contract.** These field names are what `qos-catalogue list
 /// --json` prints; the crate that prints them pins the same names in
-/// its own test. Changing one without the other silently produces an
-/// empty catalogue rather than an error, so both halves have a test
-/// that would have to be edited together.
+/// its own test, so changing one without the other fails loudly
+/// instead of silently producing an empty catalogue.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CatalogueApp {
     pub package_id: String,
@@ -98,54 +68,43 @@ pub struct UnreachableRegistry {
 // ---------------------------------------------------------------------
 
 static CATALOGUE: Mutex<Option<(Vec<CatalogueApp>, Instant)>> = Mutex::new(None);
-/// Set while a refresh worker is in flight, so a burst of keystrokes
-/// schedules one refresh rather than one per character.
+/// So a burst of keystrokes schedules one refresh, not one per character.
 static REFRESHING: AtomicBool = AtomicBool::new(false);
-/// The notification raised for an in-flight open, per package, so the
-/// frame thread can retire it when the app actually starts.
+/// Per package, so the frame thread can retire it when the app starts.
 static PENDING_NOTICES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
-/// Where we look for `qos-catalogue`, in order — the same search the
-/// launcher does for `qos-launcher`, for the same reasons.
+/// The same search the launcher does for `qos-launcher`.
 fn catalogue_bin_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(explicit) = std::env::var_os("QOS_CATALOGUE_BIN") {
-        if !explicit.is_empty() {
-            out.push(PathBuf::from(explicit));
-        }
+    if let Some(explicit) = std::env::var_os("QOS_CATALOGUE_BIN")
+        && !explicit.is_empty()
+    {
+        out.push(PathBuf::from(explicit));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            out.push(dir.join("qos-catalogue"));
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        out.push(dir.join("qos-catalogue"));
     }
     out.push(PathBuf::from("/usr/libexec/qos-catalogue"));
     out.push(PathBuf::from("/usr/bin/qos-catalogue"));
     out
 }
 
-/// First candidate that exists.
-///
-/// `None` means this machine has no catalogue binary, which is not an
-/// error: the desktop then offers exactly the installed apps, as it
-/// did before this path existed.
+/// `None` means no catalogue binary — not an error, the desktop then
+/// offers exactly the installed apps.
 pub fn resolve_catalogue_bin() -> Option<PathBuf> {
     catalogue_bin_candidates().into_iter().find(|p| p.exists())
 }
 
-/// Parse the `list --json` envelope.
-///
 /// Split out from the subprocess so the wire contract is assertable
 /// without spawning anything.
 pub fn parse_listing(stdout: &str) -> Result<CatalogueListing, String> {
     serde_json::from_str(stdout).map_err(|e| e.to_string())
 }
 
-/// Available-but-not-installed apps, from cache.
-///
-/// Returns immediately, always. A cold or stale cache schedules a
-/// refresh and answers with whatever it currently holds — the palette
-/// calls this on every keystroke and must never wait on a network.
+/// Returns immediately: a cold or stale cache schedules a refresh and
+/// answers with whatever it currently holds.
 pub fn available_apps() -> Vec<CatalogueApp> {
     let (apps, needs_refresh) = {
         let cache = CATALOGUE.lock().expect("CATALOGUE poisoned");
@@ -167,28 +126,20 @@ pub fn invalidate() {
     *CATALOGUE.lock().expect("CATALOGUE poisoned") = None;
 }
 
-/// Replace the cache directly. For tests, which must not depend on a
-/// registry being reachable.
+/// For tests, which must not depend on a registry being reachable.
 pub fn seed_for_test(apps: Vec<CatalogueApp>) {
     *CATALOGUE.lock().expect("CATALOGUE poisoned") = Some((apps, Instant::now()));
 }
 
-/// Run `qos-catalogue list --json` on a worker thread and cache the
-/// result.
-///
-/// A failure caches an *empty* list rather than leaving the cache
-/// cold: a cold cache would schedule another refresh on the very next
-/// keystroke, so an unreachable registry would mean a new HTTP attempt
-/// per character typed. The empty result expires under
-/// [`FAILED_REFRESH_BACKOFF`], so a registry that comes back is picked
-/// up shortly after.
+/// A failure caches an *empty* list rather than leaving the cache cold
+/// (which would mean a new HTTP attempt per character typed), and
+/// expires under [`FAILED_REFRESH_BACKOFF`] so a registry that comes
+/// back is picked up shortly after.
 fn schedule_refresh() {
     if REFRESHING.swap(true, Ordering::SeqCst) {
         return;
     }
     let Some(bin) = resolve_catalogue_bin() else {
-        // Nothing to run. Cache an empty answer so we don't re-resolve
-        // the binary on every keystroke.
         *CATALOGUE.lock().expect("CATALOGUE poisoned") = Some((Vec::new(), Instant::now()));
         REFRESHING.store(false, Ordering::SeqCst);
         return;
@@ -253,37 +204,32 @@ fn schedule_refresh() {
 // Opening something that isn't here yet.
 // ---------------------------------------------------------------------
 
-/// Remember the notification raised for an in-flight open.
 pub fn note_pending_notice(package_id: &str, notification_id: u64) {
     let mut pending = PENDING_NOTICES.lock().expect("PENDING_NOTICES poisoned");
     pending.retain(|(id, _)| id != package_id);
     pending.push((package_id.to_string(), notification_id));
 }
 
-/// Take the notification raised for `package_id`, if one is still
-/// outstanding. Called on the frame thread when the launch resolves,
-/// so the "opening" toast is retired by the app appearing rather than
-/// by a timer.
+/// A peek, not a take — the frame thread walks this every frame.
+/// Retirement goes through [`take_pending_notice`].
+pub fn pending_notices() -> Vec<(String, u64)> {
+    PENDING_NOTICES
+        .lock()
+        .expect("PENDING_NOTICES poisoned")
+        .clone()
+}
+
+/// So the "opening" toast is retired by the app appearing, not a timer.
 pub fn take_pending_notice(package_id: &str) -> Option<u64> {
     let mut pending = PENDING_NOTICES.lock().expect("PENDING_NOTICES poisoned");
     let idx = pending.iter().position(|(id, _)| id == package_id)?;
     Some(pending.remove(idx).1)
 }
 
-/// Fetch `package_id`, then launch it into `room` — on a worker
-/// thread, reporting through the launcher's own event queue.
-///
 /// `capabilities` is the activating workspace's grant list, captured
-/// on the frame thread. It is republished immediately before the
-/// launch rather than read fresh: an install takes seconds, and the
-/// app must land in the sandbox of the workspace the user opened it
-/// from, not whichever one they happen to be looking at when the
-/// download finishes.
-///
-/// Everything this reports rides the same [`LaunchEvent`] queue a
-/// normal launch uses, so a failure here surfaces through the same
-/// path — and with the same wording — as any other failure to open an
-/// app.
+/// on the frame thread rather than read fresh — an install takes
+/// seconds, and the app must land in the sandbox it was opened from,
+/// not whichever workspace is active when the download finishes.
 pub fn install_and_launch(
     package_id: String,
     display_name: String,
@@ -294,7 +240,7 @@ pub fn install_and_launch(
         push_failure(
             &package_id,
             &display_name,
-            "this system has no app catalogue installed (qos-catalogue is missing)".to_string(),
+            "this system has no app catalogue (qos-catalogue is missing)".to_string(),
         );
         return;
     };
@@ -326,10 +272,7 @@ pub fn install_and_launch(
             Ok(_) => {}
         }
 
-        // The registry no longer offers it — it is here now.
         invalidate();
-        // The installed-apps enumeration is memoised; the package that
-        // just landed is younger than the memo.
         launcher::invalidate_app_cache();
 
         launcher::set_workspace_capabilities(capabilities);
@@ -341,7 +284,7 @@ pub fn install_and_launch(
         push_failure(
             &identity.0,
             &identity.1,
-            "could not start the install worker".to_string(),
+            "could not start loading it".to_string(),
         );
     }
 }
@@ -358,10 +301,8 @@ fn push_failure(package_id: &str, display_name: &str, detail: String) {
 mod tests {
     use super::*;
 
-    /// The wire contract, pinned against the exact JSON the
-    /// `qos-catalogue` binary prints. The other half of this pin lives
-    /// in `app-catalogue`'s own test; the two would have to be edited
-    /// together for a field rename to go unnoticed.
+    /// Pinned against the exact JSON `qos-catalogue` prints;
+    /// `app-catalogue`'s own test pins the other half.
     #[test]
     fn the_listing_envelope_parses_the_binarys_field_names() {
         let json = r#"{"apps":[{"package_id":"dev.qos.sheets","display_name":"Sheets",
@@ -381,9 +322,7 @@ mod tests {
         assert_eq!(listing.unreachable[0].name, "mirror");
     }
 
-    /// A machine with nothing available produces an empty listing, not
-    /// a parse error — that is the shape the binary prints when no
-    /// registry is configured.
+    /// Nothing available is an empty listing, not a parse error.
     #[test]
     fn an_empty_catalogue_is_a_valid_answer() {
         let listing = parse_listing(r#"{"apps":[],"unreachable":[]}"#).expect("parses");
@@ -423,8 +362,7 @@ mod tests {
         assert_eq!(take_pending_notice("dev.qos.replacefixture"), None);
     }
 
-    /// `QOS_CATALOGUE_BIN` is how a test — and the headless harness —
-    /// points the shell at a specific build.
+    /// How a test, or the headless harness, points at a specific build.
     #[test]
     #[serial_test::serial(process_env)]
     fn an_explicit_binary_override_is_searched_first() {

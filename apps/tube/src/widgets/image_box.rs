@@ -15,11 +15,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill, Gradient, ImageData as PenikoImage};
 
+use ui::ImageStore;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::ImageStore;
 
 use crate::util::seed_gradient;
 
@@ -69,11 +69,9 @@ impl ImageBox {
         } else {
             let (top, bottom) = seed_gradient(&self.seed);
             let shape = RoundedRect::from_rect(self.rect, self.radius);
-            let grad = Gradient::new_linear(
-                (self.rect.x0, self.rect.y0),
-                (self.rect.x1, self.rect.y1),
-            )
-            .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
+            let grad =
+                Gradient::new_linear((self.rect.x0, self.rect.y0), (self.rect.x1, self.rect.y1))
+                    .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
             scene.fill(Fill::NonZero, transform, &grad, None, &shape);
             // Faint bottom vignette so overlaid header text stays legible.
             let veil = Color::from_rgba8(0, 0, 0, 30);
@@ -84,13 +82,13 @@ impl ImageBox {
 
 impl Widget for ImageBox {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        if self.image.is_none() && !self.url.is_empty() {
-            if let Some(store) = &self.store {
-                if let Some(img) = store.get(&self.url) {
-                    self.image = Some(img);
-                    self.dirty = true;
-                }
-            }
+        if self.image.is_none()
+            && !self.url.is_empty()
+            && let Some(store) = &self.store
+            && let Some(img) = store.get(&self.url)
+        {
+            self.image = Some(img);
+            self.dirty = true;
         }
     }
 
@@ -100,28 +98,23 @@ impl Widget for ImageBox {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
+        let node = super::leaf_node(
+            taffy,
+            Style {
                 size: taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: length(self.height),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+            },
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        let new = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
-        );
+        let new = super::layout_rect(taffy, node, origin);
         if new != self.rect {
             self.dirty = true;
         }
@@ -153,7 +146,7 @@ impl Widget for ImageBox {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ImageBox"
     }
     fn needs_redraw(&self) -> bool {
@@ -186,7 +179,12 @@ mod tests {
     }
 
     fn count(scene: &Scene, tag: DrawTag) -> usize {
-        scene.encoding().draw_tags.iter().filter(|t| **t == tag).count()
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == tag)
+            .count()
     }
 
     /// A real banner image paints an IMAGE draw; without one, only a COLOR
@@ -201,11 +199,21 @@ mod tests {
             width: 4,
             height: 4,
         };
-        assert!(count(&paint(Some(img)), DrawTag::IMAGE) >= 1, "real banner → IMAGE draw");
+        assert!(
+            count(&paint(Some(img)), DrawTag::IMAGE) >= 1,
+            "real banner → IMAGE draw"
+        );
 
         let gradient = paint(None);
-        assert_eq!(count(&gradient, DrawTag::IMAGE), 0, "no image → no IMAGE draw");
+        assert_eq!(
+            count(&gradient, DrawTag::IMAGE),
+            0,
+            "no image → no IMAGE draw"
+        );
         // The gradient fallback still paints (gradient + a solid COLOR veil).
-        assert!(!gradient.encoding().draw_tags.is_empty(), "gradient fallback painted something");
+        assert!(
+            !gradient.encoding().draw_tags.is_empty(),
+            "gradient fallback painted something"
+        );
     }
 }

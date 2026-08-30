@@ -17,7 +17,9 @@ use vello::Scene;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+#[cfg(test)]
+use winit::keyboard::NamedKey;
+use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
@@ -27,7 +29,6 @@ use shell::shell::state::WorkspaceTree;
 use ui::Widget;
 
 use taffy::prelude::NodeId;
-use ui::theme::Theme;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
 /// Used only as the unit for the spin-wait loop; animations themselves
@@ -57,6 +58,12 @@ impl ShellDriver {
     }
 
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
+        // Boot adopts every ownerless workspace before the session ever
+        // paints (`compositor::hosted`), so a room you made is a room
+        // you own; skipping it renders "no members" for rooms that on a
+        // real machine are yours.
+        let mut tree = tree;
+        tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
         Self {
             fb: FrameBuilder::with_tree(tree, viewport),
             state: AutoCommit::new(),
@@ -67,7 +74,7 @@ impl ShellDriver {
         }
     }
 
-    /// Run compute_layout + apply_layout against the current tree. The
+    /// Run `compute_layout` + `apply_layout` against the current tree. The
     /// host's animation state is preserved because we don't rebuild the
     /// taffy tree — only the layout pass re-runs.
     ///
@@ -106,6 +113,7 @@ impl ShellDriver {
     }
     /// The palette's current query — what a scenario typed, read back
     /// through the same accessor the overlay uses.
+    #[cfg(test)]
     pub fn palette_query(&self) -> &str {
         self.fb.host().palette_query()
     }
@@ -222,9 +230,9 @@ impl ShellDriver {
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
-        let n = steps.max(1) as f64;
+        let n = f64::from(steps.max(1));
         for s in 1..=steps.max(1) {
-            let t = s as f64 / n;
+            let t = f64::from(s) / n;
             let p = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
             self.dispatch(WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
@@ -244,8 +252,8 @@ impl ShellDriver {
         self.dispatch(event);
     }
 
-    /// Type a literal string — one Key::Character event per non-control
-    /// character. Triggers the same handle_event path the live binary's
+    /// Type a literal string — one `Key::Character` event per non-control
+    /// character. Triggers the same `handle_event` path the live binary's
     /// keyboard handler does. Caller is expected to have opened an
     /// input target (palette, name editor, etc.) first.
     pub fn type_str(&mut self, s: &str) {
@@ -285,18 +293,22 @@ impl ShellDriver {
     /// path (legacy `--scenes`) where state mutations between scenes
     /// can affect the structural layout (overlay reservations).
     pub fn paint_settled(&mut self) -> Scene {
+        // A live frame is `pump_apps` → paint (see `compositor::native`).
+        // Pump first here too, so every reconciler `Widget::update` runs
+        // (active-tab writeback, focused-group marking, scroll-into-view,
+        // cross-strip dispatch) is reflected in what gets captured.
+        let root = self.root_obj.clone();
+        self.fb.pump_apps(&mut self.state, &root);
         self.fb.paint_settled()
     }
 }
 
 /// Append a tab to the first window group of the first workspace, straight
-/// into a forked document.
-///
-/// The peer in the `room-activity` scene has no `WorkspaceTree` of its own —
-/// it is a bare document, exactly like a remote replica that has only ever
-/// received change blobs. So it writes the same shape
-/// `WorkspaceTree::doc_append_tab_to_first_group_of_active_workspace` writes,
-/// by hand. Returns whether anything was written.
+/// into a forked document. The `room-activity` scene's peer has no
+/// `WorkspaceTree` — just a bare document, like a remote replica that has
+/// only ever received change blobs — so this hand-writes the same shape
+/// `WorkspaceTree::doc_append_tab_to_first_group_of_active_workspace` writes.
+/// Returns whether anything was written.
 fn peer_append_tab(doc: &mut automerge::AutoCommit, title: &str) -> bool {
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
@@ -331,25 +343,10 @@ fn peer_append_tab(doc: &mut automerge::AutoCommit, title: &str) -> bool {
 }
 
 impl ShellDriver {
-    /// Apply the named "scene" mutation set (the legacy `--scenes`
-    /// catalogue). Each scene is a one-shot mutation — call on a fresh
-    /// driver per scene if a clean slate is required.
-    /// Seed the active workspace with a membership and a set of granted
-    /// capabilities, so the Members and Permissions panes have something
-    /// real to render.
-    ///
-    /// Everything goes through `WorkspaceTree::grant_in_workspace` — the
-    /// authority-checked, doc-mirroring path the settings panel and the
-    /// portal both use. Nothing here writes a capability the enforcement
-    /// path would not honour, so a shot of this scene is a shot of a
-    /// state the compositor can actually be in.
-    /// Put a few records in the rooms the user is *not* in, so a search
-    /// has something to bring here.
-    ///
-    /// Sample content, and only ever reachable from `--shots`: the live
-    /// compositor's corpus is the records apps actually wrote. It goes
-    /// through the same `RoomRecords::reference` the palette's own Enter
-    /// does, so what the scene paints is what a real room index produces.
+    /// Puts a few records in rooms the user is *not* in, so search has
+    /// something to bring here. Reachable only from `--shots`, but goes
+    /// through the real `RoomRecords::reference` path, so what the scene
+    /// paints is what a real room index produces.
     fn seed_records_in_other_rooms(&mut self) {
         use ui::record::{RecordId, RecordKind};
         let rooms: Vec<_> = {
@@ -382,6 +379,71 @@ impl ShellDriver {
         }
     }
 
+    /// Record what an accepted invite and a couple of shares would have
+    /// recorded: memberships in this room and in Research (whose peers
+    /// are already present, so their faces are backed by a capability
+    /// rather than by hearsay), and two resources handed to named
+    /// people.
+    fn seed_shared_room(&mut self) {
+        use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+        let handle = self.chrome_handle();
+        let owner = handle.borrow().local_user_id.clone();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let ws_id = tree.active;
+            let room = ws_id.raw().to_string();
+            for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
+                tree.grant_in_workspace(
+                    ws_id,
+                    &owner,
+                    CapOverride::membership(Subject::person(member), room.clone(), verb),
+                );
+            }
+            // Both members at their desks: a room only carries a display
+            // name while a session of theirs is present.
+            if let Some(ws) = tree.active_workspace_mut() {
+                ws.collaborators
+                    .push(shell::shell::state::Collaborator::new("ada", "Ada"));
+                ws.collaborators
+                    .push(shell::shell::state::Collaborator::new("bo", "Bo"));
+            }
+            for (path, who, verb) in [
+                ("/var/workspace/design", "ada", Verb::Write),
+                ("/var/workspace/brief.pdf", "bo", Verb::Read),
+            ] {
+                tree.grant_in_workspace(
+                    ws_id,
+                    &owner,
+                    CapOverride::grant(Subject::person(who), Scope::FsPath(path.to_string()), verb),
+                );
+            }
+            // Research already has two people present. Give them the
+            // membership their presence implies, so the row shows the
+            // faces of people who can actually reach it.
+            let research: Vec<_> = tree
+                .workspaces
+                .iter()
+                .filter(|w| w.name == "Research")
+                .map(|w| (w.id, w.id.raw().to_string()))
+                .collect();
+            for (id, room) in research {
+                for (member, verb) in [("alice", Verb::Write), ("bob", Verb::Read)] {
+                    tree.grant_in_workspace(
+                        id,
+                        &owner,
+                        CapOverride::membership(Subject::person(member), room.clone(), verb),
+                    );
+                }
+            }
+        }
+        self.with_chrome(|_| {});
+    }
+
+    /// Seeds the active workspace with membership and granted capabilities
+    /// via `WorkspaceTree::grant_in_workspace` — the same authority-checked
+    /// path the settings panel and portal use, so this is a state the
+    /// compositor can actually be in.
     fn seed_workspace_permissions(&mut self) {
         use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
         let handle = self.chrome_handle();
@@ -438,6 +500,8 @@ impl ShellDriver {
         self.with_chrome(|_| {});
     }
 
+    /// Applies the named "scene" mutation set (the legacy `--scenes`
+    /// catalogue) — a one-shot mutation; call on a fresh driver per scene.
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
             "desktop" => {}
@@ -445,29 +509,30 @@ impl ShellDriver {
                 self.with_chrome(|st| st.overlays.overview = true);
                 self.fb.host_mut().force_overview_settled(true);
             }
+            // The same panel with the room actually shared: members on
+            // this room and on Research, and two resources handed out.
+            "overview-shared" => {
+                self.seed_shared_room();
+                self.with_chrome(|st| st.overlays.overview = true);
+                self.fb.host_mut().force_overview_settled(true);
+            }
             "palette" => {
                 self.fb.host_mut().set_palette_visible(true);
-                // Production opens the palette focused (see
-                // `open_palette_with_scope`); a scene that skipped this
-                // rendered the field's idle border and hid the focus ring
-                // from every screenshot review.
+                // Production opens the palette focused (`open_palette_with_scope`);
+                // otherwise the focus ring is absent from the shot.
                 self.fb.host_mut().set_palette_focus(true);
-                // Settle the rising-edge open animation so a single-frame
-                // paint shows the fully-opened modal instead of frame 0
-                // (`alpha == 0` → indistinguishable from bare desktop).
+                // Settle the rising-edge open animation: frame 0 (`alpha == 0`)
+                // is indistinguishable from bare desktop.
                 self.fb.host_mut().force_palette_settled();
-                // Populate the palette via the search registry so the
-                // scene shows a real result list. The live compositor
-                // does this on every keystroke via `handle_event`;
-                // scenes seed it explicitly.
+                // Live compositor populates results on every keystroke via
+                // `handle_event`; scenes seed it explicitly instead.
                 let root = self.root_obj.clone();
                 self.fb
                     .host_mut()
                     .refresh_search_results_for_shots(&mut self.state, &root);
             }
-            // The query that exposed the palette's ranking: an installed
-            // app's name that also appears in dozens of source paths.
-            // Enter activates the top row, so the app has to be it.
+            // "calculator" is both an installed app's name and a hit in
+            // dozens of source paths — the app has to rank first.
             "palette_app_query" => {
                 self.fb.host_mut().set_palette_visible(true);
                 self.fb.host_mut().force_palette_settled();
@@ -478,12 +543,9 @@ impl ShellDriver {
                     .host_mut()
                     .refresh_search_results_for_shots(&mut self.state, &root);
             }
-            // Ctrl+K's half of search: scoped to the focused app, with a
-            // query that appears nowhere but the focused Notes tab's own
-            // body. Pumps the apps first — exactly what the live frame
-            // loop does every frame — so the note's text is in the
-            // document and the provider has content to match rather than
-            // a title to fall back on.
+            // Ctrl+K's half of search, scoped to the focused app; pumps
+            // apps first (as the live frame loop does) so the note's text
+            // is actually in the document to match against.
             "palette_in_app_query" => {
                 let root = self.root_obj.clone();
                 self.fb.pump_apps(&mut self.state, &root);
@@ -498,13 +560,8 @@ impl ShellDriver {
                     .host_mut()
                     .refresh_search_results_for_shots(&mut self.state, &root);
             }
-            // Records from other rooms, which is what makes a room that
-            // starts empty workable: the rows say where each record
-            // lives, and Enter brings it here.
-            //
-            // The records are seeded into rooms *other* than the active
-            // one, because that is the case the gesture exists for — a
-            // record already here needs no bringing.
+            // Seeded in other rooms deliberately — a record already in
+            // the active room needs no bringing.
             "palette_records" => {
                 self.seed_records_in_other_rooms();
                 self.fb.host_mut().set_palette_visible(true);
@@ -516,10 +573,8 @@ impl ShellDriver {
                     .host_mut()
                     .refresh_search_results_for_shots(&mut self.state, &root);
             }
-            // What the card looks like when nothing matches. Worth a
-            // scene of its own: an empty result list is the state a
-            // palette spends real time in, and it is the one most likely
-            // to be left looking broken.
+            // Empty results are a state the palette spends real time in
+            // and the one most likely to be left looking broken.
             "palette_no_results" => {
                 self.fb.host_mut().set_palette_visible(true);
                 self.fb.host_mut().set_palette_focus(true);
@@ -576,11 +631,10 @@ impl ShellDriver {
                 self.fb.host_mut().force_ws_settings_settled();
             }
             "room-activity" => {
-                // Drive the room through the *production* mirrors first, so
-                // the pane has a history to show that the shell actually
-                // recorded. Nothing here seeds a `HistoryEntry`: these are the
-                // same calls the portal, the permission prompt, the drop
-                // handler and the settings modal make.
+                // Drives the room through the production mirrors, not a
+                // seeded `HistoryEntry` — these are the same calls the
+                // portal, permission prompt, drop handler and settings
+                // modal make.
                 use shell::shell::state::{CapOverride, Scope, Subject, Verb};
                 let handle = self.chrome_handle();
                 let owner = {
@@ -624,14 +678,12 @@ impl ShellDriver {
                     }
                     tree.seed_doc_from_cache();
 
-                    // A second person, and a history that is not all one
-                    // second old. The peer forks the document under its own
-                    // actor, makes a real change, and merges back — the same
-                    // shape a remote replica's sync round has — and the
-                    // commits are stamped across the past fortnight through
-                    // the clock the FS layer uses when it replays a durable
-                    // chain. Without this the scene exercises neither the
-                    // author directory nor the date filter.
+                    // A second person and a history spread over time: the
+                    // peer forks the document under its own actor, makes a
+                    // real change, and merges back — the shape a remote
+                    // replica's sync round has — with commits stamped
+                    // across the past fortnight so the author directory and
+                    // date filter both have something to exercise.
                     let base: Vec<automerge::Change> = tree
                         .export_changes_since(&[])
                         .iter()
@@ -642,8 +694,7 @@ impl ShellDriver {
                     if peer.apply_changes(base).is_ok() {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs() as i64)
-                            .unwrap_or(0);
+                            .map_or(0, |d| d.as_secs() as i64);
                         const DAY: i64 = 86_400;
                         for (days_ago, title) in
                             [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
@@ -664,10 +715,10 @@ impl ShellDriver {
                 self.fb.host_mut().force_room_activity_settled();
             }
             "room-activity-named" => {
-                // The same room, with two of its runs named — one of them by the
-                // peer, under the peer's own actor, so the band reads "named by"
-                // somebody other than whoever is looking. Both names go in through
-                // the pane's own write path, which is what the [Name] chip calls.
+                // Two runs named, one by the peer under its own actor, so
+                // the band reads "named by" someone other than the viewer.
+                // Both go in through the pane's own write path (the [Name]
+                // chip's call).
                 self.scene_setup("room-activity")?;
                 let handle = self.chrome_handle();
                 let st = handle.borrow();
@@ -702,8 +753,7 @@ impl ShellDriver {
                 self.fb.host_mut().force_room_activity_settled();
             }
             "room-activity-all" => {
-                // The same room, widened to the whole tree — which is what
-                // the document actually holds. Every row now says which
+                // Widened to the whole tree; every row now says which
                 // workspace it happened in.
                 self.scene_setup("room-activity")?;
                 let handle = self.chrome_handle();
@@ -724,62 +774,55 @@ impl ShellDriver {
             }
             "notifications" => {
                 use shell::shell::notification::{Notification, NotificationSeverity};
-                // Backdate `created_at` past the slide-in window so the
-                // still-frame snapshot captures the toasts settled at
-                // their resting position. Without this, every toast's
-                // `enter` progress is ~0 at snapshot time and
-                // `slide_dx == TOAST_WIDTH` pushes them entirely off-
-                // screen-right — the audit on 2026-06-24 mistook this
-                // for a text-truncation bug in the notification widget.
-                let settled_at = Instant::now() - Duration::from_secs(1);
+                // Backdate `created_at` past the slide-in window: at t=0 a
+                // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
+                // pushes it entirely off-screen-right.
+                let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
                 self.with_chrome(|st| {
-                    // Three sample toasts spanning the severity ramp so
-                    // the snapshot exercises info / warning / error
-                    // colour treatment in one frame. Long dismiss
-                    // windows so the still-image scene captures the
-                    // stack fully visible.
+                    // Severity ramp in one frame; long dismiss windows so
+                    // the still-image scene captures the stack visible.
                     st.push_notification_full(
                         Notification::new("Switched to workspace Research", "Active tab: Notes")
                             .with_severity(NotificationSeverity::Info)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                     st.push_notification_full(
                         Notification::new("Slow network", "Peer sync delayed; retrying")
                             .with_severity(NotificationSeverity::Warning)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                     st.push_notification_full(
                         Notification::new("Permission denied", "Files cannot access /etc/shadow")
                             .with_severity(NotificationSeverity::Error)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                 });
             }
             "notifications-one" => {
                 use shell::shell::notification::{Notification, NotificationSeverity};
-                let settled_at = Instant::now() - Duration::from_secs(1);
+                let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
                 self.with_chrome(|st| {
                     st.push_notification_full(
                         Notification::new("Build finished", "All 524 tests passed")
                             .with_severity(NotificationSeverity::Info)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                 });
             }
             "notifications-dnd" => {
                 use shell::shell::notification::{Notification, NotificationSeverity};
-                let settled_at = Instant::now() - Duration::from_secs(1);
+                let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
                 self.with_chrome(|st| {
                     // One banner posted *before* DND is engaged stays on
                     // screen (DND only gates new posts).
                     st.push_notification_full(
                         Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
                             .with_severity(NotificationSeverity::Info)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                     // Engage Do-Not-Disturb, then post two more — these are
@@ -797,45 +840,183 @@ impl ShellDriver {
                 });
             }
             "multi-group" => {
-                // Construct a 3-group strip in the active workspace by
-                // pushing two extra `WindowGroup` rows alongside the
-                // bootstrap default. This is the only scene-time mutation
-                // that exercises the inter-group chrome (resize handles,
-                // active-group outlines, gap drop-zones) — every other
-                // scene operates on the single-group bootstrap.
+                // The only scene that exercises inter-group chrome (resize
+                // handles, active-group outlines, gap drop-zones) — every
+                // other scene operates on the single-group bootstrap.
                 use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
                 self.with_chrome(|st| {
                     let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.active_workspace_mut() {
-                        if let Some(strip) = ws.strips.first_mut() {
-                            // Two synthetic groups, Normal-width, each
-                            // with one stub tab. IDs picked far above the
-                            // bootstrap range so they don't collide with
-                            // anything the persistence layer might
-                            // produce.
-                            for (gid, tid, label) in
-                                [(9001u64, 9101u64, "Stub-A"), (9002u64, 9102u64, "Stub-B")]
-                            {
-                                let stub_tab = Tab {
-                                    id: tid,
-                                    title: label.to_string(),
-                                    tile: TileContent::Stub {
-                                        kind: shell::shell::state::AppKind::Settings,
-                                        label: label.to_string(),
-                                    },
-                                };
-                                let group = WindowGroup {
-                                    id: gid,
-                                    tabs: vec![stub_tab],
-                                    active_tab: tid,
-                                    width: WindowWidth::Normal,
-                                    maximized: false,
-                                };
-                                strip.window_groups.push(group);
-                            }
+                    if let Some(ws) = tree.active_workspace_mut()
+                        && let Some(strip) = ws.strips.first_mut()
+                    {
+                        // IDs picked far above the bootstrap range so
+                        // they don't collide with persisted state.
+                        for (gid, tid, label) in
+                            [(9001u64, 9101u64, "Stub-A"), (9002u64, 9102u64, "Stub-B")]
+                        {
+                            let stub_tab = Tab {
+                                id: tid,
+                                title: label.to_string(),
+                                tile: TileContent::Stub {
+                                    kind: shell::shell::state::AppKind::Settings,
+                                    label: label.to_string(),
+                                },
+                            };
+                            let group = WindowGroup {
+                                id: gid,
+                                tabs: vec![stub_tab],
+                                active_tab: tid,
+                                width: WindowWidth::Normal,
+                                maximized: false,
+                            };
+                            strip.window_groups.push(group);
                         }
                     }
                     drop(tree);
+                    st.bump();
+                });
+            }
+            // One window filling the strip. Maximizing used to stroke a
+            // 2 px accent rectangle around the group's bounding box —
+            // sharp corners a pixel outside a rounded card — and there
+            // was no scene that showed it, which is how it survived to
+            // be reported from a live session instead of from a review.
+            "maximized" => {
+                let mut target = None;
+                self.with_chrome(|st| {
+                    {
+                        let mut tree = st.tree_mut();
+                        if let Some(strip) = tree
+                            .active_workspace_mut()
+                            .and_then(|ws| ws.strips.first_mut())
+                        {
+                            let sid = strip.id;
+                            if let Some(g) = strip.window_groups.first_mut() {
+                                g.maximized = true;
+                                target = Some((sid, g.id));
+                            }
+                        }
+                    }
+                    if let Some((_, gid)) = target {
+                        st.set_maximized_group(Some(gid));
+                    }
+                    st.bump();
+                });
+                let Some((strip_id, group_id)) = target else {
+                    return Err("maximized: active workspace has no window group".into());
+                };
+                // The widget tree is built before `scene_setup` runs, so
+                // the flag has to land on the live group as well — the
+                // same pair of writes the maximize click performs.
+                if let Some(row) = self.host_mut().group_row_mut_for_tests(strip_id) {
+                    for g in &mut row.groups {
+                        if g.id == group_id {
+                            g.maximized = true;
+                        }
+                    }
+                }
+            }
+            // Two half-width windows, focus on the right-hand one — nothing
+            // about the layout alone says which takes the next keystroke.
+            "two-groups-focus" => {
+                use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+                let half = WindowWidth::Fraction(500);
+                let mut placed = None;
+                self.with_chrome(|st| {
+                    {
+                        let mut tree = st.tree_mut();
+                        let mut sibling = None;
+                        let mut strip_id = None;
+                        if let Some(strip) = tree
+                            .active_workspace_mut()
+                            .and_then(|ws| ws.strips.first_mut())
+                        {
+                            for g in &mut strip.window_groups {
+                                g.width = half;
+                            }
+                            let gid = 9101u64;
+                            let tid = 9111u64;
+                            strip.window_groups.push(WindowGroup {
+                                id: gid,
+                                tabs: vec![Tab {
+                                    id: tid,
+                                    title: "Settings".to_string(),
+                                    tile: TileContent::Stub {
+                                        kind: shell::shell::state::AppKind::Settings,
+                                        label: "Settings".to_string(),
+                                    },
+                                }],
+                                active_tab: tid,
+                                width: half,
+                                maximized: false,
+                            });
+                            strip_id = Some(strip.id);
+                            sibling = Some(gid);
+                        }
+                        // Focus the newly-added right-hand window, so the
+                        // scene shows the signal moving off the default.
+                        if let (Some(sid), Some(gid)) = (strip_id, sibling) {
+                            tree.set_active_group(sid, gid);
+                            placed = Some(sid);
+                        }
+                    }
+                    st.bump();
+                });
+                // Widths only reach the widget tree at construction, which
+                // ran before this; halve the live groups too or the scene
+                // renders one full-width window with its sibling off-edge.
+                if let Some(sid) = placed
+                    && let Some(row) = self.host_mut().group_row_mut_for_tests(sid)
+                {
+                    for g in &mut row.groups {
+                        g.set_width(half.to_ui());
+                    }
+                }
+                // The pushed group latches its 420 ms arrival fade off the
+                // wall clock the moment it's spliced in; paint once so it
+                // becomes a widget, then wait the curve out before the
+                // caller's `paint_settled` captures the resting state.
+                let _ = self.paint_settled();
+                std::thread::sleep(std::time::Duration::from_millis(600));
+            }
+            "multi-strip" => {
+                // Three strips in the active workspace, focus on the
+                // middle one — the only scene exercising the strip ribbon.
+                use shell::shell::state::{
+                    AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+                };
+                self.with_chrome(|st| {
+                    let mut focus = None;
+                    {
+                        let mut tree = st.tree_mut();
+                        if let Some(ws) = tree.active_workspace_mut() {
+                            for (n, name) in ["Build", "Review"].iter().enumerate() {
+                                let sid = StripId(9200 + n as u64);
+                                let mut strip = Strip::new(sid, (*name).to_string());
+                                let gid = 9300 + n as u64;
+                                let tid = 9400 + n as u64;
+                                strip.window_groups.push(WindowGroup {
+                                    id: gid,
+                                    tabs: vec![Tab {
+                                        id: tid,
+                                        title: (*name).to_string(),
+                                        tile: TileContent::Stub {
+                                            kind: AppKind::Settings,
+                                            label: (*name).to_string(),
+                                        },
+                                    }],
+                                    active_tab: tid,
+                                    width: WindowWidth::Normal,
+                                    maximized: false,
+                                });
+                                ws.strips.push(strip);
+                            }
+                            focus = ws.strips.get(1).map(|s| s.id).map(|sid| (ws.id, sid));
+                        }
+                        if let Some((ws_id, sid)) = focus {
+                            tree.active_strip.insert(ws_id, sid);
+                        }
+                    }
                     st.bump();
                 });
             }
@@ -849,7 +1030,11 @@ impl ShellDriver {
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
         "multi-group",
+        "multi-strip",
+        "maximized",
+        "two-groups-focus",
         "overview",
+        "overview-shared",
         "palette",
         "palette_typed",
         "palette_in_app_query",
@@ -871,26 +1056,30 @@ impl ShellDriver {
     ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen
-    /// rect in viewport-local coordinates. Returns `None` if the rect
-    /// is `Rect::ZERO` (which generally means "this widget hasn't been
-    /// drawn yet" — call `paint` once first to populate it).
+    /// rect in viewport-local coordinates. `None` means `Rect::ZERO` —
+    /// generally "not drawn yet" (call `paint` once first).
     ///
-    /// Resolution order (first non-zero match wins):
-    /// 1. Hand-curated table — the five legacy keys that depend on
-    ///    chrome-internal accessors that aren't reachable by tree walk.
-    /// 2. Widget-tree registry — every widget with a `test_id` or
-    ///    discoverable name/path key (see `widget_registry`).
+    /// Checks a hand-curated table first (`"add_workspace"`,
+    /// `"ws_settings_tab[general|members|permissions]"` — keys needing
+    /// chrome-internal accessors no tree walk reaches), then falls back to
+    /// the widget-tree registry keyed by `test_id` or path
+    /// (`ShellOverlayHost/TopBarChrome`).
     ///
-    /// Names supported by the hand-curated table:
-    ///   - `"add_workspace"` — the "+ Add workspace" tile in the overview
-    ///     (only valid while the overview is open).
-    ///   - `"ws_settings_tab[general|members|permissions]"` — modal
-    ///     tab pills (only valid while ws-settings is open).
+    /// # A client tile has two names, and only one is the one you guessed
     ///
-    /// Beyond those, scenarios can address any widget by its `test_id`
-    /// (e.g. `command_palette_input`, `wheel_disc`) or by its path key
-    /// (e.g. `ShellOverlayHost/TopBarChrome` if the widget didn't opt in
-    /// to a `test_id`).
+    /// A foreign surface is `foreign-surface-<id>`, and once bound to a
+    /// tab also answers to `foreign-surface-<id>[<tab_id>]`. Both forms
+    /// exist within one session, so look it up **by prefix on the surface
+    /// id**, never the bare name:
+    ///
+    /// ```ignore
+    /// let stem = format!("foreign-surface-{surface_id}");
+    /// let named = names.iter().find(|n| **n == stem || n.starts_with(&format!("{stem}[")));
+    /// ```
+    ///
+    /// Getting this wrong returns `None` — indistinguishable from "not
+    /// open" — for a window plainly on screen, so a harness that declines
+    /// to click blames whatever assertion runs next.
     pub fn resolve_named_rect(&self, name: &str) -> Option<Rect> {
         let host = self.fb.host();
         let curated = match name {
@@ -902,36 +1091,28 @@ impl ShellDriver {
             }
             _ => None,
         };
-        if let Some(r) = curated {
-            if r.area() > 0.0 {
-                return Some(r);
-            }
-            // Fall through to the registry — the curated key may have
-            // missed because its prerequisite chrome state isn't set
-            // (overview closed, ws-settings closed). Registry can still
-            // succeed for an opt-in `test_id` regardless.
+        if let Some(r) = curated
+            && r.area() > 0.0
+        {
+            return Some(r);
         }
+        // Fall through to the registry — the curated key may have
+        // missed because its prerequisite chrome state isn't set
+        // (overview closed, ws-settings closed). Registry can still
+        // succeed for an opt-in `test_id` regardless.
         let registry = self.widget_registry();
         registry.get(name).copied().filter(|r| r.area() > 0.0)
     }
 
-    /// Walk the widget tree from the overlay host and return a snapshot
-    /// of every addressable widget's rect, keyed by:
-    ///   - its `test_id()` if it opted in, OR
-    ///   - a path key `Parent/Child[index]` reflecting the position in
-    ///     the tree (index disambiguates siblings of the same name).
+    /// Snapshot of every addressable widget's rect, keyed by `test_id()`
+    /// or, failing that, a path key `Parent/Child[index]`.
     ///
-    /// The registry is **rebuilt on every call** — there's no hidden
-    /// cache. Callers that need the registry across multiple actions
-    /// in a scenario should re-fetch it after each `paint` because
-    /// layout (and therefore rects) can shift between frames.
-    ///
-    /// Widgets at `Rect::ZERO` are still registered (a missing rect is
-    /// information too — the caller can detect a widget that exists
-    /// but isn't laid out yet). `resolve_named_rect` filters those out.
+    /// Rebuilt on every call — no hidden cache — so re-fetch after each
+    /// `paint` in a multi-action scenario. Widgets at `Rect::ZERO` are
+    /// still registered; `resolve_named_rect` filters those out.
     pub fn widget_registry(&self) -> HashMap<String, Rect> {
         // Delegate to the shared walk in `compositor::frame` so the
-        // out-of-process `compositor::test_control` and the in-process
+        // out-of-process `compositor::test_control` and in-process
         // ShellDriver see exactly the same target set.
         self.fb.widget_registry()
     }
@@ -1034,19 +1215,11 @@ mod tests {
         );
     }
 
-    /// End-to-end pin for the user's "drag-tab-out replaces instead of
-    /// creating a sibling" report: with the bootstrap default's 4-tab
-    /// Wide group, dragging the second tab pill (Files) past the source
-    /// group's right edge and releasing in the empty strip area must
-    /// produce TWO groups — the 3-tab source and a 1-tab new group —
-    /// not one.
-    ///
-    /// The earlier `tab_drag_out_to_new_group` headless scenario used
-    /// guessed coords (420, 80) → (1100, 80) which missed the actual
-    /// pill rect (the leading icon column shifts pill 1 well past
-    /// x=420 inside a Wide=800 group laid out from x≈224). This test
-    /// reads the live `tab_rects()` off the bar so the press lands
-    /// exactly on a pill regardless of layout drift.
+    /// Dragging the second tab pill (Files) out of the bootstrap default's
+    /// 4-tab Wide group, past its right edge into the empty strip area,
+    /// must produce TWO groups (3-tab source + 1-tab sibling), not a
+    /// replace. Reads the live `tab_rects()` off the bar so the press
+    /// lands on the pill regardless of layout drift.
     #[test]
     fn driver_drag_tab_out_creates_sibling_group() {
         let mut d = ShellDriver::new((1600, 900));
@@ -1112,20 +1285,15 @@ mod tests {
              post = {:?}",
             post_strip.1,
         );
-        // Source kept 3 tabs, new group has 1.
         let counts: Vec<usize> = post_strip.1.iter().map(|(_, t)| t.len()).collect();
         assert!(
             counts.contains(&3) && counts.contains(&1),
-            "expected one group with 3 tabs and one with 1 tab; got {:?}",
-            counts,
+            "expected one group with 3 tabs and one with 1 tab; got {counts:?}",
         );
 
-        // Both groups must be laid out — the user's visible "replace"
-        // perception was the new group living at `Rect::ZERO` because
-        // `GroupRow::structure_dirty` never bubbled up to `App` /
-        // driver-level `relayout`. Pin both rects > 0 so a regression
-        // would surface as a failure here, not as a silent invisible
-        // sibling group at runtime.
+        // Both groups must be laid out: a `structure_dirty` that fails to
+        // bubble up to a `relayout` leaves the new group at `Rect::ZERO`,
+        // silently invisible rather than failing here.
         for i in 0..2 {
             let g = d
                 .host_mut()
@@ -1155,13 +1323,9 @@ mod tests {
     }
 
     /// `widget_registry` must enumerate the live widget tree after a
-    /// paint. The bootstrap default seeds a topbar inside the content
-    /// chrome, so a registry walk should surface a `TopBarChrome` entry
-    /// (either as a bare name or with a `[0]` suffix).
-    ///
-    /// Pinned so a future regression that breaks `ShellOverlayHost::
-    /// children()` — the recursion entry-point — fails this test instead
-    /// of silently returning an empty registry.
+    /// paint, surfacing a `TopBarChrome` entry from the bootstrap default —
+    /// pinned so a regression in `ShellOverlayHost::children()` fails here
+    /// rather than silently returning an empty registry.
     #[test]
     fn widget_registry_finds_topbar_buttons() {
         let mut d = ShellDriver::new((1600, 900));
@@ -1173,15 +1337,11 @@ mod tests {
             !registry.is_empty(),
             "registry must not be empty after paint"
         );
-        // The host (root) should be there.
         assert!(
             registry.keys().any(|k| k.contains("ShellOverlayHost")),
             "registry should contain ShellOverlayHost; keys={:?}",
             registry.keys().collect::<Vec<_>>()
         );
-        // And the topbar chrome should be reachable through the content
-        // subtree (added in Addition B once host.children() forwards
-        // content + sidebar + palette).
         assert!(
             registry.keys().any(|k| k.contains("TopBarChrome")),
             "registry should contain TopBarChrome; keys={:?}",
@@ -1189,12 +1349,9 @@ mod tests {
         );
     }
 
-    /// `resolve_named_rect` must fall through to the widget tree when
-    /// the hand-curated table misses. The CommandPalette widget opts in
-    /// to `test_id() == "command_palette_input"` (a high-value target);
-    /// after opening the palette, the resolver should return its rect
-    /// even though `command_palette_input` is not in the hand-curated
-    /// match arm.
+    /// `resolve_named_rect` must fall through to the widget tree when the
+    /// hand-curated table misses: `command_palette_input` isn't in that
+    /// table, but the `CommandPalette` widget opts in via `test_id()`.
     #[test]
     fn resolve_named_rect_falls_back_to_registry() {
         let mut d = ShellDriver::new((1600, 900));
@@ -1224,18 +1381,11 @@ mod tests {
         );
     }
 
-    /// Regression test for the 2026-07-09 report: drag a tab into its
-    /// own group, click that group's window body, then press Ctrl+K.
-    /// The palette must:
-    ///
-    /// 1. Not make the sibling group disappear (both groups still laid
-    ///    out with non-zero rects).
-    /// 2. Scope to the CLICKED group's tab, not the group that happened
-    ///    to be active before the detach.
-    ///
-    /// Reproduces the setup used by
-    /// [`driver_drag_tab_out_creates_sibling_group`] then extends it
-    /// with a body-click + Ctrl+K.
+    /// Drag a tab into its own group, click that group's window body, then
+    /// press Ctrl+K. The palette must not make the sibling group disappear,
+    /// and must scope to the CLICKED group's tab, not whichever group was
+    /// active before the detach. Extends
+    /// [`driver_drag_tab_out_creates_sibling_group`]'s setup.
     #[test]
     fn detach_click_body_ctrl_k_scopes_to_clicked_tab() {
         let mut d = ShellDriver::new((1600, 900));
@@ -1248,7 +1398,6 @@ mod tests {
             let ws_id = tree.active;
             *tree.active_strip.get(&ws_id).expect("active strip")
         };
-        // Drag Files (pill 1) out past the source group's right edge.
         let (from, to) = {
             let group = d
                 .host_mut()
@@ -1267,7 +1416,6 @@ mod tests {
         let _ = d.paint();
         d.relayout();
 
-        // Two groups must exist now.
         let post = d.host().groups_per_strip();
         let strip = post
             .iter()
@@ -1275,8 +1423,7 @@ mod tests {
             .expect("strip present");
         assert_eq!(strip.1.len(), 2, "detach must produce two groups");
 
-        // Find the group that contains the Files tab. Titles come from
-        // the bootstrap default seed; the detached one is the singleton.
+        // The detached group is the singleton.
         let files_group_idx = strip
             .1
             .iter()
@@ -1299,10 +1446,9 @@ mod tests {
             "both groups laid out before body click"
         );
 
-        // Click the middle of the Files group's WINDOW BODY (well
-        // below the tab bar so we don't hit a pill).
+        // Well below the tab bar so we don't hit a pill.
         let body_click = Point::new(
-            (files_rect.x0 + files_rect.x1) / 2.0,
+            f64::midpoint(files_rect.x0, files_rect.x1),
             files_rect.y0 + files_rect.height() * 0.6,
         );
         d.click_at(body_click);
@@ -1310,7 +1456,6 @@ mod tests {
         let _ = d.paint();
         d.relayout();
 
-        // Sanity: click alone must not drop the group.
         let mid = d.host().groups_per_strip();
         let strip_mid = mid
             .iter()
@@ -1323,16 +1468,13 @@ mod tests {
             strip_mid.1
         );
 
-        // Fire Ctrl+K.
         d.set_modifiers(ModifiersState::CONTROL);
         d.press_key(Key::Character(winit::keyboard::SmolStr::new("k")));
         d.set_modifiers(ModifiersState::empty());
         let _ = d.paint();
         d.relayout();
 
-        // Postcondition 1: the sibling group must still exist AND still
-        // have a non-zero rect. The "window disappears" repro was the
-        // group getting silently dropped or rendered at zero.
+        // Sibling group must still exist with a non-zero rect.
         let post2 = d.host().groups_per_strip();
         let strip2 = post2
             .iter()
@@ -1350,15 +1492,9 @@ mod tests {
                 .group_at_for_tests(strip_id, i)
                 .expect("group laid out post ctrl+k")
                 .get_rect();
-            assert!(
-                r.area() > 0.0,
-                "group[{i}] must still render (rect={:?})",
-                r
-            );
+            assert!(r.area() > 0.0, "group[{i}] must still render (rect={r:?})");
         }
 
-        // Postcondition 2: the tree's active_tab must point at Files,
-        // not the group that was active before the drag.
         let active_tab = d.chrome().active_tab_id();
         assert_eq!(
             active_tab,

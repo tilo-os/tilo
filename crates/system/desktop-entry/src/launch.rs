@@ -2,50 +2,34 @@
 //!
 //! # The decision this module encodes
 //!
-//! A qOS package runs inside qOS's sandbox: bubblewrap with
-//! `--unshare-all`, a seccomp deny-list, Landlock, exactly one writable
-//! directory chosen by the launcher, and an environment carrying the
-//! room the app belongs to. A host application **does not**, and cannot
-//! be made to:
+//! A qOS package runs inside qOS's sandbox: bubblewrap with `--unshare-all`, a seccomp
+//! deny-list, Landlock, one writable directory, and an environment carrying the app's room. A
+//! host application **does not**, and cannot be made to:
 //!
-//! - A Flatpak brings its own sandbox. Building one needs `unshare(2)`,
-//!   `mount(2)` and `pivot_root(2)`, which qOS's baseline seccomp
-//!   filter denies outright; it also needs `/usr/bin` and its own
-//!   runtime tree, which qOS's sandbox does not bind. Running
-//!   `flatpak run` inside qOS's sandbox does not produce a
-//!   doubly-confined app — it produces an app that fails to start.
-//! - A plain distribution binary has no sandbox at all and no manifest
-//!   describing one. There is nothing to derive a policy from: qOS's
-//!   sandbox is built out of a package manifest, and a `.desktop` file
-//!   is not one.
+//! - A Flatpak brings its own sandbox, which needs `unshare(2)`/`mount(2)`/`pivot_root(2)` —
+//!   denied by qOS's baseline seccomp filter — plus `/usr/bin` and its own runtime tree, not
+//!   bound in qOS's sandbox. `flatpak run` inside qOS's sandbox doesn't doubly-confine it;
+//!   it just fails to start.
+//! - A plain distribution binary has no sandbox and no manifest to derive a policy from —
+//!   qOS's sandbox is built out of a package manifest, and a `.desktop` file is not one.
 //!
-//! So a host application runs **unconfined**, as the user, with the
-//! user's own files and network. Concretely it has:
+//! So a host application runs **unconfined**, as the user, with the user's own files and
+//! network: no `QOS_WORKSPACE_ID` (no collaboration room, nothing partitioned per room), no
+//! capability file (there's no sandbox to enforce workspace grants against, and passing them
+//! would falsely imply the app was limited to them), and no per-room state partition (it
+//! writes to the user's real `$HOME`).
 //!
-//! - **no `QOS_WORKSPACE_ID`** — it is in no collaboration room, and
-//!   nothing it writes is partitioned per room;
-//! - **no capability file** — the workspace's grants describe what a
-//!   *sandboxed* app may reach, and there is no sandbox here to enforce
-//!   them against, so they are not passed. Passing them would say the
-//!   app was limited to them, which would be false;
-//! - **no per-room state partition** — it writes to the user's real
-//!   `$HOME`, like it does under any other desktop.
-//!
-//! Those three absences are the reason [`HostLaunch::is_confined`]
-//! exists and is `false`, and the reason the desktop labels these apps
-//! separately everywhere they appear. The failure mode this is written
-//! against is not "a host app escapes the sandbox" — it never had one —
-//! but "the user cannot tell which of the two kinds of app they are
-//! looking at". Blurring the two is the bug.
+//! Those absences are why [`HostLaunch::is_confined`] is `false`, and why the desktop labels
+//! these apps separately everywhere. The failure mode guarded against is not "a host app
+//! escapes the sandbox" (it never had one) but "the user cannot tell which kind of app they
+//! are looking at" — blurring the two is the bug.
 //!
 //! # What is still controlled
 //!
-//! The environment. A host app is spawned from an explicit allowlist of
-//! the launcher's own variables plus a fixed set of overrides, not from
-//! whatever the compositor happens to be carrying. That keeps qOS's
-//! internal variables — a room id, an app directory, an identity path —
-//! from leaking into a process that is not entitled to them and would
-//! not honour them.
+//! The environment. A host app is spawned from an explicit allowlist of the launcher's own
+//! variables plus a fixed set of overrides, not whatever the compositor happens to be
+//! carrying — keeping qOS's internal variables (room id, app directory, identity path) from
+//! leaking into a process not entitled to them.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -54,11 +38,9 @@ use std::process::Command;
 use crate::entry::{DesktopEntry, EntrySource, EntryType};
 use crate::exec::{ExecError, ExpandContext, expand, split_exec};
 
-/// Variables inherited from the launching process, when set.
-///
-/// Everything a normal desktop application needs to find its user, its
-/// theme, its locale and its session bus — and nothing that describes
-/// qOS's own confinement, because a host app is not subject to it.
+/// Variables inherited from the launching process, when set. Everything a normal desktop
+/// app needs to find its user, theme, locale and session bus — nothing that describes qOS's
+/// own confinement, since a host app is not subject to it.
 const INHERITED_ENV: &[&str] = &[
     "HOME",
     "USER",
@@ -83,12 +65,9 @@ const INHERITED_ENV: &[&str] = &[
     "DBUS_SESSION_BUS_ADDRESS",
 ];
 
-/// Variables that are always cleared, whatever the parent had.
-///
-/// `DISPLAY` because there is no XWayland: a toolkit that sees one
-/// tries the X11 backend, fails to connect, and reports a display
-/// error instead of falling back. The `QOS_*` ones because they
-/// describe a confinement this process does not have.
+/// Variables that are always cleared, whatever the parent had. `DISPLAY` because there's no
+/// `XWayland` (a toolkit that sees one tries X11, fails to connect, and errors instead of
+/// falling back); `QOS_*` because they describe a confinement this process does not have.
 const CLEARED_ENV: &[&str] = &[
     "DISPLAY",
     "XAUTHORITY",
@@ -99,15 +78,12 @@ const CLEARED_ENV: &[&str] = &[
     "QOS_NET_GATE",
 ];
 
-/// The desktop name qOS announces, and what `OnlyShowIn`/`NotShowIn`
-/// are matched against.
+/// The desktop name qOS announces, and what `OnlyShowIn`/`NotShowIn` are matched against.
 pub const XDG_CURRENT_DESKTOP: &str = "nirios";
 
-/// Marker set in a host application's environment.
-///
-/// Not a capability and not read by anything qOS enforces — it is there
-/// so `ps`, a crash report or a confused user can tell that this
-/// process was started by qOS and is not confined by it.
+/// Marker set in a host application's environment. Not a capability and not read by anything
+/// qOS enforces — there so `ps`, a crash report or a confused user can tell it was started by
+/// qOS and is not confined by it.
 pub const HOST_APP_ENV: &str = "QOS_HOST_APP";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -132,11 +108,9 @@ pub enum HostLaunchError {
     NotFound(String),
 }
 
-/// A resolved host-application launch: the exact argv and environment.
-///
-/// Pure data. Building one performs no I/O and starts nothing, so the
-/// command a launch *would* use is assertable in a test without a
-/// process appearing.
+/// A resolved host-application launch: the exact argv and environment. Pure data — building
+/// one performs no I/O and starts nothing, so the command it *would* use is assertable in a
+/// test without a process appearing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostLaunch {
     /// Desktop-file id of the entry this came from.
@@ -145,22 +119,18 @@ pub struct HostLaunch {
     pub display_name: String,
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// The child's complete environment. Not overrides — the child is
-    /// spawned with `env_clear()` and then exactly this.
+    /// The child's complete environment. Not overrides — the child is spawned with `env_clear()`
+    /// and then exactly this.
     pub env: BTreeMap<String, String>,
-    /// Where its window is expected to announce itself. See
-    /// [`DesktopEntry::window_identities`].
+    /// Where its window is expected to announce itself. See [`DesktopEntry::window_identities`].
     pub window_identities: Vec<String>,
     pub source: EntrySource,
 }
 
 impl HostLaunch {
-    /// Always `false`, and a method rather than a constant so a caller
-    /// asking "is this app confined?" gets an answer from the type that
-    /// knows, not from a comment.
-    ///
-    /// Nothing in this crate can return `true` here. A confined launch
-    /// is a `.qpkg` going through `qos-launcher run`.
+    /// Always `false`, and a method rather than a constant so a caller asking "is this app
+    /// confined?" gets an answer from the type that knows, not a comment. Nothing in this crate
+    /// can return `true` here — a confined launch is a `.qpkg` going through `qos-launcher run`.
     pub fn is_confined(&self) -> bool {
         false
     }
@@ -180,14 +150,12 @@ impl HostLaunch {
 /// What the launching desktop knows that the `.desktop` file does not.
 #[derive(Debug, Clone, Default)]
 pub struct LaunchEnv {
-    /// Host path of the compositor's Wayland socket, e.g.
-    /// `/run/user/1000/wayland-1`. `WAYLAND_DISPLAY` is set to its file
-    /// name and `XDG_RUNTIME_DIR` to its directory, so a host app
-    /// connects to the compositor that launched it rather than to
-    /// whatever the launcher's own environment pointed at.
+    /// Host path of the compositor's Wayland socket, e.g. `/run/user/1000/wayland-1`.
+    /// `WAYLAND_DISPLAY` is set to its file name and `XDG_RUNTIME_DIR` to its directory, so a
+    /// host app connects to the compositor that launched it rather than whatever the launcher's
+    /// own environment pointed at.
     pub wayland_socket: Option<PathBuf>,
-    /// Documents to open, as absolute host paths. Feed `%f`/`%F`, and
-    /// `%u`/`%U` as `file://` URLs.
+    /// Documents to open, as absolute host paths. Feed `%f`/`%F`, and `%u`/`%U` as `file://` URLs.
     pub files: Vec<String>,
     /// URLs to open. Feed `%u`/`%U`.
     pub urls: Vec<String>,
@@ -227,11 +195,9 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
         },
     );
     let mut argv = argv.into_iter();
-    let program = argv
-        .next()
-        .ok_or_else(|| HostLaunchError::NoExec {
-            id: entry.id.clone(),
-        })?;
+    let program = argv.next().ok_or_else(|| HostLaunchError::NoExec {
+        id: entry.id.clone(),
+    })?;
 
     Ok(HostLaunch {
         desktop_id: entry.id.clone(),
@@ -244,22 +210,20 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
     })
 }
 
-/// The child's whole environment: an allowlist of the parent's, plus
-/// the overrides the desktop is authoritative for.
+/// The child's whole environment: an allowlist of the parent's, plus the overrides the
+/// desktop is authoritative for.
 fn build_env(wayland_socket: Option<&Path>) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     for key in INHERITED_ENV {
-        if let Some(value) = std::env::var_os(key) {
-            if !value.is_empty() {
-                env.insert((*key).to_string(), value.to_string_lossy().to_string());
-            }
+        if let Some(value) = std::env::var_os(key)
+            && !value.is_empty()
+        {
+            env.insert((*key).to_string(), value.to_string_lossy().to_string());
         }
     }
-    // The compositor's socket wins over anything inherited. Both halves
-    // have to move together: WAYLAND_DISPLAY is resolved relative to
-    // XDG_RUNTIME_DIR, so setting one from the launch and the other
-    // from the parent's environment is how an app ends up connecting to
-    // a different compositor.
+    // The compositor's socket wins over anything inherited. Both halves must move together:
+    // WAYLAND_DISPLAY resolves relative to XDG_RUNTIME_DIR, so mixing sources here is how an
+    // app ends up connecting to a different compositor.
     if let Some(socket) = wayland_socket {
         if let Some(name) = socket.file_name() {
             env.insert(
@@ -291,8 +255,7 @@ fn build_env(wayland_socket: Option<&Path>) -> BTreeMap<String, String> {
     env
 }
 
-/// Find the entry with this desktop-file id on the current system and
-/// plan a launch for it.
+/// Find the entry with this desktop-file id on the current system and plan a launch for it.
 pub fn plan_by_id(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostLaunchError> {
     let scan = crate::cache::cached_scan();
     let entry = scan
@@ -335,16 +298,15 @@ mod tests {
         );
     }
 
-    /// The whole point of the module. A host launch is never confined,
-    /// and the type says so rather than a comment.
+    /// The whole point of the module. A host launch is never confined, and the type says so
+    /// rather than a comment.
     #[test]
     fn a_host_launch_is_never_confined() {
         let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
         assert!(!launch.is_confined());
     }
 
-    /// The three things a confined qOS app has and a host app must not
-    /// be told it has.
+    /// The three things a confined qOS app has and a host app must not be told it has.
     #[test]
     fn the_environment_carries_no_room_no_app_dir_and_no_identity() {
         let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
@@ -447,8 +409,8 @@ mod tests {
         );
     }
 
-    /// `env_clear()` then the map: nothing from the launcher's own
-    /// environment reaches the child except through the allowlist.
+    /// `env_clear()` then the map: nothing from the launcher's own environment reaches the
+    /// child except through the allowlist.
     #[test]
     fn to_command_starts_from_an_empty_environment() {
         let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
@@ -460,9 +422,6 @@ mod tests {
         for k in launch.env.keys() {
             assert!(vars.contains(k), "{k} must reach the child");
         }
-        assert_eq!(
-            cmd.get_program(),
-            std::ffi::OsStr::new("/usr/bin/flatpak")
-        );
+        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/usr/bin/flatpak"));
     }
 }

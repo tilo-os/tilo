@@ -10,7 +10,7 @@
 //! - **Automatic brightness / Night light** are durable preferences
 //!   persisted to the shared store ([`crate::prefs::SystemPrefs`]); the
 //!   compositor's output layer reads them.
-//! - **Scale** is the HiDPI display-scale factor. Unlike resolution/mode
+//! - **Scale** is the `HiDPI` display-scale factor. Unlike resolution/mode
 //!   setting (which stays the compositor's to own), scale is a shared
 //!   preference: the compositor reads `display.scale` from the settings
 //!   file at session start and advertises it to clients as the preferred
@@ -31,19 +31,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::Dispatcher;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Slider, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{DisplayPrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row, value_row, El};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
 
 /// CRDT key the brightness slider writes into.
 pub const BRIGHTNESS_KEY: &str = "display.brightness";
@@ -54,7 +54,7 @@ pub const NIGHT_LIGHT_KEY: &str = "display.night_light";
 /// CRDT key the display-scale dropdown writes into.
 pub const DISPLAY_SCALE_KEY: &str = "display.scale";
 
-/// Offered HiDPI display scales as `(display label, factor)`. The label is
+/// Offered `HiDPI` display scales as `(display label, factor)`. The label is
 /// what the dropdown shows and stores in the CRDT; the factor is what
 /// [`DisplayPrefs::scale`] persists and the compositor advertises as the
 /// preferred `wp_fractional_scale`.
@@ -68,18 +68,21 @@ pub const DISPLAY_SCALES: &[(&str, f64)] = &[
 
 /// Map a scale factor to the closest offered label (defaults to "100%").
 fn scale_label(scale: f64) -> &'static str {
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // could hold a non-finite scale, and this must degrade to "100%" rather
+    // than panic the pane.
     DISPLAY_SCALES
         .iter()
-        .min_by(|(_, a), (_, b)| {
-            (a - scale).abs().partial_cmp(&(b - scale).abs()).unwrap()
-        })
-        .map(|(label, _)| *label)
-        .unwrap_or("100%")
+        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
+        .map_or("100%", |(label, _)| *label)
 }
 
 /// Map a scale label back to its factor, if recognised.
 fn scale_factor_of(label: &str) -> Option<f64> {
-    DISPLAY_SCALES.iter().find(|(l, _)| *l == label).map(|(_, s)| *s)
+    DISPLAY_SCALES
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, s)| *s)
 }
 
 /// One real display output, derived from a DRM connector.
@@ -97,7 +100,7 @@ pub struct DisplayOutput {
 pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
     // Strip the leading `cardN-` so we're left with the connector, e.g.
     // `eDP-1`, `HDMI-A-1`, `DP-2`.
-    let name = conn.split_once('-').map(|(_, rest)| rest).unwrap_or(conn);
+    let name = conn.split_once('-').map_or(conn, |(_, rest)| rest);
     let upper = name.to_ascii_uppercase();
     let builtin = upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI");
     let label = if builtin {
@@ -201,9 +204,11 @@ impl DisplayPane {
     ) -> Self {
         Self {
             dispatcher,
-            outputs: vec![
-                DisplayOutput { label: "Built-in display".into(), connected: true, builtin: true },
-            ],
+            outputs: vec![DisplayOutput {
+                label: "Built-in display".into(),
+                connected: true,
+                builtin: true,
+            }],
             initial_brightness,
             initial_prefs: DisplayPrefs::default(),
             last_brightness: initial_brightness,
@@ -239,14 +244,16 @@ impl DisplayPane {
         let arrangement = if connected.is_empty() {
             card(
                 "Displays",
-                rows(vec![caption(
-                    "No displays detected on this device.",
-                )]),
+                rows(vec![caption("No displays detected on this device.")]),
             )
         } else {
             let mut out_rows: Vec<El> = Vec::new();
             for o in &connected {
-                let status = if o.builtin { "Active · primary" } else { "Connected" };
+                let status = if o.builtin {
+                    "Active · primary"
+                } else {
+                    "Connected"
+                };
                 out_rows.push(value_row(&o.label, status));
             }
             // One honest line about the idle ports rather than a row each.
@@ -259,8 +266,7 @@ impl DisplayPane {
         };
 
         // --- Scale card: HiDPI display-scale factor.
-        let scale_opts: Vec<String> =
-            DISPLAY_SCALES.iter().map(|(l, _)| l.to_string()).collect();
+        let scale_opts: Vec<String> = DISPLAY_SCALES.iter().map(|(l, _)| l.to_string()).collect();
         let scale = card(
             "Scale",
             rows(vec![
@@ -334,7 +340,7 @@ impl Widget for DisplayPane {
             let _ = state.put(
                 root,
                 BRIGHTNESS_KEY,
-                automerge::ScalarValue::F64(self.initial_brightness as f64),
+                automerge::ScalarValue::F64(f64::from(self.initial_brightness)),
             );
             let _ = state.put(
                 root,
@@ -346,51 +352,54 @@ impl Widget for DisplayPane {
                 NIGHT_LIGHT_KEY,
                 automerge::ScalarValue::Boolean(self.initial_prefs.night_light),
             );
-            let _ = state.put(root, DISPLAY_SCALE_KEY, scale_label(self.initial_prefs.scale));
+            let _ = state.put(
+                root,
+                DISPLAY_SCALE_KEY,
+                scale_label(self.initial_prefs.scale),
+            );
             self.last_prefs = self.initial_prefs;
             self.needs_seed = false;
         }
 
         // Brightness → dispatcher, guarded so we don't shell out every frame.
-        if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY) {
-            if let Value::Scalar(s) = val {
-                if let automerge::ScalarValue::F64(f) = s.as_ref() {
-                    let new = *f as f32;
-                    if (new - self.last_brightness).abs() > 0.001 {
-                        self.last_brightness = new;
-                        if let Err(e) =
-                            self.dispatcher.set_brightness((new.clamp(0.0, 1.0)) * 100.0)
-                        {
-                            warn!(target: "qos::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
-                        }
-                    }
+        if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY)
+            && let Value::Scalar(s) = val
+            && let automerge::ScalarValue::F64(f) = s.as_ref()
+        {
+            let new = *f as f32;
+            if (new - self.last_brightness).abs() > 0.001 {
+                self.last_brightness = new;
+                if let Err(e) = self
+                    .dispatcher
+                    .set_brightness((new.clamp(0.0, 1.0)) * 100.0)
+                {
+                    warn!(target: "qos::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
                 }
             }
         }
 
         // Comfort preferences → persist to the shared store on change.
-        if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY) {
-            if b != self.last_prefs.auto_brightness {
-                self.last_prefs.auto_brightness = b;
-                Self::persist_display(|d| d.auto_brightness = b);
-            }
+        if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
+            && b != self.last_prefs.auto_brightness
+        {
+            self.last_prefs.auto_brightness = b;
+            Self::persist_display(|d| d.auto_brightness = b);
         }
-        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY) {
-            if b != self.last_prefs.night_light {
-                self.last_prefs.night_light = b;
-                Self::persist_display(|d| d.night_light = b);
-            }
+        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY)
+            && b != self.last_prefs.night_light
+        {
+            self.last_prefs.night_light = b;
+            Self::persist_display(|d| d.night_light = b);
         }
         // Display scale → persist to the shared store on change. The
         // compositor reads `display.scale` at session start and advertises
         // it as the preferred fractional scale.
-        if let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY) {
-            if let Some(v) = scale_factor_of(&label) {
-                if (v - self.last_prefs.scale).abs() > f64::EPSILON {
-                    self.last_prefs.scale = v;
-                    Self::persist_display(|d| d.scale = v);
-                }
-            }
+        if let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
+            && let Some(v) = scale_factor_of(&label)
+            && (v - self.last_prefs.scale).abs() > f64::EPSILON
+        {
+            self.last_prefs.scale = v;
+            Self::persist_display(|d| d.scale = v);
         }
 
         if let Some(c) = &mut self.composed {
@@ -417,24 +426,23 @@ impl Widget for DisplayPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -463,22 +471,21 @@ impl Widget for DisplayPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -498,7 +505,7 @@ impl Widget for DisplayPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DisplayPane"
     }
 
@@ -565,7 +572,7 @@ mod tests {
         let _ = doc.put(&root, BRIGHTNESS_KEY, automerge::ScalarValue::F64(0.75));
         pane.sync(&mut doc, &root);
         let calls = rec.calls();
-        assert_eq!(calls.len(), 1, "expected one dispatch, got {:?}", calls);
+        assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
         assert!(calls[0].starts_with("set_brightness("));
         assert!(calls[0].contains("75."), "expected 75% in {:?}", calls[0]);
     }
@@ -588,8 +595,7 @@ mod tests {
     #[test]
     fn seed_writes_initial_brightness_into_crdt() {
         let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane =
-            DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.42);
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.42);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
@@ -608,14 +614,19 @@ mod tests {
     #[test]
     fn arrangement_reflects_injected_outputs() {
         let rec = Arc::new(RecordingDispatcher::default());
-        let pane = DisplayPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            0.5,
-        )
-        .with_outputs(vec![
-            DisplayOutput { label: "Built-in display".into(), connected: true, builtin: true },
-            DisplayOutput { label: "HDMI-A-1".into(), connected: true, builtin: false },
-        ]);
+        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                DisplayOutput {
+                    label: "Built-in display".into(),
+                    connected: true,
+                    builtin: true,
+                },
+                DisplayOutput {
+                    label: "HDMI-A-1".into(),
+                    connected: true,
+                    builtin: false,
+                },
+            ]);
         assert_eq!(pane.outputs().len(), 2);
         assert_eq!(pane.outputs()[1].label, "HDMI-A-1");
     }
@@ -636,18 +647,35 @@ mod tests {
     #[test]
     fn arrangement_lists_only_connected_outputs() {
         let rec = Arc::new(RecordingDispatcher::default());
-        let pane = DisplayPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            0.5,
-        )
-        .with_outputs(vec![
-            DisplayOutput { label: "Built-in display".into(), connected: true, builtin: true },
-            DisplayOutput { label: "DP-1".into(), connected: false, builtin: false },
-            DisplayOutput { label: "DP-2".into(), connected: false, builtin: false },
-            DisplayOutput { label: "HDMI-A-1".into(), connected: false, builtin: false },
-        ]);
+        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                DisplayOutput {
+                    label: "Built-in display".into(),
+                    connected: true,
+                    builtin: true,
+                },
+                DisplayOutput {
+                    label: "DP-1".into(),
+                    connected: false,
+                    builtin: false,
+                },
+                DisplayOutput {
+                    label: "DP-2".into(),
+                    connected: false,
+                    builtin: false,
+                },
+                DisplayOutput {
+                    label: "HDMI-A-1".into(),
+                    connected: false,
+                    builtin: false,
+                },
+            ]);
         let shown = pane.connected_outputs();
-        assert_eq!(shown.len(), 1, "only the connected built-in display is listed");
+        assert_eq!(
+            shown.len(),
+            1,
+            "only the connected built-in display is listed"
+        );
         assert_eq!(shown[0].label, "Built-in display");
     }
 
@@ -666,8 +694,7 @@ mod tests {
     fn seed_writes_initial_scale_label_into_crdt() {
         let rec = Arc::new(RecordingDispatcher::default());
         // with_dispatcher seeds initial_prefs = DisplayPrefs::default() (1.0).
-        let mut pane =
-            DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
@@ -684,8 +711,7 @@ mod tests {
     fn changing_scale_persists_fractional_factor_to_disk() {
         let _guard = crate::prefs::test_env::ConfigGuard::new("display-scale");
         let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane =
-            DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root); // seed

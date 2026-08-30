@@ -4,13 +4,13 @@
 //!
 //! ```bash
 //! # Volatile demo, in-memory only:
-//! cargo run -p ui --example identity_flow_demo
+//! cargo run -p ui --example ui-lab -- identity_flow_demo
 //!
 //! # Persist to a directory (the demo writes identity.json on success):
-//! cargo run -p ui --example identity_flow_demo -- --persist /tmp/qos-alice
+//! cargo run -p ui --example ui-lab -- identity_flow_demo --persist /tmp/qos-alice
 //!
 //! # Jump to a specific screen pre-seeded with sample data:
-//! cargo run -p ui --example identity_flow_demo -- --screen recovery_share
+//! cargo run -p ui --example ui-lab -- identity_flow_demo --screen recovery_share
 //! ```
 //!
 //! With `--persist <DIR>` the demo saves the created identity to
@@ -21,21 +21,21 @@
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use collab_types::{ChannelId, Role, generate_keypair};
+use rand_core::OsRng;
+use threshold_identity::ThresholdIdentity;
 use ui::widget::identity_flow::{
     IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityRecord, IdentityStore,
     InviteEnvelope, MemoryIdentityStore, mint_invite,
 };
 use ui::{App, State};
-use collab_types::{ChannelId, Role, generate_keypair};
-use threshold_identity::ThresholdIdentity;
-use rand_core::OsRng;
 
 fn parse_screen_arg(name: &str) -> Option<IdentityFlowScreen> {
     Some(match name {
@@ -71,10 +71,7 @@ impl DemoFileStore {
         }
         let cached = if path.exists() {
             let bytes = fs::read(&path)?;
-            match IdentityRecord::from_json_bytes(&bytes) {
-                Ok(rec) => Some(rec),
-                Err(_) => None,
-            }
+            IdentityRecord::from_json_bytes(&bytes).ok()
         } else {
             None
         };
@@ -82,10 +79,6 @@ impl DemoFileStore {
             path,
             cached: Mutex::new(cached),
         })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 }
 
@@ -97,8 +90,7 @@ impl IdentityStore for DemoFileStore {
         let bytes = record.to_json_bytes()?;
         // 0600 lands on the temp file, so the record is never readable by
         // anyone else at its final path.
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)
-            .map_err(IdentityFlowError::Io)?;
+        atomic_file::write_with_mode(&self.path, &bytes, 0o600).map_err(IdentityFlowError::Io)?;
         *self.cached.lock().unwrap() = Some(record.clone());
         eprintln!(
             "identity_flow_demo: wrote identity to {} (0600)",
@@ -108,8 +100,7 @@ impl IdentityStore for DemoFileStore {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+pub fn run(args: &[String]) {
     let screen = args
         .windows(2)
         .find(|w| w[0] == "--screen")
@@ -121,16 +112,13 @@ fn main() {
         .find(|w| w[0] == "--persist")
         .map(|w| PathBuf::from(&w[1]));
 
-    let store: Arc<dyn IdentityStore> = match persist_dir {
-        Some(dir) => {
-            let path = dir.join("identity.json");
-            eprintln!("identity_flow_demo: persisting to {}", path.display());
-            Arc::new(DemoFileStore::at(path).expect("init DemoFileStore"))
-        }
-        None => {
-            eprintln!("identity_flow_demo: in-memory only (no --persist)");
-            Arc::new(MemoryIdentityStore::new())
-        }
+    let store: Arc<dyn IdentityStore> = if let Some(dir) = persist_dir {
+        let path = dir.join("identity.json");
+        eprintln!("identity_flow_demo: persisting to {}", path.display());
+        Arc::new(DemoFileStore::at(path).expect("init DemoFileStore"))
+    } else {
+        eprintln!("identity_flow_demo: in-memory only (no --persist)");
+        Arc::new(MemoryIdentityStore::new())
     };
 
     let mut flow = IdentityFlow::new(store.clone());
@@ -138,13 +126,9 @@ fn main() {
 
     let mut rng = OsRng;
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-    let record = IdentityRecord::from_threshold_identity(
-        &id,
-        "alice",
-        [248, 113, 113],
-        SystemTime::now(),
-    )
-    .unwrap();
+    let record =
+        IdentityRecord::from_threshold_identity(&id, "alice", [248, 113, 113], SystemTime::now())
+            .unwrap();
     flow.recovery_share.seed_from_record(&record);
     let mnemonic = flow.recovery_share.mnemonic().to_string();
     flow.recovery_verify.seed_mnemonic(mnemonic);
@@ -153,11 +137,10 @@ fn main() {
             let mut id_local = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
             id_local.begin_enrolment(1, 2, 2, &mut rng).unwrap()
         };
-        let _ = flow
-            .add_device_host
-            .begin(r1, sess, *id.group_public_key());
+        let _ = flow.add_device_host.begin(r1, sess, *id.group_public_key());
     }
-    flow.invite_mint.set_channel(ChannelId::new(), "engineering");
+    flow.invite_mint
+        .set_channel(ChannelId::new(), "engineering");
     let (owner_sk, owner_pk) = generate_keypair();
     let env: InviteEnvelope = mint_invite(
         ChannelId::new(),
@@ -166,7 +149,7 @@ fn main() {
         &owner_sk,
         "Alice",
         Role::Editor,
-        SystemTime::now() + std::time::Duration::from_secs(3600),
+        SystemTime::now() + std::time::Duration::from_hours(1),
     )
     .unwrap();
     flow.invite_accept.set_url(env.to_url().unwrap());

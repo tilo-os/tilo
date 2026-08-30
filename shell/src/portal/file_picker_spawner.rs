@@ -1,22 +1,14 @@
 //! Abstraction for "spawn a file-picker overlay" — used by
-//! [`super::file_chooser::FileChooserBackend`] to surface a real
-//! dialog without coupling to the shell's chrome.
+//! [`super::file_chooser::FileChooserBackend`] to surface a real dialog
+//! without coupling to the shell's chrome.
 //!
-//! Sandbox Phase 4.3 follow-up: the FileChooser backend was returning
-//! a placeholder URI on `Allow`. This trait lets the backend hand off
-//! the rendering + selection to whichever surface owns the caller's
-//! workspace chrome.
+//! Two production implementors are imagined: the hosted-mode chrome
+//! (pushes a [`ui::widget::FilePicker`] into the workspace overlay
+//! layer), and the native compositor (a transient xdg-shell surface).
 //!
-//! Two production implementors are imagined:
-//!   - The hosted-mode chrome — pushes a [`ui::widget::FilePicker`]
-//!     into the workspace overlay layer.
-//!   - The native compositor — opens a transient surface owned by the
-//!     compositor's xdg-shell context.
-//!
-//! Tests use [`MockFilePickerSpawner`] which resolves the
-//! `oneshot::Receiver` with a pre-baked path set, never rendering
-//! anything. [`NullFilePickerSpawner`] always cancels (host fallback
-//! for environments without a chrome).
+//! Tests use [`MockFilePickerSpawner`], which resolves the
+//! `oneshot::Receiver` with a pre-baked path set without rendering
+//! anything; [`NullFilePickerSpawner`] always cancels (host fallback for environments without a chrome).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -27,12 +19,10 @@ use super::PortalCaller;
 
 /// One named file-type filter the calling app asked for.
 ///
-/// Decoded from the portal's `filters` option, which is
-/// `a(sa(us))` — a list of `(label, [(kind, pattern)])` where kind 0
-/// is a glob and kind 1 is a MIME type. Both are kept: an app that
-/// filters by MIME (`image/png`) and one that filters by glob
-/// (`*.png`) are asking the same question, and the dialog should not
-/// answer only one of them.
+/// Decoded from the portal's `filters` option (`a(sa(us))`): a list of
+/// `(label, [(kind, pattern)])` where kind 0 is a glob, kind 1 a MIME
+/// type. Both are kept — an app filtering by MIME (`image/png`) and one
+/// filtering by glob (`*.png`) are asking the same question.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PickerFilter {
     /// What the user sees in the filter control ("Images").
@@ -46,12 +36,10 @@ pub struct PickerFilter {
 impl PickerFilter {
     /// Build from a label plus the raw `(kind, pattern)` pairs.
     ///
-    /// A glob is reduced to its extension because that is what the
-    /// dialog can match cheaply against a directory listing; a pattern
-    /// with no usable extension (`*`, `*.*`, `report-??.txt`) widens the
-    /// filter to "everything" rather than silently matching nothing.
-    /// A filter that hides files the app would have accepted is worse
-    /// than one that shows a few it would not.
+    /// A glob is reduced to its extension because that's what the dialog
+    /// can match cheaply against a directory listing; a pattern with no
+    /// usable extension (`*`, `*.*`, `report-??.txt`) widens the filter to
+    /// "everything" rather than silently matching nothing — hiding files the app would have accepted is worse than showing extra ones.
     pub fn from_pairs(label: impl Into<String>, pairs: &[(u32, String)]) -> Self {
         let mut extensions = Vec::new();
         let mut mimetypes = Vec::new();
@@ -84,9 +72,8 @@ impl PickerFilter {
 
 /// Reduce a shell glob to the extension it selects, if it selects one.
 ///
-/// `*.png` → `png`. `*` and `*.*` select everything, and a glob whose
-/// wildcards fall inside the extension (`*.p?g`) cannot be reduced —
-/// both answer `None`, which the caller reads as "matches everything".
+/// `*.png` → `png`. `*`/`*.*` select everything, and a glob whose
+/// wildcards fall inside the extension (`*.p?g`) can't be reduced — both answer `None`, read as "matches everything".
 fn extension_of_glob(pattern: &str) -> Option<String> {
     let rest = pattern.strip_prefix("*.")?;
     if rest.is_empty() || rest.contains(['*', '?', '[', ']', '.']) {
@@ -97,38 +84,29 @@ fn extension_of_glob(pattern: &str) -> Option<String> {
 
 /// One end-user request the file-picker spawner must fulfil.
 ///
-/// The host implementor renders a real dialog (mounted in the
-/// caller's workspace chrome) and ultimately fulfils `reply` with
-/// the user's selection: `Some(paths)` for "user picked these" or
-/// `None` for "user cancelled / dialog closed without selection".
+/// The host implementor renders a real dialog and ultimately fulfils
+/// `reply` with the user's selection: `Some(paths)` or `None` (cancelled / closed without selection).
 ///
-/// Note what is *not* here: a starting directory the app chose, or a
-/// set of roots the app chose. The portal spec has a `current_folder`
-/// option and this deliberately drops it — an app that can aim the
-/// dialog can use it to probe for files it was never granted, by
-/// reading which directories the dialog will open. Where the dialog
-/// starts is the compositor's decision (`PickerScope`).
+/// Note what is *not* here: a starting directory or set of roots the app
+/// chose. The portal spec has a `current_folder` option, deliberately
+/// dropped here — an app that could aim the dialog could use it to probe
+/// for files it was never granted, by reading which directories the
+/// dialog opens. Where the dialog starts is the compositor's decision (`PickerScope`).
 pub struct FilePickerRequest {
-    /// Identity of the requesting app — host can show "{app_id} wants
-    /// to open a file" in the dialog header.
+    /// Identity of the requesting app — host can show "{`app_id`} wants to open a file" in the dialog header.
     pub caller: PortalCaller,
-    /// User-facing dialog title (provided by the calling app — usually
-    /// "Open File" or similar).
+    /// User-facing dialog title, provided by the calling app.
     pub title: String,
-    /// `true` for `SaveFile` / `SaveFiles` flows, `false` for `OpenFile`.
-    /// Affects the action-button label ("Save" vs "Open").
+    /// `true` for `SaveFile` / `SaveFiles` flows, `false` for `OpenFile`; affects the action-button label ("Save" vs "Open").
     pub save: bool,
-    /// `true` when the app asked for `OpenFiles` — the user may return
-    /// more than one path.
+    /// `true` when the app asked for `OpenFiles` — the user may return more than one path.
     pub multiple: bool,
     /// The app's preferred label for the confirm button ("Import").
     pub accept_label: Option<String>,
-    /// Suggested filename for a Save dialog.
     pub current_name: Option<String>,
     /// File-type filters the app offered. Empty means "any file".
     pub filters: Vec<PickerFilter>,
-    /// One-shot reply channel. The spawner fulfils this with the
-    /// user's selection.
+    /// One-shot reply channel; the spawner fulfils this with the user's selection.
     pub reply: oneshot::Sender<Option<Vec<PathBuf>>>,
 }
 
@@ -146,18 +124,15 @@ impl FilePickerRequest {
 /// Host-side contract: spawn a real file-picker for `req`.
 ///
 /// Implementors typically push `req` into a per-frame queue the
-/// compositor drains on the main thread. The reply channel resolves
-/// the portal D-Bus call.
+/// compositor drains on the main thread; the reply channel resolves the portal D-Bus call.
 pub trait FilePickerSpawner: Send + Sync {
     /// Enqueue a request. Must not block — the caller is the D-Bus
-    /// dispatcher and we don't want to stall every portal request on
-    /// the main thread.
+    /// dispatcher and stalling it would stall every portal request on the main thread.
     fn spawn(&self, req: FilePickerRequest);
 }
 
-/// Cheap clone wrapper around `Arc<dyn FilePickerSpawner>` —
-/// matches the [`super::PromptQueueHandle`] shape so each interface
-/// impl can hold its own copy.
+/// Cheap clone wrapper around `Arc<dyn FilePickerSpawner>` — matches the
+/// [`super::PromptQueueHandle`] shape so each interface impl can hold its own copy.
 #[derive(Clone)]
 pub struct FilePickerSpawnerHandle {
     inner: Arc<dyn FilePickerSpawner>,
@@ -168,8 +143,7 @@ impl FilePickerSpawnerHandle {
         Self { inner }
     }
 
-    /// Helper — issue a request and return the receiver. Same
-    /// shape `PromptQueueHandle::enqueue` uses.
+    /// Helper — issue a request and return the receiver, same shape `PromptQueueHandle::enqueue` uses.
     pub fn request(
         &self,
         caller: PortalCaller,
@@ -180,10 +154,7 @@ impl FilePickerSpawnerHandle {
     }
 
     /// Issue a request carrying everything the calling app asked for.
-    pub fn request_with(
-        &self,
-        opts: FilePickerOptions,
-    ) -> oneshot::Receiver<Option<Vec<PathBuf>>> {
+    pub fn request_with(&self, opts: FilePickerOptions) -> oneshot::Receiver<Option<Vec<PathBuf>>> {
         let (tx, rx) = oneshot::channel();
         let req = FilePickerRequest {
             caller: opts.caller,
@@ -200,9 +171,8 @@ impl FilePickerSpawnerHandle {
     }
 }
 
-/// Everything the FileChooser backend decoded out of one portal call,
-/// minus the reply channel [`FilePickerSpawnerHandle::request_with`]
-/// makes.
+/// Everything the `FileChooser` backend decoded out of one portal call,
+/// minus the reply channel [`FilePickerSpawnerHandle::request_with`] adds.
 #[derive(Debug)]
 pub struct FilePickerOptions {
     pub caller: PortalCaller,
@@ -248,10 +218,8 @@ impl FilePickerOptions {
     }
 }
 
-/// Cancel-everything spawner — for hosted-mode environments without
-/// a chrome (e.g. headless tests or the boot-time portal that's up
-/// before the first workspace renders). Every request resolves to
-/// `None` (cancelled).
+/// Cancel-everything spawner — for hosted-mode environments without a
+/// chrome (headless tests, the boot-time portal before the first workspace renders). Every request resolves to `None`.
 pub struct NullFilePickerSpawner;
 
 impl NullFilePickerSpawner {
@@ -267,8 +235,7 @@ impl FilePickerSpawner for NullFilePickerSpawner {
 }
 
 /// Test-only spawner that returns a pre-baked path list on every
-/// request. Tracks the requests it received so tests can assert on
-/// the caller / title / save flag without rendering anything.
+/// request; tracks requests received so tests can assert without rendering anything.
 pub struct MockFilePickerSpawner {
     paths: Vec<PathBuf>,
     seen: Mutex<Vec<(PortalCaller, String, bool)>>,
@@ -291,8 +258,7 @@ impl MockFilePickerSpawner {
         }
     }
 
-    /// Tests assert against this to verify the backend forwarded the
-    /// right caller / title / save flag.
+    /// Tests assert against this to verify the backend forwarded the right caller / title / save flag.
     pub fn requests(&self) -> Vec<(PortalCaller, String, bool)> {
         self.seen.lock().map(|s| s.clone()).unwrap_or_default()
     }
@@ -303,8 +269,7 @@ impl FilePickerSpawner for MockFilePickerSpawner {
         if let Ok(mut s) = self.seen.lock() {
             s.push((req.caller.clone(), req.title.clone(), req.save));
         }
-        // Empty path list ≡ cancelled — mirrors the dialog's
-        // "Open with no selection = cancel" treatment.
+        // Empty path list ≡ cancelled — mirrors the dialog's "Open with no selection = cancel" treatment.
         let reply = if self.paths.is_empty() {
             None
         } else {
@@ -372,9 +337,8 @@ mod tests {
 
     #[test]
     fn an_unreducible_glob_widens_the_filter_instead_of_hiding_everything() {
-        // `*.p?g` cannot be reduced to one extension. Matching nothing
-        // would hide files the app would have accepted, so the filter
-        // has to open up rather than close down.
+        // `*.p?g` cannot be reduced to one extension — matching nothing would
+        // hide files the app would have accepted, so the filter opens up instead.
         let f = PickerFilter::from_pairs("Odd", &[(0, "*.p?g".into()), (0, "*.png".into())]);
         assert!(
             f.is_catch_all(),

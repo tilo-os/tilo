@@ -85,7 +85,7 @@ impl Category {
             ("historic", _) => Category::Landmark,
             ("leisure", "park" | "garden" | "nature_reserve") => Category::Park,
             ("shop", _) => Category::Shop,
-            ("railway", _) | ("public_transport", _) => Category::Transit,
+            ("railway" | "public_transport", _) => Category::Transit,
             ("highway", "bus_stop") => Category::Transit,
             _ => Category::Other,
         }
@@ -164,8 +164,12 @@ pub enum TravelMode {
 }
 
 impl TravelMode {
-    pub const ALL: [TravelMode; 4] =
-        [TravelMode::Car, TravelMode::Transit, TravelMode::Bike, TravelMode::Foot];
+    pub const ALL: [TravelMode; 4] = [
+        TravelMode::Car,
+        TravelMode::Transit,
+        TravelMode::Bike,
+        TravelMode::Foot,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -612,13 +616,25 @@ mod tests {
         // Re-pushing an existing term moves it to front, not duplicates.
         m.push_recent("Q7");
         assert_eq!(m.recents[0], "Q7");
-        assert_eq!(m.recents.iter().filter(|r| r.eq_ignore_ascii_case("q7")).count(), 1);
+        assert_eq!(
+            m.recents
+                .iter()
+                .filter(|r| r.eq_ignore_ascii_case("q7"))
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn toggle_saved_flips() {
         let mut m = MapModel::default();
-        m.places.push(Place::new("a", "A", Category::Cafe, "", LatLon::new(0.0, 0.0)));
+        m.places.push(Place::new(
+            "a",
+            "A",
+            Category::Cafe,
+            "",
+            LatLon::new(0.0, 0.0),
+        ));
         assert!(m.toggle_saved("a"));
         assert!(!m.toggle_saved("a"));
         assert!(!m.toggle_saved("missing"));
@@ -631,7 +647,13 @@ mod tests {
         p.saved = true;
         m.upsert_place(p);
         // Re-fetch (unsaved) must not clobber the saved flag.
-        m.upsert_place(Place::new("x", "X2", Category::Shop, "addr2", LatLon::new(1.0, 2.0)));
+        m.upsert_place(Place::new(
+            "x",
+            "X2",
+            Category::Shop,
+            "addr2",
+            LatLon::new(1.0, 2.0),
+        ));
         assert!(m.place("x").unwrap().saved);
         assert_eq!(m.place("x").unwrap().name, "X2");
     }

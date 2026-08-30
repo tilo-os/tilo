@@ -4,7 +4,7 @@
 //! We follow the H.273 / CICP (Coding-Independent Code Points)
 //! numbering because that's what libavcodec + Wayland
 //! `color-management-v1` both speak. If a codec / wire consumer needs a
-//! different encoding (e.g. Y'CbCr matrix as a MATRIX_COEFFICIENTS
+//! different encoding (e.g. Y'`CbCr` matrix as a `MATRIX_COEFFICIENTS`
 //! integer for HEVC VUI), it converts from these enums at the boundary
 //! — the on-wire representation is documented on each variant.
 //!
@@ -105,7 +105,7 @@ impl TransferCharacteristics {
     }
 }
 
-/// Y'CbCr matrix — the RGB↔Y'CbCr conversion matrix used by the
+/// Y'`CbCr` matrix — the RGB↔Y'`CbCr` conversion matrix used by the
 /// codec's chroma subsampling. CICP `MatrixCoefficients`.
 ///
 /// - [`Self::Bt709`] — matches BT.709 primaries; SDR video. CICP 1.

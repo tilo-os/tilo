@@ -19,9 +19,7 @@ ui = { path = "../../ui" }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
@@ -31,3 +29,11 @@ russh = "0.54"
 tokio.workspace = true
 vte = "0.15.0"
 des = "0.8"
+
+[dev-dependencies]
+# Serialises tests that exercise the process-wide clipboard, so they never
+# race each other under cargo's default parallel runner.
+serial_test.workspace = true
+
+[lints]
+workspace = true

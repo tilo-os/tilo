@@ -21,7 +21,7 @@ use super::scenario::{self, JsonDirSink, NullSink, Scenario, SnapshotSink};
 // =====================================================================
 
 pub mod offscreen {
-    use super::*;
+    use super::{Color, OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, scenario};
 
     /// `SnapshotSink` that renders into a PNG file per snapshot under
     /// `dir`, using the supplied `OffscreenRenderer`.
@@ -34,7 +34,7 @@ pub mod offscreen {
         pub first_paint_seen: bool,
     }
 
-    impl<'a> SnapshotSink for PngDirSink<'a> {
+    impl SnapshotSink for PngDirSink<'_> {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
             let scene = driver.paint();
             let path = self.dir.join(format!("{name}.png"));
@@ -104,10 +104,9 @@ pub mod offscreen {
             let path = dir.join(format!("{name}.png"));
             renderer.render_png(&scene, Color::TRANSPARENT, &path);
             if !first_paint_seen {
-                // First render_png forces vello's ~30 pipelines to
-                // compile against the live device. Mark AFTER the call
-                // returns so the metric captures the entire cold path,
-                // not just the CPU-side scene build.
+                // Mark AFTER render_png returns so the metric captures
+                // vello's ~30-pipeline cold compile, not just the
+                // CPU-side scene build.
                 qos_startup_metrics::mark("first-paint");
                 first_paint_seen = true;
             }
@@ -121,7 +120,7 @@ pub mod offscreen {
 // =====================================================================
 
 pub mod headless {
-    use super::*;
+    use super::{JsonDirSink, Path, Scenario, ShellDriver, scenario};
 
     pub fn run_scenario(
         driver: &mut ShellDriver,
@@ -148,7 +147,7 @@ pub mod headless {
 // =====================================================================
 
 pub mod recording {
-    use super::*;
+    use super::{OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, scenario};
 
     use std::fs::File;
     use std::io::Write;
@@ -217,7 +216,7 @@ pub mod recording {
         pub frames_per_step: u32,
     }
 
-    impl<'a> RecordingSink<'a> {
+    impl RecordingSink<'_> {
         fn encode_current(&mut self, driver: &mut ShellDriver) {
             let scene = driver.paint();
             let rgba = self.renderer.render_rgba(&scene);
@@ -235,13 +234,17 @@ pub mod recording {
         }
     }
 
-    impl<'a> SnapshotSink for RecordingSink<'a> {
+    impl SnapshotSink for RecordingSink<'_> {
         fn capture(&mut self, driver: &mut ShellDriver, _name: &str) {
-            // Snapshot in recording mode is an explicit "flush the
-            // current frame as a marker step". The step-driven outer
-            // loop already encodes every step, so a Snapshot is a no-op
-            // here to avoid double-encoding the same frame.
-            let _ = driver;
+            // Encode the frame as offered. The step-driven outer loop
+            // encodes every step too, so a plain `Snapshot` contributes
+            // its frame twice — harmless in a video, and the price of
+            // the case that matters: an action that samples an
+            // animation curve emits its whole curve *through this sink*
+            // and is a single step to the outer loop. Skipping here left
+            // those videos jumping from the curve's first state to its
+            // last with nothing in between.
+            self.encode_current(driver);
         }
     }
 
@@ -254,19 +257,16 @@ pub mod recording {
         action: &scenario::Action,
         sink: &mut RecordingSink<'_>,
     ) {
-        // Use a side NullSink to consume the action's own Snapshot path
-        // (we encode unconditionally, not just on Snapshot markers).
-        let mut null = NullSink;
-        // SAFETY: re-borrow the action — `Action` is Clone but we want
-        // the apply path to see the same value. Just pass through.
-        // (`scenario::apply` is private to the module; use `run` with
-        // a one-action scenario instead.)
+        // Runs through the recording sink itself (see `RecordingSink::capture`
+        // for why) rather than a side `NullSink`. `scenario::apply` is
+        // private to the module, so this uses `run` with a one-action
+        // scenario instead.
         let one_off = Scenario {
             name: "_recording_step",
             description: "",
             actions: vec![action.clone()],
         };
-        scenario::run(driver, &one_off, &mut null);
+        scenario::run(driver, &one_off, sink);
         // Always settle layout between steps so the encoded frame
         // matches what the user would see at this point in the
         // scenario, not a half-rebuilt tree.
@@ -280,7 +280,7 @@ pub mod recording {
 // =====================================================================
 
 pub mod window {
-    use super::*;
+    use super::{NullSink, Scenario, ShellDriver, scenario};
 
     use shell::shell::{build_nirios_root, persist, sync_tab_presence_from_tree};
     use ui::presence::PresenceKey;
@@ -296,7 +296,7 @@ pub mod window {
     /// is "drive the shell into a state, then leave it open".
     ///
     /// Caveat: chrome state (overlay flags, palette query) is **not**
-    /// persisted — only the WorkspaceTree itself is. So a pre-rolled
+    /// persisted — only the `WorkspaceTree` itself is. So a pre-rolled
     /// `OpenPalette` will not be visible on the live binary's first
     /// frame; a pre-rolled `SwitchWorkspace(1)` will. Useful for
     /// scripted "open the live binary on workspace 2 with these tabs".
@@ -315,7 +315,7 @@ pub mod window {
             let mut sink = NullSink;
             scenario::run(&mut driver, scenario, &mut sink);
             let chrome = driver.chrome();
-            if let Err(e) = persist::save_tree_to(&*chrome.tree(), &path) {
+            if let Err(e) = persist::save_tree_to(&chrome.tree(), &path) {
                 eprintln!("shots: pre-roll persist failed: {e}");
             }
         }

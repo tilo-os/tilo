@@ -1,39 +1,13 @@
 //! `qos-control` — thin CLI over the `QOS_TEST_CONTROL` socket.
 //!
-//! Wraps the JSON command protocol implemented by
-//! [`shell::compositor::test_control`] so humans and shell
-//! scripts don't have to glue `socat` to `jq`. Default socket path
-//! comes from `$QOS_TEST_CONTROL` (matches the env-var the
-//! compositor binds against), falling back to `/tmp/nirios.sock` when
-//! the var is unset — so the natural workflow is "set the env var
-//! once, both ends pick it up".
+//! Wraps the JSON command protocol of [`shell::compositor::test_control`] so
+//! scripts don't have to glue `socat` to `jq`. The socket path comes from
+//! `$QOS_TEST_CONTROL` — the same env var the compositor binds against —
+//! falling back to `/tmp/nirios.sock`. No `clap`, no async, just stdlib +
+//! `serde_json`. Run `--help` for the subcommand list.
 //!
-//! Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`,
-//! "Component 3: `qos-control` CLI". Implementation discipline
-//! mirrors the spec's "single file, single purpose binary" — no
-//! `clap`, no async, just stdlib + `serde_json`.
-//!
-//! ## Subcommands
-//!
-//! ```text
-//! qos-control [--socket /path] <op> [args]
-//!
-//!   list-targets                  print every target as `NAME  (X, Y, W, H)`
-//!   click NAME                    click_named
-//!   click-at X Y                  click_at
-//!   drag X1 Y1 X2 Y2 [STEPS]      drag
-//!   key KEY                       key
-//!   type TEXT                     type
-//!   modifiers FLAGS               comma-separated subset of ctrl,shift,alt,logo
-//!                                 (empty string clears all)
-//!   snapshot PATH                 snapshot
-//!   state-dump [--pretty]         state_dump
-//!   raw '<json>'                  raw passthrough (escape hatch)
-//! ```
-//!
-//! Exit codes: `0` on `Ok`/`Targets`/`State`, `1` on `Err` (the
-//! command echoes `err.code`/`err.message` to stderr), `2` on
-//! argv / I/O / parse failures.
+//! Exit codes: `0` on `Ok`/`Targets`/`State`, `1` on `Err` (echoing
+//! `err.code`/`err.message` to stderr), `2` on argv / I/O / parse failures.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -41,10 +15,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Default socket path when neither `--socket` nor `$QOS_TEST_CONTROL`
-/// is set. Mirrors the spec's "the natural workflow is set the env
-/// once, both ends pick it up" — production runs never bind here
-/// because the env-var gate inside the compositor refuses to listen
-/// without a path.
+/// is set. Production runs never bind here because the env-var gate
+/// inside the compositor refuses to listen without a path.
 const DEFAULT_SOCKET: &str = "/tmp/nirios.sock";
 
 /// Internal representation of a parsed CLI invocation. Built by
@@ -108,25 +80,19 @@ struct Invocation {
     command: Command,
 }
 
-/// Argv parse error. Distinguishes between "user typed `--help`" (a
-/// valid request, exits 0 after printing usage), "unknown subcommand"
-/// (exits 2), and "missing arg" (exits 2). The `(code, message)`
-/// shape mirrors the wire's `Response::Err`.
+/// Argv parse error; the `(code, message)` shape mirrors the wire's
+/// `Response::Err`.
 #[derive(Debug, Clone, PartialEq)]
 enum ParseError {
     /// Caller asked for help — print usage and exit 0.
     Help,
-    /// Caller provided invalid input — print message to stderr and
-    /// exit 2.
+    /// Invalid input — print message to stderr and exit 2.
     Usage(String),
 }
 
-/// Parse `argv` (without the program name) into an [`Invocation`].
-///
-/// Accepts `--socket PATH` at any position before the subcommand.
-/// Subcommand-specific arguments are positional and required;
-/// optional trailing args (drag's `STEPS`, state-dump's `--pretty`)
-/// are matched per-subcommand.
+/// Parse `argv` (without the program name) into an [`Invocation`]. Accepts
+/// `--socket PATH` anywhere before the subcommand; subcommand arguments are
+/// positional and required, with optional trailing args matched per-subcommand.
 fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     let mut socket: Option<PathBuf> = None;
     let mut positional: Vec<String> = Vec::with_capacity(argv.len());
@@ -199,7 +165,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             Command::Type { text: text.clone() }
         }
         "modifiers" => {
-            let flags = iter.next().map(String::as_str).unwrap_or("");
+            let flags = iter.next().map_or("", String::as_str);
             let (ctrl, shift, alt, logo) = parse_modifier_flags(flags)?;
             Command::Modifiers {
                 ctrl,
@@ -379,11 +345,8 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             json!({ "op": "actions_invoke", "provider": provider, "id": id })
         }
         Command::Raw { json } => {
-            // Validate the JSON parses — sending garbage to the
-            // compositor would surface as a `parse_error` response,
-            // but the caller can't tell whether their shell quoting
-            // was wrong or the compositor rejected it. Catching it
-            // here gives a clearer diagnostic.
+            // Validate here: a `parse_error` from the compositor can't tell
+            // the caller whether their shell quoting or the payload was wrong.
             return serde_json::from_str::<serde_json::Value>(json)
                 .map(|_| json.clone())
                 .map_err(|e| ParseError::Usage(format!("raw: payload is not valid JSON ({e})")));
@@ -430,9 +393,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
     match cmd {
         Command::ListTargets => {
             // `Response::Targets(Vec<TargetEntry>)` serialises as
-            // `{"targets": [...]}`. Print one per line as
-            // `NAME  (X, Y, W, H)` — the format the spec example
-            // shows.
+            // `{"targets": [...]}`. Print one per line as `NAME  (X, Y, W, H)`.
             let targets = response
                 .get("targets")
                 .and_then(|v| v.as_array())
@@ -445,7 +406,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
                     .and_then(|v| v.as_array())
                     .map(|a| {
                         a.iter()
-                            .filter_map(|v| v.as_f64())
+                            .filter_map(serde_json::Value::as_f64)
                             .map(|f| format!("{f:.0}"))
                             .collect::<Vec<_>>()
                     })
@@ -459,11 +420,9 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             }
         }
         Command::StateDump { pretty } => {
-            // `Response::State { workspace_tree, chrome }` —
-            // serialises as `{"state": {...}}`. Print the inner
-            // object so consumers pipe directly to `jq .workspace_tree`
-            // / `jq .chrome` without an outer level. `--pretty`
-            // enables `serde_json::to_string_pretty`.
+            // `Response::State` serialises as `{"state": {...}}`; print the
+            // inner object so consumers can pipe to `jq .workspace_tree`
+            // without an outer level.
             let inner = response
                 .get("state")
                 .cloned()
@@ -476,10 +435,8 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             println!("{out}");
         }
         Command::Snapshot { path } => {
-            // The wire's `Ok { frame }` doesn't echo back the path,
-            // but the caller almost always wants to confirm the file
-            // location — print the requested path so a shell pipe
-            // `snapshot /tmp/x.png | xclip` works.
+            // The wire's `Ok { frame }` doesn't echo the path back, so print
+            // it here to make `snapshot /tmp/x.png | xclip` work.
             println!("{path}");
         }
         Command::ActionsList { json, .. } => {
@@ -516,7 +473,10 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
                 .max()
                 .unwrap_or(0);
             for entry in &actions {
-                let provider = entry.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+                let provider = entry
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                 let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
                 let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -532,7 +492,10 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
             let title = answer.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let provider = answer.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+            let provider = answer
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let id = answer.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             println!("invoked {provider}:{id}  {title}");
         }
@@ -586,13 +549,10 @@ fn print_usage() {
 }
 
 fn main() -> ExitCode {
-    // `head -5` (and other downstream filters) close their read end
-    // before we finish writing. Without this, Rust's default `println!`
-    // panic-on-EPIPE turns a routine shell-pipe into a process abort
-    // — visible noise in CI logs that has nothing to do with the
-    // command's success/failure. Reset SIGPIPE to its default
-    // disposition (terminate cleanly) so the next failed write exits
-    // 141 like every other unix tool.
+    // A downstream `head -5` closes its read end before we finish writing,
+    // and Rust's default panic-on-EPIPE turns that routine pipe into a
+    // process abort. Restoring SIGPIPE's default disposition makes the next
+    // failed write exit 141 like every other unix tool.
     //
     // SAFETY: `signal` with `SIG_DFL` is async-signal-safe; we run
     // before any thread is spawned, so no other code observes the
@@ -650,18 +610,14 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    //! Pure-logic argv-parsing tests. The CLI is just a shim over the
-    //! socket protocol — the socket itself is exhaustively tested in
-    //! `compositor::test_control::tests` and
-    //! `tests/control_socket_test.rs`, so duplicating those rounds
-    //! here would be redundant. What we *do* test here is every
-    //! subcommand's parse path: missing args error, valid args
-    //! produce the right `Command` variant, the wire payload uses
-    //! the schema the dispatcher expects.
+    //! Pure-logic argv-parsing tests: every subcommand's parse path, the
+    //! resulting `Command` variant, and the wire payload's schema. The
+    //! socket protocol itself is covered in
+    //! `compositor::test_control::tests` and `tests/control_socket_test.rs`.
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Invocation, ParseError> {
-        let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         parse_args(&argv)
     }
 
@@ -851,16 +807,12 @@ mod tests {
         // test runner uses `--test-threads 1` in CI, and within a
         // single thread the assertion holds. Other unit tests in the
         // crate don't read this variable.
-        // Note: this test asserts the *fallback* path; for the
-        // env-var path see `default_socket_reads_env_when_set`.
         let prev = std::env::var_os("QOS_TEST_CONTROL");
         unsafe {
             std::env::remove_var("QOS_TEST_CONTROL");
         }
         let inv = parse(&["list-targets"]).unwrap();
-        // Restore before assertion so a panic doesn't poison the
-        // test process's env for any later test (defensive — the
-        // assertion below shouldn't fail in practice).
+        // Restore before asserting so a panic can't poison the env for later tests.
         if let Some(v) = prev {
             unsafe {
                 std::env::set_var("QOS_TEST_CONTROL", v);

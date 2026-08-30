@@ -9,33 +9,24 @@
 //! qos-rollback confirm     enroll N's keyslot, prove it unseals, THEN raise the floor
 //! ```
 //!
-//! Every ordering constraint here exists because of a way it can go wrong:
+//! Every ordering constraint exists because of a way it can go wrong:
 //!
-//! * **Floor raised at install time** → generation `N` turns out not to boot,
-//!   and the fallback has already been destroyed. The machine is inert and needs
-//!   the recovery key. This is the failure the whole design is arranged around.
-//! * **Floor raised before the new keyslot is proven** → if sealing produced a
-//!   token that cannot unseal (wrong PCR prediction, TPM in lockout, a bug here),
-//!   raising the floor removes the older tokens' ability to unseal too and
-//!   nothing is left.
-//! * **Old keyslots pruned before the floor is raised** → harmless, and it is
-//!   the order used, because the floor is the thing that cannot be undone.
-//!   Pruning is reversible by re-enrolling; an NV increment is not reversible by
-//!   anything.
+//! * **Floor raised at install time** → if `N` turns out not to boot, the fallback is already
+//!   destroyed and the machine is inert, needing the recovery key — the failure the whole
+//!   design is arranged around.
+//! * **Floor raised before the new keyslot is proven** → a token that can't unseal (wrong PCR
+//!   prediction, TPM lockout, a bug) would remove the older tokens' ability too, leaving
+//!   nothing.
+//! * **Old keyslots pruned before the floor is raised** → harmless, and the order used, since
+//!   the floor can't be undone while pruning is reversible by re-enrolling.
 //!
 //! # Interaction with bootc's staged updates
 //!
-//! `bootc` stages a new deployment and makes it the default for the next boot,
-//! keeping the previous one as a rollback target. It does not know about
-//! generations, so the join is: the confirmation runs on the *booted* system,
-//! reads the generation from the sealed command line of the deployment that
-//! actually booted, and confirms that. A deployment that fails to boot never
-//! reaches its own confirmation, which is precisely the property needed.
-//!
-//! `bootc` also exposes `bootc status --json` with `staged` and `booted`. When a
-//! staged deployment exists, confirmation of the booted one still proceeds — the
-//! staged one is a *future* generation and has nothing to do with whether the
-//! running one is good.
+//! `bootc` stages a deployment and makes it the default next boot, keeping the previous one as
+//! a rollback target; it knows nothing about generations, so confirmation runs on the *booted*
+//! system, reads the generation from its sealed command line, and confirms that — a deployment
+//! that fails to boot never reaches its own confirmation. A staged deployment (`bootc status
+//! --json`) is a *future* generation and doesn't affect whether the running one is confirmed.
 
 use crate::counter::{self, FloorState};
 use crate::exec::Runner;
@@ -47,11 +38,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Persisted, non-secret bookkeeping.
-///
-/// The authoritative copies of everything here also live in the LUKS2 tokens;
-/// this file exists so `status` is cheap and so a machine with no enrolled
-/// generation yet still knows its counter base.
+/// Persisted, non-secret bookkeeping. The authoritative copies also live in the LUKS2 tokens;
+/// this file exists so `status` is cheap and a machine with no enrolled generation yet still
+/// knows its counter base.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct State {
     pub nv_index: u32,
@@ -60,9 +49,8 @@ pub struct State {
     pub nv_base: i64,
     /// Last generation whose keyslot was enrolled and proven.
     pub last_confirmed: Option<u64>,
-    /// Keyslots that were an independent unlock path at enrollment — the recovery
-    /// key's, and any `systemd-cryptenroll` slot. Recorded so an unattended
-    /// confirmation can notice one has gone missing.
+    /// Keyslots that were an independent unlock path at enrollment (recovery key's, and any
+    /// `systemd-cryptenroll` slot), recorded so an unattended confirmation can notice one missing.
     #[serde(default)]
     pub foreign_keyslots: Vec<u32>,
 }
@@ -89,19 +77,20 @@ pub fn save_state(path: &Path, state: &State) -> Result<()> {
     std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Establish the counter base, cross-checking every source that claims to know.
-///
-/// The tokens in the LUKS2 header and the state file must agree. A disagreement
-/// means one of them has been tampered with or a previous run was interrupted,
-/// and since a wrong base turns into "increment the counter a very large number
-/// of times", it is refused rather than resolved by preference.
+/// Establish the counter base, cross-checking every source that claims to know. The LUKS2
+/// tokens and the state file must agree — disagreement means tampering or an interrupted
+/// prior run, and since a wrong base turns into "increment the counter a huge number of
+/// times", it's refused rather than resolved by preference.
 pub fn load_base(state: Option<&State>, tokens: &[(u32, RollbackToken)]) -> Result<Option<i64>> {
     let mut bases: Vec<(String, i64)> = Vec::new();
     if let Some(s) = state {
         bases.push(("state file".into(), s.nv_base));
     }
     for (id, t) in tokens {
-        bases.push((format!("token {id} (generation {})", t.generation), t.nv_base));
+        bases.push((
+            format!("token {id} (generation {})", t.generation),
+            t.nv_base,
+        ));
     }
     let Some((_, first)) = bases.first().cloned() else {
         return Ok(None);
@@ -148,15 +137,13 @@ pub fn plan(
     })
 }
 
-/// SAFETY-CRITICAL: raise the floor, but only after proving the running
-/// generation's token unseals *right now*.
+/// SAFETY-CRITICAL: raise the floor, but only after proving the running generation's token
+/// unseals *right now*. `proof` is a secret already shown to open the device for the
+/// generation being confirmed — requiring it as an argument means the caller cannot reach
+/// this function without having established that.
 ///
-/// `proof` is a secret already shown to open the device for the generation being
-/// confirmed. Requiring it as an argument means the caller cannot reach this
-/// function without having established that — the proof is a value, not a promise.
-///
-/// Each step also needs a signed, single-use approval. Missing approvals stop the
-/// advance early and are reported; they never stop the disk unlocking.
+/// Each step also needs a signed, single-use approval; missing approvals stop the advance
+/// early and are reported, never the disk unlocking.
 #[allow(clippy::too_many_arguments)]
 pub fn advance_floor(
     runner: &dyn Runner,
@@ -218,24 +205,47 @@ mod tests {
         (
             gen_num as u32,
             RollbackToken::new(
-                1, gen_num, 0x01D9_1100, crate::counter::operand(base, gen_num).unwrap(), base,
-                "sha256", &[7, 11], false,
-                b"p", b"q", b"n", b"d",
-                &[Prediction { approved_policy: b"a".to_vec(), signature: b"s".to_vec(), label: String::new() }],
+                1,
+                gen_num,
+                0x01D9_1100,
+                crate::counter::operand(base, gen_num).unwrap(),
+                base,
+                "sha256",
+                &[7, 11],
+                false,
+                b"p",
+                b"q",
+                b"n",
+                b"d",
+                &[Prediction {
+                    approved_policy: b"a".to_vec(),
+                    signature: b"s".to_vec(),
+                    label: String::new(),
+                }],
             ),
         )
     }
 
     #[test]
     fn base_comes_from_agreeing_sources() {
-        let s = State { nv_index: 1, nv_base: 100, last_confirmed: Some(7), foreign_keyslots: vec![0] };
+        let s = State {
+            nv_index: 1,
+            nv_base: 100,
+            last_confirmed: Some(7),
+            foreign_keyslots: vec![0],
+        };
         let toks = vec![tok(7, 100), tok(6, 100)];
         assert_eq!(load_base(Some(&s), &toks).unwrap(), Some(100));
     }
 
     #[test]
     fn a_disagreeing_base_is_refused() {
-        let s = State { nv_index: 1, nv_base: 100, last_confirmed: Some(7), foreign_keyslots: vec![0] };
+        let s = State {
+            nv_index: 1,
+            nv_base: 100,
+            last_confirmed: Some(7),
+            foreign_keyslots: vec![0],
+        };
         let toks = vec![tok(7, 999)];
         let e = load_base(Some(&s), &toks).unwrap_err().to_string();
         assert!(e.contains("disagrees between sources"), "{e}");
@@ -253,7 +263,10 @@ mod tests {
 
     #[test]
     fn planning_confirms_the_window_and_the_prune() {
-        let floor = FloorState { counter: 100, base: 100 }; // floor generation 0
+        let floor = FloorState {
+            counter: 100,
+            base: 100,
+        }; // floor generation 0
         let p = plan(10, floor, &[7, 8, 9, 10], 3, None).unwrap();
         assert_eq!(p.floor.target_floor, 8);
         assert_eq!(p.keep, vec![10, 9, 8]);
@@ -262,12 +275,14 @@ mod tests {
 
     #[test]
     fn planning_honours_a_declared_floor() {
-        let floor = FloorState { counter: 100, base: 100 };
+        let floor = FloorState {
+            counter: 100,
+            base: 100,
+        };
         let p = plan(10, floor, &[8, 9, 10], 3, Some(10)).unwrap();
         assert_eq!(p.floor.target_floor, 10);
-        // The keyslots are still retained even though the floor closed the
-        // window: the floor is what enforces, and keeping the slots means a
-        // later re-enrollment does not have to rebuild them from nothing.
+        // The keyslots are still retained even though the floor closed the window — the floor
+        // enforces, and keeping slots means a later re-enrollment doesn't rebuild from nothing.
         assert_eq!(p.keep, vec![10, 9, 8]);
     }
 
@@ -275,16 +290,19 @@ mod tests {
     fn state_round_trips() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("s.json");
-        let s = State { nv_index: 0x01D9_1100, nv_base: 5, last_confirmed: None, foreign_keyslots: vec![0, 1] };
+        let s = State {
+            nv_index: 0x01D9_1100,
+            nv_base: 5,
+            last_confirmed: None,
+            foreign_keyslots: vec![0, 1],
+        };
         assert_eq!(load_state(&p).unwrap(), None);
         save_state(&p, &s).unwrap();
         assert_eq!(load_state(&p).unwrap(), Some(s));
     }
 }
 
-// ---------------------------------------------------------------------------
 // The whole confirmation, in one place
-// ---------------------------------------------------------------------------
 
 /// Inputs to [`run`].
 pub struct Request<'a> {
@@ -294,18 +312,15 @@ pub struct Request<'a> {
     pub generation: u64,
     /// Directory holding the signed predictions the image shipped.
     pub prediction_dir: &'a Path,
-    /// How the independent unlock path is checked, before anything is touched and
-    /// again after everything is done.
+    /// How the independent unlock path is checked, before anything is touched and again after
+    /// everything is done.
     pub recovery: keyslots::RecoveryCheck<'a>,
     /// PIN, when the tokens carry one and a person is supplying it.
     pub pin: Option<&'a [u8]>,
-    /// A secret already known to open the device — normally the one `unlock`
-    /// used at boot, left in `/run`.
-    ///
-    /// Supplying it is what makes unattended confirmation possible at all: the
-    /// sealed token may need a PIN that nothing on the machine knows after boot,
-    /// and this value is a *better* proof than a fresh unseal would be, because
-    /// the machine demonstrably booted with it.
+    /// A secret already known to open the device — normally the one `unlock` used at boot, left
+    /// in `/run`. Supplying it is what makes unattended confirmation possible at all (the sealed
+    /// token may need a PIN nothing on the machine knows after boot), and it's a *better* proof
+    /// than a fresh unseal, since the machine demonstrably booted with it.
     pub proof: Option<&'a [u8]>,
     /// Raise the floor to at least this generation.
     pub floor_at_least: Option<u64>,
@@ -323,30 +338,26 @@ pub struct Outcome {
     pub enrolled: Option<(u32, u32)>,
     pub dropped: Vec<u64>,
     pub floor: FloorState,
-    /// Counter values the floor could not reach for want of a signed approval.
-    ///
-    /// Non-empty means the protection is running on keyslot retention alone until
-    /// the authority issues more. The disk still unlocks.
+    /// Counter values the floor could not reach for want of a signed approval. Non-empty means
+    /// protection is running on keyslot retention alone until the authority issues more — the
+    /// disk still unlocks.
     pub unapproved_steps: Vec<u64>,
 }
 
-/// Confirm a generation: enroll it if needed, prove it, prune the window, and
-/// only then raise the floor.
-///
-/// This is the ordering the whole design rests on, so it lives in the library
-/// rather than in the command-line front end — a test that re-implements the
-/// order proves nothing about the order the machine actually uses.
+/// Confirm a generation: enroll it if needed, prove it, prune the window, and only then raise
+/// the floor. This is the ordering the whole design rests on, so it lives in the library
+/// rather than the CLI front end — a test that re-implements the order proves nothing about
+/// the order the machine actually uses.
 ///
 /// SAFETY-CRITICAL, in the order the steps appear:
 ///
 /// 1. the recovery key must open the device before anything is touched;
-/// 2. the generation being confirmed must have a keyslot, enrolled here if it
-///    does not, and enrollment verifies its own slot;
-/// 3. its secret must unseal *and* open the device — that value is then the
-///    authorisation for everything destructive that follows, so no step can
-///    proceed on an assumption;
-/// 4. pruning comes before the floor, because pruning is reversible by
-///    re-enrolling and an NV increment is reversible by nothing;
+/// 2. the generation being confirmed must have a keyslot, enrolled here if not, and
+///    enrollment verifies its own slot;
+/// 3. its secret must unseal *and* open the device — that value then authorises everything
+///    destructive that follows, so no step proceeds on an assumption;
+/// 4. pruning comes before the floor: pruning is reversible by re-enrolling, an NV increment
+///    is reversible by nothing;
 /// 5. the recovery key must still open the device at the end.
 pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Outcome> {
     let device = req.device;
@@ -368,7 +379,10 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
         .context("no rollback enrollment on this device yet: run `qos-rollback enroll` first")?;
     let counter_value = counter::read(runner, cfg.nv_index, req.scratch)?
         .context("the rollback floor counter has never been incremented")?;
-    let mut floor = FloorState { counter: counter_value, base };
+    let mut floor = FloorState {
+        counter: counter_value,
+        base,
+    };
 
     // The generation must have a keyslot before the floor can pass it.
     let mut enrolled = None;
@@ -419,57 +433,53 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
         });
     }
 
-    // The proof that the generation being confirmed can actually unlock this
-    // machine. Either it was handed to us (the secret this boot unlocked with) or
-    // we unseal it now. Everything destructive below is authorised by it, so no
-    // step can proceed on a belief.
+    // The proof that the generation being confirmed can actually unlock this machine — either
+    // handed to us (the secret this boot unlocked with) or unsealed now — authorises everything
+    // destructive below, so no step proceeds on a belief.
     let running_slot = tokens
         .iter()
         .find(|(_, t)| t.generation == req.generation)
         .context("no token for the generation being confirmed")?
         .1
         .keyslot()?;
-    let proof: Vec<u8> = match req.proof {
-        Some(p) => {
-            if !keyslots::verify_passphrase(runner, ws, device, p, Some(running_slot))? {
-                bail!(
-                    "the supplied proof secret does not open generation {}'s keyslot ({running_slot}) \
-                     on {} — refusing to confirm a generation on someone else's secret",
-                    req.generation,
-                    device.display()
-                );
-            }
-            p.to_vec()
+    let proof: Vec<u8> = if let Some(p) = req.proof {
+        if !keyslots::verify_passphrase(runner, ws, device, p, Some(running_slot))? {
+            bail!(
+                "the supplied proof secret does not open generation {}'s keyslot ({running_slot}) \
+                 on {} — refusing to confirm a generation on someone else's secret",
+                req.generation,
+                device.display()
+            );
         }
-        None => {
-            let (_, running_token) = tokens
-                .iter()
-                .find(|(_, t)| t.generation == req.generation)
-                .expect("found above");
-            let s = keyslots::unseal(
-                runner,
-                ws,
-                running_token,
-                Path::new(&cfg.pcr_public_key),
-                req.pin,
-            )?
-            .context(
-                "the token for the generation being confirmed does not unseal on this machine, so \
-                 there is nothing to confirm; refusing to touch the floor",
-            )?;
-            if !keyslots::verify_passphrase(runner, ws, device, &s, None)? {
-                bail!(
-                    "the unsealed secret for generation {} does not open {}",
-                    req.generation,
-                    device.display()
-                );
-            }
-            s.to_vec()
+        p.to_vec()
+    } else {
+        let (_, running_token) = tokens
+            .iter()
+            .find(|(_, t)| t.generation == req.generation)
+            .expect("found above");
+        let s = keyslots::unseal(
+            runner,
+            ws,
+            running_token,
+            Path::new(&cfg.pcr_public_key),
+            req.pin,
+        )?
+        .context(
+            "the token for the generation being confirmed does not unseal on this machine, so \
+             there is nothing to confirm; refusing to touch the floor",
+        )?;
+        if !keyslots::verify_passphrase(runner, ws, device, &s, None)? {
+            bail!(
+                "the unsealed secret for generation {} does not open {}",
+                req.generation,
+                device.display()
+            );
         }
+        s.to_vec()
     };
 
-    // The `true` is the independent-unlock-path check at the top of this function:
-    // it bails rather than returning, so reaching here means it passed.
+    // The `true` is the independent-unlock-path check at the top of this function: it bails
+    // rather than returning, so reaching here means it passed.
     retention::prune_is_safe(&plan.drop, &[req.generation], true)?;
     let mut dropped = Vec::new();
     for g in &plan.drop {

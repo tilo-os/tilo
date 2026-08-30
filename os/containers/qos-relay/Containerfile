@@ -49,10 +49,17 @@ COPY . /build
 # os/Containerfile.host — pin CARGO_HOME + SCCACHE_DIR into the
 # repo-mounted /build.
 ARG SOURCE_DATE_EPOCH=0
+# No RUSTFLAGS here, deliberately. The variable REPLACES `build.rustflags`
+# from .cargo/config.toml rather than appending to it, so setting it for the
+# `--remap-path-prefix` alone silently drops target-cpu=x86-64-v3 and every
+# link-time hardening flag (full RELRO, BIND_NOW, noexecstack, and the
+# GNU_PROPERTY shadow-stack mark) from everything this image builds. That
+# exact regression is why the remap now lives in .cargo/config.toml instead,
+# alongside the flags it used to displace -- it still applies here, because
+# cargo reads that config from /build.
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
     CARGO_INCREMENTAL=0 \
-    RUSTFLAGS=--remap-path-prefix=/build=. \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     LC_ALL=C.UTF-8 \
     TZ=UTC

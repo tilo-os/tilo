@@ -50,14 +50,22 @@ mod tests {
     fn next_wraps_at_the_end() {
         let t = FocusTrap::new(vec![1, 2, 3]);
         assert_eq!(t.next_from(1), Some(2));
-        assert_eq!(t.next_from(3), Some(1), "Tab from last member returns to first");
+        assert_eq!(
+            t.next_from(3),
+            Some(1),
+            "Tab from last member returns to first"
+        );
     }
 
     #[test]
     fn prev_wraps_at_the_start() {
         let t = FocusTrap::new(vec![1, 2, 3]);
         assert_eq!(t.prev_from(2), Some(1));
-        assert_eq!(t.prev_from(1), Some(3), "Shift+Tab from first wraps to last");
+        assert_eq!(
+            t.prev_from(1),
+            Some(3),
+            "Shift+Tab from first wraps to last"
+        );
     }
 
     #[test]

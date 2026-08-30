@@ -1,29 +1,18 @@
-//! End-to-end `zwp_linux_dmabuf_v1` feedback walk — the handshake a
-//! GPU client performs before it can create its first window.
+//! End-to-end `zwp_linux_dmabuf_v1` feedback walk — the handshake a GPU
+//! client performs before it can create its first window.
 //!
 //! Mesa removed `wl_drm`, so `dmabuf_feedback.main_device` is the only
-//! way a client can learn which GPU to allocate on. A compositor that
-//! advertises a version-3 dmabuf global offers the protocol without that
-//! event, and Mesa reports
+//! way a client learns which GPU to allocate on. A compositor advertising
+//! a version-3 dmabuf global offers the protocol without that event;
+//! Mesa reports `libEGL warning: failed to get driver name for fd -1`
+//! then fails to create the window silently — the client connects, stays
+//! alive, and never maps a toplevel, with no compositor-side error.
 //!
-//! ```text
-//! libEGL warning: failed to get driver name for fd -1
-//! ```
-//!
-//! then fails to create the window — the client connects, stays alive,
-//! and never maps a toplevel. That is a silent failure with no
-//! compositor-side error, which is exactly why it needs a test.
-//!
-//! This walk runs an in-process wayland-client through a `UnixStream`
-//! pair into a real headless [`State`], and asserts on the wire events:
-//!
-//! 1. the global is advertised at **version ≥ 4** (feedback exists),
-//! 2. `get_default_feedback` yields a `main_device` naming a real DRM
-//!    node the client could open,
-//! 3. the advertised format table contains only buffers the compositor
-//!    can actually composite — no format is offered that
-//!    [`shell::compositor::foreign::validate_importable`] would reject
-//!    when the client attaches it.
+//! Runs an in-process wayland-client through a `UnixStream` pair into a
+//! real headless [`State`], asserting: the global is version >= 4;
+//! `get_default_feedback` yields a `main_device` naming a real, openable
+//! DRM node; the format table offers only buffers
+//! [`shell::compositor::foreign::validate_importable`] would accept.
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -41,7 +30,6 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
 };
 
-/// One `{format, modifier}` pair out of the feedback format table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TableEntry {
     fourcc: u32,
@@ -51,14 +39,13 @@ struct TableEntry {
 #[derive(Default)]
 struct ClientAppState {
     dmabuf: Option<ZwpLinuxDmabufV1>,
-    /// Version the *compositor* advertised for the global. `< 4` means
-    /// no feedback, i.e. the bug this test guards.
+    /// Version the *compositor* advertised. `< 4` means no feedback, i.e.
+    /// the bug this test guards.
     dmabuf_version: Option<u32>,
     main_device: Option<u64>,
-    /// Decoded `format_table` contents.
     formats: Vec<TableEntry>,
-    /// Set once `zwp_linux_dmabuf_feedback_v1.done` arrives — the
-    /// protocol's "this batch is complete" marker.
+    /// Set once `zwp_linux_dmabuf_feedback_v1.done` arrives — the protocol's
+    /// "this batch is complete" marker.
     feedback_done: bool,
 }
 
@@ -67,7 +54,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
         state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -76,17 +63,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
             interface,
             version,
         } = event
+            && interface == "zwp_linux_dmabuf_v1"
         {
-            if interface == "zwp_linux_dmabuf_v1" {
-                state.dmabuf_version = Some(version);
-                // Bind at whatever the compositor offers, capped at the
-                // version this test knows how to drive. Binding at
-                // `min(version, 4)` means a v3 compositor still binds
-                // successfully — and then never sends feedback, which
-                // is precisely the failure the assertions below catch.
-                state.dmabuf =
-                    Some(registry.bind::<ZwpLinuxDmabufV1, _, _>(name, version.min(4), qh, ()));
-            }
+            state.dmabuf_version = Some(version);
+            // Bind at `min(version, 4)`, so a v3 compositor still binds successfully
+            // and then never sends feedback — the failure the assertions below catch.
+            state.dmabuf =
+                Some(registry.bind::<ZwpLinuxDmabufV1, _, _>(name, version.min(4), qh, ()));
         }
     }
 }
@@ -96,7 +79,7 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for ClientAppState {
         _: &mut Self,
         _: &ZwpLinuxDmabufV1,
         _: zwp_linux_dmabuf_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -108,7 +91,7 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for ClientAppState {
         state: &mut Self,
         _: &ZwpLinuxDmabufFeedbackV1,
         event: zwp_linux_dmabuf_feedback_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -186,10 +169,8 @@ fn pump(
     );
 }
 
-/// Spin up a server + client pair and walk the registry for the dmabuf
-/// global. Returns `None` when the machine has no advertisable render
-/// node — every assertion below is about *what* is advertised, and a
-/// GPU-less box legitimately advertises nothing.
+/// `None` when the machine has no advertisable render node — a GPU-less
+/// box legitimately advertises nothing.
 fn walk() -> Option<(ClientAppState, std::path::PathBuf)> {
     let node = render_node::probe().ok()?;
 
@@ -220,8 +201,8 @@ fn walk() -> Option<(ClientAppState, std::path::PathBuf)> {
         "registry walk for zwp_linux_dmabuf_v1",
     );
 
-    // Ask for the default feedback — this is the request Mesa makes to
-    // find the GPU, and the one a version-3 global cannot answer.
+    // The request Mesa makes to find the GPU, and the one a version-3 global
+    // cannot answer.
     let dmabuf = app.dmabuf.clone().expect("dmabuf bound");
     assert!(
         dmabuf.version() >= 4,
@@ -241,9 +222,8 @@ fn walk() -> Option<(ClientAppState, std::path::PathBuf)> {
     Some((app, node.path))
 }
 
-/// The regression this whole change exists for: the global must be
-/// version 4+, because version 3 carries no feedback and therefore no
-/// device, and Mesa cannot initialise EGL without one.
+/// Version 3 carries no feedback and therefore no device, and Mesa
+/// cannot initialise EGL without one.
 #[test]
 fn dmabuf_global_is_advertised_with_feedback() {
     let Some((app, _node)) = walk() else {
@@ -263,9 +243,7 @@ fn dmabuf_global_is_advertised_with_feedback() {
     );
 }
 
-/// `main_device` must name a DRM node that exists and that a client
-/// could open — a wrong or absent number sends the client to no GPU at
-/// all.
+/// A wrong or absent number sends the client to no GPU at all.
 #[test]
 fn feedback_main_device_is_the_advertised_render_node() {
     let Some((app, node)) = walk() else {
@@ -286,7 +264,6 @@ fn feedback_main_device_is_the_advertised_render_node() {
          number and get nothing usable if it is wrong",
         node.display()
     );
-    // And the node is genuinely openable by an unprivileged client.
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -300,8 +277,7 @@ fn feedback_main_device_is_the_advertised_render_node() {
         });
 }
 
-/// Every advertised `{format, modifier}` must be one the compositor can
-/// turn into tile pixels. Advertising more than that is what produces a
+/// Advertising more than the compositor can composite is what produces a
 /// client that renders happily into an error tile forever.
 #[test]
 fn every_advertised_format_is_one_the_compositor_can_composite() {
@@ -318,9 +294,8 @@ fn every_advertised_format_is_one_the_compositor_can_composite() {
     for entry in &app.formats {
         let fourcc = Fourcc::try_from(entry.fourcc)
             .unwrap_or_else(|_| panic!("advertised an unrecognised FourCC 0x{:08x}", entry.fourcc));
-        // Single-plane RGBA under LINEAR is the whole importable set —
-        // see `foreign::validate_importable`, which is the gate a real
-        // client buffer passes through.
+        // Single-plane RGBA under LINEAR is the whole importable set — see
+        // `foreign::validate_importable`, the gate a real client buffer passes.
         assert!(
             matches!(
                 fourcc,

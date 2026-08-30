@@ -3,14 +3,14 @@
 //! joiner adopts a full snapshot, then an incremental text edit ("typing")
 //! propagates. This is the transport+CRDT half of "type in one window, see
 //! it in the other" — the App layer drives exactly these calls
-//! (broadcast_doc_delta -> SyncIncremental; poll -> load_incremental).
+//! (`broadcast_doc_delta` -> `SyncIncremental`; poll -> `load_incremental`).
 
 use std::os::unix::net::UnixListener;
 use std::thread;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ReadDoc, ROOT, Value};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 
 fn text_of(doc: &AutoCommit) -> String {
@@ -21,9 +21,9 @@ fn text_of(doc: &AutoCommit) -> String {
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn live_text_edit_propagates_through_broker() {
-    let sock = std::env::temp_dir()
-        .join(format!("quick-collab-text-{}.sock", std::process::id()));
+    let sock = std::env::temp_dir().join(format!("quick-collab-text-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).expect("bind broker");
     thread::spawn(move || ui::collaboration::broker::serve(listener));
@@ -37,7 +37,6 @@ fn live_text_edit_propagates_through_broker() {
     let _ = a.poll();
     let _ = b.poll();
 
-    // Alice's document with a Text object holding "hello".
     let mut a_doc = AutoCommit::new();
     a_doc.set_actor(automerge::ActorId::from(b"alice".as_slice()));
     let t = a_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();

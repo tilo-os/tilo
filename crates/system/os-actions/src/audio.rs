@@ -1,4 +1,4 @@
-//! Audio sink control via PipeWire's `wpctl`.
+//! Audio sink control via `PipeWire`'s `wpctl`.
 
 use crate::process::{run, run_capture};
 

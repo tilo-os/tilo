@@ -1,6 +1,6 @@
-use ui::widget::{Widget, Button, AppWidget};
-use ui::presence::PresenceCtx;
 use ui::dnd::DragPayload;
+use ui::presence::PresenceCtx;
+use ui::widget::{AppWidget, Button, Widget};
 
 #[test]
 fn widget_defaults_for_collab_methods() {
@@ -14,7 +14,7 @@ fn widget_defaults_for_collab_methods() {
 #[test]
 fn draw_takes_presence_ctx() {
     // compile-time assertion that draw signature is what we expect.
-    fn _assert_draw_sig<W: Widget>() {
+    fn _assert_draw_sig() {
         fn _call<W: Widget>(
             w: &mut W,
             scene: &mut vello::Scene,
@@ -49,7 +49,7 @@ fn button_uses_token_radius() {
         accent_primary: t.colors.accent[5],
         accent_hover: t.colors.accent[4],
         status_success: t.colors.semantic.success,
-        radius_standard: t.radii.md as f64,
+        radius_standard: f64::from(t.radii.md),
         padding_standard: t.spacing.s3,
         gap_standard: t.spacing.s3,
         reduce_motion: false,
@@ -57,8 +57,7 @@ fn button_uses_token_radius() {
         ui_scale: 1.0,
         tokens: t,
     };
-    // A scene is required to draw; for this unit, just assert the legacy shortcut
-    // mirrors the token.
+    // A scene is required to draw; just assert the legacy shortcut mirrors the token.
     assert_eq!(theme.radius_standard, 99.0);
     assert_eq!(theme.tokens.radii.md, 99.0);
 }

@@ -13,7 +13,7 @@
 //! * [`MediaEngine`] — the control surface: `open` / `play` / `pause` /
 //!   `seek_ms` / `set_volume`, a monotonic playhead, `duration`, buffering %,
 //!   and a [`MediaEvent`] stream drained with [`MediaEngine::poll`]. With
-//!   `--features decode` it drives a real GStreamer `playbin`→`appsink` pipeline
+//!   `--features decode` it drives a real `GStreamer` `playbin`→`appsink` pipeline
 //!   with real audio out; without it a synthesized-frame fallback keeps
 //!   hermetic builds green.
 //! * [`TransportState`] + [`TransportSync`] — collaborative "follow-the-host"
@@ -46,7 +46,7 @@
 //!   node graph (devices + per-application streams), move one app's stream
 //!   between output devices, adjust per-stream volume/mute, switch the default
 //!   device, and diff enumerations for hotplug. Every media surface plays
-//!   *through* PipeWire; this is where the OS routes it.
+//!   *through* `PipeWire`; this is where the OS routes it.
 
 pub mod audio;
 pub mod cache;
@@ -74,10 +74,12 @@ pub mod gst_backend;
 pub use gstreamer as gst;
 
 pub use audio::{
-    enumerate as enumerate_audio, AudioDevice, AudioEnumerator, AudioGraph, AudioStream,
-    GraphControl, GraphDelta, RealEnumerator, RealGraphControl,
+    AudioDevice, AudioEnumerator, AudioGraph, AudioStream, GraphControl, GraphDelta,
+    RealEnumerator, RealGraphControl, enumerate as enumerate_audio,
 };
-pub use cache::{bucket_ms_for_fps, bucket_of, read_ahead_targets, FrameCache, FrameKey, SourceKey};
+pub use cache::{
+    FrameCache, FrameKey, SourceKey, bucket_ms_for_fps, bucket_of, read_ahead_targets,
+};
 pub use dmabuf::{ColorRange, Colorimetry, DmabufImage, DmabufPlane, YuvMatrix};
 pub use encode::{
     AudioCodec, BitrateUnits, EncodeReport, EncoderKind, EncoderSpec, HwEncPolicy, Selection,
@@ -87,12 +89,12 @@ pub use engine::{EngineConfig, MediaEngine, SeekMode};
 pub use event::{MediaEvent, VideoFrame};
 pub use frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
 pub use hw::{DecoderKind, HwPolicy, HwReport};
-pub use session::{EngineSession, SessionPool, DEFAULT_FRAME_TIMEOUT};
 pub use ring::{PrefetchProgress, Prefetcher, RingBuffer};
+pub use session::{DEFAULT_FRAME_TIMEOUT, EngineSession, SessionPool};
 pub use source::{Source, WORKSPACE_ROOT};
 pub use transport::{
-    correction, Correction, CrdtTransport, LocalTransport, TransportState, TransportSync,
-    DRIFT_SEEK_THRESHOLD_MS,
+    Correction, CrdtTransport, DRIFT_SEEK_THRESHOLD_MS, LocalTransport, TransportState,
+    TransportSync, correction,
 };
 
 /// Wall-clock time in unix milliseconds, for stamping a [`TransportState`]'s
@@ -102,6 +104,5 @@ pub use transport::{
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }

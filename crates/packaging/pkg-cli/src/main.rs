@@ -1,8 +1,6 @@
 //! `qos-pkg` — CLI driver for the `qos-pkg` foundation crate.
 //!
-//! ## `.qpkg` on-disk format
-//!
-//! A `.qpkg` is a plain (uncompressed) tar archive containing:
+//! A `.qpkg` is a plain (uncompressed) tar archive:
 //!
 //! ```text
 //! qpkg.toml          # tiny header: package_id (qpkg:<hex>) + format version
@@ -12,16 +10,11 @@
 //! blobs/<hex>        # each payload blob, named by its BLAKE3 hex hash
 //! ```
 //!
-//! Why uncompressed: each blob inside is already content-addressed
-//! and (in deployed qOS) lives inside an iroh-blobs store that
-//! does chunk-level deduplication / streaming. Adding gzip over
-//! that would just waste CPU; the loader streams blobs straight
-//! out of the tar at install time.
-//!
-//! The `qpkg.toml` header is convention-only — strictly speaking
-//! it duplicates information already present in the signed-root.
-//! It exists so a human running `tar tf foo.qpkg` sees the
-//! PackageId without decoding the binary signed-root.
+//! Uncompressed because each blob is already content-addressed and,
+//! deployed, lives in an iroh-blobs store doing chunk-level
+//! dedup/streaming — gzip would only waste CPU. `qpkg.toml` is
+//! convention-only (duplicates what's in signed-root) so `tar tf` shows
+//! the `PackageId` without decoding binary.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -34,17 +27,17 @@ use serde::{Deserialize, Serialize};
 
 use pkg::blobs::{BlobHash, BlobStore, Collection};
 use pkg::signed::SignedRoot;
-use pkg::{Manifest, MemoryBlobStore, PackageId, SigningIdentity, Verification, pack, unpack, verify};
+use pkg::{
+    Manifest, MemoryBlobStore, PackageId, SigningIdentity, Verification, pack, unpack, verify,
+};
 
-/// The header entry inside a `.qpkg` tar. Tiny, deliberately
-/// minimal so it can be deserialised without pulling the rest
-/// of the crate.
+/// The header entry inside a .qpkg tar. Tiny and minimal so it can be
+/// deserialised without pulling in the rest of the crate.
 #[derive(Debug, Serialize, Deserialize)]
 struct QpkgHeader {
     /// `qpkg:<hex>` form.
     package_id: String,
-    /// Format version of the .qpkg layout itself. Bumped
-    /// independently from `qos-pkg`'s signed-root version.
+    /// Format version of the .qpkg layout itself; bumped independently from qos-pkg's signed-root version.
     format: u32,
 }
 
@@ -63,9 +56,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Pack a payload directory + manifest into a .qpkg, signing
-    /// it with a freshly-generated identity unless --identity is
-    /// passed.
+    /// Pack a payload directory + manifest into a .qpkg, signing with a fresh identity unless --identity is passed.
     Pack {
         /// Path to the manifest (TOML).
         #[arg(long)]
@@ -76,102 +67,86 @@ enum Command {
         /// Output .qpkg path.
         #[arg(short = 'o', long)]
         output: PathBuf,
-        /// Optional identity JSON. If absent, a fresh keypair is
-        /// generated and its public key replaces
-        /// `publisher.identity` in the embedded manifest copy.
+        /// Optional identity JSON; if absent, a fresh keypair is generated and
+        /// its public key replaces `publisher.identity` in the embedded manifest copy.
         #[arg(long)]
         identity: Option<PathBuf>,
     },
-    /// Re-sign an existing .qpkg with the given identity, writing
-    /// the result back into the same file.
+    /// Re-sign an existing .qpkg with the given identity, writing the result back into the same file.
     Sign {
         #[arg(long)]
         identity: PathBuf,
         /// Path to the .qpkg.
         file: PathBuf,
     },
-    /// Verify a .qpkg — checks every cryptographic invariant
-    /// and reports the first one that breaks. By default the
-    /// embedded publisher identity is treated as trusted (so the
-    /// command succeeds on a self-signed package); pass
+    /// Verify a .qpkg — checks every cryptographic invariant and reports
+    /// the first one that breaks. By default the embedded publisher
+    /// identity is trusted (so a self-signed package succeeds); pass
     /// --trusted-key to override.
     Verify {
-        /// Hex-encoded trusted Ed25519 public key (32 bytes).
-        /// Repeatable. If empty, the embedded publisher key is
-        /// auto-trusted.
+        /// Hex-encoded trusted Ed25519 public key (32 bytes), repeatable; if
+        /// empty the embedded publisher key is auto-trusted.
         #[arg(long)]
         trusted_key: Vec<String>,
         file: PathBuf,
     },
     /// Print the manifest + payload tree of a .qpkg.
-    Inspect {
-        file: PathBuf,
-    },
+    Inspect { file: PathBuf },
     /// Extract the payload + a copy of the manifest into `dest`.
     Unpack {
         #[arg(long)]
         dest: PathBuf,
         file: PathBuf,
     },
-    /// Publish a signed .qpkg to a registry: sign an index entry with
-    /// the publisher identity, upload the blob to iroh-blobs, and emit
-    /// the entry to the target registry.
+    /// Publish a signed .qpkg to a registry: sign an index entry, upload
+    /// the blob to iroh-blobs, and emit the entry to the target registry.
     ///
-    /// `--registry` is a `file://`/local directory (self-hosted) or an
-    /// `https://` URL. `--dry-run` prints the signed entry + content
-    /// hash without uploading — the shape CI diffs.
+    /// `--registry` is `file://`/local (self-hosted) or `https://`.
+    /// `--dry-run` prints the signed entry + content hash without uploading.
     Publish {
-        /// Target registry: a local directory / `file://…` (self-hosted)
-        /// or an `https://…` registry endpoint.
+        /// Target registry: a local dir / `file://…` (self-hosted) or an `https://…` endpoint.
         #[arg(long)]
         registry: String,
-        /// Publisher identity JSON. Required unless `--dry-run`. Must be
-        /// the same key that signed the package.
+        /// Publisher identity JSON; required unless --dry-run, and must be the key that signed the package.
         #[arg(long)]
         identity: Option<PathBuf>,
-        /// Registry operator identity that signs the served index
-        /// (`file://` targets only). Defaults to `--identity` for
-        /// single-operator self-hosting.
+        /// Registry operator identity signing the served index (file:// only);
+        /// defaults to --identity for single-operator hosting.
         #[arg(long = "registry-key")]
         registry_key: Option<PathBuf>,
         /// `registry_id` stamped into a freshly-created index.
         #[arg(long = "registry-id", default_value = "local")]
         registry_id: String,
-        /// Target arch when the manifest declares more than one
-        /// (`x86_64` | `aarch64`). Inferred otherwise.
+        /// Target arch when the manifest declares more than one (`x86_64` | aarch64); inferred otherwise.
         #[arg(long)]
         arch: Option<String>,
-        /// Build + sign the entry and print it (with the content hash);
-        /// upload nothing.
+        /// Build + sign the entry and print it (with content hash); upload nothing.
         #[arg(long)]
         dry_run: bool,
-        /// After publishing to a `file://` registry, keep serving the
-        /// uploaded blobs so the index tickets resolve (blocks until
-        /// Ctrl-C).
+        /// After publishing to a file:// registry, keep serving the uploaded
+        /// blobs so index tickets resolve (blocks until Ctrl-C).
         #[arg(long)]
         serve: bool,
         /// The .qpkg to publish.
         file: PathBuf,
     },
-    /// Generate a publisher identity and write it as the JSON file
-    /// `--identity` accepts everywhere else. Refuses to overwrite.
+    /// Generate a publisher identity, written as the JSON --identity accepts elsewhere; refuses to overwrite.
     Keygen {
         /// Where to write the identity JSON.
         #[arg(long)]
         out: PathBuf,
     },
     /// Print a signed registry entry for a .qpkg — the JSON shape a
-    /// registry's `/entries` serves and the Store + the shell's palette
-    /// consume. For a self-hosted registry that is a static directory,
-    /// collect the printed entries into an `entries` file next to the
-    /// packages and serve the directory over HTTP.
+    /// registry's `/entries` serves. For a static-directory self-hosted
+    /// registry, collect printed entries into an `entries` file and serve
+    /// the directory over HTTP.
     Entry {
         /// Public URL the .qpkg will be downloadable from.
         #[arg(long)]
         url: String,
-        /// Publisher identity JSON that signs the entry. A fresh key
-        /// is generated when absent — fine for a local registry, since
-        /// `qos-install` verifies the package's own signature again.
+        /// Publisher identity JSON that signs the entry; a fresh key is
+        /// generated when absent (fine locally — `qos-install` re-verifies
+        /// the package's own signature).
         #[arg(long)]
         identity: Option<PathBuf>,
         /// The .qpkg to describe.
@@ -228,20 +203,17 @@ fn cmd_pack(
 ) -> Result<()> {
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read manifest {manifest_path:?}"))?;
-    let mut manifest =
-        Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    let mut manifest = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
 
     let identity = match identity_path {
         Some(p) => load_identity(p)?,
         None => SigningIdentity::generate(),
     };
 
-    // If the manifest's `publisher.identity` was a placeholder
-    // (zeros, or a different hex) we patch it to the signing
-    // identity's public key. This matches the CLI's documented
-    // behaviour: pack-fresh keys produce a self-consistent
-    // manifest without the author needing to round-trip through
-    // sign first.
+    // If the manifest's publisher.identity was a placeholder (zeros or a
+    // different hex), patch it to the signing identity's public key —
+    // pack-fresh keys should produce a self-consistent manifest without
+    // round-tripping through sign first.
     let pub_hex = hex::encode(identity.public_key_bytes());
     manifest.publisher.identity = format!("ed25519:{pub_hex}");
 
@@ -269,9 +241,8 @@ fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
             hex::encode(identity.public_key_bytes())
         );
     }
-    // Sign-with-has_signature-bit-already-set so verify can
-    // recompute the same bytes on its side.
-    let mut pre_signed = signed.clone();
+    // Sign with the has_signature bit already set so verify recomputes the same bytes.
+    let mut pre_signed = signed;
     pre_signed.signature = Some([0u8; 64]);
     let sig = identity
         .sign_signed_root(&pre_signed)
@@ -292,14 +263,13 @@ fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
         .map_err(|e| anyhow!("store: {e}"))?;
     let new_id = new_signed.package_id();
     write_qpkg(file, new_id, &new_store)?;
-    eprintln!("re-signed {} -> {}", id, new_id);
+    eprintln!("re-signed {id} -> {new_id}");
     Ok(())
 }
 
 fn cmd_verify(trusted_hex: &[String], file: &Path) -> Result<()> {
     let (id, store) = read_qpkg(file)?;
-    // Trust set: caller's keys + (if empty) the embedded
-    // publisher key for convenience.
+    // Trust set: caller's keys + (if empty) the embedded publisher key for convenience.
     let mut keys: Vec<[u8; 32]> = Vec::new();
     for hex in trusted_hex {
         let b = hex::decode(hex).with_context(|| format!("invalid trusted-key hex {hex:?}"))?;
@@ -354,7 +324,11 @@ fn cmd_inspect(file: &Path) -> Result<()> {
     );
     println!(
         "signed: {}",
-        if signed.signature.is_some() { "yes" } else { "NO" }
+        if signed.signature.is_some() {
+            "yes"
+        } else {
+            "NO"
+        }
     );
     let manifest_bytes = store
         .get(&signed.manifest_hash)
@@ -370,13 +344,8 @@ fn cmd_inspect(file: &Path) -> Result<()> {
     let collection = Collection::decode(&collection_bytes)?;
     println!("--- payload ({} files) ---", collection.entries.len());
     for (p, h) in &collection.entries {
-        let size = store
-            .get(h)
-            .ok()
-            .flatten()
-            .map(|b| b.len())
-            .unwrap_or(0);
-        println!("  {p}  (blake3:{}, {size} bytes)", h);
+        let size = store.get(h).ok().flatten().map_or(0, |b| b.len());
+        println!("  {p}  (blake3:{h}, {size} bytes)");
     }
     Ok(())
 }
@@ -384,10 +353,9 @@ fn cmd_inspect(file: &Path) -> Result<()> {
 fn cmd_unpack(dest: &Path, file: &Path) -> Result<()> {
     let (id, store) = read_qpkg(file)?;
     let manifest = unpack(id, &store, dest).map_err(|e| anyhow!("unpack: {e}"))?;
-    // Also drop a manifest.toml at the destination root for
-    // convenience — unpack only writes the payload tree, but
-    // a developer inspecting an unpacked package expects to
-    // see the manifest too.
+    // Also drop a manifest.toml at the destination root for convenience —
+    // unpack only writes the payload tree, but a developer inspecting it
+    // expects to see the manifest too.
     let toml = manifest
         .to_toml_string()
         .map_err(|e| anyhow!("re-encode manifest: {e}"))?;
@@ -415,9 +383,9 @@ fn cmd_publish(
         Some(other) => bail!("unknown --arch {other:?} (expected x86_64 or aarch64)"),
     };
 
-    // --dry-run: emit the signed entry + content hash; no network, no
-    // identity file strictly required (a fresh key still yields a
-    // signature CI can inspect, but a real publish must pin --identity).
+    // --dry-run: emit the signed entry + content hash, no network; a
+    // fresh key still yields an inspectable signature, but a real publish
+    // must pin --identity.
     if dry_run {
         let publisher = match identity {
             Some(p) => load_identity(p)?,
@@ -434,8 +402,9 @@ fn cmd_publish(
         return Ok(());
     }
 
-    let identity_path =
-        identity.ok_or_else(|| anyhow!("--identity is required to publish (only --dry-run may run keyless)"))?;
+    let identity_path = identity.ok_or_else(|| {
+        anyhow!("--identity is required to publish (only --dry-run may run keyless)")
+    })?;
     let publisher = load_identity(identity_path)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -443,12 +412,11 @@ fn cmd_publish(
         .build()
         .context("build tokio runtime")?;
 
-    // HTTPS target: emit the signed entry to the registry endpoint. The
-    // registry ingests the blob out of band via the entry's ticket.
+    // HTTPS target: emit the signed entry to the registry endpoint, which
+    // ingests the blob out of band via the entry's ticket.
     if registry.starts_with("http://") || registry.starts_with("https://") {
-        let (entry, _package_id) =
-            app_registry::build_entry(&qpkg_bytes, &publisher, arch, None)
-                .map_err(|e| anyhow!("build entry: {e}"))?;
+        let (entry, _package_id) = app_registry::build_entry(&qpkg_bytes, &publisher, arch, None)
+            .map_err(|e| anyhow!("build entry: {e}"))?;
         rt.block_on(app_registry::publish::emit_entry_https(registry, &entry))
             .map_err(|e| anyhow!("emit to registry: {e}"))?;
         eprintln!(
@@ -501,7 +469,7 @@ fn cmd_publish(
     Ok(())
 }
 
-// ----- .qpkg I/O ---------------------------------------------------
+// .qpkg I/O
 
 fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()> {
     let file = File::create(path).with_context(|| format!("create {path:?}"))?;
@@ -521,9 +489,8 @@ fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()>
         .ok_or_else(|| anyhow!("signed-root blob missing"))?;
     tar_append_bytes(&mut tar, "signed-root", &signed)?;
 
-    // manifest + collection (named for the human reader; the
-    // verifier doesn't actually use these names — it walks via
-    // the hashes in the signed-root).
+    // manifest + collection named for the human reader — the verifier
+    // actually walks via the hashes in signed-root, not these names.
     let signed_decoded = SignedRoot::decode(&signed)?;
     let manifest = store
         .get(&signed_decoded.manifest_hash)
@@ -538,11 +505,9 @@ fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()>
 
     // Per-file blobs.
     for (h, b) in store.iter() {
-        // Skip the three blobs we already wrote under their
-        // human-readable names; they live under `blobs/<hex>` too
-        // for downstream tooling that wants to dedupe by hash, so
-        // write them once under both names.
-        let name = format!("blobs/{}", h);
+        // Skip the three blobs already written under human-readable names;
+        // they also live under blobs/<hex> for tooling that dedupes by hash.
+        let name = format!("blobs/{h}");
         tar_append_bytes(&mut tar, &name, b)?;
     }
     tar.finish().context("finalise tar")?;
@@ -556,10 +521,7 @@ fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore)> {
     let mut store = MemoryBlobStore::new();
     for entry in ar.entries().context("read tar entries")? {
         let mut entry = entry?;
-        let entry_path = entry
-            .path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+        let entry_path = entry.path().map(|p| p.to_path_buf()).unwrap_or_default();
         let name = entry_path.to_string_lossy().to_string();
         let mut buf = Vec::new();
         entry.read_to_end(&mut buf).context("read tar entry")?;
@@ -571,11 +533,8 @@ fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore)> {
             n if n.starts_with("blobs/") => {
                 store.put(&buf).map_err(|e| anyhow!("store: {e}"))?;
             }
-            // signed-root, manifest.toml, collection.qcl are
-            // duplicated under blobs/<hex> too, so we can
-            // ingest them generically there. But if a packager
-            // omitted the blobs/ duplicates we still want the
-            // store populated, so ingest these too.
+            // signed-root/manifest.toml/collection.qcl are usually duplicated
+            // under blobs/<hex>; ingest them here too in case a packager omitted the duplicate.
             "signed-root" | "manifest.toml" | "collection.qcl" => {
                 store.put(&buf).map_err(|e| anyhow!("store: {e}"))?;
             }
@@ -605,14 +564,14 @@ fn tar_append_str<W: Write>(tar: &mut tar::Builder<W>, name: &str, s: &str) -> R
 }
 
 fn toml_to_string<T: serde::Serialize>(v: &T) -> Result<String> {
-    Ok(toml::to_string_pretty(v).context("toml encode qpkg.toml")?)
+    toml::to_string_pretty(v).context("toml encode qpkg.toml")
 }
 
 fn toml_from_str(s: &str) -> Result<QpkgHeader> {
-    Ok(toml::from_str(s).context("toml decode qpkg.toml")?)
+    toml::from_str(s).context("toml decode qpkg.toml")
 }
 
-// ----- identity I/O ------------------------------------------------
+// identity I/O
 
 #[derive(Serialize, Deserialize)]
 struct IdentityFile {
@@ -633,7 +592,7 @@ fn load_identity(path: &Path) -> Result<SigningIdentity> {
 }
 
 /// The raw signing key behind an identity file — for signatures that
-/// are not package signatures (registry entries).
+/// aren't package signatures (registry entries).
 fn load_signing_key(path: &Path) -> Result<SigningKey> {
     let bytes = std::fs::read(path).with_context(|| format!("read identity {path:?}"))?;
     let f: IdentityFile = serde_json::from_slice(&bytes).context("parse identity JSON")?;
@@ -656,8 +615,11 @@ fn cmd_keygen(out: &Path) -> Result<()> {
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
     }
-    std::fs::write(out, serde_json::to_vec_pretty(&file).context("encode identity")?)
-        .with_context(|| format!("write {out:?}"))?;
+    std::fs::write(
+        out,
+        serde_json::to_vec_pretty(&file).context("encode identity")?,
+    )
+    .with_context(|| format!("write {out:?}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -668,9 +630,9 @@ fn cmd_keygen(out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Build the entry from the package's own manifest: id, name, category
-/// and version come from inside the signed package, so a registry row
-/// cannot describe a package as something it is not.
+/// Build the entry from the package's own manifest: id, name,
+/// category, version come from inside the signed package, so a
+/// registry row cannot describe a package as something it is not.
 fn registry_entry_for(
     qpkg_bytes: &[u8],
     url: &str,
@@ -680,8 +642,7 @@ fn registry_entry_for(
     let package = &meta.manifest.package;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let mut entry = registry_types::RegistryEntry {
         package_id: package.id.clone(),
         name: package.name.clone().unwrap_or_else(|| package.id.clone()),

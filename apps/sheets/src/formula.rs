@@ -25,8 +25,152 @@
 //! division by zero yields `#DIV/0!`; type mismatches yield `#VALUE!`.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+use std::hash::BuildHasher;
 
-use crate::model::{a1_to_addr, addr_to_a1, Addr, CellFormat, CellValue, FormatCategory, FormulaError};
+use crate::model::{
+    Addr, CellFormat, CellValue, FormatCategory, FormulaError, a1_to_addr, addr_to_a1,
+};
+
+// ---------------------------------------------------------------------------
+// Character cursor
+// ---------------------------------------------------------------------------
+
+/// A bounds-checked cursor over a formula's characters.
+///
+/// The reference scanner, the tokenizer and the `TEXT` date picture all walk a
+/// formula by index. Routing every read through one cursor keeps the index
+/// inside the buffer, so a truncated or malformed formula ends the scan
+/// instead of reading past the end. `Copy`, so a caller can fork a look-ahead
+/// and commit it only once the look-ahead has succeeded.
+#[derive(Clone, Copy)]
+struct Scan<'a> {
+    chars: &'a [char],
+    pos: usize,
+}
+
+impl<'a> Scan<'a> {
+    fn new(chars: &'a [char]) -> Self {
+        Self { chars, pos: 0 }
+    }
+
+    /// Index of the next character to read.
+    fn pos(self) -> usize {
+        self.pos
+    }
+
+    /// The next character, without consuming it.
+    fn peek(self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    /// The character immediately before `index`, if there is one.
+    fn before(self, index: usize) -> Option<char> {
+        index
+            .checked_sub(1)
+            .and_then(|prev| self.chars.get(prev))
+            .copied()
+    }
+
+    /// Consume and return the next character.
+    fn bump(&mut self) -> Option<char> {
+        let c = self.chars.get(self.pos).copied()?;
+        self.pos = self.pos.saturating_add(1);
+        Some(c)
+    }
+
+    /// Skip `n` characters, stopping at the end of the buffer.
+    fn advance(&mut self, n: usize) {
+        self.pos = self.pos.saturating_add(n).min(self.chars.len());
+    }
+
+    /// Consume characters for as long as `pred` holds.
+    fn skip_while(&mut self, pred: impl Fn(char) -> bool) {
+        while self.peek().is_some_and(&pred) {
+            self.pos = self.pos.saturating_add(1);
+        }
+    }
+
+    /// The text between `start` and the cursor.
+    fn text_from(self, start: usize) -> String {
+        self.chars
+            .get(start..self.pos)
+            .unwrap_or_default()
+            .iter()
+            .collect()
+    }
+
+    /// Whether the text at the cursor begins with `needle`.
+    fn starts_with(self, needle: &str) -> bool {
+        let mut rest = self.chars.get(self.pos..).unwrap_or_default().iter();
+        needle.chars().all(|want| rest.next() == Some(&want))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Numeric conversions
+// ---------------------------------------------------------------------------
+
+/// A spreadsheet number as an integer, truncating toward zero the way Excel
+/// does. This is the file's single float-to-integer conversion: every index,
+/// count and component derived from a formula value goes through it, so an
+/// absurd argument clamps instead of wrapping.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "float-to-int `as` saturates at i64's bounds and maps NaN to 0"
+)]
+fn number_to_int(n: f64) -> i64 {
+    n.trunc() as i64
+}
+
+/// A spreadsheet number as a 0-based index, clamped into `0..=len`. Negative,
+/// NaN and oversized arguments collapse to the nearest valid position.
+fn number_to_index(n: f64, len: usize) -> usize {
+    usize::try_from(number_to_int(n)).unwrap_or(0).min(len)
+}
+
+/// A count or length as a spreadsheet number. Counts come from materialised
+/// ranges, so `u32` is far above any reachable value and the conversion stays
+/// exact.
+fn count_number(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// An integer as a spreadsheet number. Values outside `i32` clamp, which keeps
+/// the conversion exact for every calendar and index quantity that reaches it.
+fn int_number(n: i64) -> f64 {
+    f64::from(i32::try_from(n.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or(0))
+}
+
+/// The median of a sample, or `None` when the sample is empty. Sorts in place
+/// with `total_cmp`, so a NaN orders instead of aborting the comparison.
+fn median(sample: &mut [f64]) -> Option<f64> {
+    sample.sort_by(f64::total_cmp);
+    let mid = sample.len() / 2;
+    let hi = *sample.get(mid)?;
+    if sample.len() % 2 != 0 {
+        return Some(hi);
+    }
+    let lo = *mid.checked_sub(1).and_then(|i| sample.get(i))?;
+    Some(f64::midpoint(lo, hi))
+}
+
+/// Which component `HOUR`/`MINUTE`/`SECOND` projects out of a serial.
+#[derive(Clone, Copy)]
+enum TimeComponent {
+    Hour,
+    Minute,
+    Second,
+}
+
+/// Exact equality between two spreadsheet numbers.
+#[expect(
+    clippy::float_cmp,
+    reason = "spreadsheet `=` compares values exactly, as Excel does; an epsilon would make distinct cells compare equal"
+)]
+fn numbers_equal(a: f64, b: f64) -> bool {
+    a == b
+}
 
 // ---------------------------------------------------------------------------
 // Reference extraction (for editor highlighting + click-to-insert)
@@ -62,71 +206,64 @@ pub struct RefSpan {
 /// are never mistaken for references.
 pub fn references(body: &str) -> Vec<RefSpan> {
     let chars: Vec<char> = body.chars().collect();
+    let mut scan = Scan::new(&chars);
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '"' {
-            i += 1;
-            while i < chars.len() && chars[i] != '"' {
-                i += 1;
-            }
-            if i < chars.len() {
-                i += 1; // closing quote
-            }
+    while let Some(ch) = scan.peek() {
+        if ch == '"' {
+            scan.bump();
+            scan.skip_while(|c| c != '"');
+            scan.bump(); // closing quote, when the literal is terminated
             continue;
         }
-        if c == '$' || c.is_ascii_alphabetic() {
-            let start = i;
-            while i < chars.len() && (chars[i] == '$' || chars[i].is_ascii_alphanumeric()) {
-                i += 1;
-            }
-            // A run right after a digit/dot is an exponent (`1e3`), not a ref.
-            let prev_numish =
-                start > 0 && (chars[start - 1].is_ascii_digit() || chars[start - 1] == '.');
-            // An identifier followed by `(` is a function name, not a ref.
-            let mut k = i;
-            while k < chars.len() && chars[k].is_whitespace() {
-                k += 1;
-            }
-            let is_call = k < chars.len() && chars[k] == '(';
-            if prev_numish || is_call {
+        if ch != '$' && !ch.is_ascii_alphabetic() {
+            scan.bump();
+            continue;
+        }
+        let start = scan.pos();
+        scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+        // A run right after a digit/dot is an exponent (`1e3`), not a ref.
+        let prev_numish = scan
+            .before(start)
+            .is_some_and(|prev| prev.is_ascii_digit() || prev == '.');
+        // An identifier followed by `(` is a function name, not a ref.
+        let mut ahead = scan;
+        ahead.skip_while(char::is_whitespace);
+        if prev_numish || ahead.peek() == Some('(') {
+            continue;
+        }
+        let Some(first) = a1_to_addr(&scan.text_from(start)) else {
+            continue; // TRUE / FALSE / function names / bare words
+        };
+        // A `:` (optionally spaced) followed by another reference makes a
+        // range that spans from the first reference to the second.
+        if ahead.peek() == Some(':') {
+            ahead.bump();
+            ahead.skip_while(char::is_whitespace);
+            let tail_start = ahead.pos();
+            ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+            if let Some(second) = a1_to_addr(&ahead.text_from(tail_start)) {
+                let tl = (first.0.min(second.0), first.1.min(second.1));
+                let br = (first.0.max(second.0), first.1.max(second.1));
+                let key = format!("{}:{}", addr_to_a1(tl.0, tl.1), addr_to_a1(br.0, br.1));
+                out.push(RefSpan {
+                    start,
+                    end: ahead.pos(),
+                    tl,
+                    br,
+                    key,
+                });
+                scan = ahead;
                 continue;
             }
-            let token: String = chars[start..i].iter().collect();
-            let Some(a0) = a1_to_addr(&token) else {
-                continue; // TRUE / FALSE / function names / bare words
-            };
-            // A `:` (optionally spaced) followed by another reference makes a
-            // range that spans from `token` to the second reference.
-            let mut j = i;
-            while j < chars.len() && chars[j].is_whitespace() {
-                j += 1;
-            }
-            if j < chars.len() && chars[j] == ':' {
-                let mut m = j + 1;
-                while m < chars.len() && chars[m].is_whitespace() {
-                    m += 1;
-                }
-                let tstart = m;
-                while m < chars.len() && (chars[m] == '$' || chars[m].is_ascii_alphanumeric()) {
-                    m += 1;
-                }
-                let tok2: String = chars[tstart..m].iter().collect();
-                if let Some(a1v) = a1_to_addr(&tok2) {
-                    let tl = (a0.0.min(a1v.0), a0.1.min(a1v.1));
-                    let br = (a0.0.max(a1v.0), a0.1.max(a1v.1));
-                    let key = format!("{}:{}", addr_to_a1(tl.0, tl.1), addr_to_a1(br.0, br.1));
-                    out.push(RefSpan { start, end: m, tl, br, key });
-                    i = m;
-                    continue;
-                }
-            }
-            let key = addr_to_a1(a0.0, a0.1);
-            out.push(RefSpan { start, end: i, tl: a0, br: a0, key });
-            continue;
         }
-        i += 1;
+        let key = addr_to_a1(first.0, first.1);
+        out.push(RefSpan {
+            start,
+            end: scan.pos(),
+            tl: first,
+            br: first,
+            key,
+        });
     }
     out
 }
@@ -174,51 +311,43 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
         return raw.to_string();
     }
     let chars: Vec<char> = body.chars().collect();
-    let mut out = String::with_capacity(raw.len() + 4);
+    let mut scan = Scan::new(&chars);
+    let mut out = String::with_capacity(raw.len().saturating_add(4));
     out.push('=');
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '"' {
+    while let Some(ch) = scan.peek() {
+        if ch == '"' {
             // Copy a string literal verbatim, including the closing quote.
-            out.push(c);
-            i += 1;
-            while i < chars.len() {
-                out.push(chars[i]);
-                let done = chars[i] == '"';
-                i += 1;
-                if done {
-                    break;
-                }
-            }
+            let start = scan.pos();
+            scan.bump();
+            scan.skip_while(|c| c != '"');
+            scan.bump();
+            out.push_str(&scan.text_from(start));
             continue;
         }
-        if c == '$' || c.is_ascii_alphabetic() {
-            let start = i;
-            while i < chars.len() && (chars[i] == '$' || chars[i].is_ascii_alphanumeric()) {
-                i += 1;
-            }
-            let token: String = chars[start..i].iter().collect();
-            // A run right after a digit/dot is an exponent (`1e3`), not a ref.
-            let prev_numish =
-                start > 0 && (chars[start - 1].is_ascii_digit() || chars[start - 1] == '.');
-            // An identifier immediately followed by `(` is a function name.
-            let mut k = i;
-            while k < chars.len() && chars[k].is_whitespace() {
-                k += 1;
-            }
-            let is_call = k < chars.len() && chars[k] == '(';
-            if !prev_numish && !is_call {
-                if let Some(shifted) = offset_ref_token(&token, dcol, drow) {
-                    out.push_str(&shifted);
-                    continue;
-                }
-            }
-            out.push_str(&token);
+        if ch != '$' && !ch.is_ascii_alphabetic() {
+            out.push(ch);
+            scan.bump();
             continue;
         }
-        out.push(c);
-        i += 1;
+        let start = scan.pos();
+        scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+        let token = scan.text_from(start);
+        // A run right after a digit/dot is an exponent (`1e3`), not a ref.
+        let prev_numish = scan
+            .before(start)
+            .is_some_and(|prev| prev.is_ascii_digit() || prev == '.');
+        // An identifier immediately followed by `(` is a function name.
+        let mut ahead = scan;
+        ahead.skip_while(char::is_whitespace);
+        let is_call = ahead.peek() == Some('(');
+        if !prev_numish
+            && !is_call
+            && let Some(shifted) = offset_ref_token(&token, dcol, drow)
+        {
+            out.push_str(&shifted);
+            continue;
+        }
+        out.push_str(&token);
     }
     out
 }
@@ -228,39 +357,48 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
 /// (leaving function names, booleans, and bare words untouched).
 fn offset_ref_token(tok: &str, dcol: i64, drow: i64) -> Option<String> {
     let bytes = tok.as_bytes();
-    let mut i = 0;
-    let col_abs = i < bytes.len() && bytes[i] == b'$';
+    let mut at = 0usize;
+    let col_abs = bytes.first() == Some(&b'$');
     if col_abs {
-        i += 1;
+        at = 1;
     }
-    let ls = i;
-    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
-        i += 1;
+    let letters_start = at;
+    while bytes.get(at).is_some_and(u8::is_ascii_alphabetic) {
+        at = at.saturating_add(1);
     }
-    if i == ls {
-        return None;
-    }
-    let letters = &tok[ls..i];
-    let row_abs = i < bytes.len() && bytes[i] == b'$';
+    let letters = tok.get(letters_start..at).filter(|s| !s.is_empty())?;
+    let row_abs = bytes.get(at) == Some(&b'$');
     if row_abs {
-        i += 1;
+        at = at.saturating_add(1);
     }
-    let ds = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
+    let digits_start = at;
+    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+        at = at.saturating_add(1);
     }
-    if i == ds || i != bytes.len() {
-        return None;
+    if at != bytes.len() {
+        return None; // trailing junk: not a plain A1 reference
     }
-    let col = crate::model::letters_to_col(letters)? as i64;
-    let row: i64 = tok[ds..i].parse().ok()?; // 1-based
-    let new_col = if col_abs { col } else { (col + dcol).max(0) };
-    let new_row = if row_abs { row } else { (row + drow).max(1) };
+    let col = i64::from(crate::model::letters_to_col(letters)?);
+    let row: i64 = tok.get(digits_start..at)?.parse().ok()?; // 1-based
+    // Both components are clamped to the grid's addressable range, so a wild
+    // offset lands on the edge rather than wrapping around it.
+    let new_col = if col_abs {
+        col
+    } else {
+        col.saturating_add(dcol).clamp(0, i64::from(u32::MAX))
+    };
+    let new_row = if row_abs {
+        row
+    } else {
+        row.saturating_add(drow).clamp(1, i64::from(u32::MAX))
+    };
     let mut s = String::new();
     if col_abs {
         s.push('$');
     }
-    s.push_str(&crate::model::col_to_letters(new_col as u32));
+    s.push_str(&crate::model::col_to_letters(
+        u32::try_from(new_col).unwrap_or(0),
+    ));
     if row_abs {
         s.push('$');
     }
@@ -288,97 +426,82 @@ enum Token {
 
 fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
     let chars: Vec<char> = input.chars().collect();
-    let mut i = 0;
+    let mut scan = Scan::new(&chars);
     let mut out = Vec::new();
-    while i < chars.len() {
-        let c = chars[i];
-        if c.is_whitespace() {
-            i += 1;
+    while let Some(ch) = scan.peek() {
+        if ch.is_whitespace() {
+            scan.bump();
             continue;
         }
-        match c {
+        match ch {
             '0'..='9' | '.' => {
-                let start = i;
-                while i < chars.len()
-                    && (chars[i].is_ascii_digit() || chars[i] == '.')
-                {
-                    i += 1;
-                }
+                let start = scan.pos();
+                scan.skip_while(|c| c.is_ascii_digit() || c == '.');
                 // optional scientific exponent: 1e3, 2.5E-4
-                if i < chars.len() && (chars[i] == 'e' || chars[i] == 'E') {
-                    let save = i;
-                    i += 1;
-                    if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
-                        i += 1;
+                if matches!(scan.peek(), Some('e' | 'E')) {
+                    let before_exponent = scan;
+                    scan.bump();
+                    if matches!(scan.peek(), Some('+' | '-')) {
+                        scan.bump();
                     }
-                    if i < chars.len() && chars[i].is_ascii_digit() {
-                        while i < chars.len() && chars[i].is_ascii_digit() {
-                            i += 1;
-                        }
+                    if scan.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        scan.skip_while(|c| c.is_ascii_digit());
                     } else {
-                        i = save; // not actually an exponent
+                        scan = before_exponent; // not actually an exponent
                     }
                 }
-                let s: String = chars[start..i].iter().collect();
-                let n = s.parse::<f64>().map_err(|_| FormulaError::Error)?;
+                let n = scan
+                    .text_from(start)
+                    .parse::<f64>()
+                    .map_err(|_| FormulaError::Error)?;
                 out.push(Token::Num(n));
             }
             '"' => {
-                i += 1;
-                let mut s = String::new();
-                while i < chars.len() && chars[i] != '"' {
-                    s.push(chars[i]);
-                    i += 1;
+                scan.bump();
+                let start = scan.pos();
+                scan.skip_while(|c| c != '"');
+                let literal = scan.text_from(start);
+                if scan.bump() != Some('"') {
+                    return Err(FormulaError::Error); // unterminated string
                 }
-                if i >= chars.len() {
-                    return Err(FormulaError::Error);
-                }
-                i += 1; // closing quote
-                out.push(Token::Str(s));
+                out.push(Token::Str(literal));
             }
             '$' | 'A'..='Z' | 'a'..='z' | '_' => {
                 // Identifier: function name or cell reference (may contain $).
-                let start = i;
-                while i < chars.len()
-                    && (chars[i].is_ascii_alphanumeric()
-                        || chars[i] == '$'
-                        || chars[i] == '_'
-                        || chars[i] == '.')
-                {
-                    i += 1;
-                }
-                let s: String = chars[start..i].iter().collect();
-                out.push(Token::Ident(s));
+                let start = scan.pos();
+                scan.skip_while(|c| c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.');
+                out.push(Token::Ident(scan.text_from(start)));
             }
             '<' => {
-                if i + 1 < chars.len() && chars[i + 1] == '=' {
-                    out.push(Token::Le);
-                    i += 2;
-                } else if i + 1 < chars.len() && chars[i + 1] == '>' {
-                    out.push(Token::Ne);
-                    i += 2;
-                } else {
-                    out.push(Token::Lt);
-                    i += 1;
+                scan.bump();
+                match scan.peek() {
+                    Some('=') => {
+                        scan.bump();
+                        out.push(Token::Le);
+                    }
+                    Some('>') => {
+                        scan.bump();
+                        out.push(Token::Ne);
+                    }
+                    _ => out.push(Token::Lt),
                 }
             }
             '>' => {
-                if i + 1 < chars.len() && chars[i + 1] == '=' {
+                scan.bump();
+                if scan.peek() == Some('=') {
+                    scan.bump();
                     out.push(Token::Ge);
-                    i += 2;
                 } else {
                     out.push(Token::Gt);
-                    i += 1;
                 }
             }
             '=' => {
+                scan.bump();
                 out.push(Token::Eq);
-                i += 1;
             }
-            '+' | '-' | '*' | '/' | '^' | '&' | '%' | '(' | ')' | ','
-            | ':' => {
-                out.push(Token::Op(c));
-                i += 1;
+            '+' | '-' | '*' | '/' | '^' | '&' | '%' | '(' | ')' | ',' | ':' => {
+                scan.bump();
+                out.push(Token::Op(ch));
             }
             _ => return Err(FormulaError::Error),
         }
@@ -435,7 +558,7 @@ impl Parser {
     fn next(&mut self) -> Option<Token> {
         let t = self.tokens.get(self.pos).cloned();
         if t.is_some() {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
         }
         t
     }
@@ -532,11 +655,7 @@ impl Parser {
         // Percent literal suffix: `50%` -> 0.5.
         while matches!(self.peek(), Some(Token::Op('%'))) {
             self.next();
-            e = Expr::Binary(
-                BinOp::Div,
-                Box::new(e),
-                Box::new(Expr::Num(100.0)),
-            );
+            e = Expr::Binary(BinOp::Div, Box::new(e), Box::new(Expr::Num(100.0)));
         }
         Ok(e)
     }
@@ -583,9 +702,8 @@ impl Parser {
                 // Range A1:B3 ?
                 if matches!(self.peek(), Some(Token::Op(':'))) {
                     self.next();
-                    let end = match self.next() {
-                        Some(Token::Ident(e)) => e,
-                        _ => return Err(FormulaError::Ref),
+                    let Some(Token::Ident(end)) = self.next() else {
+                        return Err(FormulaError::Ref);
                     };
                     let a = a1_to_addr(&id).ok_or(FormulaError::Ref)?;
                     let b = a1_to_addr(&end).ok_or(FormulaError::Ref)?;
@@ -618,14 +736,14 @@ fn parse(formula: &str) -> Result<Expr, FormulaError> {
 /// The recalculation engine. Holds the raw input strings for every
 /// non-empty cell and produces a fully-evaluated value map, recomputing
 /// formulas with memoisation + cycle detection.
-pub struct Engine<'a> {
-    raw: &'a HashMap<Addr, String>,
+pub struct Engine<'a, S = std::collections::hash_map::RandomState> {
+    raw: &'a HashMap<Addr, String, S>,
     cache: HashMap<Addr, CellValue>,
     visiting: HashSet<Addr>,
 }
 
-impl<'a> Engine<'a> {
-    pub fn new(raw: &'a HashMap<Addr, String>) -> Self {
+impl<'a, S: BuildHasher> Engine<'a, S> {
+    pub fn new(raw: &'a HashMap<Addr, String, S>) -> Self {
         Self {
             raw,
             cache: HashMap::new(),
@@ -707,22 +825,17 @@ impl<'a> Engine<'a> {
             return rv;
         }
         if op == BinOp::Concat {
-            return CellValue::Text(format!(
-                "{}{}",
-                lv.to_plain_string(),
-                rv.to_plain_string()
-            ));
+            return CellValue::Text(format!("{}{}", lv.to_plain_string(), rv.to_plain_string()));
         }
         // Comparisons can compare text or numbers.
         if matches!(
             op,
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
         ) {
-            return self.eval_compare(op, &lv, &rv);
+            return eval_compare(op, &lv, &rv);
         }
-        let (a, b) = match (lv.as_number(), rv.as_number()) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return CellValue::Error(FormulaError::Value),
+        let (Some(a), Some(b)) = (lv.as_number(), rv.as_number()) else {
+            return CellValue::Error(FormulaError::Value);
         };
         let result = match op {
             BinOp::Add => a + b,
@@ -735,31 +848,16 @@ impl<'a> Engine<'a> {
                 a / b
             }
             BinOp::Pow => a.powf(b),
-            _ => unreachable!(),
+            // Concat and the comparisons are handled above.
+            BinOp::Concat
+            | BinOp::Eq
+            | BinOp::Ne
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge => return CellValue::Error(FormulaError::Value),
         };
         CellValue::Number(result)
-    }
-
-    fn eval_compare(&self, op: BinOp, lv: &CellValue, rv: &CellValue) -> CellValue {
-        // Numeric comparison when both coerce; otherwise string comparison.
-        let ord = match (lv.as_number(), rv.as_number()) {
-            (Some(a), Some(b)) => a.partial_cmp(&b),
-            _ => Some(lv.to_plain_string().cmp(&rv.to_plain_string())),
-        };
-        let Some(ord) = ord else {
-            return CellValue::Error(FormulaError::Value);
-        };
-        use std::cmp::Ordering::*;
-        let res = match op {
-            BinOp::Eq => ord == Equal,
-            BinOp::Ne => ord != Equal,
-            BinOp::Lt => ord == Less,
-            BinOp::Gt => ord == Greater,
-            BinOp::Le => ord != Greater,
-            BinOp::Ge => ord != Less,
-            _ => unreachable!(),
-        };
-        CellValue::Bool(res)
     }
 
     /// Flatten an argument into the list of scalar values it represents.
@@ -803,8 +901,45 @@ impl<'a> Engine<'a> {
         Ok(nums)
     }
 
+    /// Dispatch a function call to the family that implements it. Each stage
+    /// returns `None` for a name it does not own, so an unknown function falls
+    /// through to `#NAME?`.
     fn eval_call(&mut self, name: &str, args: &[Expr]) -> CellValue {
-        match name {
+        if let Some(v) = self.eval_aggregate(name, args) {
+            return v;
+        }
+        if let Some(v) = self.eval_logical(name, args) {
+            return v;
+        }
+        if let Some(v) = self.eval_math(name, args) {
+            return v;
+        }
+        if let Some(v) = self.eval_text(name, args) {
+            return v;
+        }
+        if let Some(v) = self.eval_lookup(name, args) {
+            return v;
+        }
+        if let Some(v) = self.eval_datetime(name, args) {
+            return v;
+        }
+        CellValue::Error(FormulaError::Name)
+    }
+
+    /// How many values across `args` satisfy `keep`, with ranges flattened.
+    fn count_matching(&mut self, args: &[Expr], keep: impl Fn(&CellValue) -> bool) -> usize {
+        let mut n = 0usize;
+        for a in args {
+            let hits = self.collect_values(a).iter().filter(|v| keep(v)).count();
+            n = n.saturating_add(hits);
+        }
+        n
+    }
+
+    /// The SUM/AVERAGE/COUNT family, including the conditional `*IF`/`*IFS`
+    /// variants.
+    fn eval_aggregate(&mut self, name: &str, args: &[Expr]) -> Option<CellValue> {
+        let value = match name {
             "SUM" => match self.numeric_args(args) {
                 Ok(ns) => CellValue::Number(ns.iter().sum()),
                 Err(e) => e,
@@ -815,139 +950,172 @@ impl<'a> Engine<'a> {
             },
             "AVERAGE" => match self.numeric_args(args) {
                 Ok(ns) if !ns.is_empty() => {
-                    CellValue::Number(ns.iter().sum::<f64>() / ns.len() as f64)
+                    CellValue::Number(ns.iter().sum::<f64>() / count_number(ns.len()))
                 }
                 Ok(_) => CellValue::Error(FormulaError::Div0),
                 Err(e) => e,
             },
             "MEDIAN" => match self.numeric_args(args) {
-                Ok(mut ns) if !ns.is_empty() => {
-                    ns.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                    let mid = ns.len() / 2;
-                    let m = if ns.len() % 2 == 0 {
-                        (ns[mid - 1] + ns[mid]) / 2.0
-                    } else {
-                        ns[mid]
-                    };
-                    CellValue::Number(m)
-                }
-                Ok(_) => CellValue::Error(FormulaError::Num),
+                Ok(mut ns) => match median(&mut ns) {
+                    Some(m) => CellValue::Number(m),
+                    None => CellValue::Error(FormulaError::Num),
+                },
                 Err(e) => e,
             },
             "MIN" => match self.numeric_args(args) {
-                Ok(ns) => {
-                    if ns.is_empty() {
-                        CellValue::Number(0.0)
-                    } else {
-                        CellValue::Number(ns.iter().cloned().fold(f64::INFINITY, f64::min))
-                    }
-                }
+                Ok(ns) if ns.is_empty() => CellValue::Number(0.0),
+                Ok(ns) => CellValue::Number(ns.iter().copied().fold(f64::INFINITY, f64::min)),
                 Err(e) => e,
             },
             "MAX" => match self.numeric_args(args) {
-                Ok(ns) => {
-                    if ns.is_empty() {
-                        CellValue::Number(0.0)
-                    } else {
-                        CellValue::Number(ns.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
-                    }
-                }
+                Ok(ns) if ns.is_empty() => CellValue::Number(0.0),
+                Ok(ns) => CellValue::Number(ns.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
                 Err(e) => e,
             },
-            "COUNT" => {
-                // Count of numeric cells.
-                let mut n = 0;
-                for a in args {
-                    for v in self.collect_values(a) {
-                        if matches!(v, CellValue::Number(_)) {
-                            n += 1;
-                        }
-                    }
-                }
-                CellValue::Number(n as f64)
-            }
+            // Count of numeric cells.
+            "COUNT" => CellValue::Number(count_number(
+                self.count_matching(args, |v| matches!(v, CellValue::Number(_))),
+            )),
+            // Count of non-empty cells.
             "COUNTA" => {
-                // Count of non-empty cells.
-                let mut n = 0;
-                for a in args {
-                    for v in self.collect_values(a) {
-                        if !v.is_empty() {
-                            n += 1;
+                CellValue::Number(count_number(self.count_matching(args, |v| !v.is_empty())))
+            }
+            "COUNTBLANK" => {
+                CellValue::Number(count_number(self.count_matching(args, CellValue::is_empty)))
+            }
+            "SUMIF" => self.sumif(args),
+            "COUNTIF" => self.countif(args),
+            "AVERAGEIF" => self.averageif(args),
+            "COUNTIFS" => match self.criteria_mask(args) {
+                Ok(mask) => CellValue::Number(count_number(mask.iter().filter(|b| **b).count())),
+                Err(e) => e,
+            },
+            "SUMIFS" => {
+                let Some((values, criteria)) = args.split_first() else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let vals = self.collect_values(values);
+                match self.criteria_mask(criteria) {
+                    Ok(mask) => {
+                        let mut total = 0.0;
+                        for (v, keep) in vals.iter().zip(mask.iter()) {
+                            if *keep && let Some(n) = v.as_number() {
+                                total += n;
+                            }
+                        }
+                        CellValue::Number(total)
+                    }
+                    Err(e) => e,
+                }
+            }
+            "AVERAGEIFS" => {
+                let Some((values, criteria)) = args.split_first() else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let vals = self.collect_values(values);
+                match self.criteria_mask(criteria) {
+                    Ok(mask) => {
+                        let mut sum = 0.0;
+                        let mut cnt = 0usize;
+                        for (v, keep) in vals.iter().zip(mask.iter()) {
+                            if *keep && let Some(n) = v.as_number() {
+                                sum += n;
+                                cnt = cnt.saturating_add(1);
+                            }
+                        }
+                        if cnt == 0 {
+                            CellValue::Error(FormulaError::Div0)
+                        } else {
+                            CellValue::Number(sum / count_number(cnt))
                         }
                     }
+                    Err(e) => e,
                 }
-                CellValue::Number(n as f64)
             }
+            _ => return None,
+        };
+        Some(value)
+    }
+
+    /// IF/IFS/SWITCH and the boolean connectives.
+    fn eval_logical(&mut self, name: &str, args: &[Expr]) -> Option<CellValue> {
+        let value = match name {
             "IF" => {
-                if args.len() < 2 {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let cond = self.eval_expr(&args[0]);
+                let (Some(cond_expr), Some(then_expr)) = (args.first(), args.get(1)) else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let cond = self.eval_expr(cond_expr);
                 if cond.is_error() {
-                    return cond;
+                    return Some(cond);
                 }
                 if cond_truthy(&cond) {
-                    self.eval_expr(&args[1])
-                } else if args.len() >= 3 {
-                    self.eval_expr(&args[2])
+                    self.eval_expr(then_expr)
+                } else if let Some(else_expr) = args.get(2) {
+                    self.eval_expr(else_expr)
                 } else {
                     CellValue::Bool(false)
                 }
             }
             "IFS" => {
-                let mut i = 0;
-                while i + 1 < args.len() {
-                    let cond = self.eval_expr(&args[i]);
+                let mut chosen = CellValue::Error(FormulaError::Na);
+                for pair in args.chunks_exact(2) {
+                    let (Some(cond_expr), Some(then_expr)) = (pair.first(), pair.get(1)) else {
+                        continue;
+                    };
+                    let cond = self.eval_expr(cond_expr);
                     if cond.is_error() {
-                        return cond;
+                        return Some(cond);
                     }
                     if cond_truthy(&cond) {
-                        return self.eval_expr(&args[i + 1]);
+                        chosen = self.eval_expr(then_expr);
+                        break;
                     }
-                    i += 2;
                 }
-                CellValue::Error(FormulaError::Na)
+                chosen
             }
             "IFERROR" => {
-                if args.len() < 2 {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let v = self.eval_expr(&args[0]);
+                let (Some(probe), Some(fallback)) = (args.first(), args.get(1)) else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let v = self.eval_expr(probe);
                 if v.is_error() {
-                    self.eval_expr(&args[1])
+                    self.eval_expr(fallback)
                 } else {
                     v
                 }
             }
             "IFNA" => {
-                if args.len() < 2 {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let v = self.eval_expr(&args[0]);
+                let (Some(probe), Some(fallback)) = (args.first(), args.get(1)) else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let v = self.eval_expr(probe);
                 if matches!(&v, CellValue::Error(FormulaError::Na)) {
-                    self.eval_expr(&args[1])
+                    self.eval_expr(fallback)
                 } else {
                     v
                 }
             }
             "SWITCH" => {
-                if args.is_empty() {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let target = self.eval_expr(&args[0]);
-                let mut i = 1;
-                while i + 1 < args.len() {
-                    let case = self.eval_expr(&args[i]);
+                let Some((target_expr, rest)) = args.split_first() else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let target = self.eval_expr(target_expr);
+                let mut cases = rest.chunks_exact(2);
+                let mut chosen: Option<&Expr> = None;
+                for pair in cases.by_ref() {
+                    let (Some(case_expr), Some(value_expr)) = (pair.first(), pair.get(1)) else {
+                        continue;
+                    };
+                    let case = self.eval_expr(case_expr);
                     if values_equal(&case, &target) {
-                        return self.eval_expr(&args[i + 1]);
+                        chosen = Some(value_expr);
+                        break;
                     }
-                    i += 2;
                 }
                 // A lone trailing argument is the default.
-                if i < args.len() {
-                    self.eval_expr(&args[i])
-                } else {
-                    CellValue::Error(FormulaError::Na)
+                match chosen.or_else(|| cases.remainder().first()) {
+                    Some(e) => self.eval_expr(e),
+                    None => CellValue::Error(FormulaError::Na),
                 }
             }
             "TRUE" => CellValue::Bool(true),
@@ -956,44 +1124,45 @@ impl<'a> Engine<'a> {
                 Ok(bs) => CellValue::Bool(bs.iter().filter(|b| **b).count() % 2 == 1),
                 Err(e) => e,
             },
-            "AND" => {
-                let vals = self.flatten_bools(args);
-                match vals {
-                    Ok(bs) => CellValue::Bool(bs.into_iter().all(|b| b)),
-                    Err(e) => e,
-                }
-            }
-            "OR" => {
-                let vals = self.flatten_bools(args);
-                match vals {
-                    Ok(bs) => CellValue::Bool(bs.into_iter().any(|b| b)),
-                    Err(e) => e,
-                }
-            }
+            "AND" => match self.flatten_bools(args) {
+                Ok(bs) => CellValue::Bool(bs.into_iter().all(|b| b)),
+                Err(e) => e,
+            },
+            "OR" => match self.flatten_bools(args) {
+                Ok(bs) => CellValue::Bool(bs.into_iter().any(|b| b)),
+                Err(e) => e,
+            },
             "NOT" => {
-                if args.len() != 1 {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let v = self.eval_expr(&args[0]);
-                match v.as_number() {
+                let [only] = args else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                match self.eval_expr(only).as_number() {
                     Some(n) => CellValue::Bool(n == 0.0),
                     None => CellValue::Error(FormulaError::Value),
                 }
             }
-            "ABS" => self.unary_num(args, |n| n.abs()),
-            "SQRT" => self.unary_num(args, |n| n.sqrt()),
-            "INT" => self.unary_num(args, |n| n.floor()),
-            "SIGN" => self.unary_num(args, |n| n.signum()),
-            "EXP" => self.unary_num(args, |n| n.exp()),
-            "LN" => self.unary_num(args, |n| n.ln()),
-            "LOG10" => self.unary_num(args, |n| n.log10()),
+            _ => return None,
+        };
+        Some(value)
+    }
+
+    /// The scalar maths functions.
+    fn eval_math(&mut self, name: &str, args: &[Expr]) -> Option<CellValue> {
+        let value = match name {
+            "ABS" => self.unary_num(args, f64::abs),
+            "SQRT" => self.unary_num(args, f64::sqrt),
+            "INT" => self.unary_num(args, f64::floor),
+            "SIGN" => self.unary_num(args, f64::signum),
+            "EXP" => self.unary_num(args, f64::exp),
+            "LN" => self.unary_num(args, f64::ln),
+            "LOG10" => self.unary_num(args, f64::log10),
             "LOG" => {
                 let v = self.eval_expr(args.first().unwrap_or(&Expr::Num(0.0)));
                 if v.is_error() {
-                    return v;
+                    return Some(v);
                 }
                 let Some(n) = v.as_number() else {
-                    return CellValue::Error(FormulaError::Value);
+                    return Some(CellValue::Error(FormulaError::Value));
                 };
                 let base = args
                     .get(1)
@@ -1013,15 +1182,26 @@ impl<'a> Engine<'a> {
                 }
             }),
             "POWER" => self.binary_num(args, |a, b| Some(a.powf(b))),
-            "FLOOR" => self.unary_num(args, |n| n.floor()),
-            "CEILING" => self.unary_num(args, |n| n.ceil()),
+            "FLOOR" => self.unary_num(args, f64::floor),
+            "CEILING" => self.unary_num(args, f64::ceil),
+            _ => return None,
+        };
+        Some(value)
+    }
+
+    /// The text functions.
+    fn eval_text(&mut self, name: &str, args: &[Expr]) -> Option<CellValue> {
+        let value = match name {
             "LEN" => {
-                let v = self.eval_expr(args.first().unwrap_or(&Expr::Str(String::new())));
-                CellValue::Number(v.to_plain_string().chars().count() as f64)
+                let text = self
+                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
+                    .to_plain_string();
+                CellValue::Number(count_number(text.chars().count()))
             }
-            "UPPER" => self.unary_text(args, |s| s.to_uppercase()),
-            "LOWER" => self.unary_text(args, |s| s.to_lowercase()),
+            "UPPER" => self.unary_text(args, str::to_uppercase),
+            "LOWER" => self.unary_text(args, str::to_lowercase),
             "TRIM" => self.unary_text(args, |s| s.trim().to_string()),
+            "PROPER" => self.unary_text(args, proper_case),
             "LEFT" => self.substr_fn(args, true),
             "RIGHT" => self.substr_fn(args, false),
             "MID" => self.mid_fn(args),
@@ -1030,7 +1210,7 @@ impl<'a> Engine<'a> {
                 for a in args {
                     for v in self.collect_values(a) {
                         if v.is_error() {
-                            return v;
+                            return Some(v);
                         }
                         s.push_str(&v.to_plain_string());
                     }
@@ -1041,21 +1221,24 @@ impl<'a> Engine<'a> {
             "REPLACE" => self.replace_fn(args),
             "FIND" => self.find_fn(args, true),
             "SEARCH" => self.find_fn(args, false),
-            "PROPER" => self.unary_text(args, proper_case),
             "REPT" => {
-                let s = self.eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
+                let s = self
+                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
                     .to_plain_string();
-                let n = args
+                let count = args
                     .get(1)
                     .and_then(|a| self.eval_expr(a).as_number())
-                    .unwrap_or(0.0)
-                    .max(0.0) as usize;
-                CellValue::Text(s.repeat(n.min(10_000)))
+                    .map_or(0, |n| number_to_index(n, 10_000));
+                CellValue::Text(s.repeat(count))
             }
             "VALUE" => {
-                let s = self.eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
+                let s = self
+                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
                     .to_plain_string();
-                let cleaned: String = s.chars().filter(|c| !matches!(c, ',' | '$' | ' ')).collect();
+                let cleaned: String = s
+                    .chars()
+                    .filter(|c| !matches!(c, ',' | '$' | ' '))
+                    .collect();
                 let core = cleaned.trim_end_matches('%');
                 match core.parse::<f64>() {
                     Ok(n) => CellValue::Number(if cleaned.ends_with('%') { n / 100.0 } else { n }),
@@ -1063,182 +1246,150 @@ impl<'a> Engine<'a> {
                 }
             }
             "EXACT" => {
-                if args.len() < 2 {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let a = self.eval_expr(&args[0]).to_plain_string();
-                let b = self.eval_expr(&args[1]).to_plain_string();
+                let (Some(left), Some(right)) = (args.first(), args.get(1)) else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let a = self.eval_expr(left).to_plain_string();
+                let b = self.eval_expr(right).to_plain_string();
                 CellValue::Bool(a == b)
             }
             "CHAR" => {
-                let n = self.eval_expr(args.first().unwrap_or(&Expr::Num(0.0)))
-                    .as_number()
-                    .unwrap_or(0.0) as u32;
-                match char::from_u32(n) {
+                let code = args
+                    .first()
+                    .and_then(|a| self.eval_expr(a).as_number())
+                    .map_or(0, |n| u32::try_from(number_to_int(n)).unwrap_or(0));
+                match char::from_u32(code) {
                     Some(c) => CellValue::Text(c.to_string()),
                     None => CellValue::Error(FormulaError::Value),
                 }
             }
             "CODE" => {
-                let s = self.eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
+                let s = self
+                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
                     .to_plain_string();
                 match s.chars().next() {
-                    Some(c) => CellValue::Number(c as u32 as f64),
+                    Some(c) => CellValue::Number(f64::from(u32::from(c))),
                     None => CellValue::Error(FormulaError::Value),
                 }
             }
             "TEXTJOIN" => self.textjoin(args),
             "TEXT" => {
-                if args.len() < 2 {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let v = self.eval_expr(&args[0]);
+                let (Some(value_expr), Some(code_expr)) = (args.first(), args.get(1)) else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let v = self.eval_expr(value_expr);
                 if v.is_error() {
-                    return v;
+                    return Some(v);
                 }
-                let code = self.eval_expr(&args[1]).to_plain_string();
+                let code = self.eval_expr(code_expr).to_plain_string();
                 match v.as_number() {
                     Some(n) => CellValue::Text(apply_text_code(n, &code)),
                     None => CellValue::Text(v.to_plain_string()),
                 }
             }
-            "SUMIF" => self.sumif(args),
-            "COUNTIF" => self.countif(args),
-            "AVERAGEIF" => self.averageif(args),
-            "COUNTBLANK" => {
-                let mut n = 0;
-                for a in args {
-                    for v in self.collect_values(a) {
-                        if v.is_empty() {
-                            n += 1;
-                        }
-                    }
-                }
-                CellValue::Number(n as f64)
-            }
-            "COUNTIFS" => match self.criteria_mask(args) {
-                Ok(mask) => CellValue::Number(mask.iter().filter(|b| **b).count() as f64),
-                Err(e) => e,
-            },
-            "SUMIFS" => {
-                if args.is_empty() {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let vals = self.collect_values(&args[0]);
-                match self.criteria_mask(&args[1..]) {
-                    Ok(mask) => {
-                        let mut total = 0.0;
-                        for (i, keep) in mask.iter().enumerate() {
-                            if *keep {
-                                if let Some(n) = vals.get(i).and_then(|v| v.as_number()) {
-                                    total += n;
-                                }
-                            }
-                        }
-                        CellValue::Number(total)
-                    }
-                    Err(e) => e,
-                }
-            }
-            "AVERAGEIFS" => {
-                if args.is_empty() {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let vals = self.collect_values(&args[0]);
-                match self.criteria_mask(&args[1..]) {
-                    Ok(mask) => {
-                        let (mut sum, mut cnt) = (0.0, 0usize);
-                        for (i, keep) in mask.iter().enumerate() {
-                            if *keep {
-                                if let Some(n) = vals.get(i).and_then(|v| v.as_number()) {
-                                    sum += n;
-                                    cnt += 1;
-                                }
-                            }
-                        }
-                        if cnt == 0 {
-                            CellValue::Error(FormulaError::Div0)
-                        } else {
-                            CellValue::Number(sum / cnt as f64)
-                        }
-                    }
-                    Err(e) => e,
-                }
-            }
+            _ => return None,
+        };
+        Some(value)
+    }
+
+    /// The lookup functions.
+    fn eval_lookup(&mut self, name: &str, args: &[Expr]) -> Option<CellValue> {
+        let value = match name {
             "VLOOKUP" => self.vlookup(args),
             "HLOOKUP" => self.hlookup(args),
             "INDEX" => self.index_fn(args),
             "MATCH" => self.match_fn(args),
             "CHOOSE" => {
-                let idx = self.eval_expr(args.first().unwrap_or(&Expr::Num(0.0)))
-                    .as_number()
-                    .unwrap_or(0.0) as i64;
-                if idx >= 1 && (idx as usize) < args.len() {
-                    self.eval_expr(&args[idx as usize])
-                } else {
-                    CellValue::Error(FormulaError::Value)
+                let index = args
+                    .first()
+                    .and_then(|a| self.eval_expr(a).as_number())
+                    .map_or(0, number_to_int);
+                // Argument 0 is the index itself, so a valid pick starts at 1.
+                let picked = usize::try_from(index)
+                    .ok()
+                    .filter(|i| *i >= 1)
+                    .and_then(|i| args.get(i));
+                match picked {
+                    Some(e) => self.eval_expr(e),
+                    None => CellValue::Error(FormulaError::Value),
                 }
             }
+            _ => return None,
+        };
+        Some(value)
+    }
+
+    /// The date and time functions.
+    fn eval_datetime(&mut self, name: &str, args: &[Expr]) -> Option<CellValue> {
+        let value = match name {
             "DATE" => {
-                if args.len() < 3 {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let y = self.eval_expr(&args[0]).as_number();
-                let m = self.eval_expr(&args[1]).as_number();
-                let d = self.eval_expr(&args[2]).as_number();
-                match (y, m, d) {
-                    (Some(y), Some(m), Some(d)) => {
-                        // Normalize out-of-range months/days the way Excel does.
-                        let m0 = m as i64 - 1;
-                        let year = y as i64 + m0.div_euclid(12);
-                        let month = m0.rem_euclid(12) as u32 + 1;
-                        let serial =
-                            crate::model::date_to_serial(year, month, 1) + (d as i64 - 1) as f64;
-                        CellValue::Number(serial)
-                    }
-                    _ => CellValue::Error(FormulaError::Value),
-                }
+                let (Some(y_expr), Some(m_expr), Some(d_expr)) =
+                    (args.first(), args.get(1), args.get(2))
+                else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let year_arg = self.eval_expr(y_expr).as_number();
+                let month_arg = self.eval_expr(m_expr).as_number();
+                let day_arg = self.eval_expr(d_expr).as_number();
+                let (Some(y), Some(m), Some(d)) = (year_arg, month_arg, day_arg) else {
+                    return Some(CellValue::Error(FormulaError::Value));
+                };
+                // Normalize out-of-range months/days the way Excel does.
+                let month_index = number_to_int(m).saturating_sub(1);
+                let year = number_to_int(y).saturating_add(month_index.div_euclid(12));
+                let month = u32::try_from(month_index.rem_euclid(12))
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                let day_offset = int_number(number_to_int(d).saturating_sub(1));
+                CellValue::Number(crate::model::date_to_serial(year, month, 1) + day_offset)
             }
             "TIME" => {
-                if args.is_empty() {
-                    return CellValue::Error(FormulaError::Error);
-                }
-                let h = self.eval_expr(&args[0]).as_number().unwrap_or(0.0);
-                let mi = args.get(1).and_then(|a| self.eval_expr(a).as_number()).unwrap_or(0.0);
-                let s = args.get(2).and_then(|a| self.eval_expr(a).as_number()).unwrap_or(0.0);
+                let Some(h_expr) = args.first() else {
+                    return Some(CellValue::Error(FormulaError::Error));
+                };
+                let h = self.eval_expr(h_expr).as_number().unwrap_or(0.0);
+                let mi = args
+                    .get(1)
+                    .and_then(|a| self.eval_expr(a).as_number())
+                    .unwrap_or(0.0);
+                let s = args
+                    .get(2)
+                    .and_then(|a| self.eval_expr(a).as_number())
+                    .unwrap_or(0.0);
                 CellValue::Number(((h * 3600.0 + mi * 60.0 + s) / 86400.0).rem_euclid(1.0))
             }
             "TODAY" => CellValue::Number(crate::model::now_serial().floor()),
             "NOW" => CellValue::Number(crate::model::now_serial()),
-            "YEAR" => self.date_part(args, |(y, _, _)| y as f64),
-            "MONTH" => self.date_part(args, |(_, m, _)| m as f64),
-            "DAY" => self.date_part(args, |(_, _, d)| d as f64),
-            "HOUR" => self.time_part(args, 0),
-            "MINUTE" => self.time_part(args, 1),
-            "SECOND" => self.time_part(args, 2),
+            "YEAR" => self.date_part(args, |(y, _, _)| int_number(y)),
+            "MONTH" => self.date_part(args, |(_, m, _)| f64::from(m)),
+            "DAY" => self.date_part(args, |(_, _, d)| f64::from(d)),
+            "HOUR" => self.time_part(args, TimeComponent::Hour),
+            "MINUTE" => self.time_part(args, TimeComponent::Minute),
+            "SECOND" => self.time_part(args, TimeComponent::Second),
             "WEEKDAY" => {
                 let v = self.eval_expr(args.first().unwrap_or(&Expr::Num(0.0)));
                 if v.is_error() {
-                    return v;
+                    return Some(v);
                 }
                 let Some(n) = v.as_number() else {
-                    return CellValue::Error(FormulaError::Value);
+                    return Some(CellValue::Error(FormulaError::Value));
                 };
-                let wd = crate::model::weekday_from_serial(n); // 1=Sun..7=Sat
-                let t = args
+                let weekday = i64::from(crate::model::weekday_from_serial(n)); // 1=Sun..7=Sat
+                let scheme = args
                     .get(1)
                     .and_then(|a| self.eval_expr(a).as_number())
-                    .map(|x| x as i64)
-                    .unwrap_or(1);
-                let out = match t {
-                    2 => ((wd + 5) % 7) + 1, // Mon=1..Sun=7
-                    3 => (wd + 5) % 7,       // Mon=0..Sun=6
-                    _ => wd,                 // Sun=1..Sat=7
+                    .map_or(1, number_to_int);
+                let shifted = weekday.saturating_add(5).rem_euclid(7);
+                let out = match scheme {
+                    2 => shifted.saturating_add(1), // Mon=1..Sun=7
+                    3 => shifted,                   // Mon=0..Sun=6
+                    _ => weekday,                   // Sun=1..Sat=7
                 };
-                CellValue::Number(out as f64)
+                CellValue::Number(int_number(out))
             }
-            _ => CellValue::Error(FormulaError::Name),
-        }
+            _ => return None,
+        };
+        Some(value)
     }
 
     fn flatten_bools(&mut self, args: &[Expr]) -> Result<Vec<bool>, CellValue> {
@@ -1248,9 +1399,9 @@ impl<'a> Engine<'a> {
                 if v.is_error() {
                     return Err(v);
                 }
-                match v.as_number() {
-                    Some(n) => out.push(n != 0.0),
-                    None => {} // skip non-numeric
+                // Non-numeric values are skipped.
+                if let Some(n) = v.as_number() {
+                    out.push(n != 0.0);
                 }
             }
         }
@@ -1271,16 +1422,12 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn binary_num(
-        &mut self,
-        args: &[Expr],
-        f: impl Fn(f64, f64) -> Option<f64>,
-    ) -> CellValue {
-        if args.len() != 2 {
+    fn binary_num(&mut self, args: &[Expr], f: impl Fn(f64, f64) -> Option<f64>) -> CellValue {
+        let [left, right] = args else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let a = self.eval_expr(&args[0]);
-        let b = self.eval_expr(&args[1]);
+        };
+        let a = self.eval_expr(left);
+        let b = self.eval_expr(right);
         if a.is_error() {
             return a;
         }
@@ -1297,21 +1444,22 @@ impl<'a> Engine<'a> {
     }
 
     fn round_fn(&mut self, args: &[Expr], mode: RoundMode) -> CellValue {
-        if args.is_empty() {
+        let Some(value_expr) = args.first() else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let v = self.eval_expr(&args[0]);
+        };
+        let v = self.eval_expr(value_expr);
         if v.is_error() {
             return v;
         }
         let Some(n) = v.as_number() else {
             return CellValue::Error(FormulaError::Value);
         };
-        let digits = if args.len() >= 2 {
-            self.eval_expr(&args[1]).as_number().unwrap_or(0.0) as i32
-        } else {
-            0
-        };
+        // Past ±308 the scale factor is already 0 or infinite, so clamping
+        // there loses nothing and keeps the exponent in range.
+        let digits = args.get(1).map_or(0, |a| {
+            let scale = self.eval_expr(a).as_number().unwrap_or(0.0);
+            i32::try_from(number_to_int(scale).clamp(-308, 308)).unwrap_or(0)
+        });
         let factor = 10f64.powi(digits);
         let scaled = n * factor;
         let rounded = match mode {
@@ -1340,58 +1488,73 @@ impl<'a> Engine<'a> {
     }
 
     fn substr_fn(&mut self, args: &[Expr], from_left: bool) -> CellValue {
-        if args.is_empty() {
+        let Some(text_expr) = args.first() else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let s = self.eval_expr(&args[0]).to_plain_string();
-        let n = if args.len() >= 2 {
-            self.eval_expr(&args[1]).as_number().unwrap_or(1.0).max(0.0) as usize
-        } else {
-            1
         };
-        let chars: Vec<char> = s.chars().collect();
-        let take = n.min(chars.len());
+        let chars: Vec<char> = self
+            .eval_expr(text_expr)
+            .to_plain_string()
+            .chars()
+            .collect();
+        let take = args.get(1).map_or(1, |a| {
+            let n = self.eval_expr(a).as_number().unwrap_or(1.0);
+            number_to_index(n, chars.len())
+        });
         let slice: String = if from_left {
-            chars[..take].iter().collect()
+            chars.iter().take(take).collect()
         } else {
-            chars[chars.len() - take..].iter().collect()
+            chars
+                .iter()
+                .skip(chars.len().saturating_sub(take))
+                .collect()
         };
         CellValue::Text(slice)
     }
 
     fn mid_fn(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 3 {
+        let (Some(text_expr), Some(start_expr), Some(len_expr)) =
+            (args.first(), args.get(1), args.get(2))
+        else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let s = self.eval_expr(&args[0]).to_plain_string();
-        let start = self.eval_expr(&args[1]).as_number().unwrap_or(1.0).max(1.0) as usize - 1;
-        let len = self.eval_expr(&args[2]).as_number().unwrap_or(0.0).max(0.0) as usize;
-        let chars: Vec<char> = s.chars().collect();
-        if start >= chars.len() {
-            return CellValue::Text(String::new());
-        }
-        let end = (start + len).min(chars.len());
-        CellValue::Text(chars[start..end].iter().collect())
+        };
+        let chars: Vec<char> = self
+            .eval_expr(text_expr)
+            .to_plain_string()
+            .chars()
+            .collect();
+        // MID counts from 1, so the 1-based start becomes a 0-based skip.
+        let start = number_to_index(
+            self.eval_expr(start_expr)
+                .as_number()
+                .unwrap_or(1.0)
+                .max(1.0),
+            chars.len(),
+        )
+        .saturating_sub(1);
+        let len = number_to_index(
+            self.eval_expr(len_expr).as_number().unwrap_or(0.0),
+            chars.len(),
+        );
+        CellValue::Text(chars.iter().skip(start).take(len).collect())
     }
 
-    /// SUMIF(range, criterion, [sum_range]).
+    /// SUMIF(range, criterion, [`sum_range`]).
     fn sumif(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 2 {
+        let (Some(range_expr), Some(crit_expr)) = (args.first(), args.get(1)) else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let probe = self.collect_values(&args[0]);
-        let crit = self.eval_expr(&args[1]);
-        let sum_vals = if args.len() >= 3 {
-            self.collect_values(&args[2])
-        } else {
-            probe.clone()
+        };
+        let probe = self.collect_values(range_expr);
+        let crit = self.eval_expr(crit_expr);
+        let sum_vals = match args.get(2) {
+            Some(a) => self.collect_values(a),
+            None => probe.clone(),
         };
         let mut total = 0.0;
-        for (i, v) in probe.iter().enumerate() {
-            if criterion_matches(v, &crit) {
-                if let Some(n) = sum_vals.get(i).and_then(|x| x.as_number()) {
-                    total += n;
-                }
+        for (v, summand) in probe.iter().zip(sum_vals.iter()) {
+            if criterion_matches(v, &crit)
+                && let Some(n) = summand.as_number()
+            {
+                total += n;
             }
         }
         CellValue::Number(total)
@@ -1399,40 +1562,40 @@ impl<'a> Engine<'a> {
 
     /// COUNTIF(range, criterion).
     fn countif(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 2 {
+        let (Some(range_expr), Some(crit_expr)) = (args.first(), args.get(1)) else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let probe = self.collect_values(&args[0]);
-        let crit = self.eval_expr(&args[1]);
+        };
+        let probe = self.collect_values(range_expr);
+        let crit = self.eval_expr(crit_expr);
         let n = probe.iter().filter(|v| criterion_matches(v, &crit)).count();
-        CellValue::Number(n as f64)
+        CellValue::Number(count_number(n))
     }
 
-    /// AVERAGEIF(range, criterion, [average_range]).
+    /// AVERAGEIF(range, criterion, [`average_range`]).
     fn averageif(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 2 {
+        let (Some(range_expr), Some(crit_expr)) = (args.first(), args.get(1)) else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let probe = self.collect_values(&args[0]);
-        let crit = self.eval_expr(&args[1]);
-        let vals = if args.len() >= 3 {
-            self.collect_values(&args[2])
-        } else {
-            probe.clone()
         };
-        let (mut sum, mut cnt) = (0.0, 0usize);
-        for (i, v) in probe.iter().enumerate() {
-            if criterion_matches(v, &crit) {
-                if let Some(n) = vals.get(i).and_then(|x| x.as_number()) {
-                    sum += n;
-                    cnt += 1;
-                }
+        let probe = self.collect_values(range_expr);
+        let crit = self.eval_expr(crit_expr);
+        let vals = match args.get(2) {
+            Some(a) => self.collect_values(a),
+            None => probe.clone(),
+        };
+        let mut sum = 0.0;
+        let mut cnt = 0usize;
+        for (v, sample) in probe.iter().zip(vals.iter()) {
+            if criterion_matches(v, &crit)
+                && let Some(n) = sample.as_number()
+            {
+                sum += n;
+                cnt = cnt.saturating_add(1);
             }
         }
         if cnt == 0 {
             CellValue::Error(FormulaError::Div0)
         } else {
-            CellValue::Number(sum / cnt as f64)
+            CellValue::Number(sum / count_number(cnt))
         }
     }
 
@@ -1441,10 +1604,12 @@ impl<'a> Engine<'a> {
     /// kept; ranges shorter than the first simply stop contributing.
     fn criteria_mask(&mut self, pairs: &[Expr]) -> Result<Vec<bool>, CellValue> {
         let mut mask: Option<Vec<bool>> = None;
-        let mut i = 0;
-        while i + 1 < pairs.len() {
-            let probe = self.collect_values(&pairs[i]);
-            let crit = self.eval_expr(&pairs[i + 1]);
+        for pair in pairs.chunks_exact(2) {
+            let (Some(range_expr), Some(crit_expr)) = (pair.first(), pair.get(1)) else {
+                continue;
+            };
+            let probe = self.collect_values(range_expr);
+            let crit = self.eval_expr(crit_expr);
             if crit.is_error() {
                 return Err(crit);
             }
@@ -1457,7 +1622,6 @@ impl<'a> Engine<'a> {
                     .map(|(a, b)| *a && *b)
                     .collect(),
             });
-            i += 2;
         }
         Ok(mask.unwrap_or_default())
     }
@@ -1465,34 +1629,47 @@ impl<'a> Engine<'a> {
     /// SUBSTITUTE(text, old, new, [instance]) — replace all occurrences, or
     /// only the `instance`-th (1-based) when given.
     fn substitute(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 3 {
+        let (Some(text_expr), Some(old_expr), Some(new_expr)) =
+            (args.first(), args.get(1), args.get(2))
+        else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let text = self.eval_expr(&args[0]).to_plain_string();
-        let old = self.eval_expr(&args[1]).to_plain_string();
-        let new = self.eval_expr(&args[2]).to_plain_string();
+        };
+        let text = self.eval_expr(text_expr).to_plain_string();
+        let old = self.eval_expr(old_expr).to_plain_string();
+        let new = self.eval_expr(new_expr).to_plain_string();
         if old.is_empty() {
             return CellValue::Text(text);
         }
-        let instance = args.get(3).and_then(|a| self.eval_expr(a).as_number()).map(|n| n as usize);
+        let instance = args
+            .get(3)
+            .and_then(|a| self.eval_expr(a).as_number())
+            .map(|n| number_to_index(n, usize::MAX));
         let out = match instance {
             None => text.replace(&old, &new),
             Some(target) if target >= 1 => {
                 let mut result = String::new();
                 let mut rest = text.as_str();
-                let mut count = 0;
+                let mut count = 0usize;
+                let mut replaced = false;
                 while let Some(pos) = rest.find(&old) {
-                    count += 1;
+                    let after = pos.saturating_add(old.len());
+                    let (Some(head), Some(tail)) = (rest.get(..pos), rest.get(after..)) else {
+                        break;
+                    };
+                    count = count.saturating_add(1);
+                    result.push_str(head);
                     if count == target {
-                        result.push_str(&rest[..pos]);
                         result.push_str(&new);
-                        result.push_str(&rest[pos + old.len()..]);
-                        return CellValue::Text(result);
+                        result.push_str(tail);
+                        replaced = true;
+                        break;
                     }
-                    result.push_str(&rest[..pos + old.len()]);
-                    rest = &rest[pos + old.len()..];
+                    result.push_str(&old);
+                    rest = tail;
                 }
-                result.push_str(rest);
+                if !replaced {
+                    result.push_str(rest);
+                }
                 result
             }
             _ => text,
@@ -1500,66 +1677,85 @@ impl<'a> Engine<'a> {
         CellValue::Text(out)
     }
 
-    /// REPLACE(old_text, start, num_chars, new_text) — positional replacement.
+    /// `REPLACE(old_text`, start, `num_chars`, `new_text`) — positional replacement.
     fn replace_fn(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 4 {
+        let (Some(text_expr), Some(start_expr), Some(num_expr), Some(new_expr)) =
+            (args.first(), args.get(1), args.get(2), args.get(3))
+        else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let chars: Vec<char> = self.eval_expr(&args[0]).to_plain_string().chars().collect();
-        let start =
-            (self.eval_expr(&args[1]).as_number().unwrap_or(1.0).max(1.0) as usize - 1).min(chars.len());
-        let num = self.eval_expr(&args[2]).as_number().unwrap_or(0.0).max(0.0) as usize;
-        let new = self.eval_expr(&args[3]).to_plain_string();
-        let end = (start + num).min(chars.len());
-        let mut out: String = chars[..start].iter().collect();
+        };
+        let chars: Vec<char> = self
+            .eval_expr(text_expr)
+            .to_plain_string()
+            .chars()
+            .collect();
+        // REPLACE counts from 1, so the 1-based start becomes a 0-based skip.
+        let start = number_to_index(
+            self.eval_expr(start_expr)
+                .as_number()
+                .unwrap_or(1.0)
+                .max(1.0),
+            chars.len(),
+        )
+        .saturating_sub(1);
+        let num = number_to_index(
+            self.eval_expr(num_expr).as_number().unwrap_or(0.0),
+            chars.len(),
+        );
+        let new = self.eval_expr(new_expr).to_plain_string();
+        let mut out: String = chars.iter().take(start).collect();
         out.push_str(&new);
-        out.extend(chars[end..].iter());
+        out.extend(chars.iter().skip(start.saturating_add(num)));
         CellValue::Text(out)
     }
 
     /// FIND/SEARCH(needle, haystack, [start]) — 1-based position of `needle`,
     /// case-sensitive for FIND and case-insensitive for SEARCH.
     fn find_fn(&mut self, args: &[Expr], case_sensitive: bool) -> CellValue {
-        if args.len() < 2 {
+        let (Some(needle_expr), Some(hay_expr)) = (args.first(), args.get(1)) else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let needle = self.eval_expr(&args[0]).to_plain_string();
-        let hay = self.eval_expr(&args[1]).to_plain_string();
+        };
+        let needle = self.eval_expr(needle_expr).to_plain_string();
+        let hay = self.eval_expr(hay_expr).to_plain_string();
+        // The optional start is 1-based; below 1 it means "from the beginning".
         let start = args
             .get(2)
             .and_then(|a| self.eval_expr(a).as_number())
-            .map(|n| n as usize)
-            .unwrap_or(1)
-            .max(1)
-            - 1;
-        let (h, n) = if case_sensitive {
+            .map_or(1, |n| number_to_index(n, usize::MAX).max(1))
+            .saturating_sub(1);
+        let (haystack, pattern) = if case_sensitive {
             (hay, needle)
         } else {
             (hay.to_lowercase(), needle.to_lowercase())
         };
-        let hchars: Vec<char> = h.chars().collect();
-        if start > hchars.len() {
+        let hay_chars: Vec<char> = haystack.chars().collect();
+        if start > hay_chars.len() {
             return CellValue::Error(FormulaError::Value);
         }
-        let hsub: String = hchars[start..].iter().collect();
-        match hsub.find(&n) {
+        let tail: String = hay_chars.iter().skip(start).collect();
+        match tail.find(&pattern) {
             Some(byte_pos) => {
-                let char_off = hsub[..byte_pos].chars().count();
-                CellValue::Number((start + char_off + 1) as f64)
+                let char_off = tail.get(..byte_pos).map_or(0, |p| p.chars().count());
+                CellValue::Number(count_number(
+                    start.saturating_add(char_off).saturating_add(1),
+                ))
             }
             None => CellValue::Error(FormulaError::Value),
         }
     }
 
-    /// TEXTJOIN(delimiter, ignore_empty, values…).
+    /// TEXTJOIN(delimiter, `ignore_empty`, values…).
     fn textjoin(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 3 {
+        let (Some(delim_expr), Some(flag_expr)) = (args.first(), args.get(1)) else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let delim = self.eval_expr(&args[0]).to_plain_string();
-        let ignore_empty = cond_truthy(&self.eval_expr(&args[1]));
+        };
+        let Some(values) = args.get(2..).filter(|rest| !rest.is_empty()) else {
+            return CellValue::Error(FormulaError::Error);
+        };
+        let delim = self.eval_expr(delim_expr).to_plain_string();
+        let ignore_empty = cond_truthy(&self.eval_expr(flag_expr));
         let mut parts = Vec::new();
-        for a in &args[2..] {
+        for a in values {
             for v in self.collect_values(a) {
                 if v.is_error() {
                     return v;
@@ -1573,144 +1769,123 @@ impl<'a> Engine<'a> {
         CellValue::Text(parts.join(&delim))
     }
 
-    /// VLOOKUP(lookup, table, col_index, [range_lookup]). Exact match when
+    /// VLOOKUP(lookup, table, `col_index`, [`range_lookup`]). Exact match when
     /// `range_lookup` is FALSE; otherwise an ascending approximate match.
     fn vlookup(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 3 {
-            return CellValue::Error(FormulaError::Error);
-        }
-        let key = self.eval_expr(&args[0]);
-        if key.is_error() {
-            return key;
-        }
-        let Some((tl, br)) = range_bounds(&args[1]) else {
-            return CellValue::Error(FormulaError::Ref);
-        };
-        let Some(col_index) = self.eval_expr(&args[2]).as_number() else {
-            return CellValue::Error(FormulaError::Value);
-        };
-        let col_index = col_index as i64;
-        if col_index < 1 {
-            return CellValue::Error(FormulaError::Value);
-        }
-        let target_col = tl.0 as i64 + col_index - 1;
-        if target_col > br.0 as i64 {
-            return CellValue::Error(FormulaError::Ref);
-        }
-        let approx = args
-            .get(3)
-            .map(|a| self.eval_expr(a).as_number().map(|n| n != 0.0).unwrap_or(true))
-            .unwrap_or(true);
-        let mut best: Option<u32> = None;
-        for r in tl.1..=br.1 {
-            let probe = self.eval_cell((tl.0, r));
-            if approx {
-                if lte(&probe, &key) {
-                    best = Some(r);
-                } else {
-                    break;
-                }
-            } else if values_equal(&probe, &key) {
-                return self.eval_cell((target_col as u32, r));
-            }
-        }
-        match best {
-            Some(r) => self.eval_cell((target_col as u32, r)),
-            None => CellValue::Error(FormulaError::Na),
-        }
+        self.lookup(args, Axis::Vertical)
     }
 
-    /// HLOOKUP(lookup, table, row_index, [range_lookup]).
+    /// HLOOKUP(lookup, table, `row_index`, [`range_lookup`]).
     fn hlookup(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 3 {
+        self.lookup(args, Axis::Horizontal)
+    }
+
+    /// Shared body for VLOOKUP/HLOOKUP: scan the leading column (or row) of the
+    /// table for `key`, then read the cell `index - 1` steps across the other
+    /// axis.
+    fn lookup(&mut self, args: &[Expr], axis: Axis) -> CellValue {
+        let (Some(key_expr), Some(table_expr), Some(index_expr)) =
+            (args.first(), args.get(1), args.get(2))
+        else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let key = self.eval_expr(&args[0]);
+        };
+        let key = self.eval_expr(key_expr);
         if key.is_error() {
             return key;
         }
-        let Some((tl, br)) = range_bounds(&args[1]) else {
+        let Some((tl, br)) = range_bounds(table_expr) else {
             return CellValue::Error(FormulaError::Ref);
         };
-        let Some(row_index) = self.eval_expr(&args[2]).as_number() else {
+        let Some(index) = self.eval_expr(index_expr).as_number().map(number_to_int) else {
             return CellValue::Error(FormulaError::Value);
         };
-        let row_index = row_index as i64;
-        if row_index < 1 {
+        if index < 1 {
             return CellValue::Error(FormulaError::Value);
         }
-        let target_row = tl.1 as i64 + row_index - 1;
-        if target_row > br.1 as i64 {
+        // `along` runs down the probe axis; `across` picks the answer column/row.
+        let (along_from, along_to, across_first, across_last) = match axis {
+            Axis::Vertical => (tl.1, br.1, tl.0, br.0),
+            Axis::Horizontal => (tl.0, br.0, tl.1, br.1),
+        };
+        let target = i64::from(across_first)
+            .saturating_add(index)
+            .saturating_sub(1);
+        if target > i64::from(across_last) {
             return CellValue::Error(FormulaError::Ref);
         }
+        let target = u32::try_from(target).unwrap_or(across_first);
         let approx = args
             .get(3)
-            .map(|a| self.eval_expr(a).as_number().map(|n| n != 0.0).unwrap_or(true))
-            .unwrap_or(true);
+            .is_none_or(|a| self.eval_expr(a).as_number() != Some(0.0));
         let mut best: Option<u32> = None;
-        for c in tl.0..=br.0 {
-            let probe = self.eval_cell((c, tl.1));
+        for along in along_from..=along_to {
+            let probe = self.eval_cell(axis.addr(along, across_first));
             if approx {
                 if lte(&probe, &key) {
-                    best = Some(c);
+                    best = Some(along);
                 } else {
                     break;
                 }
             } else if values_equal(&probe, &key) {
-                return self.eval_cell((c, target_row as u32));
+                return self.eval_cell(axis.addr(along, target));
             }
         }
         match best {
-            Some(c) => self.eval_cell((c, target_row as u32)),
+            Some(along) => self.eval_cell(axis.addr(along, target)),
             None => CellValue::Error(FormulaError::Na),
         }
     }
 
-    /// INDEX(range, row_num, [col_num]). A single-row or single-column range
+    /// INDEX(range, `row_num`, [`col_num`]). A single-row or single-column range
     /// takes one index; a rectangle takes both.
     fn index_fn(&mut self, args: &[Expr]) -> CellValue {
         let Some((tl, br)) = args.first().and_then(range_bounds) else {
             return CellValue::Error(FormulaError::Ref);
         };
-        let rows = br.1 - tl.1 + 1;
-        let cols = br.0 - tl.0 + 1;
-        let a1 = args
+        let single_row = br.1 == tl.1;
+        let first_index = args
             .get(1)
             .and_then(|a| self.eval_expr(a).as_number())
-            .unwrap_or(0.0) as i64;
-        let a2 = args.get(2).and_then(|a| self.eval_expr(a).as_number()).map(|n| n as i64);
-        let (row_i, col_i) = match a2 {
-            Some(c) => (a1, c),
-            None if rows == 1 => (1, a1),
-            None if cols == 1 => (a1, 1),
-            None => (a1, 1),
+            .map_or(0, number_to_int);
+        let second_index = args
+            .get(2)
+            .and_then(|a| self.eval_expr(a).as_number())
+            .map(number_to_int);
+        // With one index, a single-row range indexes columns; anything else
+        // indexes rows.
+        let (row_i, col_i) = match second_index {
+            Some(col) => (first_index, col),
+            None if single_row => (1, first_index),
+            None => (first_index, 1),
         };
         if row_i < 1 || col_i < 1 {
             return CellValue::Error(FormulaError::Value);
         }
-        let cc = tl.0 as i64 + col_i - 1;
-        let rr = tl.1 as i64 + row_i - 1;
-        if cc > br.0 as i64 || rr > br.1 as i64 {
+        let col = i64::from(tl.0).saturating_add(col_i).saturating_sub(1);
+        let row = i64::from(tl.1).saturating_add(row_i).saturating_sub(1);
+        if col > i64::from(br.0) || row > i64::from(br.1) {
             return CellValue::Error(FormulaError::Ref);
         }
-        self.eval_cell((cc as u32, rr as u32))
+        let (Ok(col), Ok(row)) = (u32::try_from(col), u32::try_from(row)) else {
+            return CellValue::Error(FormulaError::Ref);
+        };
+        self.eval_cell((col, row))
     }
 
-    /// MATCH(lookup, range, [match_type]). `0` exact, `1` largest ≤ (ascending,
+    /// MATCH(lookup, range, [`match_type`]). `0` exact, `1` largest ≤ (ascending,
     /// default), `-1` smallest ≥ (descending).
     fn match_fn(&mut self, args: &[Expr]) -> CellValue {
-        if args.len() < 2 {
+        let (Some(key_expr), Some(range_expr)) = (args.first(), args.get(1)) else {
             return CellValue::Error(FormulaError::Error);
-        }
-        let key = self.eval_expr(&args[0]);
-        let Some((tl, br)) = range_bounds(&args[1]) else {
+        };
+        let key = self.eval_expr(key_expr);
+        let Some((tl, br)) = range_bounds(range_expr) else {
             return CellValue::Error(FormulaError::Na);
         };
         let match_type = args
             .get(2)
             .and_then(|a| self.eval_expr(a).as_number())
-            .map(|n| n as i64)
-            .unwrap_or(1);
+            .map_or(1, number_to_int);
         let cells: Vec<Addr> = if br.1 == tl.1 {
             (tl.0..=br.0).map(|c| (c, tl.1)).collect()
         } else {
@@ -1722,7 +1897,7 @@ impl<'a> Engine<'a> {
             match match_type {
                 0 => {
                     if values_equal(&v, &key) {
-                        return CellValue::Number((i + 1) as f64);
+                        return CellValue::Number(count_number(i.saturating_add(1)));
                     }
                 }
                 t if t > 0 => {
@@ -1742,7 +1917,7 @@ impl<'a> Engine<'a> {
             }
         }
         match best {
-            Some(i) => CellValue::Number((i + 1) as f64),
+            Some(i) => CellValue::Number(count_number(i.saturating_add(1))),
             None => CellValue::Error(FormulaError::Na),
         }
     }
@@ -1763,8 +1938,8 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Shared body for HOUR/MINUTE/SECOND (`which` = 0/1/2).
-    fn time_part(&mut self, args: &[Expr], which: u8) -> CellValue {
+    /// Shared body for HOUR/MINUTE/SECOND.
+    fn time_part(&mut self, args: &[Expr], which: TimeComponent) -> CellValue {
         let Some(a) = args.first() else {
             return CellValue::Error(FormulaError::Error);
         };
@@ -1775,12 +1950,12 @@ impl<'a> Engine<'a> {
         let Some(n) = v.as_number() else {
             return CellValue::Error(FormulaError::Value);
         };
-        let (h, mi, s) = time_parts(n);
-        CellValue::Number(match which {
-            0 => h,
-            1 => mi,
-            _ => s,
-        } as f64)
+        let (hours, minutes, seconds) = time_parts(n);
+        CellValue::Number(int_number(match which {
+            TimeComponent::Hour => hours,
+            TimeComponent::Minute => minutes,
+            TimeComponent::Second => seconds,
+        }))
     }
 }
 
@@ -1791,24 +1966,72 @@ enum RoundMode {
     Up,
 }
 
+/// Which way a lookup scans its table.
+#[derive(Clone, Copy)]
+enum Axis {
+    /// VLOOKUP: probe down the leading column, answer from a column.
+    Vertical,
+    /// HLOOKUP: probe across the leading row, answer from a row.
+    Horizontal,
+}
+
+impl Axis {
+    /// The address `along` steps down the probe axis and `across` steps along
+    /// the other one.
+    fn addr(self, along: u32, across: u32) -> Addr {
+        match self {
+            Self::Vertical => (across, along),
+            Self::Horizontal => (along, across),
+        }
+    }
+}
+
+/// Compare two evaluated operands under a comparison operator: numerically
+/// when both coerce to numbers, otherwise as text.
+fn eval_compare(op: BinOp, lv: &CellValue, rv: &CellValue) -> CellValue {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let ord = match (lv.as_number(), rv.as_number()) {
+        (Some(a), Some(b)) => a.partial_cmp(&b),
+        _ => Some(lv.to_plain_string().cmp(&rv.to_plain_string())),
+    };
+    let Some(ord) = ord else {
+        // A NaN operand orders against nothing.
+        return CellValue::Error(FormulaError::Value);
+    };
+    let res = match op {
+        BinOp::Eq => ord == Equal,
+        BinOp::Ne => ord != Equal,
+        BinOp::Lt => ord == Less,
+        BinOp::Gt => ord == Greater,
+        BinOp::Le => ord != Greater,
+        BinOp::Ge => ord != Less,
+        // Only the comparison operators reach here.
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow | BinOp::Concat => {
+            return CellValue::Error(FormulaError::Value);
+        }
+    };
+    CellValue::Bool(res)
+}
+
 /// Whether a probe value satisfies a COUNTIF/SUMIF criterion. Supports a
 /// bare value (equality) and the string operators `">5"`, `"<=3"`,
 /// `"<>x"`, `">=0"`.
 fn criterion_matches(probe: &CellValue, crit: &CellValue) -> bool {
-    if let CellValue::Text(s) = crit {
-        let s = s.trim();
-        for (op, len) in [("<=", 2), (">=", 2), ("<>", 2), ("<", 1), (">", 1), ("=", 1)] {
-            if let Some(rest) = s.strip_prefix(op) {
-                let _ = len;
+    if let CellValue::Text(text) = crit {
+        let text = text.trim();
+        for op in ["<=", ">=", "<>", "<", ">", "="] {
+            if let Some(rest) = text.strip_prefix(op) {
                 if let Ok(threshold) = rest.trim().parse::<f64>() {
-                    let Some(p) = probe.as_number() else { return false };
+                    let Some(value) = probe.as_number() else {
+                        return false;
+                    };
                     return match op {
-                        "<=" => p <= threshold,
-                        ">=" => p >= threshold,
-                        "<>" => p != threshold,
-                        "<" => p < threshold,
-                        ">" => p > threshold,
-                        "=" => p == threshold,
+                        "<=" => value <= threshold,
+                        ">=" => value >= threshold,
+                        "<>" => !numbers_equal(value, threshold),
+                        "<" => value < threshold,
+                        ">" => value > threshold,
+                        "=" => numbers_equal(value, threshold),
                         _ => false,
                     };
                 }
@@ -1824,7 +2047,7 @@ fn criterion_matches(probe: &CellValue, crit: &CellValue) -> bool {
     }
     // Plain equality.
     match (probe.as_number(), crit.as_number()) {
-        (Some(a), Some(b)) => a == b,
+        (Some(a), Some(b)) => numbers_equal(a, b),
         _ => probe.to_plain_string() == crit.to_plain_string(),
     }
 }
@@ -1833,10 +2056,7 @@ fn criterion_matches(probe: &CellValue, crit: &CellValue) -> bool {
 /// `Ref` is a 1×1 rectangle; anything that isn't a reference yields `None`.
 fn range_bounds(arg: &Expr) -> Option<(Addr, Addr)> {
     match arg {
-        Expr::Range(a, b) => Some((
-            (a.0.min(b.0), a.1.min(b.1)),
-            (a.0.max(b.0), a.1.max(b.1)),
-        )),
+        Expr::Range(a, b) => Some(((a.0.min(b.0), a.1.min(b.1)), (a.0.max(b.0), a.1.max(b.1)))),
         Expr::Ref(a) => Some((*a, *a)),
         _ => None,
     }
@@ -1846,8 +2066,10 @@ fn range_bounds(arg: &Expr) -> Option<(Addr, Addr)> {
 /// case-insensitive text compare (matching spreadsheet lookup semantics).
 fn values_equal(a: &CellValue, b: &CellValue) -> bool {
     match (a.as_number(), b.as_number()) {
-        (Some(x), Some(y)) => x == y,
-        _ => a.to_plain_string().eq_ignore_ascii_case(&b.to_plain_string()),
+        (Some(x), Some(y)) => numbers_equal(x, y),
+        _ => a
+            .to_plain_string()
+            .eq_ignore_ascii_case(&b.to_plain_string()),
     }
 }
 
@@ -1868,21 +2090,23 @@ fn cond_truthy(v: &CellValue) -> bool {
     match v {
         CellValue::Bool(b) => *b,
         CellValue::Number(n) => *n != 0.0,
-        CellValue::Empty => false,
+        CellValue::Empty | CellValue::Error(_) => false,
         CellValue::Text(t) => match t.to_ascii_uppercase().as_str() {
             "TRUE" => true,
             "FALSE" => false,
             _ => !t.is_empty(),
         },
-        CellValue::Error(_) => false,
     }
 }
 
 /// The `(hours, minutes, seconds)` of a serial's fractional day.
 fn time_parts(serial: f64) -> (i64, i64, i64) {
-    let frac = serial.fract().abs();
-    let total = (frac * 86400.0).round() as i64;
-    ((total / 3600) % 24, (total % 3600) / 60, total % 60)
+    let seconds_of_day = number_to_int((serial.fract().abs() * 86400.0).round());
+    (
+        seconds_of_day.div_euclid(3600).rem_euclid(24),
+        seconds_of_day.rem_euclid(3600).div_euclid(60),
+        seconds_of_day.rem_euclid(60),
+    )
 }
 
 /// Title-case a string: capitalize the first letter of each run of letters.
@@ -1905,13 +2129,30 @@ fn proper_case(s: &str) -> String {
     out
 }
 
+/// A 1-based month number as a 0-based index into a twelve-entry name table.
+fn month_index(m: u32) -> usize {
+    usize::try_from(m.clamp(1, 12))
+        .unwrap_or(1)
+        .saturating_sub(1)
+}
+
 /// The full English month name for `TEXT`'s `mmmm` token.
 fn full_month(m: u32) -> &'static str {
     const M: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June", "July", "August", "September",
-        "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
-    M.get((m.max(1).min(12) - 1) as usize).copied().unwrap_or("January")
+    M.get(month_index(m)).copied().unwrap_or("January")
 }
 
 /// Render a number through a `TEXT` format code — a date/time picture when the
@@ -1933,15 +2174,13 @@ fn format_number_code(n: f64, code: &str) -> String {
     let percent = code.contains('%');
     let value = if percent { n * 100.0 } else { n };
     let grouping = code.contains(',');
-    let decimals = code
-        .split('.')
-        .nth(1)
-        .map(|frac| frac.chars().filter(|c| *c == '0' || *c == '#').count())
-        .unwrap_or(0);
+    let decimals = code.split('.').nth(1).map_or(0, |frac| {
+        frac.chars().filter(|c| *c == '0' || *c == '#').count()
+    });
     let mut out = if grouping {
         crate::model::format_thousands(value, decimals)
     } else {
-        format!("{:.*}", decimals, value)
+        format!("{value:.decimals$}")
     };
     if percent {
         out.push('%');
@@ -1956,83 +2195,81 @@ fn format_number_code(n: f64, code: &str) -> String {
 /// `mmmm`/`mmm`/`mm`/`m` (month, or minute in a time context), `dd`/`d`,
 /// `hh`/`h`, `ss`, and `am/pm`; anything else is copied through literally.
 fn format_date_code(serial: f64, code: &str) -> String {
-    let (y, m, d) = crate::model::serial_to_ymd(serial);
-    let (hh, mi, ss) = time_parts(serial);
-    let lc: Vec<char> = code.to_lowercase().chars().collect();
+    let (year, month, day) = crate::model::serial_to_ymd(serial);
+    let (hours, minutes, seconds) = time_parts(serial);
+    let lowered: Vec<char> = code.to_lowercase().chars().collect();
+    let mut scan = Scan::new(&lowered);
     let has_ampm = code.to_lowercase().contains("am/pm");
-    let disp_h = if has_ampm {
-        match hh % 12 {
+    let shown_hour = if has_ampm {
+        match hours.rem_euclid(12) {
             0 => 12,
             h => h,
         }
     } else {
-        hh
+        hours
     };
     let mut out = String::new();
-    let mut i = 0;
     // "mm"/"m" mean minutes only when we've just passed an hour token / colon.
     let mut time_ctx = false;
-    let starts = |from: usize, p: &str| lc[from..].iter().collect::<String>().starts_with(p);
-    while i < lc.len() {
-        if starts(i, "am/pm") {
-            out.push_str(if hh < 12 { "AM" } else { "PM" });
-            i += 5;
-        } else if starts(i, "yyyy") {
-            out.push_str(&format!("{:04}", y));
-            i += 4;
+    while let Some(ch) = scan.peek() {
+        if scan.starts_with("am/pm") {
+            out.push_str(if hours < 12 { "AM" } else { "PM" });
+            scan.advance(5);
+        } else if scan.starts_with("yyyy") {
+            let _ = write!(out, "{year:04}");
+            scan.advance(4);
             time_ctx = false;
-        } else if starts(i, "yy") {
-            out.push_str(&format!("{:02}", (y % 100 + 100) % 100));
-            i += 2;
+        } else if scan.starts_with("yy") {
+            let _ = write!(out, "{:02}", year.rem_euclid(100));
+            scan.advance(2);
             time_ctx = false;
-        } else if starts(i, "mmmm") {
-            out.push_str(full_month(m));
-            i += 4;
-        } else if starts(i, "mmm") {
-            out.push_str(month_abbrev_local(m));
-            i += 3;
-        } else if starts(i, "hh") {
-            out.push_str(&format!("{:02}", disp_h));
-            i += 2;
+        } else if scan.starts_with("mmmm") {
+            out.push_str(full_month(month));
+            scan.advance(4);
+        } else if scan.starts_with("mmm") {
+            out.push_str(month_abbrev_local(month));
+            scan.advance(3);
+        } else if scan.starts_with("hh") {
+            let _ = write!(out, "{shown_hour:02}");
+            scan.advance(2);
             time_ctx = true;
-        } else if starts(i, "h") {
-            out.push_str(&format!("{}", disp_h));
-            i += 1;
+        } else if scan.starts_with("h") {
+            let _ = write!(out, "{shown_hour}");
+            scan.advance(1);
             time_ctx = true;
-        } else if starts(i, "ss") {
-            out.push_str(&format!("{:02}", ss));
-            i += 2;
-        } else if starts(i, "dd") {
-            out.push_str(&format!("{:02}", d));
-            i += 2;
+        } else if scan.starts_with("ss") {
+            let _ = write!(out, "{seconds:02}");
+            scan.advance(2);
+        } else if scan.starts_with("dd") {
+            let _ = write!(out, "{day:02}");
+            scan.advance(2);
             time_ctx = false;
-        } else if starts(i, "d") {
-            out.push_str(&format!("{}", d));
-            i += 1;
+        } else if scan.starts_with("d") {
+            let _ = write!(out, "{day}");
+            scan.advance(1);
             time_ctx = false;
-        } else if starts(i, "mm") {
+        } else if scan.starts_with("mm") {
             if time_ctx {
-                out.push_str(&format!("{:02}", mi));
+                let _ = write!(out, "{minutes:02}");
                 time_ctx = false;
             } else {
-                out.push_str(&format!("{:02}", m));
+                let _ = write!(out, "{month:02}");
             }
-            i += 2;
-        } else if starts(i, "m") {
+            scan.advance(2);
+        } else if scan.starts_with("m") {
             if time_ctx {
-                out.push_str(&format!("{}", mi));
+                let _ = write!(out, "{minutes}");
                 time_ctx = false;
             } else {
-                out.push_str(&format!("{}", m));
+                let _ = write!(out, "{month}");
             }
-            i += 1;
+            scan.advance(1);
         } else {
-            let ch = lc[i];
             if ch == ':' {
                 time_ctx = true;
             }
             out.push(ch);
-            i += 1;
+            scan.advance(1);
         }
     }
     out
@@ -2044,7 +2281,7 @@ fn month_abbrev_local(m: u32) -> &'static str {
     const M: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    M.get((m.max(1).min(12) - 1) as usize).copied().unwrap_or("Jan")
+    M.get(month_index(m)).copied().unwrap_or("Jan")
 }
 
 /// Parse a non-formula raw string into a literal value. Numbers parse as
@@ -2058,10 +2295,10 @@ fn parse_literal(raw: &str) -> CellValue {
         return CellValue::Number(n);
     }
     // Accept a leading currency/percent for convenience.
-    if let Some(p) = trimmed.strip_suffix('%') {
-        if let Ok(n) = p.trim().parse::<f64>() {
-            return CellValue::Number(n / 100.0);
-        }
+    if let Some(p) = trimmed.strip_suffix('%')
+        && let Ok(n) = p.trim().parse::<f64>()
+    {
+        return CellValue::Number(n / 100.0);
     }
     match trimmed.to_uppercase().as_str() {
         "TRUE" => CellValue::Bool(true),
@@ -2071,7 +2308,7 @@ fn parse_literal(raw: &str) -> CellValue {
 }
 
 /// Convenience: evaluate a whole sheet's raw inputs into a value map.
-pub fn recalculate(raw: &HashMap<Addr, String>) -> HashMap<Addr, CellValue> {
+pub fn recalculate<S: BuildHasher>(raw: &HashMap<Addr, String, S>) -> HashMap<Addr, CellValue> {
     Engine::new(raw).evaluate_all()
 }
 
@@ -2115,9 +2352,9 @@ enum Unit {
 ///   * SUM/AVERAGE/MIN/MAX/etc. over a uniformly-formatted range inherit
 ///     that format.
 ///   * anything ambiguous → `None` (plain).
-pub fn infer_result_format(
+pub fn infer_result_format<S: BuildHasher>(
     body: &str,
-    formats: &HashMap<Addr, CellFormat>,
+    formats: &HashMap<Addr, CellFormat, S>,
 ) -> Option<CellFormat> {
     let expr = parse(body).ok()?;
     let unit = unit_of(&expr, formats);
@@ -2147,10 +2384,12 @@ fn unit_of_format(fmt: CellFormat) -> Unit {
 }
 
 /// Recursively determine an expression's unit.
-fn unit_of(expr: &Expr, formats: &HashMap<Addr, CellFormat>) -> Unit {
+fn unit_of<S: BuildHasher>(expr: &Expr, formats: &HashMap<Addr, CellFormat, S>) -> Unit {
     match expr {
         Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) => Unit::Scalar,
-        Expr::Ref(addr) => formats.get(addr).map(|f| unit_of_format(*f)).unwrap_or(Unit::Scalar),
+        Expr::Ref(addr) => formats
+            .get(addr)
+            .map_or(Unit::Scalar, |f| unit_of_format(*f)),
         Expr::Range(_, _) => Unit::Scalar,
         Expr::Unary(_, inner) => unit_of(inner, formats),
         Expr::Binary(op, l, r) => {
@@ -2164,7 +2403,7 @@ fn unit_of(expr: &Expr, formats: &HashMap<Addr, CellFormat>) -> Unit {
 
 /// Combine two operand units under a binary operator.
 fn combine(op: BinOp, l: Unit, r: Unit) -> Unit {
-    use BinOp::*;
+    use BinOp::{Add, Concat, Div, Eq, Ge, Gt, Le, Lt, Mul, Ne, Pow, Sub};
     // Comparisons and concat yield bare scalars/booleans/text.
     if matches!(op, Eq | Ne | Lt | Gt | Le | Ge | Concat) {
         return Unit::Scalar;
@@ -2198,7 +2437,11 @@ fn combine(op: BinOp, l: Unit, r: Unit) -> Unit {
 
 /// The unit a function call produces. Aggregates over a range inherit the
 /// range's uniform unit; ROUND/ABS/etc. inherit their first argument.
-fn unit_of_call(name: &str, args: &[Expr], formats: &HashMap<Addr, CellFormat>) -> Unit {
+fn unit_of_call<S: BuildHasher>(
+    name: &str,
+    args: &[Expr],
+    formats: &HashMap<Addr, CellFormat, S>,
+) -> Unit {
     match name {
         // Sum-family + selection functions preserve a uniform unit.
         "SUM" | "AVERAGE" | "MIN" | "MAX" | "MEDIAN" | "PRODUCT" | "ROUND" | "ROUNDUP"
@@ -2228,7 +2471,7 @@ fn unit_of_call(name: &str, args: &[Expr], formats: &HashMap<Addr, CellFormat>) 
 
 /// Units contributed by a single argument — a range contributes the unit of
 /// each cell it spans.
-fn arg_units(arg: &Expr, formats: &HashMap<Addr, CellFormat>) -> Vec<Unit> {
+fn arg_units<S: BuildHasher>(arg: &Expr, formats: &HashMap<Addr, CellFormat, S>) -> Vec<Unit> {
     match arg {
         Expr::Range(a, b) => {
             let (c0, c1) = (a.0.min(b.0), a.0.max(b.0));
@@ -2236,7 +2479,11 @@ fn arg_units(arg: &Expr, formats: &HashMap<Addr, CellFormat>) -> Vec<Unit> {
             let mut out = Vec::new();
             for r in r0..=r1 {
                 for c in c0..=c1 {
-                    out.push(formats.get(&(c, r)).map(|f| unit_of_format(*f)).unwrap_or(Unit::Scalar));
+                    out.push(
+                        formats
+                            .get(&(c, r))
+                            .map_or(Unit::Scalar, |f| unit_of_format(*f)),
+                    );
                 }
             }
             out
@@ -2270,7 +2517,9 @@ mod tests {
     }
 
     fn val(map: &HashMap<Addr, CellValue>, a: &str) -> CellValue {
-        map.get(&a1_to_addr(a).unwrap()).cloned().unwrap_or(CellValue::Empty)
+        map.get(&a1_to_addr(a).unwrap())
+            .cloned()
+            .unwrap_or(CellValue::Empty)
     }
 
     #[test]
@@ -2317,7 +2566,7 @@ mod tests {
 
     #[test]
     fn specific_excel_error_codes() {
-        use crate::model::{format_value, CellFormat};
+        use crate::model::{CellFormat, format_value};
         // Each formula triggers one specific cause. Assert both the typed
         // error kind *and* the exact canonical string the grid renders
         // (through the real `recalculate` + `format_value` path).
@@ -2379,6 +2628,9 @@ mod tests {
     }
 
     #[test]
+    // ROUND(PI(),2) is expected to be 3.14; that is the assertion, not an
+    // approximation of the constant.
+    #[allow(clippy::approx_constant)]
     fn math_functions() {
         let m = run(&[
             ("A1", "=POWER(2,10)"),
@@ -2409,8 +2661,14 @@ mod tests {
     #[test]
     fn stats_conditional_functions() {
         let m = run(&[
-            ("A1", "10"), ("A2", "20"), ("A3", "30"), ("A4", "40"),
-            ("B1", "x"), ("B2", "y"), ("B3", "x"), ("B4", "y"),
+            ("A1", "10"),
+            ("A2", "20"),
+            ("A3", "30"),
+            ("A4", "40"),
+            ("B1", "x"),
+            ("B2", "y"),
+            ("B3", "x"),
+            ("B4", "y"),
             ("C1", "=AVERAGEIF(A1:A4,\">15\")"),
             ("C2", "=SUMIFS(A1:A4,B1:B4,\"x\")"),
             ("C3", "=COUNTIFS(A1:A4,\">=20\",B1:B4,\"y\")"),
@@ -2470,9 +2728,12 @@ mod tests {
     fn lookup_functions() {
         // A small table: A=key, B=payload.
         let m = run(&[
-            ("A1", "1"), ("B1", "one"),
-            ("A2", "2"), ("B2", "two"),
-            ("A3", "3"), ("B3", "three"),
+            ("A1", "1"),
+            ("B1", "one"),
+            ("A2", "2"),
+            ("B2", "two"),
+            ("A3", "3"),
+            ("B3", "three"),
             ("D1", "=VLOOKUP(2,A1:B3,2,FALSE)"),
             ("D2", "=INDEX(B1:B3,3)"),
             ("D3", "=MATCH(3,A1:A3,0)"),

@@ -35,8 +35,8 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::undo::{UndoAccess, UndoRequest, UndoStatus};
-use crate::widget::{Button, ButtonFace, ButtonStyle};
 use crate::widget::Widget;
+use crate::widget::{Button, ButtonFace, ButtonStyle};
 
 /// Default footprint of an icon-only history control — a square toolbar
 /// button, matching the density icon buttons are placed at elsewhere.
@@ -212,7 +212,12 @@ impl Widget for UndoButton {
         let layout = taffy.layout(node).unwrap();
         let x = origin.x + layout.location.x as f64;
         let y = origin.y + layout.location.y as f64;
-        let next = Rect::new(x, y, x + layout.size.width as f64, y + layout.size.height as f64);
+        let next = Rect::new(
+            x,
+            y,
+            x + layout.size.width as f64,
+            y + layout.size.height as f64,
+        );
         if next != self.rect {
             self.rect = next;
             self.dirty = true;
@@ -472,7 +477,15 @@ mod tests {
             },
         ] {
             b.handle_event(
-                &ev, 1.0, &mods, &mut doc, &ROOT, &mut handled, &mut focus, node, &taffy,
+                &ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
             );
         }
     }

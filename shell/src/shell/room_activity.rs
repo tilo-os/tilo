@@ -1,71 +1,17 @@
 //! Room activity — everything that has happened to this workspace, by
 //! everyone, in one filterable pane.
 //!
-//! # What a room's history actually is here
+//! The room's state lives in [`WorkspaceTree::doc`], a tree-wide
+//! automerge document holding every workspace on this machine, so
+//! [`RoomScope`] decides which workspaces' changes are shown — a pane
+//! titled with one room's name must never render another's governance.
+//! Not shown: the contents of documents open inside the room, which the
+//! broker routes as opaque bytes it never materialises.
 //!
-//! A workspace is a collaboration room, and the room's own state lives in
-//! [`WorkspaceTree::doc`] — an automerge document carrying each workspace's
-//! name, its room id, its owner, its capability grants, and its strips,
-//! window groups and tabs. Every mirror in `state.rs` named `doc_*` writes
-//! into it, peers merge into it, and it is therefore a real change graph with
-//! real authors and (since those mirrors commit through
-//! [`WorkspaceTree::commit_room_change`]) real timestamps.
-//!
-//! That graph is what this pane renders. [`ui::HistorySource`] turns it into
-//! rows and [`ui::ActivityTimeline`] draws them; this module is the join
-//! between the two plus the room-specific vocabulary, the filters the shell
-//! owns, and the sheet's geometry.
-//!
-//! # One document, several rooms
-//!
-//! [`WorkspaceTree::doc`] is **tree-wide**: a single automerge document whose
-//! `workspaces` list holds every workspace on this machine. A change in it
-//! therefore belongs to a particular workspace (a grant, a rename, a window
-//! opened), to several at once (a cache flush rewrites the whole list), or to
-//! none (the active-workspace pointer lives at the document root).
-//!
-//! So a pane titled with one room's name cannot simply render the whole
-//! document — that would put another room's governance under this room's
-//! heading. Each row is attributed to the workspace whose subtree the change
-//! touched, and [`RoomScope`] decides which of them are shown. The default is
-//! this room only; widening to the whole tree is explicit, and says so in the
-//! header.
-//!
-//! # What it deliberately does not show
-//!
-//! Not the contents of the documents open inside the room. An app's document
-//! lives in that app's own process; the compositor's broker
-//! ([`crate::shell::collab_broker`]) routes its CRDT deltas between peers as
-//! opaque bytes keyed by `(app_id, cluster_id)` and never materialises them —
-//! it could not describe an edit to a note if it wanted to. Naming per-app
-//! documents here would mean inventing a data source. A room's own history is
-//! what the shell can honestly account for, so a room's own history is what
-//! this shows; per-document history is the app's to present, over its own
-//! document (see `apps/word-processor/src/history_panel.rs`).
-//!
-//! # Grouping and names
-//!
-//! A room's history is a flood like any other CRDT history — a flush that
-//! rewrites the workspace list is a dozen changes on its own — so the pane shows
-//! [`ui::group_entries`]'s bands and expands to individual changes on demand. A
-//! band that nobody named still describes itself honestly ("8 permission changes
-//! over 3 min"); a band someone named shows the name, and says who wrote it.
-//!
-//! Names live in the room document (`ui::history_groups`), beside the changes
-//! they name, so a peer that syncs the room gets the names with it and a name
-//! survives a restart. Two people naming overlapping runs at once converges —
-//! see `ui::widget::history_group::group_entries` for exactly what to.
-//!
-//! # Restore
-//!
-//! A row's `[Revert]` writes the delta from now back to that version as a
-//! **new forward change**, through the same [`ui::state::write_revert_patches`]
-//! primitive the per-document scrubber uses. History is appended to, never
-//! rewritten: the reverted-past versions stay in the graph and the revert is
-//! itself the newest row. Governance rows (a grant, a revoke, an owner change)
-//! carry [`OpClass::Govern`], which [`ui::widget::op_class_is_revertible`]
-//! declares non-revertible — an owner counters a governance act with another
-//! one rather than quietly rewinding it — so those rows never offer the chip.
+//! A row's `[Revert]` writes the delta back as a **new forward change**;
+//! history is appended to, never rewritten. Governance rows
+//! ([`OpClass::Govern`]) are non-revertible — an owner counters a
+//! governance act with another one rather than rewinding it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -91,18 +37,13 @@ use crate::shell::state::WorkspaceTree;
 /// Widest the sheet ever gets. Past this the rows stop gaining information
 /// and start becoming hard to scan across.
 const SHEET_MAX_W: f64 = 560.0;
-/// Narrowest the sheet gets before it stops being a sheet and takes the whole
-/// viewport instead. Below this a side sheet leaves the content behind it too
-/// thin to be worth preserving, which is the point at which the HIG's
-/// content-panel rule says show one thing at a time.
+/// Narrowest the sheet gets before it takes the whole viewport instead —
+/// below this the content behind it is too thin to be worth preserving
+/// (HIG's content-panel rule: show one thing at a time).
 const SHEET_MIN_W: f64 = 360.0;
-/// Viewport width under which the sheet goes full-bleed.
 const FULL_BLEED_UNDER: f64 = 720.0;
-/// Inset from the viewport edges.
 const SHEET_INSET: f64 = 16.0;
-/// Height of the pane's own header (title + subtitle).
 const HEADER_H: f64 = 58.0;
-/// Height of one row of the shell-owned filter chips.
 const CHIP_ROW_H: f64 = 30.0;
 
 /// How far back the pane is showing. Maps onto
@@ -128,18 +69,15 @@ impl Period {
         }
     }
 
-    /// The half-open `[start, now)` window this period selects, or `None` for
-    /// "no range" — which is how [`HistoryFilter`] spells "everything".
-    ///
-    /// `now` is passed in rather than read from the clock so the pane's
-    /// behaviour is testable and so every row in one frame is judged against
-    /// one instant.
+    /// The half-open `[start, now)` window, or `None` for "everything".
+    /// `now` is passed in, not read from the clock, so behaviour is
+    /// testable and every row in one frame is judged against one instant.
     pub fn range(self, now: SystemTime) -> Option<(SystemTime, SystemTime)> {
         let back = match self {
             Period::AllTime => return None,
-            Period::Today => Duration::from_secs(24 * 3600),
-            Period::Week => Duration::from_secs(7 * 24 * 3600),
-            Period::Month => Duration::from_secs(30 * 24 * 3600),
+            Period::Today => Duration::from_hours(24),
+            Period::Week => Duration::from_hours(168),
+            Period::Month => Duration::from_hours(720),
         };
         // The end is nudged past `now` so a change committed during this very
         // frame is inside the window rather than one tick outside it — the
@@ -149,20 +87,15 @@ impl Period {
     }
 }
 
-/// Which workspaces' changes the pane is showing.
-///
-/// The room document is shared by every workspace on the machine, so this is
-/// a genuine scope decision rather than a filter: a row outside the scope is
-/// not hidden, it is not this room's history.
+/// Which workspaces' changes the pane is showing. A genuine scope
+/// decision, not a filter — a row outside it is not this room's history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RoomScope {
-    /// Only changes that touched the active workspace, plus changes that
-    /// belong to no single workspace (the active-workspace pointer, a flush
-    /// that rewrote the whole list). Those cannot be attributed to another
-    /// room, so they cannot carry one into this view.
+    /// Changes touching the active workspace, plus ones belonging to no
+    /// single workspace — those can't carry another room into this view.
     #[default]
     ThisRoom,
-    /// Every change in the tree document, with each row labelled by the
+    /// Every change in the tree document, each row labelled by the
     /// workspace it belongs to.
     AllWorkspaces,
 }
@@ -181,12 +114,9 @@ impl RoomScope {
 /// What a dispatched event did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RoomActivityOutcome {
-    /// The pane consumed the event.
     pub handled: bool,
-    /// A row's `[Revert]` wrote a new forward change into the room document.
     pub reverted: bool,
-    /// A band was named, renamed or un-named. That is a document write too, and
-    /// the shell has to redraw and re-derive after it.
+    /// A band was named/renamed/un-named — a document write too.
     pub named: bool,
 }
 
@@ -194,49 +124,34 @@ pub struct RoomActivityOutcome {
 pub struct RoomActivityPane {
     timeline: ActivityTimeline,
     source: HistorySource,
-    /// Row the user asked to revert to. Set by the timeline's callback during
-    /// event dispatch and drained immediately after — the callback is an
-    /// `FnMut` owned by the widget and cannot reach back into this struct.
+    /// Set by the timeline's `FnMut` callback, drained right after — it
+    /// can't reach back into this struct itself.
     revert_intent: Rc<Cell<Option<HistoryEntryId>>>,
-    /// Band the user named. Same handshake as the revert intent; the payload is
-    /// not `Copy`, so this is a `RefCell`.
+    /// Same handshake as `revert_intent`; `RefCell` since the payload isn't `Copy`.
     name_intent: Rc<RefCell<Option<GroupNameRequest>>>,
-    /// Names read out of the room document at the last rebuild.
     named: Vec<NamedRange>,
-    /// Room-document heads at the last rebuild. Re-deriving the timeline every
-    /// frame would walk the whole change graph per frame; the graph only moves
-    /// when someone commits.
+    /// Heads at the last rebuild, so a no-op frame skips re-deriving.
     last_heads: Vec<ChangeHash>,
     period: Period,
-    /// Every row the document yielded, with the workspace each belongs to.
-    /// `None` means the change belongs to no single workspace. The timeline
-    /// is handed the subset [`Self::scope`] selects out of this.
+    /// Every row the document yielded, with the workspace each belongs
+    /// to (`None` for no single workspace). [`Self::scope`] selects the
+    /// subset handed to the timeline.
     derived: Vec<(HistoryEntry, Option<u64>)>,
     scope: RoomScope,
-    /// Hit rects for the scope segments, cached by `draw`.
     scope_rects: Vec<(RoomScope, Rect)>,
-    /// Contributor the user picked from the people row, or `None` for
-    /// everyone. Drives [`HistoryFilter::authors`].
     author: Option<String>,
-    /// Distinct contributors present in the current entry set, in first-seen
-    /// order. Derived from the rows, never from a roster — a name only appears
-    /// here if that person actually did something in this room.
+    /// First-seen order, derived from the rows rather than a roster — a
+    /// name appears only if that person did something in this room.
     contributors: Vec<String>,
     sheet: Rect,
-    /// Hit rects cached by `draw` for the two shell-owned chip rows. Cleared
-    /// whenever the pane is not painted so a stale click cannot trip them.
+    /// Cleared whenever the pane isn't painted, so a stale click can't trip them.
     period_rects: Vec<(Period, Rect)>,
     author_rects: Vec<(Option<String>, Rect)>,
-    /// Workspace name shown in the header. Refreshed with the entries.
     room_name: String,
-    /// Total rows before the shell's own filters, for the header count.
     total_entries: usize,
-    /// Active workspace at the last scope application. Switching rooms moves
-    /// no changes, so the heads check would not notice — but it changes which
-    /// rows are this room's.
+    /// Switching rooms moves no changes, so the heads check alone
+    /// wouldn't notice — but it changes which rows are this room's.
     last_active: Option<u64>,
-    /// Pinned "now" for tests, so relative timestamps and the period windows
-    /// stay stable across runs.
     now_override: Option<SystemTime>,
 }
 
@@ -257,13 +172,10 @@ impl RoomActivityPane {
                 let mut t = ActivityTimeline::new()
                     .on_revert(move |id| ri.set(Some(*id)))
                     .on_name_group(move |req| *ni.borrow_mut() = Some(req.clone()));
-                // The sheet is the surface; the timeline sits on it.
                 t.set_draws_own_surface(false);
                 t
             },
-            // A workspace is a cluster: a tiled set of running windows that
-            // can be saved and reopened collaboratively. That is what this
-            // document describes, so that is what its rows are tagged with.
+            // A workspace is a cluster of windows saved/reopened collaboratively.
             source: HistorySource::new().with_artifact_kind(ArtifactKind::Cluster),
             revert_intent,
             name_intent,
@@ -285,8 +197,7 @@ impl RoomActivityPane {
         }
     }
 
-    /// Pin "now". Tests use this so a period window and the relative
-    /// timestamps do not depend on when the suite runs.
+    /// Tests pin "now" so period windows don't depend on when the suite runs.
     pub fn set_now_for_test(&mut self, now: SystemTime) {
         self.now_override = Some(now);
         self.timeline.set_now_for_test(now);
@@ -296,22 +207,18 @@ impl RoomActivityPane {
         self.now_override.unwrap_or_else(SystemTime::now)
     }
 
-    /// Read-only access to the rows the pane derived, unfiltered.
     pub fn entries(&self) -> &[HistoryEntry] {
         self.timeline.entries()
     }
 
-    /// Rows currently on screen, after every filter.
     pub fn visible_len(&self) -> usize {
         self.timeline.visible_len()
     }
 
-    /// Borrow a visible row.
     pub fn visible_entry(&self, i: usize) -> Option<&HistoryEntry> {
         self.timeline.visible_entry(i)
     }
 
-    /// The contributors that actually appear in the room's history.
     pub fn contributors(&self) -> &[String] {
         &self.contributors
     }
@@ -324,14 +231,11 @@ impl RoomActivityPane {
         self.author.as_deref()
     }
 
-    /// The sheet's last laid-out rect. `Rect::ZERO` before the first layout.
+    /// `Rect::ZERO` before the first layout.
     pub fn rect(&self) -> Rect {
         self.sheet
     }
 
-    /// Borrow the timeline widget — the pane's own filters live here (the
-    /// op-class chips and the author typeahead), so a test that wants to drive
-    /// them goes through this rather than replicating the geometry.
     pub fn timeline(&self) -> &ActivityTimeline {
         &self.timeline
     }
@@ -340,7 +244,6 @@ impl RoomActivityPane {
         &mut self.timeline
     }
 
-    /// Select a period. Reinstalls the filter so the list narrows immediately.
     pub fn set_period(&mut self, period: Period) {
         if self.period != period {
             self.period = period;
@@ -348,7 +251,6 @@ impl RoomActivityPane {
         }
     }
 
-    /// Restrict to one contributor, or `None` for everyone.
     pub fn set_author_filter(&mut self, author: Option<String>) {
         if self.author != author {
             self.author = author;
@@ -356,8 +258,7 @@ impl RoomActivityPane {
         }
     }
 
-    /// Push the shell-owned filters onto the timeline. The op-class chips and
-    /// the author typeahead are the widget's own and are left alone.
+    /// Op-class chips and author typeahead are the widget's own, left alone.
     fn reinstall_filter(&mut self) {
         let mut filter = HistoryFilter::default();
         filter.time_range = self.period.range(self.now());
@@ -371,15 +272,10 @@ impl RoomActivityPane {
         });
     }
 
-    /// Re-derive the timeline from the room document if the graph has moved.
-    ///
-    /// Called every frame while the pane is open; the heads check is what
-    /// keeps that cheap. The tree is taken by `&mut` because reading an
-    /// automerge change graph closes any open transaction first.
+    /// Re-derive the timeline from the room document if the graph has
+    /// moved; called every frame, the heads check keeps that cheap.
+    /// `&mut` because reading a change graph closes any open transaction.
     pub fn refresh(&mut self, tree: &mut WorkspaceTree) {
-        // Close anything a mirror left open, so a mutation from this frame is
-        // a change with a timestamp rather than an invisible pending
-        // transaction.
         tree.commit_room_change();
 
         let name = tree
@@ -400,16 +296,8 @@ impl RoomActivityPane {
         }
         self.last_heads = heads;
 
-        // Bind the local automerge actor to whoever is sitting at this machine.
-        //
-        // The qOS identity on disk is preferred — it carries a display name
-        // and an avatar colour the user chose. Failing that (a shell running
-        // outside a provisioned session), the actor is still *this* process's,
-        // and this process writes on behalf of the local user, so it is named
-        // with the same user id the capabilities in these very rows are
-        // granted to. Neither is a guess; what is left unresolved is a peer's
-        // actor, which honestly reads as an unknown participant until the
-        // collaboration layer tells us who they are.
+        // Bind the local automerge actor to the qOS identity, or local user
+        // id; a peer's actor stays unresolved until collaboration says who.
         let actor = tree.doc.get_actor().to_hex_string();
         if !self.source.authors().is_registered(&actor) {
             let registered = self.source.authors_mut().register_local_identity(&actor);
@@ -437,9 +325,8 @@ impl RoomActivityPane {
         self.apply_scope(tree);
     }
 
-    /// Hand the timeline the rows [`Self::scope`] selects, labelled where a
-    /// label is needed, and re-derive everything that depends on which rows
-    /// are in play.
+    /// Hand the timeline the rows [`Self::scope`] selects and re-derive
+    /// everything that depends on which rows are in play.
     fn apply_scope(&mut self, tree: &WorkspaceTree) {
         let active = tree.active.raw();
         self.last_active = Some(active);
@@ -452,16 +339,11 @@ impl RoomActivityPane {
         let mut rows: Vec<HistoryEntry> = Vec::with_capacity(self.derived.len());
         for (entry, tag) in &self.derived {
             match (self.scope, tag) {
-                // This room: its own changes, plus the ones that belong to no
-                // room at all. A change owned by another workspace is simply
-                // not this room's history.
                 (RoomScope::ThisRoom, Some(id)) if *id != active => continue,
                 (RoomScope::ThisRoom, _) => rows.push(entry.clone()),
                 (RoomScope::AllWorkspaces, tag) => {
                     let mut e = entry.clone();
-                    // Across the whole tree a row is meaningless without
-                    // saying which room it happened in — three identical
-                    // "Set the room owner" lines are noise otherwise.
+                    // Otherwise three identical "Set the room owner" lines are noise.
                     if let Some(id) = tag {
                         let label = names
                             .get(id)
@@ -481,8 +363,6 @@ impl RoomActivityPane {
             .filter(|e| seen.insert(e.author.name.clone()))
             .map(|e| e.author.name.clone())
             .collect();
-        // A contributor filter naming someone who no longer appears would hide
-        // everything with no way back except clearing it, so drop it.
         let stale_author = self
             .author
             .as_ref()
@@ -492,14 +372,10 @@ impl RoomActivityPane {
         }
 
         self.timeline.set_entries(rows);
-        // A name whose first change is not in this scope cannot be placed, and
-        // `group_entries` drops it rather than guessing — which is the right
-        // answer for a band belonging to another room.
         self.timeline.set_named_ranges(self.named.clone());
         self.reinstall_filter();
     }
 
-    /// Widen or narrow which workspaces the pane covers.
     pub fn set_scope(&mut self, scope: RoomScope, tree: &WorkspaceTree) {
         if self.scope != scope {
             self.scope = scope;
@@ -511,20 +387,14 @@ impl RoomActivityPane {
         self.scope
     }
 
-    /// Explicitly seed the author directory — the collaboration layer calls
-    /// this when it learns a peer's real display name.
     pub fn authors_mut(&mut self) -> &mut AuthorDirectory {
         self.source.authors_mut()
     }
 
     // ---------- Geometry ----------
 
-    /// Lay the sheet out inside `viewport`.
-    ///
-    /// Wide viewport: a right-anchored sheet, so the room stays visible behind
-    /// what happened to it. Narrow viewport: full-bleed, because a 360 px
-    /// sheet over a 600 px desktop is two unusable halves rather than one
-    /// usable pane.
+    /// Wide: right-anchored, so the room stays visible behind it. Narrow:
+    /// full-bleed — a 360px sheet over a 600px desktop is two unusable halves.
     pub fn layout(&mut self, viewport: Rect) {
         let vw = viewport.width();
         let sheet_w = if vw < FULL_BLEED_UNDER {
@@ -538,10 +408,6 @@ impl RoomActivityPane {
         let y1 = viewport.y1 - SHEET_INSET;
         self.sheet = Rect::new(x0, y0, x1, y1.max(y0));
 
-        // The timeline occupies whatever is left under the header and the two
-        // chip rows. On a very short viewport the chip rows are dropped before
-        // the row list is, because a pane with filters and no rows is worse
-        // than one with rows and no filters.
         let rows_y0 = (self.sheet.y0 + self.chrome_height()).min(self.sheet.y1);
         let rows_y1 = (self.sheet.y1 - 8.0).max(rows_y0);
         self.timeline.set_rect(Rect::new(
@@ -552,12 +418,10 @@ impl RoomActivityPane {
         ));
     }
 
-    /// Whether the sheet is tall enough to afford the shell's chip rows.
     fn shows_chip_rows(&self) -> bool {
         self.sheet.height() > HEADER_H + 2.0 * CHIP_ROW_H + 140.0
     }
 
-    /// Vertical space the pane's own chrome takes above the timeline.
     fn chrome_height(&self) -> f64 {
         if self.shows_chip_rows() {
             HEADER_H + 2.0 * CHIP_ROW_H
@@ -578,8 +442,14 @@ impl RoomActivityPane {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let card = RoundedRect::from_rect(self.sheet, tokens.radii.lg as f64);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &card);
+        let card = RoundedRect::from_rect(self.sheet, f64::from(tokens.radii.lg));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &card,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -588,9 +458,6 @@ impl RoomActivityPane {
             &card,
         );
 
-        // Header. The subtitle is the pane's honesty: it names the room and
-        // says what "activity" covers here, so nobody reads an empty list as
-        // "nothing happened in my documents".
         let title_size = tokens.typography.scale.lg;
         let title = match self.scope {
             RoomScope::ThisRoom => "Room activity",
@@ -605,9 +472,6 @@ impl RoomActivityPane {
             None,
         );
         let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
-        // The subtitle is the pane's scope, spelled out. A title naming one
-        // room over a list drawn from every room would be a lie the reader
-        // has no way to catch.
         let subtitle = match self.scope {
             RoomScope::ThisRoom => {
                 let room = if self.room_name.is_empty() {
@@ -634,9 +498,6 @@ impl RoomActivityPane {
             Some((self.sheet.width() - 32.0) as f32),
         );
 
-        // Scope switch, right-aligned in the header. Two segments rather than
-        // a chip row: this is not another filter, it is which document region
-        // the pane is reading.
         self.scope_rects.clear();
         {
             let size = (tokens.typography.scale.sm - 1.0).max(10.0);
@@ -644,11 +505,9 @@ impl RoomActivityPane {
             let cy = self.sheet.y0 + 24.0;
             let mut widths: Vec<f64> = Vec::with_capacity(2);
             for sc in RoomScope::ALL {
-                widths.push(tr.measure(sc.label(), size, None).0 as f64 + 16.0);
+                widths.push(f64::from(tr.measure(sc.label(), size, None).0) + 16.0);
             }
             let total: f64 = widths.iter().sum::<f64>() + 4.0;
-            // Only offered when there is room for it; the sheet stays usable
-            // at every width, and the default scope is the safe one.
             if total < self.sheet.width() * 0.62 {
                 let mut x = self.sheet.x1 - 16.0 - total;
                 for (i, sc) in RoomScope::ALL.iter().enumerate() {
@@ -679,8 +538,8 @@ impl RoomActivityPane {
                         },
                         transform
                             * Affine::translate((
-                                rect.x0 + (rect.width() - lw as f64) / 2.0,
-                                rect.y0 + (rect.height() - lh as f64) / 2.0,
+                                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
                             )),
                         None,
                     );
@@ -703,7 +562,12 @@ impl RoomActivityPane {
                 transform,
                 tr,
                 theme,
-                Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + CHIP_ROW_H),
+                Rect::new(
+                    self.sheet.x0 + 12.0,
+                    y,
+                    self.sheet.x1 - 12.0,
+                    y + CHIP_ROW_H,
+                ),
                 &periods,
                 |p| *p == selected,
             );
@@ -735,10 +599,8 @@ impl RoomActivityPane {
 
     // ---------- Events ----------
 
-    /// Route an event into the pane. Returns what it did.
-    ///
-    /// `tree` is the live room document: a revert writes into it as a new
-    /// forward change and commits, exactly as a `doc_*` mirror would.
+    /// `tree` is the live room document: a revert writes into it as a
+    /// new forward change and commits, exactly as a `doc_*` mirror would.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -790,9 +652,8 @@ impl RoomActivityPane {
 
         let mut handled = false;
         let mut focus_target = None;
-        // The timeline hit-tests against its own rect and ignores both of
-        // these, but `Widget::handle_event` asks for a layout tree — hand it a
-        // throwaway one rather than threading the shell's.
+        // `Widget::handle_event` needs a layout tree; a throwaway one since
+        // the timeline hit-tests against its own rect and ignores it.
         let mut scratch: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = scratch.new_leaf(taffy::Style::default()).unwrap();
         let root = automerge::ROOT;
@@ -825,13 +686,9 @@ impl RoomActivityPane {
         out
     }
 
-    /// Write (or remove) a name over a run of the room's changes.
-    ///
-    /// An empty label is the request to take the name off; that is what clearing
-    /// the field and pressing Enter means. Either way the write is committed
-    /// through [`WorkspaceTree::commit_room_change`], exactly as a `doc_*` mirror
-    /// would, so it is stamped and reaches peers through the same sync as the
-    /// changes it names.
+    /// Write (or remove, for an empty label) a name over a run of the
+    /// room's changes, committed so it reaches peers through the same
+    /// sync as the changes it names.
     pub fn apply_name(&mut self, tree: &mut WorkspaceTree, req: &GroupNameRequest) -> bool {
         let before = tree.doc.get_heads();
         if req.label.is_empty() {
@@ -842,12 +699,7 @@ impl RoomActivityPane {
                 return false;
             }
         } else {
-            ui::history_groups::name_range(
-                &mut tree.doc,
-                &req.start,
-                Some(&req.end),
-                &req.label,
-            );
+            ui::history_groups::name_range(&mut tree.doc, &req.start, Some(&req.end), &req.label);
         }
         tree.commit_room_change();
         if tree.doc.get_heads() == before {
@@ -858,21 +710,14 @@ impl RoomActivityPane {
         true
     }
 
-    /// True while the pane's name field has the keyboard, so the host routes keys
-    /// (including Escape, which cancels the field rather than closing the sheet)
-    /// here first.
+    /// True while the pane's name field has the keyboard, so Escape
+    /// cancels the field rather than closing the sheet.
     pub fn wants_keyboard(&self) -> bool {
         self.timeline.wants_keyboard()
     }
 
-    /// Rewrite the room document to the state it had at `id`, as a **new
-    /// forward change**.
-    ///
-    /// Same primitive as the per-document scrubber's restore: the delta from
-    /// now back to then is derived and written, so the versions rolled past
-    /// stay in the graph and the revert becomes the newest row. Returns
-    /// `false` when the id names no change here or when the document is
-    /// already in that state.
+    /// Rewrite the document to the state at `id`, as a **new forward
+    /// change** — the versions rolled past stay in the graph.
     pub fn revert_to(&mut self, tree: &mut WorkspaceTree, id: &HistoryEntryId) -> bool {
         let Some(target) = ui::heads_for_entry(&mut tree.doc, id) else {
             return false;
@@ -882,40 +727,25 @@ impl RoomActivityPane {
             return false;
         }
         ui::state::write_revert_patches(&mut tree.doc, &current, &target);
-        // `current` was read before the patches were written, and reading heads
-        // is what closes an automerge transaction — asking for them again here
-        // would commit the revert *unstamped* and then compare the result
-        // against itself. Commit deliberately, then compare against the heads
-        // from before the write.
         tree.commit_room_change();
         if tree.doc.get_heads() == current {
-            // The patch set was empty — nothing was actually different.
             return false;
         }
-        // The document just changed underneath the cache; bring the tree's
-        // read model back in line and re-derive the rows so the revert shows
-        // up as the newest entry.
+        // Bring the read model back in line with what just changed
+        // underneath it, so the revert shows up as the newest entry.
         tree.resync_cache_from_doc();
         self.last_heads.clear();
         self.refresh(tree);
         true
     }
 
-    /// Drop the derived rows so the next [`Self::refresh`] rebuilds them.
-    /// Called when the pane is opened, so a room that changed while it was
-    /// closed is up to date the moment it appears.
     pub fn invalidate(&mut self) {
         self.last_heads.clear();
     }
 }
 
-/// Paint one row of pill-shaped chips, returning the hit rects for the ones
-/// that fit.
-///
-/// Chips that would overflow the row are not painted and not returned, so a
-/// narrow sheet loses the tail of a long contributor list rather than
-/// overlapping it — and, because the rect never exists, a click cannot select
-/// a chip the user cannot see.
+/// Chips that would overflow the row are neither painted nor returned,
+/// so a click cannot select one the user cannot see.
 fn draw_chip_row<T: Clone>(
     scene: &mut Scene,
     transform: Affine,
@@ -936,7 +766,7 @@ fn draw_chip_row<T: Clone>(
     for (value, label) in items {
         // Reserve room for a "+N" overflow marker so it never itself overflows.
         let (lw, lh) = tr.measure(label, size, None);
-        let w = lw as f64 + 16.0;
+        let w = f64::from(lw) + 16.0;
         if x + w > row.x1 - 28.0 {
             dropped += 1;
             continue;
@@ -966,8 +796,8 @@ fn draw_chip_row<T: Clone>(
             },
             transform
                 * Affine::translate((
-                    rect.x0 + (rect.width() - lw as f64) / 2.0,
-                    rect.y0 + (rect.height() - lh as f64) / 2.0,
+                    rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                    rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
                 )),
             None,
         );
@@ -982,7 +812,7 @@ fn draw_chip_row<T: Clone>(
             &more,
             size,
             colors.text_dim,
-            transform * Affine::translate((row.x1 - mw as f64, cy - mh as f64 / 2.0)),
+            transform * Affine::translate((row.x1 - f64::from(mw), cy - f64::from(mh) / 2.0)),
             None,
         );
     }
@@ -993,17 +823,9 @@ fn draw_chip_row<T: Clone>(
 // Room vocabulary
 // =====================================================================
 
-/// Rewrite each row's summary in the room's own words, where the change says
-/// something nameable.
-///
-/// [`HistorySource`] describes a change generically — "1 field", "+2 items" —
-/// because it works over any document. The room document has a known shape, so
-/// its patches can be read back into what actually happened: a grant, a
-/// revoke, a window opened, a workspace renamed. Everything here is derived
-/// from the change's own patch set; a change whose shape is not recognised
-/// keeps whatever the generic producer said.
-/// Returns, per entry and in the same order, the workspace the change belongs
-/// to — `None` when it belongs to several or to none.
+/// Rewrite each row's summary in the room's own words where nameable,
+/// else keeps [`HistorySource`]'s generic one. Returns, per entry, the
+/// workspace the change belongs to — `None` for several or none.
 fn describe_room_changes(
     doc: &mut automerge::AutoCommit,
     entries: &mut [HistoryEntry],
@@ -1012,12 +834,8 @@ fn describe_room_changes(
     if entries.is_empty() {
         return tags;
     }
-    // One pass over the change list, indexed so a long-lived room does not
-    // pay a linear scan per change. A change's own `deps` are the document
-    // heads immediately before it, so diffing `deps -> [hash]` isolates
-    // exactly that change without having to rebuild a prefix per entry — and
-    // the diff only runs for changes that have a row, which is what keeps the
-    // cost proportional to what is on screen rather than to the whole graph.
+    // Indexed so a long-lived room avoids a linear scan per change:
+    // `deps -> [hash]` isolates exactly that change.
     let mut by_id: std::collections::HashMap<HistoryEntryId, usize> =
         std::collections::HashMap::with_capacity(entries.len());
     for (i, e) in entries.iter().enumerate() {
@@ -1049,15 +867,9 @@ fn describe_room_changes(
     tags
 }
 
-/// The workspace a change belongs to, or `None` when it belongs to more than
-/// one or to none.
-///
-/// Every path into a workspace's subtree runs `workspaces -> [i] -> …`, so the
-/// third path element's object is that workspace's entry map whatever depth
-/// the patch lands at, and a patch on the entry itself is that map. The entry
-/// is read **at the change's own heads**: a cache flush deletes and re-inserts
-/// every entry, so the object a historical change wrote to no longer exists at
-/// the document's current state.
+/// The workspace a change belongs to, or `None` for more than one or
+/// none. Read **at the change's own heads**: a cache flush re-inserts
+/// every entry, so a historical object may not exist at the current state.
 fn workspace_touched(
     doc: &automerge::AutoCommit,
     patches: &[automerge::Patch],
@@ -1071,9 +883,7 @@ fn workspace_touched(
             2 => p.obj.clone(),
             _ => p.path[2].0.clone(),
         };
-        // Guard the shape: the first hop must be into `workspaces`, and the
-        // second must be a list index. Anything else is a document layout we
-        // do not recognise, and guessing at it would be worse than declining.
+        // Unrecognised layout otherwise; guessing would be worse than declining.
         if !matches!(&p.path[0].1, Prop::Map(k) if k == "workspaces") {
             continue;
         }
@@ -1155,26 +965,24 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
             (automerge::PatchAction::Insert { values, .. }, "tabs") => tabs_added += values.len(),
             (automerge::PatchAction::DeleteSeq { length, .. }, "tabs") => tabs_removed += length,
             (automerge::PatchAction::Insert { values, .. }, "window_groups") => {
-                groups_moved += values.len()
+                groups_moved += values.len();
             }
             (automerge::PatchAction::DeleteSeq { length, .. }, "window_groups") => {
-                groups_moved += length
+                groups_moved += length;
             }
             (automerge::PatchAction::Insert { values, .. }, "workspaces") => {
-                workspaces_added += values.len()
+                workspaces_added += values.len();
             }
             (automerge::PatchAction::DeleteSeq { length, .. }, "workspaces") => {
-                workspaces_removed += length
+                workspaces_removed += length;
             }
             _ => {}
         }
     }
 
-    // A whole-list rewrite is the shell flushing its cached tree back into the
-    // document (`seed_doc_from_cache`). It touches every field of every
-    // workspace — including the capability map — so it has to be recognised
-    // *before* the individual-field cases, or a flush that granted nothing
-    // reads as "granted 4 capabilities".
+    // A whole-list rewrite (`seed_doc_from_cache`) touches the capability
+    // map too, so it must be recognised before the per-field cases, or a
+    // flush that granted nothing reads as "granted 4 capabilities".
     if workspaces_removed > 0 && workspaces_added == 0 {
         return Some((
             plural(workspaces_removed, "workspace", "Removed"),
@@ -1190,9 +998,7 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
         return Some((s, OpClass::Splice));
     }
 
-    // Governance next: a change that handed out or took away authority is
-    // that, whatever else it also touched. It is also the class the user is
-    // most likely to be looking for when they open this pane.
+    // Governance takes priority over whatever else the change touched.
     if !grants.is_empty() {
         let s = if grants.len() == 1 {
             format!("Granted {}", grants[0])
@@ -1363,20 +1169,16 @@ fn join_titles(titles: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! Every fixture below mutates the room through the *production*
-    //! mirrors — `adopt_ownerless_workspaces`, `grant_in_workspace`,
-    //! `revoke_in_workspace`, `doc_append_tab_to_first_group_of_active_workspace`
-    //! — and then reads the pane back. Nothing writes a synthetic
-    //! `HistoryEntry`: if the shell stopped recording a room change, or
-    //! recorded it without a timestamp, these fail.
+    //! Every fixture mutates the room through the *production* mirrors
+    //! and reads the pane back — nothing writes a synthetic `HistoryEntry`.
 
     use super::*;
     use crate::shell::state::{WorkspaceId, WorkspaceTree};
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use ui::widget::op_class_is_revertible;
 
-    /// A room with an owner, one grant, one revoke, one renamed workspace and
-    /// one window opened — a plausible half-hour in a workspace.
+    /// A plausible half-hour: owner, one grant, one revoke, one rename,
+    /// one window opened.
     fn busy_room() -> (WorkspaceTree, WorkspaceId, String) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
@@ -1438,9 +1240,6 @@ mod tests {
             summaries.iter().any(|s| s.starts_with("Revoked")),
             "the revoke is its own row: {summaries:?}"
         );
-        // The rename reaches the document through `seed_doc_from_cache`, which
-        // rewrites the whole workspace list — so the row is the flush, and it
-        // has to name what it wrote or it says nothing at all.
         assert!(
             summaries.iter().any(|s| s.contains("Design review")),
             "the flush that carried the rename names it: {summaries:?}"
@@ -1451,8 +1250,7 @@ mod tests {
         );
     }
 
-    /// Give the tree a second workspace with governance of its own, so the
-    /// two rooms' histories are genuinely interleaved in one document.
+    /// A second workspace with its own governance, interleaved in one document.
     fn two_room_tree() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
         let (mut tree, first, user) = busy_room();
         let second = tree.append_empty_workspace("Research");
@@ -1467,26 +1265,17 @@ mod tests {
             ),
         )
         .expect("owner may grant in the second room too");
-        // Make the first workspace the active one again — `append_empty_workspace`
-        // does not switch, but be explicit rather than relying on that.
         tree.set_active(first);
         (tree, first, second)
     }
 
     #[test]
     fn this_rooms_scope_excludes_another_workspaces_governance() {
-        // The room document is tree-wide. A pane headed with one room's name
-        // must not show a different room's grants — that is the whole reason
-        // the scope exists.
         let (mut tree, _first, _second) = two_room_tree();
         let mut pane = pane_over(&mut tree);
         assert_eq!(pane.scope(), RoomScope::ThisRoom, "scoped by default");
 
-        let scoped: Vec<String> = pane
-            .entries()
-            .iter()
-            .map(|e| e.summary.clone())
-            .collect();
+        let scoped: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
             !scoped.iter().any(|s| s.contains("research.example")),
             "the other room's network grant leaked into this room: {scoped:?}"
@@ -1499,11 +1288,7 @@ mod tests {
         let all_tree = { tree.workspaces.clone() };
         let _ = all_tree;
         pane.set_scope(RoomScope::AllWorkspaces, &tree);
-        let widened: Vec<String> = pane
-            .entries()
-            .iter()
-            .map(|e| e.summary.clone())
-            .collect();
+        let widened: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
             widened.iter().any(|s| s.contains("research.example")),
             "widening the scope must reveal the other room: {widened:?}"
@@ -1518,8 +1303,6 @@ mod tests {
 
     #[test]
     fn a_widened_row_names_the_workspace_it_happened_in() {
-        // Across the tree, "Set the room owner" three times is noise unless
-        // each says which room.
         let (mut tree, _first, _second) = two_room_tree();
         let mut pane = pane_over(&mut tree);
         pane.set_scope(RoomScope::AllWorkspaces, &tree);
@@ -1534,7 +1317,9 @@ mod tests {
             "the fixture has several workspaces adopting an owner: {owner_rows:?}"
         );
         assert!(
-            owner_rows.iter().any(|s| s.starts_with("Research \u{00b7} ")),
+            owner_rows
+                .iter()
+                .any(|s| s.starts_with("Research \u{00b7} ")),
             "a row must name the room it happened in: {owner_rows:?}"
         );
         let distinct: std::collections::HashSet<&String> = owner_rows.iter().collect();
@@ -1547,8 +1332,6 @@ mod tests {
 
     #[test]
     fn switching_the_active_workspace_re_scopes_without_a_document_change() {
-        // Switching rooms moves no changes, so the heads check would not
-        // notice — but it changes whose history this is.
         let (mut tree, first, second) = two_room_tree();
         let mut pane = pane_over(&mut tree);
         let in_first: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
@@ -1570,10 +1353,6 @@ mod tests {
 
     #[test]
     fn a_whole_tree_flush_belongs_to_no_single_room() {
-        // `seed_doc_from_cache` rewrites every workspace at once. Attributing
-        // that to whichever entry the patch walk happened to see first would
-        // be a guess; it is shown in both scopes because it cannot carry
-        // another room's business into this one.
         let (mut tree, _first, _second) = two_room_tree();
         let mut pane = pane_over(&mut tree);
         let scoped_flushes = pane
@@ -1596,9 +1375,6 @@ mod tests {
 
     #[test]
     fn the_local_users_own_rows_are_attributed_to_them() {
-        // A room where every change was made locally must not read as a wall
-        // of unknown participants. The local actor is this process's, and this
-        // process writes for the person at the machine.
         let (mut tree, _, _) = busy_room();
         let pane = pane_over(&mut tree);
         let me = crate::shell::state::local_user_id();
@@ -1620,9 +1396,8 @@ mod tests {
 
     #[test]
     fn every_row_carries_a_real_timestamp() {
-        // The whole date filter rests on this. Automerge leaves a change's
-        // advisory time at zero unless the committer supplies one, and a row
-        // at the epoch is a row no date range can ever select.
+        // The whole date filter rests on this — an epoch row can never be
+        // selected by a date range.
         let (mut tree, _, _) = busy_room();
         let pane = pane_over(&mut tree);
         assert!(!pane.entries().is_empty());
@@ -1638,16 +1413,14 @@ mod tests {
 
     #[test]
     fn date_range_filter_partitions_the_real_history() {
-        // One change deliberately stamped a week back through the same
-        // `commit_stamped_at` the FS layer uses when it replays a durable
-        // chain, the rest at now. "Today" must keep the recent ones and drop
-        // the old one; "30 days" must keep everything.
+        // One change stamped a week back via `commit_stamped_at`, the rest
+        // at now: "Today" drops the old one, "30 days" keeps everything.
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.active;
 
-        let week_ago = SystemTime::now() - Duration::from_secs(7 * 24 * 3600);
+        let week_ago = SystemTime::now() - Duration::from_hours(168);
         let week_ago_secs = week_ago
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -1683,10 +1456,7 @@ mod tests {
             "the week-old change must be filtered out: {today} of {all} survived"
         );
         assert!(
-            !pane
-                .timeline()
-                .entries()
-                .is_empty(),
+            !pane.timeline().entries().is_empty(),
             "filtering hides rows, it does not discard them"
         );
         for i in 0..pane.visible_len() {
@@ -1708,9 +1478,6 @@ mod tests {
 
     #[test]
     fn contributor_filter_narrows_to_one_person() {
-        // Two actors write into the same room document — the local one and a
-        // peer whose changes merged in. The people row must list both, and
-        // picking one must hide the other's rows.
         let (mut tree, _, _) = busy_room();
 
         let mut peer = automerge::AutoCommit::new();
@@ -1718,14 +1485,16 @@ mod tests {
         peer.apply_changes(
             tree.export_changes_since(&[])
                 .iter()
-                .map(|b| automerge::Change::try_from(b.as_slice()).unwrap())
-                .collect::<Vec<_>>(),
+                .map(|b| automerge::Change::try_from(b.as_slice()).unwrap()),
         )
         .unwrap();
         {
             use automerge::transaction::Transactable;
             let (_, ws_entry) = peer
-                .get(&peer.get(&automerge::ROOT, "workspaces").unwrap().unwrap().1, 0_usize)
+                .get(
+                    &peer.get(&automerge::ROOT, "workspaces").unwrap().unwrap().1,
+                    0_usize,
+                )
                 .unwrap()
                 .unwrap();
             peer.put(&ws_entry, "name", "Bob's rename").unwrap();
@@ -1795,9 +1564,6 @@ mod tests {
 
     #[test]
     fn reverting_a_row_writes_a_new_forward_change() {
-        // The covenant for history: a revert appends. The reverted-past
-        // version must still be in the graph afterwards, and the room's
-        // readable state must be what it was at the target.
         let (mut tree, ws_id, user) = busy_room();
         let mut pane = pane_over(&mut tree);
 
@@ -1820,7 +1586,10 @@ mod tests {
 
         // Revert to the version the mistake was made on top of.
         let target = pane.entries()[versions_before - 1].id;
-        assert!(pane.revert_to(&mut tree, &target), "the revert wrote something");
+        assert!(
+            pane.revert_to(&mut tree, &target),
+            "the revert wrote something"
+        );
 
         assert_eq!(
             tree.workspaces
@@ -1853,8 +1622,6 @@ mod tests {
 
     #[test]
     fn governance_rows_never_offer_revert() {
-        // A grant or a revoke is countered, not rewound. The pane must not
-        // paint a chip that would silently undo someone's authority.
         let (mut tree, _, _) = busy_room();
         let mut pane = pane_over(&mut tree);
         pane.timeline_mut()
@@ -1885,7 +1652,9 @@ mod tests {
             .find(|e| e.summary.contains("/home/user/notes"))
             .expect("the filesystem grant has a row");
         assert!(
-            grant.summary.starts_with("Granted read on /home/user/notes to files"),
+            grant
+                .summary
+                .starts_with("Granted read on /home/user/notes to files"),
             "the grant names verb, scope and subject: {:?}",
             grant.summary
         );
@@ -1947,7 +1716,10 @@ mod tests {
     fn a_short_viewport_drops_the_chip_rows_before_the_row_list() {
         let mut pane = RoomActivityPane::new();
         pane.layout(Rect::new(0.0, 0.0, 1280.0, 720.0));
-        assert!(pane.shows_chip_rows(), "a normal viewport affords the filters");
+        assert!(
+            pane.shows_chip_rows(),
+            "a normal viewport affords the filters"
+        );
         let tall_rows = pane.timeline().rect().height();
 
         pane.layout(Rect::new(0.0, 0.0, 1280.0, 220.0));
@@ -1964,18 +1736,12 @@ mod tests {
 
     #[test]
     fn contributors_are_only_people_who_actually_did_something() {
-        // The room has collaborators recorded on the tree who have never
-        // touched the document. They must not appear as contributors — the
-        // people row answers "who changed this", not "who is in the room".
         let (mut tree, _, _) = busy_room();
-        tree.collaborators.push(crate::shell::state::Collaborator {
-            id: "ghost".into(),
-            name: "Never Edited".into(),
-            active_tab: None,
-            cursor_color: None,
-            avatar: None,
-            role_id: None,
-        });
+        tree.collaborators
+            .push(crate::shell::state::Collaborator::new(
+                "ghost",
+                "Never Edited",
+            ));
         let pane = pane_over(&mut tree);
         assert!(
             !pane.contributors().iter().any(|c| c == "Never Edited"),
@@ -2020,11 +1786,17 @@ mod tests {
 
     #[test]
     fn period_windows_are_half_open_and_all_time_is_unbounded() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500000);
         assert!(Period::AllTime.range(now).is_none());
         let (start, end) = Period::Week.range(now).unwrap();
-        assert_eq!(now.duration_since(start).unwrap(), Duration::from_secs(7 * 24 * 3600));
-        assert!(end > now, "a change committed this instant is inside the window");
+        assert_eq!(
+            now.duration_since(start).unwrap(),
+            Duration::from_hours(168)
+        );
+        assert!(
+            end > now,
+            "a change committed this instant is inside the window"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -2078,8 +1850,7 @@ mod tests {
 
         // It is in the document, not in the widget: a fresh pane over the same
         // tree finds it.
-        let ranges =
-            ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].label, "Set up the room");
         assert_eq!(ranges[0].start, start);
@@ -2137,8 +1908,7 @@ mod tests {
                 label: "Temporary".to_string(),
             },
         );
-        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())
-            [0]
+        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())[0]
             .id
             .clone();
         let changes_before = pane.entries().len();
@@ -2197,7 +1967,7 @@ mod tests {
 
         let a = ui::history_groups::read_named_ranges(&mine, &AuthorDirectory::new());
         let b = ui::history_groups::read_named_ranges(&theirs, &AuthorDirectory::new());
-        assert_eq!(a.len(), 1, "one run, one band: {:?}", a);
+        assert_eq!(a.len(), 1, "one run, one band: {a:?}");
         assert_eq!(b.len(), 1);
         assert_eq!(a[0].label, b[0].label, "both peers read the same winner");
         assert!(
@@ -2268,7 +2038,10 @@ mod tests {
             Some("Something else".to_string())
         );
 
-        assert!(pane.revert_to(&mut tree, &boundary), "the restore wrote something");
+        assert!(
+            pane.revert_to(&mut tree, &boundary),
+            "the restore wrote something"
+        );
         assert_eq!(
             tree.workspaces
                 .iter()
@@ -2285,13 +2058,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Naming, driven the way a person drives it
+    // Naming, driven the way a person drives it: real `WindowEvent`s into
+    // `handle_event`, read back out of the **room document**, not the
+    // widget — proving the whole chain, not just `apply_name`.
     // -----------------------------------------------------------------
-    //
-    // Everything above calls `apply_name` directly, which proves the write but
-    // not the chain that reaches it. These drive real `WindowEvent`s into
-    // `handle_event` — move the pointer, press, type, press Enter — and then
-    // read the result out of the **room document**, not out of the widget.
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -2358,7 +2128,9 @@ mod tests {
         let m = Modifiers::default();
         for ch in text.chars() {
             let ev = if ch == ' ' {
-                key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space))
+                key_press(winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Space,
+                ))
             } else {
                 key_press(winit::keyboard::Key::Character(ch.to_string().into()))
             };
@@ -2414,7 +2186,9 @@ mod tests {
         assert_eq!(pane.timeline().naming_buffer(), Some("Set up the room"));
 
         let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
             1.0,
             &Modifiers::default(),
             None,
@@ -2462,7 +2236,9 @@ mod tests {
         assert!(pane.wants_keyboard());
 
         let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)),
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Escape,
+            )),
             1.0,
             &Modifiers::default(),
             None,
@@ -2499,7 +2275,10 @@ mod tests {
         // Somewhere on the header that is not a chip: next to the disclosure
         // triangle.
         let on_header = Point::new(header.x0 + 60.0, header.center().y);
-        assert!(!name_chip.contains(on_header), "the fixture aims off the chips");
+        assert!(
+            !name_chip.contains(on_header),
+            "the fixture aims off the chips"
+        );
 
         let lines_before = pane.timeline().row_count();
         let out = click_at(&mut pane, &mut tree, on_header);
@@ -2518,7 +2297,10 @@ mod tests {
 
         // And back, addressing the same band by the same key.
         click_at(&mut pane, &mut tree, on_header);
-        assert_eq!(pane.timeline().group_at_row(band).map(|(_, e)| e), Some(expanded));
+        assert_eq!(
+            pane.timeline().group_at_row(band).map(|(_, e)| e),
+            Some(expanded)
+        );
         assert_eq!(pane.timeline().row_count(), lines_before);
         assert_eq!(
             pane.timeline().group_at_row(band).map(|(k, _)| k),
@@ -2539,7 +2321,9 @@ mod tests {
         click_at(&mut pane, &mut tree, chip.center());
         type_into(&mut pane, &mut tree, "First try");
         pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
             1.0,
             &Modifiers::default(),
             None,
@@ -2564,7 +2348,9 @@ mod tests {
         );
         type_into(&mut pane, &mut tree, " again");
         pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
             1.0,
             &Modifiers::default(),
             None,
@@ -2572,8 +2358,15 @@ mod tests {
         );
 
         let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
-        assert_eq!(ranges.len(), 1, "a rename must not leave two bands: {ranges:?}");
-        assert_eq!(ranges[0].id, record, "it addressed the record it already had");
+        assert_eq!(
+            ranges.len(),
+            1,
+            "a rename must not leave two bands: {ranges:?}"
+        );
+        assert_eq!(
+            ranges[0].id, record,
+            "it addressed the record it already had"
+        );
         assert_eq!(ranges[0].label, "First try again");
     }
 }

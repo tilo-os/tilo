@@ -1,0 +1,152 @@
+// One test binary instead of one per file: each tests/*.rs linked the whole
+// crate separately. Files stay where they are; #[path] pulls them in as
+// modules. nextest runs each test in its own process, so tests that touch
+// process state keep the isolation separate binaries gave them.
+
+#[path = "support/mod.rs"]
+mod support;
+
+#[path = "active_group_wireup_test.rs"]
+mod active_group_wireup_test;
+#[path = "advertised_globals.rs"]
+mod advertised_globals;
+#[path = "apps_integration.rs"]
+mod apps_integration;
+#[path = "blend_layer_cost.rs"]
+mod blend_layer_cost;
+#[path = "browser_stub.rs"]
+mod browser_stub;
+#[path = "capability_enforcement.rs"]
+mod capability_enforcement;
+#[path = "clipboard_e2e.rs"]
+mod clipboard_e2e;
+#[path = "color_management_protocol.rs"]
+mod color_management_protocol;
+#[path = "color_management_surface_override.rs"]
+mod color_management_surface_override;
+#[path = "compositor_test.rs"]
+mod compositor_test;
+#[path = "concept_parity_spec.rs"]
+mod concept_parity_spec;
+#[path = "control_socket_test.rs"]
+mod control_socket_test;
+#[path = "cross_strip_drag.rs"]
+mod cross_strip_drag;
+#[path = "desktop_env_interactions.rs"]
+mod desktop_env_interactions;
+#[path = "dmabuf_direct_capture_path.rs"]
+mod dmabuf_direct_capture_path;
+#[path = "dmabuf_encode_path_integration.rs"]
+mod dmabuf_encode_path_integration;
+#[path = "dmabuf_feedback_protocol.rs"]
+mod dmabuf_feedback_protocol;
+#[path = "document_open_e2e.rs"]
+mod document_open_e2e;
+#[path = "drm_backend_boot.rs"]
+mod drm_backend_boot;
+#[path = "e2e_shell_flows.rs"]
+mod e2e_shell_flows;
+#[path = "everything_composes.rs"]
+mod everything_composes;
+#[path = "expand_fullscreen_visual.rs"]
+mod expand_fullscreen_visual;
+#[path = "file_drop_routing.rs"]
+mod file_drop_routing;
+#[path = "flatpak_share_e2e.rs"]
+mod flatpak_share_e2e;
+#[path = "flatpak_share_encoder_probe.rs"]
+mod flatpak_share_encoder_probe;
+#[path = "focused_group_marking.rs"]
+mod focused_group_marking;
+#[path = "foreign_surface_compositing.rs"]
+mod foreign_surface_compositing;
+#[path = "fractional_scale_protocol.rs"]
+mod fractional_scale_protocol;
+#[path = "freeze_bench.rs"]
+mod freeze_bench;
+#[path = "hdr_capability_probe.rs"]
+mod hdr_capability_probe;
+#[path = "hdr_decode_pipeline.rs"]
+mod hdr_decode_pipeline;
+#[path = "hdr_output_encode_shader.rs"]
+mod hdr_output_encode_shader;
+#[path = "hdr_output_pipeline.rs"]
+mod hdr_output_pipeline;
+#[path = "hdr_sei_metadata.rs"]
+mod hdr_sei_metadata;
+#[path = "hdr_tonemap_shader.rs"]
+mod hdr_tonemap_shader;
+#[path = "headless_examples_smoke.rs"]
+mod headless_examples_smoke;
+#[path = "hevc_hardware_encode.rs"]
+mod hevc_hardware_encode;
+#[path = "interaction_test.rs"]
+mod interaction_test;
+#[path = "leak_probe.rs"]
+mod leak_probe;
+#[path = "maximize_persist_wireup_test.rs"]
+mod maximize_persist_wireup_test;
+#[path = "nirios_e2e_test.rs"]
+mod nirios_e2e_test;
+#[path = "nvenc_hardware_encode.rs"]
+mod nvenc_hardware_encode;
+#[path = "opening_configure_carries_the_tab_size.rs"]
+mod opening_configure_carries_the_tab_size;
+#[path = "participant_names.rs"]
+mod participant_names;
+#[path = "peer_join_toast_batches.rs"]
+mod peer_join_toast_batches;
+#[path = "peer_sync_test.rs"]
+mod peer_sync_test;
+#[path = "permission_prompt_pump.rs"]
+mod permission_prompt_pump;
+#[path = "permissions_tab_test.rs"]
+mod permissions_tab_test;
+#[path = "persisted_app_placeholders.rs"]
+mod persisted_app_placeholders;
+#[path = "portal_file_chooser_e2e.rs"]
+mod portal_file_chooser_e2e;
+#[path = "portal_grant_reaches_sandbox.rs"]
+mod portal_grant_reaches_sandbox;
+#[path = "portal_prompt_drain_e2e.rs"]
+mod portal_prompt_drain_e2e;
+#[path = "portal_test.rs"]
+mod portal_test;
+#[path = "qs_actions_click_routing.rs"]
+mod qs_actions_click_routing;
+#[path = "real_apps_visual.rs"]
+mod real_apps_visual;
+#[path = "redaction_pipeline.rs"]
+mod redaction_pipeline;
+#[path = "remote_cursors_test.rs"]
+mod remote_cursors_test;
+#[path = "sandbox_check.rs"]
+mod sandbox_check;
+#[path = "scrollback_pipeline.rs"]
+mod scrollback_pipeline;
+#[path = "server_side_decorations.rs"]
+mod server_side_decorations;
+#[path = "session_lock_e2e.rs"]
+mod session_lock_e2e;
+#[path = "shell_chrome_test.rs"]
+mod shell_chrome_test;
+#[path = "shell_state_test.rs"]
+mod shell_state_test;
+#[path = "sidebar_wheel_disc_snapshot.rs"]
+mod sidebar_wheel_disc_snapshot;
+#[path = "signed_op_pipeline.rs"]
+mod signed_op_pipeline;
+#[path = "strip_navigation.rs"]
+mod strip_navigation;
+#[path = "surface_substream_e2e.rs"]
+mod surface_substream_e2e;
+#[path = "system_monitor_test.rs"]
+mod system_monitor_test;
+#[path = "two_netns_share.rs"]
+mod two_netns_share;
+#[path = "vaapi_hardware_encode.rs"]
+mod vaapi_hardware_encode;
+#[path = "wayland_test.rs"]
+mod wayland_test;
+#[path = "workspace_settings_state_test.rs"]
+mod workspace_settings_state_test;

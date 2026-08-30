@@ -10,8 +10,8 @@ use vello::kurbo::{Point, Vec2};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::widget::TextInput;
 use ui::Widget;
+use ui::widget::TextInput;
 
 use crate::actions;
 use crate::app::{
@@ -36,13 +36,12 @@ fn new_channel_id() -> String {
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(NOW)
+        .map_or(NOW, |d| d.as_secs() as i64)
 }
 
 /// Byte offset of character index `ci` in `s` (clamped to the end).
 fn char_byte(s: &str, ci: usize) -> usize {
-    s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len())
+    s.char_indices().nth(ci).map_or(s.len(), |(b, _)| b)
 }
 
 /// Feed one raw winit event into an embedded [`TextInput`]. The composers live
@@ -61,7 +60,14 @@ fn drive_text_input(
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
     ti.handle_event(
-        event, scale, modifiers, doc, &automerge::ROOT, &mut handled, &mut focus_target, node,
+        event,
+        scale,
+        modifiers,
+        doc,
+        &automerge::ROOT,
+        &mut handled,
+        &mut focus_target,
+        node,
         &taffy,
     );
 }
@@ -96,13 +102,17 @@ impl ChatApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 44.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 44.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale,
                 };
                 self.scroll += dy;
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 match self.hit_at(self.last_mouse) {
                     Some(Hit::CallDragHandle) => {
                         // Begin dragging the overlay (only meaningful docked).
@@ -139,7 +149,11 @@ impl ChatApp {
                     None => {}
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.overlay_drag = None;
                 // End any composer drag-selection in progress.
                 self.forward_release_to_composers(event, scale, modifiers, doc);
@@ -161,14 +175,23 @@ impl ChatApp {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
                 if let Some(hit) = self.hit_at(self.last_mouse) {
                     self.on_right_click(hit);
                     *handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 // The composer owns the keystroke unless an inline editor /
@@ -197,7 +220,7 @@ impl ChatApp {
     /// (Shift+Enter inserts a newline — the composer is multiline with
     /// enter-submits); any text edit is written back into the per-channel /
     /// thread draft `Text` in the CRDT (diff-spliced) so a draft stays
-    /// collaborative + persistent. On an empty composer, ArrowUp loads your
+    /// collaborative + persistent. On an empty composer, `ArrowUp` loads your
     /// last message into the inline editor (Slack/Discord convention).
     fn route_composer_key(
         &mut self,
@@ -207,17 +230,21 @@ impl ChatApp {
         doc: &mut AutoCommit,
     ) {
         if let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key: Key::Named(NamedKey::ArrowUp), .. },
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::ArrowUp),
+                    ..
+                },
             ..
         } = event
+            && !modifiers.state().shift_key()
+            && self.focused_composer().value().is_empty()
         {
-            if !modifiers.state().shift_key() && self.focused_composer().value().is_empty() {
-                if let Some(id) = self.last_own_message_id() {
-                    self.begin_edit(id);
-                    self.reload(doc);
-                }
-                return;
+            if let Some(id) = self.last_own_message_id() {
+                self.begin_edit(id);
+                self.reload(doc);
             }
+            return;
         }
         let key = self.draft_key();
         drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
@@ -355,11 +382,20 @@ impl ChatApp {
                 self.menu = None;
                 self.apply_menu_action(target, action, doc);
             }
-            Hit::AddChannel { workspace, category } => {
+            Hit::AddChannel {
+                workspace,
+                category,
+            } => {
                 let id = new_channel_id();
                 self.perform_action(
                     doc,
-                    actions::create_channel_action(&workspace, &category, &id, "new-channel", ChannelKind::Text),
+                    actions::create_channel_action(
+                        &workspace,
+                        &category,
+                        &id,
+                        "new-channel",
+                        ChannelKind::Text,
+                    ),
                 );
                 self.begin_rename(MenuTarget::Channel(id));
             }
@@ -450,11 +486,13 @@ impl ChatApp {
                         .ws_channels()
                         .into_iter()
                         .find(|c| c.kind == ChannelKind::Voice)
-                        .map(|c| c.id.clone())
-                        .unwrap_or_else(|| {
-                            let ws = self.active_ws.clone();
-                            ChatDoc::create_channel(doc, &ws, "", "Voice", ChannelKind::Voice)
-                        });
+                        .map_or_else(
+                            || {
+                                let ws = self.active_ws.clone();
+                                ChatDoc::create_channel(doc, &ws, "", "Voice", ChannelKind::Voice)
+                            },
+                            |c| c.id.clone(),
+                        );
                     self.join_voice(&channel, doc);
                 }
             }
@@ -500,9 +538,13 @@ impl ChatApp {
                     self.emoji_target = None;
                 } else if self.history_open.is_some() {
                     self.history_open = None;
-                } else if self.left_mode == crate::responsive::FlapMode::Overlay && self.left_flap_open() {
+                } else if self.left_mode == crate::responsive::FlapMode::Overlay
+                    && self.left_flap_open()
+                {
                     self.left_flap.close();
-                } else if self.right_mode == crate::responsive::FlapMode::Overlay && self.right_flap_open() {
+                } else if self.right_mode == crate::responsive::FlapMode::Overlay
+                    && self.right_flap_open()
+                {
                     self.right_flap.close();
                 }
             }
@@ -528,18 +570,43 @@ impl ChatApp {
         let me = self.me.id.clone();
         // Leaving a prior call first emits a leave cue for that channel.
         if self.call.active && self.call.channel != channel {
-            ChatDoc::voice_leave(doc, &self.call.channel.clone(), &me);
+            let prior = self.call.channel.clone();
+            self.perform_action(
+                doc,
+                actions::ChatAction::LeaveCall {
+                    channel: prior,
+                    user: me.clone(),
+                },
+            );
         }
         self.call.join(channel.to_string());
-        ChatDoc::voice_join(doc, channel, &me);
-        // Signalling: announce how peers dial our media transport.
+        self.perform_action(
+            doc,
+            actions::ChatAction::JoinCall {
+                channel: channel.to_string(),
+                user: me.clone(),
+            },
+        );
+        // Signalling: announce how peers dial our media transport. The ticket
+        // itself comes from the transport — external, and minted here — but
+        // writing it into the shared map is a document mutation like any other,
+        // so it goes down the one route.
         if let Some(ticket) = self.media.local_ticket() {
-            ChatDoc::voice_set_ticket(doc, channel, &me, &ticket);
+            self.perform_action(
+                doc,
+                actions::ChatAction::SetCallTicket {
+                    channel: channel.to_string(),
+                    user: me,
+                    ticket,
+                },
+            );
         }
         self.sync_local_voice(doc);
         // Media: publish the local audio track over the (simulated or live)
         // transport so the pipeline is exercised end to end.
-        self.media.transport_mut().publish(crate::media::TrackKind::Audio);
+        self.media
+            .transport_mut()
+            .publish(crate::media::TrackKind::Audio);
         // Receiving half of the signalling handshake: dial every peer already
         // in the call and subscribe to their audio.
         self.connect_call_peers(doc);
@@ -553,8 +620,17 @@ impl ChatApp {
             return;
         }
         let ch = self.call.channel.clone();
-        ChatDoc::voice_leave(doc, &ch, &self.me.id);
-        self.media.transport_mut().unpublish(crate::media::TrackKind::Audio);
+        let me = self.me.id.clone();
+        self.perform_action(
+            doc,
+            actions::ChatAction::LeaveCall {
+                channel: ch,
+                user: me,
+            },
+        );
+        self.media
+            .transport_mut()
+            .unpublish(crate::media::TrackKind::Audio);
         self.call.leave();
         self.sound.leave();
         self.request_relayout();
@@ -589,7 +665,16 @@ impl ChatApp {
             return;
         }
         let ch = self.call.channel.clone();
-        ChatDoc::voice_set_sharing(doc, &ch, &self.me.id, self.call.sharing);
+        let sharing = self.call.sharing;
+        let me = self.me.id.clone();
+        self.perform_action(
+            doc,
+            actions::ChatAction::SetScreenShare {
+                channel: ch,
+                user: me,
+                sharing,
+            },
+        );
     }
 
     /// Mirror this peer's local mic/deafen/audio-only state into the shared
@@ -600,14 +685,17 @@ impl ChatApp {
             return;
         }
         let ch = self.call.channel.clone();
-        ChatDoc::voice_set_state(
+        let me = self.me.id.clone();
+        self.perform_action(
             doc,
-            &ch,
-            &self.me.id,
-            !self.call.muted,
-            self.call.muted,
-            self.call.deafened,
-            self.call.audio_only,
+            actions::ChatAction::SetCallState {
+                channel: ch,
+                user: me,
+                talking: !self.call.muted,
+                muted: self.call.muted,
+                deafened: self.call.deafened,
+                audio_only: self.call.audio_only,
+            },
         );
     }
 
@@ -629,10 +717,12 @@ impl ChatApp {
             }
             if let Some(ticket) = &m.ticket {
                 self.media.transport_mut().connect(ticket);
-                self.media.transport_mut().subscribe(crate::media::Subscription {
-                    peer: m.user.clone(),
-                    kind: crate::media::TrackKind::Audio,
-                });
+                self.media
+                    .transport_mut()
+                    .subscribe(crate::media::Subscription {
+                        peer: m.user.clone(),
+                        kind: crate::media::TrackKind::Audio,
+                    });
             }
         }
     }
@@ -647,7 +737,7 @@ impl ChatApp {
                 MenuAction::EditMessage => self.begin_edit(id),
                 MenuAction::PinMessage => {
                     let channel = self.active_channel.clone();
-                    let pinned = self.message(&id).map(|m| m.pinned).unwrap_or(false);
+                    let pinned = self.message(&id).is_some_and(|m| m.pinned);
                     self.perform_action(doc, actions::pin_message_action(&channel, &id, !pinned));
                 }
                 MenuAction::DeleteMessage => {
@@ -676,7 +766,7 @@ impl ChatApp {
                 }
             }
             MenuAction::Archive => {
-                let archived = self.channel(id).map(|c| c.archived).unwrap_or(false);
+                let archived = self.channel(id).is_some_and(|c| c.archived);
                 self.perform_action(doc, actions::archive_channel_action(id, !archived));
                 if !archived && self.active_channel == id {
                     self.active_channel.clear(); // an archived channel leaves the view
@@ -701,7 +791,13 @@ impl ChatApp {
                 let new_id = new_channel_id();
                 self.perform_action(
                     doc,
-                    actions::create_channel_action(&ws, id, &new_id, "new-channel", ChannelKind::Text),
+                    actions::create_channel_action(
+                        &ws,
+                        id,
+                        &new_id,
+                        "new-channel",
+                        ChannelKind::Text,
+                    ),
                 );
                 self.begin_rename(MenuTarget::Channel(new_id));
             }
@@ -709,7 +805,13 @@ impl ChatApp {
                 let new_id = new_channel_id();
                 self.perform_action(
                     doc,
-                    actions::create_channel_action(&ws, id, &new_id, "New Voice", ChannelKind::Voice),
+                    actions::create_channel_action(
+                        &ws,
+                        id,
+                        &new_id,
+                        "New Voice",
+                        ChannelKind::Voice,
+                    ),
                 );
                 self.begin_rename(MenuTarget::Channel(new_id));
             }
@@ -738,7 +840,7 @@ impl ChatApp {
             if !text.is_empty() {
                 match target {
                     MenuTarget::Channel(id) => {
-                        self.perform_action(doc, actions::rename_channel_action(&id, text))
+                        self.perform_action(doc, actions::rename_channel_action(&id, text));
                     }
                     // Categories are structural view grouping (not part of the
                     // exported channel/message action set) — a direct write.
@@ -797,7 +899,8 @@ impl ChatApp {
             return true;
         }
         // While a popover is up, swallow other keys.
-        if self.emoji_open || self.history_open.is_some() || self.menu.is_some() || self.attach_open {
+        if self.emoji_open || self.history_open.is_some() || self.menu.is_some() || self.attach_open
+        {
             return true;
         }
 
@@ -881,11 +984,11 @@ impl ChatApp {
                 true
             }
             Key::Character(s) => {
-                if let Some((_, text)) = &mut self.rename {
-                    if s.chars().all(|c| !c.is_control()) {
-                        text.push_str(s);
-                        self.caret = text.chars().count();
-                    }
+                if let Some((_, text)) = &mut self.rename
+                    && s.chars().all(|c| !c.is_control())
+                {
+                    text.push_str(s);
+                    self.caret = text.chars().count();
                 }
                 true
             }
@@ -974,7 +1077,11 @@ impl ChatApp {
             .rev()
             .find(|m| {
                 m.author == me
-                    && if in_thread { m.parent == parent } else { m.parent.is_none() }
+                    && if in_thread {
+                        m.parent == parent
+                    } else {
+                        m.parent.is_none()
+                    }
             })
             .map(|m| m.id.clone())
     }
@@ -984,13 +1091,18 @@ impl ChatApp {
     /// message's history and flags it edited), then close the editor. An
     /// edit that empties the message is discarded rather than blanking it.
     fn commit_edit(&mut self, doc: &mut AutoCommit) {
-        let Some((id, text)) = self.editing.take() else { return };
+        let Some((id, text)) = self.editing.take() else {
+            return;
+        };
         self.caret = 0;
         if text.trim().is_empty() {
             return;
         }
         let channel = self.active_channel.clone();
-        self.perform_action(doc, actions::edit_message_action(&channel, &id, &text, now_secs()));
+        self.perform_action(
+            doc,
+            actions::edit_message_action(&channel, &id, &text, now_secs()),
+        );
         self.reload(doc);
     }
 
@@ -1023,9 +1135,23 @@ impl ChatApp {
         // stays a direct write inside the same event.
         let channel = self.active_channel.clone();
         let author = self.me.id.clone();
+        // Bind `@name` to participants once, here, at authoring time. The
+        // message carries the resolved references, so no reader — a peer, a
+        // notification, an agent watching the room — ever re-parses the body to
+        // work out who it was addressed to.
+        let mentions = crate::mention::resolve(&text, &self.participants());
         self.perform_action(
             doc,
-            actions::send_message_action(&channel, &new_message_id(), &author, now_secs(), &text, parent, None),
+            actions::send_message_action(
+                &channel,
+                &new_message_id(),
+                &author,
+                now_secs(),
+                &text,
+                parent,
+                None,
+                mentions,
+            ),
         );
         ChatDoc::clear_draft(doc, &key);
         self.caret = 0;
@@ -1064,15 +1190,25 @@ impl ChatApp {
         let path_str = path.to_string_lossy().into_owned();
         let name = path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "file".into());
+            .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
         let attachment = if crate::picker::is_video_name(&name) {
-            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let size = std::fs::metadata(path).map_or(0, |m| m.len());
             // A video's pixel dimensions need a container probe (unavailable in
             // the default build); post 0×0 and let the card use a 16:9 poster.
-            Attachment::Video { name, path: path_str, w: 0, h: 0, size }
+            Attachment::Video {
+                name,
+                path: path_str,
+                w: 0,
+                h: 0,
+                size,
+            }
         } else if let Some((w, h)) = crate::picker::image_dimensions(path) {
-            Attachment::Image { name, path: path_str, w, h }
+            Attachment::Image {
+                name,
+                path: path_str,
+                w,
+                h,
+            }
         } else {
             return false;
         };
@@ -1091,6 +1227,7 @@ impl ChatApp {
                 "",
                 None,
                 Some(attachment),
+                Vec::new(),
             ),
         );
         self.scroll = 0.0;
@@ -1143,7 +1280,9 @@ mod tests {
             },
             &mut doc,
         );
-        let dispatched = app.last_dispatched().expect("the affordance dispatched an action");
+        let dispatched = app
+            .last_dispatched()
+            .expect("the affordance dispatched an action");
 
         assert_eq!(dispatched.type_id, from_spec.type_id);
         assert_eq!(
@@ -1151,7 +1290,11 @@ mod tests {
             "the delete-channel affordance and its Ctrl+K spec build the identical action"
         );
         // And it really deleted the channel (the affordance is on the real path).
-        assert!(ChatDoc::list_channels(&doc).into_iter().all(|c| c.id != "c_crit"));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .into_iter()
+                .all(|c| c.id != "c_crit")
+        );
     }
 
     /// The send affordance dispatches a `SendMessage` action carrying the typed
@@ -1171,7 +1314,12 @@ mod tests {
         let action: crate::actions::ChatAction =
             serde_json::from_slice(&dispatched.payload).expect("payload decodes to ChatAction");
         match action {
-            crate::actions::ChatAction::SendMessage { channel, text, author, .. } => {
+            crate::actions::ChatAction::SendMessage {
+                channel,
+                text,
+                author,
+                ..
+            } => {
                 assert_eq!(channel, "c_general");
                 assert_eq!(text, "hi from the composer");
                 assert_eq!(author, me);
@@ -1193,7 +1341,10 @@ mod tests {
             app.reload(&doc);
         }
         assert_eq!(app.active_ws, "ws_home", "re-homed to the real workspace");
-        assert_eq!(app.active_channel, "c_general", "picked the first text channel");
+        assert_eq!(
+            app.active_channel, "c_general",
+            "picked the first text channel"
+        );
         assert!(app.thread_open.is_none(), "stale demo thread dropped");
         // And nothing fake leaked in.
         assert!(app.users.iter().all(|u| u.id == model::ME));
@@ -1219,11 +1370,20 @@ mod tests {
         unsafe { std::env::remove_var("QOS_CHAT_DATA") };
 
         let ws = ChatDoc::list_workspaces(&doc);
-        assert!(ws.iter().any(|w| w.id == "ws_home"), "the real starter workspace");
-        assert!(ws.iter().all(|w| w.id != "ws_acme"), "no fabricated demo workspace");
+        assert!(
+            ws.iter().any(|w| w.id == "ws_home"),
+            "the real starter workspace"
+        );
+        assert!(
+            ws.iter().all(|w| w.id != "ws_acme"),
+            "no fabricated demo workspace"
+        );
 
         let chans = ChatDoc::list_channels(&doc);
-        assert!(chans.iter().all(|c| c.id != "c_crit"), "no fabricated demo channels");
+        assert!(
+            chans.iter().all(|c| c.id != "c_crit"),
+            "no fabricated demo channels"
+        );
 
         assert!(
             ChatDoc::list_messages(&doc, "c_general").is_empty(),
@@ -1243,8 +1403,15 @@ mod tests {
         // Type through the real composer TextInput, then Enter to send
         // (multiline + enter-submits: plain Enter sends).
         type_str(&mut app, &mut doc, "hello team");
-        assert_eq!(app.composer_main.value(), "hello team", "composer holds the typed text");
-        assert_eq!(app.draft_main, "hello team", "the draft is mirrored into the CRDT");
+        assert_eq!(
+            app.composer_main.value(),
+            "hello team",
+            "composer holds the typed text"
+        );
+        assert_eq!(
+            app.draft_main, "hello team",
+            "the draft is mirrored into the CRDT"
+        );
         feed(&mut app, &mut doc, key_named(NamedKey::Enter));
         let after = ChatDoc::list_messages(&doc, "c_crit");
         assert_eq!(after.len(), before + 1);
@@ -1281,7 +1448,10 @@ mod tests {
         app.insert_text(&mut doc, "nice");
         app.send_focused(&mut doc);
         let replies = model::reply_count(&ChatDoc::list_messages(&doc, "c_crit"), "m_concept");
-        assert_eq!(replies, 4, "thread gained one reply on top of the seeded three");
+        assert_eq!(
+            replies, 4,
+            "thread gained one reply on top of the seeded three"
+        );
     }
 
     #[test]
@@ -1292,7 +1462,11 @@ mod tests {
         assert!(app.call.active);
         assert_eq!(app.call.channel, "c_standup");
         // Joining records the local member in the shared voice membership.
-        assert!(ChatDoc::list_voice_members(&doc, "c_standup").iter().any(|m| m.user == model::ME));
+        assert!(
+            ChatDoc::list_voice_members(&doc, "c_standup")
+                .iter()
+                .any(|m| m.user == model::ME)
+        );
     }
 
     #[test]
@@ -1305,12 +1479,18 @@ mod tests {
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc); // join the huddle
         assert!(app.call.active && app.call.channel == "c_huddle");
         app.on_hit(Hit::CallExpand, &mut doc);
-        assert!(app.call.expanded, "the Expand control opens the full-window overlay");
+        assert!(
+            app.call.expanded,
+            "the Expand control opens the full-window overlay"
+        );
         let remotes = ChatDoc::list_voice_members(&doc, "c_huddle")
             .into_iter()
             .filter(|m| m.user != model::ME)
             .count();
-        assert_eq!(remotes, 3, "all three remote participants remain in the call");
+        assert_eq!(
+            remotes, 3,
+            "all three remote participants remain in the call"
+        );
     }
 
     #[test]
@@ -1333,26 +1513,38 @@ mod tests {
             // Every tile inside the region.
             for t in &tiles {
                 assert!(
-                    t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5
-                        && t.y0 >= region.y0 - 0.5 && t.y1 <= region.y1 + 0.5,
+                    t.x0 >= region.x0 - 0.5
+                        && t.x1 <= region.x1 + 0.5
+                        && t.y0 >= region.y0 - 0.5
+                        && t.y1 <= region.y1 + 0.5,
                     "w={w}: a tile escaped the content region"
                 );
             }
             // Bounding box covers the region (within one gap) in both axes.
-            let bbox = tiles.iter().fold(
-                Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN),
-                |b, r| Rect::new(b.x0.min(r.x0), b.y0.min(r.y0), b.x1.max(r.x1), b.y1.max(r.y1)),
-            );
+            let bbox =
+                tiles
+                    .iter()
+                    .fold(Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, r| {
+                        Rect::new(
+                            b.x0.min(r.x0),
+                            b.y0.min(r.y0),
+                            b.x1.max(r.x1),
+                            b.y1.max(r.y1),
+                        )
+                    });
             let slack = region.width().min(region.height()) * 0.05 + 17.0;
             assert!(
                 region.x1 - bbox.x1 <= slack && bbox.x0 - region.x0 <= slack,
                 "w={w}: horizontal void — bbox x {:?} vs region x [{:.0},{:.0}]",
-                (bbox.x0, bbox.x1), region.x0, region.x1
+                (bbox.x0, bbox.x1),
+                region.x0,
+                region.x1
             );
             assert!(
                 region.y1 - bbox.y1 <= slack && bbox.y0 - region.y0 <= slack,
                 "w={w}: vertical void below the tiles — bbox y1 {:.0} vs region y1 {:.0}",
-                bbox.y1, region.y1
+                bbox.y1,
+                region.y1
             );
             // The host is a genuine cell, not a pinned sliver.
             let host = app.overlay_host_rect();
@@ -1368,10 +1560,18 @@ mod tests {
     fn leaving_a_call_removes_local_member() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
-        assert!(ChatDoc::list_voice_members(&doc, "c_standup").iter().any(|m| m.user == model::ME));
+        assert!(
+            ChatDoc::list_voice_members(&doc, "c_standup")
+                .iter()
+                .any(|m| m.user == model::ME)
+        );
         app.on_hit(Hit::CallLeave, &mut doc);
         assert!(!app.call.active);
-        assert!(!ChatDoc::list_voice_members(&doc, "c_standup").iter().any(|m| m.user == model::ME));
+        assert!(
+            !ChatDoc::list_voice_members(&doc, "c_standup")
+                .iter()
+                .any(|m| m.user == model::ME)
+        );
     }
 
     #[test]
@@ -1379,17 +1579,26 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         assert!(app.channels.iter().any(|c| c.id == "c_random"));
         app.on_hit(
-            Hit::MenuAction { target: MenuTarget::Channel("c_random".into()), action: MenuAction::Delete },
+            Hit::MenuAction {
+                target: MenuTarget::Channel("c_random".into()),
+                action: MenuAction::Delete,
+            },
             &mut doc,
         );
-        assert!(!app.channels.iter().any(|c| c.id == "c_random"), "channel deleted via menu");
+        assert!(
+            !app.channels.iter().any(|c| c.id == "c_random"),
+            "channel deleted via menu"
+        );
     }
 
     #[test]
     fn swipe_left_action_matches_context_menu_primary() {
         // The parity invariant: a left-swipe resolves to the same action as
         // the channel context menu's first item.
-        assert_eq!(MenuAction::channel_swipe_left(), MenuAction::for_channel()[0]);
+        assert_eq!(
+            MenuAction::channel_swipe_left(),
+            MenuAction::for_channel()[0]
+        );
         assert_eq!(MenuAction::channel_swipe_left(), MenuAction::Delete);
     }
 
@@ -1397,9 +1606,18 @@ mod tests {
     fn add_channel_creates_and_opens_rename() {
         let (mut app, mut doc) = app_with_doc();
         let before = app.channels.len();
-        app.on_hit(Hit::AddChannel { workspace: "ws_acme".into(), category: "cat_acme_main".into() }, &mut doc);
+        app.on_hit(
+            Hit::AddChannel {
+                workspace: "ws_acme".into(),
+                category: "cat_acme_main".into(),
+            },
+            &mut doc,
+        );
         assert_eq!(app.channels.len(), before + 1);
-        assert!(app.rename.is_some(), "new channel opens the inline rename editor");
+        assert!(
+            app.rename.is_some(),
+            "new channel opens the inline rename editor"
+        );
     }
 
     #[test]
@@ -1423,7 +1641,11 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         let open = app.left_flap_open();
         app.on_hit(Hit::ToggleLeftFlap, &mut doc);
-        assert_ne!(app.left_flap_open(), open, "toggling the left flap flips it");
+        assert_ne!(
+            app.left_flap_open(),
+            open,
+            "toggling the left flap flips it"
+        );
     }
 
     #[test]
@@ -1433,8 +1655,16 @@ mod tests {
         app.set_composer_focus();
         type_str(&mut app, &mut doc, "abc");
         feed(&mut app, &mut doc, key_named(NamedKey::Backspace));
-        assert_eq!(app.composer_main.value(), "ab", "backspace removed the last char");
-        assert_eq!(app.composer_main.cursor_pos(), 2, "caret follows the deletion");
+        assert_eq!(
+            app.composer_main.value(),
+            "ab",
+            "backspace removed the last char"
+        );
+        assert_eq!(
+            app.composer_main.cursor_pos(),
+            2,
+            "caret follows the deletion"
+        );
         assert_eq!(app.draft_main, "ab", "the draft mirrors the edit");
     }
 
@@ -1458,15 +1688,26 @@ mod tests {
         write_real_png(&png, 240, 160);
 
         let before = ChatDoc::list_messages(&doc, "c_crit").len();
-        app.on_hit(Hit::AttachPick(png.to_string_lossy().into_owned()), &mut doc);
+        app.on_hit(
+            Hit::AttachPick(png.to_string_lossy().into_owned()),
+            &mut doc,
+        );
         let msgs = ChatDoc::list_messages(&doc, "c_crit");
         assert_eq!(msgs.len(), before + 1, "one real attachment posted");
         let last = msgs.last().unwrap();
         assert_eq!(last.text, "", "no invented caption");
         match &last.attachment {
             Some(model::Attachment::Image { path, w, h, .. }) => {
-                assert_eq!(path, &png.to_string_lossy(), "posts the real filesystem path");
-                assert_eq!((*w, *h), (240, 160), "reads the file's true header dimensions");
+                assert_eq!(
+                    path,
+                    &png.to_string_lossy(),
+                    "posts the real filesystem path"
+                );
+                assert_eq!(
+                    (*w, *h),
+                    (240, 160),
+                    "reads the file's true header dimensions"
+                );
             }
             other => panic!("expected a real image attachment, got {other:?}"),
         }
@@ -1502,11 +1743,19 @@ mod tests {
         // Resize narrow on the SAME instance.
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 560.0, 720.0);
         app.reconcile_flaps();
-        assert_eq!(app.left_mode, FlapMode::Overlay, "narrowing reflows to overlay");
+        assert_eq!(
+            app.left_mode,
+            FlapMode::Overlay,
+            "narrowing reflows to overlay"
+        );
         // And widen again.
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.reconcile_flaps();
-        assert_eq!(app.left_mode, FlapMode::Docked, "widening reflows back to docked");
+        assert_eq!(
+            app.left_mode,
+            FlapMode::Docked,
+            "widening reflows back to docked"
+        );
     }
 
     /// Drive an edit end to end through the real handlers: the message action
@@ -1528,8 +1777,15 @@ mod tests {
             },
             &mut doc,
         );
-        assert!(app.editing.is_some(), "Edit loads the message into the inline editor");
-        assert_eq!(app.editing.as_ref().unwrap().1, original, "editor seeded with the current body");
+        assert!(
+            app.editing.is_some(),
+            "Edit loads the message into the inline editor"
+        );
+        assert_eq!(
+            app.editing.as_ref().unwrap().1,
+            original,
+            "editor seeded with the current body"
+        );
 
         let mods = Modifiers::default();
         // Clear the working text, then type a new body — all via the key path.
@@ -1551,25 +1807,40 @@ mod tests {
         let m = app.message("m_me1").unwrap();
         assert_eq!(m.text, "Revised: host tile carries the follow control.");
         assert!(m.edited, "the message is flagged edited");
-        assert_eq!(m.history.len(), history_before + 1, "history grew by one revision");
-        assert_eq!(m.history.last().unwrap().text, original, "history holds the original body");
+        assert_eq!(
+            m.history.len(),
+            history_before + 1,
+            "history grew by one revision"
+        );
+        assert_eq!(
+            m.history.last().unwrap().text,
+            original,
+            "history holds the original body"
+        );
     }
 
-    /// ArrowUp in an empty composer loads your most recent message into the
+    /// `ArrowUp` in an empty composer loads your most recent message into the
     /// inline editor (Slack/Discord convention).
     #[test]
     fn arrow_up_in_empty_composer_edits_last_own_message() {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
         app.set_composer_focus();
-        assert!(app.composer_main.value().is_empty(), "composer starts empty");
+        assert!(
+            app.composer_main.value().is_empty(),
+            "composer starts empty"
+        );
         feed(&mut app, &mut doc, key_named(NamedKey::ArrowUp));
         let (id, text) = app.editing.clone().expect("ArrowUp opened the editor");
         assert_eq!(id, "m_me2", "loaded the last own top-level message");
-        assert_eq!(text, app.message("m_me2").unwrap().text, "seeded with its current body");
+        assert_eq!(
+            text,
+            app.message("m_me2").unwrap().text,
+            "seeded with its current body"
+        );
     }
 
-    /// ArrowUp does nothing once a draft is being composed — it must not
+    /// `ArrowUp` does nothing once a draft is being composed — it must not
     /// clobber in-progress text with an edit.
     #[test]
     fn arrow_up_with_a_draft_does_not_start_editing() {
@@ -1578,7 +1849,10 @@ mod tests {
         app.set_composer_focus();
         type_str(&mut app, &mut doc, "half a thought");
         feed(&mut app, &mut doc, key_named(NamedKey::ArrowUp));
-        assert!(app.editing.is_none(), "a non-empty composer suppresses ArrowUp-to-edit");
+        assert!(
+            app.editing.is_none(),
+            "a non-empty composer suppresses ArrowUp-to-edit"
+        );
     }
 
     /// Escape cancels an in-progress edit and writes nothing.
@@ -1588,7 +1862,11 @@ mod tests {
         let original = app.message("m_me1").unwrap().text.clone();
         app.begin_edit("m_me1".into());
         app.on_key(&Key::Character("Z".into()), &Modifiers::default(), &mut doc);
-        app.on_key(&Key::Named(NamedKey::Escape), &Modifiers::default(), &mut doc);
+        app.on_key(
+            &Key::Named(NamedKey::Escape),
+            &Modifiers::default(),
+            &mut doc,
+        );
         assert!(app.editing.is_none(), "Escape closes the editor");
         let m = app.message("m_me1").unwrap();
         assert_eq!(m.text, original, "cancel leaves the message untouched");
@@ -1602,7 +1880,10 @@ mod tests {
         let (mut app, _doc) = app_with_doc();
         assert_eq!(app.message("m_open").unwrap().author, "u_aria");
         app.begin_edit("m_open".into());
-        assert!(app.editing.is_none(), "a foreign message never enters the editor");
+        assert!(
+            app.editing.is_none(),
+            "a foreign message never enters the editor"
+        );
     }
 
     #[test]
@@ -1650,7 +1931,11 @@ mod tests {
         }
     }
     fn mouse(state: ElementState, button: MouseButton) -> WindowEvent {
-        WindowEvent::MouseInput { device_id: winit::event::DeviceId::dummy(), state, button }
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state,
+            button,
+        }
     }
     fn wheel(y: f64) -> WindowEvent {
         WindowEvent::MouseWheel {
@@ -1665,12 +1950,13 @@ mod tests {
         app.dispatch_event(&ev, 1.0, &mods, doc, &mut handled);
     }
 
-    /// A `KeyboardInput` press for a named key (Enter, Backspace, ArrowUp …).
+    /// A `KeyboardInput` press for a named key (Enter, Backspace, `ArrowUp` …).
     fn key_named(k: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(k);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1686,8 +1972,9 @@ mod tests {
     fn key_char(s: &str) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1755,7 +2042,10 @@ mod tests {
             sentinel,
             "Ctrl+V landed the clipboard text in the composer"
         );
-        assert_eq!(app.draft_main, sentinel, "the pasted draft is mirrored into the CRDT");
+        assert_eq!(
+            app.draft_main, sentinel,
+            "the pasted draft is mirrored into the CRDT"
+        );
     }
 
     /// A drag across the composer selects a range, and Ctrl+C copies exactly
@@ -1789,11 +2079,17 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         let before = app.workspaces.len();
         app.on_hit(Hit::AddWorkspace, &mut doc);
-        assert_eq!(app.workspaces.len(), before + 1, "the rail '+' created a workspace");
+        assert_eq!(
+            app.workspaces.len(),
+            before + 1,
+            "the rail '+' created a workspace"
+        );
         // Switched to the new workspace and landed on a real text channel in it.
         assert_ne!(app.active_ws, "ws_acme");
         assert!(app.workspaces.iter().any(|w| w.id == app.active_ws));
-        let ch = app.channel(&app.active_channel).expect("landed on a real channel");
+        let ch = app
+            .channel(&app.active_channel)
+            .expect("landed on a real channel");
         assert_eq!(ch.workspace, app.active_ws);
         assert_eq!(ch.kind, ChannelKind::Text);
     }
@@ -1804,14 +2100,27 @@ mod tests {
     fn roster_projects_users_and_voice_membership() {
         let (app, _doc) = app_with_doc();
         let rows = app.roster_rows();
-        assert_eq!(rows.len(), app.users.len(), "every workspace member is listed");
+        assert_eq!(
+            rows.len(),
+            app.users.len(),
+            "every workspace member is listed"
+        );
         // In-voice members sort to the top and carry the voice channel name.
-        assert!(rows[0].1.is_some() && rows[1].1.is_some() && rows[2].1.is_some(),
-            "the three huddle members rank first");
+        assert!(
+            rows[0].1.is_some() && rows[1].1.is_some() && rows[2].1.is_some(),
+            "the three huddle members rank first"
+        );
         let aria = rows.iter().find(|(u, _)| u.id == "u_aria").unwrap();
-        assert_eq!(aria.1.as_deref(), Some("Design Huddle"), "shows the real voice channel");
+        assert_eq!(
+            aria.1.as_deref(),
+            Some("Design Huddle"),
+            "shows the real voice channel"
+        );
         let devon = rows.iter().find(|(u, _)| u.id == "u_devon").unwrap();
-        assert!(devon.1.is_none(), "someone not in a call has no voice label");
+        assert!(
+            devon.1.is_none(),
+            "someone not in a call has no voice label"
+        );
     }
 
     #[test]
@@ -1820,7 +2129,10 @@ mod tests {
         app.thread_open = None; // no thread → the flap's other half is members
         app.on_hit(Hit::ToggleRightFlap, &mut doc);
         render_frame(&mut app, 1280.0, 720.0);
-        assert!(app.right_flap_open(), "the members pill opened the right flap");
+        assert!(
+            app.right_flap_open(),
+            "the members pill opened the right flap"
+        );
         // The members panel painted its own close control (a second
         // ToggleRightFlap hit beyond the always-present header pill), and no
         // thread panel did — i.e. the previously-blank column now has content.
@@ -1829,8 +2141,11 @@ mod tests {
             2,
             "header pill + members-panel close = two toggle hits (roster shown)"
         );
-        assert_eq!(count_hits(&app, |h| matches!(h, Hit::CloseThread)), 0,
-            "no thread panel is shown when no thread is open");
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::CloseThread)),
+            0,
+            "no thread panel is shown when no thread is open"
+        );
     }
 
     // --- unread badges (were seed-only fake data) -----------------------
@@ -1841,14 +2156,27 @@ mod tests {
         // Simulate having viewed the initial channel (as each sync frame does).
         app.mark_active_read(&mut doc);
         app.reload(&doc);
-        let unread = |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().unread;
-        assert_eq!(unread(&app, "c_general"), 1, "an unseen welcome message shows as unread");
+        let unread =
+            |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().unread;
+        assert_eq!(
+            unread(&app, "c_general"),
+            1,
+            "an unseen welcome message shows as unread"
+        );
         app.on_hit(Hit::Channel("c_general".into()), &mut doc);
         assert_eq!(app.active_channel, "c_general");
-        assert_eq!(unread(&app, "c_general"), 0, "opening the channel clears its unread");
+        assert_eq!(
+            unread(&app, "c_general"),
+            0,
+            "opening the channel clears its unread"
+        );
         // Leaving it keeps it read — the watermark persisted through the mutation.
         app.on_hit(Hit::Channel("c_crit".into()), &mut doc);
-        assert_eq!(unread(&app, "c_general"), 0, "a read channel stays read after leaving");
+        assert_eq!(
+            unread(&app, "c_general"),
+            0,
+            "a read channel stays read after leaving"
+        );
     }
 
     #[test]
@@ -1856,16 +2184,30 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.mark_active_read(&mut doc);
         app.reload(&doc);
-        let unread = |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().unread;
-        assert_eq!(unread(&app, "c_random"), 0, "an empty channel has nothing unread");
+        let unread =
+            |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().unread;
+        assert_eq!(
+            unread(&app, "c_random"),
+            0,
+            "an empty channel has nothing unread"
+        );
         // A peer posts to a channel we're not viewing (arrives via the CRDT).
         ChatDoc::push_message(
             &mut doc,
             "c_random",
-            NewMessage { author: "u_aria".into(), ts: NOW, text: "anyone around?".into(), ..Default::default() },
+            NewMessage {
+                author: "u_aria".into(),
+                ts: NOW,
+                text: "anyone around?".into(),
+                ..Default::default()
+            },
         );
         app.reload(&doc);
-        assert_eq!(unread(&app, "c_random"), 1, "the unseen message is counted unread");
+        assert_eq!(
+            unread(&app, "c_random"),
+            1,
+            "the unseen message is counted unread"
+        );
     }
 
     // --- sidebar mute/deafen (were dead outside a call) -----------------
@@ -1875,15 +2217,25 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         assert!(!app.call.active);
         render_frame(&mut app, 1280.0, 720.0);
-        assert_eq!(count_hits(&app, |h| matches!(h, Hit::CallMute)), 0, "no mute control outside a call");
-        assert_eq!(count_hits(&app, |h| matches!(h, Hit::CallDeafen)), 0, "no deafen control outside a call");
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::CallMute)),
+            0,
+            "no mute control outside a call"
+        );
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::CallDeafen)),
+            0,
+            "no deafen control outside a call"
+        );
         // Join a call → the sidebar identity bar now offers real toggles.
         app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
         assert!(app.call.active);
         render_frame(&mut app, 1280.0, 720.0);
         let side = app.sidebar_rect();
         assert!(
-            app.hits.iter().any(|(r, h)| matches!(h, Hit::CallMute) && r.x1 <= side.x1 + 1.0),
+            app.hits
+                .iter()
+                .any(|(r, h)| matches!(h, Hit::CallMute) && r.x1 <= side.x1 + 1.0),
             "in a call the sidebar shows a mute toggle"
         );
     }
@@ -1897,13 +2249,15 @@ mod tests {
             ChatDoc::list_voice_members(doc, "c_standup")
                 .into_iter()
                 .find(|m| m.user == model::ME)
-                .map(|m| m.muted)
-                .unwrap_or(false)
+                .is_some_and(|m| m.muted)
         };
         assert!(!me_muted(&doc), "unmuted on join");
         app.on_hit(Hit::CallMute, &mut doc);
         assert!(app.call.muted, "local state flipped");
-        assert!(me_muted(&doc), "muting is mirrored into the shared voice membership");
+        assert!(
+            me_muted(&doc),
+            "muting is mirrored into the shared voice membership"
+        );
     }
 
     // --- screen share (portal seam + presentation stage) ----------------
@@ -1912,8 +2266,7 @@ mod tests {
         ChatDoc::list_voice_members(doc, channel)
             .into_iter()
             .find(|m| m.user == model::ME)
-            .map(|m| m.sharing)
-            .unwrap_or(false)
+            .is_some_and(|m| m.sharing)
     }
 
     #[test]
@@ -1925,8 +2278,14 @@ mod tests {
         // Honest gating: the default system portal grants nothing headless, so
         // hitting the control starts no share and records nothing.
         app.on_hit(Hit::CallShareScreen, &mut doc);
-        assert!(!app.sharing_screen(), "no portal source → no share (honest gating)");
-        assert!(!me_sharing(&doc, "c_huddle"), "nothing is recorded when the portal declines");
+        assert!(
+            !app.sharing_screen(),
+            "no portal source → no share (honest gating)"
+        );
+        assert!(
+            !me_sharing(&doc, "c_huddle"),
+            "nothing is recorded when the portal declines"
+        );
 
         // Inject a portal that grants a source: the whole share flow runs and is
         // mirrored into the shared voice membership so peers reserve the tile.
@@ -1936,13 +2295,22 @@ mod tests {
             height: 720,
         })));
         app.on_hit(Hit::CallShareScreen, &mut doc);
-        assert!(app.sharing_screen(), "a granted portal source starts the share");
-        assert!(me_sharing(&doc, "c_huddle"), "the share is mirrored into the shared voice membership");
+        assert!(
+            app.sharing_screen(),
+            "a granted portal source starts the share"
+        );
+        assert!(
+            me_sharing(&doc, "c_huddle"),
+            "the share is mirrored into the shared voice membership"
+        );
 
         // Toggling again stops the share and clears the shared flag.
         app.on_hit(Hit::CallShareScreen, &mut doc);
         assert!(!app.sharing_screen(), "toggling again stops the share");
-        assert!(!me_sharing(&doc, "c_huddle"), "stopping clears the shared flag");
+        assert!(
+            !me_sharing(&doc, "c_huddle"),
+            "stopping clears the shared flag"
+        );
     }
 
     #[test]
@@ -1956,29 +2324,43 @@ mod tests {
 
         // No one sharing yet → a uniform participant grid.
         assert!(app.screen_sharer().is_none());
-        assert!(matches!(app.overlay_stage(), CallStage::Grid(_)), "no share is a plain grid");
+        assert!(
+            matches!(app.overlay_stage(), CallStage::Grid(_)),
+            "no share is a plain grid"
+        );
 
         // A remote announces a screen share over the shared voice membership.
         ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_aria", true);
         app.reload(&doc);
-        assert_eq!(app.screen_sharer().as_deref(), Some("u_aria"), "the sharer is read from the CRDT");
+        assert_eq!(
+            app.screen_sharer().as_deref(),
+            Some("u_aria"),
+            "the sharer is read from the CRDT"
+        );
 
         match app.overlay_stage() {
             CallStage::Share { screen, strip } => {
                 // Host + three remotes ride the filmstrip; the featured screen
                 // dominates it and everything stays inside the content region.
                 assert_eq!(strip.len(), 4, "host + three remotes fill the filmstrip");
-                assert!(screen.height() > strip[0].height(), "the featured screen dominates the stage");
+                assert!(
+                    screen.height() > strip[0].height(),
+                    "the featured screen dominates the stage"
+                );
                 let region = app.overlay_content_region();
                 for t in strip.iter().chain(std::iter::once(&screen)) {
                     assert!(
-                        t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5
-                            && t.y0 >= region.y0 - 0.5 && t.y1 <= region.y1 + 0.5,
+                        t.x0 >= region.x0 - 0.5
+                            && t.x1 <= region.x1 + 0.5
+                            && t.y0 >= region.y0 - 0.5
+                            && t.y1 <= region.y1 + 0.5,
                         "a stage tile escaped the content region"
                     );
                 }
             }
-            CallStage::Grid(_) => panic!("a screen share must promote the overlay to the presentation stage"),
+            CallStage::Grid(_) => {
+                panic!("a screen share must promote the overlay to the presentation stage")
+            }
         }
     }
 
@@ -1991,10 +2373,16 @@ mod tests {
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
         app.on_hit(Hit::CallExpand, &mut doc);
         let (_, buttons) = app.overlay_controls_layout();
-        let share = buttons.iter().find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen));
-        let (label, active, ..) = share.expect("the expanded controls include a screen-share button");
+        let share = buttons
+            .iter()
+            .find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen));
+        let (label, active, ..) =
+            share.expect("the expanded controls include a screen-share button");
         assert_eq!(*label, "Share screen");
-        assert!(!*active, "not sharing → the control reads inactive 'Share screen'");
+        assert!(
+            !*active,
+            "not sharing → the control reads inactive 'Share screen'"
+        );
         app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
             node: 7,
             width: 800,
@@ -2006,7 +2394,10 @@ mod tests {
             .iter()
             .find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen))
             .expect("share button present");
-        assert_eq!(*label, "Stop share", "sharing flips the control to 'Stop share'");
+        assert_eq!(
+            *label, "Stop share",
+            "sharing flips the control to 'Stop share'"
+        );
         assert!(*active, "sharing → the control reads active");
     }
 
@@ -2018,24 +2409,38 @@ mod tests {
         app.on_hit(Hit::Workspace("ws_jam".into()), &mut doc);
         assert_eq!(app.active_ws, "ws_jam");
         assert!(
-            !app.channels.iter().any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
+            !app.channels
+                .iter()
+                .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
             "the weekend-jam workspace starts text-only"
         );
         app.on_hit(Hit::StartCall, &mut doc);
-        assert!(app.call.active, "the Call button starts a call even with no voice channel");
         assert!(
-            app.channels.iter().any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
+            app.call.active,
+            "the Call button starts a call even with no voice channel"
+        );
+        assert!(
+            app.channels
+                .iter()
+                .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
             "a voice channel was created to hold the call"
         );
-        assert!(ChatDoc::list_voice_members(&doc, &app.call.channel).iter().any(|m| m.user == model::ME));
+        assert!(
+            ChatDoc::list_voice_members(&doc, &app.call.channel)
+                .iter()
+                .any(|m| m.user == model::ME)
+        );
     }
 
     #[test]
     fn header_call_button_joins_an_existing_voice_channel() {
         let (mut app, mut doc) = app_with_doc();
         assert!(!app.call.active);
-        let voice_before =
-            app.channels.iter().filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice).count();
+        let voice_before = app
+            .channels
+            .iter()
+            .filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
+            .count();
         app.on_hit(Hit::StartCall, &mut doc);
         assert!(app.call.active);
         assert_eq!(
@@ -2043,9 +2448,15 @@ mod tests {
             ChannelKind::Voice,
             "joined an existing voice channel"
         );
-        let voice_after =
-            app.channels.iter().filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice).count();
-        assert_eq!(voice_before, voice_after, "no spurious voice channel created when one exists");
+        let voice_after = app
+            .channels
+            .iter()
+            .filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
+            .count();
+        assert_eq!(
+            voice_before, voice_after,
+            "no spurious voice channel created when one exists"
+        );
     }
 
     // --- Follow-host control removal ------------------------------------
@@ -2069,17 +2480,33 @@ mod tests {
     fn reaction_via_the_emoji_picker_round_trips_through_the_ui() {
         let (mut app, mut doc) = app_with_doc();
         let reacted = |app: &ChatApp| {
-            app.message("m_me1").unwrap().reactions.iter().any(|r| r.emoji == "🔥" && r.reacted_by(model::ME))
+            app.message("m_me1")
+                .unwrap()
+                .reactions
+                .iter()
+                .any(|r| r.emoji == "🔥" && r.reacted_by(model::ME))
         };
         assert!(!reacted(&app), "m_me1 starts without my 🔥");
         // Open the add-reaction picker on the message, then pick an emoji.
-        app.on_hit(Hit::AddReaction { msg: "m_me1".into(), anchor: Point::ZERO }, &mut doc);
+        app.on_hit(
+            Hit::AddReaction {
+                msg: "m_me1".into(),
+                anchor: Point::ZERO,
+            },
+            &mut doc,
+        );
         assert!(app.emoji_open && app.emoji_target.as_deref() == Some("m_me1"));
         app.on_hit(Hit::EmojiChoice("🔥".into()), &mut doc);
         assert!(!app.emoji_open, "picking closes the picker");
         assert!(reacted(&app), "the picked emoji became my reaction");
         // Re-opening and picking the same emoji toggles it back off.
-        app.on_hit(Hit::AddReaction { msg: "m_me1".into(), anchor: Point::ZERO }, &mut doc);
+        app.on_hit(
+            Hit::AddReaction {
+                msg: "m_me1".into(),
+                anchor: Point::ZERO,
+            },
+            &mut doc,
+        );
         app.on_hit(Hit::EmojiChoice("🔥".into()), &mut doc);
         assert!(!reacted(&app), "picking it again removed the reaction");
     }
@@ -2090,9 +2517,15 @@ mod tests {
         app.focus = Focus::Main;
         assert!(app.draft_main.is_empty());
         app.on_hit(Hit::ComposerEmoji(Point::ZERO), &mut doc);
-        assert!(app.emoji_open && app.emoji_target.is_none(), "the composer picker has no reaction target");
+        assert!(
+            app.emoji_open && app.emoji_target.is_none(),
+            "the composer picker has no reaction target"
+        );
         app.on_hit(Hit::EmojiChoice("🎉".into()), &mut doc);
-        assert_eq!(app.draft_main, "🎉", "the emoji was typed into the composer draft");
+        assert_eq!(
+            app.draft_main, "🎉",
+            "the emoji was typed into the composer draft"
+        );
     }
 
     // --- swipe-to-delete gesture through the raw input path (test gap) --
@@ -2113,10 +2546,22 @@ mod tests {
         // Press on the row (arms the swipe), drag left past the commit
         // threshold, release (commits the primary action = Delete).
         feed(&mut app, &mut doc, cursor(row.center().x, cy));
-        feed(&mut app, &mut doc, mouse(ElementState::Pressed, MouseButton::Left));
+        feed(
+            &mut app,
+            &mut doc,
+            mouse(ElementState::Pressed, MouseButton::Left),
+        );
         assert!(app.swipe.is_some(), "pressing a channel row arms a swipe");
-        feed(&mut app, &mut doc, cursor(row.center().x - (SWIPE_COMMIT_DX + 20.0), cy));
-        feed(&mut app, &mut doc, mouse(ElementState::Released, MouseButton::Left));
+        feed(
+            &mut app,
+            &mut doc,
+            cursor(row.center().x - (SWIPE_COMMIT_DX + 20.0), cy),
+        );
+        feed(
+            &mut app,
+            &mut doc,
+            mouse(ElementState::Released, MouseButton::Left),
+        );
         assert!(
             !app.channels.iter().any(|c| c.id == "c_random"),
             "the committed swipe deleted the channel"
@@ -2128,11 +2573,19 @@ mod tests {
     #[test]
     fn category_create_and_collapse_via_the_hit_path() {
         let (mut app, mut doc) = app_with_doc();
-        let acme_cats = |app: &ChatApp| app.categories.iter().filter(|c| c.workspace == "ws_acme").count();
+        let acme_cats = |app: &ChatApp| {
+            app.categories
+                .iter()
+                .filter(|c| c.workspace == "ws_acme")
+                .count()
+        };
         let before = acme_cats(&app);
         app.on_hit(Hit::AddCategory("ws_acme".into()), &mut doc);
         assert_eq!(acme_cats(&app), before + 1, "a category was created");
-        assert!(app.rename.is_some(), "a new category opens the inline rename editor");
+        assert!(
+            app.rename.is_some(),
+            "a new category opens the inline rename editor"
+        );
         app.rename = None;
         app.caret = 0;
         let collapsed_before = app.category("cat_acme_main").unwrap().collapsed;
@@ -2147,10 +2600,14 @@ mod tests {
     #[test]
     fn reorder_channel_via_menu_action() {
         let (mut app, mut doc) = app_with_doc();
-        let order = |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().order;
+        let order =
+            |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().order;
         assert!(order(&app, "c_crit") > order(&app, "c_general"));
         app.on_hit(
-            Hit::MenuAction { target: MenuTarget::Channel("c_crit".into()), action: MenuAction::MoveUp },
+            Hit::MenuAction {
+                target: MenuTarget::Channel("c_crit".into()),
+                action: MenuAction::MoveUp,
+            },
             &mut doc,
         );
         assert!(
@@ -2167,10 +2624,16 @@ mod tests {
         app.on_hit(Hit::OpenThread("m_concept".into()), &mut doc);
         assert_eq!(app.thread_open.as_deref(), Some("m_concept"));
         assert_eq!(app.focus, Focus::Thread);
-        assert!(app.right_flap_open(), "opening a thread reveals the right flap");
+        assert!(
+            app.right_flap_open(),
+            "opening a thread reveals the right flap"
+        );
         // Re-hitting the same affordance toggles the thread closed.
         app.on_hit(Hit::OpenThread("m_concept".into()), &mut doc);
-        assert!(app.thread_open.is_none(), "re-hitting the affordance closes the thread");
+        assert!(
+            app.thread_open.is_none(),
+            "re-hitting the affordance closes the thread"
+        );
         assert_eq!(app.focus, Focus::Main);
     }
 
@@ -2182,7 +2645,10 @@ mod tests {
         app.focus = Focus::Thread;
         app.on_hit(Hit::Workspace("ws_qos".into()), &mut doc);
         assert_eq!(app.active_ws, "ws_qos");
-        assert!(app.thread_open.is_none(), "switching workspaces drops the open thread");
+        assert!(
+            app.thread_open.is_none(),
+            "switching workspaces drops the open thread"
+        );
         assert_eq!(app.scroll, 0.0, "scroll resets");
         assert_eq!(app.focus, Focus::Main, "focus returns to the main composer");
         assert_eq!(
@@ -2201,10 +2667,16 @@ mod tests {
         // Top layer first: the emoji picker.
         assert!(app.on_key(&Key::Named(NamedKey::Escape), &mods, &mut doc));
         assert!(!app.emoji_open, "Escape closes the emoji picker first");
-        assert!(app.thread_open.is_some(), "the thread underneath stays open");
+        assert!(
+            app.thread_open.is_some(),
+            "the thread underneath stays open"
+        );
         // Next Escape peels the thread.
         assert!(app.on_key(&Key::Named(NamedKey::Escape), &mods, &mut doc));
-        assert!(app.thread_open.is_none(), "a second Escape closes the thread");
+        assert!(
+            app.thread_open.is_none(),
+            "a second Escape closes the thread"
+        );
     }
 
     #[test]
@@ -2221,9 +2693,22 @@ mod tests {
     #[test]
     fn edit_history_popover_opens_and_dismisses() {
         let (mut app, mut doc) = app_with_doc();
-        assert!(app.message("m_sora").unwrap().edited, "m_sora is an edited message");
-        app.on_hit(Hit::EditHistory { msg: "m_sora".into(), anchor: Point::ZERO }, &mut doc);
-        assert_eq!(app.history_open.as_deref(), Some("m_sora"), "the history popover opened");
+        assert!(
+            app.message("m_sora").unwrap().edited,
+            "m_sora is an edited message"
+        );
+        app.on_hit(
+            Hit::EditHistory {
+                msg: "m_sora".into(),
+                anchor: Point::ZERO,
+            },
+            &mut doc,
+        );
+        assert_eq!(
+            app.history_open.as_deref(),
+            Some("m_sora"),
+            "the history popover opened"
+        );
         app.on_hit(Hit::Dismiss, &mut doc);
         assert!(app.history_open.is_none(), "the dismiss scrim closes it");
     }
@@ -2286,11 +2771,19 @@ mod tests {
         assert_eq!(b.me.id, "u_bob");
 
         // Structure converges: a channel Alice creates shows up for Bob.
-        let chan = ChatDoc::create_channel(&mut doc_a, "ws_home", "cat_home_text", "planning", ChannelKind::Text);
+        let chan = ChatDoc::create_channel(
+            &mut doc_a,
+            "ws_home",
+            "cat_home_text",
+            "planning",
+            ChannelKind::Text,
+        );
         exchange(&mut doc_a, &mut doc_b);
         b.reload(&doc_b);
         assert!(
-            b.channels.iter().any(|c| c.id == chan && c.name == "planning"),
+            b.channels
+                .iter()
+                .any(|c| c.id == chan && c.name == "planning"),
             "peer B sees the channel peer A created"
         );
 
@@ -2300,9 +2793,17 @@ mod tests {
         a.send_focused(&mut doc_a);
         exchange(&mut doc_a, &mut doc_b);
         b.reload(&doc_b);
-        let alice_msg = b.messages.iter().find(|m| m.text == "morning all").expect("B sees A's message");
+        let alice_msg = b
+            .messages
+            .iter()
+            .find(|m| m.text == "morning all")
+            .expect("B sees A's message");
         assert_eq!(alice_msg.author, "u_alice");
-        assert_eq!(b.user_name("u_alice"), "Alice", "attributed to the right person");
+        assert_eq!(
+            b.user_name("u_alice"),
+            "Alice",
+            "attributed to the right person"
+        );
         let msg_id = alice_msg.id.clone();
 
         // Bob replies — converges back to Alice, attributed to Bob.
@@ -2310,27 +2811,56 @@ mod tests {
         b.send_focused(&mut doc_b);
         exchange(&mut doc_a, &mut doc_b);
         a.reload(&doc_a);
-        let bob_msg = a.messages.iter().find(|m| m.text == "morning!").expect("A sees B's reply");
+        let bob_msg = a
+            .messages
+            .iter()
+            .find(|m| m.text == "morning!")
+            .expect("A sees B's reply");
         assert_eq!(bob_msg.author, "u_bob");
         assert_eq!(a.user_name("u_bob"), "Bob");
 
         // Both react with the SAME emoji to Alice's message. Distinct
         // identities mean the count is 2 — the exact thing a shared `u_me`
         // would have collapsed to 1.
-        a.on_hit(Hit::Reaction { msg: msg_id.clone(), emoji: "👍".into() }, &mut doc_a);
-        b.on_hit(Hit::Reaction { msg: msg_id.clone(), emoji: "👍".into() }, &mut doc_b);
+        a.on_hit(
+            Hit::Reaction {
+                msg: msg_id.clone(),
+                emoji: "👍".into(),
+            },
+            &mut doc_a,
+        );
+        b.on_hit(
+            Hit::Reaction {
+                msg: msg_id.clone(),
+                emoji: "👍".into(),
+            },
+            &mut doc_b,
+        );
         exchange(&mut doc_a, &mut doc_b);
         a.reload(&doc_a);
         b.reload(&doc_b);
         for (who, app) in [("A", &a), ("B", &b)] {
             let m = app.messages.iter().find(|m| m.id == msg_id).unwrap();
-            let thumbs = m.reactions.iter().find(|r| r.emoji == "👍").expect("👍 present");
-            assert_eq!(thumbs.count(), 2, "peer {who}: both distinct reactors counted once each");
+            let thumbs = m
+                .reactions
+                .iter()
+                .find(|r| r.emoji == "👍")
+                .expect("👍 present");
+            assert_eq!(
+                thumbs.count(),
+                2,
+                "peer {who}: both distinct reactors counted once each"
+            );
             assert!(thumbs.reacted_by("u_alice") && thumbs.reacted_by("u_bob"));
         }
 
         // Full convergence: identical timelines on both peers.
-        let ids = |app: &ChatApp| app.messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        let ids = |app: &ChatApp| {
+            app.messages
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids(&a), ids(&b), "both peers converge on the same timeline");
     }
 
@@ -2358,8 +2888,17 @@ mod tests {
         a.send_focused(&mut doc_a);
         exchange(&mut doc_a, &mut doc_b);
         b.reload(&doc_b);
-        let msg_id = b.messages.iter().find(|m| m.text == "shipping friday").expect("B sees it").id.clone();
-        assert!(b.message(&msg_id).is_some_and(|m| !m.edited), "not edited yet");
+        let msg_id = b
+            .messages
+            .iter()
+            .find(|m| m.text == "shipping friday")
+            .expect("B sees it")
+            .id
+            .clone();
+        assert!(
+            b.message(&msg_id).is_some_and(|m| !m.edited),
+            "not edited yet"
+        );
 
         // Alice edits through the real inline editor: load her own message,
         // append to its working text, and commit.
@@ -2372,10 +2911,16 @@ mod tests {
         exchange(&mut doc_a, &mut doc_b);
         b.reload(&doc_b);
         let m = b.message(&msg_id).expect("edited message present for B");
-        assert_eq!(m.text, "shipping friday → moved to monday", "B sees the edited body");
+        assert_eq!(
+            m.text, "shipping friday → moved to monday",
+            "B sees the edited body"
+        );
         assert!(m.edited, "B sees the (edited) flag");
         assert_eq!(m.history.len(), 1, "B sees one archived prior version");
-        assert_eq!(m.history[0].text, "shipping friday", "the prior body is preserved verbatim");
+        assert_eq!(
+            m.history[0].text, "shipping friday",
+            "the prior body is preserved verbatim"
+        );
 
         // A second edit accumulates history without losing the first — proving
         // the log grows rather than overwriting.
@@ -2390,7 +2935,10 @@ mod tests {
         assert_eq!(m.history[1].text, "shipping friday → moved to monday");
         // And a non-author cannot edit someone else's message via the same path.
         b.begin_edit(msg_id.clone());
-        assert!(b.editing.is_none(), "a non-author can't open the editor on A's message");
+        assert!(
+            b.editing.is_none(),
+            "a non-author can't open the editor on A's message"
+        );
     }
 
     #[test]
@@ -2400,13 +2948,22 @@ mod tests {
         let mp4 = dir.path().join("clip.mp4");
         std::fs::write(&mp4, b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00moov").unwrap();
         let before = ChatDoc::list_messages(&doc, "c_crit").len();
-        app.on_hit(Hit::AttachPick(mp4.to_string_lossy().into_owned()), &mut doc);
+        app.on_hit(
+            Hit::AttachPick(mp4.to_string_lossy().into_owned()),
+            &mut doc,
+        );
         let msgs = ChatDoc::list_messages(&doc, "c_crit");
         assert_eq!(msgs.len(), before + 1, "the video posted as one message");
         match &msgs.last().unwrap().attachment {
-            Some(model::Attachment::Video { name, path, size, .. }) => {
+            Some(model::Attachment::Video {
+                name, path, size, ..
+            }) => {
                 assert_eq!(name, "clip.mp4");
-                assert_eq!(path, &mp4.to_string_lossy(), "references the real FUSE path, not copied bytes");
+                assert_eq!(
+                    path,
+                    &mp4.to_string_lossy(),
+                    "references the real FUSE path, not copied bytes"
+                );
                 assert!(*size > 0, "reads the real file size");
             }
             other => panic!("expected a Video attachment, got {other:?}"),
@@ -2425,8 +2982,14 @@ mod tests {
         );
         app.perms = crate::permissions::ChatPermissions::from_context(ctx);
 
-        assert!(!app.can_participate(), "a member without admin can't write to the workspace");
-        assert!(!app.embed_allowed("/var/workspace/secret.png"), "an ungranted embed is gated");
+        assert!(
+            !app.can_participate(),
+            "a member without admin can't write to the workspace"
+        );
+        assert!(
+            !app.embed_allowed("/var/workspace/secret.png"),
+            "an ungranted embed is gated"
+        );
 
         // Sending is a no-op under the gate.
         let before = ChatDoc::list_messages(&doc, "c_crit").len();
@@ -2442,13 +3005,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("x.png");
         write_real_png(&png, 32, 32);
-        assert!(!app.attach_file(&mut doc, &png), "a gated peer can't attach either");
+        assert!(
+            !app.attach_file(&mut doc, &png),
+            "a gated peer can't attach either"
+        );
 
         // And reacting is gated.
-        if let Some(id) = app.messages.iter().find(|m| m.reactions.is_empty()).map(|m| m.id.clone()) {
-            app.on_hit(Hit::Reaction { msg: id.clone(), emoji: "👍".into() }, &mut doc);
+        if let Some(id) = app
+            .messages
+            .iter()
+            .find(|m| m.reactions.is_empty())
+            .map(|m| m.id.clone())
+        {
+            app.on_hit(
+                Hit::Reaction {
+                    msg: id.clone(),
+                    emoji: "👍".into(),
+                },
+                &mut doc,
+            );
             let after = app.messages.iter().find(|mm| mm.id == id).unwrap();
-            assert!(after.reactions.iter().all(|r| r.emoji != "👍"), "gated: no reaction added");
+            assert!(
+                after.reactions.iter().all(|r| r.emoji != "👍"),
+                "gated: no reaction added"
+            );
         }
     }
 
@@ -2479,7 +3059,10 @@ mod tests {
         for doc in [&doc_a, &doc_b] {
             let members = ChatDoc::list_voice_members(doc, "c_lounge");
             assert_eq!(members.len(), 2, "both peers are in the call");
-            assert!(members.iter().all(|m| m.ticket.is_some()), "every member published a ticket");
+            assert!(
+                members.iter().all(|m| m.ticket.is_some()),
+                "every member published a ticket"
+            );
             assert!(members.iter().any(|m| m.user == "u_alice"));
             assert!(members.iter().any(|m| m.user == "u_bob"));
         }
@@ -2489,6 +3072,10 @@ mod tests {
         a.reload(&doc_a);
         a.connect_call_peers(&doc_a);
         b.connect_call_peers(&doc_b);
-        assert_eq!(a.call_session(), CallSession::Peer, "a 2-person call meshes peer-to-peer");
+        assert_eq!(
+            a.call_session(),
+            CallSession::Peer,
+            "a 2-person call meshes peer-to-peer"
+        );
     }
 }

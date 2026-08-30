@@ -1,13 +1,11 @@
 //! Terminal-aware output helpers.
 //!
-//! The main win here is OSC 8 hyperlinks — the escape sequence
-//! modern terminals (gnome-terminal >= 3.34, iTerm2, kitty,
-//! wezterm, foot, alacritty) render as clickable links. Pipes /
-//! files degrade to plain text so `notes | grep` still works.
-//!
-//! Scope is intentionally small: no colour theming, no
-//! progress-bar library, no columnar tables. Apps that need those
-//! reach for `owo-colors` / `indicatif` / etc. themselves.
+//! The main win is OSC 8 hyperlinks — the escape sequence modern terminals
+//! (gnome-terminal, iTerm2, kitty, wezterm, foot, alacritty) render as
+//! clickable links, degrading to plain text on pipes/files so `notes |
+//! grep` still works. Scope is intentionally small: no colour theming, no
+//! progress bars, no tables — apps that need those reach for
+//! `owo-colors`/`indicatif` themselves.
 
 use std::fmt;
 use std::io::{self, IsTerminal, Write};
@@ -25,8 +23,7 @@ enum Stream {
 }
 
 impl OutputBuilder {
-    /// Force hyperlinks on. Default is auto-detect via
-    /// [`io::IsTerminal`].
+    /// Force hyperlinks on; default is auto-detect via [`io::IsTerminal`].
     pub fn hyperlinks(mut self, on: bool) -> Self {
         self.hyperlinks = on;
         self
@@ -43,20 +40,14 @@ impl OutputBuilder {
         self.write(|w| writeln!(w, "{text}"))
     }
 
-    /// Write text and a clickable hyperlink (OSC 8) on the same
-    /// line. Pipes and files fall back to `<label> [<url>]`.
-    ///
-    /// The label may be empty — the URL is then rendered as its
-    /// own hyperlink anchor. Callers usually pass a
-    /// human-readable label + a file:// URL.
+    /// Write text and a clickable hyperlink (OSC 8) on the same line; pipes
+    /// and files fall back to `<label> [<url>]`. An empty label renders the
+    /// URL itself as the anchor.
     pub fn hyperlink(&self, label: &str, url: &str) -> io::Result<()> {
         self.write(|w| {
             if self.hyperlinks_active(w) {
                 // OSC 8 sequence: ESC ] 8 ; params ; URI ST label ESC ] 8 ; ; ST
-                write!(
-                    w,
-                    "\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\"
-                )?;
+                write!(w, "\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")?;
                 writeln!(w)
             } else if label.is_empty() {
                 writeln!(w, "{url}")
@@ -66,8 +57,8 @@ impl OutputBuilder {
         })
     }
 
-    /// Emit a `file://` hyperlink for the given path. Convenience
-    /// wrapper over [`OutputBuilder::hyperlink`].
+    /// Emit a `file://` hyperlink for the given path — a convenience wrapper
+    /// over [`OutputBuilder::hyperlink`].
     pub fn hyperlink_path<P: AsRef<std::path::Path>>(
         &self,
         label: &str,
@@ -96,8 +87,7 @@ impl OutputBuilder {
         }
     }
 
-    /// Whether to actually emit hyperlink escape sequences given
-    /// the current stream's TTY status.
+    /// Whether to actually emit hyperlink escapes, given the stream's TTY status.
     fn hyperlinks_active(&self, w: &dyn Write) -> bool {
         let _ = w; // borrow — we can't call is_terminal on a &dyn Write
         if !self.hyperlinks {
@@ -110,8 +100,7 @@ impl OutputBuilder {
     }
 }
 
-/// Start a terminal-aware output builder. Hyperlinks default to
-/// on-if-terminal.
+/// Start a terminal-aware output builder; hyperlinks default to on-if-terminal.
 pub fn output() -> OutputBuilder {
     OutputBuilder {
         hyperlinks: true,
@@ -119,9 +108,8 @@ pub fn output() -> OutputBuilder {
     }
 }
 
-/// Render an OSC 8 hyperlink to a string (no I/O). Exposed so
-/// tests + custom formatters can compose the escape sequence
-/// without going through `write!`.
+/// Render an OSC 8 hyperlink to a string (no I/O), so tests/custom
+/// formatters can compose the sequence without `write!`.
 pub fn osc8(label: &str, url: &str) -> String {
     format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
 }

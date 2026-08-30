@@ -3,7 +3,7 @@
 //! (SearchField, Chip, StatTile, Banner) in a layout that reflows as the
 //! window narrows. Chips and stat tiles wrap; the toolbar buttons wrap.
 //!
-//! Run:  cargo run -p ui --example responsive_gallery
+//! Run:  cargo run -p ui --example ui-lab -- responsive_gallery
 
 use std::fs;
 
@@ -16,7 +16,7 @@ use ui::widget::{
 };
 use ui::{App, State};
 
-fn main() {
+pub fn run(_args: &[String]) {
     I18nManager::init("en-US");
     I18nManager::add_resource(
         "en-US",
@@ -38,8 +38,13 @@ fn main() {
         let _ = state.doc.put(&state.root, "request_save", false);
         let _ = state.doc.put(&state.root, "request_load", false);
         if state.doc.get(&state.root, "text_val").unwrap().is_none() {
-            let text_id = state.doc.put_object(&state.root, "text_val", automerge::ObjType::Text).unwrap();
-            let _ = state.doc.splice_text(&text_id, 0, 0, "Edit me and restart!");
+            let text_id = state
+                .doc
+                .put_object(&state.root, "text_val", automerge::ObjType::Text)
+                .unwrap();
+            let _ = state
+                .doc
+                .splice_text(&text_id, 0, 0, "Edit me and restart!");
         }
     }
 
@@ -51,13 +56,21 @@ fn main() {
                 Row::new()
                     .push(Box::new(Text::new("title").with_size(24.0)))
                     .push(Box::new(Spacer::new()))
-                    .push(Box::new(Button::new("btn_save", "save", Some("request_save"))))
-                    .push(Box::new(Button::new("btn_load", "load", Some("request_load")))),
+                    .push(Box::new(Button::new(
+                        "btn_save",
+                        "save",
+                        Some("request_save"),
+                    )))
+                    .push(Box::new(Button::new(
+                        "btn_load",
+                        "load",
+                        Some("request_load"),
+                    ))),
             ))
             // An inline banner spanning the width.
-            .push(Box::new(
-                Banner::info("Resize the window").with_message("The chips and stat tiles below reflow as the width changes."),
-            ))
+            .push(Box::new(Banner::info("Resize the window").with_message(
+                "The chips and stat tiles below reflow as the width changes.",
+            )))
             // A search field + a persisted text field inside a card.
             .push(Box::new(
                 Container::new().with_background().with_child(Box::new(
@@ -67,14 +80,22 @@ fn main() {
                         .with_gap(10.0)
                         .push(Box::new(Text::new("welcome")))
                         .push(Box::new(SearchField::new().with_placeholder("Search")))
-                        .push(Box::new(TextInput::new(vec![]).with_id("inp_1").with_on_change_path("text_val"))),
+                        .push(Box::new(
+                            TextInput::new(vec![])
+                                .with_id("inp_1")
+                                .with_on_change_path("text_val"),
+                        )),
                 )),
             ))
             // Wrapping filter chips.
             .push(Box::new(
                 Row::new()
                     .push(Box::new(Chip::new("All").selected(true)))
-                    .push(Box::new(Chip::new("Design").selectable().with_dot(theme.tokens.colors.semantic.info)))
+                    .push(Box::new(
+                        Chip::new("Design")
+                            .selectable()
+                            .with_dot(theme.tokens.colors.semantic.info),
+                    ))
                     .push(Box::new(Chip::new("Engineering").selectable()))
                     .push(Box::new(Chip::new("Research").selectable()))
                     .push(Box::new(Chip::new("archived").removable())),
@@ -82,9 +103,19 @@ fn main() {
             // Wrapping stat tiles.
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(StatTile::new("Sessions", "12").with_icon(Icon::List).with_delta("3", Trend::Up)))
-                    .push(Box::new(StatTile::new("Saved", "48 KB").with_icon(Icon::Check)))
-                    .push(Box::new(StatTile::new("Peers", "2").with_icon(Icon::Bell).with_delta("1", Trend::Down))),
+                    .push(Box::new(
+                        StatTile::new("Sessions", "12")
+                            .with_icon(Icon::List)
+                            .with_delta("3", Trend::Up),
+                    ))
+                    .push(Box::new(
+                        StatTile::new("Saved", "48 KB").with_icon(Icon::Check),
+                    ))
+                    .push(Box::new(
+                        StatTile::new("Peers", "2")
+                            .with_icon(Icon::Bell)
+                            .with_delta("1", Trend::Down),
+                    )),
             ))
             // Wrapping action buttons (original responsive demo).
             .push(Box::new(

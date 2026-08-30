@@ -16,7 +16,7 @@
 //!     the headless CI box and screenshots use.
 //!   * **Real decode (`--features decode`)** — [`PreviewDecoder`] resolves the
 //!     clip's bytes through the [`crate::media`] FUSE seam and, when they're
-//!     hydrated, seeks a shared [`media::MediaEngine`] (a real GStreamer
+//!     hydrated, seeks a shared [`media::MediaEngine`] (a real `GStreamer`
 //!     `playbin` pipeline under the feature) to the clip's *source time* and
 //!     pulls the true decoded RGBA frame. If the bytes aren't hydrated yet (a
 //!     projected reference on a fresh collaborator) it falls back to the
@@ -27,7 +27,7 @@
 //! see in the offline preview matches the graded export.
 
 use crate::model::{
-    Clip, ClipEffect, ClipId, EffectKind, Filters, MediaId, MediaKind, Project, Track, TextSource,
+    Clip, ClipEffect, ClipId, EffectKind, Filters, MediaId, MediaKind, Project, TextSource, Track,
     TrackKind, Transform, Transition,
 };
 use crate::param::Param;
@@ -43,7 +43,11 @@ pub struct Rgb {
 
 impl Rgb {
     pub fn new(r: f64, g: f64, b: f64) -> Self {
-        Self { r: r.clamp(0.0, 1.0), g: g.clamp(0.0, 1.0), b: b.clamp(0.0, 1.0) }
+        Self {
+            r: r.clamp(0.0, 1.0),
+            g: g.clamp(0.0, 1.0),
+            b: b.clamp(0.0, 1.0),
+        }
     }
     pub fn luma(&self) -> f64 {
         0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b
@@ -92,7 +96,11 @@ impl Rgb {
 /// Blend `a` toward `b` by `t` (0..1).
 fn lerp(a: Rgb, b: Rgb, t: f64) -> Rgb {
     let t = t.clamp(0.0, 1.0);
-    Rgb::new(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
+    Rgb::new(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+    )
 }
 
 /// Apply one [`ClipEffect`] to a colour. The single source of truth for both the
@@ -183,7 +191,10 @@ fn transition_flash(clip: &Clip, playhead: f64) -> Option<Flash> {
         return None;
     }
     let alpha = (1.0 - into / 0.6) * 0.65;
-    Some(Flash { white: clip.transition != Transition::DipToBlack, alpha })
+    Some(Flash {
+        white: clip.transition != Transition::DipToBlack,
+        alpha,
+    })
 }
 
 /// A deterministic base colour per palette slot, in linear 0..1. Mirrors
@@ -218,7 +229,7 @@ pub type DecodedFrame = ::media::VideoFrame;
 /// clip under the playhead, seeks to the clip's source time and pulls the real
 /// decoded frame. The engine's synthesized fallback needs no gstreamer, so this
 /// type compiles on every build; with `--features decode` (which turns on
-/// `media/decode`) the engine is a real GStreamer `playbin` pipeline and the
+/// `media/decode`) the engine is a real `GStreamer` `playbin` pipeline and the
 /// frame is the clip's true picture.
 ///
 /// The extraction seam ([`Self::update`]) — top-clip selection, FUSE resolution,
@@ -244,7 +255,7 @@ pub struct PreviewDecoder {
 
 impl PreviewDecoder {
     /// Build a decoder. Under `--features decode` this stands up a real
-    /// GStreamer pipeline; otherwise the engine's synthesized fallback (which
+    /// `GStreamer` pipeline; otherwise the engine's synthesized fallback (which
     /// this preview never blits — the widget shows the representative frame when
     /// decode is off).
     pub fn new() -> Self {
@@ -270,7 +281,7 @@ impl PreviewDecoder {
         }
     }
 
-    /// Whether the engine is decoding through a real GStreamer pipeline.
+    /// Whether the engine is decoding through a real `GStreamer` pipeline.
     pub fn is_real_decode(&self) -> bool {
         self.engine.is_real_decode()
     }
@@ -310,7 +321,7 @@ impl PreviewDecoder {
             self.frame_media = None;
             return false;
         }
-        let abs = source.abs_path.clone();
+        let abs = source.abs_path;
         if self.open_path.as_deref() != Some(abs.as_path()) {
             self.engine.open(crate::media::engine_source(&abs));
             self.open_path = Some(abs);
@@ -332,14 +343,16 @@ impl PreviewDecoder {
         // retrying at a fixed short interval on a machine where the seek
         // takes longer than that interval restarts it forever and no frame
         // ever arrives. Widening the gap lets a slow seek finish.
-        let backoff = std::time::Duration::from_millis(
-            150u64 << self.seek_attempts.min(4),
-        );
+        let backoff = std::time::Duration::from_millis(150u64 << self.seek_attempts.min(4));
         let stale_retry = !self.settled && self.last_seek_at.elapsed() > backoff;
         if target_changed || stale_retry {
             self.engine.seek_ms(target_ms);
             self.engine.play();
-            self.seek_attempts = if target_changed { 0 } else { self.seek_attempts + 1 };
+            self.seek_attempts = if target_changed {
+                0
+            } else {
+                self.seek_attempts + 1
+            };
             self.last_seek_ms = Some(target_ms);
             self.last_seek_at = std::time::Instant::now();
             self.settled = false;
@@ -377,7 +390,12 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
 
     let (bands, env, flash) = match composite(project, playhead) {
         CompositedFrame::Empty => (None, 1.0, None),
-        CompositedFrame::Clip { base, envelope, flash, .. } => (Some(base), envelope, flash),
+        CompositedFrame::Clip {
+            base,
+            envelope,
+            flash,
+            ..
+        } => (Some(base), envelope, flash),
     };
 
     let black = Rgb::new(0.0, 0.0, 0.0);
@@ -405,7 +423,11 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
             }
             // Transition flash.
             if let Some(f) = flash {
-                let target = if f.white { Rgb::new(1.0, 1.0, 1.0) } else { black };
+                let target = if f.white {
+                    Rgb::new(1.0, 1.0, 1.0)
+                } else {
+                    black
+                };
                 px = mix(px, target, f.alpha);
             }
             let i = (y * w + x) * 4;
@@ -646,8 +668,7 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
         }
         // Opacity goes through the animation door, so a keyframed fade is
         // just a different number here — no second path.
-        let base =
-            (c.envelope(playhead) * c.param_at(Param::Opacity, playhead)).clamp(0.0, 1.0);
+        let base = (c.envelope(playhead) * c.param_at(Param::Opacity, playhead)).clamp(0.0, 1.0);
         let t_in = source_time_for(c, playhead);
         let alpha_src = has_alpha(c);
         let title = title_of(c);
@@ -697,7 +718,11 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
                 out.extend(a_layer(1.0));
                 out.push(mk(
                     base,
-                    Some(Wipe { dir: WipeDir::LeftToRight, progress: t, softness: 0.06 }),
+                    Some(Wipe {
+                        dir: WipeDir::LeftToRight,
+                        progress: t,
+                        softness: 0.06,
+                    }),
                 ));
             }
             Transition::None => out.push(mk(base, None)),
@@ -740,16 +765,27 @@ mod tests {
         let CompositedFrame::Clip { envelope: mid, .. } = composite(&p, 5.0) else {
             panic!("expected clip");
         };
-        assert!(head < mid, "head ({head}) should be dimmer than mid ({mid})");
+        assert!(
+            head < mid,
+            "head ({head}) should be dimmer than mid ({mid})"
+        );
         assert!(head < 0.2, "very head of a fade-in is near-black");
     }
 
     #[test]
     fn grade_changes_the_base_colour() {
         let neutral = palette_rgb(0);
-        let brighter = neutral.graded(&Filters { brightness: 0.9, contrast: 0.5, saturation: 0.5 });
+        let brighter = neutral.graded(&Filters {
+            brightness: 0.9,
+            contrast: 0.5,
+            saturation: 0.5,
+        });
         assert!(brighter.luma() > neutral.luma(), "brightness raises luma");
-        let desat = neutral.graded(&Filters { brightness: 0.5, contrast: 0.5, saturation: 0.0 });
+        let desat = neutral.graded(&Filters {
+            brightness: 0.5,
+            contrast: 0.5,
+            saturation: 0.0,
+        });
         // Full desaturation collapses channels toward luma → near-equal.
         assert!((desat.r - desat.g).abs() < 1e-6 && (desat.g - desat.b).abs() < 1e-6);
     }
@@ -758,7 +794,11 @@ mod tests {
     fn grayscale_effect_collapses_channels_and_empty_is_a_noop() {
         use crate::model::{ClipEffect, EffectKind};
         let c = palette_rgb(0); // a saturated bluish clip
-        assert_eq!(c.with_effects(&[]), c, "no effects leaves the colour unchanged");
+        assert_eq!(
+            c.with_effects(&[]),
+            c,
+            "no effects leaves the colour unchanged"
+        );
         let g = c.with_effects(&[ClipEffect::new(EffectKind::Grayscale)]);
         // Grayscale pulls the channels strongly toward luma (near-equal).
         assert!(
@@ -766,7 +806,10 @@ mod tests {
             "grayscale converges the channels: {g:?}",
         );
         // Invert flips the colour.
-        let inv = c.with_effects(&[ClipEffect { kind: EffectKind::Invert, amount: 1.0 }]);
+        let inv = c.with_effects(&[ClipEffect {
+            kind: EffectKind::Invert,
+            amount: 1.0,
+        }]);
         assert!((inv.r - (1.0 - c.r)).abs() < 1e-6);
     }
 
@@ -782,13 +825,19 @@ mod tests {
             CompositedFrame::Clip { base, .. } => base,
             _ => panic!("expected clip"),
         };
-        p.clip_mut(cid).unwrap().effects = vec![ClipEffect { kind: EffectKind::Grayscale, amount: 1.0 }];
+        p.clip_mut(cid).unwrap().effects = vec![ClipEffect {
+            kind: EffectKind::Grayscale,
+            amount: 1.0,
+        }];
         let after = match composite(&p, 6.0) {
             CompositedFrame::Clip { base, .. } => base,
             _ => panic!("expected clip"),
         };
         let spread = |c: Rgb| (c.r - c.g).abs() + (c.g - c.b).abs();
-        assert!(spread(after) < spread(before), "grayscale reduces channel spread in the composite");
+        assert!(
+            spread(after) < spread(before),
+            "grayscale reduces channel spread in the composite"
+        );
     }
 
     #[test]
@@ -832,7 +881,15 @@ mod tests {
             ..Default::default()
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+            solo: false,
+        });
         // Clip placed at timeline 5s, sourcing in_point=3s.
         let cid = p.add_clip(tid, mid, 5.0).unwrap();
         p.clip_mut(cid).unwrap().in_point = 3.0;
@@ -845,7 +902,9 @@ mod tests {
 
     // Build a one-clip project whose media points at a real file on disk, so
     // the decoder's hydration gate reports it decodable.
-    fn project_referencing(path: &std::path::Path) -> (crate::model::Project, crate::model::MediaId) {
+    fn project_referencing(
+        path: &std::path::Path,
+    ) -> (crate::model::Project, crate::model::MediaId) {
         use crate::model::{MediaKind, Project, Track, TrackKind};
         use uuid::Uuid;
         let mut p = Project::new("t");
@@ -864,7 +923,15 @@ mod tests {
             ..Default::default()
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+            solo: false,
+        });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 20.0;
         (p, mid)
@@ -884,9 +951,16 @@ mod tests {
         let mut dec = PreviewDecoder::new_synthesized();
         let got = dec.update(&project, 2.0);
         assert!(got, "a frame is produced for the clip under the playhead");
-        assert_eq!(dec.frame_media(), Some(mid), "frame is keyed to the clip's media");
+        assert_eq!(
+            dec.frame_media(),
+            Some(mid),
+            "frame is keyed to the clip's media"
+        );
         let frame = dec.frame().expect("cached frame");
-        assert_eq!(frame.rgba.len(), frame.width as usize * frame.height as usize * 4);
+        assert_eq!(
+            frame.rgba.len(),
+            frame.width as usize * frame.height as usize * 4
+        );
         assert!(frame.width > 0 && frame.height > 0, "a real, sized picture");
 
         std::fs::remove_file(&f).ok();
@@ -915,10 +989,21 @@ mod tests {
             ..Default::default()
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+            solo: false,
+        });
         p.add_clip(tid, mid, 0.0);
         let mut dec = PreviewDecoder::new_synthesized();
-        assert!(!dec.update(&p, 1.0), "no frame for an un-hydrated reference");
+        assert!(
+            !dec.update(&p, 1.0),
+            "no frame for an un-hydrated reference"
+        );
         assert!(dec.frame().is_none());
     }
 
@@ -928,7 +1013,10 @@ mod tests {
         // Inside the graded drone open (brighter than a neutral clip elsewhere).
         let buf = render_rgba(&p, 5.0, 32, 18);
         assert_eq!(buf.len(), 32 * 18 * 4);
-        assert!(buf.chunks(4).all(|px| px[3] == 255), "every pixel is opaque");
+        assert!(
+            buf.chunks(4).all(|px| px[3] == 255),
+            "every pixel is opaque"
+        );
         // Not a uniform black frame — the composited clip contributes colour.
         let any_colour = buf.chunks(4).any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8);
         assert!(any_colour, "the graded clip renders visible colour");
@@ -959,7 +1047,9 @@ mod tests {
             .expect("build sample-clip pipeline")
             .downcast::<gst::Pipeline>()
             .expect("pipeline");
-        pipeline.set_state(gst::State::Playing).expect("play sample pipeline");
+        pipeline
+            .set_state(gst::State::Playing)
+            .expect("play sample pipeline");
         let bus = pipeline.bus().expect("bus");
         for msg in bus.iter_timed(gst::ClockTime::from_seconds(30)) {
             use gst::MessageView;
@@ -970,11 +1060,17 @@ mod tests {
             }
         }
         let _ = pipeline.set_state(gst::State::Null);
-        assert!(f.exists() && std::fs::metadata(&f).unwrap().len() > 512, "a real sample clip was encoded");
+        assert!(
+            f.exists() && std::fs::metadata(&f).unwrap().len() > 512,
+            "a real sample clip was encoded"
+        );
 
         let (project, _mid) = project_referencing(&f);
         let mut dec = PreviewDecoder::new();
-        assert!(dec.is_real_decode(), "the decode feature must use the real pipeline");
+        assert!(
+            dec.is_real_decode(),
+            "the decode feature must use the real pipeline"
+        );
         // Preroll is async: pump until a frame lands or a short deadline.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut got = false;
@@ -1022,8 +1118,24 @@ mod tests {
         let m3 = push_media(&mut p, 3);
         let v1 = Uuid::new_v4();
         let v2 = Uuid::new_v4();
-        p.tracks.push(Track { id: v1, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
-        p.tracks.push(Track { id: v2, name: "V2".into(), kind: TrackKind::Video, index: 2, muted: false, locked: false, solo: false });
+        p.tracks.push(Track {
+            id: v1,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+            solo: false,
+        });
+        p.tracks.push(Track {
+            id: v2,
+            name: "V2".into(),
+            kind: TrackKind::Video,
+            index: 2,
+            muted: false,
+            locked: false,
+            solo: false,
+        });
         // V1: two abutting clips, cut at 5s.
         let a = p.add_clip(v1, m1, 0.0).unwrap();
         p.clip_mut(a).unwrap().out_point = 5.0;
@@ -1040,7 +1152,11 @@ mod tests {
         let (p, v1, v2) = stacked_project();
         // At t=7 both tracks are covered: V1's second clip and V2's insert.
         let layers = plan_layers(&p, 7.0);
-        assert_eq!(layers.len(), 2, "both tracks contribute a layer: {layers:?}");
+        assert_eq!(
+            layers.len(),
+            2,
+            "both tracks contribute a layer: {layers:?}"
+        );
         let lower = p.clip(layers[0].clip).unwrap();
         let upper = p.clip(layers[1].clip).unwrap();
         assert_eq!(lower.track, v1, "V1 is composited first (underneath)");
@@ -1058,7 +1174,11 @@ mod tests {
         // Locking is an edit lock, not a visibility one.
         p.tracks[idx].muted = false;
         p.tracks[idx].locked = true;
-        assert_eq!(plan_layers(&p, 7.0).len(), 2, "a locked track still renders");
+        assert_eq!(
+            plan_layers(&p, 7.0).len(),
+            2,
+            "a locked track still renders"
+        );
     }
 
     #[test]
@@ -1066,7 +1186,11 @@ mod tests {
         let (mut p, v1, v2) = stacked_project();
         let i1 = p.tracks.iter().position(|t| t.id == v1).unwrap();
         let i2 = p.tracks.iter().position(|t| t.id == v2).unwrap();
-        assert_eq!(plan_layers(&p, 7.0).len(), 2, "both tracks render by default");
+        assert_eq!(
+            plan_layers(&p, 7.0).len(),
+            2,
+            "both tracks render by default"
+        );
 
         p.tracks[i2].solo = true;
         let soloed = plan_layers(&p, 7.0);
@@ -1075,12 +1199,20 @@ mod tests {
 
         // Soloing both is the same as soloing neither.
         p.tracks[i1].solo = true;
-        assert_eq!(plan_layers(&p, 7.0).len(), 2, "every track soloed shows every track");
+        assert_eq!(
+            plan_layers(&p, 7.0).len(),
+            2,
+            "every track soloed shows every track"
+        );
 
         // Mute still wins for a track that is itself soloed.
         p.tracks[i1].muted = true;
         let muted_solo = plan_layers(&p, 7.0);
-        assert_eq!(muted_solo.len(), 1, "a muted track stays hidden even when soloed");
+        assert_eq!(
+            muted_solo.len(),
+            1,
+            "a muted track stays hidden even when soloed"
+        );
         assert_eq!(p.clip(muted_solo[0].clip).unwrap().track, v2);
     }
 
@@ -1093,7 +1225,10 @@ mod tests {
         // Playhead 1s into a clip cut at 2s → 3s of source.
         let layers = plan_layers(&p, 6.0);
         let l = layers.iter().find(|l| l.clip == cid).unwrap();
-        assert!((l.source_time - 3.0).abs() < 1e-9, "source time follows the in-point: {l:?}");
+        assert!(
+            (l.source_time - 3.0).abs() < 1e-9,
+            "source time follows the in-point: {l:?}"
+        );
     }
 
     #[test]
@@ -1105,10 +1240,17 @@ mod tests {
         let outgoing = p.clips_on(v1)[0].id;
         p.clip_mut(incoming).unwrap().transition = Transition::CrossDissolve;
         let layers = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.5);
-        assert_eq!(layers.len(), 2, "the outgoing clip is a real layer: {layers:?}");
+        assert_eq!(
+            layers.len(),
+            2,
+            "the outgoing clip is a real layer: {layers:?}"
+        );
         assert_eq!(layers[0].clip, outgoing);
         assert_eq!(layers[1].clip, incoming);
-        assert!((layers[0].alpha - 1.0).abs() < 1e-9, "the outgoing clip is fully present");
+        assert!(
+            (layers[0].alpha - 1.0).abs() < 1e-9,
+            "the outgoing clip is fully present"
+        );
         assert!(
             (layers[1].alpha - 0.5).abs() < 0.02,
             "the incoming clip is half-mixed at the midpoint: {}",
@@ -1128,7 +1270,11 @@ mod tests {
         let incoming = p.clips_on(v1)[1].id;
         p.clip_mut(incoming).unwrap().transition = Transition::FadeIn;
         let layers = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.5);
-        assert_eq!(layers.len(), 1, "a fade rises out of black, not out of the previous clip");
+        assert_eq!(
+            layers.len(),
+            1,
+            "a fade rises out of black, not out of the previous clip"
+        );
         assert_eq!(layers[0].clip, incoming);
         assert!((layers[0].alpha - 0.5).abs() < 0.02);
     }
@@ -1142,13 +1288,27 @@ mod tests {
 
         let early = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.25);
         assert_eq!(early.len(), 1);
-        assert_eq!(early[0].clip, outgoing, "the first half belongs to the outgoing clip");
-        assert!((early[0].alpha - 0.5).abs() < 0.02, "dimming toward black: {}", early[0].alpha);
+        assert_eq!(
+            early[0].clip, outgoing,
+            "the first half belongs to the outgoing clip"
+        );
+        assert!(
+            (early[0].alpha - 0.5).abs() < 0.02,
+            "dimming toward black: {}",
+            early[0].alpha
+        );
 
         let late = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.75);
         assert_eq!(late.len(), 1);
-        assert_eq!(late[0].clip, incoming, "the second half belongs to the incoming clip");
-        assert!((late[0].alpha - 0.5).abs() < 0.02, "rising out of black: {}", late[0].alpha);
+        assert_eq!(
+            late[0].clip, incoming,
+            "the second half belongs to the incoming clip"
+        );
+        assert!(
+            (late[0].alpha - 0.5).abs() < 0.02,
+            "rising out of black: {}",
+            late[0].alpha
+        );
 
         let bottom = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.5);
         let lit: f64 = bottom.iter().map(|l| l.alpha).sum();
@@ -1161,9 +1321,15 @@ mod tests {
         let incoming = p.clips_on(v1)[1].id;
         p.clip_mut(incoming).unwrap().transition = Transition::Wipe;
         let layers = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.5);
-        assert_eq!(layers.len(), 2, "a wipe reveals the incoming clip over the outgoing one");
+        assert_eq!(
+            layers.len(),
+            2,
+            "a wipe reveals the incoming clip over the outgoing one"
+        );
         assert!(layers[0].wipe.is_none(), "the outgoing clip is unmasked");
-        let w = layers[1].wipe.expect("the incoming clip carries a wipe mask");
+        let w = layers[1]
+            .wipe
+            .expect("the incoming clip carries a wipe mask");
         assert!((w.progress - 0.5).abs() < 0.02, "halfway across: {w:?}");
         assert!(w.softness > 0.0, "the edge is feathered: {w:?}");
         // The incoming clip is fully opaque *within* the revealed region —
@@ -1204,7 +1370,11 @@ mod tests {
         let incoming = p.clips_on(v1)[1].id;
         p.clip_mut(incoming).unwrap().transition = Transition::CrossDissolve;
         let after = plan_layers(&p, 5.0 + TRANSITION_SECS + 0.05);
-        assert_eq!(after.len(), 1, "past the transition only the incoming clip remains");
+        assert_eq!(
+            after.len(),
+            1,
+            "past the transition only the incoming clip remains"
+        );
         assert!((after[0].alpha - 1.0).abs() < 1e-9);
     }
 
@@ -1218,12 +1388,18 @@ mod tests {
             c.out_point = c.in_point + 0.2; // shorter than the default ramp
         }
         let clip = p.clip(incoming).unwrap().clone();
-        assert!(active_transition(&clip, 5.1).is_some(), "still transitioning early on");
+        assert!(
+            active_transition(&clip, 5.1).is_some(),
+            "still transitioning early on"
+        );
         assert!(
             active_transition(&clip, 5.19).is_some_and(|(_, t)| t > 0.9),
             "the transition is compressed into the clip's own length",
         );
-        assert!(active_transition(&clip, 5.25).is_none(), "and is over by the clip's end");
+        assert!(
+            active_transition(&clip, 5.25).is_none(),
+            "and is over by the clip's end"
+        );
     }
 
     #[test]
@@ -1236,7 +1412,11 @@ mod tests {
         // Unset: the default ramp, half-mixed at half of it.
         let at_default_mid = 5.0 + TRANSITION_SECS * 0.5;
         let default_mid = plan_layers(&p, at_default_mid);
-        assert!((default_mid[1].alpha - 0.5).abs() < 0.02, "{:?}", default_mid[1].alpha);
+        assert!(
+            (default_mid[1].alpha - 0.5).abs() < 0.02,
+            "{:?}",
+            default_mid[1].alpha
+        );
 
         // A longer ramp: the same instant is now only a quarter of the way in.
         p.clip_mut(incoming).unwrap().transition_duration = TRANSITION_SECS * 2.0;
@@ -1255,7 +1435,11 @@ mod tests {
         // A shorter ramp is already over there.
         p.clip_mut(incoming).unwrap().transition_duration = TRANSITION_SECS * 0.25;
         let quick = plan_layers(&p, at_default_mid);
-        assert_eq!(quick.len(), 1, "a short transition has finished by the default midpoint");
+        assert_eq!(
+            quick.len(),
+            1,
+            "a short transition has finished by the default midpoint"
+        );
     }
 
     #[test]
@@ -1264,8 +1448,15 @@ mod tests {
         let cid = p.clips_on(v1)[0].id;
         {
             let c = p.clip_mut(cid).unwrap();
-            c.filters = Filters { brightness: 0.7, contrast: 0.4, saturation: 0.9 };
-            c.effects = vec![ClipEffect { kind: EffectKind::Sepia, amount: 0.5 }];
+            c.filters = Filters {
+                brightness: 0.7,
+                contrast: 0.4,
+                saturation: 0.9,
+            };
+            c.effects = vec![ClipEffect {
+                kind: EffectKind::Sepia,
+                amount: 0.5,
+            }];
             c.fade_in = 2.0;
             c.opacity = 0.5;
         }
@@ -1276,7 +1467,11 @@ mod tests {
         assert_eq!(l.effects.len(), 1);
         assert_eq!(l.effects[0].kind, EffectKind::Sepia);
         // 1s into a 2s fade at half opacity.
-        assert!((l.alpha - 0.25).abs() < 1e-9, "envelope × opacity: {}", l.alpha);
+        assert!(
+            (l.alpha - 0.25).abs() < 1e-9,
+            "envelope × opacity: {}",
+            l.alpha
+        );
     }
 
     #[test]
@@ -1284,7 +1479,9 @@ mod tests {
         let p = Project::new("t");
         assert!(plan_layers(&p, 0.0).is_empty());
         let (full, _, _) = stacked_project();
-        assert!(plan_layers(&full, 10_000.0).is_empty(), "past every clip the plan is empty");
+        assert!(
+            plan_layers(&full, 10_000.0).is_empty(),
+            "past every clip the plan is empty"
+        );
     }
-
 }

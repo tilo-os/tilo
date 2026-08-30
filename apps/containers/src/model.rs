@@ -68,7 +68,10 @@ pub struct PortMapping {
 
 impl PortMapping {
     pub fn display(&self) -> String {
-        format!("{}→{}/{}", self.host_port, self.container_port, self.protocol)
+        format!(
+            "{}→{}/{}",
+            self.host_port, self.container_port, self.protocol
+        )
     }
 }
 
@@ -218,8 +221,7 @@ impl DistroBox {
             return true;
         }
         let q = query.to_ascii_lowercase();
-        self.name.to_ascii_lowercase().contains(&q)
-            || self.image.to_ascii_lowercase().contains(&q)
+        self.name.to_ascii_lowercase().contains(&q) || self.image.to_ascii_lowercase().contains(&q)
     }
 }
 
@@ -241,8 +243,7 @@ impl Volume {
             return true;
         }
         let q = query.to_ascii_lowercase();
-        self.name.to_ascii_lowercase().contains(&q)
-            || self.driver.to_ascii_lowercase().contains(&q)
+        self.name.to_ascii_lowercase().contains(&q) || self.driver.to_ascii_lowercase().contains(&q)
     }
 }
 
@@ -263,11 +264,17 @@ pub struct Engine {
 
 impl Engine {
     pub fn running_count(&self) -> usize {
-        self.containers.iter().filter(|c| c.status.is_running()).count()
+        self.containers
+            .iter()
+            .filter(|c| c.status.is_running())
+            .count()
     }
 
     pub fn stopped_count(&self) -> usize {
-        self.containers.iter().filter(|c| !c.status.is_running()).count()
+        self.containers
+            .iter()
+            .filter(|c| !c.status.is_running())
+            .count()
     }
 
     /// Total bytes across all images.
@@ -281,7 +288,7 @@ impl Engine {
 
     /// Local image references, sorted, for the create-form image combobox.
     pub fn image_references(&self) -> Vec<String> {
-        let mut refs: Vec<String> = self.images.iter().map(|i| i.reference()).collect();
+        let mut refs: Vec<String> = self.images.iter().map(Image::reference).collect();
         refs.sort();
         refs.dedup();
         refs
@@ -313,12 +320,28 @@ pub fn sample_engine() -> Engine {
             command: "nginx -g 'daemon off;'".into(),
             created: "4 hours ago".into(),
             ports: vec![
-                PortMapping { host_port: 8080, container_port: 80, protocol: "tcp".into() },
-                PortMapping { host_port: 8443, container_port: 443, protocol: "tcp".into() },
+                PortMapping {
+                    host_port: 8080,
+                    container_port: 80,
+                    protocol: "tcp".into(),
+                },
+                PortMapping {
+                    host_port: 8443,
+                    container_port: 443,
+                    protocol: "tcp".into(),
+                },
             ],
             mounts: vec![
-                Mount { source: "/var/workspace/site/dist".into(), destination: "/usr/share/nginx/html".into(), read_only: true },
-                Mount { source: "nginx-conf".into(), destination: "/etc/nginx/conf.d".into(), read_only: false },
+                Mount {
+                    source: "/var/workspace/site/dist".into(),
+                    destination: "/usr/share/nginx/html".into(),
+                    read_only: true,
+                },
+                Mount {
+                    source: "nginx-conf".into(),
+                    destination: "/etc/nginx/conf.d".into(),
+                    read_only: false,
+                },
             ],
             env: vec![
                 ("NGINX_HOST".into(), "localhost".into()),
@@ -349,10 +372,22 @@ pub fn sample_engine() -> Engine {
             status_detail: "Up 4 hours (healthy)".into(),
             command: "/usr/local/bin/api --config /etc/api/config.toml".into(),
             created: "4 hours ago".into(),
-            ports: vec![PortMapping { host_port: 3000, container_port: 3000, protocol: "tcp".into() }],
+            ports: vec![PortMapping {
+                host_port: 3000,
+                container_port: 3000,
+                protocol: "tcp".into(),
+            }],
             mounts: vec![
-                Mount { source: "/var/workspace/api/config".into(), destination: "/etc/api".into(), read_only: true },
-                Mount { source: "api-data".into(), destination: "/var/lib/api".into(), read_only: false },
+                Mount {
+                    source: "/var/workspace/api/config".into(),
+                    destination: "/etc/api".into(),
+                    read_only: true,
+                },
+                Mount {
+                    source: "api-data".into(),
+                    destination: "/var/lib/api".into(),
+                    read_only: false,
+                },
             ],
             env: vec![
                 ("RUST_LOG".into(), "info".into()),
@@ -380,7 +415,11 @@ pub fn sample_engine() -> Engine {
             status_detail: "Up 4 hours (healthy)".into(),
             command: "postgres".into(),
             created: "4 hours ago".into(),
-            ports: vec![PortMapping { host_port: 5432, container_port: 5432, protocol: "tcp".into() }],
+            ports: vec![PortMapping {
+                host_port: 5432,
+                container_port: 5432,
+                protocol: "tcp".into(),
+            }],
             mounts: vec![Mount {
                 source: "pgdata".into(),
                 destination: "/var/lib/postgresql/data".into(),
@@ -412,7 +451,11 @@ pub fn sample_engine() -> Engine {
             status_detail: "Up 4 hours".into(),
             command: "redis-server --save 60 1".into(),
             created: "4 hours ago".into(),
-            ports: vec![PortMapping { host_port: 6379, container_port: 6379, protocol: "tcp".into() }],
+            ports: vec![PortMapping {
+                host_port: 6379,
+                container_port: 6379,
+                protocol: "tcp".into(),
+            }],
             mounts: vec![],
             env: vec![("TZ".into(), "UTC".into())],
             labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
@@ -427,7 +470,8 @@ pub fn sample_engine() -> Engine {
                 pids: 4,
             },
             logs: vec![
-                "1:C 30 Jun 2026 09:14:02.114 * Redis version=7.2.5, bits=64, pid=1, just started".into(),
+                "1:C 30 Jun 2026 09:14:02.114 * Redis version=7.2.5, bits=64, pid=1, just started"
+                    .into(),
                 "1:M 30 Jun 2026 09:14:02.116 * Ready to accept connections tcp".into(),
             ],
         },
@@ -445,7 +489,10 @@ pub fn sample_engine() -> Engine {
                 destination: "/var/run/docker.sock".into(),
                 read_only: false,
             }],
-            env: vec![("CI".into(), "true".into()), ("RUNNER_LABELS".into(), "qos,rust".into())],
+            env: vec![
+                ("CI".into(), "true".into()),
+                ("RUNNER_LABELS".into(), "qos,rust".into()),
+            ],
             labels: vec![("io.qos.cluster".into(), "ci".into())],
             stats: Stats::default(),
             logs: vec![
@@ -463,8 +510,16 @@ pub fn sample_engine() -> Engine {
             command: "minio server /data --console-address :9001".into(),
             created: "5 days ago".into(),
             ports: vec![
-                PortMapping { host_port: 9000, container_port: 9000, protocol: "tcp".into() },
-                PortMapping { host_port: 9001, container_port: 9001, protocol: "tcp".into() },
+                PortMapping {
+                    host_port: 9000,
+                    container_port: 9000,
+                    protocol: "tcp".into(),
+                },
+                PortMapping {
+                    host_port: 9001,
+                    container_port: 9001,
+                    protocol: "tcp".into(),
+                },
             ],
             mounts: vec![Mount {
                 source: "minio-data".into(),
@@ -491,7 +546,11 @@ pub fn sample_engine() -> Engine {
             status_detail: "Paused".into(),
             command: "/run.sh".into(),
             created: "2 days ago".into(),
-            ports: vec![PortMapping { host_port: 3001, container_port: 3000, protocol: "tcp".into() }],
+            ports: vec![PortMapping {
+                host_port: 3001,
+                container_port: 3000,
+                protocol: "tcp".into(),
+            }],
             mounts: vec![Mount {
                 source: "grafana-storage".into(),
                 destination: "/var/lib/grafana".into(),
@@ -510,7 +569,8 @@ pub fn sample_engine() -> Engine {
                 pids: 11,
             },
             logs: vec![
-                "logger=settings t=2026-06-28 level=info msg=\"Starting Grafana\" version=11.1.0".into(),
+                "logger=settings t=2026-06-28 level=info msg=\"Starting Grafana\" version=11.1.0"
+                    .into(),
                 "logger=http.server level=info msg=\"HTTP Server Listen\" address=[::]:3000".into(),
             ],
         },
@@ -607,28 +667,32 @@ pub fn sample_engine() -> Engine {
         Volume {
             name: "api-data".into(),
             driver: "local".into(),
-            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/api-data/_data".into(),
+            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/api-data/_data"
+                .into(),
             created: "5 days ago".into(),
             in_use_by: 1,
         },
         Volume {
             name: "grafana-storage".into(),
             driver: "local".into(),
-            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/grafana-storage/_data".into(),
+            mountpoint:
+                "/var/home/dev/.local/share/containers/storage/volumes/grafana-storage/_data".into(),
             created: "2 days ago".into(),
             in_use_by: 1,
         },
         Volume {
             name: "minio-data".into(),
             driver: "local".into(),
-            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/minio-data/_data".into(),
+            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/minio-data/_data"
+                .into(),
             created: "5 days ago".into(),
             in_use_by: 0,
         },
         Volume {
             name: "nginx-conf".into(),
             driver: "local".into(),
-            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/nginx-conf/_data".into(),
+            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/nginx-conf/_data"
+                .into(),
             created: "4 hours ago".into(),
             in_use_by: 1,
         },
@@ -674,10 +738,13 @@ fn sample_api_logs() -> Vec<String> {
 
 fn sample_postgres_logs() -> Vec<String> {
     vec![
-        "PostgreSQL Database directory appears to contain a database; Skipping initialization".into(),
+        "PostgreSQL Database directory appears to contain a database; Skipping initialization"
+            .into(),
         "2026-06-30 09:14:02.001 UTC [1] LOG:  starting PostgreSQL 16.3".into(),
-        "2026-06-30 09:14:02.004 UTC [1] LOG:  listening on IPv4 address \"0.0.0.0\", port 5432".into(),
-        "2026-06-30 09:14:02.010 UTC [1] LOG:  database system is ready to accept connections".into(),
+        "2026-06-30 09:14:02.004 UTC [1] LOG:  listening on IPv4 address \"0.0.0.0\", port 5432"
+            .into(),
+        "2026-06-30 09:14:02.010 UTC [1] LOG:  database system is ready to accept connections"
+            .into(),
         "2026-06-30 13:05:01.221 UTC [42] LOG:  checkpoint starting: time".into(),
         "2026-06-30 13:05:11.882 UTC [42] LOG:  checkpoint complete: wrote 12 buffers".into(),
     ]
@@ -689,9 +756,15 @@ mod tests {
 
     #[test]
     fn status_parse_normalises_common_strings() {
-        assert_eq!(ContainerStatus::parse("Up 4 hours"), ContainerStatus::Running);
+        assert_eq!(
+            ContainerStatus::parse("Up 4 hours"),
+            ContainerStatus::Running
+        );
         assert_eq!(ContainerStatus::parse("running"), ContainerStatus::Running);
-        assert_eq!(ContainerStatus::parse("Exited (0) 2 days ago"), ContainerStatus::Exited);
+        assert_eq!(
+            ContainerStatus::parse("Exited (0) 2 days ago"),
+            ContainerStatus::Exited
+        );
         assert_eq!(ContainerStatus::parse("created"), ContainerStatus::Created);
         assert_eq!(ContainerStatus::parse("paused"), ContainerStatus::Paused);
         assert_eq!(ContainerStatus::parse("garbage"), ContainerStatus::Dead);
@@ -709,7 +782,10 @@ mod tests {
     #[test]
     fn sample_engine_is_populated_and_consistent() {
         let e = sample_engine();
-        assert!(e.running_count() >= 3, "sample has several running containers");
+        assert!(
+            e.running_count() >= 3,
+            "sample has several running containers"
+        );
         assert!(e.stopped_count() >= 2, "sample has stopped containers too");
         assert!(!e.images.is_empty());
         assert!(!e.distroboxes.is_empty());
@@ -722,7 +798,11 @@ mod tests {
     #[test]
     fn container_search_matches_name_and_image() {
         let e = sample_engine();
-        let nginx = e.containers.iter().find(|c| c.name == "web-frontend").unwrap();
+        let nginx = e
+            .containers
+            .iter()
+            .find(|c| c.name == "web-frontend")
+            .unwrap();
         assert!(nginx.matches("nginx"));
         assert!(nginx.matches("web"));
         assert!(!nginx.matches("postgres"));

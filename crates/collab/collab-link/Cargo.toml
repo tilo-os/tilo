@@ -10,3 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 # Plain stdlib. The proxy is just threads + UnixStream + sleep.
+
+[lints]
+workspace = true

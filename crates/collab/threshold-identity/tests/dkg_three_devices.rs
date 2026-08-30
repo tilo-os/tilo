@@ -1,11 +1,10 @@
 //! 2-of-3 DKG end-to-end tests.
 //!
-//! Three participants run FROST DKG, after which any 2 of them
-//! can produce a threshold signature verifiable through
-//! `collab_types::verify_event`. Covers the "add a third
-//! device" enrolment step and the recovery scenario where the
-//! third "device" is a paper share that returns into the quorum
-//! when one physical device is unavailable.
+//! Three participants run FROST DKG, after which any 2 can produce a
+//! threshold signature verifiable through `collab_types::verify_event`.
+//! Covers "add a third device" enrolment and the recovery scenario
+//! where a paper share returns to the quorum when a physical device is
+//! unavailable.
 
 use std::collections::BTreeMap;
 
@@ -33,8 +32,8 @@ fn run_three_device_dkg() -> (ThresholdIdentity, ThresholdIdentity, ThresholdIde
     let (mut s_c, r1_c) = c.begin_enrolment(3, 2, 3, &mut rng_c).unwrap();
 
     let r2_a_out = s_a.receive_round1(&[r1_b.clone(), r1_c.clone()]).unwrap();
-    let r2_b_out = s_b.receive_round1(&[r1_a.clone(), r1_c.clone()]).unwrap();
-    let r2_c_out = s_c.receive_round1(&[r1_a.clone(), r1_b.clone()]).unwrap();
+    let r2_b_out = s_b.receive_round1(&[r1_a.clone(), r1_c]).unwrap();
+    let r2_c_out = s_c.receive_round1(&[r1_a, r1_b]).unwrap();
 
     // Route each round-2 message to its addressee.
     let r2_for_a: Vec<EnrolmentRound2> = vec![r2_b_out[&1].clone(), r2_c_out[&1].clone()];

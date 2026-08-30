@@ -20,37 +20,55 @@ pub type Addr = (Col, Row);
 /// Convert a zero-based column index to spreadsheet letters.
 /// `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`, `701 -> "ZZ"`.
 pub fn col_to_letters(col: Col) -> String {
-    let mut n = col as i64 + 1; // 1-based for the bijective base-26
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    // Bijective base-26 over the zero-based index: the remainder picks a
+    // letter and `checked_sub` supplies the borrow for the next digit, ending
+    // the loop when there is none left to take.
+    let mut n = u64::from(col);
     let mut out = Vec::new();
-    while n > 0 {
-        let rem = ((n - 1) % 26) as u8;
-        out.push(b'A' + rem);
-        n = (n - 1) / 26;
+    loop {
+        // `n % 26` is below the alphabet's length, so the lookup always hits.
+        let digit = usize::try_from(n % 26).unwrap_or(0);
+        let Some(&letter) = ALPHABET.get(digit) else {
+            break;
+        };
+        out.push(letter);
+        let Some(next) = (n / 26).checked_sub(1) else {
+            break;
+        };
+        n = next;
     }
     out.reverse();
     String::from_utf8(out).unwrap_or_default()
 }
 
 /// Parse spreadsheet column letters (case-insensitive) into a zero-based
-/// index. Returns `None` for empty/non-alphabetic input.
+/// index. Returns `None` for empty or non-alphabetic input, and for a run of
+/// letters too long to name a column.
 pub fn letters_to_col(s: &str) -> Option<Col> {
     if s.is_empty() {
         return None;
     }
-    let mut n: i64 = 0;
+    let a = u32::from('A');
+    let mut n: Col = 0;
     for ch in s.chars() {
         let up = ch.to_ascii_uppercase();
         if !up.is_ascii_uppercase() {
             return None;
         }
-        n = n * 26 + (up as i64 - 'A' as i64 + 1);
+        // `up` is in `A..=Z`, so the digit lands in `1..=26`; past `ZZZZZZZ`
+        // the running total leaves the column range and parsing fails.
+        let digit = u32::from(up).checked_sub(a)?.checked_add(1)?;
+        n = n.checked_mul(26)?.checked_add(digit)?;
     }
-    Some((n - 1) as Col)
+    n.checked_sub(1)
 }
 
 /// Format an address as an A1 string: `(0, 0) -> "A1"`.
 pub fn addr_to_a1(col: Col, row: Row) -> String {
-    format!("{}{}", col_to_letters(col), row + 1)
+    // Rows read one-based on screen; the very last row saturates rather than
+    // wrapping around to row 1.
+    format!("{}{}", col_to_letters(col), row.saturating_add(1))
 }
 
 /// Parse an A1-style reference into a zero-based `(col, row)`.
@@ -58,36 +76,26 @@ pub fn addr_to_a1(col: Col, row: Row) -> String {
 /// if the syntax doesn't match `[$]LETTERS[$]DIGITS`.
 pub fn a1_to_addr(s: &str) -> Option<Addr> {
     let s = s.trim();
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    if i < bytes.len() && bytes[i] == b'$' {
-        i += 1;
-    }
-    let letter_start = i;
-    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
-        i += 1;
-    }
-    if i == letter_start {
+    let after_col_anchor = s.strip_prefix('$').unwrap_or(s);
+    // ASCII letters are one byte each, so the count is also the byte offset.
+    let letters_len = after_col_anchor
+        .bytes()
+        .take_while(u8::is_ascii_alphabetic)
+        .count();
+    let (letters, rest) = after_col_anchor.split_at_checked(letters_len)?;
+    if letters.is_empty() {
         return None;
     }
-    let letters = &s[letter_start..i];
-    if i < bytes.len() && bytes[i] == b'$' {
-        i += 1;
-    }
-    let digit_start = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == digit_start || i != bytes.len() {
+    let digits = rest.strip_prefix('$').unwrap_or(rest);
+    // Anything left that is not a digit (a stray suffix, another `$`) means
+    // this was never an A1 reference.
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let digits = &s[digit_start..i];
     let col = letters_to_col(letters)?;
-    let row: u32 = digits.parse().ok()?;
-    if row == 0 {
-        return None;
-    }
-    Some((col, row - 1))
+    let row: Row = digits.parse().ok()?;
+    // Rows are one-based on screen, so there is no row 0.
+    Some((col, row.checked_sub(1)?))
 }
 
 /// A spreadsheet evaluation error, carried as a specific *kind* rather than
@@ -179,7 +187,13 @@ impl CellValue {
             CellValue::Empty => String::new(),
             CellValue::Number(n) => format_number_general(*n),
             CellValue::Text(t) => t.clone(),
-            CellValue::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
+            CellValue::Bool(b) => {
+                if *b {
+                    "TRUE".into()
+                } else {
+                    "FALSE".into()
+                }
+            }
             CellValue::Error(e) => e.text().to_string(),
         }
     }
@@ -212,8 +226,8 @@ impl Currency {
     pub fn symbol(self) -> &'static str {
         match self {
             Currency::USD | Currency::CAD | Currency::AUD => "$",
-            Currency::EUR => "\u{20AC}", // €
-            Currency::GBP => "\u{00A3}", // £
+            Currency::EUR => "\u{20AC}",                 // €
+            Currency::GBP => "\u{00A3}",                 // £
             Currency::JPY | Currency::CNY => "\u{00A5}", // ¥
             Currency::CHF => "CHF",
             Currency::INR => "\u{20B9}", // ₹
@@ -372,11 +386,16 @@ impl CellFormat {
         match head {
             "number" => CellFormat::Number,
             "currency" => CellFormat::Currency(
-                sub.and_then(Currency::from_code).unwrap_or(default_currency),
+                sub.and_then(Currency::from_code)
+                    .unwrap_or(default_currency),
             ),
             "percent" => CellFormat::Percent,
-            "date" => CellFormat::Date(sub.and_then(date_style_from_code).unwrap_or(DateStyle::Iso)),
-            "time" => CellFormat::Time(sub.and_then(time_style_from_code).unwrap_or(TimeStyle::H24)),
+            "date" => {
+                CellFormat::Date(sub.and_then(date_style_from_code).unwrap_or(DateStyle::Iso))
+            }
+            "time" => {
+                CellFormat::Time(sub.and_then(time_style_from_code).unwrap_or(TimeStyle::H24))
+            }
             "boolean" => CellFormat::Boolean,
             "text" => CellFormat::Text,
             _ => CellFormat::General,
@@ -385,6 +404,10 @@ impl CellFormat {
 
     /// Convenience parse with the USD/ISO/24h defaults — used where the
     /// document currency isn't handy (e.g. tests).
+    // Deliberately not `FromStr`: parsing cannot fail (an unknown code reads
+    // as `General`), and the trait would hand every caller a `Result` to
+    // unwrap for no gain.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> CellFormat {
         Self::from_str_with(s, Currency::USD)
     }
@@ -471,16 +494,27 @@ pub fn format_value(value: &CellValue, fmt: CellFormat) -> String {
         CellValue::Empty => String::new(),
         CellValue::Error(e) => e.text().to_string(),
         CellValue::Text(t) => t.clone(),
-        CellValue::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
+        CellValue::Bool(b) => {
+            if *b {
+                "TRUE".into()
+            } else {
+                "FALSE".into()
+            }
+        }
         CellValue::Number(n) => match fmt {
-            CellFormat::General => format_number_general(*n),
-            CellFormat::Text => format_number_general(*n),
+            CellFormat::General | CellFormat::Text => format_number_general(*n),
             CellFormat::Number => format_thousands(*n, 2),
             CellFormat::Currency(c) => format_currency(*n, c),
             CellFormat::Percent => format!("{:.2}%", *n * 100.0),
             CellFormat::Date(s) => serial_to_date(*n, s),
             CellFormat::Time(s) => serial_to_time(*n, s),
-            CellFormat::Boolean => if *n != 0.0 { "TRUE".into() } else { "FALSE".into() },
+            CellFormat::Boolean => {
+                if *n == 0.0 {
+                    "FALSE".into()
+                } else {
+                    "TRUE".into()
+                }
+            }
         },
     }
 }
@@ -494,13 +528,21 @@ pub fn format_number_general(n: f64) -> String {
         return "0".to_string();
     }
     if !n.is_finite() {
-        return if n.is_nan() { "#NUM!".into() } else if n > 0.0 { "∞".into() } else { "-∞".into() };
+        return if n.is_nan() {
+            "#NUM!".into()
+        } else if n > 0.0 {
+            "∞".into()
+        } else {
+            "-∞".into()
+        };
     }
     if n.fract() == 0.0 && n.abs() < 1e15 {
-        return format!("{}", n as i64);
+        // Whole and inside the exactly-representable range: print the integer
+        // straight, with no decimal point.
+        return format!("{n:.0}");
     }
     // Trim trailing zeros from a fixed-precision rendering.
-    let s = format!("{:.10}", n);
+    let s = format!("{n:.10}");
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
     trimmed.to_string()
 }
@@ -559,38 +601,59 @@ pub fn format_currency(n: f64, c: Currency) -> String {
 /// thousands. Rounding is half-away-from-zero (the spreadsheet convention),
 /// not Rust's default round-half-to-even.
 fn grouped_parts(abs: f64, decimals: usize, group_sep: char) -> (String, Option<String>) {
+    // Past f64's ~17 significant digits more decimals say nothing, and the
+    // bound keeps the `powi` exponent inside `i32`.
+    let decimals = decimals.min(17);
+    let exponent = i32::try_from(decimals).unwrap_or(17);
     // Round half away from zero so e.g. JPY 1234.5 -> 1235, matching Excel.
-    let factor = 10f64.powi(decimals as i32);
+    let factor = 10f64.powi(exponent);
     let rounded = (abs * factor + 0.5).floor() / factor;
-    let s = format!("{:.*}", decimals, rounded);
+    let s = format!("{rounded:.decimals$}");
     let (int_part, frac_part) = match s.split_once('.') {
         Some((i, f)) => (i.to_string(), Some(f.to_string())),
         None => (s, None),
     };
     let mut grouped = String::new();
-    let digits: Vec<char> = int_part.chars().collect();
-    let len = digits.len();
-    for (idx, ch) in digits.iter().enumerate() {
-        if idx > 0 && (len - idx) % 3 == 0 {
+    let len = int_part.chars().count();
+    for (idx, ch) in int_part.chars().enumerate() {
+        // `enumerate` keeps `idx < len`, so this never saturates: it is how
+        // many digits still follow the one being pushed.
+        let remaining = len.saturating_sub(idx);
+        if idx > 0 && remaining.is_multiple_of(3) {
             grouped.push(group_sep);
         }
-        grouped.push(*ch);
+        grouped.push(ch);
     }
     (grouped, frac_part)
 }
 
+/// Days since the Unix epoch for an Excel serial (days since 1899-12-30).
+///
+/// A cell can hold any number at all, so the serial is first bounded to
+/// roughly the years -9000..13000. That is far outside any date a spreadsheet
+/// means, and it keeps the calendar arithmetic downstream nowhere near the
+/// edges of `i64`. A non-finite serial reads as the epoch.
+fn serial_to_unix_days(serial: f64) -> i64 {
+    // Excel epoch 1899-12-30 corresponds to Unix day -25569.
+    const EXCEL_EPOCH_UNIX_DAY: i64 = -25569;
+    let bounded = serial.floor().clamp(-4_000_000.0, 4_000_000.0);
+    // Bounded to ±4e6 on the line above, so the truncation is exact; a NaN
+    // serial converts to 0 and reads as the Excel epoch.
+    #[allow(clippy::cast_possible_truncation)]
+    let days = bounded as i64;
+    days.saturating_add(EXCEL_EPOCH_UNIX_DAY)
+}
+
 /// Convert an Excel-style serial date (days since 1899-12-30) into a string
 /// in the chosen style. Uses a civil-calendar algorithm (Howard Hinnant's
-/// days_from_civil inverse) so it's correct across centuries without a
+/// `days_from_civil` inverse) so it's correct across centuries without a
 /// chrono dependency.
 pub fn serial_to_date(serial: f64, style: DateStyle) -> String {
-    // Excel epoch 1899-12-30 corresponds to Unix day -25569.
-    let days = serial.floor() as i64 - 25569;
-    let (y, m, d) = civil_from_days(days);
+    let (y, m, d) = civil_from_days(serial_to_unix_days(serial));
     match style {
-        DateStyle::Iso => format!("{:04}-{:02}-{:02}", y, m, d),
-        DateStyle::Us => format!("{:02}/{:02}/{:04}", m, d, y),
-        DateStyle::Eu => format!("{:02}/{:02}/{:04}", d, m, y),
+        DateStyle::Iso => format!("{y:04}-{m:02}-{d:02}"),
+        DateStyle::Us => format!("{m:02}/{d:02}/{y:04}"),
+        DateStyle::Eu => format!("{d:02}/{m:02}/{y:04}"),
         DateStyle::Long => format!("{:02} {} {:04}", d, month_abbrev(m), y),
     }
 }
@@ -598,18 +661,21 @@ pub fn serial_to_date(serial: f64, style: DateStyle) -> String {
 /// Convert the fractional part of an Excel serial into a clock time.
 pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
     let frac = serial.fract().abs();
+    // `frac` is a fractional part in [0, 1), so the product is at most 86400
+    // and the truncation is exact.
+    #[allow(clippy::cast_possible_truncation)]
     let total_secs = (frac * 86400.0).round() as i64;
     let h = (total_secs / 3600) % 24;
     let mi = (total_secs % 3600) / 60;
     match style {
-        TimeStyle::H24 => format!("{:02}:{:02}", h, mi),
+        TimeStyle::H24 => format!("{h:02}:{mi:02}"),
         TimeStyle::H12 => {
             let suffix = if h < 12 { "AM" } else { "PM" };
             let h12 = match h % 12 {
                 0 => 12,
                 x => x,
             };
-            format!("{}:{:02} {}", h12, mi, suffix)
+            format!("{h12}:{mi:02} {suffix}")
         }
     }
 }
@@ -618,26 +684,36 @@ fn month_abbrev(m: u32) -> &'static str {
     const M: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    M.get((m.max(1).min(12) - 1) as usize).copied().unwrap_or("Jan")
+    let idx = m.clamp(1, 12).saturating_sub(1);
+    usize::try_from(idx)
+        .ok()
+        .and_then(|i| M.get(i))
+        .copied()
+        .unwrap_or("Jan")
 }
 
 /// Convert a calendar date to an Excel serial (days since 1899-12-30).
 pub fn date_to_serial(y: i64, m: u32, d: u32) -> f64 {
-    (days_from_civil(y, m, d) + 25569) as f64
+    let days = days_from_civil(y, m, d).saturating_add(25569);
+    // A day count outside `i32` is already millions of years from any real
+    // date; narrowing there keeps the widening to f64 exact rather than
+    // silently rounding a 64-bit day number.
+    let days = i32::try_from(days).unwrap_or(if days < 0 { i32::MIN } else { i32::MAX });
+    f64::from(days)
 }
 
 /// Split an Excel serial into its `(year, month, day)` calendar parts.
 pub fn serial_to_ymd(serial: f64) -> (i64, u32, u32) {
-    civil_from_days(serial.floor() as i64 - 25569)
+    civil_from_days(serial_to_unix_days(serial))
 }
 
 /// The weekday of a serial as Excel's default numbering: `1` = Sunday …
 /// `7` = Saturday.
 pub fn weekday_from_serial(serial: f64) -> u32 {
-    let days = serial.floor() as i64 - 25569; // days since 1970-01-01 (a Thursday)
+    let days = serial_to_unix_days(serial); // days since 1970-01-01 (a Thursday)
     // Sunday=0 .. Saturday=6, then shift to Excel's 1-based Sunday-first.
-    let dow = (((days + 4) % 7) + 7) % 7;
-    dow as u32 + 1
+    let dow = days.saturating_add(4).rem_euclid(7);
+    u32::try_from(dow).unwrap_or(0).saturating_add(1)
 }
 
 /// The current instant as an Excel serial (integer days + fractional day).
@@ -647,34 +723,68 @@ pub fn now_serial() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
+        .map_or(0.0, |d| d.as_secs_f64());
     secs / 86400.0 + 25569.0
 }
 
-/// Inverse of days_from_civil: days since Unix epoch -> (year, month, day).
+/// Inverse of `days_from_civil`: days since Unix epoch -> (year, month, day).
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    // The algorithm only ever scales the input by small constants, so bounding
+    // it to ±4 000 000 days (years ~ -9000..13000) makes every intermediate
+    // below exact: the `saturating_*` calls state that, they never trigger.
+    let z = z.clamp(-4_000_000, 4_000_000).saturating_add(719_468);
+    let era = if z >= 0 { z } else { z.saturating_sub(146_096) } / 146_097;
+    let doe = z.saturating_sub(era.saturating_mul(146_097)); // [0, 146096]
+    let yoe = doe
+        .saturating_sub(doe / 1460)
+        .saturating_add(doe / 36_524)
+        .saturating_sub(doe / 146_096)
+        / 365; // [0, 399]
+    let y = yoe.saturating_add(era.saturating_mul(400));
+    let doy = doe.saturating_sub(
+        yoe.saturating_mul(365)
+            .saturating_add(yoe / 4)
+            .saturating_sub(yoe / 100),
+    ); // [0, 365]
+    let mp = doy.saturating_mul(5).saturating_add(2) / 153; // [0, 11]
+    let day = doy
+        .saturating_sub(mp.saturating_mul(153).saturating_add(2) / 5)
+        .saturating_add(1); // [1, 31]
+    let month = if mp < 10 {
+        mp.saturating_add(3)
+    } else {
+        mp.saturating_sub(9)
+    }; // [1, 12]
+    let d = u32::try_from(day).unwrap_or(1);
+    let m = u32::try_from(month).unwrap_or(1);
+    (if m <= 2 { y.saturating_add(1) } else { y }, m, d)
 }
 
 /// Days since Unix epoch for a civil date (Howard Hinnant).
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64; // [0, 399]
-    let mp = if m > 2 { m - 3 } else { m + 9 } as i64; // [0, 11]
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146097 + doe - 719468
+    // A year outside ±10 000 000 is not a date any document can mean; bounding
+    // it keeps `era * 146_097` and everything below exact, so the
+    // `saturating_*` calls never actually clamp.
+    let y = y.clamp(-10_000_000, 10_000_000);
+    let y = if m <= 2 { y.saturating_sub(1) } else { y };
+    let era = if y >= 0 { y } else { y.saturating_sub(399) } / 400;
+    let yoe = y.saturating_sub(era.saturating_mul(400)); // [0, 399]
+    let mp = i64::from(if m > 2 {
+        m.saturating_sub(3)
+    } else {
+        m.saturating_add(9)
+    }); // [0, 11]
+    let doy = (mp.saturating_mul(153).saturating_add(2) / 5)
+        .saturating_add(i64::from(d))
+        .saturating_sub(1); // [0, 365]
+    let doe = yoe
+        .saturating_mul(365)
+        .saturating_add(yoe / 4)
+        .saturating_sub(yoe / 100)
+        .saturating_add(doy); // [0, 146096]
+    era.saturating_mul(146_097)
+        .saturating_add(doe)
+        .saturating_sub(719_468)
 }
 
 #[cfg(test)]
@@ -712,6 +822,9 @@ mod tests {
     }
 
     #[test]
+    // 3.14 is the value under test, not an approximation of PI; the assertion
+    // is that it formats back to the same digits.
+    #[allow(clippy::approx_constant)]
     fn general_trims_trailing_zeros() {
         assert_eq!(format_number_general(42.0), "42");
         assert_eq!(format_number_general(3.14), "3.14");

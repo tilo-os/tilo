@@ -2,6 +2,9 @@
 name = "ui"
 version = "0.1.0"
 edition = "2024"
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+autoexamples = false
 
 [features]
 # Keep the legacy JSON-over-Unix-socket broker path compiled in
@@ -76,6 +79,7 @@ adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
 # `legacy-broker` feature so the in-tree tests and the shell's broker
 # keep compiling.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
+capnp-rpc.workspace = true
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # On `CollaborationManager` init, load the user's on-disk identity
 # via `runtime-identity::load()` and forward its pubkey bytes to
@@ -102,7 +106,12 @@ automerge.workspace = true
 # entering App::window_event + dispatch results. Lets a maintainer
 # diagnose interaction bugs in hosted mode without source-reading.
 tracing.workspace = true
+# Standard app startup installs the workspace's logging subscriber once.
+tracing-subscriber.workspace = true
 cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
+# Keep this aligned with cosmic-text: text painting needs the font's complete
+# variation-axis order to translate CSS-like axis values for Vello.
+skrifa = "0.40.0"
 pollster.workspace = true
 
 # Raw-Vulkan interop for the WebView DMA-BUF zero-copy import (feature
@@ -121,7 +130,18 @@ winit.workspace = true
 dirs.workspace = true
 fluent.workspace = true
 unic-langid.workspace = true
-once_cell.workspace = true
+unicode-segmentation = "1.12"
+# UAX #14 opportunities shared by editor geometry and clamped-label wrapping.
+# cosmic-text uses the same crate internally; naming it directly lets toolkit
+# code that must mirror shaped rows avoid ASCII-space heuristics.
+unicode-linebreak = "0.1.5"
+# ICU dictionary/LSTM segmentation for scripts whose word boundaries cannot
+# be inferred from whitespace (Thai, Lao, Khmer, Myanmar, CJK).
+icu_segmenter = "1.5"
+# TeX/Liang hyphenation patterns with language-specific minima. The same
+# implementation is already used by the workspace's Typst document engine;
+# making it direct lets UI paragraphs opt in without runtime dictionary I/O.
+hypher = "0.1.7"
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -251,6 +271,9 @@ pkg-config = "0.3"
 
 [dev-dependencies]
 regex.workspace = true
+# The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
+# the process's stderr at a pipe, and the child's exit signal to assert SIGABRT.
+libc.workspace = true
 # Inspect Vello scene encodings (draw tags) in widget tests so we can pin
 # end-to-end paint contracts (e.g. `tabs::active_pill_emits_more_color_\
 # fills_than_inactive_siblings`) without rendering pixels.
@@ -267,7 +290,6 @@ serial_test.workspace = true
 # of a `UnixStream::pair()` and drive `CollaborationManager` against it.
 # Same pin runtime-collab tests use.
 capnp.workspace = true
-capnp-rpc.workspace = true
 tokio-util.workspace = true
 # The `Backend::Relay` integration test stands up a real in-process
 # workspace host (`qos_relay::Relay`) + two iroh clients and drives two
@@ -280,11 +302,26 @@ qos-user-identity = { path = "../crates/identity/qos-user-identity" }
 iroh.workspace = true
 iroh-base.workspace = true
 
-# Runtime probe for the DMA-BUF zero-copy import (needs the WPE engine).
 [[example]]
-name = "wpe_dmabuf_probe"
-required-features = ["webview-wpe"]
+name = "ui-lab"
+path = "examples/ui_lab.rs"
 
 [[example]]
-name = "wpe_scroll_repro"
+name = "ui-shots"
+path = "examples/ui_shots.rs"
+
+[[example]]
+name = "ui-perf"
+path = "examples/ui_perf.rs"
+
+[[example]]
+name = "ui-wpe"
+path = "examples/ui_wpe.rs"
 required-features = ["webview-wpe"]
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

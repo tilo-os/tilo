@@ -23,7 +23,10 @@ pub struct ThumbKey {
 impl ThumbKey {
     /// Key a thumbnail by the BLAKE3 hash of its source bytes at `edge`.
     pub fn of_bytes(bytes: &[u8], edge: u32) -> Self {
-        Self { content: *blake3::hash(bytes).as_bytes(), edge }
+        Self {
+            content: *blake3::hash(bytes).as_bytes(),
+            edge,
+        }
     }
 
     /// Key a thumbnail by an already-known content hash (e.g. the FUSE
@@ -44,7 +47,10 @@ impl ThumbKey {
         hasher.update(path.as_os_str().as_encoded_bytes());
         hasher.update(&mtime_ms.to_le_bytes());
         hasher.update(&size.to_le_bytes());
-        Self { content: *hasher.finalize().as_bytes(), edge }
+        Self {
+            content: *hasher.finalize().as_bytes(),
+            edge,
+        }
     }
 
     /// The on-disk filename: `<hex>-<edge>.png`.
@@ -117,11 +123,9 @@ impl ThumbCache {
         self.mem.insert(*key, arc.clone());
         let final_path = self.path_for(key);
         // temp path carries the pid+key so concurrent writers don't collide.
-        let tmp = self.dir.join(format!(
-            ".{}.{}.tmp",
-            std::process::id(),
-            key.filename()
-        ));
+        let tmp = self
+            .dir
+            .join(format!(".{}.{}.tmp", std::process::id(), key.filename()));
         if std::fs::write(&tmp, arc.as_slice()).is_ok() {
             let _ = std::fs::rename(&tmp, &final_path);
         } else {
@@ -137,8 +141,8 @@ impl ThumbCache {
             return;
         };
         let mut entries: Vec<(std::time::SystemTime, PathBuf)> = rd
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "png").unwrap_or(false))
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
             .filter_map(|e| {
                 let path = e.path();
                 let mtime = e.metadata().ok()?.modified().ok()?;
@@ -184,7 +188,11 @@ mod tests {
         let key = ThumbKey::of_bytes(b"file-content", 256);
         assert!(cache.get(&key).is_none(), "cold miss");
         cache.put(&key, vec![1, 2, 3, 4]);
-        assert_eq!(cache.get(&key).unwrap().as_slice(), &[1, 2, 3, 4], "warm hit");
+        assert_eq!(
+            cache.get(&key).unwrap().as_slice(),
+            &[1, 2, 3, 4],
+            "warm hit"
+        );
         assert!(cache.contains(&key));
     }
 
@@ -212,12 +220,15 @@ mod tests {
         // cap of 10 files → after inserting 40 the pruner keeps it near 90% (9).
         let cache = ThumbCache::with_limits(dir.path(), 64, 10).unwrap();
         for i in 0..40u32 {
-            cache.put(&ThumbKey::of_bytes(format!("f{i}").as_bytes(), 256), vec![i as u8; 8]);
+            cache.put(
+                &ThumbKey::of_bytes(format!("f{i}").as_bytes(), 256),
+                vec![i as u8; 8],
+            );
         }
         let count = std::fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "png").unwrap_or(false))
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
             .count();
         assert!(count <= 10, "disk cache pruned to its bound, got {count}");
     }

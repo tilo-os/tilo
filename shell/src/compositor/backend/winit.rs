@@ -1,22 +1,13 @@
-//! Phase 4 follow-up: drive the host window via vello+wgpu directly
-//! rather than smithay's `WinitGraphicsBackend<GlowRenderer>`.
+//! Drives the host window via vello+wgpu directly rather than smithay's
+//! `WinitGraphicsBackend<GlowRenderer>` — vello renders through wgpu while
+//! smithay's winit backend hands out an OpenGL/Glow surface, and the two
+//! can't trivially share one. Smithay still owns the wayland-server
+//! protocol state; this backend only owns the rendered window.
 //!
-//! Vello renders via wgpu while smithay's winit backend hands out an
-//! OpenGL/Glow surface — the two cannot trivially share a surface. The
-//! shortest unblock for "the host window actually paints chrome" is to
-//! own the winit window ourselves and run the same vello pipeline that
-//! `quick-ui::App::run` and `bin/shots` use. Smithay still owns the
-//! wayland-server protocol state; this backend only owns the rendered
-//! window. When Phase 6+ adds smithay-client surface presentation
-//! (foreign tabs) we can layer a glow path or texture-import back in
-//! on top — but until then this backend is the only consumer.
-//!
-//! The event integration uses winit 0.30's
-//! [`pump_app_events`][pump] so the calloop event loop in
-//! [`crate::compositor::native::run`] stays the driver: each
-//! iteration calls [`Backend::poll_events`] (which pumps winit
-//! non-blocking), then `frame_builder.paint`, then
-//! [`Backend::submit_frame`].
+//! Event integration uses winit 0.30's [`pump_app_events`][pump] so the
+//! calloop event loop in [`crate::compositor::native::run`] stays the
+//! driver: each iteration calls [`Backend::poll_events`], then
+//! `frame_builder.paint`, then [`Backend::submit_frame`].
 //!
 //! [pump]: winit::platform::pump_events::EventLoopExtPumpEvents::pump_app_events
 
@@ -24,7 +15,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use vello::peniko::Color;
-use vello::util::{RenderContext, RenderSurface};
+// `ui::gpu`'s context, not `vello::util`'s — this window shares an
+// integrated GPU with every other qOS process and needs the same memory
+// hint (see `ui/src/gpu.rs`).
+use ui::gpu::RenderContext;
+use vello::util::RenderSurface;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -41,11 +36,37 @@ use crate::compositor::present::Presenter;
 const INITIAL_WIDTH: u32 = 1600;
 const INITIAL_HEIGHT: u32 = 900;
 
-/// Default base color used for the first few frames before any
-/// `BackendEvent::OutputResized` has carried a theme through. Matches
-/// `ui::theme::Theme::dark().bg_app` so the host window doesn't
-/// flash white on boot. The compositor overrides this each frame via
-/// [`WinitBackend::set_base_color`].
+/// Override for the initial window size, as `WxH`. Named rather than left
+/// to a resize because resizing this backend isn't free: reconfiguring the
+/// surface while a frame is in flight panics the present thread. Mirrors
+/// `NIRIOS_HEADLESS_SIZE`, which the headless backend reads for the same reason.
+const SIZE_ENV: &str = "NIRIOS_WINIT_SIZE";
+
+/// Size the host window is created at; falls back to the defaults on
+/// anything unparseable, zero, or absent — a typo should give the ordinary
+/// window, never a zero-sized surface.
+fn initial_size() -> (u32, u32) {
+    let Ok(raw) = std::env::var(SIZE_ENV) else {
+        return (INITIAL_WIDTH, INITIAL_HEIGHT);
+    };
+    let parsed = raw
+        .split_once(['x', 'X'])
+        .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)))
+        .filter(|(w, h): &(u32, u32)| *w > 0 && *h > 0);
+    if let Some(size) = parsed {
+        size
+    } else {
+        eprintln!(
+            "nirios compositor: {SIZE_ENV}={raw:?} is not a usable WxH; \
+             using {INITIAL_WIDTH}x{INITIAL_HEIGHT}"
+        );
+        (INITIAL_WIDTH, INITIAL_HEIGHT)
+    }
+}
+
+/// Base color for the first few frames before a theme arrives. Matches
+/// `ui::theme::Theme::dark().bg_app` so the window doesn't flash white on
+/// boot; overridden each frame via [`WinitBackend::set_base_color`].
 const FALLBACK_BG: Color = Color::from_rgb8(0x1A, 0x1B, 0x26);
 
 pub struct WinitBackend {
@@ -53,28 +74,24 @@ pub struct WinitBackend {
     inner: Inner,
 }
 
-/// The lifecycle-aware half: everything `ApplicationHandler` needs to
-/// touch lives here so `pump_app_events` can take `&mut self`. The
-/// `EventLoop` itself stays in [`WinitBackend`] because winit's API
-/// surfaces `pump_app_events` as a method on `&mut EventLoop`.
+/// Lifecycle-aware half: everything `ApplicationHandler` touches lives here
+/// so `pump_app_events` can take `&mut self`. `EventLoop` stays in
+/// [`WinitBackend`] since winit exposes `pump_app_events` as a method on
+/// `&mut EventLoop`.
 struct Inner {
-    /// `None` until winit fires the first `resumed`. We can't create
-    /// a `Window` before the event loop has run an iteration on
-    /// platforms that enforce ActiveEventLoop semantics; deferring
-    /// here keeps the same code path working on every supported
-    /// platform.
+    /// `None` until the first `resumed` — some platforms enforce
+    /// `ActiveEventLoop` semantics and forbid creating a `Window` earlier.
     window: Option<Arc<Window>>,
-    /// Constructed alongside the window in `resumed`. Wraps the wgpu
-    /// instance/device that vello drives.
+    /// Constructed alongside the window in `resumed`; wraps the wgpu
+    /// instance/device vello drives.
     render: Option<RenderState>,
     outputs: Vec<Output>,
     event_buffer: Vec<BackendEvent>,
-    /// Background color used by `submit_frame`. Updated by callers
-    /// through [`WinitBackend::set_base_color`] so the theme's
-    /// `bg_app` doesn't leak into every render call.
+    /// Clear color used by `submit_frame`; updated via
+    /// [`WinitBackend::set_base_color`].
     base_color: Color,
-    /// Set when `pump_app_events` returns `PumpStatus::Exit` so we
-    /// emit a single `CloseRequested` and stop pumping further.
+    /// Set when `pump_app_events` returns `Exit`, so we emit one
+    /// `CloseRequested` and stop pumping.
     closed: bool,
 }
 
@@ -85,16 +102,11 @@ struct RenderState {
 }
 
 impl WinitBackend {
-    /// Build the event loop + initial state. The window itself is
-    /// created lazily on the first `resumed` callback. Returning here
-    /// only fails if winit can't construct the event loop at all.
+    /// Build the event loop + initial state; the window is created lazily
+    /// on the first `resumed` callback.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let event_loop = EventLoop::new()?;
-        let outputs = vec![Output::new(
-            OutputId(0),
-            (INITIAL_WIDTH, INITIAL_HEIGHT),
-            1.0,
-        )];
+        let outputs = vec![Output::new(OutputId(0), initial_size(), 1.0)];
         let mut me = Self {
             event_loop,
             inner: Inner {
@@ -110,22 +122,15 @@ impl WinitBackend {
         Ok(me)
     }
 
-    /// Pump the event loop until winit delivers `resumed` and the window
-    /// + render state exist.
+    /// Pump the event loop until winit delivers `resumed` and the window +
+    /// render state exist. `ActiveEventLoop` semantics forbid creating a
+    /// window before the loop has run an iteration, so draining the first
+    /// `resumed` here makes construction mean "ready" for callers like
+    /// `outputs()` and `take_presenter()`.
     ///
-    /// The window is created lazily because `ActiveEventLoop` semantics
-    /// forbid creating one before the loop has run an iteration. That
-    /// laziness used to leak into everything the compositor asks a
-    /// backend at startup: `outputs()` returned the placeholder size
-    /// rather than the real window's, `refresh_interval()` had no monitor
-    /// to ask, and `take_presenter()` found no render state and silently
-    /// left presentation on the loop thread — a threaded compositor that
-    /// wasn't. Draining the first `resumed` here makes construction mean
-    /// "ready", so none of those three has a lazy case to get wrong.
-    ///
-    /// Bounded: if the platform never delivers `resumed` we return anyway
-    /// and the backend behaves as it did before (lazy init on the first
-    /// `poll_events`), rather than hanging the compositor at startup.
+    /// Bounded: if the platform never delivers `resumed`, returns after 2s
+    /// and falls back to lazy init on the first `poll_events`, rather than
+    /// hanging the compositor at startup.
     fn pump_until_resumed(&mut self) {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while self.inner.window.is_none() && std::time::Instant::now() < deadline {
@@ -145,36 +150,28 @@ impl WinitBackend {
         }
     }
 
-    /// Override the per-frame clear color. The compositor calls this
-    /// each tick with `theme.bg_app` so changing themes at runtime is
-    /// reflected immediately without touching the backend trait.
+    /// Override the per-frame clear color; the compositor calls this each
+    /// tick with `theme.bg_app` so theme changes apply without touching the
+    /// backend trait.
     pub fn set_base_color(&mut self, color: Color) {
         self.inner.base_color = color;
     }
 }
 
-/// The presentation half of [`WinitBackend`], moved onto the render
-/// thread by [`Backend::take_presenter`].
-///
-/// Everything here is `Send`: the wgpu device/queue/surface and the
-/// `Arc<Window>` all are. What is *not* `Send` — winit's `EventLoop`,
-/// which must be pumped from the thread that created it — stays behind on
-/// the backend, which is why the split is at the [`RenderState`] boundary
-/// rather than at the whole backend.
+/// Presentation half of [`WinitBackend`], moved onto the render thread by
+/// [`Backend::take_presenter`]. Everything here is `Send`; winit's
+/// `EventLoop` isn't (must be pumped from its creating thread), which is
+/// why the split sits at the [`RenderState`] boundary.
 pub struct WinitPresenter {
     render: RenderState,
     base_color: Color,
 }
 
 impl WinitPresenter {
-    /// Render one frame into the swap chain and present it.
-    ///
-    /// Extracted verbatim from the old inline `submit_frame` so the
-    /// pixels are unchanged by the move; only the thread it runs on
-    /// differs. The blocking `device.poll` at the end is what paces this
-    /// thread to the surface's `AutoVsync` present mode — and, now that
-    /// it is off the input thread, blocking there costs a frame of
-    /// throughput instead of a keystroke of latency.
+    /// Render one frame into the swap chain and present it. The blocking
+    /// `device.poll` at the end paces this thread to the surface's
+    /// `AutoVsync` present mode; off the input thread, that costs a frame
+    /// of throughput rather than a keystroke of latency.
     fn render_and_present(&mut self, scene: &Scene) {
         let base_color = self.base_color;
         let render = &mut self.render;
@@ -182,10 +179,8 @@ impl WinitPresenter {
         let height = render.surface.config.height;
         let device_handle = &render.render_cx.devices[render.surface.dev_id];
 
-        // vello 0.5 removed `render_to_surface`. The canonical replacement
-        // is: render the scene into the surface's intermediate
-        // `target_view` texture, then blit that into the swap-chain
-        // texture via the bundled `TextureBlitter`, then present.
+        // vello 0.5 removed `render_to_surface`; render into the surface's
+        // target_view, blit via `TextureBlitter`, then present.
         let result = render.renderer.render_to_texture(
             &device_handle.device,
             &device_handle.queue,
@@ -234,23 +229,17 @@ impl WinitPresenter {
         );
         device_handle.queue.submit([encoder.finish()]);
         surface_texture.present();
-        // Block until this frame's GPU work completes so wgpu reclaims the
-        // per-frame transient resources (vello scene-upload staging buffers,
-        // the blit command buffer, the swap-chain texture view). A
-        // non-blocking `Poll` here never observes the submission's fence
-        // signal on the same tick, so those frees are deferred every frame
-        // and the driver's allocations grow without bound — the nested
-        // compositor climbed ~30 MB/s at idle and OOM'd within minutes.
+        // Block until this frame's GPU work completes so wgpu reclaims
+        // per-frame transient resources — a non-blocking poll never
+        // observes the fence on the same tick, so frees are deferred every
+        // frame and allocations grow without bound (observed: ~30 MB/s at
+        // idle, OOM within minutes).
         //
-        // BOUNDED, not indefinite: a fence for a frame in flight across a
-        // system suspend/resume can simply never signal, and an indefinite
-        // wait wedges this thread forever — `inflight` never drops, the
-        // paint gate reports no capacity, and the session freezes with the
-        // process alive (observed live as "the window froze after the
-        // machine woke from sleep", 2026-08-22). One second covers any
-        // real frame; on timeout we log and carry on — the stale swapchain
-        // then surfaces as `Outdated` on the next acquire and the
-        // reconfigure path brings presentation back.
+        // Bounded, not indefinite: a fence for a frame in flight across a
+        // system suspend/resume can simply never signal, wedging this
+        // thread forever. One second covers any real frame; on timeout we
+        // log and carry on — the stale swapchain surfaces as `Outdated` on
+        // the next acquire and reconfigure brings presentation back.
         let waited = device_handle.device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: Some(Duration::from_secs(1)),
@@ -266,13 +255,9 @@ impl Presenter for WinitPresenter {
         self.render_and_present(scene);
     }
 
-    /// Reconfigure the swap chain for a new window size.
-    ///
-    /// With the render state moved onto the render thread, the resize can
-    /// no longer happen inline in `Inner::window_event` — the surface
-    /// isn't there any more. It arrives here through the same channel as
-    /// frames, so a resize can never be applied out of order with respect
-    /// to a frame already queued at the old size.
+    /// Reconfigure the swap chain for a new window size. Arrives through
+    /// the same channel as frames, so a resize can never apply out of order
+    /// with respect to a frame already queued at the old size.
     fn resize(&mut self, size: (u32, u32)) {
         if size.0 == 0 || size.1 == 0 {
             return;
@@ -284,9 +269,15 @@ impl Presenter for WinitPresenter {
 }
 
 impl Backend for WinitBackend {
-    /// Inline presentation. Only reached when [`Backend::take_presenter`]
-    /// was not called (or already handed the render state away) — the
-    /// compositor normally submits through the render thread instead.
+    /// The host session draws the pointer over this window, so the
+    /// compositor must not paint a second one into the scene.
+    fn has_cursor_plane(&self) -> bool {
+        true
+    }
+
+    /// Inline presentation fallback — only reached when
+    /// [`Backend::take_presenter`] was never called or already took the
+    /// render state.
     fn submit_frame(&mut self, scene: &Scene, output: OutputId) {
         let base_color = self.inner.base_color;
         let Some(render) = self.inner.render.take() else {
@@ -297,19 +288,14 @@ impl Backend for WinitBackend {
         self.inner.render = Some(presenter.render);
     }
 
-    /// The host monitor's refresh rate. The nested-development backend is
-    /// a Wayland *client* of the parent compositor, so what it can
-    /// actually pace to is the parent's output — which is what
-    /// `current_monitor` reports. When the parent doesn't publish a rate
-    /// (some nested/headless parents don't), we report `None` and the
-    /// compositor falls back rather than inventing one.
+    /// Host monitor's refresh rate. This backend is a Wayland *client* of
+    /// the parent compositor, so it can only pace to what `current_monitor`
+    /// reports; when the parent doesn't publish a rate, we report `None`
+    /// rather than inventing one.
     fn refresh_interval(&self) -> Option<std::time::Duration> {
         let window = self.inner.window.as_ref()?;
-        // Ask the monitor the window is on, then the primary, then any
-        // monitor that publishes a rate. Parents differ in which of these
-        // they populate — a nested headless `cage` publishes none of them,
-        // which is why a nested run falls back rather than pacing to a
-        // real panel.
+        // Try the window's monitor, then primary, then any monitor with a
+        // rate — a nested headless `cage` publishes none, hence the fallback.
         window
             .current_monitor()
             .into_iter()
@@ -321,11 +307,8 @@ impl Backend for WinitBackend {
 
     fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {
         let Some(render) = self.inner.render.take() else {
-            // Construction is supposed to have drained `resumed`, so
-            // there is no legitimate path here. Say so rather than
-            // quietly leaving the GPU submit on the input thread — a
-            // compositor that thinks it is threaded and isn't is the
-            // worst of both.
+            // No legitimate path here — construction drains `resumed`. Log
+            // rather than quietly leaving the GPU submit on the input thread.
             eprintln!(
                 "nirios compositor: winit backend has no render state to hand \
                  to the render thread; presenting inline"
@@ -360,16 +343,18 @@ impl Backend for WinitBackend {
 
 impl ApplicationHandler for Inner {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // `resumed` can fire more than once (suspend/resume cycles on
-        // mobile); we treat the first as "init" and subsequent ones
-        // as no-ops because our render state is independent of the
-        // application lifecycle.
+        // `resumed` can fire more than once (mobile suspend/resume); only
+        // the first is init since render state is independent of the app
+        // lifecycle.
         if self.window.is_some() {
             return;
         }
         let attrs = WindowAttributes::default()
             .with_title("nirios")
-            .with_inner_size(winit::dpi::PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT));
+            .with_inner_size({
+                let (w, h) = initial_size();
+                winit::dpi::PhysicalSize::new(w, h)
+            });
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -388,15 +373,13 @@ impl ApplicationHandler for Inner {
             size.height,
             wgpu::PresentMode::AutoVsync,
         )) {
-            Ok(mut s) => {
-                s.config.format = s.config.format.add_srgb_suffix();
-                let dh = &render_cx.devices[s.dev_id];
-                s.surface.configure(&dh.device, &s.config);
-                // vello's `create_surface` built a `TextureBlitter` for the
-                // pre-srgb format; wgpu 29's TextureBlitter pipeline must
-                // match the render pass's target format exactly, so we
-                // rebuild it against the now-sRGB swap-chain format.
-                s.blitter = wgpu::util::TextureBlitter::new(&dh.device, s.config.format);
+            Ok(s) => {
+                // Present in the format vello picked — deliberately NOT an
+                // `*Srgb` one. vello renders into an intermediate texture
+                // already sRGB-encoded (`peniko::Color` is
+                // `AlphaColor<Srgb>`), then blits to the swap-chain; forcing
+                // `*Srgb` there double-encodes and washes out every surface
+                // (e.g. (22,23,27) presents as #53555B).
                 s
             }
             Err(e) => {
@@ -453,21 +436,30 @@ impl ApplicationHandler for Inner {
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
-                // Only reachable on the inline path. Once the render
-                // state has moved to the render thread this is `None`
-                // and the resize travels through the present pipe
-                // instead (`Presenter::resize`), which keeps it ordered
-                // against frames already queued at the old size.
+                // A `Resized` can arrive with nothing actually changed
+                // (fullscreen at the current size, a WM re-asserting
+                // geometry); reconfiguring anyway panics the present thread
+                // if a frame is in flight, so bail out on no-op resizes.
+                // Scale is compared too — same pixel size at a new scale
+                // factor is a real change.
+                let incoming_scale = self
+                    .window
+                    .as_ref()
+                    .map_or(1.0, |w| w.scale_factor() as f32);
+                if self.outputs.first().is_some_and(|o| {
+                    o.size == (size.width, size.height) && o.scale == incoming_scale
+                }) {
+                    return;
+                }
+                // Only reachable on the inline path — once render state
+                // moves to the render thread, this is `None` and the resize
+                // travels through `Presenter::resize` instead.
                 if let Some(render) = self.render.as_mut() {
                     render
                         .render_cx
                         .resize_surface(&mut render.surface, size.width, size.height);
                 }
-                let scale = self
-                    .window
-                    .as_ref()
-                    .map(|w| w.scale_factor() as f32)
-                    .unwrap_or(1.0);
+                let scale = incoming_scale;
                 if let Some(out) = self.outputs.first_mut() {
                     out.size = (size.width, size.height);
                     out.scale = scale;
@@ -482,19 +474,16 @@ impl ApplicationHandler for Inner {
                 self.event_buffer.push(BackendEvent::Focus(focused));
             }
             WindowEvent::RedrawRequested => {
-                // The compositor repaints every tick regardless of
-                // `RedrawRequested`, so we forward the signal but
-                // don't rely on it.
+                // Compositor repaints every tick regardless; forwarded but not relied on.
                 self.event_buffer.push(BackendEvent::Redraw);
             }
             ev @ (WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
             | WindowEvent::KeyboardInput { .. }
             | WindowEvent::MouseWheel { .. }) => {
-                // Carry the full event so `compositor::native::run`
-                // can dispatch it through `FrameBuilder::dispatch_event`
-                // — the same wire `execute_planned_action` uses for
-                // headless / scripted input.
+                // Carried whole so `compositor::native::run` can dispatch
+                // via `FrameBuilder::dispatch_event` — same wire scripted
+                // input uses.
                 self.event_buffer.push(BackendEvent::Input(ev));
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -506,16 +495,10 @@ impl ApplicationHandler for Inner {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Our outer loop already paints every frame via
-        // `frame_builder.paint`, so we don't need to request a
-        // redraw here. Leaving this empty is intentional.
+        // Outer loop already paints every frame via `frame_builder.paint`;
+        // empty here is intentional.
     }
 }
 
-// Note: no unit tests for `WinitBackend` itself — winit panics on
-// non-main-thread `EventLoop::new`, which makes parallel `cargo test`
-// runs unreliable. Phase 4's verification is the runtime smoke ("boot
-// `--mode native`, host window paints chrome") and the wider ledger
-// tests that exercise `FrameBuilder` directly. When Phase 6 splits
-// `Inner` into a state-only struct independent of the event loop, we
-// can add focused unit tests on it.
+// No unit tests for `WinitBackend` itself — winit panics on non-main-thread
+// `EventLoop::new`, making parallel `cargo test` runs unreliable.

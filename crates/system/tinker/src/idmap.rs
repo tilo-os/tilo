@@ -30,7 +30,8 @@ pub fn inside_mapping() -> bool {
 /// still open a layer, but service accounts inside it will not work.
 pub fn subordinate_range(file: &str, user: &str, uid: u32) -> Option<(u32, u32)> {
     let text = std::fs::read_to_string(file).ok()?;
-    text.lines().find_map(|line| parse_subid_line(line, user, uid))
+    text.lines()
+        .find_map(|line| parse_subid_line(line, user, uid))
 }
 
 /// One `owner:start:count` line, or `None` if it is a comment, blank, or
@@ -62,10 +63,17 @@ pub fn reexec_mapped() -> anyhow::Error {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let mut cmd = Command::new("unshare");
-    cmd.args(["--user", "--map-root-user", "--map-auto", "--mount", "--propagation=private", "--"])
-        .arg(&exe)
-        .args(&args)
-        .env(MARKER, "1");
+    cmd.args([
+        "--user",
+        "--map-root-user",
+        "--map-auto",
+        "--mount",
+        "--propagation=private",
+        "--",
+    ])
+    .arg(&exe)
+    .args(&args)
+    .env(MARKER, "1");
 
     let err = cmd.exec();
     anyhow::anyhow!(
@@ -99,14 +107,20 @@ mod tests {
     fn range_is_read_by_name() {
         let f = subuid_file("other:100000:65536\nada:524288:65536\n");
         let path = f.path().to_str().unwrap();
-        assert_eq!(subordinate_range(path, "ada", 1000), Some((524288, 65536)));
+        assert_eq!(
+            subordinate_range(path, "ada", 1000),
+            Some((524288, 65536))
+        );
         assert_eq!(subordinate_range(path, "nobody", 65534), None);
     }
 
     #[test]
     fn range_is_also_read_by_numeric_owner() {
         let f = subuid_file("1000:524288:65536\n");
-        assert_eq!(subordinate_range(f.path().to_str().unwrap(), "someone", 1000), Some((524288, 65536)));
+        assert_eq!(
+            subordinate_range(f.path().to_str().unwrap(), "someone", 1000),
+            Some((524288, 65536))
+        );
     }
 
     #[test]
@@ -117,6 +131,9 @@ mod tests {
     #[test]
     fn malformed_lines_are_skipped_not_fatal() {
         let f = subuid_file("garbage\nx:notanumber:1\nada:5:6\n");
-        assert_eq!(subordinate_range(f.path().to_str().unwrap(), "ada", 1000), Some((5, 6)));
+        assert_eq!(
+            subordinate_range(f.path().to_str().unwrap(), "ada", 1000),
+            Some((5, 6))
+        );
     }
 }

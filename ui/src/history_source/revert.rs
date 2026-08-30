@@ -1,0 +1,492 @@
+//! Undoing somebody else's work: a contiguous run of changes, addressed by
+//! what it is rather than by where it sits on a local stack.
+//!
+//! [`UndoLog`](crate::state::UndoLog) only holds actions *this* process
+//! handled — a peer's change re-baselines without pushing — so "undo what
+//! the agent just did" finds nothing there. A run is addressed instead by
+//! content-addressed [`HistoryEntryId`], so a peer that only ever received
+//! those changes can undo them. The inverse is written *forward* through
+//! [`write_patches`](crate::state::write_patches), never cut out of the
+//! graph, so the original keeps its author and the undo is itself undoable.
+//!
+//! Not wholesale: inverting a splice deletes everything in the span,
+//! including what somebody typed there afterwards. So a [`Slot`] written
+//! since the run is left alone and reported in [`RevertOutcome::kept`], and
+//! a caller must consult [`RevertOutcome::is_complete`] before saying
+//! "undone".
+
+use std::collections::{HashMap, HashSet};
+
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc};
+
+use crate::history_source::authors::AuthorDirectory;
+use crate::history_source::entry_id_from_hash;
+use crate::state::write_patches;
+use crate::widget::history::{HistoryAuthor, HistoryEntryId};
+
+/// A contiguous run of changes, addressed by its first and last change.
+///
+/// Both ends are inclusive and content-addressed, so the same `ChangeRun` names
+/// the same work on every peer that has those changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeRun {
+    pub start: HistoryEntryId,
+    pub end: HistoryEntryId,
+}
+
+impl ChangeRun {
+    pub fn new(start: HistoryEntryId, end: HistoryEntryId) -> Self {
+        Self { start, end }
+    }
+
+    pub fn single(only: HistoryEntryId) -> Self {
+        Self {
+            start: only,
+            end: only,
+        }
+    }
+}
+
+/// A place in the document a change wrote to, at the granularity where two
+/// writers genuinely collide.
+///
+/// Deliberately *not* the whole object for sequences: two people appending
+/// different paragraphs to the same list have not collided, and treating the
+/// shared parent as a conflict would make almost every run un-undoable in a
+/// document anybody is still working in.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Slot {
+    /// One text object — the case where an undo would eat somebody's words.
+    Text(ObjId),
+    /// One key of one map. Two writers on the same key is a plain overwrite.
+    Field(ObjId, String),
+    /// A whole object the run brought into existence that somebody has since
+    /// written inside. Undoing the run would remove the container and take
+    /// their work with it, so the container stays.
+    Object(ObjId),
+}
+
+/// A slot the revert declined to touch, and why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeptSlot {
+    pub slot: Slot,
+    /// Whoever wrote to it after the run, resolved through the caller's
+    /// directory so the reason can name a person rather than an actor hex.
+    pub by: HistoryAuthor,
+    /// Actor hex, for a caller grouping by identity rather than display name.
+    pub actor_hex: String,
+}
+
+/// What a revert did, and what it deliberately did not do.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct RevertOutcome {
+    /// Changes the run covered.
+    pub covered: usize,
+    /// Slots whose effect was inverted.
+    pub reverted: usize,
+    /// Slots left alone because somebody edited them after the run. Empty is
+    /// the ordinary case; non-empty means this revert was partial **and the
+    /// caller must say so**.
+    pub kept: Vec<KeptSlot>,
+    /// True when the document actually changed. A run whose effect had already
+    /// been undone reverts nothing and is not an error.
+    pub wrote: bool,
+}
+
+impl RevertOutcome {
+    /// True when every slot the run wrote was inverted — i.e. the caller may
+    /// honestly say the work was undone, full stop.
+    pub fn is_complete(&self) -> bool {
+        self.kept.is_empty()
+    }
+
+    /// Distinct people whose later edits held part of the run back, in
+    /// first-seen order.
+    pub fn blocked_by(&self) -> Vec<HistoryAuthor> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out = Vec::new();
+        for k in &self.kept {
+            if seen.insert(k.actor_hex.clone()) {
+                out.push(k.by.clone());
+            }
+        }
+        out
+    }
+}
+
+/// Why a run could not be addressed at all — distinct from "addressed it and
+/// chose to keep some of it", which is [`RevertOutcome::kept`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RevertError {
+    /// Neither end of the run names a change in this document. The usual cause
+    /// is asking the wrong document — a run recorded against the photo
+    /// editor's, handed to the word processor's.
+    UnknownRun,
+    /// The run's ends are in the document but the end precedes the start.
+    Inverted,
+}
+
+/// Both returned head sets are prefix frontiers of the document's own causal
+/// order, so they are valid arguments to `AutoCommit::diff` and mean the
+/// same thing on every peer holding the same changes.
+pub fn run_bounds(
+    doc: &mut AutoCommit,
+    run: &ChangeRun,
+) -> Result<(Vec<ChangeHash>, Vec<ChangeHash>, usize), RevertError> {
+    let versions = qdoc::history::versions(doc);
+    let mut first = None;
+    let mut last = None;
+    for v in &versions {
+        let id = entry_id_from_hash(&v.change_hash);
+        if id == run.start && first.is_none() {
+            first = Some(v.index);
+        }
+        if id == run.end {
+            last = Some(v.index);
+        }
+    }
+    let (Some(i0), Some(i1)) = (first, last) else {
+        return Err(RevertError::UnknownRun);
+    };
+    if i1 < i0 {
+        return Err(RevertError::Inverted);
+    }
+    // A run starting at the document's very first change is bracketed by the
+    // empty document — the honest "before", and a valid head set for `diff`.
+    let before = if i0 == 0 {
+        Vec::new()
+    } else {
+        qdoc::history::prefix_heads(doc, i0 - 1)
+    };
+    let after = qdoc::history::prefix_heads(doc, i1);
+    Ok((before, after, i1 - i0 + 1))
+}
+
+/// Structural sequence work returns `None` on purpose: `write_patches`
+/// re-anchors those positions through cursors, so a concurrent insert
+/// elsewhere in the same list is already handled and is not a reason to refuse.
+fn slot_of(doc: &AutoCommit, p: &Patch) -> Option<Slot> {
+    let is_text = matches!(doc.object_type(&p.obj), Ok(ObjType::Text));
+    match &p.action {
+        PatchAction::SpliceText { .. } => Some(Slot::Text(p.obj.clone())),
+        PatchAction::DeleteSeq { .. } | PatchAction::Insert { .. } | PatchAction::PutSeq { .. } => {
+            is_text.then(|| Slot::Text(p.obj.clone()))
+        }
+        PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
+            Some(Slot::Field(p.obj.clone(), key.clone()))
+        }
+        PatchAction::Increment { prop, .. } => match prop {
+            Prop::Map(k) => Some(Slot::Field(p.obj.clone(), k.clone())),
+            Prop::Seq(_) => is_text.then(|| Slot::Text(p.obj.clone())),
+        },
+        // A conflict marker carries no content, and marks are formatting spans
+        // the revert path already ignores.
+        PatchAction::Conflict { .. } | PatchAction::Mark { .. } => None,
+    }
+}
+
+/// Index of the first change after the run bracketed by `after`.
+///
+/// Found by walking prefix frontiers rather than comparing hashes, because
+/// the run's last change need not be the only head of that prefix — with
+/// two collaborators a prefix can have several concurrent frontiers.
+fn first_index_after(doc: &mut AutoCommit, after: &[ChangeHash], total: usize) -> usize {
+    let after_set: HashSet<ChangeHash> = after.iter().copied().collect();
+    for i in 0..total {
+        let hs: HashSet<ChangeHash> = qdoc::history::prefix_heads(doc, i).into_iter().collect();
+        if hs == after_set {
+            return i + 1;
+        }
+    }
+    total
+}
+
+/// Objects the run brought into existence.
+///
+/// Undoing an insertion removes the *container*, not just its contents. If
+/// somebody has since written inside a paragraph the run created, the dangerous
+/// patch is the structural delete of that paragraph — and it mentions only an
+/// index, so knowing what it would destroy means knowing which objects the run
+/// made.
+fn objects_created(forward: &[Patch]) -> HashSet<ObjId> {
+    let mut out = HashSet::new();
+    for p in forward {
+        match &p.action {
+            PatchAction::PutMap { value, .. } | PatchAction::PutSeq { value, .. } => {
+                if matches!(value.0, automerge::Value::Object(_)) {
+                    out.insert(value.1.clone());
+                }
+            }
+            PatchAction::Insert { values, .. } => {
+                for (v, id, _) in values.iter() {
+                    if matches!(v, automerge::Value::Object(_)) {
+                        out.insert(id.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Slots written by changes that landed after `after`, mapped to the actor
+/// that wrote them.
+///
+/// Walked change by change rather than as one aggregate diff, because the
+/// aggregate cannot say *who* — and "kept, because Alice edited it" is the
+/// whole value of the report. Changes by `by` itself are skipped: a later
+/// change by the author being undone is their own business, not somebody
+/// building on it. A later change landing anywhere inside an object from
+/// `created` (visible via `Patch::path`) protects that whole object, since
+/// the inverse would delete it outright.
+fn later_writers(
+    doc: &mut AutoCommit,
+    after: &[ChangeHash],
+    by: Option<&str>,
+    created: &HashSet<ObjId>,
+) -> HashMap<Slot, String> {
+    let versions = qdoc::history::versions(doc);
+    let start_at = first_index_after(doc, after, versions.len());
+    let mut out: HashMap<Slot, String> = HashMap::new();
+    // `i` is more than an array subscript here -- `prefix_heads(doc, i)` and
+    // `i - 1`/`i == 0` need the absolute version index itself, so an
+    // `.iter().enumerate()` rewrite would just reconstruct `i` from the
+    // enumerated offset for no clarity gain.
+    #[allow(clippy::needless_range_loop)]
+    for i in start_at..versions.len() {
+        let v = versions[i].clone();
+        if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor_hex)) {
+            continue;
+        }
+        let lo = if i == 0 {
+            Vec::new()
+        } else {
+            qdoc::history::prefix_heads(doc, i - 1)
+        };
+        let hi = qdoc::history::prefix_heads(doc, i);
+        let patches = doc.diff(&lo, &hi);
+        // A change that only wrote a group or run marker did not touch content.
+        if crate::history_source::groups::is_group_marker(&patches)
+            || crate::history_source::runs::is_run_marker(&patches)
+        {
+            continue;
+        }
+        for p in &patches {
+            if let Some(s) = slot_of(doc, p) {
+                out.entry(s).or_insert_with(|| v.actor_hex.clone());
+            }
+            // Every created ancestor is protected: the inverse deletes the
+            // *outermost* container, so protecting only the innermost object
+            // would let the whole paragraph go anyway.
+            for o in std::iter::once(&p.obj).chain(p.path.iter().map(|(o, _)| o)) {
+                if created.contains(o) {
+                    out.entry(Slot::Object(o.clone()))
+                        .or_insert_with(|| v.actor_hex.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The object living at `prop` of `obj` as of `after`, when it is one the run
+/// created and somebody has since written inside.
+fn blocked_container(
+    doc: &AutoCommit,
+    after: &[ChangeHash],
+    obj: &ObjId,
+    prop: impl Into<Prop>,
+    later: &HashMap<Slot, String>,
+) -> Option<(Slot, String)> {
+    let (value, id) = doc.get_at(obj, prop, after).ok().flatten()?;
+    if !matches!(value, automerge::Value::Object(_)) {
+        return None;
+    }
+    let slot = Slot::Object(id);
+    let actor = later.get(&slot)?.clone();
+    Some((slot, actor))
+}
+
+/// Two kinds of hold-back: a patch writing to a [`Slot`] somebody has
+/// edited since would overwrite their edit; a patch *removing a container*
+/// the run created that somebody has since written inside would delete
+/// their work outright. A multi-element removal is split so the elements
+/// nobody touched still go.
+fn classify(
+    doc: &AutoCommit,
+    inverse: Vec<Patch>,
+    later: &HashMap<Slot, String>,
+    after: &[ChangeHash],
+    covered: usize,
+    authors: &AuthorDirectory,
+) -> (RevertOutcome, Vec<Patch>) {
+    let mut writable: Vec<Patch> = Vec::new();
+    let mut kept: Vec<KeptSlot> = Vec::new();
+    let mut kept_seen: HashSet<Slot> = HashSet::new();
+    let mut reverted_slots: HashSet<Slot> = HashSet::new();
+    let mut structural = 0usize;
+
+    for p in inverse {
+        // Removals first: they are the patches that can destroy a container.
+        match &p.action {
+            PatchAction::DeleteSeq { index, length } => {
+                let mut removable = Vec::new();
+                let mut blocked = false;
+                for k in 0..*length {
+                    let at = index + k;
+                    match blocked_container(doc, after, &p.obj, at, later) {
+                        Some((slot, actor)) => {
+                            blocked = true;
+                            if kept_seen.insert(slot.clone()) {
+                                kept.push(KeptSlot {
+                                    by: authors.resolve(&actor),
+                                    slot,
+                                    actor_hex: actor,
+                                });
+                            }
+                        }
+                        None => removable.push(at),
+                    }
+                }
+                if blocked {
+                    // Each surviving removal is anchored on its own element, so
+                    // splitting the run does not disturb the others.
+                    for at in removable {
+                        structural += 1;
+                        writable.push(Patch {
+                            obj: p.obj.clone(),
+                            path: p.path.clone(),
+                            action: PatchAction::DeleteSeq {
+                                index: at,
+                                length: 1,
+                            },
+                        });
+                    }
+                } else {
+                    structural += 1;
+                    writable.push(p);
+                }
+                continue;
+            }
+            PatchAction::DeleteMap { key } => {
+                if let Some((slot, actor)) =
+                    blocked_container(doc, after, &p.obj, key.as_str(), later)
+                {
+                    if kept_seen.insert(slot.clone()) {
+                        kept.push(KeptSlot {
+                            by: authors.resolve(&actor),
+                            slot,
+                            actor_hex: actor,
+                        });
+                    }
+                    continue;
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(s) = slot_of(doc, &p) {
+            if let Some(actor) = later.get(&s) {
+                if kept_seen.insert(s.clone()) {
+                    kept.push(KeptSlot {
+                        by: authors.resolve(actor),
+                        slot: s,
+                        actor_hex: actor.clone(),
+                    });
+                }
+            } else {
+                reverted_slots.insert(s);
+                writable.push(p);
+            }
+        } else {
+            structural += 1;
+            writable.push(p);
+        }
+    }
+
+    let outcome = RevertOutcome {
+        covered,
+        reverted: reverted_slots.len() + structural,
+        kept,
+        wrote: false,
+    };
+    (outcome, writable)
+}
+
+/// Work out what undoing `run` would do, without touching the document.
+///
+/// The dry run behind an affordance that has to be honest *before* the user
+/// commits to it — a menu item saying "undo, except the paragraph you edited"
+/// needs this, and so does a caller deciding whether to refuse.
+pub fn plan_revert(
+    doc: &mut AutoCommit,
+    run: &ChangeRun,
+    by: Option<&str>,
+    authors: &AuthorDirectory,
+) -> Result<RevertOutcome, RevertError> {
+    let (before, after, covered) = run_bounds(doc, run)?;
+    let forward = doc.diff(&before, &after);
+    let created = objects_created(&forward);
+    let inverse = doc.diff(&after, &before);
+    let later = later_writers(doc, &after, by, &created);
+    Ok(classify(doc, inverse, &later, &after, covered, authors).0)
+}
+
+/// Undo a run of changes by writing its inverse forward into `doc`.
+///
+/// `by` is the actor hex whose run this is; later changes under that same
+/// actor are not treated as somebody building on it.
+///
+/// The transaction is left **open**: the caller commits, so the undo lands
+/// stamped and attributed under whoever asked for it, exactly like a typed
+/// edit. A caller that forgets to commit has written nothing.
+pub fn revert_run(
+    doc: &mut AutoCommit,
+    run: &ChangeRun,
+    by: Option<&str>,
+    authors: &AuthorDirectory,
+) -> Result<RevertOutcome, RevertError> {
+    let (before, after, covered) = run_bounds(doc, run)?;
+    let forward = doc.diff(&before, &after);
+    let created = objects_created(&forward);
+    let inverse = doc.diff(&after, &before);
+    let later = later_writers(doc, &after, by, &created);
+    let (mut outcome, patches) = classify(doc, inverse, &later, &after, covered, authors);
+
+    if patches.is_empty() {
+        return Ok(outcome);
+    }
+    let pending_before = doc.pending_ops();
+    // `after` is the state the reverted elements still exist in; `before` is the
+    // state a re-inserted element's boundary is expressed in.
+    write_patches(doc, patches, &before, &after);
+    outcome.wrote = doc.pending_ops() > pending_before;
+    Ok(outcome)
+}
+
+/// The contiguous run of changes authored by `actor_hex`, ending at the
+/// document's newest change by that actor.
+///
+/// How "undo what the agent just did" finds its target when nobody recorded
+/// a run: the agent commits under one stable actor, so its work is a
+/// maximal run of consecutive changes under that actor, stopping at the
+/// first change by anybody else.
+pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun> {
+    let versions = qdoc::history::versions(doc);
+    // Schema genesis is written by a fixed actor nobody is, so inverting it
+    // would take the document's containers with it.
+    let mine = |v: &qdoc::VersionMeta| {
+        !qdoc::history::is_schema_genesis(v) && v.actor_hex.eq_ignore_ascii_case(actor_hex)
+    };
+    let last = versions.iter().rposition(mine)?;
+    let mut first = last;
+    while first > 0 && mine(&versions[first - 1]) {
+        first -= 1;
+    }
+    Some(ChangeRun::new(
+        entry_id_from_hash(&versions[first].change_hash),
+        entry_id_from_hash(&versions[last].change_hash),
+    ))
+}

@@ -13,9 +13,7 @@ use std::path::{Path, PathBuf};
 use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::{PermissionContext, UserId};
-use ui::presence::{
-    PathSegment, PresenceCtx, PresenceKey, SelectionRange, draw_remote_presence,
-};
+use ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange, draw_remote_presence};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -27,6 +25,7 @@ use winit::keyboard::{Key, SmolStr};
 
 use crate::NotesApp;
 use crate::model::Workspace;
+use crate::num;
 use crate::storage;
 
 /// Default viewport when `--viewport` is omitted. A 16:9-ish desktop
@@ -35,9 +34,7 @@ pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 720);
 
 /// Parse a `WxH` string like `800x600` into a `(u32, u32)` viewport.
 pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
-    let (w, h) = s
-        .split_once('x')
-        .or_else(|| s.split_once('X'))?;
+    let (w, h) = s.split_once('x').or_else(|| s.split_once('X'))?;
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
@@ -57,10 +54,12 @@ fn seed_sample_workspace(root: &Path) {
     ws.rename(reading, "Reading list");
     let recipes = ws.create_page(None);
     ws.rename(recipes, "Recipes");
+    let formulas = ws.create_page(None);
+    ws.rename(formulas, "Formula notebook");
 
     ws.set_selected(Some(launch));
 
-    let bodies: [(uuid::Uuid, &str); 5] = [
+    let bodies: [(uuid::Uuid, &str); 6] = [
         (
             launch,
             "\
@@ -141,6 +140,31 @@ Active work, one page each.
 4. Finish with parsley off the heat.
 ",
         ),
+        (
+            formulas,
+            r#"# Formula notebook
+
+Edit the source; the mathematical preview stays live underneath.
+
+## TeX
+
+```tex
+\sum_{i=1}^{n} \frac{x_i^2}{\sqrt{1+x_i}} + \begin{bmatrix}a&b\\c&d\end{bmatrix}
+```
+
+## Typst
+
+```typst visual
+integral_0^infinity frac(1, 1+x^2) + vec(alpha, beta, gamma)
+```
+
+## Typst cases
+
+```typst
+f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
+```
+"#,
+        ),
     ];
 
     storage::save_workspace(root, &ws).expect("seed workspace save");
@@ -167,8 +191,8 @@ fn settle_layout(
         let root_node = taffy.new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
+                    width: Dimension::length(num::f32_of_u32(w)),
+                    height: Dimension::length(num::f32_of_u32(h)),
                 },
                 ..Default::default()
             },
@@ -180,8 +204,8 @@ fn settle_layout(
             taffy.compute_layout_with_measure(
                 root_node,
                 taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
+                    width: AvailableSpace::Definite(num::f32_of_u32(w)),
+                    height: AvailableSpace::Definite(num::f32_of_u32(h)),
                 },
                 |known, available, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {
@@ -216,6 +240,7 @@ fn settle_layout(
 /// - `Some("heading")` — type a `# ` shortcut to promote a paragraph to an H1.
 /// - `Some("title_edit")` — open the prominent title's inline rename.
 /// - `Some("recipes")` — select the Recipes page (shows a numbered list).
+/// - `Some("formula")` — select the formula notebook with TeX and Typst previews.
 pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
@@ -223,12 +248,11 @@ pub fn render_to_path(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Hermetic workspace root — unique per process so parallel shots
     // don't collide, cleaned up on exit.
-    let root: PathBuf = std::env::temp_dir()
-        .join(format!("notes-shots-{}", uuid::Uuid::new_v4()));
+    let root: PathBuf = std::env::temp_dir().join(format!("notes-shots-{}", uuid::Uuid::new_v4()));
     storage::ensure_layout(&root)?;
     seed_sample_workspace(&root);
 
-    let mut app = NotesApp::spawn(root.clone()).map_err(|e| e.to_string())?;
+    let mut app = NotesApp::spawn(root.clone())?;
 
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
@@ -280,7 +304,7 @@ pub fn render_to_path(
     // edge mist for off-screen ones. The widget tree already drew the
     // labeled carets, typing swipe, and sidebar mist from `presence`.
     if scenario == Some("presence") {
-        let window_rect = Rect::new(0.0, 0.0, w as f64, h as f64);
+        let window_rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         draw_remote_presence(
             &mut scene,
             Affine::IDENTITY,
@@ -314,17 +338,20 @@ fn seed_two_peers(app: &NotesApp) -> PresenceCtx {
     let alice = UserId("alice".to_string());
     let bob = UserId("bob".to_string());
     p.set_display_name(alice.clone(), "Alice");
-    p.set_display_name(bob.clone(), "Bob");
+    p.set_display_name(bob, "Bob");
 
     // Alice's caret + typing swipe on a mid-document block. The key matches
     // `block_editor::block_presence_key(4)` — a checklist row on the
     // seeded "Launch checklist" page.
     let block = |i: u32| PresenceKey::Widget {
-        path: vec![PathSegment::Field("notes_block".to_string()), PathSegment::Index(i)],
+        path: vec![
+            PathSegment::Field("notes_block".to_string()),
+            PathSegment::Index(i),
+        ],
     };
     p.set_caret(&block(4), alice.clone(), 18);
     p.record_peer_typing(
-        alice.clone(),
+        alice,
         block(4),
         SelectionRange { start: 0, end: 18 },
         std::time::Instant::now(),
@@ -339,7 +366,12 @@ fn seed_two_peers(app: &NotesApp) -> PresenceCtx {
         .into_iter()
         .find(|pg| Some(pg.id) != selected)
     {
-        p.register_peer_at("bob".to_string(), PresenceKey::Tab { id: other.id.to_string() });
+        p.register_peer_at(
+            "bob".to_string(),
+            PresenceKey::Tab {
+                id: other.id.to_string(),
+            },
+        );
     }
     // Bob's mouse pointer has drifted off the right edge → edge mist.
     p.upsert_remote_cursor("bob".to_string(), [1500.0, 380.0], Some("Bob"));
@@ -363,7 +395,15 @@ fn drive_scenario(
         let mut handled = false;
         let mut ft = None;
         app.handle_event(
-            ev, 1.0, &no_mods, &mut state.doc, &state.root, &mut handled, &mut ft, child, taffy,
+            ev,
+            1.0,
+            &no_mods,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut ft,
+            child,
+            taffy,
         );
     };
     let cursor = |x: f64, y: f64| WindowEvent::CursorMoved {
@@ -507,6 +547,12 @@ fn drive_scenario(
             // Select the "Recipes" row (index 4) so the shot shows the
             // numbered "Method" list rendered with its ordinals.
             if let Some(row) = app.sidebar_row_center_for_test(4) {
+                send(app, &cursor(row.x, row.y));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+            }
+        }
+        Some("formula") => {
+            if let Some(row) = app.sidebar_row_center_for_test(5) {
                 send(app, &cursor(row.x, row.y));
                 send(app, &mouse(ElementState::Pressed, MouseButton::Left));
             }

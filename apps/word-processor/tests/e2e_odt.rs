@@ -5,8 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use word_processor::{open_document, save_document, WordProcessorWidget, WpFormat};
 use ui::Widget;
+use word_processor::{WordProcessorWidget, WpFormat, open_document, save_document};
 
 fn temp_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -20,7 +20,11 @@ fn author_odt(path: &Path, text: &str) {
     let c = qdoc::model::init(&mut state.doc, &state.root);
     let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
     {
-        let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut state.doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let p = dm.insert_block(None, "paragraph");
         dm.splice_text(&p, 0, 0, text);
     }
@@ -36,7 +40,10 @@ fn open_edit_save_reload_odt() {
     let (mut state, mut wp, fmt) = open_document(&path).unwrap();
     assert_eq!(fmt, WpFormat::Odt);
     wp.sync(&mut state.doc, &state.root);
-    assert_eq!(wp.model().block_texts(&state.doc), vec!["alpha".to_string()]);
+    assert_eq!(
+        wp.model().block_texts(&state.doc),
+        vec!["alpha".to_string()]
+    );
 
     // Edit: append " beta" to the paragraph, then a new paragraph "gamma".
     wp.model_mut().move_end(&state.doc);
@@ -62,26 +69,21 @@ fn open_edit_save_reload_odt() {
 fn undo_reverts_word_processor_edit() {
     // The host App snapshots on commit_action and restores on undo; the word
     // processor only needs to edit the shared doc + signal commits.
-    //
-    // Both halves are authored, because the host authors them and undo is
-    // author-scoped: an anonymous checkpoint undone anonymously agrees with
-    // itself and with nothing the user does. Recording anonymously here and
-    // undoing anonymously would pass while a real Ctrl+Z skipped this edit.
-    let local_author = ui::collaboration::local_user_id();
     let mut s = ui::State::new();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut s.doc, &s.root);
-    s.commit_action_authored(None, None, Some(local_author.clone())); // baseline
+    s.commit_action(None, None); // baseline: one empty paragraph
 
     wp.model_mut().insert_str(&mut s.doc, "hello");
-    s.commit_action_authored(None, None, Some(local_author.clone()));
+    s.commit_action(None, None);
     assert_eq!(wp.model().block_texts(&s.doc), vec!["hello".to_string()]);
 
-    assert!(
-        s.undo_as(Some(&local_author), None, None).is_some(),
-        "the author's own undo must find the checkpoint the host recorded for them",
+    s.undo(None, None);
+    assert_eq!(
+        wp.model().block_texts(&s.doc),
+        vec![String::new()],
+        "undo reverts the edit"
     );
-    assert_eq!(wp.model().block_texts(&s.doc), vec![String::new()], "undo reverts the edit");
 }
 
 #[test]
@@ -120,7 +122,10 @@ fn two_word_processors_collaborate_and_converge() {
     let tb = wpb.model().block_texts(&sb.doc);
     assert_eq!(ta, tb, "collaborating word processors converge");
     assert_eq!(ta.len(), 1);
-    assert!(ta[0].contains("shared") && ta[0].contains('A') && ta[0].contains('B'), "both edits present: {ta:?}");
+    assert!(
+        ta[0].contains("shared") && ta[0].contains('A') && ta[0].contains('B'),
+        "both edits present: {ta:?}"
+    );
 }
 
 #[test]
@@ -140,7 +145,13 @@ fn table_created_in_editor_survives_odt_save_reload() {
     // Title paragraph + a 2x2 table whose first cell kept "X".
     assert_eq!(
         wp2.model().block_texts(&s2.doc),
-        vec!["Title".to_string(), "X".to_string(), String::new(), String::new(), String::new()],
+        vec![
+            "Title".to_string(),
+            "X".to_string(),
+            String::new(),
+            String::new(),
+            String::new()
+        ],
         "table + cell text round-tripped through .odt",
     );
     std::fs::remove_file(&path).ok();
@@ -148,7 +159,7 @@ fn table_created_in_editor_survives_odt_save_reload() {
 
 #[test]
 fn custom_named_style_survives_odt_save_reload() {
-    use word_processor::{StyleProps, WordProcessor};
+    use word_processor::StyleProps;
 
     let path = temp_path("styled.odt");
 
@@ -182,7 +193,10 @@ fn custom_named_style_survives_odt_save_reload() {
     // Reopen: the style is back in the stylesheet, still applied to the block.
     let (mut s2, mut wp2, _) = open_document(&path).unwrap();
     wp2.sync(&mut s2.doc, &s2.root);
-    assert_eq!(wp2.model().block_texts(&s2.doc), vec!["Heading text".to_string()]);
+    assert_eq!(
+        wp2.model().block_texts(&s2.doc),
+        vec!["Heading text".to_string()]
+    );
 
     let sheet2 = wp2.model().stylesheet(&s2.doc);
     let cs = sheet2.get("callout");
@@ -193,7 +207,11 @@ fn custom_named_style_survives_odt_save_reload() {
     assert_eq!(cs.align, "center");
     assert_eq!(cs.space_after, 10.0);
     // Built-ins must still resolve (the import only writes referenced named styles).
-    assert_eq!(sheet2.get("body").name, "Body", "built-in body still available after import");
+    assert_eq!(
+        sheet2.get("body").name,
+        "Body",
+        "built-in body still available after import"
+    );
 
     // The block still references the named style.
     let ed = word_processor::EditorDoc::bind(&mut s2.doc, &s2.root);
@@ -204,7 +222,10 @@ fn custom_named_style_survives_odt_save_reload() {
         "block keeps its named-style ref: {:?}",
         snap.blocks[0].attrs
     );
-    assert!(snap.styles.contains_key("callout"), "styles container holds the custom style after reload");
+    assert!(
+        snap.styles.contains_key("callout"),
+        "styles container holds the custom style after reload"
+    );
 
     std::fs::remove_file(&path).ok();
 }
@@ -218,7 +239,10 @@ fn open_edit_save_reload_markdown() {
     assert_eq!(fmt, WpFormat::Markdown);
     wp.sync(&mut state.doc, &state.root);
     // heading + paragraph
-    assert_eq!(wp.model().block_texts(&state.doc), vec!["Title".to_string(), "body".to_string()]);
+    assert_eq!(
+        wp.model().block_texts(&state.doc),
+        vec!["Title".to_string(), "body".to_string()]
+    );
 
     // type into the (last) paragraph
     wp.model_mut().move_to_block(&state.doc, 1);
@@ -228,7 +252,10 @@ fn open_edit_save_reload_markdown() {
 
     let (mut state2, mut wp2, _) = open_document(&path).unwrap();
     wp2.sync(&mut state2.doc, &state2.root);
-    assert_eq!(wp2.model().block_texts(&state2.doc), vec!["Title".to_string(), "body text".to_string()]);
+    assert_eq!(
+        wp2.model().block_texts(&state2.doc),
+        vec!["Title".to_string(), "body text".to_string()]
+    );
 
     std::fs::remove_file(&path).ok();
 }

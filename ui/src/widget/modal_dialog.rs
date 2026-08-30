@@ -1,25 +1,9 @@
-//! Modal dialog widget — a centered, focus-grabbing panel painted on top
-//! of a dimmed backdrop covering the full viewport.
-//!
-//! Layout / paint contract (matches the brief for Unit 7):
-//!  - Backdrop: full-viewport rect at `Color::BLACK.with_alpha_factor(0.7)`.
-//!  - Box: centered on viewport, max 480 × 320 px. `surfaces.raised` fill,
-//!    `border_standard` stroke, `radii.md` corners.
-//!  - Title bar: `text_primary` text at `typography.scale.lg`, left-padded
-//!    by `spacing.s4`.
-//!  - Footer: action buttons aligned to the right with `spacing.s2` gap.
-//!    Primary button uses the accent token + white text, secondary uses
-//!    `surfaces.raised` + `text_primary`, both at `radii.sm`.
-//!
-//! Event contract:
-//!  - Escape (pressed) ⇒ `on_dismiss`.
-//!  - Left-click outside the dialog box but inside the backdrop ⇒ `on_dismiss`.
-//!  - Left-click inside `primary_rect` ⇒ `primary_action.on_click`.
-//!  - Left-click inside `secondary_rect` ⇒ `secondary_action.on_click`.
+//! Escape or an outside click dismisses; clicks inside `primary_rect`/
+//! `secondary_rect` fire the wired action.
 //!
 //! State lives outside the CRDT — modal callbacks are host-supplied closures
-//! and do not flow through Automerge. This mirrors how `permission_prompt`
-//! exposes its result via `pending_choice`: the host owns the mutation.
+//! and do not flow through Automerge, mirroring how `permission_prompt`
+//! exposes its result via `pending_choice`.
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -34,33 +18,23 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Max dialog box width in logical pixels — the brief pins this at 480.
 pub const MAX_DIALOG_WIDTH: f64 = 480.0;
-/// Max dialog box height in logical pixels — the brief pins this at 320.
 pub const MAX_DIALOG_HEIGHT: f64 = 320.0;
-/// Title-bar height. Sized to fit `typography.scale.lg` (16 px) plus the
-/// vertical padding implied by `spacing.s4` (16 px) — 48 logical pixels
-/// keeps the title centered with breathing room above and below.
+/// Fits `typography.scale.lg` (16px) plus `spacing.s4` (16px) padding.
 const TITLE_BAR_HEIGHT: f64 = 48.0;
-/// Footer-bar height, sized to fit the action buttons with `spacing.s2`
-/// padding above/below. 56 logical pixels gives a 40-pixel button height
-/// (matching `Button`) plus 8-px top/bottom inset.
+/// Fits a 40px button (matching `Button`) plus an 8px top/bottom inset.
 const FOOTER_HEIGHT: f64 = 56.0;
-/// Default action button width — wide enough for short labels like
-/// "Cancel" / "OK" without truncating, narrow enough that two fit
-/// comfortably in the footer of a 320-wide dialog. Matches the
-/// `permission_prompt` button width pattern.
+/// Wide enough for short labels without truncating; matches
+/// `permission_prompt`'s button width.
 const ACTION_BUTTON_WIDTH: f64 = 110.0;
-/// Default action button height — matches `Button::build_layout`'s
-/// fixed 40-pixel height so the visual rhythm carries across widgets.
+/// Matches `Button::build_layout`'s fixed height.
 const ACTION_BUTTON_HEIGHT: f64 = 40.0;
 
-/// One footer-bar action button. The callback is a boxed `FnMut` so the
-/// dialog can invoke it from `handle_event` without taking ownership;
-/// the host supplies it via [`ModalDialog::primary_action`] /
-/// [`ModalDialog::secondary_action`].
+/// One footer-bar action button; boxed `FnMut` so the dialog can invoke it
+/// from `handle_event` without taking ownership.
 pub struct DialogAction {
     pub label: String,
     pub on_click: Box<dyn FnMut()>,
@@ -75,9 +49,8 @@ impl std::fmt::Debug for DialogAction {
     }
 }
 
-/// Modal dialog widget. Generic over the content type so callers can pass
-/// any `Widget` without boxing — same generic pattern the file picker uses
-/// in its body slot.
+/// Generic over the content type so callers can pass any `Widget` without
+/// boxing — same pattern the file picker uses.
 pub struct ModalDialog<C: Widget> {
     title: String,
     content: C,
@@ -85,45 +58,32 @@ pub struct ModalDialog<C: Widget> {
     secondary_action: Option<DialogAction>,
     on_dismiss: Option<Box<dyn FnMut()>>,
     open: bool,
-    /// When true the primary button paints with the `semantic.danger` token
-    /// instead of the accent — for destructive confirmations (delete / kill /
-    /// erase) where the affirmative action needs a warning colour. Purely
-    /// visual; the callback wiring is unchanged.
     destructive: bool,
     viewport: Rect,
-    /// Max box width / height in logical px. Default to the brief's
-    /// [`MAX_DIALOG_WIDTH`]×[`MAX_DIALOG_HEIGHT`]; a host can override via
-    /// [`with_max_size`](Self::with_max_size) when its content wants a wider or
-    /// shorter box than the 480×320 default (e.g. a single labelled field reads
-    /// as unbalanced in a 320-tall box).
+    /// Box max width / height; override via [`with_max_size`](Self::with_max_size)
+    /// when the default 480×320 reads as unbalanced for the content.
     max_w: f64,
     max_h: f64,
-    /// Resolved dialog rect — recomputed each `apply_layout` (and on the
-    /// fly when the viewport changes via [`with_viewport`]).
+    /// Resolved dialog rect — recomputed each `apply_layout` and on
+    /// [`with_viewport`].
     rect: Rect,
-    /// Hit-test rect for the primary footer button. `Rect::ZERO` until
-    /// the first layout pass populates it.
+    /// Hit-test rect for the primary footer button; `Rect::ZERO` until laid out.
     primary_rect: Rect,
-    /// Hit-test rect for the secondary footer button. `Rect::ZERO` until
-    /// the first layout pass populates it.
+    /// Hit-test rect for the secondary footer button; `Rect::ZERO` until laid out.
     secondary_rect: Rect,
     /// Tracked here so `MouseInput` (which carries no position) can map
     /// to a button rect — same trick `permission_prompt` uses.
     last_cursor: Point,
     /// Isolated taffy tree for the inner content, rebuilt by
-    /// [`Self::place_content`]. Kept alive (rather than dropped at the end
-    /// of layout) so `handle_event` can forward pointer/keyboard events
-    /// into the content widget with a valid node — this is what lets an
-    /// embedded `TextInput` actually focus + take the caret on a click
-    /// inside the dialog box. `None` until the first content layout.
+    /// [`Self::place_content`] and kept alive (rather than dropped at the
+    /// end of layout) so `handle_event` can forward events into the content
+    /// with a valid node — what lets an embedded `TextInput` focus and take
+    /// the caret on click. `None` until the first content layout.
     content_taffy: Option<TaffyTree<()>>,
     content_node: Option<NodeId>,
 }
 
 impl<C: Widget> ModalDialog<C> {
-    /// Construct a closed modal dialog with the given title + content.
-    /// Callers wire actions via the builder methods below and flip
-    /// `open` true once the dialog should be displayed.
     pub fn new(title: impl Into<String>, content: C) -> Self {
         Self {
             title: title.into(),
@@ -145,24 +105,20 @@ impl<C: Widget> ModalDialog<C> {
         }
     }
 
-    /// Toggle the dialog open / closed. When closed, `draw` and
-    /// `handle_event` are no-ops — the host can keep the widget in the
-    /// tree without paying any cost when it's not on-screen.
+    /// When closed, `draw` and `handle_event` are no-ops — the host can keep
+    /// the widget in the tree at no cost while it's off-screen.
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
         self
     }
 
-    /// Imperatively show or hide the dialog after construction. Flipping this
-    /// toggles whether the dialog [traps focus](Widget::traps_focus), so the
-    /// host can open it in response to a click and close it without rebuilding
-    /// the widget tree.
+    /// Imperative show/hide after construction; also toggles whether the
+    /// dialog [traps focus](Widget::traps_focus).
     pub fn set_open(&mut self, open: bool) {
         self.open = open;
     }
 
-    /// Attach a primary action. The label drives the button text; the
-    /// callback fires on a left-click inside `primary_rect`.
+    /// The callback fires on a left-click inside `primary_rect`.
     pub fn primary_action(
         mut self,
         label: impl Into<String>,
@@ -175,8 +131,8 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
-    /// Attach a secondary action. Same shape as [`primary_action`] but
-    /// renders with the muted (raised-surface) treatment.
+    /// Same shape as [`primary_action`] but renders with the muted
+    /// (raised-surface) treatment.
     pub fn secondary_action(
         mut self,
         label: impl Into<String>,
@@ -189,26 +145,21 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
-    /// Set the dismiss callback. Fires on Escape (pressed) and on
-    /// a backdrop click outside the dialog box.
+    /// Fires on Escape (pressed) and on a backdrop click outside the box.
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_dismiss = Some(Box::new(f));
         self
     }
 
-    /// Mark the primary action as destructive so its button paints with the
-    /// `semantic.danger` token instead of the accent. Use for confirmations
-    /// that delete / kill / erase — the affirmative button then reads as a
-    /// warning rather than an ordinary accented action. Chainable.
+    /// Paints the primary button as a warning (`semantic.danger`) rather
+    /// than the ordinary accent — for delete/kill/erase confirmations.
     pub fn with_destructive(mut self, on: bool) -> Self {
         self.destructive = on;
         self
     }
 
-    /// Override the box's maximum width / height in logical px (still clamped
-    /// to the viewport). Use it when the default 480×320 box reads as
-    /// unbalanced for the content — e.g. a single labelled field wants a wider,
-    /// shorter box. The box is re-centered immediately.
+    /// Overrides the box's max width/height in logical px (still clamped to
+    /// the viewport) and re-centers it immediately.
     pub fn with_max_size(mut self, max_w: f64, max_h: f64) -> Self {
         self.max_w = max_w.max(1.0);
         self.max_h = max_h.max(1.0);
@@ -216,49 +167,35 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
-    /// Borrow the inner content widget (e.g. to read an embedded field's value
-    /// on submit). Pairs with [`content_mut`](Self::content_mut).
     pub fn content(&self) -> &C {
         &self.content
     }
 
-    /// Mutably borrow the inner content widget (e.g. to focus an embedded field
-    /// when the dialog opens, or reset it between uses).
     pub fn content_mut(&mut self) -> &mut C {
         &mut self.content
     }
 
-    /// Override the viewport rect outside a taffy pass. The dialog box is
-    /// re-centered immediately so tests / hosts that paint the dialog as
-    /// an absolutely-positioned overlay don't have to spin up a taffy
-    /// tree just to update geometry.
+    /// Sets the viewport rect outside a taffy pass and re-centers the box
+    /// immediately, so a host painting the dialog as an absolutely-positioned
+    /// overlay doesn't need to spin up a taffy tree just to update geometry.
     pub fn with_viewport(mut self, viewport: Rect) -> Self {
         self.viewport = viewport;
         self.recompute_layout();
         self
     }
 
-    /// Recompute `rect`, `primary_rect`, `secondary_rect` from the
-    /// current viewport. Called from `with_viewport` and `apply_layout`.
     fn recompute_layout(&mut self) {
         if self.viewport.width() <= 0.0 || self.viewport.height() <= 0.0 {
             return;
         }
-        // Dialog size: capped at the brief's 480×320 maximum, but never
-        // larger than the viewport. Real-world usage gives the dialog
-        // its requested max in almost every case (viewports are sized
-        // for ≥720p windows); the clamp is a safety net for tiny tablet
-        // chrome.
+        // Clamped to the viewport as a safety net for tiny tablet chrome.
         let w = self.max_w.min(self.viewport.width());
         let h = self.max_h.min(self.viewport.height());
         let cx = self.viewport.x0 + (self.viewport.width() - w) / 2.0;
         let cy = self.viewport.y0 + (self.viewport.height() - h) / 2.0;
         self.rect = Rect::new(cx, cy, cx + w, cy + h);
 
-        // Footer button rects — right-aligned with `spacing.s2` (8 px)
-        // gap between primary and secondary. Primary sits rightmost
-        // (Western reading order: "OK" lands on the right, "Cancel" to
-        // the left).
+        // Right-aligned; primary sits rightmost (Western reading order).
         let footer_top = self.rect.y1 - FOOTER_HEIGHT;
         let button_y0 = footer_top + (FOOTER_HEIGHT - ACTION_BUTTON_HEIGHT) / 2.0;
         let button_y1 = button_y0 + ACTION_BUTTON_HEIGHT;
@@ -271,18 +208,15 @@ impl<C: Widget> ModalDialog<C> {
         self.secondary_rect = Rect::new(secondary_x0, button_y0, secondary_x1, button_y1);
     }
 
-    /// Lay out the inner content widget inside the dialog box, between
-    /// the title bar and the footer. Same rationale as
-    /// `PopoverWidget::place_content` — the modal's outer taffy node is
-    /// the viewport, not the body, so the content widget never gets a
-    /// non-zero rect from the parent's taffy compute. Without this step
-    /// the body content (e.g. a confirm-message text widget) paints at
-    /// scene origin instead of inside the dialog box.
+    /// Lays out the inner content between the title bar and the footer.
+    /// Same rationale as `PopoverWidget::place_content` — the modal's outer
+    /// taffy node is the viewport, not the body, so without this step the
+    /// content never gets a non-zero rect and paints at scene origin.
     fn place_content(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let pad = theme.tokens.spacing.s4 as f64;
+        let pad = f64::from(theme.tokens.spacing.s4);
         let inner = Rect::new(
             self.rect.x0 + pad,
             self.rect.y0 + TITLE_BAR_HEIGHT,
@@ -294,7 +228,9 @@ impl<C: Widget> ModalDialog<C> {
         }
         let mut inner_taffy = TaffyTree::<()>::new();
         let mut inner_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let content_node = self.content.build_layout(&mut inner_taffy, theme, &mut inner_map);
+        let content_node = self
+            .content
+            .build_layout(&mut inner_taffy, theme, &mut inner_map);
         let _ = inner_taffy.compute_layout_with_measure(
             content_node,
             Size {
@@ -311,20 +247,15 @@ impl<C: Widget> ModalDialog<C> {
         );
         self.content
             .apply_layout(&inner_taffy, content_node, Point::new(inner.x0, inner.y0));
-        // Retain the inner tree so `handle_event` can route pointer +
-        // keyboard events into the content with a live node — required for
-        // embedded fields to focus/click.
         self.content_taffy = Some(inner_taffy);
         self.content_node = Some(content_node);
     }
 
-    /// Forward an event into the inner content widget using the retained
-    /// inner taffy tree. No-op until the first content layout has run.
-    /// `handled` is intentionally NOT threaded out — the dialog decides
-    /// consumption at its own level (it's always modal-blocking); the
-    /// content only needs the event delivered so its internal state
-    /// (focus, caret, hover) updates. `focus_target` IS threaded so an
-    /// embedded focusable can request focus.
+    /// No-op until the first content layout has run. `handled` is
+    /// intentionally NOT threaded out — the dialog decides consumption at
+    /// its own level (always modal-blocking), and the content only needs
+    /// the event delivered so its state (focus, caret, hover) updates.
+    /// `focus_target` IS threaded so an embedded focusable can request focus.
     fn forward_to_content(
         &mut self,
         event: &WindowEvent,
@@ -351,19 +282,26 @@ impl<C: Widget> ModalDialog<C> {
         );
     }
 
-    /// Test/host accessor for the resolved dialog box rect.
-    pub fn dialog_rect(&self) -> Rect { self.rect }
-    /// Test/host accessor for the primary button rect.
-    pub fn primary_rect(&self) -> Rect { self.primary_rect }
-    /// Test/host accessor for the secondary button rect.
-    pub fn secondary_rect(&self) -> Rect { self.secondary_rect }
-    /// Whether the dialog is currently open.
-    pub fn is_open(&self) -> bool { self.open }
+    pub fn dialog_rect(&self) -> Rect {
+        self.rect
+    }
+    pub fn primary_rect(&self) -> Rect {
+        self.primary_rect
+    }
+    pub fn secondary_rect(&self) -> Rect {
+        self.secondary_rect
+    }
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
 }
 
-/// Draw a single footer button — local to this module so we don't pull in
-/// `permission_prompt::draw_button` (it has a different visual treatment
-/// for disabled / hover state that the modal dialog doesn't need).
+/// Local to this module rather than reusing `permission_prompt::draw_button`,
+/// which has a different disabled/hover visual treatment this doesn't need.
+// Standard immediate-mode paint-helper signature for this vello renderer
+// (scene + transform + text_renderer + theme, plus this draw's own
+// content); every parameter is independently load-bearing.
+#[allow(clippy::too_many_arguments)]
 fn draw_action_button(
     scene: &mut Scene,
     transform: Affine,
@@ -374,7 +312,7 @@ fn draw_action_button(
     is_primary: bool,
     destructive: bool,
 ) {
-    let radius = theme.tokens.radii.sm as f64;
+    let radius = f64::from(theme.tokens.radii.sm);
     let shape = RoundedRect::from_rect(rect, radius);
     let bg = if is_primary {
         if destructive {
@@ -393,11 +331,21 @@ fn draw_action_button(
         None,
         &shape,
     );
-    let text_color = if is_primary { Color::WHITE } else { theme.tokens.colors.text_primary };
+    let text_color = if is_primary {
+        // The fill is a theme token, so whether white survives it is a question
+        // about the palette in force, not a constant.
+        theme.tokens.colors.ink_on_any(
+            &[bg],
+            Color::WHITE,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        )
+    } else {
+        theme.tokens.colors.text_primary
+    };
     let text_size = theme.tokens.typography.scale.sm;
     let (text_w, _) = text_renderer.measure(label, text_size, None);
-    let text_x = rect.center().x - (text_w as f64 / 2.0);
-    let text_y = rect.y0 + (rect.height() - text_size as f64) / 2.0;
+    let text_x = rect.center().x - (f64::from(text_w) / 2.0);
+    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -410,10 +358,8 @@ fn draw_action_button(
 
 impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // The dialog itself holds no CRDT-backed state — its `open`
-        // flag, callbacks and viewport are host-supplied. Forward to
-        // the content so embedded widgets (text inputs, checkboxes,
-        // etc.) still get their sync pass.
+        // The dialog holds no CRDT-backed state itself; forward so embedded
+        // content widgets still get their sync pass.
         self.content.sync(state, path);
     }
 
@@ -423,38 +369,33 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The dialog overlays the entire viewport so it can paint the
-        // backdrop everywhere outside the box. The body content is registered
-        // as a child node so its focusable widgets join the host's keyboard
-        // focus order (and, when the dialog is open, the focus trap) — even
-        // though `place_content` re-lays-out the body itself for drawing.
+        // The body is registered as a child node so its focusable widgets
+        // join the host's keyboard focus order (and the focus trap), even
+        // though `place_content` re-lays it out separately for drawing.
         let content_node = self.content.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
                 },
-                &[content_node],
-            )
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+                ..Default::default()
+            },
+            &[content_node],
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        // Use the resolved node rect as the viewport — when the dialog is
-        // hosted under a stack overlay this is the screen-sized parent;
-        // when wired directly under `App` it's the window itself.
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        // The resolved node rect: the screen-sized parent under a stack
+        // overlay, or the window itself when wired directly under `App`.
         self.viewport = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_layout();
         let mut tr = TextRenderer::new();
@@ -474,12 +415,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             return;
         }
 
-        // 1. Backdrop — fill the full viewport at 70% black.
         let backdrop = Color::BLACK.with_alpha_factor(0.7);
         scene.fill(Fill::NonZero, transform, backdrop, None, &self.viewport);
 
-        // 2. Dialog box — raised surface with the standard border + medium radius.
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let box_shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
@@ -496,12 +435,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             &box_shape,
         );
 
-        // 3. Title bar — text only, left-padded by `spacing.s4`. The bar
-        //    itself has no separator fill; the box stroke is enough to
-        //    delineate the header zone.
         let title_size = theme.tokens.typography.scale.lg;
-        let title_x = self.rect.x0 + theme.tokens.spacing.s4 as f64;
-        let title_y = self.rect.y0 + (TITLE_BAR_HEIGHT - title_size as f64) / 2.0;
+        let title_x = self.rect.x0 + f64::from(theme.tokens.spacing.s4);
+        let title_y = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_size)) / 2.0;
         text_renderer.draw_text(
             scene,
             &self.title,
@@ -511,16 +447,11 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             None,
         );
 
-        // 3b. Inner content — laid out by `place_content` between the title
-        //     bar and the footer. Drawn on top of the box fill so embedded
-        //     fields/messages are visible. (Before this the content was
-        //     measured + positioned but never painted.)
         self.content
             .draw(scene, transform, text_renderer, theme, presence);
 
-        // 4. Footer actions — right-aligned. Skip rendering when no
-        //    action is wired (e.g. an info-only dialog with just the
-        //    Escape-to-dismiss affordance).
+        // Skipped when no action is wired (e.g. an info-only dialog with
+        // just the Escape-to-dismiss affordance).
         if let Some(action) = &self.primary_action {
             draw_action_button(
                 scene,
@@ -562,24 +493,15 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         if !self.open {
             return;
         }
-        // A genuinely modal dialog is *blocking*: while open it consumes
-        // every keyboard event and every pointer event, full stop. The App
-        // additionally suppresses its own focus shortcuts and swallows
-        // click-through (see `Widget::modal_capture`), but the dialog marks
-        // events handled itself so it stays modal even when hosted directly
-        // (tests, headless) without the App's cooperation.
+        // Blocking: while open, marks every event handled itself so it
+        // stays modal even hosted directly (tests, headless) without the
+        // App's `modal_capture` cooperation.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
-                // Forward hover to the content so embedded inputs set their
-                // hover flag — a TextInput only takes a click while hovered,
-                // and the preceding CursorMoved is what arms it.
-                self.forward_to_content(
-                    event, scale_factor, modifiers, state, path, focus_target,
-                );
-                // Cursor moves don't "consume" in a way that blocks the App's
-                // presence/redraw bookkeeping; leave `handled` for press/keys.
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // A TextInput only takes a click while hovered, and this
+                // CursorMoved is what arms it.
+                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -596,11 +518,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 *handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
-                // Every other key goes to the content (typing into a field,
-                // etc.) and is then consumed so it never reaches the host.
-                self.forward_to_content(
-                    event, scale_factor, modifiers, state, path, focus_target,
-                );
+                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -609,8 +527,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 ..
             } => {
                 let p = self.last_cursor;
-                // Order matters: button rects sit INSIDE the dialog rect,
-                // so check them first.
+                // Button rects sit INSIDE the dialog rect, so check first.
                 if self.primary_action.is_some() && self.primary_rect.contains(p) {
                     if let Some(action) = self.primary_action.as_mut() {
                         (action.on_click)();
@@ -620,31 +537,30 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                         (action.on_click)();
                     }
                 } else if self.rect.contains(p) {
-                    // Click inside the box but outside any action button —
-                    // forward to the content so an embedded field focuses
-                    // and lands its caret at the click.
                     self.forward_to_content(
-                        event, scale_factor, modifiers, state, path, focus_target,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        focus_target,
                     );
-                } else {
-                    // Click outside the dialog box but inside the backdrop —
-                    // dismiss.
-                    if let Some(cb) = self.on_dismiss.as_mut() {
-                        cb();
-                    }
+                } else if let Some(cb) = self.on_dismiss.as_mut() {
+                    cb();
                 }
-                // Every left-press while open is consumed — modals are
-                // blocking, so a click never leaks to widgets behind the
-                // backdrop regardless of where it landed.
                 *handled = true;
             }
             WindowEvent::MouseInput { .. } => {
-                // Other buttons / release while open: swallow, but still
-                // forward in-box presses so e.g. a right-click context
+                // Still forward in-box presses so e.g. a right-click context
                 // affordance in the content can react.
                 if self.rect.contains(self.last_cursor) {
                     self.forward_to_content(
-                        event, scale_factor, modifiers, state, path, focus_target,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        focus_target,
                     );
                 }
                 *handled = true;
@@ -653,7 +569,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         }
     }
 
-    fn name(&self) -> &str { "ModalDialog" }
+    fn name(&self) -> &'static str {
+        "ModalDialog"
+    }
 
     fn modal_capture(&self) -> Option<Rect> {
         if self.open { Some(self.rect) } else { None }
@@ -667,18 +585,18 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         vec![&mut self.content]
     }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
-    /// An open dialog traps keyboard focus: the host keeps Tab/Shift+Tab and
-    /// arrow navigation inside the dialog's content while it's up, and
-    /// restores the previously-focused element when it closes.
-    fn traps_focus(&self) -> bool { self.open }
+    fn traps_focus(&self) -> bool {
+        self.open
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A dialog with a backdrop is modal by definition. The title is the
-        // accessible name (FTL-resolved — falls back to the literal when no
-        // translation exists). A closed dialog is hidden from the tree.
+        // Title is the accessible name (FTL-resolved). A closed dialog is
+        // hidden from the tree.
         let title = crate::i18n!(&self.title);
         let name = (!title.is_empty()).then_some(title);
         Some(
@@ -695,12 +613,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
 
 #[cfg(test)]
 mod tests {
-    //! Unit 7 coverage. The four required tests exercise the dismiss
-    //! paths (Escape + backdrop click) and the primary-action click,
-    //! plus a paint-contract assertion via the Vello encoding. The
-    //! `TestContent` leaf below stands in for an arbitrary `C: Widget`
-    //! so the generic surface is exercised end-to-end without depending
-    //! on any other widget's behaviour.
+    //! `TestContent` stands in for an arbitrary `C: Widget` so the generic
+    //! surface is exercised end-to-end without depending on another
+    //! widget's behaviour.
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -708,10 +623,8 @@ mod tests {
     use winit::event::{DeviceId, KeyEvent, MouseButton};
     use winit::keyboard::{KeyLocation, PhysicalKey};
 
-    /// Minimal leaf widget — fixed empty rect, no paint, no events.
-    /// Used solely as the generic content placeholder in tests so the
-    /// `ModalDialog<C>` generic compiles. Mirrors the synthetic-leaf
-    /// pattern used in `tests/e2e_shell_flows.rs`.
+    /// Fixed empty rect, no paint, no events — a generic content
+    /// placeholder so `ModalDialog<C>` compiles in tests.
     struct TestContent;
 
     impl Widget for TestContent {
@@ -722,7 +635,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.new_leaf(Style::default()).unwrap();
+            let node = taffy.leaf_node(Style::default());
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -749,13 +662,17 @@ mod tests {
             _taffy: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str { "TestContent" }
-        fn get_rect(&self) -> Rect { Rect::ZERO }
+        fn name(&self) -> &str {
+            "TestContent"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
     }
 
-    /// Content leaf that counts how many events it was forwarded, so the
-    /// modal-trap forwarding contract can be asserted. Sizes itself to a
-    /// real rect so it lands inside the dialog box.
+    /// Counts how many events it was forwarded, so the modal-trap
+    /// forwarding contract can be asserted. Sizes itself to a real rect
+    /// so it lands inside the dialog box.
     #[derive(Default)]
     struct CountingContent {
         events: std::rc::Rc<std::cell::Cell<usize>>,
@@ -770,15 +687,13 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(200.0),
-                        height: Dimension::length(40.0),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Default::default()
+            });
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -788,7 +703,10 @@ mod tests {
             _a: taffy::Size<taffy::AvailableSpace>,
             _tr: &mut TextRenderer,
         ) -> taffy::Size<f32> {
-            taffy::Size { width: 200.0, height: 40.0 }
+            taffy::Size {
+                width: 200.0,
+                height: 40.0,
+            }
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
             self.rect = Rect::new(origin.x, origin.y, origin.x + 200.0, origin.y + 40.0);
@@ -816,8 +734,12 @@ mod tests {
         ) {
             self.events.set(self.events.get() + 1);
         }
-        fn name(&self) -> &str { "CountingContent" }
-        fn get_rect(&self) -> Rect { self.rect }
+        fn name(&self) -> &str {
+            "CountingContent"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
     }
 
     /// SAFETY: opaque `DeviceId` whose all-zero bit pattern is tolerated
@@ -842,11 +764,9 @@ mod tests {
         }
     }
 
-    /// Build a winit `KeyEvent` over a zeroed buffer (winit's
-    /// `KeyEventExtra` field is `pub(crate)` so we can't struct-literal
-    /// one). All public fields tolerate the all-zero pattern; we then
-    /// overwrite the bits the dialog actually inspects. Same approach
-    /// `shell/tests/e2e_shell_flows.rs::key_press` uses.
+    /// Built over a zeroed buffer since winit's `KeyEventExtra` field is
+    /// `pub(crate)` and can't be struct-literalled; all public fields
+    /// tolerate all-zero, so we overwrite just the bits the dialog inspects.
     fn key_press_event(named: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(named);
@@ -862,20 +782,15 @@ mod tests {
         }
     }
 
-    /// Drive `handle_event` through the dialog with default scaffolding.
-    /// Mirrors `permission_prompt::tests::dispatch`.
     fn dispatch<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) {
         let _ = dispatch_handled(d, event);
     }
 
     /// Same as [`dispatch`] but returns whether the dialog marked the event
     /// handled — needed to assert the modal-blocking contract.
-    fn dispatch_handled<C: Widget + 'static>(
-        d: &mut ModalDialog<C>,
-        event: &WindowEvent,
-    ) -> bool {
+    fn dispatch_handled<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) -> bool {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -894,8 +809,7 @@ mod tests {
         handled
     }
 
-    /// Build a winit character key event for an arbitrary key. Used to
-    /// assert that a non-Escape key while open is swallowed.
+    /// Used to assert that a non-Escape key while open is swallowed.
     fn char_key_event() -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Tab);
@@ -911,12 +825,19 @@ mod tests {
         }
     }
 
-    /// Lay out a `ModalDialog<CountingContent>` through the real five-pass
-    /// path so `content_taffy` / `content_node` are populated and in-box
-    /// forwarding works.
-    fn laid_out_counting(open: bool) -> (ModalDialog<CountingContent>, std::rc::Rc<std::cell::Cell<usize>>) {
+    /// Through the real five-pass path so `content_taffy` / `content_node`
+    /// are populated and in-box forwarding works.
+    fn laid_out_counting(
+        open: bool,
+    ) -> (
+        ModalDialog<CountingContent>,
+        std::rc::Rc<std::cell::Cell<usize>>,
+    ) {
         let events = std::rc::Rc::new(std::cell::Cell::new(0usize));
-        let content = CountingContent { events: events.clone(), rect: Rect::ZERO };
+        let content = CountingContent {
+            events: events.clone(),
+            rect: Rect::ZERO,
+        };
         let mut d = ModalDialog::new("Title", content).open(open);
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -935,8 +856,6 @@ mod tests {
         (d, events)
     }
 
-    /// Dispatch one `draw` and return the count of `DrawTag::COLOR`
-    /// encoding entries. Mirrors `badge::tests::color_fill_count`.
     fn color_fill_count<C: Widget + 'static>(d: &mut ModalDialog<C>) -> usize {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -951,7 +870,6 @@ mod tests {
             .count()
     }
 
-    /// Required test #1 — Escape (pressed) fires `on_dismiss`.
     #[test]
     fn modal_dialog_dismiss_on_esc() {
         let dismissed = Rc::new(Cell::new(false));
@@ -967,8 +885,6 @@ mod tests {
         );
     }
 
-    /// Required test #2 — left-click outside the centered dialog box
-    /// (but inside the viewport-sized backdrop) fires `on_dismiss`.
     #[test]
     fn modal_dialog_backdrop_click_dismisses() {
         let dismissed = Rc::new(Cell::new(false));
@@ -977,9 +893,8 @@ mod tests {
             .open(true)
             .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
             .on_dismiss(move || dismissed_clone.set(true));
-        // (10, 10) is well outside the centered 480×320 dialog rect
-        // (which spans roughly [160..640]×[140..460] inside the 800×600
-        // viewport) but inside the backdrop.
+        // Well outside the centered 480×320 dialog rect but inside the
+        // 800×600 backdrop.
         let click_point = Point::new(10.0, 10.0);
         assert!(
             !d.dialog_rect().contains(click_point),
@@ -993,8 +908,6 @@ mod tests {
         );
     }
 
-    /// Required test #3 — left-click inside `primary_rect` fires the
-    /// primary action callback.
     #[test]
     fn modal_dialog_primary_action_invokes_callback() {
         let fired = Rc::new(Cell::new(false));
@@ -1003,8 +916,8 @@ mod tests {
             .open(true)
             .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
             .primary_action("OK", move || fired_clone.set(true));
-        // Drive a taffy `apply_layout` pass so `primary_rect` is populated
-        // through the actual five-pass path (not just `with_viewport`).
+        // Drive a real `apply_layout` pass so `primary_rect` is populated
+        // through the five-pass path (not just `with_viewport`).
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let theme = Theme::dark();
@@ -1028,10 +941,8 @@ mod tests {
         );
     }
 
-    /// Required test #4 — when `open == true`, `draw` emits at least
-    /// one COLOR draw tag covering the full viewport (the backdrop fill
-    /// is the first paint). We assert by inspecting the Vello encoding
-    /// directly so we don't depend on pixel readback.
+    /// Asserted via the Vello encoding directly so this doesn't depend on
+    /// pixel readback.
     #[test]
     fn modal_dialog_paints_backdrop_when_open() {
         let mut d = ModalDialog::<TestContent>::new("Title", TestContent)
@@ -1043,10 +954,8 @@ mod tests {
             "an open dialog must emit at least one COLOR fill (the backdrop); got {open_fills}",
         );
 
-        // Cross-check: a closed dialog must paint nothing — same
-        // contract `permission_prompt` follows when it's not in the
-        // tree. This guards against a future refactor that paints the
-        // backdrop unconditionally.
+        // Guards against a future refactor that paints the backdrop
+        // unconditionally.
         let mut closed = ModalDialog::<TestContent>::new("Title", TestContent)
             .open(false)
             .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
@@ -1057,11 +966,9 @@ mod tests {
         );
     }
 
-    /// A destructive dialog must paint its primary button with a different
-    /// colour than the ordinary accent primary. We drive the real draw path
-    /// for both variants (identical but for `with_destructive`) and assert the
-    /// encoded fill data differs — the only thing that can change it is the
-    /// primary button's fill colour.
+    /// Drives the real draw path for two variants identical but for
+    /// `with_destructive`, so only the primary button's fill colour can
+    /// account for a diff in the encoded fill data.
     #[test]
     fn destructive_primary_paints_a_different_fill_than_accent() {
         fn draw_data(destructive: bool) -> Vec<u32> {
@@ -1124,7 +1031,6 @@ mod tests {
             "the dialog body must be reachable as a child for the a11y tree",
         );
     }
-    // === Modal focus-trap contract ==================================
 
     /// An OPEN dialog reports its box rect via `modal_capture`; a closed
     /// one reports `None`. This is the signal the App uses to suppress its

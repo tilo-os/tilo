@@ -34,15 +34,24 @@ pub struct Units {
 
 impl Default for Units {
     fn default() -> Self {
-        Self { temp: TempUnit::Celsius, wind: WindUnit::Kmh }
+        Self {
+            temp: TempUnit::Celsius,
+            wind: WindUnit::Kmh,
+        }
     }
 }
 
 impl Units {
     /// Metric preset (°C, km/h) — what the sample data is stored in.
-    pub const METRIC: Units = Units { temp: TempUnit::Celsius, wind: WindUnit::Kmh };
+    pub const METRIC: Units = Units {
+        temp: TempUnit::Celsius,
+        wind: WindUnit::Kmh,
+    };
     /// Imperial preset (°F, mph).
-    pub const IMPERIAL: Units = Units { temp: TempUnit::Fahrenheit, wind: WindUnit::Mph };
+    pub const IMPERIAL: Units = Units {
+        temp: TempUnit::Fahrenheit,
+        wind: WindUnit::Mph,
+    };
 
     /// Open-Meteo `temperature_unit` query value.
     pub fn temp_api(&self) -> &'static str {

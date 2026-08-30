@@ -1,54 +1,45 @@
 //! `RegistryEntry` and the canonical signing form.
 //!
-//! The publisher signs
-//! `blake3(ENTRY_DOMAIN || postcard(entry_signing_payload))` where
-//! `entry_signing_payload` is a shape mirroring [`RegistryEntry`]
-//! *without* the `signature_hex` field. That exclusion is what
-//! avoids a fixed-point loop: the signature must not cover itself.
+//! The publisher signs `blake3(ENTRY_DOMAIN ||
+//! postcard(entry_signing_payload))`, where `entry_signing_payload`
+//! mirrors [`RegistryEntry`] *without* `signature_hex` — excluding it
+//! avoids a fixed-point loop (the signature must not cover itself).
 //!
-//! Verifiers reconstruct the same bytes by peeling `signature_hex`
-//! off the received entry, feeding the rest through postcard, and
-//! re-hashing. Because all fields except the signature are
-//! included in the signed message, any tamper — a swapped
-//! `qpkg_url`, a changed root hash, an added category — flips the
-//! digest and fails verification.
+//! Verifiers reconstruct the same bytes by peeling `signature_hex` off
+//! the received entry, re-encoding, and re-hashing; since every other
+//! field is included, any tamper (a swapped `qpkg_url`, a changed root
+//! hash, an added category) flips the digest and fails verification.
 
 use ed25519_dalek::{Signature, Signer, SigningKey};
-use serde::Serialize;
 use serde::Deserialize;
+use serde::Serialize;
 
 /// Domain-separation prefix for a registry-entry publisher signature.
 pub const ENTRY_DOMAIN: &[u8] = b"qos-registry-entry-v1\0";
 
-/// Domain-separation prefix for a registry-owner index signature.
-///
-/// Not consumed inside this crate but exposed for federation
-/// clients that federate a snapshot of the registry state.
+/// Domain-separation prefix for a registry-owner index signature; not
+/// used in this crate but exposed for federation clients snapshotting registry state.
 pub const INDEX_DOMAIN: &[u8] = b"qos-registry-index-v1\0";
 
-/// One version of a `.qpkg`, with the download URL and the BLAKE3
-/// root the client verifies after fetching.
+/// One version of a .qpkg, with the download URL and the BLAKE3 root the client verifies after fetching.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryVersion {
-    /// Semver string, or the CalVer `YYYY.MM` shape used by some
-    /// publishers. Registry treats it as opaque text — client
-    /// picks a "latest".
+    /// Semver string, or `CalVer` YYYY.MM as some publishers use; treated
+    /// as opaque text — client picks a "latest".
     pub version: String,
     /// HTTPS URL of the `.qpkg` file.
     pub qpkg_url: String,
-    /// BLAKE3 hash of the `.qpkg`'s signed root (the same hash
-    /// `pkg::PackageId` derives). Clients recompute this on
-    /// download; a mismatch means bytes were tampered in transit.
+    /// BLAKE3 hash of the .qpkg's signed root (same hash
+    /// `pkg::PackageId` derives); clients recompute on download — a
+    /// mismatch means bytes were tampered in transit.
     pub qpkg_root_hash_hex: String,
-    /// Byte size of the `.qpkg`, for progress bars and integrity
-    /// pre-flight.
+    /// Byte size of the .qpkg, for progress bars and integrity pre-flight.
     pub qpkg_size_bytes: u64,
     /// Unix seconds when the publisher released this version.
     pub released_at_unix: u64,
 }
 
-/// One package entry inside a registry — everything the client
-/// needs to render a store card and start a download.
+/// One package entry inside a registry — everything the client needs to render a store card and start a download.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryEntry {
     /// Reverse-DNS id from `pkg::Manifest.package.id`.
@@ -65,30 +56,25 @@ pub struct RegistryEntry {
     pub source_url: Option<String>,
     /// Optional project homepage.
     pub homepage: Option<String>,
-    /// Ed25519 identity of the publisher (32 bytes, hex).
-    /// Matches `pkg::Manifest.publisher.identity` on every
-    /// `qpkg_url` this entry advertises.
+    /// Ed25519 identity of the publisher (32 bytes, hex); matches
+    /// `pkg::Manifest.publisher.identity` on every `qpkg_url` this entry advertises.
     pub publisher_pubkey_hex: String,
     /// All versions the publisher has released. Order-preserving.
     pub versions: Vec<RegistryVersion>,
-    /// Unix seconds of the last publisher change — the value the
-    /// publisher signs alongside the rest of the entry. Used to
-    /// order concurrent updates: on POST the server takes the
-    /// newer `updated_at_unix`.
+    /// Unix seconds of the last publisher change — signed alongside the
+    /// rest of the entry; used to order concurrent updates (POST takes the newer value).
     pub updated_at_unix: u64,
-    /// Publisher's Ed25519 signature over
-    /// `blake3(ENTRY_DOMAIN || postcard(signing_payload))`.
-    /// Hex-encoded 64 bytes.
+    /// Publisher's Ed25519 signature over `blake3(ENTRY_DOMAIN ||
+    /// postcard(signing_payload))`, hex-encoded 64 bytes.
     pub signature_hex: String,
 }
 
 /// The canonical signing payload for a [`RegistryEntry`] — every
 /// field *except* the signature itself.
 ///
-/// Kept as a borrowed view so we don't clone the entry to compute
-/// its signing bytes. Postcard walks the fields in declaration
-/// order; keep this shape aligned with the `RegistryEntry` fields
-/// listed above (minus `signature_hex`).
+/// A borrowed view (avoids cloning the entry). Postcard walks fields
+/// in declaration order, so keep this shape aligned with
+/// `RegistryEntry`'s fields (minus `signature_hex`).
 #[derive(Serialize)]
 struct EntrySigningPayload<'a> {
     package_id: &'a str,
@@ -109,20 +95,19 @@ impl RegistryEntry {
         entry_signing_message(self)
     }
 
-    /// Detach the publisher signature and return an entry whose
-    /// `signature_hex` is empty — useful when preparing an entry
-    /// for a publisher to sign, or when re-signing after a moderator
-    /// edit. Sig-verification uses [`signing_message`] directly
-    /// and does not need this helper.
+    /// Detach the publisher signature, returning an entry with an empty
+    /// `signature_hex` — for preparing an entry to sign or re-signing
+    /// after a moderator edit. Verification uses [`signing_message`]
+    /// directly and doesn't need this.
     pub fn without_signature(mut self) -> Self {
         self.signature_hex.clear();
         self
     }
 }
 
-/// Standalone form of [`RegistryEntry::signing_message`]. Kept as
-/// a free function so verifier code can compute the digest
-/// without needing to construct or mutate an entry.
+/// Standalone form of [`RegistryEntry::signing_message`], as a free
+/// function so verifier code can compute the digest without
+/// constructing/mutating an entry.
 pub fn entry_signing_message(entry: &RegistryEntry) -> [u8; 32] {
     let payload = EntrySigningPayload {
         package_id: &entry.package_id,
@@ -136,8 +121,7 @@ pub fn entry_signing_message(entry: &RegistryEntry) -> [u8; 32] {
         versions: &entry.versions,
         updated_at_unix: entry.updated_at_unix,
     };
-    // Postcard's `to_stdvec` never fails for owned inputs of this
-    // shape; unwrap is safe here.
+    // Postcard's to_stdvec never fails for owned inputs of this shape — unwrap is safe.
     let body = postcard::to_stdvec(&payload).expect("postcard encode entry payload");
     let mut hasher = blake3::Hasher::new();
     hasher.update(ENTRY_DOMAIN);
@@ -146,8 +130,7 @@ pub fn entry_signing_message(entry: &RegistryEntry) -> [u8; 32] {
 }
 
 /// Domain-separated index signing message, exposed for federation
-/// clients that snapshot the registry state and want the owner to
-/// sign a manifest of all entries.
+/// clients snapshotting registry state for the owner to sign.
 pub fn index_signing_message<T: Serialize>(index_manifest: &T) -> [u8; 32] {
     let body = postcard::to_stdvec(index_manifest).expect("postcard encode index manifest");
     let mut hasher = blake3::Hasher::new();
@@ -156,8 +139,7 @@ pub fn index_signing_message<T: Serialize>(index_manifest: &T) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-/// Convenience: sign an entry in place, filling `signature_hex`.
-/// The caller is responsible for the publisher's key.
+/// Convenience: sign an entry in place, filling `signature_hex`; caller is responsible for the publisher's key.
 pub fn sign_entry(entry: &mut RegistryEntry, signing_key: &SigningKey) {
     // Ensure the signing_message is computed over the payload
     // WITHOUT the signature field, so we clear it first.

@@ -3,7 +3,7 @@
 //! ## The truncation problem this fixes
 //!
 //! rustypipe resolves a track's audio through the iOS/TV player clients, which
-//! return direct `googlevideo` media URLs *without* a PoToken. That gets audio
+//! return direct `googlevideo` media URLs *without* a `PoToken`. That gets audio
 //! playing — but those URLs are gated by PoToken/SABR: a bounded `Range` request
 //! **past the first ~1-minute segment is refused**, so only the opening minute
 //! of a track is ever fetchable. The whole track never streams.
@@ -36,22 +36,28 @@ pub const INVIDIOUS_INSTANCES: &[&str] = &[
     "https://iv.melmac.space",
 ];
 
-/// Standard YouTube audio itags, best-decodable first. itag 140 is m4a/AAC 128k
-/// (decodable by any stock GStreamer with libav/faad); itag 251 is webm/opus
+/// Standard `YouTube` audio itags, best-decodable first. itag 140 is m4a/AAC 128k
+/// (decodable by any stock `GStreamer` with libav/faad); itag 251 is webm/opus
 /// 160k. These are present for effectively every music track, so the resolver
 /// can probe the media proxy directly without first querying (flaky, often
 /// Cloudflare-gated) `/api/v1/videos` metadata for the itag list.
 #[cfg(feature = "live")]
 const KNOWN_AUDIO_ITAGS: &[(u32, &str, &str, &str, u32)] = &[
     // (itag, mime, codec, format, bitrate)
-    (140, "audio/mp4; codecs=\"mp4a.40.2\"", "mp4a", "m4a", 128_000),
+    (
+        140,
+        "audio/mp4; codecs=\"mp4a.40.2\"",
+        "mp4a",
+        "m4a",
+        128_000,
+    ),
     (251, "audio/webm; codecs=\"opus\"", "opus", "webm", 160_000),
 ];
 
 /// One audio-only adaptive format parsed from an Invidious video response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvAudio {
-    /// YouTube stream format id (itag) — the key the local proxy re-fetches by.
+    /// `YouTube` stream format id (itag) — the key the local proxy re-fetches by.
     pub itag: u32,
     /// Average/target bitrate in bits/second (higher = better).
     pub bitrate: u32,
@@ -91,7 +97,11 @@ impl InvAudio {
 
 /// The Invidious video-info endpoint for a video id.
 pub fn video_info_url(instance: &str, video_id: &str) -> String {
-    format!("{}/api/v1/videos/{}", instance.trim_end_matches('/'), video_id)
+    format!(
+        "{}/api/v1/videos/{}",
+        instance.trim_end_matches('/'),
+        video_id
+    )
 }
 
 /// The instance's **local media proxy** URL for a specific itag. `local=true`
@@ -125,7 +135,12 @@ pub fn parse_adaptive_audio(json: &serde_json::Value) -> Vec<InvAudio> {
             let itag = num_field(it, "itag")? as u32;
             let bitrate = num_field(it, "bitrate").unwrap_or(0) as u32;
             let clen = num_field(it, "clen").unwrap_or(0);
-            Some(InvAudio { itag, bitrate, mime: mime.to_string(), clen })
+            Some(InvAudio {
+                itag,
+                bitrate,
+                mime: mime.to_string(),
+                clen,
+            })
         })
         .collect()
 }
@@ -133,11 +148,12 @@ pub fn parse_adaptive_audio(json: &serde_json::Value) -> Vec<InvAudio> {
 /// Read a numeric JSON field that Invidious may send as a number *or* a string.
 fn num_field(it: &serde_json::Value, key: &str) -> Option<u64> {
     let v = it.get(key)?;
-    v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
 /// Pick the best audio format to play: prefer the broadly-decodable M4A/AAC
-/// container (stock GStreamer decodes it everywhere), then highest bitrate;
+/// container (stock `GStreamer` decodes it everywhere), then highest bitrate;
 /// fall back to the highest-bitrate stream of any container.
 pub fn best_audio(list: &[InvAudio]) -> Option<&InvAudio> {
     list.iter()
@@ -159,7 +175,11 @@ fn instances() -> Vec<String> {
             }
         }
     }
-    out.extend(INVIDIOUS_INSTANCES.iter().map(|s| s.to_string()));
+    out.extend(
+        INVIDIOUS_INSTANCES
+            .iter()
+            .map(std::string::ToString::to_string),
+    );
     out
 }
 
@@ -214,22 +234,17 @@ pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
 /// A plain browser `User-Agent` for talking to an Invidious `local` proxy (it
 /// is not a signed googlevideo URL, so no client-specific UA is needed).
 #[cfg(feature = "live")]
-pub(crate) const BROWSER_UA: &str =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+pub(crate) const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
 /// Probe a proxy media URL with a tiny range request: `true` only when the
 /// instance actually serves **audio media bytes** — not merely `2xx + non-empty`.
 ///
-/// Public Invidious instances routinely answer with an HTTP 200/206 *HTML* body:
-/// an anti-bot interstitial (nerdvpn's "gandalf" challenge), a Cloudflare page,
-/// a "hosted-service moved" blog, or an error page rendered as HTML. The old
-/// check (`status().is_success() && !bytes.is_empty()`) accepted all of those,
-/// so the resolver committed to a dead instance and the staging download fed
-/// **HTML** into GStreamer — the pipeline errored and the transport froze at
-/// 0:00 while the UI still said "playing". We therefore require the response to
-/// actually look like media: a success status, a media `Content-Type` (never
-/// `text/html` / `text/plain` / `application/json`), and a body that does not
-/// sniff as HTML.
+/// Public Invidious instances routinely answer with an HTTP 200/206 *HTML*
+/// body: an anti-bot interstitial, a Cloudflare page, or an error page
+/// rendered as HTML. Accepting any success status would commit the resolver
+/// to a dead instance and feed HTML into the audio decoder, so this also
+/// requires a media `Content-Type` (never `text/html` / `text/plain` /
+/// `application/json`) and a body that does not sniff as HTML.
 #[cfg(feature = "live")]
 fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
     match client
@@ -251,8 +266,7 @@ fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
             }
             let ok = resp
                 .bytes()
-                .map(|b| !b.is_empty() && !body_sniffs_as_html(&b))
-                .unwrap_or(false);
+                .is_ok_and(|b| !b.is_empty() && !body_sniffs_as_html(&b));
             if !ok {
                 tracing::debug!(target: "music::proxy", %url, "proxy probe rejected (empty or HTML body)");
             }
@@ -363,7 +377,11 @@ mod tests {
             eprintln!("[proxy test] skipped — no Invidious instance reachable");
             return;
         };
-        assert!(stream.url.contains("local=true"), "resolved a proxied URL: {}", stream.url);
+        assert!(
+            stream.url.contains("local=true"),
+            "resolved a proxied URL: {}",
+            stream.url
+        );
         let client = match reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
@@ -373,16 +391,15 @@ mod tests {
         };
         // Request a range well past the first-segment boundary raw googlevideo
         // URLs refuse (~1.5 MB in).
-        let resp = match client
+        let resp = if let Ok(r) = client
             .get(&stream.url)
             .header(reqwest::header::RANGE, "bytes=1500000-1600000")
             .send()
         {
-            Ok(r) => r,
-            Err(_) => {
-                eprintln!("[proxy test] skipped — proxy fetch failed");
-                return;
-            }
+            r
+        } else {
+            eprintln!("[proxy test] skipped — proxy fetch failed");
+            return;
         };
         if !resp.status().is_success() {
             eprintln!("[proxy test] skipped — proxy returned {}", resp.status());
@@ -404,8 +421,7 @@ mod tests {
         assert!(content_type_is_media("audio/webm; codecs=\"opus\""));
         assert!(content_type_is_media("application/octet-stream"));
         assert!(content_type_is_media("video/mp4"));
-        // Anti-bot / error pages an Invidious instance actually returns — these
-        // are the false-positives that made the resolver commit to a dead proxy.
+        // Anti-bot / error pages an Invidious instance actually returns as 2xx.
         assert!(!content_type_is_media("text/html; charset=utf-8"));
         assert!(!content_type_is_media("text/plain; charset=utf-8"));
         assert!(!content_type_is_media("application/json"));
@@ -421,7 +437,9 @@ mod tests {
         assert!(body_sniffs_as_html(b"   \n<!doctype html>"));
         // A real m4a fragment begins with an ISO-BMFF box (`....ftyp`/`....moov`)
         // or arbitrary binary — never HTML.
-        assert!(!body_sniffs_as_html(&[0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p']));
+        assert!(!body_sniffs_as_html(&[
+            0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p'
+        ]));
         assert!(!body_sniffs_as_html(b"OggS\x00\x02"));
     }
 

@@ -9,7 +9,7 @@
 //! Run:
 //!   QOS_WEBVIEW_DMABUF=1 QOS_WEBVIEW_DRM_NODE=/dev/dri/renderD128 \
 //!   GALLIUM_DRIVER=radeonsi AMD_DEBUG=nodcc,notiling \
-//!   cargo run -p ui --example wpe_dmabuf_probe --features webview-wpe --release
+//!   cargo run -p ui --example ui-wpe --features webview-wpe --release -- wpe_dmabuf_probe
 
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,7 @@ use ui::webview::wpe::import::import_dmabuf;
 use ui::webview::{WebViewCommand, WebViewEngine};
 use vello::wgpu;
 
-fn main() {
+pub fn run(_args: &[String]) {
     // wgpu on Vulkan, on the AMD adapter (must match the engine's export GPU).
     let mut idesc = wgpu::InstanceDescriptor::new_without_display_handle();
     idesc.backends = wgpu::Backends::VULKAN;
@@ -33,12 +33,10 @@ fn main() {
         .or_else(|| adapters.first())
         .expect("no Vulkan adapter");
     println!("[probe] wgpu adapter: {}", adapter.get_info().name);
-    let (device, queue) = pollster::block_on(
-        adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("dmabuf-probe"),
-            ..Default::default()
-        }),
-    )
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("dmabuf-probe"),
+        ..Default::default()
+    }))
     .expect("request_device");
 
     // Bring up the engine and load a page.
@@ -48,9 +46,7 @@ fn main() {
         height: 600,
         scale_factor: 1.0,
     });
-    engine.send(WebViewCommand::Navigate(
-        "https://example.org".to_string(),
-    ));
+    engine.send(WebViewCommand::Navigate("https://example.org".to_string()));
 
     // Poll for an importable dmabuf frame.
     let deadline = Instant::now() + Duration::from_secs(25);

@@ -103,9 +103,7 @@ impl Priority {
     /// notice→info→debug across accent / info / dim neutrals.
     pub fn color(self, theme: &ThemeColors) -> Color {
         match self {
-            Priority::Emerg | Priority::Alert | Priority::Crit | Priority::Err => {
-                theme.danger
-            }
+            Priority::Emerg | Priority::Alert | Priority::Crit | Priority::Err => theme.danger,
             Priority::Warning => theme.warning,
             Priority::Notice => theme.accent,
             Priority::Info => theme.info,
@@ -154,24 +152,19 @@ impl LogEntry {
     /// `YYYY-MM-DD HH:MM:SS.mmm UTC` — the verbose detail-pane stamp.
     pub fn timestamp_full(&self) -> String {
         let (y, mo, d, hh, mm, ss, milli) = civil(self.realtime_us);
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
-            y, mo, d, hh, mm, ss, milli
-        )
+        format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03} UTC")
     }
 
     /// `HH:MM:SS` for compact contexts.
     pub fn time_hms(&self) -> String {
         let (_, _, _, hh, mm, ss, _) = civil(self.realtime_us);
-        format!("{:02}:{:02}:{:02}", hh, mm, ss)
+        format!("{hh:02}:{mm:02}:{ss:02}")
     }
 
     /// The unit label shown in the list — strips a trailing `.service`
     /// for density, leaves other suffixes (`.socket`, `.timer`) intact.
     pub fn unit_short(&self) -> &str {
-        self.unit
-            .strip_suffix(".service")
-            .unwrap_or(&self.unit)
+        self.unit.strip_suffix(".service").unwrap_or(&self.unit)
     }
 }
 
@@ -253,7 +246,7 @@ fn civil(realtime_us: u64) -> (i64, u32, u32, u32, u32, u32, u32) {
     // civil_from_days: days since 1970-01-01 → (y, m, d).
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64; // [0, 146096]
+    let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
@@ -303,8 +296,14 @@ mod tests {
     fn filter_threshold_excludes_more_verbose() {
         let mut e = sample();
         e.priority = Priority::Info; // level 6
-        let f = Filter { min_priority: 3, ..Default::default() };
-        assert!(!f.passes(&e), "info must be hidden at errors-only threshold");
+        let f = Filter {
+            min_priority: 3,
+            ..Default::default()
+        };
+        assert!(
+            !f.passes(&e),
+            "info must be hidden at errors-only threshold"
+        );
         e.priority = Priority::Err; // level 3
         assert!(f.passes(&e));
     }
@@ -313,9 +312,15 @@ mod tests {
     fn filter_search_is_case_insensitive_over_message_and_unit() {
         let mut e = sample();
         e.message = "Mount FAILED for /var/workspace".into();
-        let f = Filter { search: "failed".into(), ..Default::default() };
+        let f = Filter {
+            search: "failed".into(),
+            ..Default::default()
+        };
         assert!(f.passes(&e));
-        let f2 = Filter { search: "absent".into(), ..Default::default() };
+        let f2 = Filter {
+            search: "absent".into(),
+            ..Default::default()
+        };
         assert!(!f2.passes(&e));
     }
 

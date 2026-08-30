@@ -1,30 +1,29 @@
-//! Page header / footer ⇄ ODF master-page. ODF keeps the repeated page regions in
-//! `styles.xml` under `office:master-styles` → `style:master-page` →
-//! `style:header` / `style:footer`, each holding paragraph content. A page-number
-//! field is a `<text:page-number/>` element. This maps those paragraph sequences
-//! onto the canonical header/footer block regions (both directions), and splices
-//! the regenerated header/footer back into a copy of the original `styles.xml` so
-//! the surrounding master-page / page-layout markup is preserved.
+//! Page header/footer ⇄ ODF master-page. ODF keeps repeated page regions in `styles.xml`
+//! under `office:master-styles > style:master-page > style:header`/`style:footer`
+//! (a page-number field is `<text:page-number/>`). This maps them onto the canonical
+//! header/footer regions, splicing regenerated regions back into a copy of `styles.xml`.
 
-use crate::model::{materialize_region, DocMut, DocRef, Region};
+use crate::model::{DocMut, DocRef, Region, materialize_region};
 use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use crate::snapshot::BlockView;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
-/// Import the `style:header` / `style:footer` paragraph sequences from the first
-/// `style:master-page` in a `styles.xml` into the canonical header/footer regions.
-/// `<text:page-number/>` becomes a page-number field (placeholder char + `field`
-/// mark). No-op when neither region is present.
+/// Import the `style:header`/`style:footer` paragraphs from the first `style:master-page`.
+/// `<text:page-number/>` becomes a page-number field. No-op when neither region is present.
 pub(super) fn import_master_headers(styles_xml: &[u8], doc: &mut DocMut) {
-    let Ok(s) = std::str::from_utf8(styles_xml) else { return };
+    let Ok(s) = std::str::from_utf8(styles_xml) else {
+        return;
+    };
     parse_region(s, "style:header", Region::Header, doc);
     parse_region(s, "style:footer", Region::Footer, doc);
 }
 
-/// Walk a `style:header`/`style:footer` element, turning each `text:p`/`text:h`
-/// into a region block. Text, `text:tab`/`text:line-break`/`text:s`, and
-/// `text:page-number` fields are mapped onto the model.
+/// Walk a `style:header`/`style:footer` element into region blocks; text,
+/// `text:tab`/`text:line-break`/`text:s`, and `text:page-number` fields map onto the model.
 fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
     let mut reader = Reader::from_str(xml);
     let mut in_region = false;
@@ -34,18 +33,21 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
     // Pending field marks (block, start) applied after text is in place.
     let mut field_marks: Vec<(String, usize)> = Vec::new();
 
-    let open_block = |doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize| {
+    let open_block = |doc: &mut DocMut,
+                      prev: &mut Option<String>,
+                      cur: &mut Option<String>,
+                      cur_len: &mut usize| {
         let id = doc.insert_block_in(region, prev.as_deref(), "paragraph");
         *prev = Some(id.clone());
-        *cur = Some(id.clone());
+        *cur = Some(id);
         *cur_len = 0;
     };
     let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
-        if let Some(b) = cur {
-            if !txt.is_empty() {
-                doc.splice_text_in(region, b, *cur_len, 0, txt);
-                *cur_len += txt.chars().count();
-            }
+        if let Some(b) = cur
+            && !txt.is_empty()
+        {
+            doc.splice_text_in(region, b, *cur_len, 0, txt);
+            *cur_len += txt.chars().count();
         }
     };
 
@@ -57,7 +59,9 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 n if n == tag.as_bytes() => in_region = true,
-                b"text:p" | b"text:h" if in_region => open_block(doc, &mut prev, &mut cur, &mut cur_len),
+                b"text:p" | b"text:h" if in_region => {
+                    open_block(doc, &mut prev, &mut cur, &mut cur_len);
+                }
                 _ => {}
             },
             Event::Empty(e) if in_region => match e.name().as_ref() {
@@ -79,7 +83,11 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
                         .attributes()
                         .flatten()
                         .find(|a| a.key.as_ref() == b"text:c")
-                        .and_then(|a| a.unescape_value().ok().and_then(|v| v.parse::<usize>().ok()))
+                        .and_then(|a| {
+                            a.unescape_value()
+                                .ok()
+                                .and_then(|v| v.parse::<usize>().ok())
+                        })
                         .unwrap_or(1)
                         .min(256);
                     append(doc, &cur, &mut cur_len, &" ".repeat(n));
@@ -89,7 +97,7 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
             Event::Text(t) if in_region && cur.is_some() => {
                 if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
-                    if !txt.is_empty() && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r'])) {
+                    if !txt.is_empty() && !super::content::is_layout_whitespace(&txt) {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
                 }
@@ -119,18 +127,18 @@ fn push_escaped(out: &mut String, c: char) {
     }
 }
 
-/// Whether character `i` of `b` is the start of a page-number field (covered by a
-/// single-char `field` mark valued `page-number`).
+/// Whether character `i` of `b` is the start of a page-number field.
 fn page_number_field_at(b: &BlockView, i: usize) -> bool {
-    b.marks
-        .iter()
-        .any(|m| m.name == MARK_FIELD && m.start == i && m.end == i + 1 && m.value.as_str() == Some(FIELD_PAGE_NUMBER))
+    b.marks.iter().any(|m| {
+        m.name == MARK_FIELD
+            && m.start == i
+            && m.end == i + 1
+            && m.value.as_str() == Some(FIELD_PAGE_NUMBER)
+    })
 }
 
-/// Render a region block's text, emitting `<text:page-number/>` for field
-/// placeholders and `text:tab`/`text:line-break` for tabs/breaks. (Header/footer
-/// paragraphs carry plain text + page-number fields; richer inline styling is not
-/// modeled here.)
+/// Render a region block's text, emitting `<text:page-number/>` for field placeholders
+/// and `text:tab`/`text:line-break` for tabs/breaks; richer inline styling isn't modeled.
 fn render_region_block(b: &BlockView) -> String {
     let chars: Vec<char> = b.text.chars().collect();
     let mut out = String::from("<text:p>");
@@ -139,7 +147,6 @@ fn render_region_block(b: &BlockView) -> String {
             if page_number_field_at(b, i) {
                 out.push_str("<text:page-number/>");
             }
-            // A placeholder without a recognized field mark renders as nothing.
             continue;
         }
         match c {
@@ -152,8 +159,7 @@ fn render_region_block(b: &BlockView) -> String {
     out
 }
 
-/// The `style:header`/`style:footer` XML for a region's blocks, or `None` when the
-/// region is empty.
+/// The `style:header`/`style:footer` XML for a region's blocks, or `None` when empty.
 fn region_xml(blocks: &[BlockView], tag: &str) -> Option<String> {
     if blocks.is_empty() {
         return None;
@@ -162,15 +168,13 @@ fn region_xml(blocks: &[BlockView], tag: &str) -> Option<String> {
     for b in blocks {
         out.push_str(&render_region_block(b));
     }
-    out.push_str(&format!("</{tag}>"));
+    let _ = write!(out, "</{tag}>");
     Some(out)
 }
 
 /// Inject (or replace) the `style:header`/`style:footer` children of the first
-/// `style:master-page` in `styles_xml` with the document's header/footer. When the
-/// source has no `office:master-styles`/`style:master-page`, a minimal one is
-/// synthesised. Returns the new `styles.xml` bytes, or `None` when the document has
-/// neither a header nor a footer (so an unchanged `styles.xml` is left untouched).
+/// `style:master-page`, synthesising a minimal one if none exists; `None` when the
+/// document has neither header nor footer, leaving `styles.xml` untouched.
 pub(super) fn export_master_headers(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8>> {
     let header = materialize_region(doc.doc, doc.c, Region::Header);
     let footer = materialize_region(doc.doc, doc.c, Region::Footer);
@@ -202,27 +206,22 @@ fn synth_styles(regions: &str) -> String {
     )
 }
 
-/// Splice the regenerated `regions` into the first `style:master-page` of an
-/// existing `styles.xml`: strip any existing `style:header`/`style:footer` from
-/// that master-page, then insert the new ones at its start. Falls back to
-/// appending a master-styles section when the source has no master-page.
+/// Splice `regions` into the first `style:master-page` of an existing `styles.xml`: strip
+/// its existing header/footer, insert the new ones at its start, or append a master-styles section if there's no master-page.
 fn splice_into_master(styles_xml: &[u8], regions: &str) -> Vec<u8> {
     let s = String::from_utf8_lossy(styles_xml).into_owned();
-    // Locate the first master-page element's open tag.
     if let Some((open_end, mp_inner_start, mp_inner_end)) = first_master_page_span(&s) {
-        // Drop existing header/footer from the master-page's inner content; keep
-        // everything else (page-layout refs etc.) verbatim.
+        // Drop existing header/footer from the master-page's inner content; keep everything else (page-layout refs etc.) verbatim.
         let inner = &s[mp_inner_start..mp_inner_end];
         let cleaned = strip_regions(inner);
         let mut out = String::with_capacity(s.len() + regions.len());
-        out.push_str(&s[..open_end]); // up to and including the master-page '>'
-        out.push_str(regions); // header/footer first
-        out.push_str(&cleaned); // surviving master-page content
-        out.push_str(&s[mp_inner_end..]); // </style:master-page> onward
+        out.push_str(&s[..open_end]);
+        out.push_str(regions);
+        out.push_str(&cleaned);
+        out.push_str(&s[mp_inner_end..]);
         return out.into_bytes();
     }
-    // No master-page: inject a fresh master-styles section. Prefer placing it
-    // before the document-styles close; otherwise append.
+    // No master-page: inject a fresh master-styles section, preferring to place it before the document-styles close.
     let section = format!(
         r#"<office:master-styles><style:master-page style:name="Standard">{regions}</style:master-page></office:master-styles>"#
     );
@@ -244,7 +243,6 @@ fn splice_into_master(styles_xml: &[u8], regions: &str) -> Vec<u8> {
 fn first_master_page_span(s: &str) -> Option<(usize, usize, usize)> {
     let open = s.find("<style:master-page")?;
     let gt = s[open..].find('>')? + open;
-    // Self-closing master-page has no inner content to splice into.
     if s.as_bytes().get(gt.wrapping_sub(1)) == Some(&b'/') {
         return None;
     }
@@ -253,8 +251,7 @@ fn first_master_page_span(s: &str) -> Option<(usize, usize, usize)> {
     Some((inner_start, inner_start, close))
 }
 
-/// Remove `style:header`/`style:footer` (and the rarely-used `*-left`/`*-first`
-/// variants) elements from a master-page's inner XML, returning the survivors.
+/// Remove `style:header`/`style:footer` (and the rarely-used `*-left`/`*-first` variants) from a master-page's inner XML.
 fn strip_regions(inner: &str) -> String {
     let mut out = String::with_capacity(inner.len());
     let mut reader = Reader::from_str(inner);
@@ -302,6 +299,11 @@ fn strip_regions(inner: &str) -> String {
 fn is_region_tag(name: &[u8]) -> bool {
     matches!(
         name,
-        b"style:header" | b"style:footer" | b"style:header-left" | b"style:footer-left" | b"style:header-first" | b"style:footer-first"
+        b"style:header"
+            | b"style:footer"
+            | b"style:header-left"
+            | b"style:footer-left"
+            | b"style:header-first"
+            | b"style:footer-first"
     )
 }

@@ -1,0 +1,45 @@
+[package]
+name = "photos"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "photos"
+path = "src/lib.rs"
+
+[[bin]]
+name = "photos"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+# The open photograph is published as a Resource whose edits are ActionSpecs,
+# so the shell's palette and an out-of-process caller drive the same operations
+# the toolbar buttons do.
+qos-actions = { path = "../../crates/collab/actions" }
+# "Select anything and say something about it": the open photograph mints a
+# durable address, so a message carries the picture rather than describing it.
+qos-reference = { path = "../../crates/collab/reference" }
+# The content store: `qdoc::blobstore` is what names a photograph by its
+# bytes rather than by the path one machine happened to open it from.
+qdoc = { path = "../../crates/doc/qdoc" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+# Decode whatever the chooser hands back; encode what Save and the clipboard
+# export. Default features are off workspace-wide, so name the formats.
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
+png.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# Lets a test look inside a drawn scene and count the image draws, so
+# "the photograph reached the scene" is an assertion rather than a hope.
+vello_encoding.workspace = true
+
+[lints]
+workspace = true

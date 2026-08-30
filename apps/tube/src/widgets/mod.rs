@@ -1,7 +1,7 @@
 //! App-local widgets + small composition helpers.
 //!
 //! `ui` owns the canonical toolkit; these are Tube-specific primitives we
-//! either can't express with the stock widgets (a SponsorBlock seek bar, a
+//! either can't express with the stock widgets (a `SponsorBlock` seek bar, a
 //! gradient thumbnail, vector icons) or want clickable in our own
 //! [`ActionBus`] dialect (`Flex`, `Switch`). The free helpers at the bottom
 //! cut the boilerplate of wrapping `ui::Text` and building spacers.
@@ -13,20 +13,89 @@ pub mod image_box;
 pub mod player_host;
 pub mod seek_bar;
 pub mod thumbnail;
-pub mod video_surface;
 
 pub use channel_avatar::ChannelAvatar;
-pub use controls::{Icon, IconKind, Switch};
+pub use controls::Switch;
 pub use flex::{Align, Axis, Flex, IntoElement, Justify, Len, Surface};
 pub use image_box::ImageBox;
 pub use player_host::{PlayerHost, SharedPlayer};
 pub use seek_bar::SeekBar;
 pub use thumbnail::Thumbnail;
-pub use video_surface::VideoSurface;
 
 use ui::theme::Theme;
 use ui::widget::Text;
+use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
+
+// --- Taffy layout helpers ------------------------------------------------
+//
+// `TaffyTree::new_leaf`/`new_with_children`/`layout` are typed fallible for
+// API generality, but every leaf widget in this module calls them the exact
+// way `ui` itself does internally (see `ui::widget::TaffyTreeExt`'s doc
+// comment, which this mirrors): `new_leaf` always inserts and returns `Ok`;
+// `layout` is only ever queried here for a node this same widget just built
+// and had computed by this frame's `compute_layout` pass. Centralised here
+// (rather than one `#[allow]` per call site) so every widget's
+// `build_layout`/`apply_layout` reads the same as the rest of the toolkit.
+
+/// Insert a leaf taffy node. See the module doc comment above for why the
+/// internal `unwrap` cannot actually panic.
+pub(crate) fn leaf_node(taffy: &mut taffy::TaffyTree<()>, style: taffy::Style) -> taffy::NodeId {
+    #[allow(
+        clippy::unwrap_used,
+        reason = "see widgets Taffy layout helpers doc comment"
+    )]
+    let node = taffy.new_leaf(style).unwrap();
+    node
+}
+
+/// Insert a parent taffy node over already-built `children`. See the module
+/// doc comment above for why the internal `unwrap` cannot actually panic.
+pub(crate) fn parent_node(
+    taffy: &mut taffy::TaffyTree<()>,
+    style: taffy::Style,
+    children: &[taffy::NodeId],
+) -> taffy::NodeId {
+    #[allow(
+        clippy::unwrap_used,
+        reason = "see widgets Taffy layout helpers doc comment"
+    )]
+    let node = taffy.new_with_children(style, children).unwrap();
+    node
+}
+
+/// This node's just-computed layout. See the module doc comment above for
+/// why the internal `unwrap` cannot actually panic. Prefer [`layout_rect`]
+/// when a plain `origin + layout` rect is all that's needed.
+pub(crate) fn node_layout(taffy: &taffy::TaffyTree<()>, node: taffy::NodeId) -> &taffy::Layout {
+    #[allow(
+        clippy::unwrap_used,
+        reason = "see widgets Taffy layout helpers doc comment"
+    )]
+    let l = taffy.layout(node).unwrap();
+    l
+}
+
+/// This widget's on-screen rect: `origin` plus the just-computed layout for
+/// `node`. See the module doc comment above for why the internal `unwrap`
+/// cannot actually panic.
+pub(crate) fn layout_rect(
+    taffy: &taffy::TaffyTree<()>,
+    node: taffy::NodeId,
+    origin: Point,
+) -> Rect {
+    #[allow(
+        clippy::unwrap_used,
+        reason = "see widgets Taffy layout helpers doc comment"
+    )]
+    let l = taffy.layout(node).unwrap();
+    Rect::new(
+        origin.x + f64::from(l.location.x),
+        origin.y + f64::from(l.location.y),
+        origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+        origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+    )
+}
 
 /// A line of text at `size` in the theme's primary colour.
 pub fn text(s: impl AsRef<str>, size: f32) -> Text {
@@ -66,7 +135,7 @@ pub fn divider(theme: &Theme) -> Flex {
 pub fn card_surface(theme: &Theme) -> Surface {
     Surface {
         fill: Some(theme.tokens.colors.surfaces.raised),
-        radius: theme.tokens.radii.lg as f64,
+        radius: f64::from(theme.tokens.radii.lg),
         border: Some((1.0, theme.border_standard)),
     }
 }
@@ -76,7 +145,7 @@ pub fn chip_surface(theme: &Theme, active: bool) -> Surface {
     if active {
         Surface {
             fill: Some(theme.accent_primary),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: None,
         }
     } else {
@@ -108,7 +177,7 @@ pub fn hover_fill(theme: &Theme) -> Color {
 pub fn subtle_surface(theme: &Theme) -> Surface {
     Surface {
         fill: Some(subtle_fill(theme)),
-        radius: theme.tokens.radii.full as f64,
+        radius: f64::from(theme.tokens.radii.full),
         border: None,
     }
 }
@@ -117,7 +186,7 @@ pub fn subtle_surface(theme: &Theme) -> Surface {
 pub fn hover_pill_surface(theme: &Theme) -> Surface {
     Surface {
         fill: Some(hover_fill(theme)),
-        radius: theme.tokens.radii.full as f64,
+        radius: f64::from(theme.tokens.radii.full),
         border: None,
     }
 }

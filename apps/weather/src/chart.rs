@@ -90,12 +90,26 @@ pub fn draw_hourly_strip(
             continue;
         }
         let cx = x_center(i);
-        let pill = RoundedRect::new(cx - col_w / 2.0 + 3.0, band.y0, cx + col_w / 2.0 - 3.0, band.y1, 10.0);
-        scene.fill(Fill::NonZero, t, accent.with_alpha_factor(0.14), None, &pill);
+        let pill = RoundedRect::new(
+            cx - col_w / 2.0 + 3.0,
+            band.y0,
+            cx + col_w / 2.0 - 3.0,
+            band.y1,
+            10.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            accent.with_alpha_factor(0.14),
+            None,
+            &pill,
+        );
     }
 
     // The smooth trend curve + soft area fill threaded through the columns.
-    let pts: Vec<Point> = (0..cols.len()).map(|i| Point::new(x_center(i), y_at(cols[i].temp))).collect();
+    let pts: Vec<Point> = (0..cols.len())
+        .map(|i| Point::new(x_center(i), y_at(cols[i].temp)))
+        .collect();
     let curve = catmull_rom_path(&pts);
     let mut area = curve.clone();
     area.line_to(Point::new(pts[pts.len() - 1].x, curve_bottom + 2.0));
@@ -129,7 +143,7 @@ pub fn draw_hourly_strip(
             &val,
             13.0,
             c.text_primary,
-            t * Affine::translate((cx - vw as f64 / 2.0, value_y)),
+            t * Affine::translate((cx - f64::from(vw) / 2.0, value_y)),
             None,
             TextWeight::Semibold,
         );
@@ -137,7 +151,13 @@ pub fn draw_hourly_strip(
         // Curve dot.
         if p.is_now {
             scene.fill(Fill::NonZero, t, accent, None, &Circle::new(pt, 4.5));
-            scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &Circle::new(pt, 1.8));
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.surfaces.raised,
+                None,
+                &Circle::new(pt, 1.8),
+            );
         } else {
             scene.fill(Fill::NonZero, t, accent, None, &Circle::new(pt, 2.6));
         }
@@ -155,7 +175,13 @@ pub fn draw_hourly_strip(
         // Precipitation probability (only when it's worth showing).
         if p.precip >= 5.0 {
             let drop_c = Point::new(cx - 12.0, precip_y + 4.0);
-            scene.fill(Fill::NonZero, t, c.semantic.info, None, &Circle::new(drop_c, 2.4));
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.semantic.info,
+                None,
+                &Circle::new(drop_c, 2.4),
+            );
             let txt = format!("{}%", p.precip.round() as i64);
             let (pw, _) = tr.measure(&txt, 11.0, None);
             tr.draw_text(
@@ -163,7 +189,7 @@ pub fn draw_hourly_strip(
                 &txt,
                 11.0,
                 c.semantic.info,
-                t * Affine::translate((cx - pw as f64 / 2.0 + 4.0, precip_y - 2.0)),
+                t * Affine::translate((cx - f64::from(pw) / 2.0 + 4.0, precip_y - 2.0)),
                 None,
             );
         }
@@ -180,7 +206,7 @@ pub fn draw_hourly_strip(
             &label,
             11.0,
             color,
-            t * Affine::translate((cx - lw as f64 / 2.0, label_y)),
+            t * Affine::translate((cx - f64::from(lw) / 2.0, label_y)),
             None,
             weight,
         );

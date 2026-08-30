@@ -61,11 +61,7 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
 
     // FN is required; N is the structured surname/given form.
     lines.push(format!("FN:{}", esc(&c.display_name())));
-    lines.push(format!(
-        "N:{};{};;;",
-        esc(&c.last),
-        esc(&c.first)
-    ));
+    lines.push(format!("N:{};{};;;", esc(&c.last), esc(&c.first)));
 
     if !c.org.trim().is_empty() {
         lines.push(format!("ORG:{}", esc(&c.org)));
@@ -78,13 +74,21 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
         if p.value.trim().is_empty() {
             continue;
         }
-        lines.push(format!("TEL;{}:{}", type_param(&p.label, version), esc(&p.value)));
+        lines.push(format!(
+            "TEL;{}:{}",
+            type_param(&p.label, version),
+            esc(&p.value)
+        ));
     }
     for e in &c.emails {
         if e.value.trim().is_empty() {
             continue;
         }
-        lines.push(format!("EMAIL;{}:{}", type_param(&e.label, version), esc(&e.value)));
+        lines.push(format!(
+            "EMAIL;{}:{}",
+            type_param(&e.label, version),
+            esc(&e.value)
+        ));
     }
     for a in &c.addresses {
         if a.is_empty() {
@@ -211,7 +215,10 @@ pub fn parse_vcards(input: &str) -> Vec<Contact> {
         }
         let upper = line.to_ascii_uppercase();
         if upper.starts_with("BEGIN:VCARD") {
-            cur = Some(Contact { id: Uuid::new_v4(), ..Default::default() });
+            cur = Some(Contact {
+                id: Uuid::new_v4(),
+                ..Default::default()
+            });
             continue;
         }
         if upper.starts_with("END:VCARD") {
@@ -220,8 +227,12 @@ pub fn parse_vcards(input: &str) -> Vec<Contact> {
             }
             continue;
         }
-        let Some(contact) = cur.as_mut() else { continue };
-        let Some((props, value)) = split_line(line) else { continue };
+        let Some(contact) = cur.as_mut() else {
+            continue;
+        };
+        let Some((props, value)) = split_line(line) else {
+            continue;
+        };
         apply_property(contact, &props, value);
     }
     contacts
@@ -233,11 +244,11 @@ fn unfold(input: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in input.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.starts_with(' ') || line.starts_with('\t') {
-            if let Some(last) = out.last_mut() {
-                last.push_str(&line[1..]);
-                continue;
-            }
+        if (line.starts_with(' ') || line.starts_with('\t'))
+            && let Some(last) = out.last_mut()
+        {
+            last.push_str(&line[1..]);
+            continue;
         }
         out.push(line.to_string());
     }
@@ -311,7 +322,10 @@ fn collect_types(desc: &PropDesc) -> String {
             }
         }
     }
-    types.first().cloned().unwrap_or_else(|| "other".to_string())
+    types
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "other".to_string())
 }
 
 fn apply_property(c: &mut Contact, props: &str, value: &str) {
@@ -349,10 +363,14 @@ fn apply_property(c: &mut Contact, props: &str, value: &str) {
         }
         "TITLE" => c.title = unescape(value).trim().to_string(),
         "TEL" => {
-            c.phones.push(Labeled::new(&collect_types(&desc), &unescape(strip_uri(value))));
+            c.phones.push(Labeled::new(
+                &collect_types(&desc),
+                &unescape(strip_uri(value)),
+            ));
         }
         "EMAIL" => {
-            c.emails.push(Labeled::new(&collect_types(&desc), &unescape(value)));
+            c.emails
+                .push(Labeled::new(&collect_types(&desc), &unescape(value)));
         }
         "ADR" => {
             let comps = split_unescaped(value, ';');
@@ -422,7 +440,7 @@ fn unescape(s: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             match chars.next() {
-                Some('n') | Some('N') => out.push('\n'),
+                Some('n' | 'N') => out.push('\n'),
                 Some(',') => out.push(','),
                 Some(';') => out.push(';'),
                 Some('\\') => out.push('\\'),
@@ -456,7 +474,7 @@ mod tests {
                 label: "home".into(),
                 street: "12 St James's Square".into(),
                 city: "London".into(),
-                region: "".into(),
+                region: String::new(),
                 postal: "SW1Y 4LE".into(),
                 country: "UK".into(),
             }],
@@ -478,7 +496,14 @@ mod tests {
         assert_eq!(r.org, "Analytical Engines");
         assert_eq!(r.title, "Mathematician");
         assert_eq!(r.website, "https://example.com");
-        assert_eq!(r.birthday, Some(Birthday::Full { year: 1815, month: 12, day: 10 }));
+        assert_eq!(
+            r.birthday,
+            Some(Birthday::Full {
+                year: 1815,
+                month: 12,
+                day: 10
+            })
+        );
         assert_eq!(r.phones[0].value, "+44 20 7946 0101");
         assert_eq!(r.phones[0].label, "mobile");
         assert_eq!(r.emails[0].value, "ada@example.com");
@@ -498,7 +523,14 @@ mod tests {
         assert!(doc.to_lowercase().contains("type=mobile"));
         // …and parsing it back recovers the structured birthday.
         let back = parse_vcards(&doc);
-        assert_eq!(back[0].birthday, Some(Birthday::Full { year: 1815, month: 12, day: 10 }));
+        assert_eq!(
+            back[0].birthday,
+            Some(Birthday::Full {
+                year: 1815,
+                month: 12,
+                day: 10
+            })
+        );
         assert_eq!(back[0].phones[0].label, "mobile");
     }
 
@@ -511,11 +543,17 @@ mod tests {
 
         let v3 = to_vcard(&c, VCardVersion::V3);
         assert!(v3.contains("BDAY:--03-09"), "v3 truncated form: {v3}");
-        assert_eq!(parse_vcards(&v3)[0].birthday, Some(Birthday::MonthDay { month: 3, day: 9 }));
+        assert_eq!(
+            parse_vcards(&v3)[0].birthday,
+            Some(Birthday::MonthDay { month: 3, day: 9 })
+        );
 
         let v4 = to_vcard(&c, VCardVersion::V4);
         assert!(v4.contains("BDAY:--0309"), "v4 truncated form: {v4}");
-        assert_eq!(parse_vcards(&v4)[0].birthday, Some(Birthday::MonthDay { month: 3, day: 9 }));
+        assert_eq!(
+            parse_vcards(&v4)[0].birthday,
+            Some(Birthday::MonthDay { month: 3, day: 9 })
+        );
     }
 
     #[test]

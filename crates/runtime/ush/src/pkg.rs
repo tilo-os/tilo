@@ -12,43 +12,33 @@
 //!
 //! Three alternatives were tried or considered, and rejected:
 //!
-//! - **`dnf --installroot=<layer>` on the host.** The obvious answer on Fedora,
-//!   and it does install the right files. But an installroot that holds only
-//!   the delta has no `/bin/sh`, no `ldconfig` and no `/usr/lib/rpm`, so every
-//!   scriptlet in the transaction fails. Measured on Fedora 44: `ldconfig`
-//!   returns "call to ldconfig failed", `man-db`'s file trigger exits 127, and
-//!   `dnf` reports the transaction as failed while leaving the files behind —
-//!   the worst of both, a half-applied install that claims not to have
-//!   happened. Running the same transaction inside the guest fixes it for free,
-//!   because the guest *is* the base plus the layer and every scriptlet finds
-//!   what it expects.
-//!
+//! - **`dnf --installroot=<layer>` on the host.** Installs the right files,
+//!   but an installroot holding only the delta has no `/bin/sh`, `ldconfig`
+//!   or `/usr/lib/rpm`, so every scriptlet fails. Measured on Fedora 44:
+//!   `ldconfig` errors, `man-db`'s file trigger exits 127, and `dnf` reports
+//!   the transaction failed while leaving the files behind. Running it
+//!   inside the guest fixes this for free — the guest *is* the base plus
+//!   the layer, so every scriptlet finds what it expects.
 //! - **`rpm2cpio` into the layer.** No dependency solving, no scriptlets, no
-//!   database. It would work for exactly the packages that need none of those,
-//!   which is not a useful set, and there would be no honest answer to
-//!   `pkg remove`.
-//!
+//!   database — works only for packages that need none of those, and there
+//!   is no honest answer to `pkg remove`.
 //! - **A container image per layer.** Correct and heavy: a second package
-//!   universe, a second update cadence, and gigabytes where the delta is
-//!   kilobytes. The point of the layer model is that the base is already there.
+//!   universe, a second update cadence, gigabytes where the delta is
+//!   kilobytes.
 //!
 //! # The one thing the guest cannot do
 //!
-//! It cannot *modify* a file that came from the base — the file is owned by
-//! host uid 0, which is not mapped into the guest's user namespace, so overlayfs
-//! cannot copy it up. In practice that means a layer can install a package and
-//! cannot upgrade one that shipped in the image. `pkg` says so rather than
-//! letting `dnf` fail somewhere confusing.
+//! It cannot *modify* a file from the base — owned by host uid 0, unmapped
+//! in the guest's namespace, so overlayfs can't copy it up. A layer can
+//! install a package but not upgrade one that shipped in the image; `pkg`
+//! says so rather than letting `dnf` fail somewhere confusing.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Where a layer records what `pkg` put in it.
-///
-/// Inside `/usr`, so it lands in the layer and the guest can read it back
-/// through the merged view. `rpm -qa` cannot answer this on its own: it reports
-/// the base and the layer as one installed set, which is the point of seeding
-/// the database and also the reason it is not the record of what you added.
+/// Where a layer records what `pkg` put in it, inside `/usr` so it lands in
+/// the layer. `rpm -qa` can't answer this alone — it reports base+layer as
+/// one set, which is why the database is seeded and this is a separate record.
 pub const MANIFEST_PATH: &str = "/usr/lib/ush/packages.json";
 
 /// One package this layer installed.
@@ -120,11 +110,9 @@ impl Manifest {
     }
 }
 
-/// The `dnf` argv for an install inside a guest.
-///
-/// Split out so the flags can be asserted on without a network. Weak
-/// dependencies are off: a layer should hold what you asked for, and pulling a
-/// recommends-chain into it is how a delta stops being one.
+/// The `dnf` argv for an install inside a guest, split out so the flags can
+/// be asserted on without a network. Weak deps are off — a layer should
+/// hold what you asked for, not a recommends-chain.
 pub fn install_argv(packages: &[String], releasever: &str) -> Vec<String> {
     let mut argv: Vec<String> = vec![
         "dnf5".into(),
@@ -162,17 +150,14 @@ pub fn releasever() -> String {
         .unwrap_or_else(|| "rawhide".into())
 }
 
-/// Is this package already part of what the guest can see?
-///
-/// The guest's rpm database is the base's plus whatever the layer added, so
-/// this answers "would installing it do anything", not "did this layer install
-/// it". [`Manifest`] answers the second question.
+/// Is this package already part of what the guest can see? The guest's rpm
+/// database is base+layer, so this answers "would installing it do
+/// anything", not "did this layer install it" — see [`Manifest`] for that.
 pub fn is_installed(name: &str) -> bool {
     Command::new("rpm")
         .args(["-q", name])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// `name-version-release.arch` for an installed package, or the bare name.
@@ -202,13 +187,11 @@ pub struct Inspection {
     pub risks: Vec<String>,
 }
 
-/// Inspect an installed package with rpm.
-///
-/// The "risk" read is deliberately mechanical and says what it looked at: files
-/// that are setuid or setgid, scriptlets that run as root at install time,
-/// services that would start on boot, and anything landing outside the paths a
-/// layer normally owns. It is not a malware verdict and does not pretend to be
-/// one — see [`crate::guard`] for the same honesty applied to `scan`.
+/// Inspect an installed package with rpm. The "risk" read is deliberately
+/// mechanical and says what it looked at: setuid/setgid files, root
+/// install-time scriptlets, boot-start services, anything outside a
+/// layer's normal paths — not a malware verdict; see [`crate::guard`] for
+/// the same honesty applied to `scan`.
 pub fn inspect(name: &str) -> Inspection {
     let mut out = Inspection {
         nevra: nevra(name),
@@ -395,10 +378,8 @@ mod tests {
         );
     }
 
-    /// The check that stops a `--one-time` install of something the base
-    /// already ships from whiting the base's copy out at the end of the
-    /// session. `rpm` is on every machine this runs on, and `bash` is on every
-    /// machine that has rpm.
+    /// Stops a `--one-time` install of something the base already ships from
+    /// whiting the base's copy out at session end; `rpm`/`bash` are always present.
     #[test]
     fn is_installed_distinguishes_the_base_from_a_name_nothing_provides() {
         assert!(
@@ -413,6 +394,9 @@ mod tests {
     fn releasever_is_never_empty() {
         let r = releasever();
         assert!(!r.is_empty());
-        assert!(!r.contains('%'), "an unexpanded rpm macro leaked through: {r}");
+        assert!(
+            !r.contains('%'),
+            "an unexpanded rpm macro leaked through: {r}"
+        );
     }
 }

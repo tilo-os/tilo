@@ -24,7 +24,6 @@ blake3.workspace = true
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 qos-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
-serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -43,6 +42,7 @@ roxmltree = "0.20"
 # rather than a generated spine. Already in the workspace graph, so no new
 # compilation beyond feature unification.
 image = { workspace = true, features = ["jpeg", "png"] }
+unicode-bidi = "0.3.18"
 
 [dev-dependencies]
 # Serialises the handful of tests that set the process-wide `EBOOK_LIBRARY_DIR`
@@ -51,3 +51,6 @@ image = { workspace = true, features = ["jpeg", "png"] }
 serial_test.workspace = true
 # Real temp directories for the on-disk library-discovery tests.
 tempfile.workspace = true
+
+[lints]
+workspace = true

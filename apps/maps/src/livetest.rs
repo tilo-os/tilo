@@ -154,10 +154,18 @@ where
         h.pump_frame(widget, &mut scene);
         frames += 1;
         if stop(widget) {
-            return PumpStats { frames, elapsed: start.elapsed(), stopped: true };
+            return PumpStats {
+                frames,
+                elapsed: start.elapsed(),
+                stopped: true,
+            };
         }
         if start.elapsed() >= max_wait {
-            return PumpStats { frames, elapsed: start.elapsed(), stopped: false };
+            return PumpStats {
+                frames,
+                elapsed: start.elapsed(),
+                stopped: false,
+            };
         }
         std::thread::sleep(poll);
     }
@@ -177,7 +185,11 @@ pub fn render_live_to_png<W: Widget>(h: &mut Harness, widget: &mut W, path: &Pat
         std::fs::create_dir_all(parent).ok();
     }
     write_png(path, &rgba, w, ht);
-    Frame { rgba, width: w, height: ht }
+    Frame {
+        rgba,
+        width: w,
+        height: ht,
+    }
 }
 
 fn write_png(path: &Path, rgba: &[u8], w: u32, h: u32) {
@@ -202,15 +214,20 @@ impl Frame {
     /// RGBA at `(x, y)`.
     pub fn px(&self, x: u32, y: u32) -> (u8, u8, u8, u8) {
         let i = ((y * self.width + x) * 4) as usize;
-        (self.rgba[i], self.rgba[i + 1], self.rgba[i + 2], self.rgba[i + 3])
+        (
+            self.rgba[i],
+            self.rgba[i + 1],
+            self.rgba[i + 2],
+            self.rgba[i + 3],
+        )
     }
 
     /// Clamp a region to the frame and yield integer pixel bounds.
     fn bounds(&self, region: Rect) -> (u32, u32, u32, u32) {
         let x0 = region.x0.max(0.0) as u32;
         let y0 = region.y0.max(0.0) as u32;
-        let x1 = (region.x1.min(self.width as f64) as u32).max(x0 + 1);
-        let y1 = (region.y1.min(self.height as f64) as u32).max(y0 + 1);
+        let x1 = (region.x1.min(f64::from(self.width)) as u32).max(x0 + 1);
+        let y1 = (region.y1.min(f64::from(self.height)) as u32).max(y0 + 1);
         (x0, y0, x1, y1)
     }
 
@@ -258,7 +275,10 @@ impl Frame {
             while x < x1 {
                 let a = self.px(x, y);
                 let b = other.px(x, y);
-                let d = a.0.abs_diff(b.0).max(a.1.abs_diff(b.1)).max(a.2.abs_diff(b.2));
+                let d =
+                    a.0.abs_diff(b.0)
+                        .max(a.1.abs_diff(b.1))
+                        .max(a.2.abs_diff(b.2));
                 if d > tol {
                     changed += 1;
                 }
@@ -267,6 +287,10 @@ impl Frame {
             }
             y += step;
         }
-        if total == 0 { 0.0 } else { changed as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            changed as f64 / total as f64
+        }
     }
 }

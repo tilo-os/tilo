@@ -1,29 +1,16 @@
-//! Compositor entry point — Phase 1 of the real Wayland compositor plan.
+//! Compositor entry point.
 //!
-//! The shell binary supports two run modes:
+//! The shell binary supports two run modes: [`Mode::Native`] (default) spins up a real
+//! smithay-driven Wayland server (auto-binds `wayland-N`) and paints chrome through vello+wgpu;
+//! [`Mode::Hosted`] is the legacy `winit`-on-host iced loop, an explicit dev opt-in via `--mode hosted` for when no DRM/KMS or spare Wayland session is available.
 //!
-//! - [`Mode::Native`] — the default as of Phase 7. Spins up a real
-//!   smithay-driven Wayland server (auto-binds `wayland-N`), advertises the
-//!   compositor / xdg-shell / shm / seat / output globals, and paints chrome
-//!   through the vello+wgpu backend wired up in Phase 4. This is what
-//!   `cargo run -p quick-desktop` does with no flags.
-//! - [`Mode::Hosted`] — the legacy `winit`-on-host iced loop, kept as an
-//!   explicit dev opt-in via `--mode hosted`. Useful when no DRM/KMS or
-//!   spare Wayland session is available (e.g. running inside another
-//!   compositor that you don't want to nest into).
-//!
-//! Mode selection is driven by a single `--mode <hosted|native>` (or
-//! `--mode=<...>`) command-line flag. Anything unrecognised — including the
-//! flag being absent — falls back to [`Mode::Native`] (the Phase 7 default
-//! flip). `--mode hosted` is the explicit opt-in for the legacy path.
-//!
-//! See `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
-//! (Phases 1 and 7) for the full design intent.
+//! Mode selection is a single `--mode <hosted|native>` (or `--mode=<...>`) flag; anything unrecognised, including the flag being absent, falls back to [`Mode::Native`].
 
 pub mod backend;
 pub mod bridge;
 pub mod client_input;
 pub mod dev_env;
+pub mod drag_feedback;
 pub mod foreign;
 pub mod frame;
 pub mod gpu_import;
@@ -39,6 +26,7 @@ pub mod native;
 pub mod output_globals;
 pub mod pacing;
 pub mod present;
+pub mod projection_capture;
 pub mod remote_seat;
 pub mod render_node;
 pub mod selection;
@@ -50,92 +38,58 @@ pub mod test_control;
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Default. Render inside an existing X11/Wayland host session via winit.
+    /// The legacy `winit`-on-host iced loop, kept as an explicit dev opt-in via `--mode hosted`.
     Hosted,
-    /// Future smithay-on-TTY compositor. Currently a stub — see
-    /// [`native::run`].
+    /// Default. Real smithay-driven Wayland server — see [`native::run`].
     Native,
 }
 
-/// Which backend `Mode::Native` should drive. Mirrors `--mode` in shape:
-/// a single `--backend <winit|drm>` (or `--backend=<...>`) flag, with any
-/// unknown value (or absence) falling back to [`BackendKind::Winit`].
-///
-/// `Drm` is a Phase 5 skeleton — the flag is wired through so the
-/// follow-up TTY implementation plugs in without touching the shell
-/// entry point. See [`backend::DrmBackend`] for the deferred work.
+/// Which backend `Mode::Native` should drive: `--backend <winit|drm>` (or `--backend=<...>`), unknown/absent falling back to [`BackendKind::Winit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
     /// Default. Host on an existing Wayland/X11 session via `winit`.
     Winit,
-    /// Phase 5 stub: drive a TTY directly via DRM/KMS + libinput.
-    /// Currently errors at construction with a "not yet implemented"
-    /// message — see [`backend::DrmBackend`].
+    /// Drive a TTY directly via DRM/KMS + libinput — see [`backend::DrmBackend`].
     Drm,
-    /// Display-free wgpu-offscreen backend. No window, no event loop,
-    /// no GPU surface — paints into an offscreen texture via
-    /// [`backend::HeadlessBackend`]. Lets the live binary boot in CI,
-    /// distrobox without a display, or remote SSH sessions without
-    /// X-forwarding. Drivable end-to-end through the
-    /// `QOS_TEST_CONTROL` socket protocol.
+    /// Display-free wgpu-offscreen backend: no window, no event loop, no GPU surface — paints
+    /// into an offscreen texture via [`backend::HeadlessBackend`]. Lets the live binary boot in CI, distrobox without a display, or SSH without X-forwarding; drivable via `QOS_TEST_CONTROL`.
     Headless,
 }
 
-/// Parse the run mode from the process's command-line arguments.
-///
-/// Thin wrapper around [`parse_mode`] so callers don't need to materialise a
-/// `Vec<String>` themselves. Tests should drive [`parse_mode`] directly with
-/// a fixture slice; `std::env::args` is process-global and cannot be
-/// monkey-patched.
+/// Parse the run mode from the process's command-line arguments. Thin wrapper around
+/// [`parse_mode`] so callers don't materialise a `Vec<String>`; tests should drive [`parse_mode`] directly since `std::env::args` can't be monkey-patched.
 pub fn parse_mode_from_args() -> Mode {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_mode(&borrowed)
 }
 
-/// Process-global wrapper around [`parse_peer_sync`]. v1 default OFF —
-/// callers must opt in via `--enable-peer-sync` to spin up the libp2p
-/// stack. Used by `main` to decide whether to construct a
-/// [`crate::shell::network::ShellNetwork`].
+/// Process-global wrapper around [`parse_peer_sync`]. v1 default OFF — callers opt in via `--enable-peer-sync` to spin up the Iroh stack.
 pub fn parse_peer_sync_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_peer_sync(&borrowed)
 }
 
-/// Pure, testable `--enable-peer-sync` flag parser. Returns `true` iff
-/// the flag is present anywhere in `args`. Mirrors [`parse_mode`]'s
-/// "parse from a borrowed slice" shape so tests can drive it with a
-/// fixture without touching `std::env`.
+/// Pure, testable `--enable-peer-sync` flag parser: `true` iff the flag is present anywhere in `args`, so tests can drive it with a fixture slice without touching `std::env`.
 pub fn parse_peer_sync(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--enable-peer-sync")
+    args.contains(&"--enable-peer-sync")
 }
 
-/// Source of truth for the peer-sync marker file. Mockable so tests
-/// don't actually touch the filesystem — production wires up
-/// [`XdgConfigMarkerSource`] which checks
-/// `$XDG_CONFIG_HOME/quick-desktop/peer-sync.enabled` (falling back to
-/// `~/.config/quick-desktop/peer-sync.enabled`).
-///
-/// See `os/docs/peer-sync.md` for the user-facing contract — enabling
-/// the `quick-desktop-peer-sync.service` user unit drops this marker so
-/// the next compositor launch picks up peer-sync without needing the
-/// CLI flag.
+/// Source of truth for the peer-sync marker file. Mockable so tests don't touch the
+/// filesystem; production wires up [`XdgConfigMarkerSource`], checking
+/// `$XDG_CONFIG_HOME/quick-desktop/peer-sync.enabled` (falling back to `~/.config/...`). See
+/// `os/docs/peer-sync.md`: the `shell-peer-sync.service` user unit drops this marker so the next launch picks up peer-sync without the CLI flag.
 pub trait MarkerSource {
     /// Returns true if the peer-sync marker exists.
     fn peer_sync_marker_exists(&self) -> bool;
 }
 
-/// Production marker source — checks `$XDG_CONFIG_HOME/quick-desktop/peer-sync.enabled`,
-/// falling back to `$HOME/.config/quick-desktop/peer-sync.enabled` when
-/// `XDG_CONFIG_HOME` is unset.
+/// Production marker source — checks `$XDG_CONFIG_HOME/quick-desktop/peer-sync.enabled`, falling back to `$HOME/.config/...` when `XDG_CONFIG_HOME` is unset.
 pub struct XdgConfigMarkerSource;
 
 impl XdgConfigMarkerSource {
-    /// Resolve the marker file path using the same rules
-    /// [`peer_sync_marker_exists`] uses. Exposed for diagnostics and
-    /// for tests that want to assert the resolution rules without
-    /// touching the filesystem.
+    /// Resolve the marker file path using the same rules [`peer_sync_marker_exists`] uses; exposed for diagnostics and for tests asserting resolution without touching the filesystem.
     pub fn marker_path() -> Option<std::path::PathBuf> {
         peer_sync_marker_path_from_env(
             std::env::var_os("XDG_CONFIG_HOME"),
@@ -146,13 +100,11 @@ impl XdgConfigMarkerSource {
 
 impl MarkerSource for XdgConfigMarkerSource {
     fn peer_sync_marker_exists(&self) -> bool {
-        Self::marker_path().map(|p| p.exists()).unwrap_or(false)
+        Self::marker_path().is_some_and(|p| p.exists())
     }
 }
 
-/// Pure helper for [`XdgConfigMarkerSource::marker_path`]. Split out so
-/// tests can drive the path-resolution rules with fixture env-var
-/// values without touching the real process environment.
+/// Pure helper for [`XdgConfigMarkerSource::marker_path`], so tests can drive the path-resolution rules with fixture env-var values.
 pub fn peer_sync_marker_path_from_env(
     xdg_config_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
@@ -171,10 +123,7 @@ pub fn peer_sync_marker_path_from_env(
     Some(p)
 }
 
-/// Combined peer-sync resolution: CLI flag wins, then marker file,
-/// then default OFF. Used by `main` to decide whether to spin up the
-/// libp2p stack. The trait split lets unit tests substitute an
-/// in-memory marker source without writing to disk.
+/// Combined peer-sync resolution: CLI flag wins, then marker file, then default OFF. The trait split lets unit tests substitute an in-memory marker source without writing to disk.
 pub fn peer_sync_enabled_with(args: &[&str], markers: &dyn MarkerSource) -> bool {
     if parse_peer_sync(args) {
         return true;
@@ -182,111 +131,80 @@ pub fn peer_sync_enabled_with(args: &[&str], markers: &dyn MarkerSource) -> bool
     markers.peer_sync_marker_exists()
 }
 
-/// Process-global wrapper around [`peer_sync_enabled_with`]. Reads CLI
-/// args from `std::env::args` and the marker via
-/// [`XdgConfigMarkerSource`]. `main.rs` uses this in lieu of
-/// [`parse_peer_sync_from_args`] so the systemd user unit opt-in path
-/// (see `os/docs/peer-sync.md`) actually toggles peer-sync at boot.
+/// Process-global wrapper around [`peer_sync_enabled_with`], reading CLI args from
+/// `std::env::args` and the marker via [`XdgConfigMarkerSource`] — what makes the systemd unit opt-in path (`os/docs/peer-sync.md`) actually toggle peer-sync at boot.
 pub fn peer_sync_enabled_from_env_or_marker() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     peer_sync_enabled_with(&borrowed, &XdgConfigMarkerSource)
 }
 
-/// Process-global wrapper around [`parse_portal_server_only`]. When
-/// true, `main` skips the full compositor boot and runs the
-/// xdg-desktop-portal D-Bus backend as a stand-alone process — the
-/// shape the `quick-desktop-portal.service` user unit expects (see
-/// `os/usr/lib/systemd/user/quick-desktop-portal.service`).
+/// Process-global wrapper around [`parse_portal_server_only`]: when true, `main` skips the
+/// full compositor boot and runs the xdg-desktop-portal D-Bus backend stand-alone — the shape `quick-desktop-portal.service` expects.
 pub fn parse_portal_server_only_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_portal_server_only(&borrowed)
 }
 
-/// Pure, testable `--portal-server-only` flag parser. Mirrors
-/// [`parse_peer_sync`]: returns true iff the flag is present anywhere
-/// in `args`. When set, `main` runs only `portal::serve` and skips the
-/// compositor — used by the user-level `quick-desktop-portal.service`
-/// unit so the portal backend doesn't race for `wayland-N`.
+/// Pure, testable `--portal-server-only` flag parser (mirrors [`parse_peer_sync`]). When set,
+/// `main` runs only `portal::serve` and skips the compositor, so the portal unit doesn't race for `wayland-N`.
 pub fn parse_portal_server_only(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--portal-server-only")
+    args.contains(&"--portal-server-only")
 }
 
-/// Process-global wrapper around [`parse_firstboot`]. When true,
-/// `main` runs the first-boot setup routine (creating
-/// `$XDG_CONFIG_HOME/quick-desktop/` and friends) **before** continuing
-/// with the normal compositor boot. Used by the
-/// `quick-desktop-firstboot.service` system unit on first login.
+/// Process-global wrapper around [`parse_firstboot`]: when true, `main` runs first-boot setup (creating `$XDG_CONFIG_HOME/quick-desktop/` etc.) before the normal boot.
 pub fn parse_firstboot_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_firstboot(&borrowed)
 }
 
-/// Pure, testable `--firstboot` flag parser. Mirrors
-/// [`parse_peer_sync`]: returns true iff the flag is present anywhere
-/// in `args`. When set, `main` runs first-boot setup and then
-/// continues with the compositor — first-boot is a "make sure dirs
-/// exist before we proceed" hook, not a separate entry point.
+/// Pure, testable `--firstboot` flag parser (mirrors [`parse_peer_sync`]) — a "make sure dirs exist before we proceed" hook, not a separate entry point.
 pub fn parse_firstboot(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--firstboot")
+    args.contains(&"--firstboot")
 }
 
 /// Process-global wrapper around [`parse_provision_identity`].
 pub fn parse_provision_identity_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_provision_identity(&borrowed)
 }
 
 /// Pure, testable `--provision-identity` flag parser.
 ///
-/// Unlike `--firstboot`, this is a *separate entry point*: it runs the
-/// identity ceremony and exits without starting a compositor. The
-/// `qos-identity.service` **user** unit calls it, which is what puts the key
-/// in the user's own home instead of root's.
+/// Unlike `--firstboot`, this is a *separate entry point*: runs the identity ceremony and exits
+/// without starting a compositor. The `qos-identity.service` **user** unit calls it, putting the key in the user's own home instead of root's.
 pub fn parse_provision_identity(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--provision-identity")
+    args.contains(&"--provision-identity")
 }
 
-/// Process-global wrapper around [`parse_portals`]. Sandbox Phase 4.3:
-/// callers opt in via `--enable-portals` to spin up the
-/// `xdg-desktop-portal` D-Bus backend (FileChooser / ScreenCast /
-/// Access). v1 default OFF — the same opt-in shape `parse_peer_sync`
-/// uses, so the hosted entry point keeps working bit-for-bit without
-/// the flag.
+/// Process-global wrapper around [`parse_portals`]: opt in via `--enable-portals` for the `xdg-desktop-portal` D-Bus backend. v1 default OFF, same shape as `parse_peer_sync`.
 pub fn parse_portals_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_portals(&borrowed)
 }
 
-/// Pure, testable `--enable-portals` flag parser. Mirrors
-/// [`parse_peer_sync`]'s shape so the hosted boot path treats both
-/// flags identically (`main.rs` parses each from `std::env::args` and
-/// hands the boolean to `hosted::run_with_options`).
+/// Pure, testable `--enable-portals` flag parser, mirroring [`parse_peer_sync`] so the hosted boot path treats both flags identically.
 pub fn parse_portals(args: &[&str]) -> bool {
-    args.iter().any(|a| *a == "--enable-portals")
+    args.contains(&"--enable-portals")
 }
 
-/// Pure, testable mode parser. Accepts both `--mode <value>` and
-/// `--mode=<value>` forms. Unknown values (and a missing flag) default to
-/// [`Mode::Native`] (the Phase 7 flip) so the compositor never refuses to
-/// start over a typo. `--mode hosted` is the explicit dev opt-in for the
-/// legacy iced-on-winit path.
+/// Pure, testable mode parser. Accepts `--mode <value>` and `--mode=<value>`; unknown/missing values default to [`Mode::Native`] so a typo never refuses to start the compositor.
 pub fn parse_mode(args: &[&str]) -> Mode {
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
         if let Some(value) = arg.strip_prefix("--mode=") {
             return value_to_mode(value);
         }
-        if arg == "--mode" {
-            if let Some(value) = iter.next() {
-                return value_to_mode(value);
-            }
-            // Trailing `--mode` with no value: fall through to default.
+        if arg == "--mode"
+            && let Some(value) = iter.next()
+        {
+            return value_to_mode(value);
         }
+        // Trailing `--mode` with no value: fall through to default.
     }
     Mode::Native
 }
@@ -298,31 +216,26 @@ fn value_to_mode(value: &str) -> Mode {
     }
 }
 
-/// Process-global wrapper around [`parse_backend`]. Used by
-/// [`native::run`] to decide which [`backend::Backend`] impl to
-/// instantiate inside `--mode native`.
+/// Process-global wrapper around [`parse_backend`], used by [`native::run`] to decide which [`backend::Backend`] impl `--mode native` instantiates.
 pub fn parse_backend_from_args() -> BackendKind {
     let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_backend(&borrowed)
 }
 
-/// Pure, testable backend parser. Mirrors [`parse_mode`] — accepts both
-/// `--backend <value>` and `--backend=<value>` forms, defaults to
-/// [`BackendKind::Winit`] for unknown / missing values so a typo never
-/// refuses to start the compositor.
+/// Pure, testable backend parser, mirroring [`parse_mode`]: `--backend <value>`/`--backend=<value>`, defaulting to [`BackendKind::Winit`] for unknown/missing values.
 pub fn parse_backend(args: &[&str]) -> BackendKind {
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
         if let Some(value) = arg.strip_prefix("--backend=") {
             return value_to_backend(value);
         }
-        if arg == "--backend" {
-            if let Some(value) = iter.next() {
-                return value_to_backend(value);
-            }
-            // Trailing `--backend` with no value: fall through to default.
+        if arg == "--backend"
+            && let Some(value) = iter.next()
+        {
+            return value_to_backend(value);
         }
+        // Trailing `--backend` with no value: fall through to default.
     }
     BackendKind::Winit
 }
@@ -341,8 +254,7 @@ mod tests {
 
     #[test]
     fn no_flag_defaults_native() {
-        // Phase 7 flip: the default is `Native` so `cargo run -p
-        // quick-desktop` (no flags) boots the real smithay server.
+        // `cargo run -p quick-desktop` (no flags) boots the real smithay server.
         assert!(matches!(parse_mode(&[]), Mode::Native));
     }
 
@@ -358,18 +270,14 @@ mod tests {
 
     #[test]
     fn dash_dash_mode_hosted_returns_hosted() {
-        // `--mode hosted` is the Phase 7 explicit dev opt-in for the
-        // legacy iced-on-winit path; this guards that the hosted
-        // fallback path stays reachable from the CLI.
+        // `--mode hosted` is the explicit dev opt-in for the legacy iced-on-winit path; guards that fallback stays reachable from the CLI.
         assert!(matches!(parse_mode(&["--mode", "hosted"]), Mode::Hosted));
         assert!(matches!(parse_mode(&["--mode=hosted"]), Mode::Hosted));
     }
 
     #[test]
     fn unrecognized_value_defaults_native() {
-        // Phase 7 flip: a typo no longer silently demotes to the
-        // hosted iced path; it falls through to the real Wayland
-        // server. The hosted path is opt-in (`--mode hosted`).
+        // A typo doesn't demote to the hosted iced path — it falls through to the real Wayland server (hosted is opt-in only).
         assert!(matches!(parse_mode(&["--mode", "junk"]), Mode::Native));
     }
 
@@ -439,11 +347,8 @@ mod tests {
 
     #[test]
     fn parse_backend_headless_returns_headless() {
-        // Both `--backend headless` and `--backend=headless` must
-        // resolve to `BackendKind::Headless`. The headless backend is
-        // the third path alongside winit (default) and drm; it lets
-        // the live binary boot without a display server so e2e
-        // harnesses can drive it via `QOS_TEST_CONTROL`.
+        // Both `--backend headless` and `--backend=headless` resolve to `BackendKind::Headless` — the
+        // third path alongside winit (default) and drm, letting the binary boot without a display server so e2e harnesses can drive it via `QOS_TEST_CONTROL`.
         assert!(matches!(
             parse_backend(&["--backend", "headless"]),
             BackendKind::Headless
@@ -454,12 +359,11 @@ mod tests {
         ));
     }
 
-    // ---- Subtask A: --portal-server-only -----------------------------
+    // --portal-server-only
 
     #[test]
     fn portal_server_only_default_false() {
-        // Bare cargo run -p quick-desktop must still boot the
-        // compositor — no flag means no portal-only short-circuit.
+        // Bare cargo run -p quick-desktop must still boot the compositor — no flag means no portal-only short-circuit.
         assert!(!parse_portal_server_only(&[]));
         assert!(!parse_portal_server_only(&["--mode", "native"]));
         assert!(!parse_portal_server_only(&["--enable-peer-sync"]));
@@ -468,10 +372,7 @@ mod tests {
     #[test]
     fn portal_server_only_flag_present_anywhere() {
         assert!(parse_portal_server_only(&["--portal-server-only"]));
-        // The systemd unit invokes
-        // `/usr/bin/quick-desktop --portal-server-only` with no other
-        // args, but allow combining with other flags so a developer
-        // can still mix in tracing knobs.
+        // The systemd unit invokes `--portal-server-only` alone, but combining with other flags (e.g. tracing knobs) must still work.
         assert!(parse_portal_server_only(&[
             "--mode",
             "native",
@@ -483,7 +384,7 @@ mod tests {
         ]));
     }
 
-    // ---- Subtask B: --firstboot -------------------------------------
+    // --firstboot
 
     #[test]
     fn firstboot_default_false() {
@@ -499,7 +400,7 @@ mod tests {
         assert!(parse_firstboot(&["--mode=native", "--firstboot"]));
     }
 
-    // ---- Subtask C: peer-sync marker file ---------------------------
+    // peer-sync marker file
 
     struct FakeMarker {
         present: bool,
@@ -529,9 +430,7 @@ mod tests {
 
     #[test]
     fn peer_sync_resolution_marker_enables_without_flag() {
-        // No CLI flag, but marker file present → peer-sync ON. This
-        // is the systemd-unit opt-in path documented in
-        // `os/docs/peer-sync.md`.
+        // No CLI flag, but marker file present → peer-sync ON — the systemd-unit opt-in path documented in `os/docs/peer-sync.md`.
         let m = FakeMarker { present: true };
         assert!(peer_sync_enabled_with(&[], &m));
         assert!(peer_sync_enabled_with(&["--mode", "native"], &m));

@@ -4,17 +4,15 @@
 //!
 //! The whole delivery hits the SAME `WorkspaceRuntime::fanout_delta`
 //! device peers use — the only new code is a one-line filter that
-//! suppresses PeerRelay → PeerRelay echoes. This test proves the
+//! suppresses `PeerRelay` → `PeerRelay` echoes. This test proves the
 //! reuse: no new fan-out, no new transport, no new store path.
-
-mod common;
 
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn op_on_relay1_reaches_device_on_relay2() {
@@ -80,7 +78,7 @@ async fn op_on_relay1_reaches_device_on_relay2() {
     // handshake + PeerRelayHello exchange + Subscribe. Reconnect
     // starts with a 1s backoff on failed initial dial, but on a
     // clean localhost dial this is normally under 500ms.
-    tokio::time::sleep(Duration::from_millis(3000)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     // p1 publishes on relay1.
     let payload = b"federated-delta".to_vec();
@@ -102,12 +100,20 @@ async fn op_on_relay1_reaches_device_on_relay2() {
             .await
             .expect("federation delta timeout")
             .expect("closed");
-        if let Envelope::Delta { delta, workspace_id: 3, .. } = env {
+        if let Envelope::Delta {
+            delta,
+            workspace_id: 3,
+            ..
+        } = env
+        {
             assert_eq!(delta, payload);
             got = true;
             break;
         }
         // Ignore stray Ready envelopes.
     }
-    assert!(got, "p2 must receive the delta via the federated peer relay");
+    assert!(
+        got,
+        "p2 must receive the delta via the federated peer relay"
+    );
 }

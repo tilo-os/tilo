@@ -39,7 +39,13 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
         .params
         .iter()
         .filter(|p| p.enabled && !p.key.trim().is_empty())
-        .map(|p| format!("{}={}", url_encode(&sub(&p.key)), url_encode(&sub(&p.value))))
+        .map(|p| {
+            format!(
+                "{}={}",
+                url_encode(&sub(&p.key)),
+                url_encode(&sub(&p.value))
+            )
+        })
         .collect();
     let url = if query.is_empty() {
         base
@@ -101,7 +107,13 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
                 .form
                 .iter()
                 .filter(|f| f.enabled && !f.key.trim().is_empty())
-                .map(|f| format!("{}={}", url_encode(&sub(&f.key)), url_encode(&sub(&f.value))))
+                .map(|f| {
+                    format!(
+                        "{}={}",
+                        url_encode(&sub(&f.key)),
+                        url_encode(&sub(&f.value))
+                    )
+                })
                 .collect();
             Some(pairs.join("&"))
         }
@@ -122,10 +134,10 @@ fn url_encode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push_str("%20"),
-            _ => out.push_str(&format!("%{:02X}", b)),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
     out
@@ -152,10 +164,7 @@ pub fn send_blocking(out: &Outgoing) -> Result<ResponseData, String> {
     let started = Instant::now();
     let resp = builder.send().map_err(|e| e.to_string())?;
     let status = resp.status();
-    let status_text = status
-        .canonical_reason()
-        .unwrap_or("")
-        .to_string();
+    let status_text = status.canonical_reason().unwrap_or("").to_string();
     let headers: Vec<KeyValue> = resp
         .headers()
         .iter()
@@ -224,21 +233,21 @@ mod tests {
     use crate::model::{HttpMethod, Request};
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn url_gets_query_string_from_enabled_params() {
         let mut req = Request::new("r");
         req.url = "{{base}}/search".into();
-        req.params = vec![
-            KeyValue::new("q", "rust lang"),
-            {
-                let mut d = KeyValue::new("debug", "1");
-                d.enabled = false;
-                d
-            },
-        ];
+        req.params = vec![KeyValue::new("q", "rust lang"), {
+            let mut d = KeyValue::new("debug", "1");
+            d.enabled = false;
+            d
+        }];
         let out = build_outgoing(&req, &env(&[("base", "https://api.example.com")]));
         assert_eq!(out.url, "https://api.example.com/search?q=rust%20lang");
     }
@@ -247,12 +256,15 @@ mod tests {
     fn bearer_auth_adds_authorization_header() {
         let mut req = Request::new("r");
         req.url = "https://x.test".into();
-        req.auth = Auth::Bearer { token: "{{tok}}".into() };
+        req.auth = Auth::Bearer {
+            token: "{{tok}}".into(),
+        };
         let out = build_outgoing(&req, &env(&[("tok", "secret123")]));
-        assert!(out
-            .headers
-            .iter()
-            .any(|(k, v)| k == "Authorization" && v == "Bearer secret123"));
+        assert!(
+            out.headers
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v == "Bearer secret123")
+        );
     }
 
     #[test]
@@ -265,10 +277,11 @@ mod tests {
         };
         let out = build_outgoing(&req, &HashMap::new());
         // base64("user:pass") == "dXNlcjpwYXNz"
-        assert!(out
-            .headers
-            .iter()
-            .any(|(k, v)| k == "Authorization" && v == "Basic dXNlcjpwYXNz"));
+        assert!(
+            out.headers
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v == "Basic dXNlcjpwYXNz")
+        );
     }
 
     #[test]
@@ -280,10 +293,11 @@ mod tests {
         req.body_text = "{\"a\":1}".into();
         let out = build_outgoing(&req, &HashMap::new());
         assert_eq!(out.body.as_deref(), Some("{\"a\":1}"));
-        assert!(out
-            .headers
-            .iter()
-            .any(|(k, v)| k == "Content-Type" && v == "application/json"));
+        assert!(
+            out.headers
+                .iter()
+                .any(|(k, v)| k == "Content-Type" && v == "application/json")
+        );
     }
 
     #[test]
@@ -292,7 +306,10 @@ mod tests {
         req.method = HttpMethod::Post;
         req.url = "https://x.test".into();
         req.body_mode = BodyMode::Form;
-        req.form = vec![KeyValue::new("name", "Jane Doe"), KeyValue::new("role", "admin")];
+        req.form = vec![
+            KeyValue::new("name", "Jane Doe"),
+            KeyValue::new("role", "admin"),
+        ];
         let out = build_outgoing(&req, &HashMap::new());
         assert_eq!(out.body.as_deref(), Some("name=Jane%20Doe&role=admin"));
     }

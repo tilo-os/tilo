@@ -127,17 +127,17 @@ impl Widget for NavRow {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -159,7 +159,7 @@ impl Widget for NavRow {
         if self.is_focused {
             let ring = RoundedRect::from_rect(
                 Rect::new(r.x0, r.y0 + 1.0, r.x1, r.y1 - 1.0),
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
             );
             scene.stroke(&Stroke::new(2.0), t, theme.border_focus, None, &ring);
         }
@@ -191,7 +191,7 @@ impl Widget for NavRow {
                     &cs,
                     11.0,
                     c.text_dim,
-                    t * Affine::translate((r.x1 - cw as f64 - 6.0, y + 8.0)),
+                    t * Affine::translate((r.x1 - f64::from(cw) - 6.0, y + 8.0)),
                     None,
                 );
             }
@@ -199,7 +199,7 @@ impl Widget for NavRow {
                 if *selected {
                     let shape = RoundedRect::from_rect(
                         Rect::new(r.x0, r.y0 + 2.0, r.x1, r.y1 - 2.0),
-                        theme.tokens.radii.md as f64,
+                        f64::from(theme.tokens.radii.md),
                     );
                     scene.fill(
                         Fill::NonZero,
@@ -222,7 +222,11 @@ impl Widget for NavRow {
                     scene,
                     &self.label,
                     theme.tokens.typography.scale.sm,
-                    if *selected { c.text_primary } else { c.text_dim },
+                    if *selected {
+                        c.text_primary
+                    } else {
+                        c.text_dim
+                    },
                     t * Affine::translate((r.x0 + 64.0, y + 8.0)),
                     Some((inner_w - 72.0) as f32),
                 );
@@ -252,7 +256,7 @@ impl Widget for NavRow {
                     &st,
                     11.0,
                     status_color(theme, status_class(*status)),
-                    t * Affine::translate((r.x1 - sw as f64 - 6.0, y + 8.0)),
+                    t * Affine::translate((r.x1 - f64::from(sw) - 6.0, y + 8.0)),
                     None,
                     TextWeight::Semibold,
                 );
@@ -300,10 +304,8 @@ impl Widget for NavRow {
                     },
                 ..
             } if self.is_focused => {
-                let is_activate = matches!(
-                    key,
-                    Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space)
-                ) || matches!(key, Key::Character(s) if s.as_str() == " ");
+                let is_activate = matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space))
+                    || matches!(key, Key::Character(s) if s.as_str() == " ");
                 if is_activate {
                     self.activate();
                     *handled = true;
@@ -313,7 +315,7 @@ impl Widget for NavRow {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NavRow"
     }
 
@@ -342,9 +344,7 @@ impl Widget for NavRow {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        let mut state = AccessState::new()
-            .focusable(true)
-            .focused(self.is_focused);
+        let mut state = AccessState::new().focusable(true).focused(self.is_focused);
         match &self.kind {
             NavKind::Collection { expanded, .. } => {
                 state = state.expanded(*expanded);
@@ -361,12 +361,7 @@ impl Widget for NavRow {
         )
     }
 
-    fn perform_action(
-        &mut self,
-        action: &Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
+    fn perform_action(&mut self, action: &Action, _state: &mut AutoCommit, _path: &ObjId) -> bool {
         if matches!(action, Action::Activate) {
             self.activate();
             true

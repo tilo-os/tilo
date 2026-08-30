@@ -2,40 +2,32 @@
 //! see without a user's consent.
 //!
 //! Every manifest in the tree used to hand-list fonts, mesa, `/usr/lib`,
-//! the Wayland socket and `/dev/dri`. That list was identical in 45 of
-//! 46 packages, which is the tell: it is not a property of the app, it
-//! is a property of *running a GUI program on this system*. Worse, it
-//! was a place where a package named host paths, and the launcher bound
-//! whatever it named. A package asking for `/` got `/`.
+//! the Wayland socket and `/dev/dri` — identical in 45 of 46 packages,
+//! which is the tell: not a property of the app, but of *running a GUI
+//! program on this system*. Worse, a package named host paths and the
+//! launcher bound whatever it named — a package asking for `/` got `/`.
 //!
-//! So the set moved here. It is fixed, it is the same for every package,
-//! and no manifest field feeds it. An app that needs something outside
-//! it asks the user through the capability system
-//! ([`crate::capabilities`]) — the one route, already built, already
-//! consented to, already enforced.
+//! So the set moved here: fixed, identical for every package, fed by no
+//! manifest field. An app that needs something outside it asks the user
+//! through the capability system ([`crate::capabilities`]).
 //!
-//! Two rules govern what may be added to this list:
-//!
-//! 1. **It carries no user content.** Fonts, driver ICDs, the C library
-//!    and the CA bundle are the same bytes for every person on the
-//!    machine. `~/Documents` is not, and never enters here.
-//! 2. **Every GUI app needs it.** If only some apps need it, it is a
-//!    capability, not a profile entry — otherwise the profile drifts
-//!    back into being the union of what apps happened to ask for, which
-//!    is the thing being removed.
+//! Two rules govern what may be added: **no user content** (fonts,
+//! driver ICDs, the C library and the CA bundle are the same bytes for
+//! every person; `~/Documents` is not and never enters here), and
+//! **every GUI app needs it** — otherwise it's a capability, not a
+//! profile entry, or the profile drifts back into being the union of
+//! what apps happened to ask for.
 
 use std::path::{Path, PathBuf};
 
 /// Read-only host paths every sandboxed app gets.
 ///
 /// Bound with `--ro-bind-try`: an entry is a *permission*, not an
-/// assertion that the path exists on this host. `/usr/share/nvidia` on
-/// an AMD box and `/etc/crypto-policies` on a non-Fedora base are both
-/// normal, and neither is a reason to refuse a launch.
+/// assertion the path exists on this host — `/usr/share/nvidia` on an
+/// AMD box is normal and not a reason to refuse a launch.
 pub const SYSTEM_READ_PATHS: &[&str] = &[
-    // ---- Dynamic loader + C library ------------------------------
-    // An app whose ELF cannot find its interpreter does not start, so
-    // this is the floor below which nothing runs at all.
+    // Dynamic loader + C library: an app whose ELF can't find its
+    // interpreter doesn't start — the floor below which nothing runs.
     "/usr/lib",
     "/usr/lib64",
     "/lib",
@@ -44,17 +36,19 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     "/etc/ld.so.cache",
     "/etc/ld.so.conf",
     "/etc/ld.so.conf.d",
-    // ---- Text rendering ------------------------------------------
-    // The toolkit renders every string through cosmic-text; without
-    // fonts an app draws empty boxes, which is indistinguishable from
-    // a broken app.
+    // Text rendering: the toolkit renders every string through
+    // cosmic-text; without fonts an app draws empty boxes.
     "/usr/share/fonts",
     "/usr/share/fontconfig",
     "/etc/fonts",
-    // ---- GPU: loader manifests + driver data ---------------------
-    // Which *device* the app may open is narrowed separately by
-    // `push_gpu_selection`; these are the vendor-neutral loader
-    // manifests and driver config that say how to talk to it.
+    // Keyboard layout data: `xkb_context_new` returns NULL without its
+    // default include path, and winit unwraps that into a panic — every
+    // sandboxed Wayland app dies before painting. `X11/locale` carries
+    // Compose tables for dead keys, so the two travel together.
+    "/usr/share/X11/xkb",
+    "/usr/share/X11/locale",
+    // GPU loader manifests + driver data (vendor-neutral); which device is
+    // narrowed separately by `push_gpu_selection`.
     "/usr/share/vulkan",
     "/usr/share/glvnd",
     "/usr/share/drirc.d",
@@ -64,19 +58,16 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     // Mesa and the Vulkan loader enumerate PCI devices and read driver
     // attributes out of sysfs. There is no interface that replaces it.
     "/sys",
-    // ---- Locale + machine facts ----------------------------------
-    // `/etc/machine-id` is read by graphics and D-Bus client libraries
-    // on startup. It identifies the machine, not the person.
+    // Locale + machine facts: `/etc/machine-id` is read by graphics/D-Bus
+    // client libraries at startup — identifies the machine, not the person.
     "/etc/machine-id",
     "/etc/os-release",
     "/usr/share/zoneinfo",
     "/etc/localtime",
-    // ---- TLS trust -----------------------------------------------
-    // Whether an app reaches the network at all is decided by
+    // TLS trust: whether an app reaches the network is decided by
     // `[sandbox.net]` and the egress gate. The CA bundle only decides
-    // whether a *permitted* connection can be verified — withholding it
-    // from an app that already has egress produces certificate errors,
-    // not security. It is also the same bytes for every user.
+    // whether a *permitted* connection verifies — withholding it produces
+    // certificate errors, not security, and it's the same bytes for every user.
     "/etc/pki",
     "/etc/ssl",
     "/etc/crypto-policies",
@@ -85,26 +76,20 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
 /// Read-only paths added **only** when the launch shares the host
 /// network namespace.
 ///
-/// These describe the network the machine is on — the resolvers it
-/// uses, the names it has been told about — rather than the machine
-/// itself, so they are not part of what every app gets. An app under a
-/// host-scoped grant has an empty namespace and never resolves anything
-/// itself (the egress gate resolves on its behalf, after the name has
-/// passed the policy), and an app with no network has nothing to
-/// resolve at all. Only the unrestricted case has a resolver to
-/// configure.
-///
-/// This is still a system decision: the launcher derives it from the
-/// egress decision it already made, not from anything the package said.
+/// These describe the network the machine is on, not the machine
+/// itself, so they aren't part of what every app gets: an app under a
+/// host-scoped grant has an empty namespace and never resolves
+/// anything itself (the gate resolves after the name passes policy),
+/// and an app with no network has nothing to resolve. Only the
+/// unrestricted case has a resolver to configure — still a system
+/// decision, derived from the egress decision already made.
 pub const NETWORK_READ_PATHS: &[&str] = &["/etc/resolv.conf", "/etc/hosts"];
 
 /// Device nodes every GUI app gets, bound with `--dev-bind-try`.
 ///
 /// `--dev /dev` mounts a fresh, near-empty devtmpfs, so a GPU node has
-/// to be bound back explicitly. `push_gpu_selection` then lays a tmpfs
-/// over `/dev/dri` and re-binds only the compositor's render node, so
-/// this entry is what that narrowing lands on top of — the app never
-/// sees more than one GPU.
+/// to be bound back explicitly — this is what `push_gpu_selection`'s
+/// narrowing lands on top of, so the app never sees more than one GPU.
 pub const SYSTEM_DEVICE_PATHS: &[&str] = &[
     "/dev/dri",
     "/dev/nvidia0",
@@ -179,9 +164,9 @@ fn push(argv: &mut Vec<String>, kind: &str, src: &str, dst: &str) {
 mod tests {
     use super::*;
 
-    /// The profile is a *system* list. If a user path ever appears in
-    /// it, every app on the machine silently gained access to it — so
-    /// this is checked mechanically rather than by review.
+    /// The profile is a *system* list. If a user path ever appears in it,
+    /// every app on the machine silently gained access — checked
+    /// mechanically rather than by review.
     #[test]
     fn the_profile_names_no_user_path() {
         for p in SYSTEM_READ_PATHS
@@ -211,8 +196,8 @@ mod tests {
     }
 
     /// `/` (or any prefix of every path) in the profile would hand the
-    /// whole host to every app, which is the bug this file exists to
-    /// remove. Cheap to assert, catastrophic to miss.
+    /// whole host to every app — the bug this file exists to remove. Cheap
+    /// to assert, catastrophic to miss.
     #[test]
     fn the_profile_does_not_contain_the_root() {
         for p in SYSTEM_READ_PATHS
@@ -239,6 +224,14 @@ mod tests {
                 && w[2] == "/usr/share/fonts"),
             "fonts must be read-only: {argv:?}"
         );
+        // Without it every sandboxed Wayland app panics on `XKBNotFound`
+        // before it paints.
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                && w[1] == "/usr/share/X11/xkb"
+                && w[2] == "/usr/share/X11/xkb"),
+            "the xkb keymap data must be read-only in the sandbox: {argv:?}"
+        );
         assert!(
             argv.windows(3)
                 .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/dri"),
@@ -257,11 +250,10 @@ mod tests {
 mod network_profile_tests {
     use super::*;
 
-    /// The machine's resolver configuration is not part of what every
-    /// app gets. An app with no network has nothing to resolve, and an
-    /// app under a host-scoped grant resolves through the gate — giving
-    /// either of them the resolver list would hand out a description of
-    /// the user's network for no functional gain.
+    /// The machine's resolver configuration is not part of what every app
+    /// gets: an app with no network has nothing to resolve, and one under
+    /// a host-scoped grant resolves through the gate — either way, handing
+    /// out the resolver list gives no functional gain.
     #[test]
     fn the_resolver_files_appear_only_for_an_unrestricted_network() {
         let mut without = Vec::new();
@@ -294,7 +286,7 @@ mod network_profile_tests {
             for rule in landlock_ro_paths(shares) {
                 let s = rule.display().to_string();
                 assert!(
-                    argv.iter().any(|a| *a == s),
+                    argv.contains(&s),
                     "landlock names {s} but nothing binds it (shares={shares})"
                 );
             }

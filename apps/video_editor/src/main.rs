@@ -5,15 +5,31 @@
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -41,7 +57,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             let bundled = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample-media");
             if bundled.exists() {
                 // Safety: set before any threads spawn for the one-shot render.
-                unsafe { std::env::set_var("QOS_VE_MEDIA_DIR", bundled); }
+                unsafe {
+                    std::env::set_var("QOS_VE_MEDIA_DIR", bundled);
+                }
             }
         }
         // Scenario selectors (deterministic single-frame captures):
@@ -58,7 +76,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // and, under `--features decode`, warms the pipeline so the capture
         // shows the clip's true decoded frame — not the representative gradient.
         if let Some(path) = parse_value_arg(&args, "--import") {
-            let mut app = video_editor::VideoEditorApp::new_import_placed(vec![std::path::PathBuf::from(path)]);
+            let mut app =
+                video_editor::VideoEditorApp::new_import_placed(vec![std::path::PathBuf::from(
+                    path,
+                )]);
             // Warm up on ONE state so the import + the async-prerolled decoded
             // frame persist into the same document the render then draws from.
             let mut state = ui::State::new();
@@ -74,14 +95,29 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         if empty {
-            emit(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new(), digest)?;
+            emit(
+                video_editor::app_root(),
+                DEFAULT_SHOTS_VIEWPORT,
+                &out,
+                ui::State::new(),
+                digest,
+            )?;
         } else if args.iter().any(|a| a == "--narrow") {
-            emit(video_editor::app_root_narrow(), NARROW_SHOTS_VIEWPORT, &out, ui::State::new(), digest)?;
+            emit(
+                video_editor::app_root_narrow(),
+                NARROW_SHOTS_VIEWPORT,
+                &out,
+                ui::State::new(),
+                digest,
+            )?;
         } else {
             // Every scenario resolves through the same `ShotScenario` selector
             // the app itself defines, so adding one there is enough to make it
             // capturable — no second list to keep in step.
-            match scenario.as_deref().and_then(video_editor::app::ShotScenario::from_arg) {
+            match scenario
+                .as_deref()
+                .and_then(video_editor::app::ShotScenario::from_arg)
+            {
                 Some(s) => emit(
                     Box::new(video_editor::VideoEditorApp::new_for_shot(s)),
                     DEFAULT_SHOTS_VIEWPORT,
@@ -105,7 +141,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, video_editor::app_root(), "dev.qos.video-editor"));
+        std::process::exit(ui::headless::run(
+            spec,
+            video_editor::app_root(),
+            "dev.qos.video-editor",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.video-editor");
@@ -170,7 +210,7 @@ fn parse_size_env() -> Option<(u32, u32)> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 ///
 /// `state` carries the document: a fresh one for the seeded/demo scenarios, or
 /// a **warmed** one (already synced through the import + decode warm-up) so the
@@ -199,13 +239,8 @@ fn render_shot_to_png(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (size, theme) = shot_config(viewport);
     let mut text_renderer = TextRenderer::new();
-    let scene = video_editor::shot::compose(
-        &mut *widget,
-        size,
-        &theme,
-        &mut state,
-        &mut text_renderer,
-    )?;
+    let scene =
+        video_editor::shot::compose(&mut *widget, size, &theme, &mut state, &mut text_renderer)?;
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -230,13 +265,8 @@ fn print_scene_digest(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (size, theme) = shot_config(viewport);
     let mut text_renderer = TextRenderer::new();
-    let scene = video_editor::shot::compose(
-        &mut *widget,
-        size,
-        &theme,
-        &mut state,
-        &mut text_renderer,
-    )?;
+    let scene =
+        video_editor::shot::compose(&mut *widget, size, &theme, &mut state, &mut text_renderer)?;
     println!("{:016x}", video_editor::shot::fingerprint(&scene));
     Ok(())
 }

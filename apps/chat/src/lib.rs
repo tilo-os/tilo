@@ -25,21 +25,37 @@
 //! `app_root()` is the single integration point used by the live event
 //! loop; [`app_root_for_shot`] stages a scenario for the offscreen renderer.
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 pub mod actions;
 pub mod app;
 // Live call media (real microphone/Opus audio + camera/screen H.264) — compiled
 // only under `live-media`; the default build carries no GStreamer/openh264/iroh.
 #[cfg(feature = "live-media")]
 pub mod audio;
-#[cfg(feature = "live-media")]
-pub mod video;
 pub mod call;
 pub mod doc;
 pub mod emoji;
 pub mod events;
+pub mod i18n;
 pub mod identity;
 pub mod images;
 pub mod media;
+pub mod mention;
 pub mod model;
 pub mod paint;
 pub mod permissions;
@@ -49,6 +65,8 @@ pub mod render_chat;
 pub mod responsive;
 pub mod search_provider;
 pub mod storage;
+#[cfg(feature = "live-media")]
+pub mod video;
 
 pub use app::ChatApp;
 

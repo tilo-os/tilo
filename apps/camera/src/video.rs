@@ -9,7 +9,7 @@
 //! This path is deliberately codec-in-Rust and source-agnostic: the same
 //! [`Recorder`] records frames coming off a real webcam (the `live-capture`
 //! pipeline hands it RGBA buffers) and the procedural frames used by the
-//! headless demo/tests. No GStreamer, no ffmpeg, no device required to
+//! headless demo/tests. No `GStreamer`, no ffmpeg, no device required to
 //! produce or verify a real encoded video.
 //!
 //! MJPEG (one JPEG per frame) is chosen over an inter-frame codec on purpose:
@@ -50,7 +50,12 @@ pub struct Recorder {
 impl Recorder {
     /// A recorder that will tag the clip at `fps` frames per second.
     pub fn new(fps: u32) -> Self {
-        Self { frames: Vec::new(), w: 0, h: 0, fps: fps.max(1) }
+        Self {
+            frames: Vec::new(),
+            w: 0,
+            h: 0,
+            fps: fps.max(1),
+        }
     }
 
     /// JPEG-encode one frame and append it. The first frame fixes the clip
@@ -87,7 +92,7 @@ impl Recorder {
 
     /// Clip duration in milliseconds implied by the frame count and fps.
     pub fn duration_ms(&self) -> i64 {
-        (self.frames.len() as i64 * 1000) / self.fps as i64
+        (self.frames.len() as i64 * 1000) / i64::from(self.fps)
     }
 
     /// Mux the buffered frames into a complete AVI byte stream. Returns
@@ -191,7 +196,7 @@ fn chunk(tag: &[u8; 4], body: &[u8]) -> Vec<u8> {
 /// Mux JPEG `frames` into a complete AVI byte stream.
 fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
     let n = frames.len() as u32;
-    let max_frame = frames.iter().map(|f| f.len()).max().unwrap_or(0) as u32;
+    let max_frame = frames.iter().map(std::vec::Vec::len).max().unwrap_or(0) as u32;
 
     // --- movi list body: the sequence of "00dc" frame chunks. Track each
     // chunk's offset relative to the "movi" fourcc for the index. ---
@@ -304,7 +309,7 @@ pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     } else {
         FPS
     };
-    let dur_ms = (total_frames as i64 * 1000) / fps as i64;
+    let dur_ms = (i64::from(total_frames) * 1000) / i64::from(fps);
     Some((w, h, dur_ms))
 }
 
@@ -373,7 +378,8 @@ mod tests {
         // Locate the first "00dc" chunk and pull its payload.
         let movi = find(&avi, b"movi").unwrap();
         let dc = find(&avi[movi..], b"00dc").unwrap() + movi;
-        let size = u32::from_le_bytes([avi[dc + 4], avi[dc + 5], avi[dc + 6], avi[dc + 7]]) as usize;
+        let size =
+            u32::from_le_bytes([avi[dc + 4], avi[dc + 5], avi[dc + 6], avi[dc + 7]]) as usize;
         let payload = &avi[dc + 8..dc + 8 + size];
         assert_eq!(&payload[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
 
@@ -410,7 +416,10 @@ mod tests {
     fn frames_of_a_different_size_are_skipped() {
         let mut rec = Recorder::new(FPS);
         assert!(rec.push(&solid_frame(32, 32, 1, 2, 3)));
-        assert!(!rec.push(&solid_frame(64, 64, 4, 5, 6)), "size change rejected");
+        assert!(
+            !rec.push(&solid_frame(64, 64, 4, 5, 6)),
+            "size change rejected"
+        );
         assert_eq!(rec.frame_count(), 1);
     }
 }

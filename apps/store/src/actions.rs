@@ -47,10 +47,16 @@ pub struct ActionOutcome {
 
 impl ActionOutcome {
     fn ok(msg: impl Into<String>) -> Self {
-        Self { ok: true, status_line: msg.into() }
+        Self {
+            ok: true,
+            status_line: msg.into(),
+        }
     }
     fn fail(msg: impl Into<String>) -> Self {
-        Self { ok: false, status_line: msg.into() }
+        Self {
+            ok: false,
+            status_line: msg.into(),
+        }
     }
 }
 
@@ -147,11 +153,7 @@ pub fn pin_plan(item: &StoreItem, pin: bool) -> SpawnPlan {
 pub fn flatpak_open_plan(item: &StoreItem) -> SpawnPlan {
     SpawnPlan {
         program: qos_launcher_bin(),
-        args: vec![
-            "run-host".into(),
-            "--desktop-id".into(),
-            item.id.clone(),
-        ],
+        args: vec!["run-host".into(), "--desktop-id".into(), item.id.clone()],
         status_line: format!("Opening {}…", item.name),
     }
 }
@@ -159,15 +161,15 @@ pub fn flatpak_open_plan(item: &StoreItem) -> SpawnPlan {
 /// Flatpak install/remove via the host `flatpak` CLI.
 pub fn flatpak_plan(item: &StoreItem, install: bool) -> SpawnPlan {
     if install {
+        let mut args = vec!["install".into(), "--user".into(), "--noninteractive".into()];
+        if let Some(path) = item.install_ref_path.as_ref() {
+            args.push(path.clone());
+        } else {
+            args.extend(["flathub".into(), item.id.clone()]);
+        }
         SpawnPlan {
             program: "flatpak".into(),
-            args: vec![
-                "install".into(),
-                "--user".into(),
-                "--noninteractive".into(),
-                "flathub".into(),
-                item.id.clone(),
-            ],
+            args,
             status_line: format!("Installing Flatpak {}…", item.name),
         }
     } else {
@@ -181,6 +183,47 @@ pub fn flatpak_plan(item: &StoreItem, install: bool) -> SpawnPlan {
             ],
             status_line: format!("Removing Flatpak {}…", item.name),
         }
+    }
+}
+
+/// `flatpak update --user --noninteractive <app-id>`.
+pub fn flatpak_update_plan(item: &StoreItem) -> SpawnPlan {
+    SpawnPlan {
+        program: "flatpak".into(),
+        args: vec![
+            "update".into(),
+            "--user".into(),
+            "--noninteractive".into(),
+            item.id.clone(),
+        ],
+        status_line: format!("Updating Flatpak {}…", item.name),
+    }
+}
+
+pub fn flatpak_remote_add_plan(name: &str, url: &str) -> SpawnPlan {
+    SpawnPlan {
+        program: "flatpak".into(),
+        args: vec![
+            "remote-add".into(),
+            "--user".into(),
+            "--if-not-exists".into(),
+            name.into(),
+            url.into(),
+        ],
+        status_line: format!("Adding Flatpak remote {name}…"),
+    }
+}
+
+pub fn flatpak_remote_remove_plan(name: &str) -> SpawnPlan {
+    SpawnPlan {
+        program: "flatpak".into(),
+        args: vec![
+            "remote-delete".into(),
+            "--user".into(),
+            "--force".into(),
+            name.into(),
+        ],
+        status_line: format!("Removing Flatpak remote {name}…"),
     }
 }
 
@@ -219,14 +262,14 @@ pub fn spawn_plan(plan: &SpawnPlan) -> (i32, String) {
 pub fn download_qpkg(url: &str, dest: &Path) -> Result<u64, String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("qos-store/0.1")
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_mins(2))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let bytes = client
         .get(url)
         .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.bytes())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::bytes)
         .map_err(|e| format!("download {url}: {e}"))?;
     if bytes.is_empty() {
         return Err(format!("download {url}: empty body"));
@@ -252,13 +295,12 @@ pub fn download_qpkg(url: &str, dest: &Path) -> Result<u64, String> {
 pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> ActionOutcome {
     match (action, &item.source) {
         (ActionKind::Open, StoreSource::Qos { .. })
-        | (ActionKind::Update, StoreSource::Qos { .. }) => {
-            open_qos(item, action, staging_dir)
-        }
+        | (ActionKind::Update, StoreSource::Qos { .. }) => open_qos(item, action, staging_dir),
         (ActionKind::Remove, StoreSource::Qos { .. }) => run_step(&remove_plan(item)),
         (ActionKind::MarkInstalled, StoreSource::Qos { .. }) => run_step(&pin_plan(item, true)),
         (ActionKind::Unmark, StoreSource::Qos { .. }) => run_step(&pin_plan(item, false)),
         (ActionKind::FlatpakInstall, StoreSource::Flathub) => run_step(&flatpak_plan(item, true)),
+        (ActionKind::FlatpakUpdate, StoreSource::Flathub) => run_step(&flatpak_update_plan(item)),
         (ActionKind::FlatpakOpen, StoreSource::Flathub) => run_step(&flatpak_open_plan(item)),
         (ActionKind::FlatpakRemove, StoreSource::Flathub) => run_step(&flatpak_plan(item, false)),
         (ActionKind::NeedsFlatpakHost, _) => {
@@ -326,7 +368,9 @@ fn run_step(plan: &SpawnPlan) -> ActionOutcome {
 }
 
 fn first_line(s: &str) -> Option<String> {
-    s.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string())
+    s.lines()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
 }
 
 fn last_line(s: &str) -> String {
@@ -347,12 +391,15 @@ mod tests {
         StoreItem {
             id: format!("dev.qos.{}", name.to_ascii_lowercase()),
             name: name.into(),
-            description: "".into(),
+            description: String::new(),
             categories: vec![],
             icon_url: None,
             homepage_url: None,
             source_url: None,
-            source: StoreSource::Qos { registry_name: "qOS".into() },
+            install_ref_path: None,
+            source: StoreSource::Qos {
+                registry_name: "qOS".into(),
+            },
             versions: vec![StoreItemVersion {
                 version: "0.1.0".into(),
                 released_at_unix: 0,
@@ -367,13 +414,14 @@ mod tests {
 
     fn flatpak_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
-            id: format!("org.example.{}", name),
+            id: format!("org.example.{name}"),
             name: name.into(),
-            description: "".into(),
+            description: String::new(),
             categories: vec![],
             icon_url: None,
             homepage_url: None,
             source_url: None,
+            install_ref_path: None,
             source: StoreSource::Flathub,
             versions: vec![StoreItemVersion {
                 version: "1.0".into(),
@@ -417,20 +465,37 @@ mod tests {
     fn pin_plan_maps_to_pin_and_unpin() {
         let item = qos_item(
             "Notes",
-            InstalledState::Installed { version: "1".into(), available: "1".into(), pinned: false },
+            InstalledState::Installed {
+                version: "1".into(),
+                available: "1".into(),
+                pinned: false,
+            },
         );
-        assert_eq!(pin_plan(&item, true).args, vec!["pin".to_string(), "dev.qos.notes".to_string()]);
-        assert_eq!(pin_plan(&item, false).args, vec!["unpin".to_string(), "dev.qos.notes".to_string()]);
+        assert_eq!(
+            pin_plan(&item, true).args,
+            vec!["pin".to_string(), "dev.qos.notes".to_string()]
+        );
+        assert_eq!(
+            pin_plan(&item, false).args,
+            vec!["unpin".to_string(), "dev.qos.notes".to_string()]
+        );
     }
 
     #[test]
     fn remove_plan_uses_qos_install_remove() {
         let item = qos_item(
             "Notes",
-            InstalledState::Installed { version: "1".into(), available: "1".into(), pinned: false },
+            InstalledState::Installed {
+                version: "1".into(),
+                available: "1".into(),
+                pinned: false,
+            },
         );
         let plan = remove_plan(&item);
-        assert_eq!(plan.args, vec!["remove".to_string(), "dev.qos.notes".to_string()]);
+        assert_eq!(
+            plan.args,
+            vec!["remove".to_string(), "dev.qos.notes".to_string()]
+        );
     }
 
     #[test]
@@ -443,6 +508,29 @@ mod tests {
         assert!(ins.args.contains(&"org.example.Chess".to_string()));
         let rm = flatpak_plan(&item, false);
         assert_eq!(rm.args[0], "uninstall");
+        let update = flatpak_update_plan(&item);
+        assert_eq!(update.args[0], "update");
+        assert!(update.args.contains(&"org.example.Chess".to_string()));
+    }
+
+    #[test]
+    fn flatpak_remote_plans_are_user_scoped_and_noninteractive() {
+        let add = flatpak_remote_add_plan("flathub", "https://example.test/repo");
+        assert_eq!(add.args[0], "remote-add");
+        assert!(add.args.contains(&"--user".to_string()));
+        assert!(add.args.contains(&"--if-not-exists".to_string()));
+        let remove = flatpak_remote_remove_plan("flathub");
+        assert_eq!(remove.args[0], "remote-delete");
+        assert!(remove.args.contains(&"--force".to_string()));
+    }
+
+    #[test]
+    fn flatpak_ref_install_uses_the_selected_file() {
+        let mut item = flatpak_item("Chess", InstalledState::Not);
+        item.install_ref_path = Some("/tmp/chess.flatpakref".into());
+        let plan = flatpak_plan(&item, true);
+        assert!(plan.args.contains(&"/tmp/chess.flatpakref".to_string()));
+        assert!(!plan.args.contains(&"flathub".to_string()));
     }
 
     /// The gap this closes: an installed Flatpak had no action that

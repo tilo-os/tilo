@@ -1,4 +1,4 @@
-//! Headless render smoke test: spawn a NotesApp, build its layout,
+//! Headless render smoke test: spawn a `NotesApp`, build its layout,
 //! and draw one frame into an offscreen scene. Confirms the whole
 //! widget tree composes through the same `sync → build_layout →
 //! apply_layout → draw` cycle the live `ui::App` uses, with no panic
@@ -134,8 +134,7 @@ fn hello() {}
         let n = panel.editor().blocks().len();
         assert!(
             n >= 6,
-            "Welcome seed should parse into at least 6 blocks; got {}",
-            n,
+            "Welcome seed should parse into at least 6 blocks; got {n}",
         );
         for b in panel.editor().blocks() {
             let r = b.line.get_rect();
@@ -143,8 +142,7 @@ fn hello() {}
             // row (the horizontal rule paints across the whole row).
             assert!(
                 r.width() > 0.0 && r.height() > 0.0,
-                "block rect must be non-degenerate (got {:?})",
-                r
+                "block rect must be non-degenerate (got {r:?})"
             );
         }
     }
@@ -170,6 +168,6 @@ fn hello() {}
     if let Ok(path) = std::env::var("NOTES_SNAPSHOT") {
         let mut renderer = OffscreenRenderer::new(w, h);
         renderer.render_png(&scene, Color::TRANSPARENT, std::path::Path::new(&path));
-        eprintln!("notes: snapshot written to {}", path);
+        eprintln!("notes: snapshot written to {path}");
     }
 }

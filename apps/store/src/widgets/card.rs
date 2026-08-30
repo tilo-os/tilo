@@ -14,9 +14,7 @@
 //! bespoke rendering. The action button label + click path are wired by the
 //! caller: this fn is pure composition.
 
-use ui::widget::{
-    Button, Column, Container, Row, Spacer, Text, Widget,
-};
+use ui::widget::{Button, Column, Container, Row, Spacer, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
@@ -72,17 +70,16 @@ pub fn store_card(
     // ghost buttons so the card has one clear primary action. They are direct
     // children of the row (fixed-width buttons) laid out as a horizontal
     // cluster on the right, not a vertical stack.
-    let action_btn = Button::new(
-        action_click_key,
-        action.label(),
-        Some(action_click_key),
-    )
-    .primary();
+    let action_btn =
+        Button::new(action_click_key, action.label(), Some(action_click_key)).primary();
 
     let mut row = Row::new()
         .no_wrap()
         .push(icon_placeholder(theme))
         .push(Box::new(text_col))
+        .push(Box::new(
+            Button::new(&format!("{select_key}.button"), "Details", Some(select_key)).ghost(),
+        ))
         .push(Box::new(action_btn));
     // Optional secondary controls for a cached qOS app: the "mark
     // installed" (pin) toggle and a small Remove. These are absent
@@ -99,24 +96,7 @@ pub fn store_card(
         ));
     }
 
-    // A click on the card body (outside the action button) opens
-    // the detail sheet — modelled as a Button that spans the row
-    // and writes `select_key`. We inline it as an outer wrapper
-    // Container with the row inside it, and rely on the
-    // Container's `with_permission_scope` follow-up when we wire
-    // permissions.
-    // For now: a two-button card would be ergonomically confusing.
-    // We instead render the row inside a Container, and reserve
-    // the click-to-open flow as a follow-up (the detail sheet is
-    // reachable from a keyboard shortcut in the meantime — Enter
-    // on the focused card writes `select_key`).
-    let _ = select_key;
-
-    Box::new(
-        Container::new()
-            .with_background()
-            .with_child(Box::new(row)),
-    )
+    Box::new(Container::new().with_background().with_child(Box::new(row)))
 }
 
 /// Small decorative icon square. Real icon fetching is a follow-up;

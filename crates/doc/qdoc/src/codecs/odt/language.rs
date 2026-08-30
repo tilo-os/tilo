@@ -1,36 +1,31 @@
-//! Document default language ⇄ ODF default paragraph style. ODF carries a document
-//! default language on the paragraph-family default style, as
-//! `<style:default-style style:family="paragraph"><style:text-properties
-//! fo:language="xx" fo:country="YY"/></style:default-style>` inside `styles.xml`'s
-//! `<office:styles>` section. This maps that `fo:language`/`fo:country` onto the
-//! document-wide language setting (both directions), splitting / reassembling the
-//! BCP-47 tag (`de-DE` ⇄ `de`+`DE`). Supports spell-check locale selection and
-//! accessibility/screen-reader language.
+//! Document default language ⇄ ODF default paragraph style, carried as
+//! `<style:default-style style:family="paragraph"><style:text-properties fo:language="xx"
+//! fo:country="YY"/></style:default-style>` inside `styles.xml`'s `<office:styles>`. This
+//! maps it onto the document-wide language setting, splitting/reassembling the BCP-47 tag
+//! (`de-DE` ⇄ `de`+`DE`) for spell-check locale and accessibility/screen-reader use.
 
-use crate::model::{language as model_language, DocMut, DocRef};
+use crate::model::{DocMut, DocRef, language as model_language};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
 use super::styles::reassemble_bcp47;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 /// Import the document default language from the first paragraph-family
-/// `style:default-style` in `styles.xml` into the document-wide language setting.
-/// No-op when no such default-style carries an `fo:language` (the document then
-/// declares no default language).
+/// `style:default-style` in `styles.xml`. No-op when none carries `fo:language`.
 pub(super) fn import_default_language(styles_xml: &[u8], doc: &mut DocMut) {
     if let Some(code) = parse_default_language(styles_xml) {
         doc.set_language(&code);
     }
 }
 
-/// Scan `styles.xml` for the paragraph-family `<style:default-style>`'s
-/// `<style:text-properties fo:language=… fo:country=…>` and reassemble the BCP-47
-/// tag. Returns `None` when absent. Only the *paragraph* default-style is inspected
-/// (other families' defaults carry their own, unrelated, language attributes).
+/// Scan `styles.xml` for the paragraph-family `<style:default-style>`'s language attributes
+/// and reassemble the BCP-47 tag. Only the *paragraph* default-style is inspected.
 fn parse_default_language(styles_xml: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(styles_xml).ok()?;
     let mut reader = Reader::from_str(s);
-    // Whether we're inside `<style:default-style style:family="paragraph">`.
     let mut in_para_default = false;
     loop {
         match reader.read_event() {
@@ -40,7 +35,7 @@ fn parse_default_language(styles_xml: &[u8]) -> Option<String> {
             Ok(Event::End(e)) if e.name().as_ref() == b"style:default-style" => {
                 in_para_default = false;
             }
-            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+            Ok(Event::Start(e) | Event::Empty(e))
                 if in_para_default && e.name().as_ref() == b"style:text-properties" =>
             {
                 let lang = attr(&e, b"fo:language");
@@ -61,20 +56,20 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
 }
 
-/// Splice the document default language into `styles_xml`'s paragraph-family
-/// `style:default-style`, returning the updated bytes — or `None` when the document
-/// declares no default language (so the original `styles.xml` is left untouched).
-///
-/// If a paragraph `style:default-style` already exists, its `style:text-properties`
-/// gets the `fo:language`/`fo:country` (replacing any prior pair); otherwise a fresh
-/// default-style is injected into the `<office:styles>` section (created if absent).
+/// Splice the document default language into `styles_xml`'s paragraph `style:default-style`,
+/// or `None` when the document declares none (original left untouched); replaces an
+/// existing default-style's language or injects a fresh one into `<office:styles>`.
 pub(super) fn export_default_language(doc: &DocRef, styles_xml: &[u8]) -> Option<Vec<u8>> {
     let code = model_language(doc.doc, doc.c)?;
     let (lang, country) = split_bcp47(&code);
-    Some(splice_default_language(styles_xml, &lang, country.as_deref()))
+    Some(splice_default_language(
+        styles_xml,
+        &lang,
+        country.as_deref(),
+    ))
 }
 
 /// Split a BCP-47 tag into `(language, optional country)` (`de-DE` → `("de", Some("DE"))`,
@@ -90,7 +85,7 @@ fn split_bcp47(code: &str) -> (String, Option<String>) {
 fn lang_attrs(lang: &str, country: Option<&str>) -> String {
     let mut s = format!(r#"fo:language="{}""#, escape_attr(lang));
     if let Some(c) = country {
-        s.push_str(&format!(r#" fo:country="{}""#, escape_attr(c)));
+        let _ = write!(s, r#" fo:country="{}""#, escape_attr(c));
     }
     s
 }
@@ -103,15 +98,12 @@ fn default_style_xml(lang: &str, country: Option<&str>) -> String {
     )
 }
 
-/// Splice the default language into `styles.xml`. Reuses the existing paragraph
-/// `style:default-style` when present (replacing its language attributes); otherwise
-/// injects a fresh one into (or creates) the `<office:styles>` section.
+/// Splice the default language into `styles.xml`, reusing an existing paragraph
+/// `style:default-style` or injecting a fresh one into `<office:styles>`.
 fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>) -> Vec<u8> {
     let s = String::from_utf8_lossy(styles_xml).into_owned();
 
-    // Case 1: a paragraph `style:default-style` already exists — rewrite it wholesale
-    // (its only modeled content is the language; other text-properties on a default
-    // style are uncommon and re-synthesising keeps the splice simple and correct).
+    // Case 1: a paragraph default-style exists — rewrite it wholesale; other text-properties on a default style are uncommon, so re-synthesising keeps the splice simple.
     if let Some((start, end)) = find_para_default_style(&s) {
         let mut out = String::with_capacity(s.len());
         out.push_str(&s[..start]);
@@ -122,8 +114,7 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
 
     let elem = default_style_xml(lang, country);
 
-    // Case 2: an `<office:styles>` section exists — inject the default-style right
-    // after its open tag (default styles conventionally lead the section).
+    // Case 2: an `<office:styles>` section exists — inject right after its open tag (default styles conventionally lead the section).
     if let Some(open_end) = open_tag_end(&s, "<office:styles") {
         let mut out = String::with_capacity(s.len() + elem.len());
         out.push_str(&s[..open_end]);
@@ -142,49 +133,44 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
         return out.into_bytes();
     }
 
-    // Case 3: no `<office:styles>` at all — synthesise one holding the default-style.
-    // ODF orders `office:styles` before `office:automatic-styles`/`office:master-styles`.
+    // Case 3: no `<office:styles>` at all — synthesise one. ODF orders `office:styles` before `office:automatic-styles`/`office:master-styles`.
     let section = format!("<office:styles>{elem}</office:styles>");
     let at = s
         .find("<office:automatic-styles")
         .or_else(|| s.find("<office:master-styles"))
         .or_else(|| s.rfind("</office:document-styles>"));
-    match at {
-        Some(pos) => {
-            let mut out = String::with_capacity(s.len() + section.len());
-            out.push_str(&s[..pos]);
-            out.push_str(&section);
-            out.push_str(&s[pos..]);
-            out.into_bytes()
-        }
-        None => {
-            let mut out = s;
-            out.push_str(&section);
-            out.into_bytes()
-        }
+    if let Some(pos) = at {
+        let mut out = String::with_capacity(s.len() + section.len());
+        out.push_str(&s[..pos]);
+        out.push_str(&section);
+        out.push_str(&s[pos..]);
+        out.into_bytes()
+    } else {
+        let mut out = s;
+        out.push_str(&section);
+        out.into_bytes()
     }
 }
 
-/// Locate the first paragraph-family `<style:default-style …>…</style:default-style>`
-/// (or self-closing form), returning its `(start, end)` byte span. Matches only the
-/// `style:family="paragraph"` default-style (other families are left untouched).
+/// Locate the first paragraph-family `<style:default-style>` (or self-closing form), by `(start, end)` byte span.
 fn find_para_default_style(s: &str) -> Option<(usize, usize)> {
     let needle = "<style:default-style";
     let mut from = 0;
     while let Some(rel) = s[from..].find(needle) {
         let start = from + rel;
         let after_name = start + needle.len();
-        // The char after the element name must be a delimiter (so `<style:default-style-x`
-        // doesn't match).
-        let is_delim = matches!(s.as_bytes().get(after_name), Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/'));
-        let gt = match s[start..].find('>') {
-            Some(g) => start + g,
-            None => return None,
+        // The char after the element name must be a delimiter, so `<style:default-style-x` doesn't match.
+        let is_delim = matches!(
+            s.as_bytes().get(after_name),
+            Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
+        );
+        let gt = {
+            let g = s[start..].find('>')?;
+            start + g
         };
         let open_tag = &s[start..=gt];
         if is_delim && open_tag.contains(r#"style:family="paragraph""#) {
             if s.as_bytes().get(gt.wrapping_sub(1)) == Some(&b'/') {
-                // Self-closing.
                 return Some((start, gt + 1));
             }
             let close = "</style:default-style>";
@@ -196,8 +182,7 @@ fn find_para_default_style(s: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// Byte index just past the `>` of the first `{open_prefix}` open tag, or `None` if
-/// it's self-closing / absent.
+/// Byte index just past the `>` of the first `{open_prefix}` open tag, or `None` if self-closing/absent.
 fn open_tag_end(s: &str, open_prefix: &str) -> Option<usize> {
     let open = s.find(open_prefix)?;
     let gt = s[open..].find('>')? + open;

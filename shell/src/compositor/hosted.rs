@@ -1,65 +1,40 @@
-//! Hosted compositor mode — runs the shell inside the developer's existing
-//! X11/Wayland session via `winit`. This is the legacy path that every
-//! `cargo run -p quick-desktop` invocation has used; it was lifted verbatim
-//! out of `main()` as part of Phase 1 of the real-Wayland-compositor plan so
-//! the new `--mode native` dispatch has somewhere to land.
-//!
-//! Behaviour is unchanged from before the split.
+//! Hosted compositor mode — runs the shell inside the developer's existing X11/Wayland session
+//! via `winit`. The legacy path every `cargo run -p quick-desktop` invocation uses; kept separate so `--mode native` has somewhere to land.
 
 use std::sync::Arc;
 
 use crate::network::behaviour::{load_or_create_keypair, peer_salt_from_keypair};
 use crate::shell::network::{ShellNetwork, peer_key_path};
 use crate::shell::state::WorkspaceTree;
-use crate::shell::{build_nirios_overlay_host_with_handle, persist, sync_tab_presence_from_tree};
+use crate::shell::{persist, sync_tab_presence_from_tree};
 use ui::collaboration::PresencePayload;
 use ui::presence::PresenceKey;
 use ui::widget::Widget;
 use ui::{App, State};
 
-/// Boot the shell on top of the host's existing display server with
-/// the legacy v1 behaviour — peer-sync OFF, portals OFF. Kept as a
-/// thin alias of [`run_with_options`] for callers that still hard-code
-/// the no-arg entry point (notably integration tests that don't care
-/// about the libp2p / portal side of the world).
+/// Boot the shell with legacy v1 behaviour — peer-sync OFF, portals OFF. Thin alias of
+/// [`run_with_options`] for callers that hard-code the no-arg entry point (mainly integration tests).
 pub fn run() {
     run_with_options(false);
 }
 
-/// Aggregated boot-time toggles for the hosted entry point. Held by
-/// value so a future flag (e.g. `--enable-foo`) is one struct-field
-/// edit + one branch, not a fan-out across `main.rs` and every test
-/// fixture. v1 stays at two fields; the empty default is OFF for both.
+/// Aggregated boot-time toggles for the hosted entry point, held by value so a new flag is one
+/// struct-field edit, not a fan-out across `main.rs` and every test fixture. v1: two fields, default OFF.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostedOptions {
     pub enable_peer_sync: bool,
-    /// Sandbox Phase 4.3: spin up the `xdg-desktop-portal` D-Bus
-    /// backend (FileChooser / ScreenCast / Access). Off by default —
-    /// the portal lifetime is tied to the shell's tokio runtime, and
-    /// callers without the flag get the exact pre-4.3 hosted-mode
-    /// behaviour.
+    /// Spin up the `xdg-desktop-portal` D-Bus backend (`FileChooser` / `ScreenCast` / Access). Off by default; portal lifetime is tied to the shell's tokio runtime.
     pub enable_portals: bool,
 }
 
-/// Boot the shell on top of the host's existing display server.
-///
-/// Mirrors the previous `main()` body verbatim: load (or default) the
-/// persisted workspace tree, seed presence so collaboration chrome paints on
-/// the first frame, and hand control to `App::run`, which drives the winit
-/// event loop until the user quits.
-///
-/// When `enable_peer_sync` is true, also constructs a
-/// [`ShellNetwork`] handle on top of the same `WorkspaceTree`. Phase 3
-/// Task 3.1 only owns the construction — wiring `tick()` into the
-/// per-frame update loop and routing palette commands lives behind
-/// Tasks 3.2 + 3.3. v1 default OFF — passing `false` (or omitting
-/// `--enable-peer-sync` on the CLI) preserves the existing behaviour
-/// bit-for-bit.
-/// How long an invite minted from the palette stays valid. One hour —
-/// long enough to hand a token to someone in the same room, short
-/// enough that a token left in a chat log stops working.
+/// How long an invite minted from the palette stays valid: one hour — long enough to hand a token to someone in the room, short enough that a leaked chat-log token stops working.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
 
+/// Boot the shell on top of the host's existing display server.
+///
+/// Loads (or defaults) the persisted workspace tree, seeds presence so collaboration chrome
+/// paints on the first frame, and hands control to `App::run`. When `enable_peer_sync` is true,
+/// also constructs a [`ShellNetwork`] handle on the same `WorkspaceTree`; `false` preserves existing behaviour bit-for-bit.
 pub fn run_with_options(enable_peer_sync: bool) {
     run_with_full_options(HostedOptions {
         enable_peer_sync,
@@ -67,9 +42,7 @@ pub fn run_with_options(enable_peer_sync: bool) {
     });
 }
 
-/// Full options-struct form. New flags (Sandbox 4.3's portal toggle)
-/// land here without changing the legacy `run_with_options(bool)`
-/// caller — `main.rs` switches over when it's wiring multiple flags.
+/// Full options-struct form. New flags land here without changing the legacy `run_with_options(bool)` caller; `main.rs` switches over when wiring multiple flags.
 pub fn run_with_full_options(opts: HostedOptions) {
     let HostedOptions {
         enable_peer_sync,
@@ -77,35 +50,17 @@ pub fn run_with_full_options(opts: HostedOptions) {
     } = opts;
 
     let path = persist::state_json_path();
-    // The notice is carried all the way to the chrome rather than logged here:
-    // "your workspaces are gone" and "your workspaces are on the disk and this
-    // build declined to open them" look identical from the desk, and the journal
-    // is not where the person is looking.
+    // The notice is carried to the chrome rather than logged here: "your workspaces are gone" vs.
+    // "this build declined to open them" look identical from the desk, and the journal isn't where the person is looking.
     let (mut tree, state_notice) = persist::load_or_default(&path);
 
-    // C-1: under `--enable-peer-sync`, derive a deterministic 16-bit
-    // peer salt from the libp2p keypair and stamp it into every id
-    // minted by `next_id` for the rest of the process lifetime. Two
-    // peers running in parallel mint ids with disjoint high bits, so
-    // CRDT sync no longer folds two distinct workspaces into a single
-    // row when their counters happen to overlap.
-    //
-    // The salt has to be set BEFORE `load_or_default`'s
-    // `seed_next_id_from_self` runs — otherwise the counter is seeded
-    // off ids from the *previous* (salt-0) run and the very next
-    // `WorkspaceId::new()` call mints a salted id whose counter
-    // overlaps an unsalted one already in the tree. The fix is to
-    // re-seed after setting the salt; `seed_next_id_from_self` is
-    // idempotent.
-    //
-    // No salt is set under the legacy (peer-sync-off) path so existing
-    // tests + restart cases keep producing the familiar `0x0001,
-    // 0x0002, …` id sequence. The salt-0 default is the explicit
-    // back-compat contract.
-    // Refused rather than downgraded when the device key will not load:
-    // the salt comes from that key, and syncing an unsalted id space
-    // lets two peers mint colliding ids, which CRDT sync then folds into
-    // one row.
+    // Under `--enable-peer-sync`, derive a deterministic 16-bit peer salt from the Iroh keypair
+    // and stamp it into every id `next_id` mints, so two peers no longer fold distinct workspaces
+    // into one row when counters overlap. Must be set BEFORE `load_or_default`'s
+    // `seed_next_id_from_self` runs, or the counter seeds off the previous (salt-0) run and the
+    // next `WorkspaceId::new()` collides with an unsalted id already in the tree; re-seeding after
+    // setting the salt is idempotent and fixes it. Legacy (peer-sync-off) path stays salt-0 for
+    // back-compat. Refused, not downgraded, when the device key won't load — syncing an unsalted id space is what causes the collision this prevents.
     let enable_peer_sync = enable_peer_sync
         && match load_or_create_keypair(&peer_key_path()) {
             Ok(kp) => {
@@ -124,33 +79,20 @@ pub fn run_with_full_options(opts: HostedOptions) {
             }
         };
 
-    // Permissions must outlive the process. Recording where to write
-    // the tree is what turns an `Always` grant into a durable one:
-    // every capability mutation flushes here, so a grant survives both
-    // a clean exit and a crash.
-    //
-    // NOT when the file was refused. Declining to *read* a state file and
-    // then writing a bootstrapped tree over it is worse than never having
-    // checked: the check would announce that the person's workspaces are
-    // safe on disk while destroying them. So a refused session runs without
-    // persistence, the same way `ui::persist` switches an app's writer off
-    // over a document it would not open.
+    // Permissions must outlive the process: recording where to write the tree turns an `Always`
+    // grant into a durable one, since every capability mutation flushes here. NOT set when the file
+    // was refused — declining to *read* a state file and then writing a bootstrapped tree over it
+    // would announce the workspaces are safe on disk while destroying them, so a refused session runs without persistence.
     tree.persist_path = if state_notice.is_none() {
-        Some(path.clone())
+        Some(path)
     } else {
         None
     };
-    // The FUSE mount runs in another process and enforces the list it
-    // reads from this path (`qos-fs --acl`). Exporting here is what
-    // stops the filesystem from enforcing an empty list forever.
+    // The FUSE mount (another process) enforces the ACL list it reads from this path (`qos-fs --acl`); exporting here is what makes it enforce anything instead of an empty list forever.
     tree.fs_acl_path = Some(persist::fs_capability_export_path());
 
-    // Every workspace needs a durable identity as a collaboration room
-    // before anything is launched into it. State files written before
-    // rooms existed come back with none; minting here — after
-    // `persist_path` is set, so the mint is written down in the same
-    // breath — is what makes "the workspace I had yesterday" and "the
-    // workspace I have today" the same room rather than two.
+    // Every workspace needs a durable room identity before anything is launched into it. State
+    // files written before rooms existed come back with none; minting here (after `persist_path` is set, so it's written down in the same breath) keeps "yesterday's workspace" and "today's" the same room.
     let roomless = tree.adopt_roomless_workspaces();
     if !roomless.is_empty() {
         tracing::info!(
@@ -159,11 +101,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
         );
     }
 
-    // Someone has to own each room, or nobody can grant anything in it.
-    // Workspaces restored from a state file written before ownership
-    // existed carry no owner; the local user adopts them here. The
-    // alternative — treating an unowned workspace as owned by whoever
-    // asks — is the hole this replaces.
+    // Someone has to own each room or nobody can grant anything in it; workspaces restored from a state file written before ownership existed carry no owner, so the local user adopts them here.
     let local_user = crate::shell::state::local_user_id();
     let adopted = tree.adopt_ownerless_workspaces(&local_user);
     if !adopted.is_empty() {
@@ -173,34 +111,20 @@ pub fn run_with_full_options(opts: HostedOptions) {
         );
     }
 
-    // C-3: one `WorkspaceTreeHandle` shared across compositor / portal /
-    // peer-sync. The shell chrome, the portal's `GrantStoreHandle`, and
-    // the peer-sync `WorkspaceTreeReplica` each hold a clone of this
-    // handle — every mutation lands on the same underlying tree.
+    // One `WorkspaceTreeHandle` shared across compositor / portal / peer-sync — chrome, the portal's `GrantStoreHandle`, and the peer-sync replica each hold a clone, so every mutation lands on the same tree.
     let tree_handle: crate::shell::state::WorkspaceTreeHandle = tree.shared();
 
-    // Snapshot for `sync_tab_presence_from_tree`, which only reads the
-    // cache once at startup. Held briefly under a read lock.
+    // Snapshot for `sync_tab_presence_from_tree`, which only reads the cache once at startup; held briefly under a read lock.
     let tree_snapshot: WorkspaceTree = tree_handle.read().clone();
 
-    // C-3: peer-sync shares the same `WorkspaceTreeHandle` as chrome +
-    // portal. `WorkspaceTreeReplica::apply_changes` writes into the
-    // shared tree → the next paint reads the merged state without any
-    // copy-back step.
-    //
-    // Held alive for the life of `run` so the actor's tokio runtime
-    // doesn't drop out from under us mid-session. Failure is logged
-    // and treated as "peer-sync stays off" — the shell must keep
-    // working even if the keypair store is unreadable.
+    // Peer-sync shares the same `WorkspaceTreeHandle` as chrome + portal:
+    // `WorkspaceTreeReplica::apply_changes` writes into the shared tree, so the next paint reads the
+    // merged state with no copy-back. Held alive for the life of `run` so the actor's tokio runtime
+    // doesn't drop mid-session; a load failure is logged and treated as "peer-sync stays off".
     let peer_sync: Option<Arc<ShellNetwork>> = if enable_peer_sync {
-        match ShellNetwork::spawn(
-            tree_handle.clone(),
-            &peer_key_path(),
-        ) {
+        match ShellNetwork::spawn(tree_handle.clone(), &peer_key_path()) {
             Ok(handle) => {
-                // Subscribe to the default workspace topic so the
-                // actor's gossipsub mesh has somewhere to deliver
-                // `NeighbourMsg::SyncReq`s as soon as a peer dials in.
+                // Subscribe to the default workspace topic so the actor's gossip mesh has somewhere to deliver `NeighbourMsg::SyncReq`s as soon as a peer dials in.
                 let _ = handle.join_default_workspace();
                 tracing::info!("peer-sync: actor spawned, default workspace joined");
                 Some(Arc::new(handle))
@@ -216,8 +140,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
 
     qos_startup_metrics::mark("hosted-run-state-build");
     let state = State::new();
-    // The session keeps each open tab's document on disk — one record per
-    // tab — so a note typed into one is still there next boot.
+    // The session keeps each open tab's document on disk, one record per tab, so a note typed into one is still there next boot.
     let (host, _chrome) = crate::shell::build_nirios_overlay_host_with_records(
         tree_handle.clone(),
         enable_peer_sync,
@@ -226,16 +149,11 @@ pub fn run_with_full_options(opts: HostedOptions) {
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&_chrome, notice);
     }
-    // Which records each room holds outlives the session too, and the
-    // records apps have written are found by looking. Both are switched
-    // on here, beside the rest of the session's durable state, so
-    // building a compositor for a test or a screenshot reads and writes
-    // nobody's.
+    // Which records each room holds outlives the session too, and the records apps have written
+    // are found by looking; both switched on here beside the rest of the session's durable state, so a compositor built for a test or screenshot reads and writes nobody's.
     host.room_records().borrow_mut().attach_store();
-    // Give the palette's `/invite` and `/connect` rows something that
-    // actually performs them. Without this the host records an intent
-    // and drops it, which is what both commands did before: reachable
-    // in the palette, inert in a running session.
+    // Give the palette's `/invite` and `/connect` rows something that actually performs them —
+    // without this the host records an intent and drops it: reachable in the palette, inert in a running session.
     let host = match peer_sync.as_ref() {
         Some(net) => {
             let net = Arc::clone(net);
@@ -245,18 +163,21 @@ pub fn run_with_full_options(opts: HostedOptions) {
                     let active = tree_for_bridge.read().active;
                     net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                 }
+                crate::shell::overlay_host::PeerSyncRequest::IssueInviteFor(name) => {
+                    let active = tree_for_bridge.read().active;
+                    net.issue_invite_named(active, INVITE_EXPIRY_SECONDS, &name)
+                }
                 crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
                     let active = tree_for_bridge.read().active;
-                    net.accept_invite(active, &token).map(|room| room.to_string())
+                    net.accept_invite(active, &token)
+                        .map(|room| room.to_string())
                 }
             }))
         }
         None => host,
     };
-    // The portal's two queues. Made here, before the host is boxed into
-    // the app, because attaching them needs the concrete type — and made
-    // unconditionally because they are two cheap handles, and a queue
-    // nobody fills costs nothing to hold.
+    // The portal's two queues, made here (before the host is boxed into the app, since attaching
+    // them needs the concrete type) and unconditionally — two cheap handles, and an unfilled queue costs nothing to hold.
     let portal_prompts =
         crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
     let portal_pickers = crate::portal::FilePickerQueue::new();
@@ -266,21 +187,13 @@ pub fn run_with_full_options(opts: HostedOptions) {
     qos_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::new(state, root);
     qos_startup_metrics::mark("hosted-app-new-done");
-    // Seed per-tab presence from the tree's collaborator roster so
-    // tab-pill presence dots render on first draw. Network-driven
-    // presence updates later rewrite the same keys via the collab
-    // pump, so this does not conflict with live peer attribution.
+    // Seed per-tab presence from the tree's collaborator roster so tab-pill presence dots render
+    // on first draw; network-driven updates later rewrite the same keys via the collab pump, so this doesn't conflict with live peer attribution.
     sync_tab_presence_from_tree(&tree_snapshot, app.presence_ctx_mut());
-    // Declare the pointer-presence scope so local cursor moves broadcast
-    // to every connected peer under the workspace's **room**.
-    //
-    // The room, not the local `WorkspaceId`. The id is a per-machine
-    // handle: two peers in one room hold different ones, so a pointer
-    // published under it arrives addressed to a scope the receiver has
-    // never heard of and is filed away unread. The room is what the
-    // launcher stamps into an app, what the overlay looks peers up by,
-    // and what the native backend already republishes under — this was
-    // the odd one out.
+    // Declare the pointer-presence scope so local cursor moves broadcast to every connected peer
+    // under the workspace's **room**, not the local `WorkspaceId` — the id is a per-machine handle
+    // (two peers in one room hold different ones), so a pointer published under it would arrive
+    // addressed to a scope the receiver has never heard of. The room is what the launcher, the overlay, and the native backend already key on.
     let active_room = tree_snapshot
         .workspaces
         .iter()
@@ -295,56 +208,50 @@ pub fn run_with_full_options(opts: HostedOptions) {
         );
     }
 
-    // Phase 3.2 cursor-presence pump: when peer-sync is enabled,
-    // pipe every local `broadcast_presence` Pointer event into a
-    // `NetCmd::Publish { msg: PresenceMoved }` and drain received
-    // presence updates into the chrome's remote-cursors overlay.
-    // Sink + frame-tick are only installed under `enable_peer_sync`
-    // so the legacy headless path stays fully bit-compatible.
+    // Cursor-presence pump: when peer-sync is enabled, pipe every local `broadcast_presence`
+    // Pointer event into `NetCmd::Publish { msg: PresenceMoved }` and drain received updates into
+    // the chrome's remote-cursors overlay. Installed only under `enable_peer_sync` so the legacy headless path stays bit-compatible.
     if let Some(net) = peer_sync.as_ref() {
         let send_net = Arc::clone(net);
         app.set_presence_broadcast_sink(move |key, payload| {
-            // Only Pointer payloads carry an (x, y) coordinate; the
-            // other variants (Caret, Selection, Arrived, Left) are
-            // out of scope for cursor presence and ride the existing
-            // unix-socket path the toolkit already invokes alongside.
+            // Only Pointer payloads carry an (x, y); the other variants (Caret, Selection, Arrived, Left) are out of scope here and ride the existing unix-socket path.
             let PresencePayload::Pointer { x, y } = payload else {
                 return;
             };
-            // Encode the structured `PresenceKey` to JSON so the wire
-            // format stays opaque to the shell-side bridge. Receivers
-            // either round-trip back into PresenceKey (when they care
-            // about scope) or use the string as an attribution-only
-            // identifier.
+            // Encode the structured `PresenceKey` to JSON so the wire format stays opaque to the
+            // shell-side bridge; receivers either round-trip back into `PresenceKey` or use the string as an attribution-only id.
             let key_str = serde_json::to_string(key).unwrap_or_default();
-            send_net.publish_presence(key_str, (*x as f64, *y as f64));
+            send_net.publish_presence(key_str, (f64::from(*x), f64::from(*y)));
         });
         let recv_net = Arc::clone(net);
         let inbound = recv_net.inbound_presence_handle();
-        // Inbound samples arrive at whatever rate the publisher manages
-        // (~30 Hz) and never carry a "peer left" note, so they are fed
-        // through the interpolator rather than straight onto the overlay:
-        // it eases between consecutive samples and fades a peer's cursor
-        // out once they go quiet. See `shell::shell::cursor_interp`.
+        // Inbound samples arrive at whatever rate the publisher manages (~30 Hz) and never carry a
+        // "peer left" note, so they're fed through the interpolator rather than straight onto the overlay: it eases between samples and fades a quiet peer's cursor out. See `shell::shell::cursor_interp`.
         let mut cursors = crate::shell::cursor_interp::CursorInterpolator::new();
+        let tree_for_roster = tree_handle.clone();
         app.set_frame_tick(move |presence_ctx| {
-            // Pump the actor→replica event channel first so any
-            // `PresenceMoved` events that arrived since the last
-            // wakeup land in the inbound buffer this frame.
+            // Pump the actor→replica event channel first so any `PresenceMoved` events since the last wakeup land in the inbound buffer this frame.
             recv_net.tick();
-            // Drain the buffer atomically so a slow frame doesn't
-            // double-apply the same delta. Anything we drop here is
-            // a stale move that's about to be replaced anyway, since
-            // peers republish at ~30 Hz.
+            // Drain the buffer atomically so a slow frame doesn't double-apply the same delta — anything dropped here is a stale move about to be replaced anyway, since peers republish at ~30 Hz.
             let drained: Vec<_> = {
                 let mut buf = inbound.lock().unwrap();
                 std::mem::take(&mut *buf)
             };
             let now = std::time::Instant::now();
             for entry in drained {
+                // A frame addressed to a room is this session learning a named person is in it; putting them on
+                // that room's roster is what the avatar stack, wheel-disc dots, and collaborators overlay render from.
+                if let Ok(ui::presence::PresenceKey::Workspace { id }) =
+                    serde_json::from_str::<ui::presence::PresenceKey>(&entry.key)
+                    && let Some(room) = crate::shell::state::RoomId::parse(&id)
+                {
+                    tree_for_roster
+                        .write()
+                        .note_peer_present(room, entry.peer, &entry.user);
+                }
                 cursors.push_sample(
-                    &format!("p{:016x}", entry.peer),
-                    "",
+                    &crate::shell::state::session_handle(entry.peer),
+                    &entry.user,
                     [entry.point.0 as f32, entry.point.1 as f32],
                     now,
                 );
@@ -352,63 +259,45 @@ pub fn run_with_full_options(opts: HostedOptions) {
             cursors.apply_to(presence_ctx, now);
         });
     }
-    // Sandbox Phase 4.3 — bring up the xdg-desktop-portal D-Bus
-    // backend if `--enable-portals` was passed. The portal needs a
-    // tokio runtime to drive zbus's async dispatch; reuse the
-    // peer-sync runtime when present, otherwise mint a dedicated one
-    // (kept alive next to `peer_sync` for the lifetime of `app.run`).
+    // Bring up the xdg-desktop-portal D-Bus backend if `--enable-portals` was passed; needs a tokio
+    // runtime for zbus's async dispatch, reusing the peer-sync runtime when present or minting a dedicated one.
     //
-    // The portal must NOT bypass the existing sandbox / grant
-    // enforcement — `flow::resolve` is the only entry point that
-    // mutates the workspace's `grants` map, and it consults the same
-    // store the chrome's permission-prompt pump already uses (Phase
-    // 4.2). Failures are downgraded to a warning so a broken session
-    // bus never wedges the shell.
+    // The portal must NOT bypass the existing sandbox / grant enforcement — `flow::resolve` is the
+    // only entry point that mutates the workspace's `grants` map, consulting the same store the
+    // chrome's permission-prompt pump uses. Failures downgrade to a warning so a broken session bus never wedges the shell.
     let _portal_runtime: Option<tokio::runtime::Runtime>;
     let _portal_handle: Option<crate::portal::ServerHandle>;
     if enable_portals {
-        let (rt_handle, runtime_owned) = match tokio::runtime::Handle::try_current() {
-            Ok(h) => (h, None),
-            Err(_) => {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name("nirios-portal")
-                    .build()
-                    .ok();
-                match rt {
-                    Some(rt) => (rt.handle().clone(), Some(rt)),
-                    None => {
-                        tracing::warn!("portal: tokio runtime build failed; portal stays off");
-                        _portal_runtime = None;
-                        _portal_handle = None;
-                        app.run();
-                        return;
-                    }
-                }
+        let (rt_handle, runtime_owned) = if let Ok(h) = tokio::runtime::Handle::try_current() {
+            (h, None)
+        } else {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("nirios-portal")
+                .build()
+                .ok();
+            if let Some(rt) = rt {
+                (rt.handle().clone(), Some(rt))
+            } else {
+                tracing::warn!("portal: tokio runtime build failed; portal stays off");
+                _portal_runtime = None;
+                _portal_handle = None;
+                app.run();
+                return;
             }
         };
-        // C-3: the portal's grant store shares the same
-        // `WorkspaceTreeHandle` as the shell chrome + peer-sync
-        // replica. Portal `Allow` outcomes flip a workspace grant on
-        // the same tree the Permissions tab reads from, and
-        // `doc_insert_grant` mirrors the change into the automerge doc
-        // so peer-sync ships it on the next tick.
-        let grants = crate::portal::GrantStoreHandle::new(tree_handle.clone());
-        // The same queues the host is already draining. Building fresh
-        // ones here is the bug this replaces: the portal would fill a
-        // queue nobody was watching.
-        let prompts = portal_prompts.clone();
-        let pickers = portal_pickers.clone();
+        // The portal's grant store shares the same `WorkspaceTreeHandle` as chrome + peer-sync: an
+        // `Allow` outcome flips a workspace grant on the same tree the Permissions tab reads, and `doc_insert_grant` mirrors it into the automerge doc so peer-sync ships it next tick.
+        let grants = crate::portal::GrantStoreHandle::new(tree_handle);
+        // The same queues the host is already draining — fresh ones here would leave the portal filling a queue nobody watches.
+        let prompts = portal_prompts;
+        let pickers = portal_pickers;
         let ctx = crate::portal::PortalContext {
             grants,
-            prompts: prompts.clone(),
+            prompts,
             caller_map: crate::portal::CallerMap::new(),
-            // The real dialog, not the null spawner. Hosted mode has a
-            // chrome to render it in, so there is no reason for it to
-            // cancel every request the way the null one does.
-            file_picker: crate::portal::FilePickerSpawnerHandle::new(std::sync::Arc::new(
-                pickers.clone(),
-            )),
+            // The real dialog, not the null spawner: hosted mode has a chrome to render it in, so there's no reason to cancel every request.
+            file_picker: crate::portal::FilePickerSpawnerHandle::new(std::sync::Arc::new(pickers)),
             screencast_provisioner: crate::portal::ScreenCastStreamProvisionerHandle::new(
                 std::sync::Arc::new(crate::portal::MockScreenCastProvisioner::new_with_node(
                     1, "default",
@@ -444,27 +333,15 @@ pub fn run_with_full_options(opts: HostedOptions) {
 
     let _peer_sync = peer_sync.clone(); // keep alive for lifetime of `app.run()`
 
-    // Local CRDT fan-out broker: when QUICK_COLLAB_SOCK is set, bind
-    // the path and detach a listener thread so every app launched
-    // with the same env var connects through us and shares CRDT
-    // updates live. Held for the lifetime of `app.run()` so the
-    // socket file survives the session and reader threads stay
-    // alive. See `shell::collab_broker` module docs for the protocol
-    // surface and the test-only relay in `ui/tests/real_socket_two_peer.rs`
-    // for the original spec.
-    //
-    // Phase 2: when peer-sync is also enabled, the broker bridges
-    // through `ShellNetwork` so two laptops on the same gossipsub
-    // topic share app-level CRDT increments via libp2p too.
+    // Local CRDT fan-out broker: when QUICK_COLLAB_SOCK is set, bind the path and detach a
+    // listener thread so every app launched with the same env var shares CRDT updates live. Held
+    // for the lifetime of `app.run()` so the socket file and reader threads survive the session. See
+    // `shell::collab_broker` for the protocol; when peer-sync is also enabled, the broker bridges through `ShellNetwork` so two laptops on the same gossip topic share app-level CRDT increments too.
     let _collab_broker: Option<crate::shell::collab_broker::BrokerHandle> =
         if let Some(path) = std::env::var_os("QUICK_COLLAB_SOCK") {
             let socket_path = std::path::PathBuf::from(path);
-            // Optional native Cap'n Proto socket alongside the legacy
-            // JSON one. When bound, apps using the `runtime-collab`
-            // SDK connect directly to the shell without needing the
-            // `collab-bridge` translator. Both transports share
-            // fanout: an event delivered on one lands on subscribers
-            // of the other.
+            // Optional native Cap'n Proto socket alongside the legacy JSON one: apps using the
+            // `runtime-collab` SDK clients connect directly to the native broker. Both transports share fanout — an event on one lands on subscribers of the other.
             let capnp_socket_path =
                 std::env::var_os("QUICK_COLLAB_CAPNP_SOCK").map(std::path::PathBuf::from);
             match crate::shell::collab_broker::spawn_full(
@@ -478,8 +355,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
                         socket_path.display(),
                         capnp_socket_path
                             .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "<none>".to_string()),
+                            .map_or_else(|| "<none>".to_string(), |p| p.display().to_string()),
                         peer_sync.is_some()
                     );
                     Some(handle)
@@ -496,15 +372,11 @@ pub fn run_with_full_options(opts: HostedOptions) {
             None
         };
 
-    // Hosted-mode test-control socket: when QOS_TEST_CONTROL is set,
-    // bind it the same way the headless backend does and run the App
-    // with a proxy that injects clicks/hovers into the event loop.
-    // Same code path as hardware events; same gate; same redraw.
+    // Hosted-mode test-control socket: when QOS_TEST_CONTROL is set, bind it like the headless
+    // backend and run the App with a proxy injecting clicks/hovers into the event loop — same code
+    // path, gate, and redraw as hardware events.
     //
-    // Gated on `dev_env::DEV_ENV_OVERRIDES` as well as the cargo feature,
-    // for the same reason the native path is: this socket drives the shell
-    // as if it were the user, so an installed binary must not be able to
-    // open one however it was compiled.
+    // Gated on `dev_env::DEV_ENV_OVERRIDES` as well as the cargo feature: this socket drives the shell as if it were the user, so an installed binary must not be able to open one however it was compiled.
     #[cfg(feature = "hosted-test-control")]
     {
         if let Some(path) = crate::compositor::native::test_control_path(

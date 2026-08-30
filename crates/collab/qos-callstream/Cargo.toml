@@ -16,3 +16,6 @@ openh264 = { version = "0.9", features = ["source"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0.18"
 tracing = "0.1"
+
+[lints]
+workspace = true

@@ -1,25 +1,10 @@
 //! Structural version diff between two states of the **same** document.
 //!
-//! A CRDT-native document has one property a byte diff never does: **stable block
-//! identity**. A paragraph keeps its block id across every edit and every
-//! save/load, so two versions of the same document can be aligned by id instead
-//! of guessed at by fuzzy text matching. That makes a clean, deterministic
-//! structural diff possible — added / removed / changed blocks, and within a
-//! changed block a run-level (character) diff a UI can render inline.
-//!
-//! Feed it two [`DocSnapshot`]s (e.g. from [`crate::Document::materialize_at`] at
-//! two versions, or two [`crate::Document`]s of the same lineage). The result is
-//! plain serializable data — no rendering assumptions baked in.
-//!
-//! Alignment strategy:
-//! * If the two versions share block ids (the normal case for one document's
-//!   history), blocks are aligned by an LCS over the id sequences: shared ids in
-//!   the same relative order are `Equal` anchors, ids only on the old side are
-//!   `Removed`, ids only on the new side are `Added`. Each `Equal` pair is then
-//!   compared field-by-field and reported `Changed` (with a run diff) or filtered
-//!   out when identical.
-//! * If the two share **no** ids (e.g. two independently imported files), it
-//!   falls back to positional pairing so a content diff is still produced.
+//! A CRDT-native document has stable block identity — a paragraph keeps its id across every edit
+//! and save/load — so two versions align by id instead of fuzzy text matching, giving a clean
+//! structural diff (added/removed/changed blocks, plus a run-level diff within a changed block).
+//! Feed it two [`DocSnapshot`]s; the result is plain serializable data. Blocks align by an LCS over
+//! shared ids when both versions share any; otherwise it falls back to positional pairing.
 
 use crate::document::MarkSpan;
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
@@ -29,19 +14,16 @@ use std::collections::BTreeMap;
 /// The full structural diff of a document between two versions (`old` → `new`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocDiff {
-    /// Body-block changes, in reading order (new-version order for kept/added
-    /// blocks; a removed block sits after the surviving block it followed).
+    /// Body-block changes, in reading order (new-version order for kept/added blocks; a removed block sits after the surviving block it followed).
     pub blocks: Vec<BlockDiff>,
-    /// Document-property changes (`title`/`author`/… → old/new), keyed by name.
-    /// Only properties that actually changed appear.
+    /// Document-property changes (`title`/`author`/… → old/new), keyed by name; only properties that actually changed appear.
     pub properties: Vec<PropChange>,
     /// A one-line tally for a header/summary line.
     pub summary: DiffSummary,
 }
 
 impl DocDiff {
-    /// Whether the two versions are structurally identical (no block or property
-    /// changes).
+    /// Whether the two versions are structurally identical (no block or property changes).
     pub fn is_empty(&self) -> bool {
         self.blocks.iter().all(|b| b.op == BlockOp::Equal) && self.properties.is_empty()
     }
@@ -72,11 +54,8 @@ pub struct PropChange {
 /// How a block relates the old version to the new one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockOp {
-    /// Present only in the new version.
     Added,
-    /// Present only in the old version.
     Removed,
-    /// Present in both, with differing content (see the detail fields).
     Changed,
     /// Present in both, identical (kept as context; filter with [`DocDiff::changed_blocks`]).
     Equal,
@@ -90,8 +69,7 @@ pub struct BlockDiff {
     pub op: BlockOp,
     /// The block kind in the new version (or the old version for a `Removed` block).
     pub kind: String,
-    /// Set on a `Changed` block whose kind changed (e.g. paragraph → heading):
-    /// `(old_kind, new_kind)`.
+    /// Set on a `Changed` block whose kind changed (e.g. paragraph → heading): `(old_kind, new_kind)`.
     #[serde(default)]
     pub kind_change: Option<(String, String)>,
     /// The old block text (`Removed`/`Changed`; `None` for `Added`).
@@ -100,8 +78,7 @@ pub struct BlockDiff {
     /// The new block text (`Added`/`Changed`; `None` for `Removed`).
     #[serde(default)]
     pub new_text: Option<String>,
-    /// Character-level run diff of the text (only for `Changed`). For `Added` /
-    /// `Removed` the whole text is implied by `new_text` / `old_text`.
+    /// Character-level run diff of the text (only for `Changed`); for `Added`/`Removed` the whole text is implied by `new_text`/`old_text`.
     #[serde(default)]
     pub runs: Vec<TextRun>,
     /// Inline marks (bold/italic/link/…) that were added going old → new.
@@ -110,8 +87,7 @@ pub struct BlockDiff {
     /// Inline marks that were removed going old → new.
     #[serde(default)]
     pub marks_removed: Vec<MarkSpan>,
-    /// Block attribute changes (`style`/`level`/`align`/… → old/new). Only
-    /// attributes that changed appear.
+    /// Block attribute changes (`style`/`level`/`align`/… → old/new). Only attributes that changed appear.
     #[serde(default)]
     pub attr_changes: Vec<AttrChange>,
 }
@@ -134,21 +110,16 @@ pub struct TextRun {
 /// The kind of a [`TextRun`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunOp {
-    /// Unchanged text present in both versions.
     Equal,
-    /// Text inserted in the new version.
     Insert,
-    /// Text deleted from the old version.
     Delete,
 }
 
-/// Above this many characters a paragraph's run diff falls back to a coarse
-/// whole-text replace (delete-all + insert-all) so the O(n·m) alignment can't be
-/// driven quadratic by a pathologically long "paragraph".
+/// Above this many characters a paragraph's run diff falls back to a coarse whole-text replace, so
+/// the O(n·m) alignment can't be driven quadratic by a pathologically long "paragraph".
 const RUN_DIFF_CHAR_CAP: usize = 8_192;
 
-/// Diff two whole-document snapshots (`old` → `new`). See the module docs for the
-/// alignment strategy.
+/// Diff two whole-document snapshots (`old` → `new`). See the module docs for the alignment strategy.
 pub fn diff_snapshots(old: &DocSnapshot, new: &DocSnapshot) -> DocDiff {
     let blocks = diff_block_lists(&old.blocks, &new.blocks);
     let properties = diff_props(&old.properties, &new.properties);
@@ -161,11 +132,14 @@ pub fn diff_snapshots(old: &DocSnapshot, new: &DocSnapshot) -> DocDiff {
             BlockOp::Equal => summary.unchanged += 1,
         }
     }
-    DocDiff { blocks, properties, summary }
+    DocDiff {
+        blocks,
+        properties,
+        summary,
+    }
 }
 
-/// Diff two ordered block lists. Public so a caller can diff header/footer/note
-/// block sequences with the same primitive.
+/// Diff two ordered block lists. Public so a caller can diff header/footer/note block sequences with the same primitive.
 pub fn diff_block_lists(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> {
     let old_ids: Vec<&str> = old.iter().map(|b| b.id.as_str()).collect();
     let new_ids: Vec<&str> = new.iter().map(|b| b.id.as_str()).collect();
@@ -197,8 +171,7 @@ pub fn diff_block_lists(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> 
     out
 }
 
-/// Positional fallback: pair blocks by index (used when the two versions share no
-/// block ids). Extra blocks on either side are added/removed.
+/// Positional fallback: pair blocks by index (used when the two versions share no block ids). Extra blocks on either side are added/removed.
 fn diff_positional(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> {
     let mut out = Vec::new();
     let n = old.len().min(new.len());
@@ -225,7 +198,15 @@ fn added_block(b: &BlockView) -> BlockDiff {
         runs: Vec::new(),
         marks_added: b.marks.clone(),
         marks_removed: Vec::new(),
-        attr_changes: b.attrs.iter().map(|(k, v)| AttrChange { key: k.clone(), old: None, new: Some(v.clone()) }).collect(),
+        attr_changes: b
+            .attrs
+            .iter()
+            .map(|(k, v)| AttrChange {
+                key: k.clone(),
+                old: None,
+                new: Some(v.clone()),
+            })
+            .collect(),
     }
 }
 
@@ -240,7 +221,15 @@ fn removed_block(b: &BlockView) -> BlockDiff {
         runs: Vec::new(),
         marks_added: Vec::new(),
         marks_removed: b.marks.clone(),
-        attr_changes: b.attrs.iter().map(|(k, v)| AttrChange { key: k.clone(), old: Some(v.clone()), new: None }).collect(),
+        attr_changes: b
+            .attrs
+            .iter()
+            .map(|(k, v)| AttrChange {
+                key: k.clone(),
+                old: Some(v.clone()),
+                new: None,
+            })
+            .collect(),
     }
 }
 
@@ -251,24 +240,35 @@ fn compare_blocks(old: &BlockView, new: &BlockView) -> BlockDiff {
     let (marks_added, marks_removed) = diff_marks(&old.marks, &new.marks);
     let attr_changes = diff_attrs(&old.attrs, &new.attrs);
 
-    let changed = kind_change.is_some() || text_changed || !marks_added.is_empty() || !marks_removed.is_empty() || !attr_changes.is_empty();
+    let changed = kind_change.is_some()
+        || text_changed
+        || !marks_added.is_empty()
+        || !marks_removed.is_empty()
+        || !attr_changes.is_empty();
 
     BlockDiff {
         id: new.id.clone(),
-        op: if changed { BlockOp::Changed } else { BlockOp::Equal },
+        op: if changed {
+            BlockOp::Changed
+        } else {
+            BlockOp::Equal
+        },
         kind: new.kind.clone(),
         kind_change,
         old_text: text_changed.then(|| old.text.clone()),
         new_text: text_changed.then(|| new.text.clone()),
-        runs: if text_changed { text_runs(&old.text, &new.text) } else { Vec::new() },
+        runs: if text_changed {
+            text_runs(&old.text, &new.text)
+        } else {
+            Vec::new()
+        },
         marks_added,
         marks_removed,
         attr_changes,
     }
 }
 
-/// Marks present only in `new` (added) and only in `old` (removed). A mark's
-/// identity is its full `(start, end, name, value)` tuple.
+/// Marks present only in `new` (added) and only in `old` (removed). A mark's identity is its full `(start, end, name, value)` tuple.
 fn diff_marks(old: &[MarkSpan], new: &[MarkSpan]) -> (Vec<MarkSpan>, Vec<MarkSpan>) {
     let added = new.iter().filter(|m| !old.contains(m)).cloned().collect();
     let removed = old.iter().filter(|m| !new.contains(m)).cloned().collect();
@@ -284,18 +284,28 @@ fn diff_attrs(old: &BTreeMap<String, AttrVal>, new: &BTreeMap<String, AttrVal>) 
         let ov = old.get(k);
         let nv = new.get(k);
         if ov != nv {
-            out.push(AttrChange { key: k.clone(), old: ov.cloned(), new: nv.cloned() });
+            out.push(AttrChange {
+                key: k.clone(),
+                old: ov.cloned(),
+                new: nv.cloned(),
+            });
         }
     }
     out
 }
 
-/// Character-level diff of two paragraph texts into `Equal`/`Insert`/`Delete`
-/// runs. LCS-based, so it reports the minimal shared subsequence as `Equal` and
-/// the surrounding edits as insert/delete. Capped by [`RUN_DIFF_CHAR_CAP`].
+/// Character-level diff of two paragraph texts into `Equal`/`Insert`/`Delete` runs, LCS-based
+/// (minimal shared subsequence as `Equal`, surrounding edits as insert/delete). Capped by [`RUN_DIFF_CHAR_CAP`].
 pub fn text_runs(old: &str, new: &str) -> Vec<TextRun> {
     if old == new {
-        return if old.is_empty() { Vec::new() } else { vec![TextRun { op: RunOp::Equal, text: old.to_string() }] };
+        return if old.is_empty() {
+            Vec::new()
+        } else {
+            vec![TextRun {
+                op: RunOp::Equal,
+                text: old.to_string(),
+            }]
+        };
     }
     let a: Vec<char> = old.chars().collect();
     let b: Vec<char> = new.chars().collect();
@@ -303,10 +313,16 @@ pub fn text_runs(old: &str, new: &str) -> Vec<TextRun> {
         // Coarse fallback: whole-text replace. Still valid, just not minimal.
         let mut runs = Vec::new();
         if !a.is_empty() {
-            runs.push(TextRun { op: RunOp::Delete, text: old.to_string() });
+            runs.push(TextRun {
+                op: RunOp::Delete,
+                text: old.to_string(),
+            });
         }
         if !b.is_empty() {
-            runs.push(TextRun { op: RunOp::Insert, text: new.to_string() });
+            runs.push(TextRun {
+                op: RunOp::Insert,
+                text: new.to_string(),
+            });
         }
         return runs;
     }
@@ -314,17 +330,14 @@ pub fn text_runs(old: &str, new: &str) -> Vec<TextRun> {
     coalesce(ops)
 }
 
-// ---- LCS machinery ---------------------------------------------------------
-
 enum AlignStep<'a> {
     Both(&'a str, &'a str),
     OldOnly(&'a str),
     NewOnly(&'a str),
 }
 
-/// LCS alignment over two id sequences → an ordered list of steps. Shared ids in
-/// the longest common subsequence become `Both`; the rest are `OldOnly`/`NewOnly`
-/// interleaved in reading order.
+/// LCS alignment over two id sequences → an ordered list of steps: shared ids in the longest
+/// common subsequence become `Both`; the rest are `OldOnly`/`NewOnly` interleaved in reading order.
 fn lcs_align<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<AlignStep<'a>> {
     let n = old.len();
     let m = new.len();
@@ -411,7 +424,10 @@ fn coalesce(ops: Vec<(RunOp, char)>) -> Vec<TextRun> {
     for (op, ch) in ops {
         match runs.last_mut() {
             Some(r) if r.op == op => r.text.push(ch),
-            _ => runs.push(TextRun { op, text: ch.to_string() }),
+            _ => runs.push(TextRun {
+                op,
+                text: ch.to_string(),
+            }),
         }
     }
     runs
@@ -426,7 +442,11 @@ fn diff_props(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) ->
         let ov = old.get(k);
         let nv = new.get(k);
         if ov != nv {
-            out.push(PropChange { name: k.clone(), old: ov.cloned(), new: nv.cloned() });
+            out.push(PropChange {
+                name: k.clone(),
+                old: ov.cloned(),
+                new: nv.cloned(),
+            });
         }
     }
     out
@@ -452,7 +472,6 @@ mod tests {
         d.splice_text(&c, 0, 0, "gamma");
         let v1 = snap_of(&d);
 
-        // Edit `b`, remove `c`, add a new paragraph after `a`.
         d.splice_text(&b, 0, 4, "BETA"); // "beta" -> "BETA"
         d.remove_block(&c);
         let e = d.insert_block(Some(&a), "paragraph");
@@ -465,12 +484,16 @@ mod tests {
         assert_eq!(diff.summary.changed, 1, "one edited paragraph");
 
         let changed: Vec<_> = diff.changed_blocks().collect();
-        // The edited block reports old/new text and a run diff.
         let edited = changed.iter().find(|b| b.op == BlockOp::Changed).unwrap();
         assert_eq!(edited.id, b);
         assert_eq!(edited.old_text.as_deref(), Some("beta"));
         assert_eq!(edited.new_text.as_deref(), Some("BETA"));
-        assert!(edited.runs.iter().any(|r| r.op == RunOp::Insert && r.text == "BETA"));
+        assert!(
+            edited
+                .runs
+                .iter()
+                .any(|r| r.op == RunOp::Insert && r.text == "BETA")
+        );
 
         let added = changed.iter().find(|x| x.op == BlockOp::Added).unwrap();
         assert_eq!(added.new_text.as_deref(), Some("epsilon"));
@@ -502,16 +525,25 @@ mod tests {
         let diff = diff_snapshots(&v1, &v2);
         let ch = diff.changed_blocks().next().unwrap();
         assert_eq!(ch.op, BlockOp::Changed);
-        assert!(ch.marks_added.iter().any(|m| m.name == "strong"), "bold added surfaced");
+        assert!(
+            ch.marks_added.iter().any(|m| m.name == "strong"),
+            "bold added surfaced"
+        );
         assert!(ch.marks_removed.is_empty());
     }
 
     #[test]
     fn char_run_diff_is_minimal() {
         let runs = text_runs("the quick fox", "the quick brown fox");
-        // The shared prefix/suffix stay Equal; only "brown " is inserted.
-        assert!(runs.iter().any(|r| r.op == RunOp::Insert && r.text.contains("brown")));
-        let equal: String = runs.iter().filter(|r| r.op == RunOp::Equal).map(|r| r.text.clone()).collect();
+        assert!(
+            runs.iter()
+                .any(|r| r.op == RunOp::Insert && r.text.contains("brown"))
+        );
+        let equal: String = runs
+            .iter()
+            .filter(|r| r.op == RunOp::Equal)
+            .map(|r| r.text.clone())
+            .collect();
         assert!(equal.contains("the quick"));
         assert!(equal.contains("fox"));
     }
@@ -527,7 +559,10 @@ mod tests {
         b.splice_text(&pb, 0, 0, "first LINE");
 
         let diff = diff_snapshots(&snap_of(&a), &snap_of(&b));
-        assert_eq!(diff.summary.changed, 1, "positional pairing found the edited paragraph");
+        assert_eq!(
+            diff.summary.changed, 1,
+            "positional pairing found the edited paragraph"
+        );
         assert!(diff.blocks[0].runs.iter().any(|r| r.op == RunOp::Insert));
     }
 
@@ -544,12 +579,15 @@ mod tests {
         let title = diff.properties.iter().find(|p| p.name == "title").unwrap();
         assert_eq!(title.old.as_deref(), Some("Draft"));
         assert_eq!(title.new.as_deref(), Some("Final"));
-        assert!(diff.properties.iter().any(|p| p.name == "author" && p.new.as_deref() == Some("Ada")));
+        assert!(
+            diff.properties
+                .iter()
+                .any(|p| p.name == "author" && p.new.as_deref() == Some("Ada"))
+        );
     }
 }
-// ---- spreadsheet (workbook) structural diff --------------------------------
-// Appended to diff.rs. Same "stable identity → clean structural diff" idea as the
-// document diff: sheets align by their stable sheet id, cells by their A1 ref.
+// Spreadsheet (workbook) structural diff, appended here: same "stable identity → clean structural
+// diff" idea as the document diff — sheets align by their stable sheet id, cells by their A1 ref.
 
 use crate::sheet::snapshot::{CellView, SheetView, WorkbookSnapshot};
 
@@ -615,45 +653,49 @@ pub struct CellChange {
     pub new: Option<CellView>,
 }
 
-/// Diff two workbook snapshots (`old` → `new`). Sheets align by their stable id;
-/// within a shared sheet, cells align by A1 reference.
+/// Diff two workbook snapshots (`old` → `new`). Sheets align by their stable id; within a shared sheet, cells align by A1 reference.
 pub fn diff_workbooks(old: &WorkbookSnapshot, new: &WorkbookSnapshot) -> SheetDiff {
     let mut summary = SheetDiffSummary::default();
     let mut out = Vec::new();
 
-    let old_by_id: BTreeMap<&str, &SheetView> = old.sheets.iter().map(|s| (s.id.as_str(), s)).collect();
-    let new_by_id: BTreeMap<&str, &SheetView> = new.sheets.iter().map(|s| (s.id.as_str(), s)).collect();
+    let old_by_id: BTreeMap<&str, &SheetView> =
+        old.sheets.iter().map(|s| (s.id.as_str(), s)).collect();
+    let new_by_id: BTreeMap<&str, &SheetView> =
+        new.sheets.iter().map(|s| (s.id.as_str(), s)).collect();
 
     // New + shared sheets, in new tab order.
     for ns in &new.sheets {
-        match old_by_id.get(ns.id.as_str()) {
-            Some(os) => {
-                let change = diff_sheet(os, ns);
-                match change.op {
-                    SheetOp::Changed => {
-                        for c in &change.cells {
-                            match c.op {
-                                CellOp::Added => summary.cells_added += 1,
-                                CellOp::Removed => summary.cells_removed += 1,
-                                CellOp::Changed => summary.cells_changed += 1,
-                            }
-                        }
+        if let Some(os) = old_by_id.get(ns.id.as_str()) {
+            let change = diff_sheet(os, ns);
+            if change.op == SheetOp::Changed {
+                for c in &change.cells {
+                    match c.op {
+                        CellOp::Added => summary.cells_added += 1,
+                        CellOp::Removed => summary.cells_removed += 1,
+                        CellOp::Changed => summary.cells_changed += 1,
                     }
-                    _ => {}
                 }
-                out.push(change);
             }
-            None => {
-                summary.sheets_added += 1;
-                summary.cells_added += ns.cells.len();
-                out.push(SheetChange {
-                    id: ns.id.clone(),
-                    name: ns.name.clone(),
-                    op: SheetOp::Added,
-                    name_change: None,
-                    cells: ns.cells.iter().map(|c| CellChange { reference: c.reference.clone(), op: CellOp::Added, old: None, new: Some(c.clone()) }).collect(),
-                });
-            }
+            out.push(change);
+        } else {
+            summary.sheets_added += 1;
+            summary.cells_added += ns.cells.len();
+            out.push(SheetChange {
+                id: ns.id.clone(),
+                name: ns.name.clone(),
+                op: SheetOp::Added,
+                name_change: None,
+                cells: ns
+                    .cells
+                    .iter()
+                    .map(|c| CellChange {
+                        reference: c.reference.clone(),
+                        op: CellOp::Added,
+                        old: None,
+                        new: Some(c.clone()),
+                    })
+                    .collect(),
+            });
         }
     }
     // Removed sheets (present only in old).
@@ -666,34 +708,79 @@ pub fn diff_workbooks(old: &WorkbookSnapshot, new: &WorkbookSnapshot) -> SheetDi
                 name: os.name.clone(),
                 op: SheetOp::Removed,
                 name_change: None,
-                cells: os.cells.iter().map(|c| CellChange { reference: c.reference.clone(), op: CellOp::Removed, old: Some(c.clone()), new: None }).collect(),
+                cells: os
+                    .cells
+                    .iter()
+                    .map(|c| CellChange {
+                        reference: c.reference.clone(),
+                        op: CellOp::Removed,
+                        old: Some(c.clone()),
+                        new: None,
+                    })
+                    .collect(),
             });
         }
     }
-    SheetDiff { sheets: out, summary }
+    SheetDiff {
+        sheets: out,
+        summary,
+    }
 }
 
 fn diff_sheet(old: &SheetView, new: &SheetView) -> SheetChange {
     let name_change = (old.name != new.name).then(|| (old.name.clone(), new.name.clone()));
-    let old_cells: BTreeMap<&str, &CellView> = old.cells.iter().map(|c| (c.reference.as_str(), c)).collect();
-    let new_cells: BTreeMap<&str, &CellView> = new.cells.iter().map(|c| (c.reference.as_str(), c)).collect();
+    let old_cells: BTreeMap<&str, &CellView> = old
+        .cells
+        .iter()
+        .map(|c| (c.reference.as_str(), c))
+        .collect();
+    let new_cells: BTreeMap<&str, &CellView> = new
+        .cells
+        .iter()
+        .map(|c| (c.reference.as_str(), c))
+        .collect();
 
     let mut refs: Vec<&str> = old_cells.keys().chain(new_cells.keys()).copied().collect();
-    refs.sort();
+    refs.sort_unstable();
     refs.dedup();
 
     let mut cells = Vec::new();
     for r in refs {
         match (old_cells.get(r), new_cells.get(r)) {
-            (Some(oc), Some(nc)) if oc != nc => cells.push(CellChange { reference: r.to_string(), op: CellOp::Changed, old: Some((*oc).clone()), new: Some((*nc).clone()) }),
+            (Some(oc), Some(nc)) if oc != nc => cells.push(CellChange {
+                reference: r.to_string(),
+                op: CellOp::Changed,
+                old: Some((*oc).clone()),
+                new: Some((*nc).clone()),
+            }),
             (Some(_), Some(_)) => {}
-            (None, Some(nc)) => cells.push(CellChange { reference: r.to_string(), op: CellOp::Added, old: None, new: Some((*nc).clone()) }),
-            (Some(oc), None) => cells.push(CellChange { reference: r.to_string(), op: CellOp::Removed, old: Some((*oc).clone()), new: None }),
+            (None, Some(nc)) => cells.push(CellChange {
+                reference: r.to_string(),
+                op: CellOp::Added,
+                old: None,
+                new: Some((*nc).clone()),
+            }),
+            (Some(oc), None) => cells.push(CellChange {
+                reference: r.to_string(),
+                op: CellOp::Removed,
+                old: Some((*oc).clone()),
+                new: None,
+            }),
             (None, None) => {}
         }
     }
-    let op = if name_change.is_some() || !cells.is_empty() { SheetOp::Changed } else { SheetOp::Equal };
-    SheetChange { id: new.id.clone(), name: new.name.clone(), op, name_change, cells }
+    let op = if name_change.is_some() || !cells.is_empty() {
+        SheetOp::Changed
+    } else {
+        SheetOp::Equal
+    };
+    SheetChange {
+        id: new.id.clone(),
+        name: new.name.clone(),
+        op,
+        name_change,
+        cells,
+    }
 }
 
 #[cfg(test)]
@@ -719,10 +806,24 @@ mod sheet_diff_tests {
         assert_eq!(diff.summary.cells_added, 1, "B1 added");
         assert_eq!(diff.summary.cells_removed, 1, "A2 removed");
         let sheet = diff.changed_sheets().next().unwrap();
-        assert!(sheet.cells.iter().any(|c| c.reference == "A1" && c.op == CellOp::Changed));
-        assert!(sheet.cells.iter().any(|c| c.reference == "B1" && c.op == CellOp::Added));
-        assert!(sheet.cells.iter().any(|c| c.reference == "A2" && c.op == CellOp::Removed));
-        // The diff is plain serializable data a UI can render.
+        assert!(
+            sheet
+                .cells
+                .iter()
+                .any(|c| c.reference == "A1" && c.op == CellOp::Changed)
+        );
+        assert!(
+            sheet
+                .cells
+                .iter()
+                .any(|c| c.reference == "B1" && c.op == CellOp::Added)
+        );
+        assert!(
+            sheet
+                .cells
+                .iter()
+                .any(|c| c.reference == "A2" && c.op == CellOp::Removed)
+        );
         let json = serde_json::to_string(&diff).expect("sheet diff serializes to JSON");
         assert!(json.contains("A1") && json.contains("B1"));
     }
@@ -737,7 +838,14 @@ mod sheet_diff_tests {
         let v2 = a.materialize();
         let diff = diff_workbooks(&v1, &v2);
         assert_eq!(diff.summary.sheets_added, 1);
-        assert!(diff.sheets.iter().any(|s| s.name == "Added" && s.op == SheetOp::Added));
-        assert!(diff_workbooks(&v1, &v1).is_empty(), "a snapshot vs itself is empty");
+        assert!(
+            diff.sheets
+                .iter()
+                .any(|s| s.name == "Added" && s.op == SheetOp::Added)
+        );
+        assert!(
+            diff_workbooks(&v1, &v1).is_empty(),
+            "a snapshot vs itself is empty"
+        );
     }
 }

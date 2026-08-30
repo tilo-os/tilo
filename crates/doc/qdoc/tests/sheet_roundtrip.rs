@@ -25,7 +25,9 @@ fn zip_of(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
 
 fn imp(codec: &dyn SheetProvider, bytes: &[u8]) -> Workbook {
     let mut wb = Workbook::new();
-    codec.import(bytes, &mut wb).expect("import into workbook model");
+    codec
+        .import(bytes, &mut wb)
+        .expect("import into workbook model");
     wb
 }
 
@@ -70,7 +72,10 @@ fn sample_ods() -> Vec<u8> {
     let manifest = br#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>"#.to_vec();
     zip_of(&[
-        ("mimetype", b"application/vnd.oasis.opendocument.spreadsheet".to_vec()),
+        (
+            "mimetype",
+            b"application/vnd.oasis.opendocument.spreadsheet".to_vec(),
+        ),
         ("content.xml", content),
         ("META-INF/manifest.xml", manifest),
     ])
@@ -82,21 +87,51 @@ fn sample_ods() -> Vec<u8> {
 /// inline/plain string, and TWO formulas whose sources survive verbatim.
 fn assert_sample(snap: &WorkbookSnapshot, fmt: &str, formula_a2: &str, formula_c1: &str) {
     let names: Vec<&str> = snap.sheets.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, vec!["Budget", "Data"], "{fmt}: two sheets in tab order");
+    assert_eq!(
+        names,
+        vec!["Budget", "Data"],
+        "{fmt}: two sheets in tab order"
+    );
 
     let budget = snap.sheet_by_name("Budget").unwrap();
-    let a1 = budget.cell("A1").unwrap_or_else(|| panic!("{fmt}: Budget!A1 missing"));
-    assert_eq!((a1.value.as_str(), a1.cell_type), ("10", CellType::Number), "{fmt}: A1 number");
+    let a1 = budget
+        .cell("A1")
+        .unwrap_or_else(|| panic!("{fmt}: Budget!A1 missing"));
+    assert_eq!(
+        (a1.value.as_str(), a1.cell_type),
+        ("10", CellType::Number),
+        "{fmt}: A1 number"
+    );
     let b1 = budget.cell("B1").unwrap();
-    assert_eq!((b1.value.as_str(), b1.cell_type), ("Hello", CellType::Text), "{fmt}: B1 string");
+    assert_eq!(
+        (b1.value.as_str(), b1.cell_type),
+        ("Hello", CellType::Text),
+        "{fmt}: B1 string"
+    );
     let a2 = budget.cell("A2").unwrap();
-    assert_eq!(a2.formula.as_deref(), Some(formula_a2), "{fmt}: A2 formula preserved (not flattened)");
+    assert_eq!(
+        a2.formula.as_deref(),
+        Some(formula_a2),
+        "{fmt}: A2 formula preserved (not flattened)"
+    );
     assert_eq!(a2.value, "20", "{fmt}: A2 cached result");
 
     let data = snap.sheet_by_name("Data").unwrap();
-    assert_eq!(data.cell("A1").unwrap().value, "Region", "{fmt}: Data!A1 (shared) string");
-    assert_eq!(data.cell("B1").unwrap().value, "42", "{fmt}: Data!B1 number");
-    assert_eq!(data.cell("C1").unwrap().formula.as_deref(), Some(formula_c1), "{fmt}: Data!C1 formula preserved");
+    assert_eq!(
+        data.cell("A1").unwrap().value,
+        "Region",
+        "{fmt}: Data!A1 (shared) string"
+    );
+    assert_eq!(
+        data.cell("B1").unwrap().value,
+        "42",
+        "{fmt}: Data!B1 number"
+    );
+    assert_eq!(
+        data.cell("C1").unwrap().formula.as_deref(),
+        Some(formula_c1),
+        "{fmt}: Data!C1 formula preserved"
+    );
 }
 
 // ---- 1. parse genuine files into the CRDT model ----------------------------
@@ -128,7 +163,12 @@ fn ods_roundtrips_cells_types_and_formulas() {
     let wb = imp(&OdsCodec, &sample_ods());
     let out = OdsCodec.export(&wb).expect("export ods");
     let reopened = imp(&OdsCodec, &out);
-    assert_sample(&reopened.materialize(), "ods-reopened", "of:=[.A1]*2", "of:=[.B1]+1");
+    assert_sample(
+        &reopened.materialize(),
+        "ods-reopened",
+        "of:=[.A1]*2",
+        "of:=[.B1]+1",
+    );
 }
 
 // ---- 3. edit as a CRDT op, serialize, reopen -------------------------------
@@ -139,15 +179,27 @@ fn xlsx_edit_as_crdt_op_survives_reopen() {
     let budget = wb.sheet_ids_in_order()[0].clone();
     // A CRDT cell edit + a brand-new formula cell.
     wb.set_cell(&budget, "A1", CellInput::number("15"));
-    wb.set_cell(&budget, "C3", CellInput::formula("SUM(A1:A2)", "35", CellType::Number));
+    wb.set_cell(
+        &budget,
+        "C3",
+        CellInput::formula("SUM(A1:A2)", "35", CellType::Number),
+    );
     let versions_before = wb.versions().len();
     assert!(versions_before > 1, "edits extend the CRDT change history");
 
     let out = XlsxCodec.export(&wb).unwrap();
     let snap = imp(&XlsxCodec, &out).materialize();
     let b = snap.sheet_by_name("Budget").unwrap();
-    assert_eq!(b.cell("A1").unwrap().value, "15", "edited cell survived reopen");
-    assert_eq!(b.cell("C3").unwrap().formula.as_deref(), Some("SUM(A1:A2)"), "new formula survived reopen");
+    assert_eq!(
+        b.cell("A1").unwrap().value,
+        "15",
+        "edited cell survived reopen"
+    );
+    assert_eq!(
+        b.cell("C3").unwrap().formula.as_deref(),
+        Some("SUM(A1:A2)"),
+        "new formula survived reopen"
+    );
     // Untouched cells stayed.
     assert_eq!(b.cell("B1").unwrap().value, "Hello");
 }
@@ -159,16 +211,35 @@ fn xxe_dtd_is_rejected_in_both_spreadsheet_formats() {
     // A DTD in a modeled XML part is rejected outright (defence in depth vs XXE /
     // billion-laughs), via the same codecs/safety.rs guard the doc codecs use.
     let evil_wb = br#"<?xml version="1.0"?><!DOCTYPE workbook [<!ENTITY x "boom">]><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#.to_vec();
-    let xlsx = zip_of(&[("[Content_Types].xml", b"<Types/>".to_vec()), ("xl/workbook.xml", evil_wb)]);
+    let xlsx = zip_of(&[
+        ("[Content_Types].xml", b"<Types/>".to_vec()),
+        ("xl/workbook.xml", evil_wb),
+    ]);
     let mut wb = Workbook::new();
-    let err = XlsxCodec.import(&xlsx, &mut wb).expect_err("xlsx XXE must be rejected");
-    assert!(format!("{err}").contains("DTD"), "xlsx: expected a DTD rejection, got: {err}");
+    let err = XlsxCodec
+        .import(&xlsx, &mut wb)
+        .expect_err("xlsx XXE must be rejected");
+    assert!(
+        format!("{err}").contains("DTD"),
+        "xlsx: expected a DTD rejection, got: {err}"
+    );
 
     let evil_content = br#"<?xml version="1.0"?><!DOCTYPE office:document-content [<!ENTITY x "boom">]><office:document-content/>"#.to_vec();
-    let ods = zip_of(&[("mimetype", b"application/vnd.oasis.opendocument.spreadsheet".to_vec()), ("content.xml", evil_content)]);
+    let ods = zip_of(&[
+        (
+            "mimetype",
+            b"application/vnd.oasis.opendocument.spreadsheet".to_vec(),
+        ),
+        ("content.xml", evil_content),
+    ]);
     let mut wb2 = Workbook::new();
-    let err2 = OdsCodec.import(&ods, &mut wb2).expect_err("ods XXE must be rejected");
-    assert!(format!("{err2}").contains("DTD"), "ods: expected a DTD rejection, got: {err2}");
+    let err2 = OdsCodec
+        .import(&ods, &mut wb2)
+        .expect_err("ods XXE must be rejected");
+    assert!(
+        format!("{err2}").contains("DTD"),
+        "ods: expected a DTD rejection, got: {err2}"
+    );
 }
 
 #[test]
@@ -176,17 +247,29 @@ fn zip_bomb_is_rejected_in_both_spreadsheet_formats() {
     // An entry-count amplification bomb (a few KB → thousands of parts, each read
     // into memory) is rejected fast by the bounded reader, before any part is
     // modeled — the same ZipLimits cap the doc codecs enforce.
-    let many: Vec<(String, Vec<u8>)> = (0..9000).map(|i| (format!("p{i}.xml"), b"<x/>".to_vec())).collect();
+    let many: Vec<(String, Vec<u8>)> = (0..9000)
+        .map(|i| (format!("p{i}.xml"), b"<x/>".to_vec()))
+        .collect();
     let refs: Vec<(&str, Vec<u8>)> = many.iter().map(|(n, b)| (n.as_str(), b.clone())).collect();
     let bomb = zip_of(&refs);
 
     let mut wb = Workbook::new();
-    let err = XlsxCodec.import(&bomb, &mut wb).expect_err("xlsx zip bomb must be rejected");
-    assert!(format!("{err}").contains("limit") || format!("{err}").contains("bomb"), "xlsx: expected a bounded rejection, got: {err}");
+    let err = XlsxCodec
+        .import(&bomb, &mut wb)
+        .expect_err("xlsx zip bomb must be rejected");
+    assert!(
+        format!("{err}").contains("limit") || format!("{err}").contains("bomb"),
+        "xlsx: expected a bounded rejection, got: {err}"
+    );
 
     let mut wb2 = Workbook::new();
-    let err2 = OdsCodec.import(&bomb, &mut wb2).expect_err("ods zip bomb must be rejected");
-    assert!(format!("{err2}").contains("limit") || format!("{err2}").contains("bomb"), "ods: expected a bounded rejection, got: {err2}");
+    let err2 = OdsCodec
+        .import(&bomb, &mut wb2)
+        .expect_err("ods zip bomb must be rejected");
+    assert!(
+        format!("{err2}").contains("limit") || format!("{err2}").contains("bomb"),
+        "ods: expected a bounded rejection, got: {err2}"
+    );
 }
 
 #[test]
@@ -217,15 +300,30 @@ fn large_workbook_parse_and_serialize_is_fast() {
         for r in 1..=ROWS {
             let reference = format!("A{r}");
             // Every cell is a formula whose source must survive.
-            wb.set_cell(&id, &reference, CellInput::formula(format!("B{r}+{r}"), format!("{}", r + 1), CellType::Number));
+            wb.set_cell(
+                &id,
+                &reference,
+                CellInput::formula(format!("B{r}+{r}"), format!("{}", r + 1), CellType::Number),
+            );
         }
         ids.push(id);
     }
     let total = (SHEETS as u32 * ROWS) as usize;
-    assert_eq!(wb.materialize().sheets.iter().map(|s| s.cells.len()).sum::<usize>(), total, "built all cells");
+    assert_eq!(
+        wb.materialize()
+            .sheets
+            .iter()
+            .map(|s| s.cells.len())
+            .sum::<usize>(),
+        total,
+        "built all cells"
+    );
 
     let mut report = String::new();
-    for (name, codec) in [("xlsx", &XlsxCodec as &dyn SheetProvider), ("ods", &OdsCodec as &dyn SheetProvider)] {
+    for (name, codec) in [
+        ("xlsx", &XlsxCodec as &dyn SheetProvider),
+        ("ods", &OdsCodec as &dyn SheetProvider),
+    ] {
         let t0 = Instant::now();
         let bytes = codec.export(&wb).expect("export large workbook");
         let export_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -236,19 +334,41 @@ fn large_workbook_parse_and_serialize_is_fast() {
 
         let snap = round.materialize();
         assert_eq!(snap.sheets.len(), SHEETS, "{name}: sheet count preserved");
-        assert_eq!(snap.sheets.iter().map(|s| s.cells.len()).sum::<usize>(), total, "{name}: cell count preserved");
+        assert_eq!(
+            snap.sheets.iter().map(|s| s.cells.len()).sum::<usize>(),
+            total,
+            "{name}: cell count preserved"
+        );
         // Spot-check a formula survived the whole round-trip.
-        let last = snap.sheets.last().unwrap().cell(&format!("A{ROWS}")).unwrap();
-        assert_eq!(last.formula.as_deref(), Some(format!("B{ROWS}+{ROWS}").as_str()), "{name}: formula preserved end-to-end");
+        let last = snap
+            .sheets
+            .last()
+            .unwrap()
+            .cell(&format!("A{ROWS}"))
+            .unwrap();
+        assert_eq!(
+            last.formula.as_deref(),
+            Some(format!("B{ROWS}+{ROWS}").as_str()),
+            "{name}: formula preserved end-to-end"
+        );
 
-        report.push_str(&format!("  {name:>4}: export {export_ms:8.1} ms, reimport {import_ms:8.1} ms, {:8.1} KiB\n", bytes.len() as f64 / 1024.0));
+        report.push_str(&format!(
+            "  {name:>4}: export {export_ms:8.1} ms, reimport {import_ms:8.1} ms, {:8.1} KiB\n",
+            bytes.len() as f64 / 1024.0
+        ));
         // Wall-clock is release-gated: a cell is an automerge sub-map, so building the
         // grid is bounded by automerge-0.8's inherent O(n^2) object creation in a debug
         // build, not by the codec. Cell/type/formula preservation above is asserted in
         // every mode; the timing guard runs where it is meaningful.
         if !cfg!(debug_assertions) {
-            assert!(export_ms < 15_000.0, "{name}: export too slow ({export_ms:.0} ms) — possible O(n^2)");
-            assert!(import_ms < 15_000.0, "{name}: reimport too slow ({import_ms:.0} ms) — possible O(n^2)");
+            assert!(
+                export_ms < 15_000.0,
+                "{name}: export too slow ({export_ms:.0} ms) — possible O(n^2)"
+            );
+            assert!(
+                import_ms < 15_000.0,
+                "{name}: reimport too slow ({import_ms:.0} ms) — possible O(n^2)"
+            );
         }
     }
     eprintln!("large_workbook_parse_and_serialize ({total} cells):\n{report}");

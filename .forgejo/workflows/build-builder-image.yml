@@ -1,0 +1,143 @@
+name: Build the CI builder image
+
+# Publishes code.sandbox.example/qos/qos-builder, which check.yml runs in. Weekly so
+# the base and the package set stay current; on dispatch, and whenever the
+# inputs that define the environment change.
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  push:
+    branches: ["main"]
+    paths:
+      - "os/Containerfile.builder"
+      - "rust-toolchain.toml"
+      - "tools/check-build-env.sh"
+      - ".forgejo/workflows/build-builder-image.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: build-builder-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      # The image bakes the toolchain the workspace pins, so a job cannot
+      # silently compile with a different one.
+      - name: Read the pinned toolchain
+        run: |
+          ch=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
+          [ -n "$ch" ] || { echo "no channel in rust-toolchain.toml"; exit 1; }
+          echo "RUST_CHANNEL=$ch" >> "$GITHUB_ENV"
+          echo "building for toolchain $ch"
+
+      # The runner provides docker, not podman.
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The Containerfile runs tools/check-build-env.sh during the build, so a
+      # missing native dependency fails here rather than in every later job.
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: os/Containerfile.builder
+          push: true
+          build-args: |
+            RUST_CHANNEL=${{ env.RUST_CHANNEL }}
+          tags: |
+            code.sandbox.example/qos/qos-builder:${{ env.RUST_CHANNEL }}
+            code.sandbox.example/qos/qos-builder:${{ github.sha }}
+            code.sandbox.example/qos/qos-builder:latest
+
+  # Two separate, fresh job containers prove that an object written by the
+  # first compiler process is read back from the remote S3 cache by another.
+  # A unique prefix makes the first run genuinely cold without deleting or
+  # disturbing the production cache. The package is deliberately small: this
+  # is a cache-path assertion, not another workspace build.
+  cache-cold:
+    needs: build
+    runs-on: runner
+    container:
+      # Use the immutable image produced by this run. A mutable `latest` tag
+      # can resolve to a runner's stale local image even after the build job
+      # has pushed a replacement.
+      image: code.sandbox.example/qos/qos-builder:${{ github.sha }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    env:
+      CARGO_HOME: /cargo-home
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: /tmp/qos-sccache-canary-target
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
+      SCCACHE_S3_KEY_PREFIX: quickdesktop/canary/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-deps-
+      - name: Enable remote compiler cache
+        run: bash tools/ci-sccache.sh prepare
+      - name: Populate a new remote cache namespace
+        run: |
+          test -n "${RUSTC_WRAPPER:-}"
+          bash tools/ci-measure.sh "sccache cold canary" -- \
+            cargo build -p atomic-file --locked
+          bash tools/ci-sccache-canary.sh cold
+
+  cache-warm:
+    needs: cache-cold
+    runs-on: runner
+    container:
+      image: code.sandbox.example/qos/qos-builder:${{ github.sha }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    env:
+      CARGO_HOME: /cargo-home
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: /tmp/qos-sccache-canary-target
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
+      SCCACHE_S3_KEY_PREFIX: quickdesktop/canary/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-deps-
+      - name: Enable remote compiler cache
+        run: bash tools/ci-sccache.sh prepare
+      - name: Require remote hits from a fresh compiler process
+        run: |
+          test -n "${RUSTC_WRAPPER:-}"
+          bash tools/ci-measure.sh "sccache warm canary" -- \
+            cargo build -p atomic-file --locked
+          bash tools/ci-sccache-canary.sh warm

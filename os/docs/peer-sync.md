@@ -1,85 +1,62 @@
-# Peer-sync (libp2p) — opt-in
+# Peer sync (Iroh)
 
-qOS's collaboration features rely on the `shell`
-compositor speaking libp2p (gossipsub + mDNS) to discover and sync with
-nearby peers. This is implemented behind the `--enable-peer-sync` flag
-on the compositor binary, and **disabled by default** in the OS image
-for privacy reasons.
+The collaborative session starts the shell's Iroh transport. It supports an
+ad-hoc direct invite and an optional always-on workspace host at the same time.
 
-## Why it's off by default
+The normal desktop remains conservative: peer sync is enabled by the
+`shell-peer-sync.desktop` session or `--enable-peer-sync`. Once enabled, the
+shell loads `/var/lib/qos/device/keypair.bin`, binds an Iroh endpoint, and
+joins a deterministic gossip topic for the workspace. Iroh attempts a direct
+path and falls back to its encrypted transport relay when necessary.
 
-- **mDNS** broadcasts the device's presence on the local network, which
-  on a laptop in a public space leaks the hostname / user to anyone
-  listening.
-- **gossipsub** accepts inbound connections from any peer that finds us
-  via mDNS, which expands the attack surface.
-- Per-cluster sandboxing means a malicious peer can only see what's
-  been explicitly shared, but **discovery itself** still leaks
-  metadata. The default-off posture matches the rest of nirios's
-  "explicit consent" model.
+Invites carry a signed Iroh `EndpointAddr`; no multicast discovery or fixed
+TCP port is required. The inviter and invitee authenticate the endpoint id
+embedded in the token before room state is accepted.
 
-## How to opt in
-
-There are two supported paths:
-
-### Path 1 — one-shot, this session only
-
-At the greetd login prompt, select the **"nirios (peer-sync)"** session
-entry instead of plain "nirios". This invokes
-`shell --enable-peer-sync` for that one session; logging out
-returns to the default no-peer-sync compositor.
-
-### Path 2 — persistent, until you turn it off
+For a persistent opt-in, enable the user marker unit and start a new desktop
+session:
 
 ```sh
 systemctl --user enable --now shell-peer-sync.service
 ```
 
-This sets a marker file at
-`$XDG_CONFIG_HOME/shell/peer-sync.enabled` (or
-`~/.config/qos/peer-sync.enabled` when `XDG_CONFIG_HOME` is
-unset) and persists across reboots. The compositor checks for this
-marker on launch and enables peer-sync without needing the
-`--enable-peer-sync` CLI flag. To disable:
+To return to the default-off posture, remove the marker and start a new
+session:
 
 ```sh
 systemctl --user disable --now shell-peer-sync.service
 ```
 
-## What it enables
+## Persistent host
 
-When `--enable-peer-sync` is on, the compositor:
+Set `QOS_COLLAB_HOST` to the host's Iroh endpoint id (or the JSON representation
+of a complete `EndpointAddr`) to attach the session to a home or hosted server. The shell
+authenticates with its device certificate and sends durable collaboration
+messages to the host in addition to the direct gossip path. The host pins
+configured workspaces and store-and-forwards updates to offline devices.
 
-1. Starts a libp2p `Swarm` with mDNS + gossipsub transports
-   (`shell/src/shell/network.rs`).
-2. Joins a `nirios.cluster.<id>` gossipsub topic per cluster you share.
-3. Accepts incoming Wayland buffer streams from invited peers
-   (Peer-sync Phase 4 — H.264-encoded).
-4. Forwards local cursor positions over the gossipsub topic so other
-   peers can render your presence (`docs/architecture/peer-sync.md` in
-   the main repo).
+The identity files are created together by `shell --provision-identity`:
 
-Sandboxing remains the security boundary: each cluster is still a
-Bubblewrap-isolated namespace, and peer-sync only widens the *control
-plane*, not the data plane.
-
-## Auditing what's running
-
-```sh
-# Is the marker present?
-ls -la "${XDG_RUNTIME_DIR}/nirios/"
-
-# Is mDNS broadcasting? (will list our service if the flag is on)
-avahi-browse -a -t 2>/dev/null | grep -i nirios
-
-# Is the libp2p swarm logging? (look for gossipsub topic subscriptions)
-journalctl --user -u graphical-session.target | grep -E 'libp2p|gossipsub|mdns'
+```text
+~/.config/qos/identity/primary.json
+/var/lib/qos/user-identity/pubkey.bin
+/var/lib/qos/user-identity/privkey.bin
+/var/lib/qos/device/keypair.bin
+/var/lib/qos/device/cert.bin
 ```
 
-## Future work
+The personal root certifies the device key. Shell, filesystem sync, and the
+workspace-host client all derive the same Iroh endpoint id from that device
+key.
 
-The proper config story is a TOML file under
-`/etc/qos/peer-sync.toml` (or `~/.config/qos/`) that
-selects between *off / loopback-only / lan / public* discovery scopes.
-The current binary flag is a v1 placeholder; track the follow-up in
-`docs/superpowers/plans/2026-05-08-peer-sync.md`.
+## Diagnostics
+
+```bash
+journalctl --user -u graphical-session.target | grep -Ei 'iroh|gossip|workspace host'
+stat -c '%a %U:%G %n' /var/lib/qos/device/keypair.bin
+systemctl --user status qos-identity.service
+systemctl --user status shell-peer-sync.service
+```
+
+An unreadable or mismatched key is not repaired by generating a replacement;
+restore or deliberately re-enrol the device instead.

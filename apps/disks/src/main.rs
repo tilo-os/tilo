@@ -5,19 +5,35 @@
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 use std::collections::HashMap;
 
 use disks::DisksApp;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
+use ui::taffy::prelude::*;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
-use ui::taffy::prelude::*;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point};
 use ui::vello::peniko::Color;
+use ui::widget::Widget;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// A phone-width capture used to exercise the responsive overlay flap. Below
@@ -42,7 +58,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--narrow` (or a sub-breakpoint `--viewport WxH`) renders the
         // collapsed layout with the drive-list flap revealed over its scrim.
         let narrow = args.iter().any(|a| a == "--narrow")
-            || parse_viewport_arg(&args).is_some_and(|(w, _)| (w as f64) < 900.0);
+            || parse_viewport_arg(&args).is_some_and(|(w, _)| f64::from(w) < 900.0);
         let viewport = parse_viewport_arg(&args).unwrap_or(if narrow {
             NARROW_SHOTS_VIEWPORT
         } else {
@@ -145,7 +161,7 @@ fn parse_val_arg(args: &[String], flag: &str) -> Option<String> {
 }
 
 /// Run one offscreen frame against the app and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 /// `narrow` snaps the drive-list flap open *after* layout so the collapsed
 /// overlay is captured settled rather than mid-animation.
 fn render_shot_to_png(

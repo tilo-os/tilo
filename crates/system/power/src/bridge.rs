@@ -65,7 +65,9 @@ impl Default for PowerBridge {
 
 impl PowerBridge {
     pub fn new() -> Self {
-        Self { inner: Arc::new(Mutex::new(BridgeInner::default())) }
+        Self {
+            inner: Arc::new(Mutex::new(BridgeInner::default())),
+        }
     }
 
     // ---- service → compositor ---------------------------------------
@@ -98,7 +100,9 @@ impl PowerBridge {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BridgeInner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

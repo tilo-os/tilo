@@ -408,8 +408,8 @@ impl Model {
             .filter(|t| t.parent.is_none())
             .filter(|t| match sel {
                 ListSel::Inbox => t.project.is_none() && !t.done,
-                ListSel::Today => t.due.map(|d| d <= today).unwrap_or(false) && !t.done,
-                ListSel::Upcoming => t.due.map(|d| d > today).unwrap_or(false) && !t.done,
+                ListSel::Today => t.due.is_some_and(|d| d <= today) && !t.done,
+                ListSel::Upcoming => t.due.is_some_and(|d| d > today) && !t.done,
                 ListSel::Completed => t.done,
                 ListSel::Project(p) => t.project == Some(*p),
             })
@@ -424,19 +424,24 @@ impl Model {
     }
 
     pub fn subtasks_of(&self, parent: Id) -> Vec<&Task> {
-        self.tasks.iter().filter(|t| t.parent == Some(parent)).collect()
+        self.tasks
+            .iter()
+            .filter(|t| t.parent == Some(parent))
+            .collect()
     }
 
     /// Count of open (not done) tasks matching a smart list — used for
     /// the sidebar badges.
     pub fn open_count(&self, sel: &ListSel, today: NaiveDate) -> usize {
-        self.tasks_for(sel, today).iter().filter(|t| !t.done).count()
+        self.tasks_for(sel, today)
+            .iter()
+            .filter(|t| !t.done)
+            .count()
     }
 
     /// Events occurring on `date`, sorted all-day first then by start.
     pub fn events_on(&self, date: NaiveDate) -> Vec<&Event> {
-        let mut out: Vec<&Event> =
-            self.events.iter().filter(|e| e.occurs_on(date)).collect();
+        let mut out: Vec<&Event> = self.events.iter().filter(|e| e.occurs_on(date)).collect();
         out.sort_by(|a, b| {
             b.all_day
                 .cmp(&a.all_day)
@@ -476,9 +481,24 @@ pub fn seed_demo(today: NaiveDate) -> Model {
     let pid_health = Uuid::new_v4();
 
     let projects = vec![
-        Project { id: pid_work, name: "Work".into(), color: Palette::Indigo, order: 0 },
-        Project { id: pid_personal, name: "Personal".into(), color: Palette::Emerald, order: 1 },
-        Project { id: pid_health, name: "Health".into(), color: Palette::Red, order: 2 },
+        Project {
+            id: pid_work,
+            name: "Work".into(),
+            color: Palette::Indigo,
+            order: 0,
+        },
+        Project {
+            id: pid_personal,
+            name: "Personal".into(),
+            color: Palette::Emerald,
+            order: 1,
+        },
+        Project {
+            id: pid_health,
+            name: "Health".into(),
+            color: Palette::Red,
+            order: 2,
+        },
     ];
 
     let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
@@ -722,7 +742,11 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         parent: Some(flights),
     });
 
-    Model { projects, events, tasks }
+    Model {
+        projects,
+        events,
+        tasks,
+    }
 }
 
 #[cfg(test)]
@@ -738,7 +762,10 @@ mod tests {
         let mut e = sample_event(date(2026, 6, 15)); // Monday
         e.recurrence = Recurrence::Weekly;
         let occ = e.occurrences_in(date(2026, 6, 1), date(2026, 6, 30));
-        assert_eq!(occ, vec![date(2026, 6, 15), date(2026, 6, 22), date(2026, 6, 29)]);
+        assert_eq!(
+            occ,
+            vec![date(2026, 6, 15), date(2026, 6, 22), date(2026, 6, 29)]
+        );
     }
 
     #[test]
@@ -763,7 +790,11 @@ mod tests {
         let model = seed_demo(date(2026, 6, 15));
         let today = model.tasks_for(&ListSel::Today, date(2026, 6, 15));
         // Every "Today" task is open and due on/before today.
-        assert!(today.iter().all(|t| !t.done && t.due.unwrap() <= date(2026, 6, 15)));
+        assert!(
+            today
+                .iter()
+                .all(|t| !t.done && t.due.unwrap() <= date(2026, 6, 15))
+        );
     }
 
     #[test]
@@ -773,8 +804,17 @@ mod tests {
         // curated project names) against known developer-TODO fragments.
         let model = seed_demo(date(2026, 6, 15));
         let markers = [
-            "ICS", "round-trip", "PR #", "hit test", "month-grid", "Release v",
-            "Sprint", "TODO", "refactor", "unit test", "bugfix",
+            "ICS",
+            "round-trip",
+            "PR #",
+            "hit test",
+            "month-grid",
+            "Release v",
+            "Sprint",
+            "TODO",
+            "refactor",
+            "unit test",
+            "bugfix",
         ];
         let mut titles: Vec<&str> = Vec::new();
         titles.extend(model.events.iter().map(|e| e.title.as_str()));

@@ -1,24 +1,11 @@
-//! End-to-end coverage for the desktop-environment window-management
-//! interactions, driven through the real [`ShellOverlayHost`] event/state
-//! path (not tautological helpers):
+//! End-to-end coverage for desktop-environment window management —
+//! window-group resize and reorder, strip travel, and drag-file-to-open —
+//! driven through the real [`ShellOverlayHost`] event/state path.
 //!
-//!   1. Horizontal window-group resize — drag an inter-group resize handle;
-//!      neighbours reflow and the new widths persist into the
-//!      [`WorkspaceTree`].
-//!   2. Whole-group reorder — grab a group's tab-bar background and drop it
-//!      at a new slot; the strip's `window_groups` order in the tree changes
-//!      to the dropped position.
-//!   3. Horizontal strip travel — a bare wheel over the strip must NOT move
-//!      it (hard boundary); focusing an off-screen group slides it into view.
-//!   4. Drag-file-to-open — dropping a file resolves its MIME to an app and
-//!      splices the launch intent into the active workspace on the real
-//!      `handle_file_drop` path.
-//!
-//! Harness shape mirrors `cross_strip_drag.rs`: build a tree, hand it to
-//! [`build_nirios_overlay_host_with_chrome`] so the shell captures the
-//! per-strip `GroupRow` pointers, run a real layout pass so every rect lands
-//! in screen space, then drive real winit events + the per-frame harvest
-//! hooks the production `Widget::update` runs.
+//! Harness mirrors `cross_strip_drag.rs`: build a tree, hand it to
+//! [`build_nirios_overlay_host_with_chrome`], run a real layout pass, then
+//! drive real winit events plus the per-frame harvest hooks
+//! `Widget::update` runs in production.
 
 use std::collections::HashMap;
 
@@ -38,9 +25,9 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
-/// One workspace, one strip, `group_ids.len()` groups (one tab each). Group
-/// ids are the caller's so failure messages stay legible; the first group's
-/// id is also recorded as the strip's active group.
+/// One workspace, one strip, one tab per group. Group ids are the
+/// caller's so failure messages stay legible; the first is the strip's
+/// active group.
 fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>) {
     let ws_id = WorkspaceId::new();
     let strip_id = StripId::new();
@@ -71,9 +58,8 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
     };
     let ws = Workspace {
         strips: vec![strip],
-        // Everything else — including the workspace's durable
-        // collaboration room — comes from the builder, so a field added
-        // to `Workspace` does not break this fixture.
+        // Everything else comes from the builder, so a field added to
+        // `Workspace` does not break this fixture.
         ..Workspace::test_default(ws_id, "Test")
     };
 
@@ -100,11 +86,10 @@ struct Layout {
     child_node: NodeId,
 }
 
-/// Usable strip width at the fixture's viewport — the window minus the
-/// wheel-disc slot and its wallpaper gutter. Group widths are *fractions* of
-/// this, so a pixel expectation only means anything alongside it. Read off
-/// the live row rather than recomputed here, so the test cannot drift from
-/// what the shell actually reserves.
+/// Usable strip width at the fixture's viewport (window minus the
+/// wheel-disc slot + gutter). Group widths are fractions of this, so a
+/// pixel expectation only means anything alongside it; read off the live
+/// row so the test can't drift from what the shell reserves.
 fn usable_strip_px(host: &mut ShellOverlayHost, strip_id: StripId) -> f64 {
     host.group_row_mut_for_tests(strip_id)
         .expect("strip GroupRow")
@@ -112,13 +97,13 @@ fn usable_strip_px(host: &mut ShellOverlayHost, strip_id: StripId) -> f64 {
 }
 
 fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
-    // What the compositor does before every build: tell the host which
-    // display it is painting to, so window-group width fractions resolve
-    // against it rather than against the toolkit's fallback.
+    // What the compositor does before every build: name the display, so
+    // window-group width fractions resolve against it rather than the
+    // toolkit's fallback.
     host.set_output_geometry(&[shell::shell::overlay_host::OutputGeometry {
         x: 0.0,
-        width: W as f64,
-        height: H as f64,
+        width: f64::from(W),
+        height: f64::from(H),
     }]);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -162,8 +147,6 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
     }
 }
 
-/// Dispatch a single winit event through the whole host, exactly as the run
-/// loop does.
 fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: WindowEvent) {
     let mut doc = automerge::AutoCommit::new();
     let doc_root = automerge::ROOT.clone();
@@ -181,6 +164,44 @@ fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: WindowEvent) {
         layout.child_node,
         &layout.taffy,
     );
+}
+
+/// Hover a group's first tab and hold its chip-reveal curve past the end, so
+/// the per-tab chips have hit rects to click.
+///
+/// The cluster slides out on wall time: `TabBar::advance_reveal` starts the
+/// curve and returns where it started, so the rects stay `Rect::ZERO` until it
+/// has run. A test that hovers and reads straight back always reads zero and
+/// clicks nothing. `hold_reveal_at` is the renderer's own escape from that —
+/// an offscreen frame costs more wall time than the curve lasts — and layout
+/// has to run again afterwards, since `apply_layout` is what places the rects.
+fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: StripId) -> Layout {
+    let pill = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("group after layout")
+        .tab_rects()
+        .first()
+        .copied()
+        .expect("a pill")
+        .center();
+    cursor(host, layout, pill);
+    // The curve is created by the layout pass that first sees the new hover
+    // target, so it has to exist before it can be held.
+    let layout = lay_out_host(host);
+    let mut held = false;
+    if let Some(row) = host.group_row_mut_for_tests(strip_id) {
+        for g in &mut row.groups {
+            held |= g
+                .bar_mut_for_tests()
+                .hold_reveal_at(std::time::Duration::from_secs(1));
+        }
+    }
+    assert!(
+        held,
+        "hovering the pill started no reveal, so there is nothing to click",
+    );
+    let _ = layout;
+    lay_out_host(host)
 }
 
 fn cursor(host: &mut ShellOverlayHost, layout: &Layout, p: Point) {
@@ -218,9 +239,7 @@ fn release(host: &mut ShellOverlayHost, layout: &Layout) {
     );
 }
 
-// -----------------------------------------------------------------------
 // 1. Horizontal window-group resize
-// -----------------------------------------------------------------------
 
 #[test]
 fn resize_handle_drag_persists_new_group_widths_into_tree() {
@@ -228,7 +247,6 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
-    // Both groups start at Normal — two thirds of the usable strip.
     let usable = usable_strip_px(&mut host, strip_id);
     let start_px = WindowWidth::Normal.resolve(usable);
     {
@@ -239,17 +257,16 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
         assert_eq!(g[1].width.resolve(usable), start_px);
     }
 
-    // Resolve the inter-group resize handle's centre from live geometry.
     let handle_rect = host
         .group_row_mut_for_tests(strip_id)
         .expect("strip GroupRow")
         .handle_at(0)
         .expect("one inter-group resize handle for a 2-group strip")
         .get_rect();
-    let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
-    let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+    let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
+    let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-    // Drag the handle +40 px to the right: left neighbour grows, right shrinks.
+    // Drag the handle +40 px right: left neighbour grows, right shrinks.
     cursor(&mut host, &layout, Point::new(cx, cy));
     press(&mut host, &layout);
     cursor(&mut host, &layout, Point::new(cx + 40.0, cy));
@@ -273,8 +290,8 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
         start_px - 40.0,
         "right group must have shrunk by the same 40 px (no overlap, widths reflow)",
     );
-    // What is *stored* is the share, not the pixels — so the same tree on a
-    // wider display gives the same proportions rather than the same widths.
+    // What is *stored* is the share, not the pixels — the same tree on a
+    // wider display gives the same proportions, not the same widths.
     assert!(
         matches!(left.width, WindowWidth::Fraction(_)),
         "a resize persists as a fraction of the strip; got {:?}",
@@ -282,20 +299,16 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     );
 }
 
-/// A drag far past a neighbour's minimum width must clamp — the shrinking
-/// group pins at the display's minimum group width and the growing group
-/// absorbs only the slack, so the pair sum is preserved (no overlap, no
-/// runaway width) and the clamped widths persist into the tree. Same real
-/// host + harvest path as the linear-reflow test above, just a delta big
-/// enough to hit the wall.
+/// A drag far past a neighbour's minimum must clamp: the shrinking group
+/// pins at the display's minimum and the growing one absorbs only the
+/// slack, preserving the pair sum, and the clamped widths persist.
 #[test]
 fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200]);
-    // Start both groups at Narrow (a third of the strip each). From two
-    // Normals the *right* group cannot reach its minimum at all, because the
-    // left would have to grow past the display to make room — the pair sum
+    // Start both at Narrow. From two Normals the right group can't reach its
+    // minimum at all (the left would grow past the display), so the pair sum
     // has to leave slack for the clamp to be reachable.
-    for g in tree.workspaces[0].strips[0].window_groups.iter_mut() {
+    for g in &mut tree.workspaces[0].strips[0].window_groups {
         g.width = WindowWidth::Narrow;
     }
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
@@ -310,12 +323,11 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
         .handle_at(0)
         .expect("one inter-group resize handle for a 2-group strip")
         .get_rect();
-    let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
-    let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+    let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
+    let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-    // Drag +5000 px right — far past the right neighbour's min. The right
-    // group can only shrink to the display's minimum, so the left group
-    // grows by exactly that slack, NOT by the requested 5000.
+    // Far past the right neighbour's min: it can only shrink to the
+    // display's minimum, so the left group grows by that slack, not by 5000.
     cursor(&mut host, &layout, Point::new(cx, cy));
     press(&mut host, &layout);
     cursor(&mut host, &layout, Point::new(cx + 5000.0, cy));
@@ -345,9 +357,7 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     );
 }
 
-// -----------------------------------------------------------------------
 // 2. Whole-group reorder
-// -----------------------------------------------------------------------
 
 fn group_grab_point(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: usize) -> Point {
     let g = host
@@ -355,7 +365,10 @@ fn group_grab_point(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: u
         .expect("group widget");
     let bar = g.bar_rect();
     let last = g.tab_rects().last().copied().unwrap_or(bar);
-    Point::new((last.x1 + bar.x1) / 2.0, (bar.y0 + bar.y1) / 2.0)
+    Point::new(
+        f64::midpoint(last.x1, bar.x1),
+        f64::midpoint(bar.y0, bar.y1),
+    )
 }
 
 #[test]
@@ -364,7 +377,6 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
-    // Persisted order at boot: [100, 200, 300].
     {
         let st = chrome.borrow();
         let tree = st.tree();
@@ -376,8 +388,7 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
         assert_eq!(order, vec![100, 200, 300]);
     }
 
-    // Grab group 100's tab-bar background and drag it past group 300's
-    // centre so it lands last.
+    // Drag group 100's tab-bar background past group 300's centre.
     let grab = group_grab_point(&mut host, strip_id, 0);
     let g300_center_x = host
         .group_at_for_tests(strip_id, 2)
@@ -390,7 +401,6 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
     cursor(&mut host, &layout, Point::new(g300_center_x + 60.0, grab.y));
     release(&mut host, &layout);
 
-    // Production runs this harvest each frame inside `Widget::update`.
     host.tick_pending_group_reorder_harvest_for_tests();
 
     let st = chrome.borrow();
@@ -408,9 +418,8 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
     );
 }
 
-/// The magnifier chip in a tab's window decoration must open the search bar
-/// *scoped to that app* — the same thing Ctrl+K does. It used to only toggle a
-/// local focus ring on the group, so clicking it appeared to do nothing.
+/// The magnifier chip in a tab's window decoration must open the search
+/// bar *scoped to that app* — the same thing Ctrl+K does.
 #[test]
 fn tab_search_chip_opens_palette_scoped_to_that_app() {
     use shell::shell::chrome_state::SearchScope;
@@ -422,30 +431,20 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
     assert!(!host.palette_visible(), "palette starts closed");
 
     // Hover the pill so the per-tab chips get hit rects, then click search.
-    let (pill, chip) = {
-        let g = host
-            .group_at_for_tests(strip_id, 0)
-            .expect("group after layout");
-        let pill = g.tab_rects().first().copied().expect("a pill").center();
-        (pill, g.bar_for_tests().search_rects().first().copied())
-    };
-    cursor(&mut host, &layout, pill);
-    let chip = chip
+    let layout = reveal_tab_chips(&mut host, &layout, strip_id);
+    let chip = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("group after layout")
+        .bar_for_tests()
+        .search_rects()
+        .first()
+        .copied()
         .filter(|r| r.area() > 0.0)
-        .or_else(|| {
-            host.group_at_for_tests(strip_id, 0)
-                .unwrap()
-                .bar_for_tests()
-                .search_rects()
-                .first()
-                .copied()
-        })
-        .expect("search chip rect");
+        .expect("search chip rect once its reveal has run");
     cursor(&mut host, &layout, chip.center());
     press(&mut host, &layout);
     release(&mut host, &layout);
 
-    // Production runs this each frame inside `Widget::update`.
     host.tick_pending_search_open_for_tests();
 
     assert!(
@@ -459,11 +458,9 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
     );
 }
 
-/// Clicking a tab's Expand chip must take the window *genuinely* full screen:
-/// the radial workspace switcher (sidebar wheel) and the top bar both get out
-/// of the way, and the promoted group covers the whole output. Expand used to
-/// only flex-grow the group inside its own strip, so the wheel and top bar kept
-/// painting over/next to it — "it isn't properly full screen".
+/// Clicking a tab's Expand chip must go *genuinely* full screen: sidebar
+/// wheel and top bar both get out of the way, and the promoted group
+/// covers the whole output.
 #[test]
 fn expand_takes_the_group_genuinely_fullscreen() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
@@ -475,23 +472,23 @@ fn expand_takes_the_group_genuinely_fullscreen() {
         "nothing holds the output at boot",
     );
 
-    // Click the Expand (maximize) chip on group 0's active tab — the real
-    // production path, not a test-only intent publisher.
+    // The real production path, not a test-only intent publisher.
+    let layout = reveal_tab_chips(&mut host, &layout, strip_id);
     let chip = {
         let g = host
             .group_at_for_tests(strip_id, 0)
             .expect("group after layout");
         let rects = g.bar_for_tests().max_rects();
         assert!(
-            !rects.is_empty(),
-            "the active tab must expose an Expand chip"
+            rects.first().is_some_and(|r| r.area() > 0.0),
+            "the active tab must expose an Expand chip once its reveal has run"
         );
         rects[0].center()
     };
     cursor(&mut host, &layout, chip);
     press(&mut host, &layout);
+    release(&mut host, &layout);
 
-    // Production runs this harvest each frame inside `Widget::update`.
     host.tick_pending_maximize_harvest_for_tests();
 
     assert!(
@@ -504,8 +501,8 @@ fn expand_takes_the_group_genuinely_fullscreen() {
          the wheel + top bar (both gate on ChromeState::is_fullscreen)",
     );
 
-    // Re-lay out: the sidebar wheel must now be display:none (zero-area) so
-    // nothing paints over the fullscreen window.
+    // The sidebar wheel must now be zero-area so nothing paints over the
+    // fullscreen window.
     let layout2 = lay_out_host(&mut host);
     let sidebar = host
         .sidebar_rect_for_tests()
@@ -519,12 +516,9 @@ fn expand_takes_the_group_genuinely_fullscreen() {
     let _ = &layout2;
 }
 
-/// A lone window group has no *inter*-group resize handle, so its only resize
-/// affordance is the grip on its own right edge. Dragging that must widen the
-/// group both on screen (the laid-out rect) and in the persisted tree.
-/// Regression for "resizing windows doesn't work": the drag used to update the
-/// width field without flagging the layout dirty, so the baked taffy length
-/// stayed put and nothing moved.
+/// A lone window group has no *inter*-group handle, so its only resize
+/// affordance is the grip on its own right edge — dragging it must widen
+/// the group on screen and in the persisted tree.
 #[test]
 fn group_right_edge_drag_resizes_on_screen_and_persists() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100]);
@@ -576,7 +570,6 @@ fn group_right_edge_drag_resizes_on_screen_and_persists() {
         "and by exactly the dragged distance",
     );
 
-    // Production runs this harvest each frame inside `Widget::update`.
     host.tick_pending_width_harvest_for_tests();
     assert_eq!(
         width_in_tree(&chrome),
@@ -586,23 +579,20 @@ fn group_right_edge_drag_resizes_on_screen_and_persists() {
     let _ = &layout;
 }
 
-/// A group focused in the *same frame it appeared* must still be panned into
-/// view. A freshly adopted Wayland client is exactly this: `adopt_toplevel`
-/// creates the group and focuses it, and on that frame the group has no rect
-/// yet, so the row cannot pan. The reconcile used to record "already handled"
-/// regardless and never retry — leaving a newly launched window off the output
-/// whenever the strip's existing window filled it.
+/// A group focused in the same frame it appeared must still pan into
+/// view — `adopt_toplevel` creates and focuses a group before it has a
+/// rect.
 #[test]
 fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
-    // One full-width group fills the strip; a second group therefore starts
-    // past the right edge — the geometry a newly launched app lands in.
+    // One full-width group fills the strip, so a second starts past the
+    // right edge — the geometry a newly launched app lands in.
     let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
     tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let _ = &layout;
 
-    // Splice in a second group and focus it, the way adoption does — before
+    // Splice in a second group and focus it the way adoption does, before
     // any layout pass has given it a rect.
     let new_group = {
         let st = chrome.borrow();
@@ -630,17 +620,16 @@ fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
     };
     chrome.borrow_mut().bump();
 
-    // Frame one, in production order: the resync splices the group into the
-    // live row, then the scroll reconcile runs — before any layout has given
-    // the group a rect.
+    // Frame one, in production order: resync splices the group into the live
+    // row, then the scroll reconcile runs — still with no rect.
     let _ = Widget::take_structure_dirty(&mut host);
     host.tick_scroll_active_into_view_for_tests();
     let _layout = lay_out_host(&mut host);
     // Frame two: the group now has a rect, so the pan must happen.
     host.tick_scroll_active_into_view_for_tests();
     // The pan is eased on the snap curve, not teleported — advance the
-    // production per-frame tick past the curve's duration so the motion
-    // settles before the position is read.
+    // per-frame tick past the curve's duration so the motion settles before
+    // the position is read.
     host.group_row_mut_for_tests(strip_id)
         .expect("strip GroupRow")
         .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_millis(400));
@@ -672,15 +661,13 @@ fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
     );
 }
 
-/// Dragging a tab pill to a new slot *inside its own group* must reorder the
-/// group's `tabs` list in the persisted tree. Drives the real press → move →
-/// release path and then the per-frame harvest `Widget::update` runs, so this
-/// covers the whole wire: `TabBar` release → `WindowGroup` pill/host swap →
-/// `pending_tab_reorder` → `ShellOverlayHost` harvest →
+/// Dragging a tab pill to a new slot inside its own group must reorder
+/// the persisted `tabs` list — the whole wire from `TabBar` release
+/// through `pending_tab_reorder` to
 /// `WorkspaceTree::reorder_tab_within_group`.
 #[test]
 fn tab_drag_reorders_tabs_within_group_in_tree() {
-    // One group carrying three tabs so there are gaps to drop into.
+    // Three tabs so there are gaps to drop into.
     let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
     {
         let g = &mut tree.workspaces[0].strips[0].window_groups[0];
@@ -726,16 +713,16 @@ fn tab_drag_reorders_tabs_within_group_in_tree() {
     };
     assert_eq!(tab_order(&chrome), vec![1, 2, 3], "persisted order at boot");
 
-    // Grab pill A (index 0) and drop it past pill C's midpoint → [B, C, A].
+    // Drop pill A past pill C's midpoint → [B, C, A].
     let (grab, target) = {
         let g = host
             .group_at_for_tests(strip_id, 0)
             .expect("group after layout");
         let rects = g.tab_rects();
         assert!(rects.len() >= 3, "three pills must be laid out");
-        // Grab over the pill's label area (left inset), NOT its centre: the
-        // centre is where the per-tab close / maximize / search chips sit and
-        // those consume the press before a drag can start.
+        // Grab the pill's label area, NOT its centre: the per-tab close /
+        // maximize / search chips sit there and consume the press before a drag
+        // can start.
         (
             Point::new(rects[0].x0 + 8.0, rects[0].center().y),
             Point::new(rects[2].center().x + 10.0, rects[2].center().y),
@@ -743,20 +730,18 @@ fn tab_drag_reorders_tabs_within_group_in_tree() {
     };
     cursor(&mut host, &layout, grab);
     press(&mut host, &layout);
-    // Move past the drag threshold, then onto the target gap.
     cursor(&mut host, &layout, Point::new(grab.x + 20.0, grab.y));
     cursor(&mut host, &layout, target);
     release(&mut host, &layout);
 
-    // The widget's own pill order must have moved too — the persisted write
-    // below is a mirror of it, not an independent path.
+    // The widget's own pill order must move too — the persisted write is a
+    // mirror of it, not an independent path.
     {
         let g = host.group_at_for_tests(strip_id, 0).unwrap();
         let widget_order: Vec<u64> = g.tabs().iter().map(|t| t.id).collect();
         assert_eq!(widget_order, vec![2, 3, 1], "pill order after the drop");
     }
 
-    // Production runs this harvest each frame inside `Widget::update`.
     host.tick_pending_tab_reorder_harvest_for_tests();
 
     assert_eq!(
@@ -766,19 +751,13 @@ fn tab_drag_reorders_tabs_within_group_in_tree() {
     );
 }
 
-// -----------------------------------------------------------------------
 // 3. Horizontal strip scroll
-// -----------------------------------------------------------------------
 
 #[test]
 fn switching_workspace_swaps_the_rendered_strips() {
-    // Two workspaces: A (boot) with groups [100, 200]; B with groups
-    // [300, 400], group 300 carrying two tabs. The rendered strip must
-    // follow `tree.active`: after a switch the host's live rows are
-    // B's — this is what makes every window gesture (the Alt+Shift
-    // jump, clicks, focus-follow) act on the workspace the user is
-    // looking at, instead of the boot workspace forever (the
-    // "jump only works in Home" bug, 2026-08-22).
+    // Two workspaces, A (boot) and B. The rendered strip must follow
+    // `tree.active`, so every window gesture acts on the workspace the user
+    // is looking at rather than the boot workspace forever.
     let (mut tree, strip_a, _) = single_strip_tree(&[100, 200]);
     let ws_b_id = WorkspaceId::new();
     let strip_b = StripId::new();
@@ -823,8 +802,8 @@ fn switching_workspace_swaps_the_rendered_strips() {
         "precondition: only the active workspace's strips are rendered"
     );
 
-    // Switch the active workspace the way every switch path does (tree
-    // mutation + chrome bump), then run the per-frame reconcile.
+    // Switch the way every switch path does (tree mutation + chrome bump),
+    // then run the per-frame reconcile.
     {
         let st = chrome.borrow();
         st.tree_mut().set_active(ws_b_id);
@@ -844,7 +823,6 @@ fn switching_workspace_swaps_the_rendered_strips() {
         host.group_row_mut_for_tests(strip_a).is_none(),
         "the old workspace's rows must be gone"
     );
-    // The jump's widget-side focus write lands on the new rows.
     assert!(
         host.focus_window_widget(strip_b, 300, 3002),
         "focus_window_widget must reach workspace B's rendered rows"
@@ -864,11 +842,10 @@ fn switching_workspace_swaps_the_rendered_strips() {
 
 #[test]
 fn wheel_over_strip_does_not_move_it() {
-    // Hard boundary (2026-08-22): a bare wheel never moves the strip —
-    // scrolling is for content inside a window. The view travels only
-    // through focus changes and the shell's Alt-modified wheel
-    // gestures (which route through `client_input`, not this widget
-    // path).
+    // Hard boundary: a bare wheel never moves the strip — scrolling is for
+    // content inside a window. The view travels only through focus changes
+    // and the Alt-modified wheel gestures, which route through
+    // `client_input`, not this widget path.
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300, 400]);
     let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
@@ -882,8 +859,8 @@ fn wheel_over_strip_does_not_move_it() {
         &mut host,
         &layout,
         Point::new(
-            (row_rect.x0 + row_rect.x1) / 2.0,
-            (row_rect.y0 + row_rect.y1) / 2.0,
+            f64::midpoint(row_rect.x0, row_rect.x1),
+            f64::midpoint(row_rect.y0, row_rect.y1),
         ),
     );
     dispatch(
@@ -895,8 +872,8 @@ fn wheel_over_strip_does_not_move_it() {
             phase: winit::event::TouchPhase::Moved,
         },
     );
-    // Give any (wrongly started) eased travel every chance to show
-    // itself before reading the position.
+    // Give any wrongly-started eased travel every chance to show itself
+    // before reading the position.
     host.group_row_mut_for_tests(strip_id)
         .unwrap()
         .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_millis(400));
@@ -910,16 +887,15 @@ fn wheel_over_strip_does_not_move_it() {
 
 #[test]
 fn focusing_offscreen_group_scrolls_it_into_view() {
-    // Four Normal (600 px) groups overflow the 1280 px viewport, so the
-    // last group starts off the right edge at scroll_x = 0.
+    // Four Normal (600 px) groups overflow the 1280 px viewport, so the last
+    // starts off the right edge at scroll_x = 0.
     let (tree, strip_id, ids) = single_strip_tree(&[100, 200, 300, 400]);
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
-    let layout = lay_out_host(&mut host);
+    let _layout = lay_out_host(&mut host);
 
     let last_id = ids[3];
     let row_rect = host.group_row_rect_for_tests(strip_id).unwrap();
 
-    // Pre-condition: the last group is off the right edge, scroll is home.
     let before = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
     assert_eq!(before, 0.0, "strip starts scrolled home");
     let last_rect_before = host.group_at_for_tests(strip_id, 3).unwrap().get_rect();
@@ -931,8 +907,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
         row_rect.x1,
     );
 
-    // Focus the off-screen group in the persisted tree, then run the
-    // focus-follow reconcile the production `Widget::update` runs.
+    // Focus the off-screen group, then run the focus-follow reconcile.
     {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
@@ -940,8 +915,8 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
     }
     host.tick_scroll_active_into_view_for_tests();
     // The pan is eased on the snap curve, not teleported — advance the
-    // production per-frame tick past the curve's duration so the motion
-    // settles before the position is read.
+    // per-frame tick past the curve's duration so the motion settles before
+    // the position is read.
     host.group_row_mut_for_tests(strip_id)
         .unwrap()
         .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_millis(400));
@@ -953,8 +928,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
          (scroll_x was {before}, now {after})",
     );
 
-    // Re-layout so the group rects reflect the new scroll offset, then
-    // assert the focused group is now fully within the strip viewport.
+    // Re-layout so the rects reflect the new scroll offset.
     let _layout = lay_out_host(&mut host);
     let row_rect = host.group_row_rect_for_tests(strip_id).unwrap();
     let last_rect_after = host.group_at_for_tests(strip_id, 3).unwrap().get_rect();
@@ -967,9 +941,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
     );
 }
 
-// -----------------------------------------------------------------------
 // 4. Drag-file-to-open
-// -----------------------------------------------------------------------
 
 #[test]
 fn dropping_a_code_file_opens_the_editor_in_the_active_workspace() {
@@ -982,7 +954,7 @@ fn dropping_a_code_file_opens_the_editor_in_the_active_workspace() {
         tree.workspaces[0].strips[0].window_groups[0].tabs.len()
     };
 
-    // Drop a `.ts` file — the real `WindowEvent::DroppedFile` entry point.
+    // Drop a `.ts` file through the real `WindowEvent::DroppedFile` entry.
     let tab_id = chrome
         .borrow_mut()
         .handle_file_drop(std::path::Path::new("/some/where/component.ts"))
@@ -1010,9 +982,9 @@ fn dropping_a_code_file_opens_the_editor_in_the_active_workspace() {
 
 #[test]
 fn dropping_a_folder_opens_files_app() {
-    // A path with no extension that isn't a real dir on disk classifies as
-    // a plain file → Files. A real folder classifies as Files too; either
-    // way a non-code drop resolves to the file manager, never the Editor.
+    // An extensionless path that isn't a real dir classifies as a plain file
+    // → Files, as does a real folder: a non-code drop never resolves to the
+    // Editor.
     let (tree, _strip_id, _ids) = single_strip_tree(&[100]);
     let (_host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let tmp = std::env::temp_dir().join("qos-deskenv-drop-folder");

@@ -1,12 +1,9 @@
 //! pack → unpack → verify integration tests.
 
-mod fixtures;
-
+use crate::fixtures;
 use ed25519_dalek::SigningKey;
 use pkg::manifest::Manifest;
-use pkg::{
-    MemoryBlobStore, SigningIdentity, Verification, pack, unpack, verify,
-};
+use pkg::{MemoryBlobStore, SigningIdentity, Verification, pack, unpack, verify};
 use rand::rngs::OsRng;
 
 fn fresh_identity() -> (SigningKey, String) {
@@ -95,10 +92,7 @@ fn tampered_manifest_fails_verify() {
     // Tamper: flip one byte in the manifest blob.
     use pkg::blobs::{BlobHash, BlobStore};
     use pkg::signed::SignedRoot;
-    let signed_bytes = store
-        .get(&BlobHash(*id.as_bytes()))
-        .unwrap()
-        .unwrap();
+    let signed_bytes = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
     let signed = SignedRoot::decode(&signed_bytes).unwrap();
     let manifest_hash = signed.manifest_hash;
     let mut manifest_bytes = store.get(&manifest_hash).unwrap().unwrap();
@@ -133,10 +127,7 @@ fn tampered_manifest_fails_verify() {
     tampered.put(&signed_bytes).unwrap();
     // Walk the original collection too so payload blobs exist.
     use pkg::blobs::Collection;
-    let collection_bytes = store
-        .get(&signed.payload_root_hash)
-        .unwrap()
-        .unwrap();
+    let collection_bytes = store.get(&signed.payload_root_hash).unwrap().unwrap();
     tampered.put(&collection_bytes).unwrap();
     let collection = Collection::decode(&collection_bytes).unwrap();
     for hash in collection.entries.values() {

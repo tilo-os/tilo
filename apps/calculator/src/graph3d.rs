@@ -143,7 +143,12 @@ impl SurfaceKey {
             yaw: bits(model.view3d.yaw),
             pitch: bits(model.view3d.pitch),
             zoom: bits(model.view3d.zoom),
-            canvas: (bits(canvas.x0), bits(canvas.y0), bits(canvas.x1), bits(canvas.y1)),
+            canvas: (
+                bits(canvas.x0),
+                bits(canvas.y0),
+                bits(canvas.x1),
+                bits(canvas.y1),
+            ),
         }
     }
 }
@@ -169,11 +174,21 @@ impl Graph3dScreen {
                 let w = PANEL_OVERLAY_W.min(area.width() - 40.0);
                 self.panel = Rect::new(area.x0, area.y0, area.x0 + w, area.y1);
                 self.scrim_rect = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
-                self.toggle_rect = Rect::new(self.panel.x1 - 66.0, self.panel.y0 + 14.0, self.panel.x1 - 16.0, self.panel.y0 + 42.0);
+                self.toggle_rect = Rect::new(
+                    self.panel.x1 - 66.0,
+                    self.panel.y0 + 14.0,
+                    self.panel.x1 - 16.0,
+                    self.panel.y0 + 42.0,
+                );
             } else {
                 self.panel = Rect::ZERO;
                 self.scrim_rect = Rect::ZERO;
-                self.toggle_rect = Rect::new(area.x0 + 12.0, area.y0 + 12.0, area.x0 + 144.0, area.y0 + 44.0);
+                self.toggle_rect = Rect::new(
+                    area.x0 + 12.0,
+                    area.y0 + 12.0,
+                    area.x0 + 144.0,
+                    area.y0 + 44.0,
+                );
             }
         }
     }
@@ -193,16 +208,31 @@ impl Graph3dScreen {
         for i in 0..model.surfaces.len() {
             let card_h = self.card_heights.get(i).copied().unwrap_or(BASE_ROW_H);
             let r = Rect::new(self.panel.x0 + 12.0, y, self.panel.x1 - 12.0, y + card_h);
-            let vis = Rect::new(r.x1 - 34.0, r.center().y - 11.0, r.x1 - 12.0, r.center().y + 11.0);
+            let vis = Rect::new(
+                r.x1 - 34.0,
+                r.center().y - 11.0,
+                r.x1 - 12.0,
+                r.center().y + 11.0,
+            );
             // "z =" label at the left, the math field fills the rest up to the dot.
-            let edit = Rect::new(r.x0 + 60.0, r.y0 + CARD_PAD_Y, vis.x0 - 8.0, r.y1 - CARD_PAD_Y);
+            let edit = Rect::new(
+                r.x0 + 60.0,
+                r.y0 + CARD_PAD_Y,
+                vis.x0 - 8.0,
+                r.y1 - CARD_PAD_Y,
+            );
             self.vis_rects.push(vis);
             self.edit_rects.push(edit);
             self.row_rects.push(r);
             y += card_h + ROW_GAP;
         }
         let add_y = y + 4.0;
-        self.add_rect = Rect::new(self.panel.x0 + 12.0, add_y, self.panel.x1 - 12.0, add_y + 36.0);
+        self.add_rect = Rect::new(
+            self.panel.x0 + 12.0,
+            add_y,
+            self.panel.x1 - 12.0,
+            add_y + 36.0,
+        );
     }
 
     /// Measure every row's formula and compute its grown card height (run at the
@@ -223,7 +253,11 @@ impl Graph3dScreen {
 
     /// Reconcile the per-row [`MathField`]s with `model.surfaces`.
     pub fn sync_fields(&mut self, model: &CalcModel) {
-        if self.fields.len() != model.surfaces.len() {
+        if self.fields.len() == model.surfaces.len() {
+            for (field, f) in self.fields.iter_mut().zip(&model.surfaces) {
+                field.set_source(&f.expr);
+            }
+        } else {
             self.fields = model
                 .surfaces
                 .iter()
@@ -237,10 +271,6 @@ impl Graph3dScreen {
                 } else {
                     field.park_caret_in_structure();
                 }
-            }
-        } else {
-            for (field, f) in self.fields.iter_mut().zip(&model.surfaces) {
-                field.set_source(&f.expr);
             }
         }
     }
@@ -263,7 +293,13 @@ impl Graph3dScreen {
     }
 
     /// Paint remote collaborators' carets into the active surface field.
-    pub fn draw_remote_carets(&self, scene: &mut Scene, t: Affine, active: usize, cursors: &[(Point, Color)]) {
+    pub fn draw_remote_carets(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        active: usize,
+        cursors: &[(Point, Color)],
+    ) {
         if let Some(f) = self.fields.get(active) {
             f.draw_remote_carets(scene, t, cursors);
         }
@@ -308,7 +344,7 @@ impl Graph3dScreen {
     /// Center of surface row `i`'s visibility dot, once laid out (test helper).
     #[doc(hidden)]
     pub fn vis_center(&self, i: usize) -> Option<Point> {
-        self.vis_rects.get(i).map(|r| r.center())
+        self.vis_rects.get(i).map(ui::kurbo::Rect::center)
     }
 
     pub fn draw(
@@ -342,17 +378,63 @@ impl Graph3dScreen {
         }
         // Open overlay drawer: dismiss scrim over the canvas first.
         if self.overlay {
-            draw::fill_rect(scene, t, self.scrim_rect, draw::with_alpha(Color::BLACK, 110));
+            draw::fill_rect(
+                scene,
+                t,
+                self.scrim_rect,
+                draw::with_alpha(Color::BLACK, 110),
+            );
         }
 
         // ---- panel ---------------------------------------------------------
-        let panel_bg = if self.overlay { c.surfaces.raised } else { c.surfaces.base };
+        let panel_bg = if self.overlay {
+            c.surfaces.raised
+        } else {
+            c.surfaces.base
+        };
         draw::fill_rect(scene, t, self.panel, panel_bg);
-        draw::line(scene, t, Point::new(self.panel.x1, self.panel.y0), Point::new(self.panel.x1, self.panel.y1), c.border_standard, if self.overlay { 1.5 } else { 1.0 });
-        let head = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 12.0, self.panel.x1 - 16.0, self.panel.y0 + 36.0);
-        draw::text_in(scene, tr, t, head, "Surfaces", 16.0, c.text_primary, Align::Left, TextWeight::Semibold);
-        let sub = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 36.0, self.panel.x1 - 16.0, self.panel.y0 + 56.0);
-        draw::text_in(scene, tr, t, sub, "z = f(x, y)  ·  click to edit", 12.0, c.text_dim, Align::Left, TextWeight::Regular);
+        draw::line(
+            scene,
+            t,
+            Point::new(self.panel.x1, self.panel.y0),
+            Point::new(self.panel.x1, self.panel.y1),
+            c.border_standard,
+            if self.overlay { 1.5 } else { 1.0 },
+        );
+        let head = Rect::new(
+            self.panel.x0 + 16.0,
+            self.panel.y0 + 12.0,
+            self.panel.x1 - 16.0,
+            self.panel.y0 + 36.0,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            head,
+            "Surfaces",
+            16.0,
+            c.text_primary,
+            Align::Left,
+            TextWeight::Semibold,
+        );
+        let sub = Rect::new(
+            self.panel.x0 + 16.0,
+            self.panel.y0 + 36.0,
+            self.panel.x1 - 16.0,
+            self.panel.y0 + 56.0,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            sub,
+            "z = f(x, y)  ·  click to edit",
+            12.0,
+            c.text_dim,
+            Align::Left,
+            TextWeight::Regular,
+        );
 
         // Surface rows (already reconciled + measured by `measure_cards`).
         for i in 0..model.surfaces.len() {
@@ -360,24 +442,69 @@ impl Graph3dScreen {
             let r = self.row_rects[i];
             let active = i == model.active_surface;
             if active {
-                draw::fill_rrect(scene, t, r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.18));
+                draw::fill_rrect(
+                    scene,
+                    t,
+                    r,
+                    8.0,
+                    draw::mix(c.surfaces.raised, c.accent[5], 0.18),
+                );
                 draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
                 draw::fill_rrect(scene, t, r, 8.0, c.surfaces.raised);
             }
             // colour swatch (this surface's series colour)
-            let sw = Rect::new(r.x0 + 12.0, r.center().y - 7.0, r.x0 + 26.0, r.center().y + 7.0);
+            let sw = Rect::new(
+                r.x0 + 12.0,
+                r.center().y - 7.0,
+                r.x0 + 26.0,
+                r.center().y + 7.0,
+            );
             let col = series_color(theme, i);
-            draw::fill_rrect(scene, t, sw, 3.0, if f.visible { col } else { draw::with_alpha(col, 80) });
+            draw::fill_rrect(
+                scene,
+                t,
+                sw,
+                3.0,
+                if f.visible {
+                    col
+                } else {
+                    draw::with_alpha(col, 80)
+                },
+            );
             // "z =" prefix, then the 2D math editor.
-            let txt_col = if f.visible { c.text_primary } else { c.text_dim };
+            let txt_col = if f.visible {
+                c.text_primary
+            } else {
+                c.text_dim
+            };
             let prefix = Rect::new(r.x0 + 34.0, r.y0, r.x0 + 60.0, r.y1);
-            draw::text_in(scene, tr, t, prefix, "z =", 14.0, txt_col, Align::Left, TextWeight::Medium);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                prefix,
+                "z =",
+                14.0,
+                txt_col,
+                Align::Left,
+                TextWeight::Medium,
+            );
             let edit = self.edit_rects[i];
             let empty = self.fields[i].is_empty();
             if empty && !active {
                 let pr = Rect::new(edit.x0 + 4.0, edit.y0, edit.x1, edit.y1);
-                draw::text_in(scene, tr, t, pr, "f(x, y)", 14.0, c.text_dim, Align::Left, TextWeight::Regular);
+                draw::text_in(
+                    scene,
+                    tr,
+                    t,
+                    pr,
+                    "f(x, y)",
+                    14.0,
+                    c.text_dim,
+                    Align::Left,
+                    TextWeight::Regular,
+                );
             } else {
                 self.fields[i].set_rect(edit, tr);
                 let fld_col = if f.visible { txt_col } else { c.text_dim };
@@ -396,19 +523,83 @@ impl Graph3dScreen {
         // add button
         draw::fill_rrect(scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::stroke_rrect(scene, t, self.add_rect, 8.0, c.border_standard, 1.0);
-        draw::text_in(scene, tr, t, self.add_rect, "+ Add surface", 13.0, c.accent[6], Align::Center, TextWeight::Medium);
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            self.add_rect,
+            "+ Add surface",
+            13.0,
+            c.accent[6],
+            Align::Center,
+            TextWeight::Medium,
+        );
 
         // controls readout
         let v = &model.view3d;
         let info_y = self.add_rect.y1 + 16.0;
-        let info = Rect::new(self.panel.x0 + 16.0, info_y, self.panel.x1 - 16.0, info_y + 80.0);
+        let info = Rect::new(
+            self.panel.x0 + 16.0,
+            info_y,
+            self.panel.x1 - 16.0,
+            info_y + 80.0,
+        );
         draw::fill_rrect(scene, t, info, 8.0, c.neutral[1]);
-        let l1 = Rect::new(info.x0 + 12.0, info.y0 + 6.0, info.x1 - 12.0, info.y0 + 26.0);
-        draw::text_in(scene, tr, t, l1, &format!("yaw  {:.0}°   pitch  {:.0}°", v.yaw.to_degrees(), v.pitch.to_degrees()), 12.0, c.text_dim, Align::Left, TextWeight::Regular);
-        let l2 = Rect::new(info.x0 + 12.0, info.y0 + 28.0, info.x1 - 12.0, info.y0 + 48.0);
-        draw::text_in(scene, tr, t, l2, &format!("zoom  {:.2}×   domain ±{:.0}", v.zoom, DOM), 12.0, c.text_dim, Align::Left, TextWeight::Regular);
-        let l3 = Rect::new(info.x0 + 12.0, info.y0 + 50.0, info.x1 - 12.0, info.y1 - 6.0);
-        draw::text_in(scene, tr, t, l3, "drag to rotate · scroll to zoom", 12.0, c.accent[6], Align::Left, TextWeight::Regular);
+        let l1 = Rect::new(
+            info.x0 + 12.0,
+            info.y0 + 6.0,
+            info.x1 - 12.0,
+            info.y0 + 26.0,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            l1,
+            &format!(
+                "yaw  {:.0}°   pitch  {:.0}°",
+                v.yaw.to_degrees(),
+                v.pitch.to_degrees()
+            ),
+            12.0,
+            c.text_dim,
+            Align::Left,
+            TextWeight::Regular,
+        );
+        let l2 = Rect::new(
+            info.x0 + 12.0,
+            info.y0 + 28.0,
+            info.x1 - 12.0,
+            info.y0 + 48.0,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            l2,
+            &format!("zoom  {:.2}×   domain ±{:.0}", v.zoom, DOM),
+            12.0,
+            c.text_dim,
+            Align::Left,
+            TextWeight::Regular,
+        );
+        let l3 = Rect::new(
+            info.x0 + 12.0,
+            info.y0 + 50.0,
+            info.x1 - 12.0,
+            info.y1 - 6.0,
+        );
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            l3,
+            "drag to rotate · scroll to zoom",
+            12.0,
+            c.accent[6],
+            Align::Left,
+            TextWeight::Regular,
+        );
 
         // Overlay drawer keeps a "Hide" chip in its header.
         if self.overlay {
@@ -426,11 +617,37 @@ impl Graph3dScreen {
         let r = self.toggle_rect;
         if self.panel_open {
             draw::fill_rrect(scene, t, r, 8.0, c.neutral[2]);
-            draw::text_in(scene, tr, t, r, "Hide", 12.0, c.text_dim, Align::Center, TextWeight::Semibold);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                r,
+                "Hide",
+                12.0,
+                c.text_dim,
+                Align::Center,
+                TextWeight::Semibold,
+            );
         } else {
-            draw::fill_rrect(scene, t, r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.20));
+            draw::fill_rrect(
+                scene,
+                t,
+                r,
+                8.0,
+                draw::mix(c.surfaces.raised, c.accent[5], 0.20),
+            );
             draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
-            draw::text_in(scene, tr, t, r, "Surfaces", 13.0, c.accent[6], Align::Center, TextWeight::Semibold);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                r,
+                "Surfaces",
+                13.0,
+                c.accent[6],
+                Align::Center,
+                TextWeight::Semibold,
+            );
         }
     }
 
@@ -446,7 +663,13 @@ impl Graph3dScreen {
             t
         };
 
-        scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &self.canvas);
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &self.canvas,
+        );
         let wire = draw::with_alpha(theme.tokens.colors.neutral[0], 90);
         let wire_stroke = vello::kurbo::Stroke::new(0.6);
         for cell in &self.surface_cache.cells {
@@ -456,8 +679,22 @@ impl Graph3dScreen {
         }
         if let Some((o, xa, ya)) = self.surface_cache.axes {
             let c = &theme.tokens.colors;
-            draw::line(scene, tt, o, xa, draw::with_alpha(c.semantic.danger, 180), 1.2);
-            draw::line(scene, tt, o, ya, draw::with_alpha(c.semantic.success, 180), 1.2);
+            draw::line(
+                scene,
+                tt,
+                o,
+                xa,
+                draw::with_alpha(c.semantic.danger, 180),
+                1.2,
+            );
+            draw::line(
+                scene,
+                tt,
+                o,
+                ya,
+                draw::with_alpha(c.semantic.success, 180),
+                1.2,
+            );
         }
         scene.pop_layer();
     }
@@ -522,7 +759,12 @@ impl Graph3dScreen {
         }
 
         if sampled.is_empty() {
-            self.surface_cache = SurfaceCache { key: Some(key), cells: Vec::new(), axes: None, rebuilds };
+            self.surface_cache = SurfaceCache {
+                key: Some(key),
+                cells: Vec::new(),
+                axes: None,
+                rebuilds,
+            };
             return;
         }
         if !zmin.is_finite() || !zmax.is_finite() {
@@ -590,13 +832,21 @@ impl Graph3dScreen {
                     let shade = 0.55 + 0.45 * lambert;
                     cells.push(Depth {
                         depth: 0.25 * (d00 + d10 + d11 + d01),
-                        cell: SurfaceCell { path, series: surf.series, shade },
+                        cell: SurfaceCell {
+                            path,
+                            series: surf.series,
+                            shade,
+                        },
                     });
                 }
             }
         }
         // painter's algorithm across ALL surfaces: far (large depth) first.
-        cells.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+        cells.sort_by(|a, b| {
+            b.depth
+                .partial_cmp(&a.depth)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let (o, _) = project(0.0, 0.0, 0.0);
         let (xa, _) = project(DOM * 1.05, 0.0, 0.0);
@@ -621,7 +871,7 @@ impl Graph3dScreen {
 }
 
 fn scale_rgb(c: Color, f: f64) -> Color {
-    let s = |x: u8| (x as f64 * f).round().clamp(0.0, 255.0) as u8;
+    let s = |x: u8| (f64::from(x) * f).round().clamp(0.0, 255.0) as u8;
     Color::from_rgba8(s(c.r()), s(c.g()), s(c.b()), c.a())
 }
 
@@ -680,7 +930,10 @@ mod tests {
         // Cells from more than one series prove multiple surfaces are drawn.
         let distinct: std::collections::BTreeSet<usize> =
             s.surface_cache.cells.iter().map(|c| c.series).collect();
-        assert!(distinct.len() >= 2, "multiple surfaces must each contribute cells, got {distinct:?}");
+        assert!(
+            distinct.len() >= 2,
+            "multiple surfaces must each contribute cells, got {distinct:?}"
+        );
     }
 
     #[test]
@@ -691,12 +944,18 @@ mod tests {
         assert_eq!(s.surface_cache.rebuilds, 1);
         s.ensure_surfaces(&m);
         s.ensure_surfaces(&m);
-        assert_eq!(s.surface_cache.rebuilds, 1, "theme switch re-sampled the surfaces");
+        assert_eq!(
+            s.surface_cache.rebuilds, 1,
+            "theme switch re-sampled the surfaces"
+        );
         m.mode = Mode::Calc;
         s.ensure_surfaces(&m);
         m.mode = Mode::Graph3d;
         s.ensure_surfaces(&m);
-        assert_eq!(s.surface_cache.rebuilds, 1, "tab switch re-sampled the surfaces");
+        assert_eq!(
+            s.surface_cache.rebuilds, 1,
+            "tab switch re-sampled the surfaces"
+        );
     }
 
     #[test]
@@ -728,7 +987,10 @@ mod tests {
         s.ensure_surfaces(&m);
         let after: std::collections::BTreeSet<usize> =
             s.surface_cache.cells.iter().map(|c| c.series).collect();
-        assert!(!after.contains(&0), "a hidden surface must contribute no cells");
+        assert!(
+            !after.contains(&0),
+            "a hidden surface must contribute no cells"
+        );
     }
 
     #[test]
@@ -748,7 +1010,10 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut s = Graph3dScreen::default();
         let mut m = CalcModel::default();
-        m.surfaces = vec![PlotFn { expr: "(x^2+1)/(y-3)".into(), visible: true }];
+        m.surfaces = vec![PlotFn {
+            expr: "(x^2+1)/(y-3)".into(),
+            visible: true,
+        }];
         m.active_surface = 0;
         s.measure_cards(&m, &mut tr);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
@@ -770,7 +1035,10 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut s = Graph3dScreen::default();
         let mut m = CalcModel::default();
-        m.surfaces = vec![PlotFn { expr: "(1/x)/(1/y)".into(), visible: true }];
+        m.surfaces = vec![PlotFn {
+            expr: "(1/x)/(1/y)".into(),
+            visible: true,
+        }];
         m.active_surface = 0;
         s.measure_cards(&m, &mut tr);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
@@ -788,6 +1056,9 @@ mod tests {
             s.edit_rects[0].height()
         );
         s.fields[0].set_rect(s.edit_rects[0], &mut tr);
-        assert!(s.fields[0].overflows(), "the maxed surface field must report overflow");
+        assert!(
+            s.fields[0].overflows(),
+            "the maxed surface field must report overflow"
+        );
     }
 }

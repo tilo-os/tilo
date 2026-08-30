@@ -1,51 +1,42 @@
 //! Error types for `channel-crypto`.
 //!
-//! OpenMLS itself defines a thicket of error enums parameterised over
-//! the storage backend's error type. Propagating those verbatim
-//! couples our public surface to openmls's internal type-level
-//! plumbing; bumping openmls would then ripple into every downstream
-//! caller. Instead we collapse openmls's errors into a single
-//! [`Error::OpenMls`] variant that owns a human-readable string built
-//! via `{:?}` of the underlying error. The original error chain is
-//! lost; in exchange callers handle one shape and the broker can log
-//! the message unchanged.
+//! `OpenMLS` defines a thicket of error enums parameterised over the
+//! storage backend's error type; propagating those verbatim would
+//! couple our surface to openmls's internal plumbing, so they collapse
+//! into a single [`Error::OpenMls`] carrying a `{:?}`-rendered string.
+//! The error chain is lost; in exchange callers handle one shape and the
+//! broker logs the message unchanged.
 //!
-//! Variants are split by *which step failed* (creation, join, etc.)
-//! so triage can route on the variant alone — the inner string only
-//! matters for the human reading the audit line.
+//! Variants split by *which step failed* so triage routes on the
+//! variant alone — the inner string is only for the human reading the
+//! audit line.
 
 use thiserror::Error;
 
 /// All errors produced by this crate.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The underlying openmls call failed. The string carries the
-    /// `{:?}` form of the openmls error; full type chain is dropped
-    /// to keep the public surface stable across openmls bumps.
+    /// The underlying openmls call failed; the string is the `{:?}` form,
+    /// full type chain dropped to keep the surface stable across openmls bumps.
     #[error("openmls error: {0}")]
     OpenMls(String),
 
-    /// `OpenMlsRustCrypto::storage()` rejected a write of secret
-    /// material (signature keypair, key package private state).
-    /// Surfaced as a separate variant because storage failure has a
-    /// different operational signal than a protocol error: it almost
-    /// always means an out-of-memory or in-test fixture issue, not a
-    /// malformed peer message.
+    /// `OpenMlsRustCrypto::storage()` rejected a write of secret material.
+    /// Separate variant because storage failure has a different operational
+    /// signal than a protocol error — almost always OOM or a test-fixture
+    /// issue, not a malformed peer message.
     #[error("openmls storage error: {0}")]
     Storage(String),
 
-    /// `tls_codec::Serialize`/`Deserialize` failed. The wire format
-    /// for Welcome / application messages is TLS-CODEC; a malformed
-    /// blob from a peer surfaces here. Always recoverable — drop the
-    /// message, do not crash.
+    /// `tls_codec::Serialize`/`Deserialize` failed — the Welcome/application
+    /// wire format is TLS-CODEC; a malformed peer blob surfaces here.
+    /// Always recoverable: drop the message, don't crash.
     #[error("tls_codec error: {0}")]
     TlsCodec(String),
 
-    /// We received an `MlsMessageIn` whose body variant is not the
-    /// one we expected (e.g. tried to read a Welcome but the bytes
-    /// decoded to an application message, or vice versa). Cleanly
-    /// distinct from `TlsCodec` because the bytes parsed — they just
-    /// describe a different shape than the API call wanted.
+    /// An `MlsMessageIn`'s body variant wasn't the one expected (e.g. a
+    /// Welcome read as an application message). Distinct from `TlsCodec` —
+    /// the bytes parsed, they just describe a different shape.
     #[error("unexpected mls message variant: expected {expected}, got {actual}")]
     UnexpectedMessageKind {
         /// What the caller's API path was hoping to extract.
@@ -54,18 +45,17 @@ pub enum Error {
         actual: &'static str,
     },
 
-    /// `MlsGroup::process_message` returned a non-application
-    /// content variant (proposal, external join, commit). The API
-    /// surface here only deals with application payloads; governance
-    /// commits arrive via the broker's ChannelEvent log, not in-band.
+    /// `MlsGroup::process_message` returned a non-application variant
+    /// (proposal, external join, commit) — this surface only handles
+    /// application payloads; governance commits arrive via the broker's
+    /// `ChannelEvent` log, not in-band.
     #[error("processed message was not an application message")]
     NotApplicationMessage,
 }
 
 impl Error {
-    /// Wrap an openmls error type that implements `Debug`.
-    ///
-    /// We swallow the source-chain on purpose; see the module docs.
+    /// Wrap an openmls error type that implements `Debug`. Swallows the
+    /// source chain on purpose; see the module docs.
     pub(crate) fn openmls<E: std::fmt::Debug>(e: E) -> Self {
         Self::OpenMls(format!("{e:?}"))
     }

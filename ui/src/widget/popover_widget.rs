@@ -2,23 +2,13 @@
 //!
 //! Renders a rounded-rect surface adjacent to an `anchor_rect` on a
 //! requested [`PopoverSide`]. If positioning on the requested side would
-//! clip past the configured `viewport`, the side is flipped to its
-//! opposite (`Below` ↔ `Above`, `Left` ↔ `Right`). The resolved side is
-//! exposed via [`PopoverWidget::resolved_side`] so tests + the parent
-//! widget can pin the actual placement after flip logic.
-//!
-//! The popover paints:
-//!   - A 4-ring drop shadow (alpha-only black rings, same idea as the
-//!     pill shadow in [`crate::widget::tabs::TabBar::draw_pill_inner`]).
-//!   - A rounded-rect body in `theme.tokens.colors.surfaces.overlay` with
-//!     a 1-px `theme.tokens.colors.border_standard` border.
-//!   - A small triangular arrow pointing at the anchor, filled in the
-//!     same overlay colour as the body.
-//!   - Whatever the inner `content` widget draws.
+//! clip past the configured `viewport`, the side flips to its opposite
+//! (`Below` ↔ `Above`, `Left` ↔ `Right`); the resolved side is exposed via
+//! [`PopoverWidget::resolved_side`].
 //!
 //! Naming: deliberately `PopoverWidget`, NOT `Popover` — the latter is
-//! owned by [`crate::overlay::popover::Popover`] (a tiny positioning
-//! hint, not a `Widget`). Don't collide.
+//! owned by [`crate::overlay::popover::Popover`] (a tiny positioning hint,
+//! not a `Widget`). Don't collide.
 
 use std::collections::HashMap;
 
@@ -33,18 +23,21 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Side of the anchor the popover prefers to render on. If positioning
-/// on the preferred side would clip past `viewport`, the popover flips
-/// to its opposite side; the resolved side is reported via
+/// Side of the anchor the popover prefers to render on; flips to its
+/// opposite if `viewport` would clip it. See
 /// [`PopoverWidget::resolved_side`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PopoverSide { Above, Below, Left, Right }
+pub enum PopoverSide {
+    Above,
+    Below,
+    Left,
+    Right,
+}
 
 impl PopoverSide {
-    /// Opposite side used by the flip resolver. `Below` ↔ `Above`,
-    /// `Left` ↔ `Right`.
     fn opposite(self) -> Self {
         match self {
             PopoverSide::Above => PopoverSide::Below,
@@ -55,44 +48,34 @@ impl PopoverSide {
     }
 }
 
-/// Tip width / height of the small triangular arrow that bridges the
-/// gap between the popover body and the anchor edge. 4 px per the spec
-/// — small enough to read as a "speech-bubble nub" rather than a full
-/// callout fin.
+/// Tip width/height of the triangular arrow bridging the popover body and
+/// the anchor edge. 4 px per the spec — small enough to read as a
+/// "speech-bubble nub" rather than a full callout fin.
 const ARROW_SIZE_PX: f64 = 4.0;
 
-/// Fallback intrinsic size in CSS-like px. Used only when the inner
-/// content widget reports `taffy::Size::ZERO` from `measure` (e.g. a
-/// content widget that hasn't been wired to size itself). The popover
-/// still needs *some* non-zero body so the flip resolver, draw, and
-/// hit-test paths have meaningful geometry.
+/// Fallback intrinsic size when the inner content reports
+/// `taffy::Size::ZERO` from `measure`, so the popover still has a
+/// non-zero body for the flip resolver, draw, and hit-test paths.
 const FALLBACK_BODY_W: f64 = 96.0;
 const FALLBACK_BODY_H: f64 = 32.0;
 
-/// Anchored, dismissible overlay panel. Generic over its content widget
+/// Anchored, dismissible overlay panel, generic over its content widget
 /// so callers can stuff arbitrary trees inside (menu rows, color
-/// pickers, form bodies, etc.) while the popover handles positioning,
-/// chrome, and the outside-click dismiss contract.
+/// pickers, form bodies, etc.).
 pub struct PopoverWidget<C: Widget> {
     anchor_rect: Rect,
     content: C,
     side: PopoverSide,
     open: bool,
     on_dismiss: Option<Box<dyn FnMut()>>,
-    /// Resolved popover body rect after flip logic. Populated during
-    /// `apply_layout` (or via `recompute_layout` in tests). Reported by
-    /// [`Self::rect`].
+    /// Resolved popover body rect after flip logic; see [`Self::rect`].
     rect: Rect,
-    /// Viewport bounds used for flip resolution. Defaults to a very
-    /// large region so a popover with no `with_viewport` call still
-    /// honours its requested side.
+    /// Defaults to a very large region so a popover with no
+    /// `with_viewport` call still honours its requested side.
     viewport: Rect,
-    /// Resolved side after flip logic. Populated alongside `rect`.
     resolved_side: PopoverSide,
-    /// Last cursor position seen via `CursorMoved`. Used by the
-    /// outside-click dismiss path: a `MouseInput { Pressed, Left }`
-    /// dispatched on the popover dispatches its dismiss callback when
-    /// the cached cursor isn't inside `self.rect`.
+    /// Last cursor seen via `CursorMoved`: a `MouseInput { Pressed, Left }`
+    /// fires dismiss when this isn't inside `self.rect`.
     last_cursor: Point,
 }
 
@@ -108,8 +91,6 @@ impl<C: Widget> PopoverWidget<C> {
             open: false,
             on_dismiss: None,
             rect: Rect::ZERO,
-            // Default viewport: large enough that the requested side is
-            // honoured when the caller doesn't call `with_viewport`.
             // Negative origin keeps `Above` / `Left` from clipping.
             viewport: Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6),
             resolved_side: side,
@@ -118,8 +99,7 @@ impl<C: Widget> PopoverWidget<C> {
     }
 
     /// Set the popover's open state. When `false`, the widget paints
-    /// nothing and ignores input events. Builder-style so it composes
-    /// with the other configuration setters.
+    /// nothing and ignores input events.
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
         self
@@ -132,10 +112,9 @@ impl<C: Widget> PopoverWidget<C> {
         self
     }
 
-    /// Override the viewport bounds used for the flip resolver. The
-    /// default is "infinite", which honours the requested side; callers
-    /// that want flip-on-clip semantics MUST pass the real viewport
-    /// (typically the host window's inner rect).
+    /// Override the viewport used for the flip resolver. Default is
+    /// "infinite"; callers that want flip-on-clip semantics MUST pass the
+    /// real viewport (typically the host window's inner rect).
     pub fn with_viewport(mut self, viewport: Rect) -> Self {
         self.viewport = viewport;
         self
@@ -143,34 +122,44 @@ impl<C: Widget> PopoverWidget<C> {
 
     /// Resolved popover body rect after flip logic. Returns `Rect::ZERO`
     /// before the first layout pass.
-    pub fn rect(&self) -> Rect { self.rect }
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
 
-    /// Resolved side after flip logic. Equal to the side passed to
-    /// `new` unless the popover would have clipped past `viewport`, in
-    /// which case it's the opposite.
-    pub fn resolved_side(&self) -> PopoverSide { self.resolved_side }
+    /// Equal to the side passed to `new` unless the popover would have
+    /// clipped past `viewport`, in which case it's the opposite.
+    pub fn resolved_side(&self) -> PopoverSide {
+        self.resolved_side
+    }
 
-    /// Intrinsic body dimensions, derived from the inner content's
-    /// `measure`. Falls back to a small default rect when the content
-    /// reports zero so the popover still has visible chrome.
+    /// Intrinsic body dimensions, derived from the inner content's `measure`.
     fn body_size(&mut self, text_renderer: &mut TextRenderer) -> (f64, f64) {
         let measured = self.content.measure(
-            taffy::Size { width: None, height: None },
+            taffy::Size {
+                width: None,
+                height: None,
+            },
             taffy::Size {
                 width: taffy::AvailableSpace::MaxContent,
                 height: taffy::AvailableSpace::MaxContent,
             },
             text_renderer,
         );
-        let w = if measured.width > 0.0 { measured.width as f64 } else { FALLBACK_BODY_W };
-        let h = if measured.height > 0.0 { measured.height as f64 } else { FALLBACK_BODY_H };
+        let w = if measured.width > 0.0 {
+            f64::from(measured.width)
+        } else {
+            FALLBACK_BODY_W
+        };
+        let h = if measured.height > 0.0 {
+            f64::from(measured.height)
+        } else {
+            FALLBACK_BODY_H
+        };
         (w, h)
     }
 
-    /// Position the popover body relative to `anchor_rect` on `side`,
-    /// applying the spacing gap. Returns the candidate body rect; the
-    /// flip resolver decides whether to accept this or flip to the
-    /// opposite side.
+    /// Candidate body rect for `side`; the flip resolver decides whether
+    /// to accept this or flip to the opposite side.
     fn position_on(&self, side: PopoverSide, body_w: f64, body_h: f64, gap: f64) -> Rect {
         let anchor = self.anchor_rect;
         match side {
@@ -201,13 +190,9 @@ impl<C: Widget> PopoverWidget<C> {
         }
     }
 
-    /// True if `candidate` fits inside `viewport` along the axis that
-    /// the requested side cares about. We flip *only* when the
-    /// requested side runs out of room along its primary axis — a
-    /// popover that has plenty of vertical room but extends slightly
-    /// past the horizontal edge stays on the requested side (clamping
-    /// horizontally is a future refinement; the spec only requires
-    /// flip-on-axis behaviour).
+    /// True if `candidate` fits inside `viewport` along the side's primary
+    /// axis — flip triggers only there. Overflow on the cross axis stays
+    /// put (clamping there is a future refinement).
     fn fits_on(&self, candidate: Rect, side: PopoverSide) -> bool {
         let vp = self.viewport;
         match side {
@@ -218,24 +203,18 @@ impl<C: Widget> PopoverWidget<C> {
         }
     }
 
-    /// Lay out the inner content widget inside the popover body. The
-    /// content gets the body rect deflated by `spacing.s2` padding on
-    /// every side; the popover composes its content via an isolated
-    /// taffy tree because the parent's taffy doesn't model the
-    /// popover-internal layout (we computed `self.rect` manually
-    /// against `anchor_rect` and `viewport`, not via flexbox).
-    ///
-    /// Without this step every overlay-anchored content widget would
-    /// keep `Rect::ZERO` and paint at scene origin instead of inside
-    /// the popover body — which is what an earlier draft of this file
-    /// shipped. Pinned here so any future refactor that drops the call
-    /// has to confront the surprise it causes.
+    /// Lay out the inner content inside the popover body, deflated by
+    /// `spacing.s2` padding. Uses an isolated taffy tree because
+    /// `self.rect` is computed manually against `anchor_rect` and
+    /// `viewport`, not via the parent's flexbox — the parent's taffy tree
+    /// has nothing to place the content against. Skipping this leaves
+    /// the content at `Rect::ZERO`, painting at scene origin.
     fn place_content(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let body = self.rect;
         if body.width() <= 0.0 || body.height() <= 0.0 {
             return;
         }
-        let pad = theme.tokens.spacing.s2 as f64;
+        let pad = f64::from(theme.tokens.spacing.s2);
         let inner = Rect::new(
             body.x0 + pad,
             body.y0 + pad,
@@ -244,7 +223,9 @@ impl<C: Widget> PopoverWidget<C> {
         );
         let mut inner_taffy = TaffyTree::<()>::new();
         let mut inner_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let content_node = self.content.build_layout(&mut inner_taffy, theme, &mut inner_map);
+        let content_node = self
+            .content
+            .build_layout(&mut inner_taffy, theme, &mut inner_map);
         let _ = inner_taffy.compute_layout_with_measure(
             content_node,
             taffy::Size {
@@ -263,12 +244,11 @@ impl<C: Widget> PopoverWidget<C> {
             .apply_layout(&inner_taffy, content_node, Point::new(inner.x0, inner.y0));
     }
 
-    /// Resolve the popover's final `rect` + `resolved_side` for the
-    /// current `anchor_rect`, content size and viewport. Called from
-    /// `apply_layout` and also exposed for tests that want to drive
-    /// the layout without a full taffy compute.
+    /// Resolve `rect` + `resolved_side` for the current `anchor_rect`,
+    /// content size and viewport. Also exposed for tests that want to
+    /// drive layout without a full taffy compute.
     fn recompute_layout(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
-        let gap = theme.tokens.spacing.s2 as f64;
+        let gap = f64::from(theme.tokens.spacing.s2);
         let (body_w, body_h) = self.body_size(text_renderer);
         let preferred = self.position_on(self.side, body_w, body_h, gap);
         if self.fits_on(preferred, self.side) {
@@ -281,10 +261,8 @@ impl<C: Widget> PopoverWidget<C> {
         }
     }
 
-    /// Construct the small triangular arrow that bridges the popover
-    /// body and the anchor edge. The triangle's base sits flush with
-    /// the popover body's anchor-facing edge; its tip points at the
-    /// anchor centre line.
+    /// Triangular arrow bridging the popover body and the anchor edge: base
+    /// flush with the body's anchor-facing edge, tip at the anchor centreline.
     fn arrow_path(&self) -> BezPath {
         let body = self.rect;
         let mut path = BezPath::new();
@@ -292,28 +270,40 @@ impl<C: Widget> PopoverWidget<C> {
             PopoverSide::Below => {
                 // Body is below the anchor → arrow points up, sitting on
                 // top edge of the body.
-                let cx = body.center().x.clamp(body.x0 + ARROW_SIZE_PX, body.x1 - ARROW_SIZE_PX);
+                let cx = body
+                    .center()
+                    .x
+                    .clamp(body.x0 + ARROW_SIZE_PX, body.x1 - ARROW_SIZE_PX);
                 path.move_to(Point::new(cx - ARROW_SIZE_PX, body.y0));
                 path.line_to(Point::new(cx + ARROW_SIZE_PX, body.y0));
                 path.line_to(Point::new(cx, body.y0 - ARROW_SIZE_PX));
                 path.close_path();
             }
             PopoverSide::Above => {
-                let cx = body.center().x.clamp(body.x0 + ARROW_SIZE_PX, body.x1 - ARROW_SIZE_PX);
+                let cx = body
+                    .center()
+                    .x
+                    .clamp(body.x0 + ARROW_SIZE_PX, body.x1 - ARROW_SIZE_PX);
                 path.move_to(Point::new(cx - ARROW_SIZE_PX, body.y1));
                 path.line_to(Point::new(cx + ARROW_SIZE_PX, body.y1));
                 path.line_to(Point::new(cx, body.y1 + ARROW_SIZE_PX));
                 path.close_path();
             }
             PopoverSide::Right => {
-                let cy = body.center().y.clamp(body.y0 + ARROW_SIZE_PX, body.y1 - ARROW_SIZE_PX);
+                let cy = body
+                    .center()
+                    .y
+                    .clamp(body.y0 + ARROW_SIZE_PX, body.y1 - ARROW_SIZE_PX);
                 path.move_to(Point::new(body.x0, cy - ARROW_SIZE_PX));
                 path.line_to(Point::new(body.x0, cy + ARROW_SIZE_PX));
                 path.line_to(Point::new(body.x0 - ARROW_SIZE_PX, cy));
                 path.close_path();
             }
             PopoverSide::Left => {
-                let cy = body.center().y.clamp(body.y0 + ARROW_SIZE_PX, body.y1 - ARROW_SIZE_PX);
+                let cy = body
+                    .center()
+                    .y
+                    .clamp(body.y0 + ARROW_SIZE_PX, body.y1 - ARROW_SIZE_PX);
                 path.move_to(Point::new(body.x1, cy - ARROW_SIZE_PX));
                 path.line_to(Point::new(body.x1, cy + ARROW_SIZE_PX));
                 path.line_to(Point::new(body.x1 + ARROW_SIZE_PX, cy));
@@ -326,10 +316,7 @@ impl<C: Widget> PopoverWidget<C> {
 
 impl<C: Widget + 'static> Widget for PopoverWidget<C> {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // Pass through to the content so nested widgets keep their CRDT
-        // wiring whether the popover is open or not. (Closed popovers
-        // still want their content's CRDT-derived state up-to-date so
-        // re-opening doesn't reveal a stale frame.)
+        // Pass through even when closed — otherwise re-opening reveals a stale frame.
         self.content.sync(state, path);
     }
 
@@ -339,32 +326,24 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The popover's outer taffy node is a zero-extent leaf — we
-        // position the body manually in `apply_layout` so the flip
-        // resolver can run against the explicit `anchor_rect` and
-        // `viewport`, not whatever the parent's flexbox happens to
-        // assign. The content's layout is built but parked under its
-        // own subtree; we resolve its rect manually too.
+        // Zero-extent leaf — the body is positioned manually in
+        // `apply_layout` against `anchor_rect` and `viewport`, not the
+        // parent's flexbox.
         let _ = self.content.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
-        // The flip resolver needs a TextRenderer to measure content,
-        // but `apply_layout` doesn't receive one. We construct a
-        // throw-away renderer here so unit tests + the production
-        // pipeline both arrive at the same `rect`. The renderer is
-        // cheap to instantiate and the measure pass is the only call.
+        // `apply_layout` doesn't receive a `TextRenderer`, but the flip
+        // resolver needs one — construct a throwaway one.
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
         self.recompute_layout(&theme, &mut tr);
@@ -380,34 +359,23 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         presence: &PresenceCtx,
     ) {
         if !self.open {
-            // Closed → emit nothing. The spec's
-            // `popover_closed_paints_nothing` test pins zero
-            // `DrawTag::COLOR` fills against this branch; any future
-            // "paint chrome but hide content" refactor has to honour
-            // it.
+            // Closed → emit nothing; `popover_closed_paints_nothing`
+            // pins zero `DrawTag::COLOR` fills against this branch.
             return;
         }
-        // Recompute against the live theme so the spacing token and
-        // any theme swap apply to the body rect / arrow. Also re-place
-        // the content — token changes can change the inner padding.
+        // Recompute against the live theme so a theme swap's spacing
+        // token applies to the body rect, arrow, and inner padding.
         self.recompute_layout(theme, text_renderer);
         self.place_content(theme, text_renderer);
 
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let body = self.rect;
         let shape = RoundedRect::from_rect(body, radius);
 
         // Drop shadow: 4 concentric outset rings at low alpha, same
-        // 4-ring pattern used by `TabBar::draw_pill_inner`. Alphas are
-        // expressed as `Color::BLACK.with_alpha_factor(..)` so the
-        // shadow stays themed (no literal `Color::from_rgba8(0,0,0,..)`).
+        // pattern as `TabBar::draw_pill_inner`.
         let shadow_y_offset = 6.0_f64;
-        let shadow_rings: [(f64, f32); 4] = [
-            (2.0, 0.20),
-            (5.0, 0.12),
-            (9.0, 0.06),
-            (14.0, 0.02),
-        ];
+        let shadow_rings: [(f64, f32); 4] = [(2.0, 0.20), (5.0, 0.12), (9.0, 0.06), (14.0, 0.02)];
         for (spread, alpha) in shadow_rings {
             let shadow_rect = Rect::new(
                 body.x0 - spread,
@@ -425,7 +393,6 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
             );
         }
 
-        // Body fill + border (themed overlay surface).
         let fill = theme.tokens.colors.surfaces.overlay;
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
         scene.stroke(
@@ -436,15 +403,14 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
             &shape,
         );
 
-        // Arrow: small triangle pointing at the anchor edge, filled in
-        // the same overlay colour so it reads as a continuation of the
-        // popover body chrome rather than a separate marker.
+        // Arrow: filled in the same overlay colour so it reads as a
+        // continuation of the body chrome rather than a separate marker.
         let arrow = self.arrow_path();
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &arrow);
 
-        // Finally, the inner content. Drawn after the chrome so the
-        // content paints on top of the body fill.
-        self.content.draw(scene, transform, text_renderer, theme, presence);
+        // Drawn after the chrome so content paints on top of the body fill.
+        self.content
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -464,35 +430,32 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(
-                    position.x / scale_factor,
-                    position.y / scale_factor,
-                );
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                if !self.rect.contains(self.last_cursor) {
-                    if let Some(cb) = self.on_dismiss.as_mut() {
-                        cb();
-                        *handled = true;
-                    }
+                if !self.rect.contains(self.last_cursor)
+                    && let Some(cb) = self.on_dismiss.as_mut()
+                {
+                    cb();
+                    *handled = true;
                 }
             }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str { "PopoverWidget" }
+    fn name(&self) -> &'static str {
+        "PopoverWidget"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
-
-// =====================================================================
-// Tests
-// =====================================================================
 
 #[cfg(test)]
 mod tests {
@@ -500,10 +463,8 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
     use winit::event::DeviceId;
 
-    /// Minimal `Widget` that reports a fixed intrinsic size and emits a
-    /// single fill on draw. Used as the generic content for the
-    /// popover tests so we don't depend on any real widget's layout
-    /// behaviour.
+    /// Minimal `Widget` with a fixed intrinsic size, used as generic
+    /// content so tests don't depend on any real widget's layout behaviour.
     struct TestContent {
         rect: Rect,
         intrinsic: taffy::Size<f32>,
@@ -513,7 +474,10 @@ mod tests {
         fn new(w: f32, h: f32) -> Self {
             Self {
                 rect: Rect::ZERO,
-                intrinsic: taffy::Size { width: w, height: h },
+                intrinsic: taffy::Size {
+                    width: w,
+                    height: h,
+                },
             }
         }
     }
@@ -527,15 +491,13 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(self.intrinsic.width),
-                        height: Dimension::length(self.intrinsic.height),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::length(self.intrinsic.width),
+                    height: Dimension::length(self.intrinsic.height),
+                },
+                ..Default::default()
+            });
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -566,9 +528,8 @@ mod tests {
             theme: &Theme,
             _presence: &PresenceCtx,
         ) {
-            // Single solid fill so tests inspecting `DrawTag::COLOR`
-            // can attribute fills to either the popover chrome or the
-            // content.
+            // Single solid fill so tests inspecting `DrawTag::COLOR` can
+            // attribute fills to either the popover chrome or the content.
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -589,11 +550,16 @@ mod tests {
             _focus_target: &mut Option<NodeId>,
             _node_id: NodeId,
             _taffy: &TaffyTree<()>,
-        ) {}
+        ) {
+        }
 
-        fn name(&self) -> &str { "TestContent" }
+        fn name(&self) -> &str {
+            "TestContent"
+        }
 
-        fn get_rect(&self) -> Rect { self.rect }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
     }
 
     fn synth_device() -> DeviceId {
@@ -603,23 +569,23 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
 
-    /// Helper: drive a popover through `build_layout` + `apply_layout`
-    /// so `rect` and `resolved_side` reflect the current configuration.
+    /// Drive a popover through `build_layout` + `apply_layout` so `rect`
+    /// and `resolved_side` reflect the current configuration.
     fn lay_out<C: Widget + 'static>(p: &mut PopoverWidget<C>) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = p.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
-        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
         p.apply_layout(&taffy, node, Point::ZERO);
     }
 
-    /// Anchor at (100, 100, 200, 130) with `Below` and a generous
-    /// viewport must place the popover's `rect.y0` at least
-    /// `anchor.y1 + spacing.s2` — i.e. fully below the anchor with the
-    /// themed gap honoured. Pins both the positioning algebra and the
-    /// spec's exact threshold (`>= 130 + gap`).
+    /// Anchor at (100, 100, 200, 130) with `Below` and a generous viewport
+    /// must place `rect.y0` at least `anchor.y1 + spacing.s2` — fully
+    /// below the anchor with the themed gap honoured.
     #[test]
     fn popover_anchored_below_positions_under_anchor() {
         let theme = Theme::dark();
@@ -647,10 +613,9 @@ mod tests {
         );
     }
 
-    /// Anchor near the bottom of the viewport with `Below` requested
-    /// must flip to `Above`. The flipped popover's `y1` (its lowest
-    /// edge after the flip) must sit above the anchor's `y0`, with the
-    /// themed gap between them.
+    /// Anchor near the bottom of the viewport with `Below` requested must
+    /// flip to `Above`; the flipped popover's `y1` must sit above the
+    /// anchor's `y0` with the themed gap between them.
     #[test]
     fn popover_flips_when_no_room_below() {
         let anchor = Rect::new(100.0, 580.0, 200.0, 595.0);
@@ -678,10 +643,8 @@ mod tests {
         );
     }
 
-    /// A `MouseInput { Pressed, Left }` whose cursor sits *outside*
-    /// the popover body must invoke the dismiss callback exactly once.
-    /// Uses a `Rc<RefCell<usize>>` to count callback invocations so
-    /// the assertion is observable from the test driver.
+    /// A `MouseInput { Pressed, Left }` whose cursor sits *outside* the
+    /// popover body must invoke the dismiss callback exactly once.
     #[test]
     fn popover_dismiss_on_outside_click() {
         use std::cell::RefCell;
@@ -707,7 +670,7 @@ mod tests {
         );
 
         let mut tree: TaffyTree<()> = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mods = winit::event::Modifiers::default();
@@ -720,14 +683,34 @@ mod tests {
             device_id: synth_device(),
             position: winit::dpi::PhysicalPosition::new(outside.x, outside.y),
         };
-        p.handle_event(&cursor_evt, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus_target, node, &tree);
+        p.handle_event(
+            &cursor_evt,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
 
         let press_evt = WindowEvent::MouseInput {
             device_id: synth_device(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        p.handle_event(&press_evt, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus_target, node, &tree);
+        p.handle_event(
+            &press_evt,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
 
         assert_eq!(
             *dismiss_count.borrow(),
@@ -738,9 +721,7 @@ mod tests {
     }
 
     /// `open == false` is the empty-paint contract: `draw` emits zero
-    /// `DrawTag::COLOR` entries. Pinning via `vello_encoding` is the
-    /// strongest possible check — any stray chrome (shadow, body,
-    /// border, arrow, content) shows up as at least one fill.
+    /// `DrawTag::COLOR` entries — any stray chrome would show up as a fill.
     #[test]
     fn popover_closed_paints_nothing() {
         use vello_encoding::DrawTag;

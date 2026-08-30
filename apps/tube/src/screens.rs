@@ -4,20 +4,19 @@
 //! no per-screen state: navigation rebuilds the whole tree from the model,
 //! so these functions are pure views.
 
+use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::widget::{ScrollAxis, Scrollable, TextInput};
+use ui::widget::{IconWidget, ScrollAxis, Scrollable, TextInput};
 use vello::peniko::Color;
 
 use crate::action::{Action, ActionBus, SettingFlag};
 use crate::images::Imgs;
-use crate::model::{
-    Category, Channel, Playlist, Route, SearchType, SkipMode, TubeModel, Video,
-};
+use crate::model::{Category, Channel, Playlist, Route, SearchType, SkipMode, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
-    card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
-    subtle_fill, subtle_surface, text, text_c, Align, ChannelAvatar, Flex, Icon, IconKind, ImageBox,
-    IntoElement, Justify, Len, PlayerHost, SharedPlayer, Surface, Switch, Thumbnail,
+    Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, Len, PlayerHost, SharedPlayer,
+    Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, gap, hover_fill,
+    hover_pill_surface, spring, subtle_fill, subtle_surface, text, text_c,
 };
 
 use crate::contrast::SelectedStyle;
@@ -77,7 +76,7 @@ pub fn selected_nav_item(theme: &Theme) -> SelectedStyle {
     SelectedStyle::on(theme.accent_hover)
 }
 
-/// "On" status pill (SponsorBlock / DeArrow indicators in the top bar). The
+/// "On" status pill (`SponsorBlock` / `DeArrow` indicators in the top bar). The
 /// old design put accent-blue text on a translucent accent wash (3.4:1). We
 /// keep the recognisable accent tint but strengthen it into an opaque fill and
 /// contrast the foreground against the result.
@@ -103,7 +102,13 @@ fn avatar(name: &str, size: f32) -> ChannelAvatar {
 /// A channel avatar that paints the real decoded avatar image when the store
 /// has it, else the deterministic initials chip. Looks the URL up on the
 /// channel record so any screen can render a real uploader photo.
-fn channel_avatar(imgs: Imgs, model: &TubeModel, channel_id: &str, name: &str, size: f32) -> ChannelAvatar {
+fn channel_avatar(
+    imgs: Imgs,
+    model: &TubeModel,
+    channel_id: &str,
+    name: &str,
+    size: f32,
+) -> ChannelAvatar {
     let url = model
         .channel(channel_id)
         .map(|c| c.avatar_url.clone())
@@ -113,8 +118,8 @@ fn channel_avatar(imgs: Imgs, model: &TubeModel, channel_id: &str, name: &str, s
     ChannelAvatar::new(imgs.store_handle(), &url, name, size)
 }
 
-fn icon(kind: IconKind, size: f32, color: Color) -> Icon {
-    Icon::new(kind, size, color)
+fn icon(kind: Icon, size: f32, color: Color) -> IconWidget {
+    IconWidget::new(kind, size).with_color(color)
 }
 
 /// A pill button: optional leading icon + label, filled (accent) or
@@ -123,7 +128,7 @@ fn pill(
     theme: &Theme,
     bus: &ActionBus,
     label: &str,
-    leading: Option<IconKind>,
+    leading: Option<Icon>,
     action: Action,
     filled: bool,
 ) -> Flex {
@@ -149,12 +154,12 @@ fn pill(
     row.push(text_c(label, 14.0, fg))
         .surface(Surface {
             fill: bg,
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border,
         })
         .hover_surface(Surface {
             fill: Some(hover_bg),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border,
         })
         .on_click(bus, action)
@@ -162,14 +167,14 @@ fn pill(
 
 /// A non-interactive stat pill (leading icon + label) — the outlined-pill look
 /// without a click handler. Used for the read-only dislike count.
-fn stat_pill(theme: &Theme, label: &str, leading: IconKind) -> Flex {
+fn stat_pill(theme: &Theme, label: &str, leading: Icon) -> Flex {
     Flex::row()
         .gap(8.0)
         .pad_xy(16.0, 9.0)
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: Some((1.0, theme.border_standard)),
         })
         .push(icon(leading, 16.0, theme.text_primary))
@@ -177,7 +182,7 @@ fn stat_pill(theme: &Theme, label: &str, leading: IconKind) -> Flex {
 }
 
 /// A small icon-only round button.
-fn icon_button(theme: &Theme, bus: &ActionBus, kind: IconKind, action: Action) -> Flex {
+fn icon_button(theme: &Theme, bus: &ActionBus, kind: Icon, action: Action) -> Flex {
     Flex::row()
         .fixed(40.0, 40.0)
         .justify(Justify::Center)
@@ -198,13 +203,17 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
         .fixed(40.0, 40.0)
         .justify(Justify::Center)
         .align(Align::Center)
-        .push(icon(IconKind::Menu, 20.0, theme.text_primary))
-        .surface(Surface { fill: None, radius: theme.tokens.radii.full as f64, border: None })
+        .push(icon(Icon::Menu, 20.0, theme.text_primary))
+        .surface(Surface {
+            fill: None,
+            radius: f64::from(theme.tokens.radii.full),
+            border: None,
+        })
         .hover_surface(hover_pill_surface(theme))
         .on_click(bus, Action::ToggleSidebar)
 }
 
-fn section_header(theme: &Theme, kind: IconKind, title: &str, subtitle: &str) -> Flex {
+fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Flex {
     Flex::row()
         .fill_w()
         .gap(10.0)
@@ -240,8 +249,8 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
             .align(Align::Center)
             .push(dim(theme, &v.channel_name, 12.5))
             .push_if(
-                model.channel(&v.channel_id).map(|c| c.verified).unwrap_or(false),
-                icon(IconKind::Check, 12.0, theme.text_dim),
+                model.channel(&v.channel_id).is_some_and(|c| c.verified),
+                icon(Icon::Check, 12.0, theme.text_dim),
             ),
     );
     meta = meta.push(dim(
@@ -260,8 +269,16 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
                     radius: 4.0,
                     border: None,
                 })
-                .push(icon(IconKind::Sparkle, 11.0, Color::from_rgb8(0xc8, 0x8e, 0xe0)))
-                .push(text_c("DeArrow title", 11.0, Color::from_rgb8(0xc8, 0x8e, 0xe0))),
+                .push(icon(
+                    Icon::Sparkles,
+                    11.0,
+                    Color::from_rgb8(0xc8, 0x8e, 0xe0),
+                ))
+                .push(text_c(
+                    "DeArrow title",
+                    11.0,
+                    Color::from_rgb8(0xc8, 0x8e, 0xe0),
+                )),
         );
     }
 
@@ -274,7 +291,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         .pad(6.0)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.lg as f64,
+            radius: f64::from(theme.tokens.radii.lg),
             border: None,
         })
         .on_click(bus, Action::OpenVideo(v.id.clone()))
@@ -284,7 +301,13 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
                 .gap(10.0)
                 .fill_w()
                 .align(Align::Start)
-                .push(channel_avatar(imgs, model, &v.channel_id, &v.channel_name, 36.0))
+                .push(channel_avatar(
+                    imgs,
+                    model,
+                    &v.channel_id,
+                    &v.channel_name,
+                    36.0,
+                ))
                 .push(meta),
         )
 }
@@ -299,7 +322,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
         .align(Align::Start)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: None,
         })
         .on_click(bus, Action::OpenVideo(v.id.clone()))
@@ -321,7 +344,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
                 // view count / date never shows a dangling "0 • " or a trailing "•".
                 .push_if(
                     !views_date_line(v.views, &v.published).is_empty(),
-                    dim(theme, &views_date_line(v.views, &v.published), 11.5),
+                    dim(theme, views_date_line(v.views, &v.published), 11.5),
                 ),
         )
 }
@@ -355,7 +378,12 @@ fn grid_with_id(cards: Vec<Flex>, id: &str) -> Flex {
     // cards scale with the window width up to their natural max and only then
     // wrap to add a column — the row is always filled edge to edge (no right
     // gutter). `align(Start)` top-aligns cards of differing heights per row.
-    let mut row = Flex::row().id(id).fill_w().grid(CARD_W).gap(18.0).align(Align::Start);
+    let mut row = Flex::row()
+        .id(id)
+        .fill_w()
+        .grid(CARD_W)
+        .gap(18.0)
+        .align(Align::Start);
     for c in cards {
         row = row.push(c);
     }
@@ -383,7 +411,12 @@ fn skeleton_card(theme: &Theme) -> Flex {
         .fill_w()
         .gap(9.0)
         .pad(6.0)
-        .push(skeleton_block(theme, Len::Fill, THUMB_H, theme.tokens.radii.lg as f64))
+        .push(skeleton_block(
+            theme,
+            Len::Fill,
+            THUMB_H,
+            f64::from(theme.tokens.radii.lg),
+        ))
         .push(
             Flex::row()
                 .gap(10.0)
@@ -409,7 +442,14 @@ fn skeleton_grid(theme: &Theme, n: usize) -> Flex {
 // chrome: nav rail + top bar
 // ---------------------------------------------------------------------------
 
-fn nav_item(theme: &Theme, bus: &ActionBus, kind: IconKind, label: &str, route: Route, active: bool) -> Flex {
+fn nav_item(
+    theme: &Theme,
+    bus: &ActionBus,
+    kind: Icon,
+    label: &str,
+    route: Route,
+    active: bool,
+) -> Flex {
     // Active item: a solid accent fill with a foreground chosen to contrast it
     // (so the selected destination reads clearly), instead of accent-coloured
     // glyphs floating on a near-white slate-200 chip (3.6:1, unreadable).
@@ -419,14 +459,18 @@ fn nav_item(theme: &Theme, bus: &ActionBus, kind: IconKind, label: &str, route: 
             sel.fg,
             Surface {
                 fill: Some(sel.bg),
-                radius: theme.tokens.radii.lg as f64,
+                radius: f64::from(theme.tokens.radii.lg),
                 border: None,
             },
         )
     } else {
         (
             theme.text_dim,
-            Surface { fill: None, radius: theme.tokens.radii.lg as f64, border: None },
+            Surface {
+                fill: None,
+                radius: f64::from(theme.tokens.radii.lg),
+                border: None,
+            },
         )
     };
     // Inactive items get a subtle neutral hover veneer; the active item already
@@ -437,7 +481,7 @@ fn nav_item(theme: &Theme, bus: &ActionBus, kind: IconKind, label: &str, route: 
     } else {
         Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.lg as f64,
+            radius: f64::from(theme.tokens.radii.lg),
             border: None,
         }
     };
@@ -478,18 +522,53 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
                 .justify(Justify::Center)
                 .surface(Surface {
                     fill: Some(theme.accent_primary),
-                    radius: theme.tokens.radii.lg as f64,
+                    radius: f64::from(theme.tokens.radii.lg),
                     border: None,
                 })
-                .push(icon(IconKind::Play, 22.0, Color::WHITE)),
+                .push(icon(Icon::Play, 22.0, Color::WHITE)),
         )
         .push(gap(1.0, 6.0))
-        .push(nav_item(theme, bus, IconKind::Home, "Home", Route::Home, sec == "home"))
-        .push(nav_item(theme, bus, IconKind::Fire, "Trending", Route::Trending, sec == "trending"))
-        .push(nav_item(theme, bus, IconKind::Subscriptions, "Subs", Route::Subscriptions, sec == "subs"))
-        .push(nav_item(theme, bus, IconKind::History, "History", Route::History, sec == "history"))
+        .push(nav_item(
+            theme,
+            bus,
+            Icon::Home,
+            "Home",
+            Route::Home,
+            sec == "home",
+        ))
+        .push(nav_item(
+            theme,
+            bus,
+            Icon::Flame,
+            "Trending",
+            Route::Trending,
+            sec == "trending",
+        ))
+        .push(nav_item(
+            theme,
+            bus,
+            Icon::GalleryVerticalEnd,
+            "Subs",
+            Route::Subscriptions,
+            sec == "subs",
+        ))
+        .push(nav_item(
+            theme,
+            bus,
+            Icon::History,
+            "History",
+            Route::History,
+            sec == "history",
+        ))
         .push(spring())
-        .push(nav_item(theme, bus, IconKind::Settings, "Settings", Route::Settings, sec == "settings"))
+        .push(nav_item(
+            theme,
+            bus,
+            Icon::Settings,
+            "Settings",
+            Route::Settings,
+            sec == "settings",
+        ))
 }
 
 /// The navigation Back affordance in the top bar. Shown only when there is
@@ -501,8 +580,12 @@ fn back_button(theme: &Theme, bus: &ActionBus) -> Flex {
         .fixed(40.0, 40.0)
         .justify(Justify::Center)
         .align(Align::Center)
-        .push(icon(IconKind::Back, 20.0, theme.text_primary))
-        .surface(Surface { fill: None, radius: theme.tokens.radii.full as f64, border: None })
+        .push(icon(Icon::ArrowLeft, 20.0, theme.text_primary))
+        .surface(Surface {
+            fill: None,
+            radius: f64::from(theme.tokens.radii.full),
+            border: None,
+        })
         .hover_surface(hover_pill_surface(theme))
         .on_click(bus, Action::Back)
 }
@@ -533,10 +616,10 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus, can_back: bool
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: Some((1.0, theme.border_standard)),
         })
-        .push(icon(IconKind::Search, 18.0, theme.text_dim))
+        .push(icon(Icon::Search, 18.0, theme.text_dim))
         .push(Flex::row().grow(1.0).push(search_input));
 
     // Only surface the data-source indicator when we're NOT on live data
@@ -572,13 +655,21 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus, can_back: bool
 /// Live-vs-sample provenance pill. A green dot + "Live" once the rustypipe
 /// backend has actually returned real data; a dim "Sample" (or "Connecting…")
 /// otherwise, so the user always knows whether the catalogue on screen is real
-/// YouTube data or the bundled offline sample.
+/// `YouTube` data or the bundled offline sample.
 fn data_source_pill(theme: &Theme, model: &TubeModel) -> Flex {
     let live = model.data_source.live;
     let (dot, fg, label) = if live {
-        (theme.tokens.colors.semantic.success, theme.text_primary, "Live")
+        (
+            theme.tokens.colors.semantic.success,
+            theme.text_primary,
+            "Live",
+        )
     } else if model.data_source.label.contains("connect") {
-        (theme.tokens.colors.semantic.warning, theme.text_dim, "Connecting…")
+        (
+            theme.tokens.colors.semantic.warning,
+            theme.text_dim,
+            "Connecting…",
+        )
     } else {
         (theme.text_dim, theme.text_dim, "Offline")
     };
@@ -588,7 +679,7 @@ fn data_source_pill(theme: &Theme, model: &TubeModel) -> Flex {
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: None,
         })
         .push(Flex::row().fixed(8.0, 8.0).surface(Surface {
@@ -612,20 +703,28 @@ fn chip(theme: &Theme, bus: &ActionBus, label: &str, action: Action, active: boo
     let (fg, resting, hover_bg) = if active {
         // Active: accent fill + seam-chosen foreground. Hover goes one ramp
         // step darker (indigo-700) so the active chip still gives feedback.
-        (sel.fg, Surface {
-            fill: Some(sel.bg),
-            radius: theme.tokens.radii.full as f64,
-            border: None,
-        }, theme.tokens.colors.accent.stops[3])
+        (
+            sel.fg,
+            Surface {
+                fill: Some(sel.bg),
+                radius: f64::from(theme.tokens.radii.full),
+                border: None,
+            },
+            theme.tokens.colors.accent.stops[3],
+        )
     } else {
-        (theme.text_primary, chip_surface(theme, false), hover_fill(theme))
+        (
+            theme.text_primary,
+            chip_surface(theme, false),
+            hover_fill(theme),
+        )
     };
     Flex::row()
         .pad_xy(14.0, 7.0)
         .surface(resting)
         .hover_surface(Surface {
             fill: Some(hover_bg),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border: None,
         })
         .on_click(bus, action)
@@ -654,28 +753,42 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
             )
         }
     } else {
-        grid(model.videos.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect())
+        grid(
+            model
+                .videos
+                .iter()
+                .map(|v| video_card(model, theme, bus, imgs, v))
+                .collect(),
+        )
     };
     scroll(
         Flex::col()
             .fill_w()
             .pad(24.0)
             .gap(18.0)
-            .push(section_header(theme, IconKind::Fire, "Trending", ""))
+            .push(section_header(theme, Icon::Flame, "Trending", ""))
             .push(body),
     )
 }
 
 pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
     let mut vids: Vec<&Video> = model.videos.iter().collect();
-    vids.sort_by(|a, b| b.views.cmp(&a.views));
-    let cards: Vec<Flex> = vids.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
+    vids.sort_by_key(|v| std::cmp::Reverse(v.views));
+    let cards: Vec<Flex> = vids
+        .iter()
+        .map(|v| video_card(model, theme, bus, imgs, v))
+        .collect();
     scroll(
         Flex::col()
             .fill_w()
             .pad(24.0)
             .gap(18.0)
-            .push(section_header(theme, IconKind::Fire, "Trending", "Most-watched right now"))
+            .push(section_header(
+                theme,
+                Icon::Flame,
+                "Trending",
+                "Most-watched right now",
+            ))
             .push(grid(cards)),
     )
 }
@@ -692,7 +805,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
                     .pad(6.0)
                     .hover_surface(Surface {
                         fill: Some(hover_fill(theme)),
-                        radius: theme.tokens.radii.lg as f64,
+                        radius: f64::from(theme.tokens.radii.lg),
                         border: None,
                     })
                     .on_click(bus, Action::OpenChannel(ch.id.clone()))
@@ -703,9 +816,16 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
     }
 
     let feed = model.subscription_feed();
-    let cards: Vec<Flex> = feed.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
+    let cards: Vec<Flex> = feed
+        .iter()
+        .map(|v| video_card(model, theme, bus, imgs, v))
+        .collect();
     let body = if cards.is_empty() {
-        empty_state(theme, "No subscriptions yet", "Subscribe to channels and their latest uploads land here.")
+        empty_state(
+            theme,
+            "No subscriptions yet",
+            "Subscribe to channels and their latest uploads land here.",
+        )
     } else {
         grid(cards)
     };
@@ -715,7 +835,12 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
             .fill_w()
             .pad(24.0)
             .gap(18.0)
-            .push(section_header(theme, IconKind::Subscriptions, "Subscriptions", &format!("{} channels", model.subscriptions.len())))
+            .push(section_header(
+                theme,
+                Icon::GalleryVerticalEnd,
+                "Subscriptions",
+                &format!("{} channels", model.subscriptions.len()),
+            ))
             .push(rail)
             .push(divider(theme))
             .push(text("Latest from your subscriptions", 16.0))
@@ -727,7 +852,11 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
     let vids = model.history_videos();
     let mut col = Flex::col().fill_w().gap(8.0);
     if vids.is_empty() {
-        col = col.push(empty_state(theme, "Nothing watched yet", "Videos you watch show up here."));
+        col = col.push(empty_state(
+            theme,
+            "Nothing watched yet",
+            "Videos you watch show up here.",
+        ));
     }
     for v in vids {
         col = col.push(compact_card(model, theme, bus, imgs, v));
@@ -738,7 +867,12 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
             .pad(24.0)
             .gap(18.0)
             .max_w(820.0)
-            .push(section_header(theme, IconKind::History, "Watch history", "Stored locally — never uploaded"))
+            .push(section_header(
+                theme,
+                Icon::History,
+                "Watch history",
+                "Stored locally — never uploaded",
+            ))
             .push(col),
     )
 }
@@ -782,8 +916,12 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
                     radius: 6.0,
                     border: None,
                 })
-                .push(icon(IconKind::Playlist, 12.0, Color::WHITE))
-                .push(text_c(&format!("{} videos", human_count(p.video_count)), 11.0, Color::WHITE)),
+                .push(icon(Icon::ListVideo, 12.0, Color::WHITE))
+                .push(text_c(
+                    format!("{} videos", human_count(p.video_count)),
+                    11.0,
+                    Color::WHITE,
+                )),
         );
     let stack = Flex::col()
         .fill_w()
@@ -799,8 +937,12 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
         .grow(1.0)
         .gap(3.0)
         .push(text(&p.title, 14.5))
-        .push(dim(theme, &format!("{} • Playlist", p.channel_name), 12.5))
-        .push(dim(theme, &format!("{} videos", human_count(p.video_count)), 12.5));
+        .push(dim(theme, format!("{} • Playlist", p.channel_name), 12.5))
+        .push(dim(
+            theme,
+            format!("{} videos", human_count(p.video_count)),
+            12.5,
+        ));
 
     Flex::col()
         .fill_w()
@@ -809,7 +951,7 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
         .id(&format!("playlist_card_{}", p.id))
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.lg as f64,
+            radius: f64::from(theme.tokens.radii.lg),
             border: None,
         })
         .on_click(bus, Action::OpenPlaylist(p.id.clone()))
@@ -819,14 +961,20 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
                 .gap(10.0)
                 .fill_w()
                 .align(Align::Start)
-                .push(icon(IconKind::Playlist, 22.0, theme.accent_primary))
+                .push(icon(Icon::ListVideo, 22.0, theme.accent_primary))
                 .push(meta),
         )
 }
 
 /// A creator search-result row: the real avatar, name (+ verified), handle and
 /// subscriber count, and a View affordance. Opens the channel page.
-fn creator_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, c: &Channel) -> Flex {
+fn creator_card(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    imgs: Imgs,
+    c: &Channel,
+) -> Flex {
     // Handle + subscriber count, each dropped when unknown (no "0 subscribers").
     let show_handle = !c.handle.is_empty() && c.handle != c.id;
     let handle_subs = match (show_handle, subs_label(c.subscribers)) {
@@ -843,7 +991,7 @@ fn creator_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, c
         .id(&format!("creator_card_{}", c.id))
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: None,
         })
         .on_click(bus, Action::OpenChannel(c.id.clone()))
@@ -857,14 +1005,27 @@ fn creator_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, c
                         .gap(6.0)
                         .align(Align::Center)
                         .push(text(&c.name, 16.0))
-                        .push_if(c.verified, icon(IconKind::Check, 14.0, theme.text_dim)),
+                        .push_if(c.verified, icon(Icon::Check, 14.0, theme.text_dim)),
                 )
                 .push_if(!handle_subs.is_empty(), dim(theme, &handle_subs, 12.5)),
         )
-        .push(pill(theme, bus, "View", None, Action::OpenChannel(c.id.clone()), false))
+        .push(pill(
+            theme,
+            bus,
+            "View",
+            None,
+            Action::OpenChannel(c.id.clone()),
+            false,
+        ))
 }
 
-pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, query: &str) -> Scrollable {
+pub fn search(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    imgs: Imgs,
+    query: &str,
+) -> Scrollable {
     let filter = &model.search_type_filter;
     // Each type's rows, gated by the multi-select filter.
     let videos: Vec<&Video> = if filter.shows(SearchType::Video) {
@@ -885,12 +1046,20 @@ pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, que
 
     let body = if model.search_loading {
         // While a fetch is in flight, show a skeleton — NEVER a premature "No
-        // results" (the bug that shipped).
+        // results".
         skeleton_grid(theme, 8)
     } else if query.trim().is_empty() {
-        empty_state(theme, "Search Tube", "Type a query above to find videos, playlists and creators.")
+        empty_state(
+            theme,
+            "Search Tube",
+            "Type a query above to find videos, playlists and creators.",
+        )
     } else if videos.is_empty() && playlists.is_empty() && creators.is_empty() {
-        empty_state(theme, "No results", "Nothing matched that search — try different words or filters.")
+        empty_state(
+            theme,
+            "No results",
+            "Nothing matched that search — try different words or filters.",
+        )
     } else {
         // Creators (compact rows) → playlists → videos, each section only when
         // it has rows and its filter chip is selected.
@@ -903,13 +1072,17 @@ pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, que
             col = col.push(rows);
         }
         if !playlists.is_empty() {
-            let cards: Vec<Flex> =
-                playlists.iter().map(|p| playlist_card(theme, bus, imgs, p)).collect();
+            let cards: Vec<Flex> = playlists
+                .iter()
+                .map(|p| playlist_card(theme, bus, imgs, p))
+                .collect();
             col = col.push(grid_with_id(cards, "playlist_grid"));
         }
         if !videos.is_empty() {
-            let cards: Vec<Flex> =
-                videos.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
+            let cards: Vec<Flex> = videos
+                .iter()
+                .map(|v| video_card(model, theme, bus, imgs, v))
+                .collect();
             col = col.push(grid(cards));
         }
         col
@@ -927,11 +1100,25 @@ pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, que
 
 /// A playlist page: its cover, title, creator and video count, a "Play all"
 /// affordance, and the ordered video list.
-pub fn playlist(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id: &str) -> Scrollable {
+pub fn playlist(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    imgs: Imgs,
+    id: &str,
+) -> Scrollable {
     let Some(pl) = model.playlist(id) else {
-        return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Playlist unavailable", "")));
+        return scroll(
+            Flex::col()
+                .pad(24.0)
+                .push(empty_state(theme, "Playlist unavailable", "")),
+        );
     };
-    let videos: Vec<&Video> = pl.video_ids.iter().filter_map(|vid| model.video(vid)).collect();
+    let videos: Vec<&Video> = pl
+        .video_ids
+        .iter()
+        .filter_map(|vid| model.video(vid))
+        .collect();
     let first_id = videos.first().map(|v| v.id.clone());
 
     let mut info = Flex::col()
@@ -941,13 +1128,24 @@ pub fn playlist(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, i
         .push(text(&pl.title, 26.0))
         .push(dim(
             theme,
-            &format!("{}  •  {} videos", pl.channel_name, human_count(pl.video_count)),
+            format!(
+                "{}  •  {} videos",
+                pl.channel_name,
+                human_count(pl.video_count)
+            ),
             13.5,
         ));
     if let Some(fid) = first_id {
         info = info.push(
-            pill(theme, bus, "Play all", Some(IconKind::Play), Action::OpenVideo(fid), true)
-                .id("playlist_play"),
+            pill(
+                theme,
+                bus,
+                "Play all",
+                Some(Icon::Play),
+                Action::OpenVideo(fid),
+                true,
+            )
+            .id("playlist_play"),
         );
     }
 
@@ -966,7 +1164,11 @@ pub fn playlist(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, i
 
     let mut list = Flex::col().fill_w().gap(8.0);
     if videos.is_empty() {
-        list = list.push(empty_state(theme, "Loading playlist…", "Fetching the playlist's videos."));
+        list = list.push(empty_state(
+            theme,
+            "Loading playlist…",
+            "Fetching the playlist's videos.",
+        ));
     }
     for v in &videos {
         list = list.push(compact_card(model, theme, bus, imgs, v));
@@ -985,14 +1187,24 @@ pub fn playlist(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, i
     )
 }
 
-pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id: &str) -> Scrollable {
+pub fn channel(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    imgs: Imgs,
+    id: &str,
+) -> Scrollable {
     let Some(ch) = model.channel(id) else {
-        return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Channel not found", "")));
+        return scroll(
+            Flex::col()
+                .pad(24.0)
+                .push(empty_state(theme, "Channel not found", "")),
+        );
     };
     let subscribed = model.is_subscribed(id);
 
     // Real banner image when the store has it, else the seed gradient.
-    let banner = ImageBox::new(&ch.seed, 160.0, theme.tokens.radii.lg as f64, None)
+    let banner = ImageBox::new(&ch.seed, 160.0, f64::from(theme.tokens.radii.lg), None)
         .source(imgs.store_handle(), &ch.banner_url);
 
     let header = Flex::row()
@@ -1009,7 +1221,7 @@ pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id
                         .gap(8.0)
                         .align(Align::Center)
                         .push(text(&ch.name, 26.0))
-                        .push_if(ch.verified, icon(IconKind::Check, 18.0, theme.text_dim)),
+                        .push_if(ch.verified, icon(Icon::Check, 18.0, theme.text_dim)),
                 )
                 .push(dim(
                     theme,
@@ -1022,9 +1234,23 @@ pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id
                 .push(dim(theme, &ch.description, 13.0)),
         )
         .push(if subscribed {
-            pill(theme, bus, "Subscribed", Some(IconKind::Bell), Action::ToggleSubscribe(ch.id.clone()), false)
+            pill(
+                theme,
+                bus,
+                "Subscribed",
+                Some(Icon::Bell),
+                Action::ToggleSubscribe(ch.id.clone()),
+                false,
+            )
         } else {
-            pill(theme, bus, "Subscribe", None, Action::ToggleSubscribe(ch.id.clone()), true)
+            pill(
+                theme,
+                bus,
+                "Subscribe",
+                None,
+                Action::ToggleSubscribe(ch.id.clone()),
+                true,
+            )
         });
 
     let cards: Vec<Flex> = model
@@ -1053,7 +1279,7 @@ fn empty_state(theme: &Theme, title: &str, body: &str) -> Flex {
         .pad(48.0)
         .align(Align::Center)
         .justify(Justify::Center)
-        .push(icon(IconKind::Eye, 40.0, theme.text_dim))
+        .push(icon(Icon::Eye, 40.0, theme.text_dim))
         .push(text(title, 18.0))
         .push(dim(theme, body, 13.0))
 }
@@ -1068,12 +1294,16 @@ pub fn watch(
     bus: &ActionBus,
     imgs: Imgs,
     id: &str,
-    content_w: f64,
-    content_h: f64,
+    content_size: (f64, f64),
     player: SharedPlayer,
 ) -> Scrollable {
+    let (content_w, content_h) = content_size;
     let Some(v) = model.video(id) else {
-        return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Video unavailable", "")));
+        return scroll(
+            Flex::col()
+                .pad(24.0)
+                .push(empty_state(theme, "Video unavailable", "")),
+        );
     };
     let dearrow = model.settings.dearrow_titles_on();
 
@@ -1105,7 +1335,11 @@ pub fn watch(
             .filter(|s| model.settings.category_enabled(s.category))
             .map(|s| {
                 let (r, g, b) = s.category.rgb();
-                (s.start as f32 / dur, s.end as f32 / dur, Color::from_rgb8(r, g, b))
+                (
+                    s.start as f32 / dur,
+                    s.end as f32 / dur,
+                    Color::from_rgb8(r, g, b),
+                )
             })
             .collect()
     } else {
@@ -1121,27 +1355,33 @@ pub fn watch(
     // separate row below the video. Picking a value round-trips back to the
     // model via `take_setting_events` (drained in `TubeApp::sync`).
     {
-        let qualities: Vec<String> = crate::app::QUALITIES.iter().map(|q| q.to_string()).collect();
+        let qualities: Vec<String> = crate::app::QUALITIES
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         let sel = crate::app::QUALITIES
             .iter()
             .position(|q| *q == model.settings.preferred_quality)
             .unwrap_or(0);
-        player.borrow_mut().set_setting(ui::widget::video_player::PlayerSetting::choice(
-            "resolution",
-            ui::icons::Icon::Monitor,
-            "Resolution",
-            1,
-            qualities,
-            sel,
-        ));
+        player
+            .borrow_mut()
+            .set_setting(ui::widget::video_player::PlayerSetting::choice(
+                "resolution",
+                ui::icons::Icon::Monitor,
+                "Resolution",
+                1,
+                qualities,
+                sel,
+            ));
     }
 
     // A show-mode segment the playhead is currently inside gets a small,
     // unintrusive "Skip" button floated over the video (bottom-right, above the
     // controls bar). It dismisses itself when the playhead leaves the segment.
-    let manual = v.sponsor.iter().find(|s| {
-        model.settings.should_show_skip(s.category) && s.contains(model.playhead)
-    });
+    let manual = v
+        .sponsor
+        .iter()
+        .find(|s| model.settings.should_show_skip(s.category) && s.contains(model.playhead));
 
     // The player surface is the app's persistent, shared `ui::widget::VideoPlayer`
     // (real GStreamer decode + audio under `--features media`, a synthesized frame
@@ -1171,17 +1411,21 @@ pub fn watch(
                         .align(Align::Center)
                         .surface(Surface {
                             fill: Some(Color::from_rgba8(0, 0, 0, 200)),
-                            radius: theme.tokens.radii.full as f64,
+                            radius: f64::from(theme.tokens.radii.full),
                             border: Some((1.0, Color::from_rgba8(255, 255, 255, 40))),
                         })
                         .hover_surface(Surface {
                             fill: Some(theme.accent_primary),
-                            radius: theme.tokens.radii.full as f64,
+                            radius: f64::from(theme.tokens.radii.full),
                             border: None,
                         })
                         .on_click(bus, Action::SkipSegment(s.end))
-                        .push(text_c(&format!("Skip {}", s.category.label()), 13.0, Color::WHITE))
-                        .push(icon(IconKind::Skip, 14.0, Color::WHITE)),
+                        .push(text_c(
+                            format!("Skip {}", s.category.label()),
+                            13.0,
+                            Color::WHITE,
+                        ))
+                        .push(icon(Icon::SkipForward, 14.0, Color::WHITE)),
                 ),
         );
     }
@@ -1195,7 +1439,11 @@ pub fn watch(
     let stage_row = Flex::row().fill_w().justify(Justify::Center).push(stage);
     let player_view = {
         let col = Flex::col().fill_w().push(stage_row);
-        if has_sb_timeline { col.id("sb_timeline") } else { col }
+        if has_sb_timeline {
+            col.id("sb_timeline")
+        } else {
+            col
+        }
     };
 
     // A compact row under the player: just a gear that opens the app's Settings
@@ -1207,8 +1455,13 @@ pub fn watch(
         .align(Align::Center)
         .push(spring())
         .push(
-            icon_button(theme, bus, IconKind::Settings, Action::Navigate(Route::Settings))
-                .id("watch_settings"),
+            icon_button(
+                theme,
+                bus,
+                Icon::Settings,
+                Action::Navigate(Route::Settings),
+            )
+            .id("watch_settings"),
         );
 
     let title = text(v.display_title(dearrow), 22.0);
@@ -1217,14 +1470,18 @@ pub fn watch(
         .fill_w()
         .gap(12.0)
         .align(Align::Center)
-        .push(dim(theme, &format!("{} • {}", human_views(v.views), v.published), 13.0))
+        .push(dim(
+            theme,
+            format!("{} • {}", human_views(v.views), v.published),
+            13.0,
+        ))
         .push(spring())
         .push(
             pill(
                 theme,
                 bus,
                 &human_count(model.display_likes(v)),
-                Some(IconKind::Like),
+                Some(Icon::ThumbsUp),
                 Action::ToggleLike(v.id.clone()),
                 liked,
             )
@@ -1236,13 +1493,19 @@ pub fn watch(
     if model.settings.return_dislike_enabled {
         let label = model
             .dislikes_of(&v.id)
-            .map(human_count)
-            .unwrap_or_else(|| "—".to_string());
-        meta = meta.push(stat_pill(theme, &label, IconKind::Dislike).id("dislike_pill"));
+            .map_or_else(|| "—".to_string(), human_count);
+        meta = meta.push(stat_pill(theme, &label, Icon::ThumbsDown).id("dislike_pill"));
     }
     let meta = meta.push(
-        pill(theme, bus, "Share", Some(IconKind::Chevron), Action::Share(v.id.clone()), false)
-            .id("share_btn"),
+        pill(
+            theme,
+            bus,
+            "Share",
+            Some(Icon::ChevronRight),
+            Action::Share(v.id.clone()),
+            false,
+        )
+        .id("share_btn"),
     );
 
     let ch_sub = model.is_subscribed(&v.channel_id);
@@ -1250,7 +1513,13 @@ pub fn watch(
         .fill_w()
         .gap(12.0)
         .align(Align::Center)
-        .push(channel_avatar(imgs, model, &v.channel_id, &v.channel_name, 48.0))
+        .push(channel_avatar(
+            imgs,
+            model,
+            &v.channel_id,
+            &v.channel_name,
+            48.0,
+        ))
         .push(
             Flex::col()
                 .grow(1.0)
@@ -1258,10 +1527,13 @@ pub fn watch(
                 .on_click(bus, Action::OpenChannel(v.channel_id.clone()))
                 .push(text(&v.channel_name, 15.0))
                 .push_if(
-                    model.channel(&v.channel_id).and_then(|c| subs_label(c.subscribers)).is_some(),
+                    model
+                        .channel(&v.channel_id)
+                        .and_then(|c| subs_label(c.subscribers))
+                        .is_some(),
                     dim(
                         theme,
-                        &model
+                        model
                             .channel(&v.channel_id)
                             .and_then(|c| subs_label(c.subscribers))
                             .unwrap_or_default(),
@@ -1271,9 +1543,23 @@ pub fn watch(
         )
         .push(
             if ch_sub {
-                pill(theme, bus, "Subscribed", Some(IconKind::Bell), Action::ToggleSubscribe(v.channel_id.clone()), false)
+                pill(
+                    theme,
+                    bus,
+                    "Subscribed",
+                    Some(Icon::Bell),
+                    Action::ToggleSubscribe(v.channel_id.clone()),
+                    false,
+                )
             } else {
-                pill(theme, bus, "Subscribe", None, Action::ToggleSubscribe(v.channel_id.clone()), true)
+                pill(
+                    theme,
+                    bus,
+                    "Subscribe",
+                    None,
+                    Action::ToggleSubscribe(v.channel_id.clone()),
+                    true,
+                )
             }
             .id("subscribe_btn"),
         );
@@ -1286,12 +1572,10 @@ pub fn watch(
         .push(dim(theme, &v.description, 13.5));
 
     let mut comments = Flex::col().fill_w().gap(14.0);
-    comments = comments.push(
-        Flex::row()
-            .gap(10.0)
-            .align(Align::Center)
-            .push(text(&format!("{} Comments", human_count(v.comments.len() as u64)), 17.0)),
-    );
+    comments = comments.push(Flex::row().gap(10.0).align(Align::Center).push(text(
+        format!("{} Comments", human_count(v.comments.len() as u64)),
+        17.0,
+    )));
     if model.settings.show_comments {
         for c in &v.comments {
             comments = comments.push(comment_row(theme, c));
@@ -1364,12 +1648,19 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: Some((1.0, theme.border_standard)),
         })
-        .on_click(bus, Action::SetQuality(model.settings.preferred_quality.clone()))
-        .push(text_c(&model.settings.preferred_quality, 12.5, theme.text_primary))
-        .push(icon(IconKind::Chevron, 12.0, theme.text_dim))
+        .on_click(
+            bus,
+            Action::SetQuality(model.settings.preferred_quality.clone()),
+        )
+        .push(text_c(
+            &model.settings.preferred_quality,
+            12.5,
+            theme.text_primary,
+        ))
+        .push(icon(Icon::ChevronRight, 12.0, theme.text_dim))
 }
 
 fn autoplay_toggle(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
@@ -1377,7 +1668,14 @@ fn autoplay_toggle(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .gap(8.0)
         .align(Align::Center)
         .push(dim(theme, "Autoplay", 12.5))
-        .push(Switch::new(model.settings.autoplay, bus, Action::ToggleSetting(SettingFlag::Autoplay)))
+        .push(
+            Switch::new(
+                model.settings.autoplay,
+                bus,
+                Action::ToggleSetting(SettingFlag::Autoplay),
+            )
+            .accessible_name("Autoplay"),
+        )
 }
 
 /// The toast stack of transient notices (auto-skip confirmations, "link
@@ -1394,7 +1692,7 @@ fn notices_view(theme: &Theme, model: &TubeModel) -> Flex {
                 .pad_xy(12.0, 8.0)
                 .align(Align::Center)
                 .surface(subtle_surface(theme))
-                .push(icon(IconKind::Skip, 14.0, theme.accent_primary))
+                .push(icon(Icon::SkipForward, 14.0, theme.accent_primary))
                 .push(text_c(n, 12.5, theme.text_primary)),
         );
     }
@@ -1419,16 +1717,23 @@ fn comment_row(theme: &Theme, c: &crate::model::Comment) -> Flex {
         .push(text_c(&c.author, 13.0, theme.text_primary))
         .push(dim(theme, &c.time_ago, 11.5));
     if c.hearted {
-        head = head.push(icon(IconKind::Like, 12.0, theme.tokens.colors.semantic.danger));
+        head = head.push(icon(
+            Icon::ThumbsUp,
+            12.0,
+            theme.tokens.colors.semantic.danger,
+        ));
     }
 
     let actions = Flex::row()
         .gap(6.0)
         .align(Align::Center)
-        .push(icon(IconKind::Like, 13.0, theme.text_dim))
-        .push(dim(theme, &human_count(c.likes), 11.5))
+        .push(icon(Icon::ThumbsUp, 13.0, theme.text_dim))
+        .push(dim(theme, human_count(c.likes), 11.5))
         .push(gap(8.0, 1.0))
-        .push_if(c.replies > 0, dim(theme, &format!("{} replies", c.replies), 11.5));
+        .push_if(
+            c.replies > 0,
+            dim(theme, format!("{} replies", c.replies), 11.5),
+        );
 
     Flex::row()
         .fill_w()
@@ -1455,7 +1760,7 @@ fn setting_row(theme: &Theme, title: &str, desc: &str, control: impl IntoElement
 
 /// A settings row whose label + description dim when `active` is false — used to
 /// show that a sub-setting is currently gated by a master switch (e.g. the
-/// DeArrow title/thumbnail toggles while DeArrow itself is off), so its state
+/// `DeArrow` title/thumbnail toggles while `DeArrow` itself is off), so its state
 /// stays reviewable without looking live.
 fn setting_row_gated(
     theme: &Theme,
@@ -1508,7 +1813,7 @@ fn vspace(px: f32) -> Flex {
     Flex::row().fill_w().h(Len::Px(px))
 }
 
-/// A clickable three-state mode selector for a SponsorBlock category. Cycles
+/// A clickable three-state mode selector for a `SponsorBlock` category. Cycles
 /// Auto-skip → Show → Off on click. The label + fill reflect the *stored*
 /// per-category mode (independent of the master switch) so the user always sees
 /// their choice.
@@ -1531,12 +1836,12 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
         .align(Align::Center)
         .surface(Surface {
             fill,
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border,
         })
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.full as f64,
+            radius: f64::from(theme.tokens.radii.full),
             border,
         })
         .on_click(bus, Action::ToggleCategory(cat))
@@ -1550,22 +1855,64 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         theme,
         "Playback",
         vec![
-            setting_row(theme, "Autoplay next video", "Play the up-next video when this one ends.",
-                Switch::new(s.autoplay, bus, Action::ToggleSetting(SettingFlag::Autoplay)).id("switch_autoplay")),
-            setting_row(theme, "Show comments", "Load the comment section on the watch page.",
-                Switch::new(s.show_comments, bus, Action::ToggleSetting(SettingFlag::ShowComments)).id("switch_comments")),
-            setting_row(theme, "Show dislikes", "Display the crowdsourced dislike count (Return YouTube Dislike).",
-                Switch::new(s.return_dislike_enabled, bus, Action::ToggleSetting(SettingFlag::ReturnDislike)).id("switch_dislikes")),
-            setting_row(theme, "Preferred quality", "Highest resolution to request when available.",
-                quality_menu(model, theme, bus)),
+            setting_row(
+                theme,
+                "Autoplay next video",
+                "Play the up-next video when this one ends.",
+                Switch::new(
+                    s.autoplay,
+                    bus,
+                    Action::ToggleSetting(SettingFlag::Autoplay),
+                )
+                .id("switch_autoplay")
+                .accessible_name("Autoplay next video"),
+            ),
+            setting_row(
+                theme,
+                "Show comments",
+                "Load the comment section on the watch page.",
+                Switch::new(
+                    s.show_comments,
+                    bus,
+                    Action::ToggleSetting(SettingFlag::ShowComments),
+                )
+                .id("switch_comments")
+                .accessible_name("Show comments"),
+            ),
+            setting_row(
+                theme,
+                "Show dislikes",
+                "Display the crowdsourced dislike count (Return YouTube Dislike).",
+                Switch::new(
+                    s.return_dislike_enabled,
+                    bus,
+                    Action::ToggleSetting(SettingFlag::ReturnDislike),
+                )
+                .id("switch_dislikes")
+                .accessible_name("Show dislikes"),
+            ),
+            setting_row(
+                theme,
+                "Preferred quality",
+                "Highest resolution to request when available.",
+                quality_menu(model, theme, bus),
+            ),
         ],
     );
 
     let sponsorblock = {
-        let mut rows = vec![
-            setting_row(theme, "Enable SponsorBlock", "Use community segment data to mark and skip parts of videos.",
-                Switch::new(s.sponsorblock_enabled, bus, Action::ToggleSetting(SettingFlag::SponsorBlock)).id("switch_sponsorblock")),
-        ];
+        let mut rows = vec![setting_row(
+            theme,
+            "Enable SponsorBlock",
+            "Use community segment data to mark and skip parts of videos.",
+            Switch::new(
+                s.sponsorblock_enabled,
+                bus,
+                Action::ToggleSetting(SettingFlag::SponsorBlock),
+            )
+            .id("switch_sponsorblock")
+            .accessible_name("Enable SponsorBlock"),
+        )];
         for cat in Category::ALL {
             let (r, g, b) = cat.rgb();
             let label = Flex::row()
@@ -1586,7 +1933,11 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                 );
             // The stored per-category mode (not the master-gated one) so the
             // selector shows the user's choice even when SponsorBlock is off.
-            let stored = s.categories.get(cat.api_key()).copied().unwrap_or(SkipMode::Skip);
+            let stored = s
+                .categories
+                .get(cat.api_key())
+                .copied()
+                .unwrap_or(SkipMode::Skip);
             rows.push(
                 Flex::row()
                     .fill_w()
@@ -1604,18 +1955,48 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         theme,
         "DeArrow",
         vec![
-            setting_row(theme, "Enable DeArrow", "Use community branding in place of clickbait.",
-                Switch::new(s.dearrow_enabled, bus, Action::ToggleSetting(SettingFlag::DeArrow)).id("switch_dearrow")),
+            setting_row(
+                theme,
+                "Enable DeArrow",
+                "Use community branding in place of clickbait.",
+                Switch::new(
+                    s.dearrow_enabled,
+                    bus,
+                    Action::ToggleSetting(SettingFlag::DeArrow),
+                )
+                .id("switch_dearrow")
+                .accessible_name("Enable DeArrow"),
+            ),
             // The two sub-toggles are gated by the master switch: they dim while
             // DeArrow is off (their stored choice is still shown + editable), and
             // only take effect once it's on. `dearrow_titles_on()` /
             // `dearrow_thumbs_on()` read exactly this combination on every card.
-            setting_row_gated(theme, "Replace clickbait titles", "Show community-submitted, factual titles instead of clickbait.",
-                Switch::new(s.dearrow_titles, bus, Action::ToggleSetting(SettingFlag::DeArrowTitles)).id("switch_dearrow_titles"),
-                s.dearrow_enabled),
-            setting_row_gated(theme, "Replace thumbnails", "Use neutral community thumbnails in place of clickbait frames.",
-                Switch::new(s.dearrow_thumbnails, bus, Action::ToggleSetting(SettingFlag::DeArrowThumbnails)).id("switch_dearrow_thumbs"),
-                s.dearrow_enabled),
+            setting_row_gated(
+                theme,
+                "Replace clickbait titles",
+                "Show community-submitted, factual titles instead of clickbait.",
+                Switch::new(
+                    s.dearrow_titles,
+                    bus,
+                    Action::ToggleSetting(SettingFlag::DeArrowTitles),
+                )
+                .id("switch_dearrow_titles")
+                .accessible_name("Replace clickbait titles"),
+                s.dearrow_enabled,
+            ),
+            setting_row_gated(
+                theme,
+                "Replace thumbnails",
+                "Use neutral community thumbnails in place of clickbait frames.",
+                Switch::new(
+                    s.dearrow_thumbnails,
+                    bus,
+                    Action::ToggleSetting(SettingFlag::DeArrowThumbnails),
+                )
+                .id("switch_dearrow_thumbs")
+                .accessible_name("Replace thumbnails"),
+                s.dearrow_enabled,
+            ),
         ],
     );
 
@@ -1626,7 +2007,7 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
             .fill_w()
             .max_w(820.0)
             .pad(24.0)
-            .push(section_header(theme, IconKind::Settings, "Settings", ""))
+            .push(section_header(theme, Icon::Settings, "Settings", ""))
             .push(vspace(18.0))
             .push(playback)
             .push(vspace(16.0))
@@ -1642,14 +2023,23 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
 // ---------------------------------------------------------------------------
 
 /// One result row in the command palette.
-fn palette_row(theme: &Theme, bus: &ActionBus, hit: &crate::search_type::SearchHit, index: usize) -> Flex {
+fn palette_row(
+    theme: &Theme,
+    bus: &ActionBus,
+    hit: &crate::search_type::SearchHit,
+    index: usize,
+) -> Flex {
     use crate::search_type::CHANNEL_TYPE_ID;
     let is_channel = hit.type_id == CHANNEL_TYPE_ID;
-    let kind = if is_channel { IconKind::Subscriptions } else { IconKind::Play };
+    let kind = if is_channel {
+        Icon::GalleryVerticalEnd
+    } else {
+        Icon::Play
+    };
     let meta = if is_channel {
         format!("Channel · {}", hit.creator)
     } else {
-        format!("{} · {}", hit.creator, clock(hit.length_secs as f64))
+        format!("{} · {}", hit.creator, clock(f64::from(hit.length_secs)))
     };
     Flex::row()
         .id(&format!("palette_row_{index}"))
@@ -1659,7 +2049,7 @@ fn palette_row(theme: &Theme, bus: &ActionBus, hit: &crate::search_type::SearchH
         .align(Align::Center)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: None,
         })
         .on_click(bus, Action::ActivateHit(hit.deep_link.clone()))
@@ -1678,7 +2068,7 @@ fn palette_row(theme: &Theme, bus: &ActionBus, hit: &crate::search_type::SearchH
                 .push(text(&hit.title, 14.0))
                 .push(dim(theme, &meta, 12.0)),
         )
-        .push(icon(IconKind::Chevron, 14.0, theme.text_dim))
+        .push(icon(Icon::ChevronRight, 14.0, theme.text_dim))
 }
 
 /// The Ctrl+K global command palette overlay. Renders a dimming scrim (click to
@@ -1714,10 +2104,10 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
-            radius: theme.tokens.radii.md as f64,
+            radius: f64::from(theme.tokens.radii.md),
             border: Some((1.0, theme.border_focus)),
         })
-        .push(icon(IconKind::Search, 18.0, theme.accent_primary))
+        .push(icon(Icon::Search, 18.0, theme.accent_primary))
         .push(Flex::row().grow(1.0).push(input))
         .push(
             Flex::row()
@@ -1756,7 +2146,7 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
         .pad(14.0)
         .surface(Surface {
             fill: Some(theme.tokens.colors.surfaces.raised),
-            radius: theme.tokens.radii.lg as f64,
+            radius: f64::from(theme.tokens.radii.lg),
             border: Some((1.0, theme.border_standard)),
         })
         // Swallow clicks on the card chrome so they don't reach the scrim and
@@ -1870,9 +2260,9 @@ mod search_screen_tests {
         out
     }
 
-    /// The search screen no longer renders a result-count header (the query
-    /// already appears once in the top-bar field), and its type-filter chips are
-    /// present so results can be narrowed by kind.
+    /// The search screen has no result-count header (the query already appears
+    /// once in the top-bar field), and its type-filter chips are present so
+    /// results can be narrowed by kind.
     #[test]
     fn search_screen_has_type_chips_and_no_count_header() {
         use crate::model::Route;
@@ -1894,7 +2284,13 @@ mod search_screen_tests {
         let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
         taffy
             .new_with_children(
-                Style { size: Size { width: length(w), height: length(h) }, ..Default::default() },
+                Style {
+                    size: Size {
+                        width: length(w),
+                        height: length(h),
+                    },
+                    ..Default::default()
+                },
                 &[child],
             )
             .unwrap();
@@ -1905,7 +2301,10 @@ mod search_screen_tests {
             }
             w.children().iter().any(|c| has_id(*c, id))
         }
-        assert!(has_id(&screen, "search_type_chips"), "the Video·Playlist·Creator chips are present");
+        assert!(
+            has_id(&screen, "search_type_chips"),
+            "the Video·Playlist·Creator chips are present"
+        );
         for label in ["video", "playlist", "creator"] {
             assert!(
                 has_id(&screen, &format!("type_chip_{label}")),
@@ -1914,11 +2313,10 @@ mod search_screen_tests {
         }
     }
 
-    /// Issue 2 — a search-result row paints the fetched thumbnail. Rendered
-    /// through the real `search` screen with an image store that has decoded the
-    /// result's thumbnail URL, the card must emit an IMAGE draw (the real still),
-    /// not just the gradient poster — the same `video_card` image path
-    /// Home/Trending use.
+    /// Rendered through the real `search` screen with an image store that has
+    /// decoded the result's thumbnail URL, a search-result card must emit an
+    /// IMAGE draw (the real still), not just the gradient poster — the same
+    /// `video_card` image path Home/Trending use.
     #[test]
     fn search_result_row_paints_the_fetched_thumbnail() {
         let store = ui::ImageStore::new(Arc::new(|_u: &str| Some(px_png())));
@@ -1936,7 +2334,10 @@ mod search_screen_tests {
         // Pre-warm the store so the build captures the decoded image.
         store.get(&thumb);
         store.block_until_idle(Duration::from_secs(5));
-        assert!(store.get(&thumb).is_some(), "the result thumbnail decoded + cached");
+        assert!(
+            store.get(&thumb).is_some(),
+            "the result thumbnail decoded + cached"
+        );
 
         let theme = Theme::dark();
         let bus = crate::action::new_bus();
@@ -1951,7 +2352,13 @@ mod search_screen_tests {
         let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
         let root = taffy
             .new_with_children(
-                Style { size: Size { width: length(w), height: length(h) }, ..Default::default() },
+                Style {
+                    size: Size {
+                        width: length(w),
+                        height: length(h),
+                    },
+                    ..Default::default()
+                },
                 &[child],
             )
             .unwrap();
@@ -1984,7 +2391,13 @@ mod search_screen_tests {
         screen.sync(&mut doc, &root_obj);
 
         let mut scene = Scene::new();
-        screen.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty());
+        screen.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
         let images = scene
             .encoding()
             .draw_tags

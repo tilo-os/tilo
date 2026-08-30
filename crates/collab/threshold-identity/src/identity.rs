@@ -1,37 +1,31 @@
 //! [`ThresholdIdentity`] — the per-device handle to a threshold-shared
 //! Ed25519 identity.
 //!
-//! Holds:
-//! - the group's Ed25519 public key (the "I am me" anchor);
-//! - the threshold parameters (`t` and `n`);
-//! - this device's 1-indexed share number;
-//! - this device's secret key material.
+//! Holds the group's Ed25519 public key (the "I am me" anchor), the
+//! threshold parameters (`t`, `n`), this device's 1-indexed share
+//! number, and its secret key material.
 //!
 //! ## Two internal modes
 //!
-//! `frost-ed25519`'s key-generation (both `split` and `dkg::part1`)
-//! requires `min_signers ≥ 2`. The spec's *first-device* bootstrap
-//! is genuinely 1-of-1 — there is only one share-holder. We
-//! represent that as a [`InnerKey::SingleDevice`] variant carrying
-//! an `ed25519_dalek::SigningKey`. Signing in this mode produces a
-//! regular RFC-8032 Ed25519 signature — byte-compatible with the
-//! threshold output by design.
+//! `frost-ed25519`'s key generation requires `min_signers ≥ 2`, but the
+//! first-device bootstrap is genuinely 1-of-1. [`InnerKey::SingleDevice`]
+//! carries a plain `ed25519_dalek::SigningKey` for that case; signing
+//! produces a regular RFC-8032 Ed25519 signature, byte-compatible with
+//! the threshold output by design.
 //!
-//! The single-device key is a **dalek key, not a frost key**, and
-//! that choice is load-bearing. A frost `SigningKey` stores the
-//! signing *scalar*; dalek's `SigningKey::from_bytes` takes a
-//! 32-byte *seed* which it expands through SHA-512 to reach the
-//! scalar. The on-disk identity record persists 32 bytes that every
-//! reader loads via `SigningKey::from_bytes`, so a frost scalar
-//! round-tripped through that record derives a different key and its
-//! signatures stop verifying against the recorded public key. Holding
-//! the seed here means [`ThresholdIdentity::single_device_seed`] can
-//! hand out exactly the bytes the record needs.
+//! The single-device key is a **dalek key, not a frost key**, and that
+//! choice is load-bearing: a frost `SigningKey` stores the signing
+//! *scalar*, while dalek's `SigningKey::from_bytes` takes a 32-byte
+//! *seed* expanded through SHA-512. The on-disk record persists 32
+//! bytes loaded via `from_bytes`, so a frost scalar round-tripped
+//! through that record would derive a different key whose signatures
+//! stop verifying. Holding the seed means
+//! [`ThresholdIdentity::single_device_seed`] hands out exactly the bytes
+//! the record needs.
 //!
-//! [`InnerKey::Threshold`] takes over once the first DKG runs.
-//! From that point any signing operation requires `threshold`
-//! shares to combine, and threshold-signing's round-1 / round-2
-//! API kicks in.
+//! [`InnerKey::Threshold`] takes over once the first DKG runs; from then
+//! any signing requires `threshold` shares combined via the round-1 /
+//! round-2 API.
 //!
 //! ## Lifecycle
 //!
@@ -47,10 +41,8 @@
 //!   DKG 2-of-3  →  ThresholdIdentity {2/3, Threshold}   (new group_public_key)
 //! ```
 //!
-//! Each DKG transition rotates the group public key. The spec
-//! accepts this for Phase 8 (refresh-based enrolment is a
-//! forward-compatible upgrade); the UX is responsible for
-//! propagating the new key in the user's identity record.
+//! Each DKG transition rotates the group public key; the UX propagates
+//! the new key into the user's identity record.
 
 use std::collections::BTreeMap;
 
@@ -69,53 +61,43 @@ use crate::signing::{
 
 /// Per-device handle to a threshold-shared Ed25519 identity.
 ///
-/// `group_public_key`, `threshold`, `total_shares`, and
-/// `this_share_index` are stable per-device facts the enrolment
-/// flow records. `inner` is the per-mode private key material.
+/// `group_public_key`/`threshold`/`total_shares`/`this_share_index` are
+/// stable per-device facts the enrolment flow records; `inner` is the
+/// per-mode private key material.
 pub struct ThresholdIdentity {
-    /// The group's verifying key. Byte-compatible with a regular
-    /// Ed25519 public key; downstream code that just wants to
-    /// verify signatures uses this without knowing anything
+    /// The group's verifying key — byte-compatible with a regular Ed25519
+    /// public key, so downstream code just verifies without knowing anything
     /// about threshold-ness.
     pub group_public_key: Ed25519PublicKey,
-    /// `t` in t-of-n. `1` for the single-device bootstrap mode;
-    /// the spec uses `2` for v1 once enrolment ran.
+    /// `t` in t-of-n: `1` for single-device bootstrap, `2` for v1 once
+    /// enrolment ran.
     pub threshold: u16,
-    /// `n` in t-of-n. Equal to the number of shares currently
-    /// outstanding (devices + recovery share, if generated).
+    /// `n` in t-of-n: the number of shares currently outstanding (devices +
+    /// recovery share, if generated).
     pub total_shares: u16,
-    /// 1-indexed share number this device holds. The recovery
-    /// share holds a separate index — typically `total_shares`
-    /// at the time it was generated.
+    /// 1-indexed share number this device holds. The recovery share holds a
+    /// separate index — typically `total_shares` at generation time.
     pub this_share_index: u16,
-    /// Per-mode private state. PRIVATE — `pub(crate)` so the
-    /// signing helpers can reach into it; never serialise.
+    /// Per-mode private state. `pub(crate)` so signing helpers reach in;
+    /// never serialise.
     pub(crate) inner: InnerKey,
 }
 
-/// Mode-discriminated key material.
-///
-/// `pub(crate)` and not exposed in the public API. Callers
-/// pattern-match on `threshold == 1` to know which mode they're
-/// in; we deliberately don't surface the enum so consumers
-/// can't construct synthetic variants that lie about their
-/// mode.
-// The `Threshold` variant carries a frost-core `PublicKeyPackage`
-// (~584 bytes) vs. `SingleDevice`'s 32-byte `SigningKey`. Boxing
-// to balance variant sizes would force a heap alloc per
-// `ThresholdIdentity::adopt_dkg_outcome` — uncommon op, but the
-// `Threshold` form is the steady state and we want random-access
-// reads to be pointer-chase free. Inline both.
+/// Mode-discriminated key material. `pub(crate)`, not in the public API
+/// — callers pattern-match on `threshold == 1` rather than seeing the
+/// enum, so they can't construct synthetic variants that lie about mode.
+// `Threshold` carries a frost-core `PublicKeyPackage` (~584 bytes)
+// vs. `SingleDevice`'s 32-byte `SigningKey`; not boxed to balance
+// sizes, since `Threshold` is the steady state and reads should stay
+// pointer-chase free.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum InnerKey {
-    /// 1-of-1 bootstrap: a plain Ed25519 signing key, held in its
-    /// dalek (seed-shaped) form so the 32 bytes this device
-    /// persists are the 32 bytes a reader expands back into the
-    /// same key. Signing produces a regular RFC-8032 Ed25519
-    /// signature.
+    /// 1-of-1 bootstrap: a plain Ed25519 signing key in dalek (seed-shaped)
+    /// form, so the 32 bytes persisted are the 32 bytes expanded back into
+    /// the same key. Produces a regular RFC-8032 signature.
     SingleDevice(ed25519_dalek::SigningKey),
-    /// `t`-of-`n` mode (t ≥ 2). Owns the device's secret share
-    /// plus the public-key package needed by aggregate.
+    /// `t`-of-`n` mode (t ≥ 2): the device's secret share plus the
+    /// public-key package `aggregate` needs.
     Threshold {
         /// This device's secret share. PRIVATE.
         secret_share: SecretShare,
@@ -163,17 +145,11 @@ impl ThresholdIdentity {
         matches!(self.inner, InnerKey::SingleDevice(_))
     }
 
-    /// First-device bootstrap returning the raw key material.
-    ///
-    /// Returns a fresh Ed25519 keypair as `(seed_bytes,
-    /// group_public_key)` — where `seed_bytes` is the 32-byte
-    /// input to `ed25519_dalek::SigningKey::from_bytes` and
-    /// `group_public_key` is the derived verifying key.
-    ///
-    /// Equivalent to [`Self::bootstrap_single_device`] followed by
-    /// [`Self::single_device_seed`]; kept as a standalone helper for
-    /// callers (the compositor's first-boot hook) that only want the
-    /// bytes to write and never hold a live identity.
+    /// First-device bootstrap returning the raw key material as
+    /// `(seed_bytes, group_public_key)`. Equivalent to
+    /// [`Self::bootstrap_single_device`] followed by
+    /// [`Self::single_device_seed`]; kept standalone for callers (the
+    /// compositor's first-boot hook) that only want bytes to write.
     pub fn bootstrap_single_device_seed<R: CryptoRng + RngCore>(
         rng: &mut R,
     ) -> ([u8; 32], Ed25519PublicKey) {
@@ -183,26 +159,21 @@ impl ThresholdIdentity {
         (seed, Ed25519PublicKey::from_bytes(pk))
     }
 
-    /// First-device bootstrap: 1-of-1 mode.
-    ///
-    /// Generates a fresh Ed25519 keypair and stores the secret in
-    /// seed form, so [`Self::single_device_seed`] can hand it back
-    /// for persistence. The first DKG run rotates the group public
-    /// key per the module docs.
-    pub fn bootstrap_single_device<R: CryptoRng + RngCore>(rng: &mut R) -> Result<Self, ThresholdError> {
+    /// First-device bootstrap: 1-of-1 mode. Generates a fresh Ed25519
+    /// keypair and stores the secret in seed form so
+    /// [`Self::single_device_seed`] can hand it back for persistence.
+    pub fn bootstrap_single_device<R: CryptoRng + RngCore>(
+        rng: &mut R,
+    ) -> Result<Self, ThresholdError> {
         let signing_key = ed25519_dalek::SigningKey::generate(rng);
         Ok(Self::from_single_device_key(signing_key))
     }
 
-    /// Rebuild a 1-of-1 identity from the 32-byte seed a previous
-    /// [`Self::single_device_seed`] produced.
-    ///
-    /// This is the load half of the persistence round-trip: the
-    /// identity that comes back signs with the same key, and its
-    /// `group_public_key` is re-derived from the seed rather than
-    /// read from the record — so a record whose stored public key
-    /// disagrees with its secret cannot be resurrected as a
-    /// self-inconsistent identity.
+    /// Rebuild a 1-of-1 identity from a [`Self::single_device_seed`] output.
+    /// The load half of the persistence round-trip: `group_public_key` is
+    /// re-derived from the seed rather than read from the record, so a
+    /// record whose stored public key disagrees with its secret can't be
+    /// resurrected as a self-inconsistent identity.
     pub fn from_single_device_seed(seed: &[u8; 32]) -> Self {
         Self::from_single_device_key(ed25519_dalek::SigningKey::from_bytes(seed))
     }
@@ -218,18 +189,14 @@ impl ThresholdIdentity {
         }
     }
 
-    /// Export this device's 1-of-1 secret as the 32-byte seed the
-    /// on-disk identity record stores.
+    /// Export this device's 1-of-1 secret as the 32-byte seed the on-disk
+    /// record stores. `None` in threshold mode — no single secret exists
+    /// there, and a caller needing one is asking the wrong question.
+    /// Callers must treat `None` as "not persistable in single-device
+    /// format", never write a placeholder.
     ///
-    /// `None` in threshold mode — there is no single secret to
-    /// export there, and a caller that needs one is asking the
-    /// wrong question (the whole point of threshold mode is that no
-    /// device holds the key whole). Callers persisting an identity
-    /// must treat `None` as "this identity is not persistable in the
-    /// single-device record format", never as "write a placeholder".
-    ///
-    /// **Secret material.** The returned array must be zeroized or
-    /// handed straight to a `0600` write; never log it.
+    /// **Secret material** — zeroize the returned array or hand it straight
+    /// to a `0600` write; never log it.
     pub fn single_device_seed(&self) -> Option<[u8; 32]> {
         match &self.inner {
             InnerKey::SingleDevice(sk) => Some(*sk.as_bytes()),
@@ -237,15 +204,10 @@ impl ThresholdIdentity {
         }
     }
 
-    /// Sign a serializable value end-to-end. Routes to the
-    /// single-device fast path or to the threshold-signing
-    /// flow as appropriate.
-    ///
-    /// In threshold mode (`t > 1`) this only works if the
-    /// current device alone constitutes a threshold-sized quorum
-    /// — i.e. never, since `t > 1` by construction. The threshold
-    /// flow requires the orchestrator to drive multiple devices;
-    /// see [`Self::sign_round1`] / [`Self::sign_round2`].
+    /// Sign a serializable value end-to-end: single-device fast path, or the
+    /// threshold-signing flow. In threshold mode (`t > 1`) this alone never
+    /// suffices — the orchestrator must drive multiple devices; see
+    /// [`Self::sign_round1`]/[`Self::sign_round2`].
     pub fn sign<V: serde::Serialize, R: CryptoRng + RngCore>(
         &self,
         message: &V,
@@ -255,10 +217,9 @@ impl ThresholdIdentity {
         self.sign_raw(&canon, rng)
     }
 
-    /// Single-device or raw-bytes signing path. The single-device
-    /// variant signs `bytes` directly via `SigningKey::sign`. In
-    /// threshold mode this returns an error pointing the caller
-    /// at the round-1 / round-2 API.
+    /// Single-device or raw-bytes signing: the single-device variant signs
+    /// directly via `SigningKey::sign`; threshold mode errors, pointing the
+    /// caller at round-1/round-2.
     pub fn sign_raw<R: CryptoRng + RngCore>(
         &self,
         bytes: &[u8],
@@ -276,19 +237,12 @@ impl ThresholdIdentity {
         }
     }
 
-    /// Begin a fresh DKG run that will produce a new (t, n)
-    /// configuration including this device.
-    ///
-    /// Parameters describe the **new** group:
-    /// - `this_share_index_in_new_group` — the slot this device
-    ///   will occupy after the DKG completes.
-    /// - `new_threshold` — `t` in the new group.
-    /// - `new_total_devices` — `n` in the new group.
-    ///
-    /// Returns the [`DkgSession`] handle plus this device's
-    /// round-1 broadcast. The orchestrator drives the remaining
-    /// rounds and calls [`Self::adopt_dkg_outcome`] when done.
-    /// The old key is unchanged until adoption.
+    /// Begin a fresh DKG run producing a new (t, n) configuration including
+    /// this device. `this_share_index_in_new_group`/`new_threshold`/
+    /// `new_total_devices` describe the new group. Returns the
+    /// [`DkgSession`] handle plus this device's round-1 broadcast; the
+    /// orchestrator drives the rest and calls [`Self::adopt_dkg_outcome`]
+    /// when done. The old key is unchanged until adoption.
     pub fn begin_enrolment<R: CryptoRng + RngCore>(
         &mut self,
         this_share_index_in_new_group: u16,
@@ -306,10 +260,7 @@ impl ThresholdIdentity {
 
     /// Commit a completed DKG run into this identity. Replaces
     /// the previous key material.
-    pub fn adopt_dkg_outcome(
-        &mut self,
-        session: DkgSession,
-    ) -> Result<(), ThresholdError> {
+    pub fn adopt_dkg_outcome(&mut self, session: DkgSession) -> Result<(), ThresholdError> {
         let (kp, pkp, threshold, total, share_index, group_pk) = session.into_inner_complete()?;
         self.inner = InnerKey::Threshold {
             secret_share: SecretShare::from_key_package(kp),
@@ -391,11 +342,9 @@ impl ThresholdIdentity {
         crate::signing::aggregate_signature(group_pk, partials, threshold)
     }
 
-    /// Generate the paper-recovery share for this identity.
-    /// **Only valid in threshold mode** — in 1-of-1 mode the
-    /// "recovery share" would be the device's full key, which
-    /// defeats the purpose. Caller is expected to enrol a
-    /// second share (DKG to ≥2-of-N) before exporting.
+    /// Generate the paper-recovery share. **Only valid in threshold mode** —
+    /// in 1-of-1 mode the "recovery share" would be the device's full key,
+    /// defeating the purpose. Caller must enrol a second share first.
     pub fn export_recovery_share(&self) -> Result<RecoveryShare, ThresholdError> {
         match &self.inner {
             InnerKey::Threshold { secret_share, .. } => {
@@ -407,13 +356,11 @@ impl ThresholdIdentity {
         }
     }
 
-    /// Decode a BIP39 mnemonic into a `SecretShare`. The literal
-    /// spec signature is `(words: &str) -> Result<SecretShare>`,
-    /// but the BIP39 mnemonic alone does NOT carry enough
-    /// metadata (identifier, verifying share, group VK,
-    /// threshold) to rebuild a `KeyPackage`. We surface a clear
-    /// error pointing callers at
-    /// [`Self::import_recovery_share_full`].
+    /// Decode a BIP39 mnemonic into a `SecretShare`. The spec's literal
+    /// signature is `(words: &str) -> Result<SecretShare>`, but a mnemonic
+    /// alone lacks the metadata (identifier, verifying share, group VK,
+    /// threshold) to rebuild a `KeyPackage` — surfaces a clear error
+    /// pointing at [`Self::import_recovery_share_full`].
     pub fn import_recovery_share(words: &str) -> Result<SecretShare, ThresholdError> {
         let _ = words;
         Err(ThresholdError::BadRecoveryMnemonic(
@@ -429,18 +376,12 @@ impl ThresholdIdentity {
         rs.into_secret_share()
     }
 
-    /// Adopt a recovery-share `SecretShare` as this device's
-    /// own share. Used in disaster recovery: the user has lost
-    /// physical devices but holds the paper share + one
-    /// surviving device.
-    ///
-    /// Requires threshold mode (an existing `PublicKeyPackage`
-    /// to extend). The recovery share must belong to the same
-    /// group.
-    pub fn adopt_recovery_share(
-        &mut self,
-        share: SecretShare,
-    ) -> Result<(), ThresholdError> {
+    /// Adopt a recovery-share `SecretShare` as this device's own — disaster
+    /// recovery when physical devices are lost but a paper share + one
+    /// surviving device remain. Requires threshold mode (an existing
+    /// `PublicKeyPackage` to extend); the recovery share must belong to the
+    /// same group.
+    pub fn adopt_recovery_share(&mut self, share: SecretShare) -> Result<(), ThresholdError> {
         let kp = share.key_package();
         let kp_group_vec = kp.verifying_key().serialize()?;
         let kp_group: [u8; 32] = kp_group_vec.as_slice().try_into().map_err(|_| {
@@ -466,8 +407,8 @@ impl ThresholdIdentity {
                 secret_share,
                 public_key_package,
             } => {
-                // Insert this share's verifying share into the
-                // PublicKeyPackage so aggregate has it.
+                // Insert this share's verifying share into the PublicKeyPackage so
+                // aggregate has it.
                 let mut verifying_shares: BTreeMap<frost_ed25519::Identifier, _> =
                     public_key_package.verifying_shares().clone();
                 let id = crate::shares::u16_to_identifier(crate::shares::identifier_to_u16(
@@ -476,14 +417,10 @@ impl ThresholdIdentity {
                 verifying_shares.insert(id, *kp.verifying_share());
                 let group_vk =
                     frost_ed25519::VerifyingKey::deserialize(self.group_public_key.as_bytes())?;
-                *public_key_package = PublicKeyPackage::new(
-                    verifying_shares,
-                    group_vk,
-                    Some(self.threshold),
-                );
-                // Replace this device's share with the recovery
-                // share. The previous share's secret material is
-                // zeroized via SecretShare's drop chain.
+                *public_key_package =
+                    PublicKeyPackage::new(verifying_shares, group_vk, Some(self.threshold));
+                // Replace this device's share with the recovery share — the
+                // previous secret is zeroized via SecretShare's drop chain.
                 let kp_owned: frost_ed25519::keys::KeyPackage = kp.clone();
                 self.this_share_index = crate::shares::identifier_to_u16(kp_owned.identifier());
                 *secret_share = SecretShare::from_key_package(kp_owned);

@@ -9,13 +9,13 @@
 //! failure this whole surface exists to prevent.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ReadDoc, ScalarValue, ROOT};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    build_from_flat, build_from_json, project, project_flat, resolve, ActionArgs, ActionError,
-    ActionInput, ActionParam, ActionSpec, ArgError, ArgValue, Doc, EncodedAction, ExecutionLocus,
-    InvokeError, ParamType, Resource, SerializableResource, PROMPTED_PARAM,
+    ActionArgs, ActionError, ActionInput, ActionParam, ActionSpec, ArgError, ArgValue, Doc,
+    EncodedAction, ExecutionLocus, InvokeError, PROMPTED_PARAM, ParamType, Resource,
+    SerializableResource, build_from_flat, build_from_json, project, project_flat, resolve,
 };
 
 // ---------------------------------------------------------------------------
@@ -86,73 +86,75 @@ fn clip_resources(clip_id: &str) -> Vec<Resource> {
     let for_opacity = clip_id.to_string();
     let for_filter = clip_id.to_string();
 
-    vec![Resource::new(
-        format!("editor.clip:{clip_id}"),
-        "editor.clip",
-        "Opening shot",
-    )
-    // Nullary.
-    .with_action(
-        ActionSpec::immediate(
-            "delete",
-            "Delete clip",
-            CLIP_TYPE,
-            &ClipAction::Delete { clip: for_delete },
+    vec![
+        Resource::new(
+            format!("editor.clip:{clip_id}"),
+            "editor.clip",
+            "Opening shot",
         )
-        .unwrap(),
-    )
-    // The existing free-text shape, untouched by this change.
-    .with_action(ActionSpec::prompted(
-        "rename",
-        "Rename clip",
-        "Name",
-        "clip name…",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| {
-            encode(&ClipAction::Rename {
-                clip: for_rename.clone(),
-                name: name.trim().to_string(),
-            })
-        },
-    ))
-    // A typed number, replacing a prose "Value 0–1" a lenient parser guessed at.
-    .with_action(ActionSpec::typed(
-        "set-opacity",
-        "Set opacity",
-        "0.75",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required(
-            "opacity",
-            ParamType::Number,
-            "Opacity from 0 (invisible) to 1 (opaque).",
-        )],
-        move |args: &ActionArgs| {
-            encode(&ClipAction::SetOpacity {
-                clip: for_opacity.clone(),
-                value: args.number("opacity").unwrap_or(1.0),
-            })
-        },
-    ))
-    // A typed choice, replacing a prose "grayscale / sepia / invert".
-    .with_action(ActionSpec::typed(
-        "set-filter",
-        "Set filter",
-        "sepia",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required("filter", ParamType::Text, "Which look to apply.")
-                .with_choices(FILTERS),
-        ],
-        move |args: &ActionArgs| {
-            // A supplied value is already known good — binding enforced the
-            // choice list before this ran — so the builder only decides what an
-            // *absent* one means.
-            encode(&ClipAction::SetFilter {
-                clip: for_filter.clone(),
-                filter: args.text("filter").unwrap_or("grayscale").to_string(),
-            })
-        },
-    ))]
+        // Nullary.
+        .with_action(
+            ActionSpec::immediate(
+                "delete",
+                "Delete clip",
+                CLIP_TYPE,
+                &ClipAction::Delete { clip: for_delete },
+            )
+            .unwrap(),
+        )
+        // The existing free-text shape, untouched by this change.
+        .with_action(ActionSpec::prompted(
+            "rename",
+            "Rename clip",
+            "Name",
+            "clip name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                encode(&ClipAction::Rename {
+                    clip: for_rename.clone(),
+                    name: name.trim().to_string(),
+                })
+            },
+        ))
+        // A typed number, replacing a prose "Value 0–1" a lenient parser guessed at.
+        .with_action(ActionSpec::typed(
+            "set-opacity",
+            "Set opacity",
+            "0.75",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required(
+                "opacity",
+                ParamType::Number,
+                "Opacity from 0 (invisible) to 1 (opaque).",
+            )],
+            move |args: &ActionArgs| {
+                encode(&ClipAction::SetOpacity {
+                    clip: for_opacity.clone(),
+                    value: args.number("opacity").unwrap_or(1.0),
+                })
+            },
+        ))
+        // A typed choice, replacing a prose "grayscale / sepia / invert".
+        .with_action(ActionSpec::typed(
+            "set-filter",
+            "Set filter",
+            "sepia",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required("filter", ParamType::Text, "Which look to apply.")
+                    .with_choices(FILTERS),
+            ],
+            move |args: &ActionArgs| {
+                // A supplied value is already known good — binding enforced the
+                // choice list before this ran — so the builder only decides what an
+                // *absent* one means.
+                encode(&ClipAction::SetFilter {
+                    clip: for_filter.clone(),
+                    filter: args.text("filter").unwrap_or("grayscale").to_string(),
+                })
+            },
+        )),
+    ]
 }
 
 /// What the on-screen affordance would build, straight from the spec's palette
@@ -277,7 +279,8 @@ fn the_resource_tree_projects_with_its_nesting() {
 fn a_wrong_typed_argument_is_refused_before_the_document_is_touched() {
     let resources = clip_resources("c1");
     let mut doc = AutoCommit::new();
-    doc.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
+    doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+        .unwrap();
     let before = doc.get_heads();
 
     let key = format!("editor.clip:c1{}set-opacity", qos_actions::KEY_SEP);
@@ -337,12 +340,14 @@ fn a_value_outside_the_declared_choices_is_refused() {
     }
 
     // And the good value still passes, so the check is a gate and not a wall.
-    assert!(build_from_flat(
-        &resources,
-        &key,
-        vec![("filter".to_string(), ArgValue::Text("sepia".into()))],
-    )
-    .is_ok());
+    assert!(
+        build_from_flat(
+            &resources,
+            &key,
+            vec![("filter".to_string(), ArgValue::Text("sepia".into()))],
+        )
+        .is_ok()
+    );
 }
 
 /// A missing required argument is refused, naming what was not supplied.
@@ -451,7 +456,8 @@ fn a_prompted_spec_projects_to_one_text_parameter_over_the_same_closure() {
     assert_eq!(spec.params()[0].ty, ParamType::Text);
     assert!(spec.params()[0].required);
     assert_eq!(
-        spec.params()[0].description, "Name",
+        spec.params()[0].description,
+        "Name",
         "the human prompt becomes the parameter's description"
     );
     assert!(
@@ -465,7 +471,10 @@ fn a_prompted_spec_projects_to_one_text_parameter_over_the_same_closure() {
             ArgValue::Text("Establishing".into()),
         )])
         .unwrap();
-    assert_eq!(headless, affordance_encode(&resources, &key, "Establishing"));
+    assert_eq!(
+        headless,
+        affordance_encode(&resources, &key, "Establishing")
+    );
 }
 
 /// A nullary spec projects to zero parameters and reproduces its pre-encoded

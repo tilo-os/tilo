@@ -7,8 +7,8 @@
 //! sample data (`sample.rs`).
 //!
 //! Endpoints (no API key required):
-//!   * Forecast:  https://api.open-meteo.com/v1/forecast
-//!   * Geocoding: https://geocoding-api.open-meteo.com/v1/search
+//!   * Forecast:  <https://api.open-meteo.com/v1/forecast>
+//!   * Geocoding: <https://geocoding-api.open-meteo.com/v1/search>
 
 use serde::Deserialize;
 
@@ -43,12 +43,9 @@ pub fn forecast_url(lat: f64, lon: f64, units: Units) -> String {
 /// are all unitless indices or µg/m³, so no unit preference is threaded here.
 pub fn air_quality_url(lat: f64, lon: f64) -> String {
     format!(
-        "{base}?latitude={lat:.4}&longitude={lon:.4}\
+        "{AIR_QUALITY_BASE}?latitude={lat:.4}&longitude={lon:.4}\
          &current=european_aqi,us_aqi,pm2_5,pm10,nitrogen_dioxide,ozone\
          &timezone=auto",
-        base = AIR_QUALITY_BASE,
-        lat = lat,
-        lon = lon,
     )
 }
 
@@ -66,7 +63,7 @@ fn url_encode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push_str("%20"),
             other => out.push_str(&format!("%{other:02X}")),
@@ -138,7 +135,12 @@ pub fn parse_forecast(
     let raw: ForecastResponse =
         serde_json::from_str(body).map_err(|e| format!("forecast decode: {e}"))?;
 
-    let uv_today = raw.daily.uv_index_max.first().and_then(|o| *o).unwrap_or(0.0);
+    let uv_today = raw
+        .daily
+        .uv_index_max
+        .first()
+        .and_then(|o| *o)
+        .unwrap_or(0.0);
 
     let current = CurrentConditions {
         temperature: raw.current.temperature_2m,
@@ -191,7 +193,12 @@ pub fn parse_forecast(
                 .unwrap_or(0.0),
             weather_code: *raw.daily.weather_code.get(i).unwrap_or(&0),
             wind_max: raw.daily.wind_speed_10m_max.get(i).copied().unwrap_or(0.0),
-            uv_index_max: raw.daily.uv_index_max.get(i).and_then(|o| *o).unwrap_or(0.0),
+            uv_index_max: raw
+                .daily
+                .uv_index_max
+                .get(i)
+                .and_then(|o| *o)
+                .unwrap_or(0.0),
             sunrise: raw.daily.sunrise.get(i).cloned().unwrap_or_default(),
             sunset: raw.daily.sunset.get(i).cloned().unwrap_or_default(),
         });
@@ -308,7 +315,11 @@ pub fn parse_geocode(body: &str) -> Result<Vec<SavedLocation>, String> {
                 r.country_code,
                 r.latitude,
                 r.longitude,
-                if r.timezone.is_empty() { "auto".to_string() } else { r.timezone },
+                if r.timezone.is_empty() {
+                    "auto".to_string()
+                } else {
+                    r.timezone
+                },
             )
         })
         .collect())
@@ -343,7 +354,7 @@ mod tests {
         for h in 0..26 {
             times.push(format!("2026-06-30T{h:02}:00"));
         }
-        let temps: Vec<f64> = (0..26).map(|h| h as f64).collect();
+        let temps: Vec<f64> = (0..26).map(|h| f64::from(h)).collect();
         let codes: Vec<i64> = vec![0; 26];
         let isday: Vec<i64> = vec![1; 26];
         let body = serde_json::json!({
@@ -382,7 +393,10 @@ mod tests {
         let snap = parse_forecast(&body, Uuid::new_v4(), Units::METRIC, 0).unwrap();
         assert_eq!(snap.hourly.len(), 24);
         assert_eq!(snap.hourly[0].time, "2026-06-30T02:00");
-        assert_eq!(snap.current.uv_index, 5.0, "current uv comes from today's max");
+        assert_eq!(
+            snap.current.uv_index, 5.0,
+            "current uv comes from today's max"
+        );
         assert_eq!(snap.daily.len(), 1);
     }
 

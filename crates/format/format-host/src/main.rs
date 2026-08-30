@@ -4,8 +4,8 @@
 
 use format_host::{
     default_registry_path,
-    router::{load_into, Router},
-    runner::{spawn_epoch_ticker, LoadedComponent},
+    router::{Router, load_into},
+    runner::{LoadedComponent, spawn_epoch_ticker},
     transport,
     watch::spawn_watcher,
 };
@@ -27,7 +27,9 @@ fn main() -> anyhow::Result<()> {
     );
 
     // capnp-rpc + tokio-LocalSet (one task per connection, single-thread Vat).
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
         let engine = LoadedComponent::engine()?;

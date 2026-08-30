@@ -14,13 +14,7 @@ use crate::model::{
     RefLabel, Remote, RepoModel, Stash, Tag,
 };
 
-fn fc(
-    path: &str,
-    area: ChangeArea,
-    kind: ChangeKind,
-    add: u32,
-    del: u32,
-) -> FileChange {
+fn fc(path: &str, area: ChangeArea, kind: ChangeKind, add: u32, del: u32) -> FileChange {
     FileChange {
         path: path.to_string(),
         old_path: None,
@@ -35,22 +29,70 @@ fn fc(
 /// map of per-file diffs for the changed files.
 pub fn model() -> (RepoModel, DiffMap) {
     let staged = vec![
-        fc("src/render/scene.rs", ChangeArea::Staged, ChangeKind::Modified, 24, 6),
-        fc("src/render/pipeline.rs", ChangeArea::Staged, ChangeKind::Added, 58, 0),
+        fc(
+            "src/render/scene.rs",
+            ChangeArea::Staged,
+            ChangeKind::Modified,
+            24,
+            6,
+        ),
+        fc(
+            "src/render/pipeline.rs",
+            ChangeArea::Staged,
+            ChangeKind::Added,
+            58,
+            0,
+        ),
         {
-            let mut r = fc("src/gpu/device.rs", ChangeArea::Staged, ChangeKind::Renamed, 3, 3);
+            let mut r = fc(
+                "src/gpu/device.rs",
+                ChangeArea::Staged,
+                ChangeKind::Renamed,
+                3,
+                3,
+            );
             r.old_path = Some("src/gpu/adapter.rs".to_string());
             r
         },
     ];
     let unstaged = vec![
-        fc("src/app.rs", ChangeArea::Unstaged, ChangeKind::Modified, 11, 4),
-        fc("Cargo.toml", ChangeArea::Unstaged, ChangeKind::Modified, 2, 1),
-        fc("src/legacy/blit.rs", ChangeArea::Unstaged, ChangeKind::Deleted, 0, 41),
+        fc(
+            "src/app.rs",
+            ChangeArea::Unstaged,
+            ChangeKind::Modified,
+            11,
+            4,
+        ),
+        fc(
+            "Cargo.toml",
+            ChangeArea::Unstaged,
+            ChangeKind::Modified,
+            2,
+            1,
+        ),
+        fc(
+            "src/legacy/blit.rs",
+            ChangeArea::Unstaged,
+            ChangeKind::Deleted,
+            0,
+            41,
+        ),
     ];
     let untracked = vec![
-        fc("docs/rendering.md", ChangeArea::Untracked, ChangeKind::Untracked, 92, 0),
-        fc("src/render/shaders/blur.wgsl", ChangeArea::Untracked, ChangeKind::Untracked, 37, 0),
+        fc(
+            "docs/rendering.md",
+            ChangeArea::Untracked,
+            ChangeKind::Untracked,
+            92,
+            0,
+        ),
+        fc(
+            "src/render/shaders/blur.wgsl",
+            ChangeArea::Untracked,
+            ChangeKind::Untracked,
+            37,
+            0,
+        ),
     ];
 
     // Staged files carry a HEAD→index diff; unstaged / untracked files carry a
@@ -63,7 +105,10 @@ pub fn model() -> (RepoModel, DiffMap) {
     diffs.insert(DiffKey::worktree("Cargo.toml"), diff_cargo());
     diffs.insert(DiffKey::worktree("src/legacy/blit.rs"), diff_deleted());
     diffs.insert(DiffKey::worktree("docs/rendering.md"), diff_untracked_md());
-    diffs.insert(DiffKey::worktree("src/render/shaders/blur.wgsl"), diff_untracked_wgsl());
+    diffs.insert(
+        DiffKey::worktree("src/render/shaders/blur.wgsl"),
+        diff_untracked_wgsl(),
+    );
 
     let mut commits = commit_history();
     let layout = graph::layout(&mut commits);
@@ -117,19 +162,45 @@ pub fn model() -> (RepoModel, DiffMap) {
     ];
 
     let tags = vec![
-        Tag { name: "v0.4.0".into(), target: "7d6e5f4".into(), message: Some("Release 0.4.0 — vello migration".into()) },
-        Tag { name: "v0.3.2".into(), target: "2c3d4e5".into(), message: Some("Hotfix: text shaping".into()) },
-        Tag { name: "v0.3.0".into(), target: "8a9b0c1".into(), message: None },
+        Tag {
+            name: "v0.4.0".into(),
+            target: "7d6e5f4".into(),
+            message: Some("Release 0.4.0 — vello migration".into()),
+        },
+        Tag {
+            name: "v0.3.2".into(),
+            target: "2c3d4e5".into(),
+            message: Some("Hotfix: text shaping".into()),
+        },
+        Tag {
+            name: "v0.3.0".into(),
+            target: "8a9b0c1".into(),
+            message: None,
+        },
     ];
 
     let stashes = vec![
-        Stash { index: 0, message: "WIP on main: experiment with msaa".into(), branch: "main".into() },
-        Stash { index: 1, message: "WIP on feature/wgpu-pipeline: bind group cache".into(), branch: "feature/wgpu-pipeline".into() },
+        Stash {
+            index: 0,
+            message: "WIP on main: experiment with msaa".into(),
+            branch: "main".into(),
+        },
+        Stash {
+            index: 1,
+            message: "WIP on feature/wgpu-pipeline: bind group cache".into(),
+            branch: "feature/wgpu-pipeline".into(),
+        },
     ];
 
     let remotes = vec![
-        Remote { name: "origin".into(), url: "git@code.sandbox.example:qos/renderer.git".into() },
-        Remote { name: "upstream".into(), url: "https://github.com/linebender/vello.git".into() },
+        Remote {
+            name: "origin".into(),
+            url: "git@code.sandbox.example:qos/renderer.git".into(),
+        },
+        Remote {
+            name: "upstream".into(),
+            url: "https://github.com/linebender/vello.git".into(),
+        },
     ];
 
     let model = RepoModel {
@@ -153,7 +224,10 @@ pub fn model() -> (RepoModel, DiffMap) {
 }
 
 fn rl(name: &str, kind: RefKind) -> RefLabel {
-    RefLabel { name: name.to_string(), kind }
+    RefLabel {
+        name: name.to_string(),
+        kind,
+    }
 }
 
 fn commit_history() -> Vec<Commit> {

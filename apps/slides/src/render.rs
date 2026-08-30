@@ -7,12 +7,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush};
 
+use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::ColorCompat;
 
 use crate::assets::{ImageState, ImageStore};
-use crate::model::{Element, ElementKind, Palette, Slide, TextAlign, SLIDE_W};
+use crate::model::{Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
 
 /// Map a point from slide space to destination pixels.
 #[inline]
@@ -72,7 +72,10 @@ fn draw_decor(
     // Footer hairline on content (surface) slides.
     if slide.background == Background::Surface {
         let y = dest.y0 + 660.0 * s;
-        let line = Line::new(map(dest, s, 96.0, 660.0), Point::new(dest.x0 + 1184.0 * s, y));
+        let line = Line::new(
+            map(dest, s, 96.0, 660.0),
+            Point::new(dest.x0 + 1184.0 * s, y),
+        );
         scene.stroke(
             &Stroke::new((1.5 * s).max(0.5)),
             transform,
@@ -127,10 +130,7 @@ fn draw_element(
             }
         }
         ElementKind::Line => {
-            let line = Line::new(
-                map(dest, s, e.x, e.y),
-                map(dest, s, e.x + e.w, e.y + e.h),
-            );
+            let line = Line::new(map(dest, s, e.x, e.y), map(dest, s, e.x + e.w, e.y + e.h));
             let stroke_col = palette
                 .resolve_role(&e.stroke)
                 .or_else(|| palette.resolve_role(&e.fill))
@@ -170,7 +170,7 @@ fn draw_image_element(
     let frame = RoundedRect::from_rect(er, radius);
     match images.get(&e.src) {
         ImageState::Ready(img) => {
-            let (iw, ih) = (img.width as f64, img.height as f64);
+            let (iw, ih) = (f64::from(img.width), f64::from(img.height));
             if iw <= 0.0 || ih <= 0.0 || er.width() <= 0.0 || er.height() <= 0.0 {
                 return;
             }
@@ -205,8 +205,8 @@ fn draw_image_element(
                 with_alpha(palette.text_dim, 200),
                 transform
                     * Affine::translate((
-                        er.center().x - tw as f64 / 2.0,
-                        er.center().y - th as f64 / 2.0,
+                        er.center().x - f64::from(tw) / 2.0,
+                        er.center().y - f64::from(th) / 2.0,
                     )),
                 None,
                 TextWeight::Regular,
@@ -231,8 +231,8 @@ fn draw_image_element(
                 with_alpha(palette.text_dim, 210),
                 transform
                     * Affine::translate((
-                        er.center().x - tw as f64 / 2.0,
-                        er.center().y - th as f64 / 2.0,
+                        er.center().x - f64::from(tw) / 2.0,
+                        er.center().y - f64::from(th) / 2.0,
                     )),
                 None,
                 TextWeight::Regular,
@@ -251,7 +251,11 @@ fn draw_text_element(
     s: f64,
 ) {
     let color = palette.resolve_role(&e.fill).unwrap_or(palette.text);
-    let weight = if e.bold { TextWeight::Bold } else { TextWeight::Regular };
+    let weight = if e.bold {
+        TextWeight::Bold
+    } else {
+        TextWeight::Regular
+    };
     // Text scales *with* the slide — a thumbnail is just a smaller slide, so
     // the font shrinks proportionally. The previous 6px floor oversized body
     // text relative to its shrunken box at thumbnail scale, forcing spurious
@@ -261,7 +265,7 @@ fn draw_text_element(
     // `draw_text_styled` and `measure_*` both lay lines out at `font_px * 1.25`,
     // so match that here and the vertical cursor advances *exactly* past any
     // wrapped continuation rows.
-    let line_h = (font_px as f64) * 1.25;
+    let line_h = f64::from(font_px) * 1.25;
     let wrap_w = (er.width() + 4.0).max(1.0) as f32;
     let lines: Vec<&str> = e.text.split('\n').collect();
     // Each explicit (\n-split) line may itself word-wrap into several visual
@@ -273,8 +277,9 @@ fn draw_text_element(
             if line.is_empty() {
                 1
             } else {
-                let (_, h) = tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
-                ((h as f64 / line_h).round() as usize).max(1)
+                let (_, h) =
+                    tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
+                ((f64::from(h) / line_h).round() as usize).max(1)
             }
         })
         .collect();
@@ -301,9 +306,9 @@ fn draw_text_element(
                     let (lw, _) =
                         tr.measure_styled(line, font_px, Some(wrap_w), weight, e.italic, false);
                     if e.align == TextAlign::Center {
-                        er.x0 + (er.width() - lw as f64) / 2.0
+                        er.x0 + (er.width() - f64::from(lw)) / 2.0
                     } else {
-                        er.x1 - lw as f64
+                        er.x1 - f64::from(lw)
                     }
                 }
             };

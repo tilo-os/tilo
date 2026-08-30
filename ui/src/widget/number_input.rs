@@ -1,40 +1,32 @@
 //! `NumberInput` — a compact, click-to-type numeric field with steppers.
 //!
-//! Inspectors across the system apps (font size, line spacing, opacity,
-//! margins, …) all show the same control: a number you can nudge with
-//! `−` / `+` buttons *or* click and type directly, always parsed,
-//! validated and clamped to a range. Before this widget every app
-//! hand-rolled it; `NumberInput` is the shared primitive they drop in.
+//! A number you can nudge with `−`/`+` buttons or click and type
+//! directly; always parsed, validated and clamped to a range. Before this
+//! widget every inspector (font size, line spacing, opacity, margins, …)
+//! hand-rolled it.
 //!
-//! Composition: two stepper buttons flank an embedded local-mode
-//! [`TextInput`] that holds the editable text. Clicking the field focuses
-//! it (with the value pre-selected, so the first keystroke replaces it);
-//! typing edits freely; pressing **Enter**, clicking a stepper, clicking
-//! outside the field, or blurring the widget **commits** — the text is
-//! parsed (leading number, so a trailing unit like `px` is tolerated),
-//! clamped to `[min, max]`, and written back. Invalid text reverts to the
-//! last good value.
+//! Two stepper buttons flank an embedded local-mode [`TextInput`].
+//! Clicking the field focuses and pre-selects it; **Enter**, a stepper
+//! click, a click outside, or blur all **commit** — parsing the leading
+//! number (tolerating a trailing unit like `px`), clamping to
+//! `[min, max]`, and reverting invalid text to the last good value.
 //!
-//! Integration seams, mirroring the rest of the toolkit:
-//!   * [`value`](NumberInput::value) — read the current number.
-//!   * [`take_changed`](NumberInput::take_changed) — poll for a committed
-//!     user change (retained-mode apps), draining the record.
-//!   * [`set_value`](NumberInput::set_value) — push a value in
-//!     programmatically (no change reported — the app is the source).
-//!   * [`with_on_change_path`](NumberInput::with_on_change_path) — optional
-//!     CRDT binding: the committed value is stored as an Automerge `F64`
-//!     and re-read on `sync`, exactly like [`Slider`](crate::widget::Slider).
+//! [`take_changed`](NumberInput::take_changed) polls a committed user
+//! change; [`set_value`](NumberInput::set_value) pushes one in silently;
+//! [`with_on_change_path`](NumberInput::with_on_change_path) optionally
+//! binds the value to a CRDT `F64`, like [`Slider`](crate::widget::Slider).
 
-use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect, Point, RoundedRect, Stroke};
-use winit::event::{WindowEvent, MouseButton, ElementState};
-use winit::keyboard::{Key, NamedKey};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
-use crate::widget::TextInput;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
+use crate::widget::TextInput;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 /// Default control height in logical pixels — matches [`TextInput`]'s
 /// 40px form-field band closely enough while staying compact for an
@@ -235,12 +227,10 @@ impl NumberInput {
         self.value.round() as i64
     }
 
-    /// Push a value in programmatically (e.g. an inspector re-pointing the
-    /// field at a newly-selected object's property). Clamps and re-formats
-    /// the display, but does NOT report a change through
-    /// [`take_changed`](NumberInput::take_changed) or write the CRDT — the
-    /// app is the source here, not the user. Mirrors
-    /// [`TextInput::set_text`](crate::widget::TextInput::set_text).
+    /// Push a value in programmatically. Clamps and re-formats the
+    /// display, but does NOT report a change through
+    /// [`take_changed`](NumberInput::take_changed) or write the CRDT.
+    /// Mirrors [`TextInput::set_text`](crate::widget::TextInput::set_text).
     pub fn set_value(&mut self, v: f64) {
         self.value = v.clamp(self.min, self.max);
         self.sync_field();
@@ -281,13 +271,12 @@ impl NumberInput {
         self.field.set_text(&t);
     }
 
-    /// Commit whatever is currently typed in the field: parse the leading
-    /// number, clamp, and adopt it. Records a change (and a pending CRDT
-    /// write) only when the value actually moved. Always re-syncs the
-    /// display so invalid / out-of-range text snaps back to the canonical
-    /// value. Does NOT itself touch the CRDT (no `state` here); the caller
-    /// flushes via [`flush_crdt`](NumberInput::flush_crdt) or the next
-    /// `sync`.
+    /// Commit whatever is typed: parse the leading number, clamp, adopt
+    /// it. Records a change (and pending CRDT write) only when the value
+    /// actually moved; always re-syncs the display so invalid/out-of-range
+    /// text snaps back. Does not touch the CRDT itself (no `state` here)
+    /// — the caller flushes via [`flush_crdt`](NumberInput::flush_crdt) or
+    /// the next `sync`.
     fn commit_local(&mut self) {
         if let Some(parsed) = parse_leading_number(self.field.value()) {
             let clamped = parsed.clamp(self.min, self.max);
@@ -314,11 +303,9 @@ impl NumberInput {
         self.sync_field();
     }
 
-    /// Position the control at an externally-computed `rect`, without a taffy
-    /// node. Lets a host that lays itself out imperatively (e.g. a slides / docs
-    /// inspector row) drop a `NumberInput` in and drive it directly — the
-    /// mirror of [`TextInput::apply_layout_external`]. Computes the same stepper
-    /// + field sub-rects `apply_layout` does.
+    /// Position the control at an externally-computed `rect`, without a
+    /// taffy node — the mirror of [`TextInput::apply_layout_external`].
+    /// Computes the same sub-rects `apply_layout` does.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
         let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
@@ -331,14 +318,14 @@ impl NumberInput {
 
     /// Flush a pending committed value to the bound CRDT field, if any.
     fn flush_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(v) = self.pending_write.take() {
-            if self.crdt_bound {
-                let _ = state.put(
-                    root,
-                    self.on_change_path.as_str(),
-                    automerge::ScalarValue::F64(v),
-                );
-            }
+        if let Some(v) = self.pending_write.take()
+            && self.crdt_bound
+        {
+            let _ = state.put(
+                root,
+                self.on_change_path.as_str(),
+                automerge::ScalarValue::F64(v),
+            );
         }
     }
 }
@@ -354,49 +341,61 @@ impl Widget for NumberInput {
         if self.field.is_focused() {
             return;
         }
-        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str()) {
-            if let Value::Scalar(s) = val {
-                let v = match s.as_ref() {
-                    automerge::ScalarValue::F64(f) => Some(*f),
-                    automerge::ScalarValue::Int(i) => Some(*i as f64),
-                    automerge::ScalarValue::Uint(u) => Some(*u as f64),
-                    _ => None,
-                };
-                if let Some(v) = v {
-                    let clamped = v.clamp(self.min, self.max);
-                    if (clamped - self.value).abs() > f64::EPSILON {
-                        self.value = clamped;
-                        self.sync_field();
-                    }
+        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
+            && let Value::Scalar(s) = val
+        {
+            let v = match s.as_ref() {
+                automerge::ScalarValue::F64(f) => Some(*f),
+                automerge::ScalarValue::Int(i) => Some(*i as f64),
+                automerge::ScalarValue::Uint(u) => Some(*u as f64),
+                _ => None,
+            };
+            if let Some(v) = v {
+                let clamped = v.clamp(self.min, self.max);
+                if (clamped - self.value).abs() > f64::EPSILON {
+                    self.value = clamped;
+                    self.sync_field();
                 }
             }
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(self.width as f32),
                 height: Dimension::length(self.height as f32),
             },
             ..Default::default()
-        }).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        let x0 = origin.x + layout.location.x as f64;
-        let y0 = origin.y + layout.location.y as f64;
-        let x1 = x0 + layout.size.width as f64;
-        let y1 = y0 + layout.size.height as f64;
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        let x0 = origin.x + f64::from(layout.location.x);
+        let y0 = origin.y + f64::from(layout.location.y);
+        let x1 = x0 + f64::from(layout.size.width);
+        let y1 = y0 + f64::from(layout.size.height);
         self.apply_layout_external(Rect::new(x0, y0, x1, y1));
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
         let colors = &theme.tokens.colors;
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let disabled = !self.enabled;
         if disabled {
             scene.push_layer(
@@ -420,13 +419,23 @@ impl Widget for NumberInput {
                 colors.surfaces.raised
             };
             scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
-            scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &shape);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &shape,
+            );
 
             let (gw, _) = text_renderer.measure(glyph, STEP_GLYPH_SIZE, None);
-            let line_height = (STEP_GLYPH_SIZE * 1.25) as f64;
-            let gx = btn_rect.x0 + (btn_rect.width() - gw as f64) / 2.0;
+            let line_height = f64::from(STEP_GLYPH_SIZE * 1.25);
+            let gx = btn_rect.x0 + (btn_rect.width() - f64::from(gw)) / 2.0;
             let gy = btn_rect.y0 + (btn_rect.height() - line_height) / 2.0;
-            let glyph_color = if disabled { theme.text_dim } else { theme.text_primary };
+            let glyph_color = if disabled {
+                theme.text_dim
+            } else {
+                theme.text_primary
+            };
             text_renderer.draw_text(
                 scene,
                 glyph,
@@ -438,7 +447,8 @@ impl Widget for NumberInput {
         }
 
         // --- Editable field (embedded TextInput draws its own chrome) ---
-        self.field.draw(scene, transform, text_renderer, theme, presence);
+        self.field
+            .draw(scene, transform, text_renderer, theme, presence);
 
         if disabled {
             scene.pop_layer();
@@ -466,8 +476,15 @@ impl Widget for NumberInput {
         // makes sets *our* node id — redirect it onto the field in set_focus.
         let prev_focus = *focus_target;
         self.field.handle_event(
-            event, scale_factor, modifiers, state, root,
-            handled, focus_target, node_id, taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            root,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
         );
         if *focus_target != prev_focus && self.field_rect.contains(self.last_cursor) {
             self.field_focus_pending = true;
@@ -485,9 +502,11 @@ impl Widget for NumberInput {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: el, button: MouseButton::Left, .. }
-                if *el == ElementState::Pressed =>
-            {
+            WindowEvent::MouseInput {
+                state: el,
+                button: MouseButton::Left,
+                ..
+            } if *el == ElementState::Pressed => {
                 if self.minus_rect.contains(self.last_cursor) {
                     // Commit any half-typed edit before stepping so the step
                     // is relative to what the user last saw, then blur the field.
@@ -508,9 +527,7 @@ impl Widget for NumberInput {
                     self.flush_crdt(state, root);
                     *focus_target = Some(node_id);
                     *handled = true;
-                } else if !self.field_rect.contains(self.last_cursor)
-                    && self.field.is_focused()
-                {
+                } else if !self.field_rect.contains(self.last_cursor) && self.field.is_focused() {
                     // Press landed outside the field while it was focused —
                     // commit the typed value and release focus.
                     self.commit_local();
@@ -518,9 +535,9 @@ impl Widget for NumberInput {
                     self.field.set_focus(false);
                 }
             }
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed && self.field.is_focused() =>
-            {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed && self.field.is_focused() => {
                 match &key_event.logical_key {
                     Key::Named(NamedKey::Enter) => {
                         self.commit_local();
@@ -551,13 +568,21 @@ impl Widget for NumberInput {
         self.field.is_dragging()
     }
 
-    fn name(&self) -> &str { "NumberInput" }
-
-    fn test_id(&self) -> Option<&str> {
-        if self.id.is_empty() { Some("number_input") } else { Some(self.id.as_str()) }
+    fn name(&self) -> &'static str {
+        "NumberInput"
     }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn test_id(&self) -> Option<&str> {
+        if self.id.is_empty() {
+            Some("number_input")
+        } else {
+            Some(self.id.as_str())
+        }
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if !self.enabled {
@@ -572,16 +597,18 @@ impl Widget for NumberInput {
         }
     }
 
-    fn is_focusable(&self) -> bool { self.enabled }
-    fn is_enabled(&self) -> bool { self.enabled }
+    fn is_focusable(&self) -> bool {
+        self.enabled
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
     fn set_focus(&mut self, focused: bool) {
         if focused {
             // Route focus into the embedded field so it's immediately
-            // editable — whether it arrived via a click in the field, a
-            // stepper press, or keyboard Tab. A *click in the field*
-            // additionally pre-selects the value so the first keystroke
-            // replaces it (standard numeric-field UX); focus arriving any
-            // other way leaves the caret where it is.
+            // editable, however it arrived. A click in the field also
+            // pre-selects the value so the first keystroke replaces it;
+            // focus arriving any other way leaves the caret where it is.
             let via_field_click = self.field_focus_pending;
             self.field_focus_pending = false;
             self.is_focused = true;
@@ -599,11 +626,17 @@ impl Widget for NumberInput {
             }
         }
     }
-    fn is_focused(&self) -> bool { self.is_focused || self.field.is_focused() }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.field)
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused || self.field.is_focused()
+    }
 
     /// Reports [`Role::SpinButton`] with the formatted value; an assistive
     /// technology can nudge it with Increment / Decrement or jump it with
-    /// SetValue, all through the same commit path as pointer/keyboard input.
+    /// `SetValue`, all through the same commit path as pointer/keyboard input.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
@@ -661,8 +694,8 @@ impl Widget for NumberInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::keyboard::{PhysicalKey, NativeKeyCode, KeyLocation};
     use winit::event::{KeyEvent, Modifiers};
+    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     fn layout_at(n: &mut NumberInput, x0: f64, y0: f64) {
         // Mirror `apply_layout`'s arithmetic without a taffy pass.
@@ -678,14 +711,21 @@ mod tests {
 
     fn dispatch(n: &mut NumberInput, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         n.handle_event(
-            event, 1.0, &Modifiers::default(), &mut doc, &root,
-            &mut handled, &mut focus_target, node, &tree,
+            event,
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
         );
     }
 
@@ -752,7 +792,9 @@ mod tests {
     /// the change through the production handle_event path.
     #[test]
     fn type_then_enter_parses_clamps_and_commits() {
-        let mut n = NumberInput::new(16.0).with_range(8.0, 72.0).with_suffix("px");
+        let mut n = NumberInput::new(16.0)
+            .with_range(8.0, 72.0)
+            .with_suffix("px");
         layout_at(&mut n, 0.0, 0.0);
 
         // Focus the field (as a click would) and replace its text with an
@@ -762,7 +804,11 @@ mod tests {
         dispatch(&mut n, &named_key(NamedKey::Enter));
 
         assert_eq!(n.value(), 72.0, "typed 999 clamps to max 72");
-        assert_eq!(n.take_changed(), Some(72.0), "commit reports the clamped change");
+        assert_eq!(
+            n.take_changed(),
+            Some(72.0),
+            "commit reports the clamped change"
+        );
         assert_eq!(n.take_changed(), None, "take_changed drains");
         // Display re-rendered to the canonical value + suffix.
         assert_eq!(n.field.value(), "72 px");
@@ -772,7 +818,9 @@ mod tests {
     /// text is tolerated by the parser.
     #[test]
     fn type_with_unit_suffix_commits_number() {
-        let mut n = NumberInput::new(16.0).with_range(1.0, 100.0).with_suffix("px");
+        let mut n = NumberInput::new(16.0)
+            .with_range(1.0, 100.0)
+            .with_suffix("px");
         layout_at(&mut n, 0.0, 0.0);
         n.field.set_focus(true);
         n.field.set_text("24 px");
@@ -799,8 +847,14 @@ mod tests {
     fn steppers_increment_and_clamp() {
         let mut n = NumberInput::new(70.0).with_range(8.0, 72.0).with_step(2.0);
         layout_at(&mut n, 0.0, 0.0);
-        let plus_c = ((n.plus_rect.x0 + n.plus_rect.x1) / 2.0, (n.plus_rect.y0 + n.plus_rect.y1) / 2.0);
-        let minus_c = ((n.minus_rect.x0 + n.minus_rect.x1) / 2.0, (n.minus_rect.y0 + n.minus_rect.y1) / 2.0);
+        let plus_c = (
+            (n.plus_rect.x0 + n.plus_rect.x1) / 2.0,
+            (n.plus_rect.y0 + n.plus_rect.y1) / 2.0,
+        );
+        let minus_c = (
+            (n.minus_rect.x0 + n.minus_rect.x1) / 2.0,
+            (n.minus_rect.y0 + n.minus_rect.y1) / 2.0,
+        );
 
         // Click + once: 70 → 72.
         dispatch(&mut n, &cursor(plus_c.0, plus_c.1));
@@ -884,7 +938,11 @@ mod tests {
         let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
         n.set_value(200.0);
         assert_eq!(n.value(), 72.0, "clamped");
-        assert_eq!(n.take_changed(), None, "programmatic set is not a user change");
+        assert_eq!(
+            n.take_changed(),
+            None,
+            "programmatic set is not a user change"
+        );
         assert_eq!(n.field.value(), "72");
     }
 
@@ -895,7 +953,10 @@ mod tests {
         let mut n = NumberInput::new(16.0).with_range(1.0, 100.0).with_step(1.0);
         layout_at(&mut n, 0.0, 0.0);
         Widget::set_focus(&mut n, true);
-        assert!(n.is_editing(), "keyboard focus routes into the editable field");
+        assert!(
+            n.is_editing(),
+            "keyboard focus routes into the editable field"
+        );
         dispatch(&mut n, &named_key(NamedKey::ArrowUp));
         assert_eq!(n.value(), 17.0, "arrows step a keyboard-focused field");
     }
@@ -916,18 +977,33 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mut n = NumberInput::new(16.0).with_range(8.0, 72.0).with_step(4.0);
-        assert!(Widget::perform_action(&mut n, &Action::Increment, &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut n,
+            &Action::Increment,
+            &mut doc,
+            &root
+        ));
         assert_eq!(n.value(), 20.0);
-        assert!(Widget::perform_action(&mut n, &Action::SetValue("100".into()), &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut n,
+            &Action::SetValue("100".into()),
+            &mut doc,
+            &root
+        ));
         assert_eq!(n.value(), 72.0, "SetValue clamps");
     }
 
     #[test]
     fn disabled_field_rejects_input() {
-        let mut n = NumberInput::new(16.0).with_range(8.0, 72.0).with_enabled(false);
+        let mut n = NumberInput::new(16.0)
+            .with_range(8.0, 72.0)
+            .with_enabled(false);
         layout_at(&mut n, 0.0, 0.0);
         let before = n.value();
-        let plus_c = ((n.plus_rect.x0 + n.plus_rect.x1) / 2.0, (n.plus_rect.y0 + n.plus_rect.y1) / 2.0);
+        let plus_c = (
+            (n.plus_rect.x0 + n.plus_rect.x1) / 2.0,
+            (n.plus_rect.y0 + n.plus_rect.y1) / 2.0,
+        );
         dispatch(&mut n, &cursor(plus_c.0, plus_c.1));
         dispatch(&mut n, &press());
         assert_eq!(n.value(), before, "disabled field ignores stepper clicks");

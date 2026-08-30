@@ -146,8 +146,12 @@ pub enum DateStyle {
 }
 
 impl DateStyle {
-    pub const ALL: [DateStyle; 4] =
-        [DateStyle::Iso, DateStyle::Us, DateStyle::Eu, DateStyle::Long];
+    pub const ALL: [DateStyle; 4] = [
+        DateStyle::Iso,
+        DateStyle::Us,
+        DateStyle::Eu,
+        DateStyle::Long,
+    ];
 
     /// A worked example so the picker shows what each style produces.
     pub fn example(self) -> &'static str {
@@ -295,8 +299,7 @@ impl RegionSettings {
     /// Persist to the shared path, preserving foreign keys. Creates the
     /// `qos` config directory if needed. Returns the path written.
     pub fn save(&self) -> std::io::Result<PathBuf> {
-        let path = Self::store_path()
-            .ok_or_else(|| std::io::Error::other("no config dir"))?;
+        let path = Self::store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -358,7 +361,10 @@ mod tests {
     fn merge_preserves_foreign_keys() {
         let existing = r#"{"version":1,"theme":{"name":"dracula"},"locale":{"currency":"USD","date_format":"Iso","time_format":"H24","measurement":"Metric"}}"#;
         let r = RegionSettings {
-            locale: Locale { currency: Currency::GBP, ..Default::default() },
+            locale: Locale {
+                currency: Currency::GBP,
+                ..Default::default()
+            },
         };
         let out = r.to_json_merged(existing);
         // Our edit landed.
@@ -377,7 +383,9 @@ mod tests {
 
     #[test]
     fn unknown_enum_string_degrades_to_default_locale() {
-        let r = RegionSettings::from_json(r#"{"locale":{"currency":"XXX","date_format":"Iso","time_format":"H24","measurement":"Metric"}}"#);
+        let r = RegionSettings::from_json(
+            r#"{"locale":{"currency":"XXX","date_format":"Iso","time_format":"H24","measurement":"Metric"}}"#,
+        );
         // The whole locale section fails to parse (XXX isn't a Currency)
         // and we fall back to defaults rather than erroring.
         assert_eq!(r.locale, Locale::default());

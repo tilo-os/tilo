@@ -36,7 +36,10 @@ impl Default for Source {
     fn default() -> Self {
         // A well-known public Piped API instance. Operators can point this
         // at a self-hosted instance for reliability.
-        Self { backend: Backend::Piped, instance: "https://pipedapi.kavin.rocks".into() }
+        Self {
+            backend: Backend::Piped,
+            instance: "https://pipedapi.kavin.rocks".into(),
+        }
     }
 }
 
@@ -97,11 +100,10 @@ impl Source {
     pub fn resolve_best(&self, video_id: &str) -> Result<AudioStream, String> {
         let url = self.streams_url(video_id);
         let body = reqwest::blocking::get(&url)
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.text())
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .and_then(reqwest::blocking::Response::text)
             .map_err(|e| e.to_string())?;
-        let json: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
         let streams = parse_audio_streams(self.backend, &json);
         Self::best_audio(&streams)
             .cloned()
@@ -116,7 +118,9 @@ fn parse_audio_streams(backend: Backend, json: &serde_json::Value) -> Vec<AudioS
         Backend::Piped => json.get("audioStreams"),
         Backend::Invidious => json.get("adaptiveFormats"),
     };
-    let Some(items) = arr.and_then(|v| v.as_array()) else { return vec![] };
+    let Some(items) = arr.and_then(|v| v.as_array()) else {
+        return vec![];
+    };
     items
         .iter()
         .filter_map(|it| {
@@ -130,7 +134,10 @@ fn parse_audio_streams(backend: Backend, json: &serde_json::Value) -> Vec<AudioS
             // Invidious sends bitrate as a string; Piped as a number.
             let bitrate = it
                 .get("bitrate")
-                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                })
                 .unwrap_or(0) as u32;
             // Only keep audio formats.
             if backend == Backend::Invidious && !mime.starts_with("audio") {
@@ -148,7 +155,7 @@ fn urlencode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
@@ -163,7 +170,10 @@ mod tests {
 
     #[test]
     fn piped_urls() {
-        let s = Source { backend: Backend::Piped, instance: "https://x.test/".into() };
+        let s = Source {
+            backend: Backend::Piped,
+            instance: "https://x.test/".into(),
+        };
         assert_eq!(s.streams_url("abc123"), "https://x.test/streams/abc123");
         assert_eq!(
             s.search_url("aurora skies"),
@@ -173,16 +183,31 @@ mod tests {
 
     #[test]
     fn invidious_urls() {
-        let s = Source { backend: Backend::Invidious, instance: "https://iv.test".into() };
+        let s = Source {
+            backend: Backend::Invidious,
+            instance: "https://iv.test".into(),
+        };
         assert_eq!(s.streams_url("zzz"), "https://iv.test/api/v1/videos/zzz");
     }
 
     #[test]
     fn best_audio_picks_highest_bitrate() {
         let streams = vec![
-            AudioStream { url: "a".into(), bitrate: 128_000, mime: "audio/mp4".into() },
-            AudioStream { url: "b".into(), bitrate: 256_000, mime: "audio/webm".into() },
-            AudioStream { url: "c".into(), bitrate: 64_000, mime: "audio/mp4".into() },
+            AudioStream {
+                url: "a".into(),
+                bitrate: 128_000,
+                mime: "audio/mp4".into(),
+            },
+            AudioStream {
+                url: "b".into(),
+                bitrate: 256_000,
+                mime: "audio/webm".into(),
+            },
+            AudioStream {
+                url: "c".into(),
+                bitrate: 64_000,
+                mime: "audio/mp4".into(),
+            },
         ];
         assert_eq!(Source::best_audio(&streams).unwrap().url, "b");
     }

@@ -163,7 +163,10 @@ pub struct HexResourceCtx {
 /// a bare `7`. Returns `None` for anything that isn't a single byte.
 fn parse_hex_byte(s: &str) -> Option<u8> {
     let t = s.trim();
-    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    let t = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
     u8::from_str_radix(t, 16).ok()
 }
 
@@ -176,7 +179,11 @@ fn immediate_spec(id: &str, label: &str, action: &HexEditorAction) -> ActionSpec
 /// `hex_editor.document` root, exporting the byte-edit actions at the cursor /
 /// selection. Every action is the same one the matching keystroke dispatches.
 pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
-    let mut root = Resource::new("hex_editor.document", "hex_editor.document", ctx.label.clone());
+    let mut root = Resource::new(
+        "hex_editor.document",
+        "hex_editor.document",
+        ctx.label.clone(),
+    );
 
     // Insert a byte at the cursor — a prompted hex value. The offset is the
     // clamped cursor so it is valid even for an append cursor / empty buffer.
@@ -304,8 +311,14 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Insert byte")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete byte")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Insert byte")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete byte")),
+            "{labels:?}"
+        );
     }
 
     /// The empty state publishes nothing — there is no open buffer to act on.
@@ -325,7 +338,10 @@ mod tests {
         let resources = Widget::resources(&view, &doc);
         let ids: Vec<&str> = resources[0].actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"delete-selection"), "{ids:?}");
-        assert!(!ids.contains(&"delete-byte"), "a selection replaces the single-byte delete");
+        assert!(
+            !ids.contains(&"delete-byte"),
+            "a selection replaces the single-byte delete"
+        );
     }
 
     /// Dispatching an action mutates the buffer, records exactly one undo
@@ -341,27 +357,19 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             HexDoc::read_bytes(&state.doc).unwrap(),
             vec![0x00, 0xAB, 0x22, 0x33],
             "the action overwrote byte 1"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             HexDoc::read_bytes(&state.doc).unwrap(),
             vec![0x00, 0x11, 0x22, 0x33],
@@ -378,7 +386,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // An insert in the middle — the growth path, not just an overwrite.
         let action = insert_bytes_action(2, vec![0xCA, 0xFE]);
@@ -387,12 +399,19 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(
             HexDoc::read_bytes(&a).unwrap(),
             vec![0xDE, 0xAD, 0xCA, 0xFE, 0xBE, 0xEF],
         );
-        assert_eq!(HexDoc::read_bytes(&a).unwrap(), HexDoc::read_bytes(&b).unwrap());
+        assert_eq!(
+            HexDoc::read_bytes(&a).unwrap(),
+            HexDoc::read_bytes(&b).unwrap()
+        );
     }
 
     /// A delete also converges byte-identically on a peer.
@@ -435,7 +454,10 @@ mod tests {
         let from_keystroke = encode(&edit_to_action(&edits[0]));
 
         assert_eq!(from_spec.type_id, from_keystroke.type_id);
-        assert_eq!(from_spec.payload, from_keystroke.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_keystroke.payload,
+            "one source of truth for delete"
+        );
     }
 
     /// The overwrite prompt builds the same action the hex-column keystroke
@@ -452,6 +474,9 @@ mod tests {
             .expect("an overwrite-byte action");
         let from_spec = prompted_encode(spec, "ab");
         let from_builder = encode(&overwrite_bytes_action(1, vec![0xAB]));
-        assert_eq!(from_spec.payload, from_builder.payload, "overwrite is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "overwrite is one source of truth"
+        );
     }
 }

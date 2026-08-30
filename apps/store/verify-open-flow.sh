@@ -27,8 +27,10 @@ mkdir -p "$WORK/serve" "$WORK/payload/bin" "$QOS_APPS_DATA_DIR"
 hr() { printf '\n─── %s ───\n' "$*"; }
 
 hr "1. build store example + hello + pkg-cli + install (debug)"
+# The cd is what selects the target directory; naming it as CARGO_TARGET_DIR
+# would only cost cache hits, since sccache hashes that variable into its Rust
+# key. The cargo shim on PATH selects the container's sccache server.
 distrobox enter my-distrobox -- bash -c "cd '$INTEG' && \
-  CARGO_TARGET_DIR='$INTEG/target' SCCACHE_DIR=/var/home/user/Development/quickdesktop/.claude/qos-sccache RUSTC_WRAPPER=sccache \
   cargo build -p store --example drive_open -p hello -p pkg-cli -p install 2>&1 | tail -3"
 
 cp "$INTEG/target/debug/qos-hello" "$WORK/payload/bin/qos-hello"

@@ -42,7 +42,10 @@ impl BatteryState {
     /// can trip the low / critical thresholds — a charging or full one is
     /// gaining runtime, so any prior warning is stale.
     pub fn is_discharging(self) -> bool {
-        matches!(self, BatteryState::Discharging | BatteryState::PendingDischarge)
+        matches!(
+            self,
+            BatteryState::Discharging | BatteryState::PendingDischarge
+        )
     }
 }
 
@@ -60,7 +63,11 @@ pub struct BatterySnapshot {
 impl BatterySnapshot {
     /// A snapshot for a machine with no battery (always "fine").
     pub fn absent() -> Self {
-        Self { present: false, percent: 100, state: BatteryState::Unknown }
+        Self {
+            present: false,
+            percent: 100,
+            state: BatteryState::Unknown,
+        }
     }
 }
 
@@ -134,11 +141,9 @@ impl BatteryMonitor {
                 self.warned_low = true;
                 out.push(BatteryEvent::Critical(snap.percent));
             }
-        } else if snap.percent <= policy.low_battery_percent {
-            if !self.warned_low {
-                self.warned_low = true;
-                out.push(BatteryEvent::Low(snap.percent));
-            }
+        } else if snap.percent <= policy.low_battery_percent && !self.warned_low {
+            self.warned_low = true;
+            out.push(BatteryEvent::Low(snap.percent));
         }
 
         out
@@ -156,11 +161,19 @@ mod tests {
     use super::*;
 
     fn policy() -> PowerPolicy {
-        PowerPolicy { low_battery_percent: 15, critical_battery_percent: 5, ..Default::default() }
+        PowerPolicy {
+            low_battery_percent: 15,
+            critical_battery_percent: 5,
+            ..Default::default()
+        }
     }
 
     fn snap(percent: u8, state: BatteryState) -> BatterySnapshot {
-        BatterySnapshot { present: true, percent, state }
+        BatterySnapshot {
+            present: true,
+            percent,
+            state,
+        }
     }
 
     #[test]
@@ -177,7 +190,10 @@ mod tests {
     #[test]
     fn healthy_charge_emits_nothing() {
         let mut m = BatteryMonitor::new();
-        assert!(m.evaluate(&snap(80, BatteryState::Discharging), &policy()).is_empty());
+        assert!(
+            m.evaluate(&snap(80, BatteryState::Discharging), &policy())
+                .is_empty()
+        );
         assert!(!m.is_warning());
     }
 
@@ -185,10 +201,19 @@ mod tests {
     fn low_warns_once_then_stays_quiet() {
         let mut m = BatteryMonitor::new();
         let p = policy();
-        assert_eq!(m.evaluate(&snap(15, BatteryState::Discharging), &p), vec![BatteryEvent::Low(15)]);
+        assert_eq!(
+            m.evaluate(&snap(15, BatteryState::Discharging), &p),
+            vec![BatteryEvent::Low(15)]
+        );
         // Draining further but still above critical: no repeat warning.
-        assert!(m.evaluate(&snap(12, BatteryState::Discharging), &p).is_empty());
-        assert!(m.evaluate(&snap(8, BatteryState::Discharging), &p).is_empty());
+        assert!(
+            m.evaluate(&snap(12, BatteryState::Discharging), &p)
+                .is_empty()
+        );
+        assert!(
+            m.evaluate(&snap(8, BatteryState::Discharging), &p)
+                .is_empty()
+        );
         assert!(m.is_warning());
     }
 
@@ -202,16 +227,28 @@ mod tests {
             vec![BatteryEvent::Critical(4)]
         );
         // Further drain: silent (already latched).
-        assert!(m.evaluate(&snap(2, BatteryState::Discharging), &p).is_empty());
+        assert!(
+            m.evaluate(&snap(2, BatteryState::Discharging), &p)
+                .is_empty()
+        );
     }
 
     #[test]
     fn low_then_critical_are_two_distinct_shots() {
         let mut m = BatteryMonitor::new();
         let p = policy();
-        assert_eq!(m.evaluate(&snap(14, BatteryState::Discharging), &p), vec![BatteryEvent::Low(14)]);
-        assert_eq!(m.evaluate(&snap(5, BatteryState::Discharging), &p), vec![BatteryEvent::Critical(5)]);
-        assert!(m.evaluate(&snap(3, BatteryState::Discharging), &p).is_empty());
+        assert_eq!(
+            m.evaluate(&snap(14, BatteryState::Discharging), &p),
+            vec![BatteryEvent::Low(14)]
+        );
+        assert_eq!(
+            m.evaluate(&snap(5, BatteryState::Discharging), &p),
+            vec![BatteryEvent::Critical(5)]
+        );
+        assert!(
+            m.evaluate(&snap(3, BatteryState::Discharging), &p)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -221,12 +258,18 @@ mod tests {
         let _ = m.evaluate(&snap(10, BatteryState::Discharging), &p); // Low
         assert!(m.is_warning());
         // Plug in: one Recovered, latches cleared.
-        assert_eq!(m.evaluate(&snap(10, BatteryState::Charging), &p), vec![BatteryEvent::Recovered]);
+        assert_eq!(
+            m.evaluate(&snap(10, BatteryState::Charging), &p),
+            vec![BatteryEvent::Recovered]
+        );
         assert!(!m.is_warning());
         // A second charging reading is silent (already recovered).
         assert!(m.evaluate(&snap(11, BatteryState::Charging), &p).is_empty());
         // Unplug and drain again: warns afresh.
-        assert_eq!(m.evaluate(&snap(12, BatteryState::Discharging), &p), vec![BatteryEvent::Low(12)]);
+        assert_eq!(
+            m.evaluate(&snap(12, BatteryState::Discharging), &p),
+            vec![BatteryEvent::Low(12)]
+        );
     }
 
     #[test]

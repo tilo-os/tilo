@@ -35,7 +35,8 @@ fn ops_strategy() -> impl Strategy<Value = Vec<Op>> {
         any::<u8>().prop_map(Op::Bold),
         (any::<u8>(), any::<u8>(), any::<u8>()).prop_map(|(i, sz, f)| Op::FontSize(i, sz, f)),
         (any::<u8>(), any::<u8>()).prop_map(|(i, f)| Op::Font(i, f)),
-        (any::<u8>(), any::<u8>(), "https?://[a-z]{1,5}/[a-z]{0,4}").prop_map(|(i, f, u)| Op::Link(i, f, u)),
+        (any::<u8>(), any::<u8>(), "https?://[a-z]{1,5}/[a-z]{0,4}")
+            .prop_map(|(i, f, u)| Op::Link(i, f, u)),
         (any::<u8>(), any::<u8>()).prop_map(|(i, c)| Op::Color(i, c)),
     ];
     proptest::collection::vec(op, 0..40)
@@ -55,7 +56,8 @@ fn apply(doc: &mut Document, ops: &[Op]) {
     for op in ops {
         let blocks = doc.blocks_in_order();
         let pick = |i: u8| blocks.get((i as usize) % blocks.len().max(1)).cloned();
-        let block_len = |doc: &Document, b: &str| doc.block_text(b).map(|t| t.chars().count()).unwrap_or(0);
+        let block_len =
+            |doc: &Document, b: &str| doc.block_text(b).map_or(0, |t| t.chars().count());
         match op {
             Op::InsertPara(i) => {
                 let after = if blocks.is_empty() { None } else { pick(*i) };
@@ -80,7 +82,7 @@ fn apply(doc: &mut Document, ops: &[Op]) {
                     let len = block_len(doc, &b);
                     let (s, e) = subrange(len, *sz, *f);
                     if e > s {
-                        let pts = 8 + (*sz as i64 % 24); // 8..=31pt
+                        let pts = 8 + (i64::from(*sz) % 24); // 8..=31pt
                         doc.add_mark(&b, s, e, "fontSize", pts);
                     }
                 }
@@ -107,7 +109,12 @@ fn apply(doc: &mut Document, ops: &[Op]) {
                 if let Some(b) = pick(*i) {
                     let len = block_len(doc, &b);
                     if len > 0 {
-                        let hex = format!("#{:02x}{:02x}{:02x}", c, c.wrapping_mul(3), c.wrapping_mul(7));
+                        let hex = format!(
+                            "#{:02x}{:02x}{:02x}",
+                            c,
+                            c.wrapping_mul(3),
+                            c.wrapping_mul(7)
+                        );
                         doc.add_mark(&b, 0, len, "color", hex.as_str());
                     }
                 }
@@ -120,7 +127,11 @@ fn apply(doc: &mut Document, ops: &[Op]) {
 /// equal materializations must yield byte-identical content.
 fn content_xml(doc: &Document) -> Vec<u8> {
     let odt = OdtCodec.export(doc.as_ref()).unwrap();
-    OdtContainer::read(&odt).unwrap().get("content.xml").unwrap().to_vec()
+    OdtContainer::read(&odt)
+        .unwrap()
+        .get("content.xml")
+        .unwrap()
+        .to_vec()
 }
 
 proptest! {

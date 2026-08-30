@@ -5,7 +5,9 @@
 //! [`ui::portal`]. All this module carries is the filter set and the labels
 //! this app wants on the dialog.
 
-pub use ui::portal::{PortalChannel as ImportChannel, PortalOutcome as ImportOutcome, inject_for_test};
+pub use ui::portal::{
+    PortalChannel as ImportChannel, PortalOutcome as ImportOutcome, inject_for_test,
+};
 
 fn opml_filter() -> ui::portal::FileFilter {
     ui::portal::FileFilter::new("OPML")

@@ -1,18 +1,16 @@
 //! Offscreen render guard for [`IconGrid`]: drives the full
-//! build_layout → measure → apply_layout → draw pipeline and asserts the
+//! `build_layout` → measure → `apply_layout` → draw pipeline and asserts the
 //! grid rasterises non-empty pixels (icons + labels + a selection fill).
 //!
 //! Skips gracefully when no wgpu adapter is available, matching the other
 //! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
-mod support;
-
+use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
-use support::offscreen::OffscreenRenderer;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
@@ -22,7 +20,10 @@ use ui::theme::Theme;
 use ui::widget::{IconGrid, IconGridItem, Widget};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h))).ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 #[test]
@@ -72,7 +73,11 @@ fn icon_grid_renders_cells_and_selection() {
     grid.apply_layout(&taffy, root, Point::ORIGIN);
 
     // 520px wide ÷ 108px stride → 4 columns.
-    assert_eq!(grid.column_count(), 4, "grid reflowed to 4 columns at 520px");
+    assert_eq!(
+        grid.column_count(),
+        4,
+        "grid reflowed to 4 columns at 520px"
+    );
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
@@ -83,7 +88,10 @@ fn icon_grid_renders_cells_and_selection() {
     // Some pixels must differ from the background (icons/labels/selection).
     let bg_rgba = [0x0f, 0x17, 0x2a, 0xff];
     let non_bg = rgba.chunks_exact(4).filter(|px| px[..4] != bg_rgba).count();
-    assert!(non_bg > 1000, "expected substantial painted content, got {non_bg} px");
+    assert!(
+        non_bg > 1000,
+        "expected substantial painted content, got {non_bg} px"
+    );
 
     if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);

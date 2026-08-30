@@ -27,14 +27,12 @@ qos-actions = { path = "../../crates/collab/actions" }
 chrono = { workspace = true, features = ["std", "clock"] }
 automerge.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 
 # Live CalDAV sync (PROPFIND discovery, calendar-query/sync-collection REPORTs,
 # ETag-guarded PUTs). This pulls a TLS/HTTP stack, so it is OPTIONAL and gated
@@ -61,3 +59,6 @@ live = ["dep:reqwest"]
 # `QOS_CALENDAR_IMPORT_DIR` env var (export/import go through `transfer_dir`),
 # so they never race each other under cargo's default parallel runner.
 serial_test.workspace = true
+
+[lints]
+workspace = true

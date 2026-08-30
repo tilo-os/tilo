@@ -1,18 +1,17 @@
-//! Document properties ⇄ OOXML `docProps/core.xml` (+ `app.xml` generator).
-//! OOXML splits document metadata across two parts:
-//!   * `docProps/core.xml` — `cp:coreProperties` with `dc:title`, `dc:creator`,
-//!     `dc:subject`, `cp:keywords`, `dcterms:created`, `dcterms:modified`.
-//!   * `docProps/app.xml` — `Properties > Application` (the generator string).
-//! This maps those onto the canonical `meta.props` document properties, both
-//! directions, preserving unmodeled `core.xml` children verbatim on export.
+//! Document properties ⇄ OOXML `docProps/core.xml` (+ `app.xml` generator). OOXML splits
+//! metadata across two parts: `core.xml`'s `cp:coreProperties` (title/creator/subject/
+//! keywords/created/modified) and `app.xml`'s `Properties > Application` generator string.
+//! This maps those onto `meta.props`, preserving unmodeled `core.xml` children on export.
 
-use crate::model::{doc_prop, DocMut, DocRef};
-use crate::schema::*;
+use crate::model::{DocMut, DocRef, doc_prop};
+use crate::schema::{
+    PROP_AUTHOR, PROP_CREATED, PROP_GENERATOR, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT,
+    PROP_TITLE,
+};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
 
-/// The element local-name (after any `prefix:`).
 fn local_name(name: &[u8]) -> &[u8] {
     match name.iter().rposition(|&b| b == b':') {
         Some(i) => &name[i + 1..],
@@ -21,7 +20,6 @@ fn local_name(name: &[u8]) -> &[u8] {
 }
 
 /// Map a `core.xml` element local-name onto a canonical document-property key.
-/// `created`/`modified` come from `dcterms:*`; `keywords` from `cp:keywords`.
 fn core_prop_for_element(local: &[u8]) -> Option<&'static str> {
     match local {
         b"title" => Some(PROP_TITLE),
@@ -34,8 +32,7 @@ fn core_prop_for_element(local: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Collect the text content of every element matching `prop_of` into the doc's
-/// `meta.props` map. Shared engine for `core.xml`/`app.xml`.
+/// Collect the text content of every element matching `prop_of` into `meta.props`.
 fn import_elements(xml: &[u8], doc: &mut DocMut, prop_of: impl Fn(&[u8]) -> Option<&'static str>) {
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().trim_text(false);
@@ -51,21 +48,21 @@ fn import_elements(xml: &[u8], doc: &mut DocMut, prop_of: impl Fn(&[u8]) -> Opti
                 }
             }
             Ok(Event::Text(t)) => {
-                if current.is_some() {
-                    if let Ok(s) = t.xml10_content() {
-                        text.push_str(&s);
-                    }
+                if current.is_some()
+                    && let Ok(s) = t.xml10_content()
+                {
+                    text.push_str(&s);
                 }
             }
             Ok(Event::End(e)) => {
-                if let Some(prop) = prop_of(local_name(e.name().as_ref())) {
-                    if current == Some(prop) {
-                        if !text.is_empty() {
-                            doc.set_doc_prop(prop, &text);
-                        }
-                        current = None;
-                        text.clear();
+                if let Some(prop) = prop_of(local_name(e.name().as_ref()))
+                    && current == Some(prop)
+                {
+                    if !text.is_empty() {
+                        doc.set_doc_prop(prop, &text);
                     }
+                    current = None;
+                    text.clear();
                 }
             }
             Ok(Event::Eof) => break,
@@ -76,14 +73,18 @@ fn import_elements(xml: &[u8], doc: &mut DocMut, prop_of: impl Fn(&[u8]) -> Opti
     }
 }
 
-/// Import `docProps/core.xml` into document properties.
 pub(super) fn import_core(xml: &[u8], doc: &mut DocMut) {
     import_elements(xml, doc, core_prop_for_element);
 }
 
-/// Import the generator (`Application`) from `docProps/app.xml`.
 pub(super) fn import_app(xml: &[u8], doc: &mut DocMut) {
-    import_elements(xml, doc, |local| if local == b"Application" { Some(PROP_GENERATOR) } else { None });
+    import_elements(xml, doc, |local| {
+        if local == b"Application" {
+            Some(PROP_GENERATOR)
+        } else {
+            None
+        }
+    });
 }
 
 fn escape_text(s: &str) -> String {
@@ -110,11 +111,17 @@ const APP_NS: &str =
     r#"xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties""#;
 
 /// The modeled child elements (by local name) of `cp:coreProperties` we own.
-const CORE_MODELED: [&[u8]; 6] = [b"title", b"creator", b"subject", b"keywords", b"created", b"modified"];
+const CORE_MODELED: [&[u8]; 6] = [
+    b"title",
+    b"creator",
+    b"subject",
+    b"keywords",
+    b"created",
+    b"modified",
+];
 
-/// Serialize the modeled `core.xml` children from the document's properties, in
-/// canonical key order. `dcterms:created`/`modified` carry the W3CDTF type attr
-/// Word writes, so the value round-trips as a real timestamp.
+/// Serialize the modeled `core.xml` children in canonical key order. `dcterms:created`/
+/// `modified` carry the W3CDTF type attr Word writes, so the value round-trips as a timestamp.
 fn core_modeled_children(doc: &DocRef) -> String {
     let mut out = String::new();
     let mut emit = |key: &str, open: &str, close: &str| {
@@ -128,12 +135,19 @@ fn core_modeled_children(doc: &DocRef) -> String {
     emit(PROP_AUTHOR, "<dc:creator>", "</dc:creator>");
     emit(PROP_SUBJECT, "<dc:subject>", "</dc:subject>");
     emit(PROP_KEYWORDS, "<cp:keywords>", "</cp:keywords>");
-    emit(PROP_CREATED, r#"<dcterms:created xsi:type="dcterms:W3CDTF">"#, "</dcterms:created>");
-    emit(PROP_MODIFIED, r#"<dcterms:modified xsi:type="dcterms:W3CDTF">"#, "</dcterms:modified>");
+    emit(
+        PROP_CREATED,
+        r#"<dcterms:created xsi:type="dcterms:W3CDTF">"#,
+        "</dcterms:created>",
+    );
+    emit(
+        PROP_MODIFIED,
+        r#"<dcterms:modified xsi:type="dcterms:W3CDTF">"#,
+        "</dcterms:modified>",
+    );
     out
 }
 
-/// Re-emit a start tag verbatim (name + attributes), self-closing if `empty`.
 fn append_start(out: &mut Vec<u8>, e: &BytesStart, empty: bool) {
     out.push(b'<');
     out.extend_from_slice(e.name().as_ref());
@@ -151,14 +165,13 @@ fn append_start(out: &mut Vec<u8>, e: &BytesStart, empty: bool) {
     }
 }
 
-/// The inner XML of `cp:coreProperties` with the modeled children stripped, so an
-/// existing `core.xml`'s unmodeled fields (lastModifiedBy, revision, …) survive.
+/// The inner XML of `cp:coreProperties` with modeled children stripped, so an existing
+/// `core.xml`'s unmodeled fields (lastModifiedBy, revision, …) survive.
 fn core_unmodeled_children(xml: &[u8]) -> String {
     unmodeled_inner(xml, "coreProperties", &CORE_MODELED)
 }
 
-/// Strip the elements whose local-name is in `modeled_names` from the inner XML
-/// of the `container` element, returning the surviving inner XML verbatim.
+/// Strip elements whose local-name is in `modeled_names`, returning the surviving inner XML.
 fn unmodeled_inner(xml: &[u8], container: &str, modeled_names: &[&[u8]]) -> String {
     let modeled: BTreeMap<&[u8], ()> = modeled_names.iter().map(|k| (*k, ())).collect();
     let inner = match element_inner(xml, container) {
@@ -211,9 +224,8 @@ fn unmodeled_inner(xml: &[u8], container: &str, modeled_names: &[&[u8]]) -> Stri
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Inner XML of the first element whose local-name (after a `prefix:`) is
-/// `local`. Shallow extraction via substring search; sufficient for the flat
-/// metadata parts.
+/// Inner XML of the first element whose local-name is `local`. Shallow substring
+/// extraction, sufficient for the flat metadata parts.
 fn element_inner(xml: &[u8], local: &str) -> Option<Vec<u8>> {
     let text = String::from_utf8_lossy(xml);
     // Find the opening tag: the local name preceded by `<` or `<prefix:`.
@@ -226,10 +238,14 @@ fn element_inner(xml: &[u8], local: &str) -> Option<Vec<u8>> {
         let before = text[..pos].rfind('<')?;
         let between = &text[before + 1..pos];
         // `between` must be empty or a `prefix:` (alnum + trailing colon).
-        let is_tag = between.is_empty() || (between.ends_with(':') && between[..between.len() - 1].chars().all(|c| c.is_alphanumeric()));
+        let is_tag = between.is_empty()
+            || (between.ends_with(':')
+                && between[..between.len() - 1]
+                    .chars()
+                    .all(char::is_alphanumeric));
         // The char after the name must end the name (space, `>`, `/`).
         let after_ch = text[pos + needle.len()..].chars().next();
-        let name_ends = matches!(after_ch, Some(' ') | Some('>') | Some('/') | Some('\t') | Some('\n') | Some('\r'));
+        let name_ends = matches!(after_ch, Some(' ' | '>' | '/' | '\t' | '\n' | '\r'));
         if is_tag && name_ends {
             let gt = text[before..].find('>')? + before;
             break (before, gt);
@@ -256,10 +272,8 @@ fn element_inner(xml: &[u8], local: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// Build `docProps/core.xml` for export from the doc's properties, merging in any
-/// unmodeled children of the preserved original. Returns `None` only when there
-/// are no modeled core properties *and* no original part (so we don't synthesise
-/// an empty part for documents that never had one).
+/// Build `docProps/core.xml` for export, merging in unmodeled children of the preserved
+/// original. `None` only when there are no modeled properties *and* no original part.
 pub(super) fn export_core(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8>> {
     let modeled = core_modeled_children(doc);
     let preserved = original.map(core_unmodeled_children).unwrap_or_default();
@@ -273,17 +287,17 @@ pub(super) fn export_core(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u
     Some(xml.into_bytes())
 }
 
-/// Build `docProps/app.xml` for export. Only the generator (`Application`) is
-/// modeled; when an original exists its other `Properties` children are preserved
-/// while `Application` is regenerated from the doc property. Returns `None` when
-/// there's no generator *and* no original part.
+/// Build `docProps/app.xml` for export; only the generator is modeled, an original's
+/// other `Properties` children are preserved. `None` when there's no generator and no original.
 pub(super) fn export_app(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8>> {
     let generator = doc_prop(doc.doc, doc.c, PROP_GENERATOR);
     if generator.is_none() && original.is_none() {
         return None;
     }
-    let preserved = original.map(|o| app_unmodeled_children(o)).unwrap_or_default();
-    let app = generator.map(|g| format!("<Application>{}</Application>", escape_text(&g))).unwrap_or_default();
+    let preserved = original.map(app_unmodeled_children).unwrap_or_default();
+    let app = generator
+        .map(|g| format!("<Application>{}</Application>", escape_text(&g)))
+        .unwrap_or_default();
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Properties {APP_NS}>{preserved}{app}</Properties>"#
@@ -291,8 +305,7 @@ pub(super) fn export_app(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8
     Some(xml.into_bytes())
 }
 
-/// The inner XML of `Properties` with the modeled `Application` child stripped,
-/// so an existing app.xml's other fields (Company, Pages, …) survive.
+/// The inner XML of `Properties` with the modeled `Application` child stripped.
 fn app_unmodeled_children(xml: &[u8]) -> String {
     unmodeled_inner(xml, "Properties", &[b"Application"])
 }

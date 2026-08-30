@@ -1,28 +1,14 @@
 //! Pointer and keyboard device policy, and the settings behind it.
 //!
-//! The Settings app has always written `input.natural_scroll`,
-//! `input.tap_to_click`, `input.pointer_speed` and `input.key_repeat` into
-//! the shared store, and the compositor has always ignored them — there
-//! was no libinput device configuration anywhere in the tree, so a
-//! touchpad on a bare-TTY session came up with libinput's own defaults and
-//! nothing the user set had any effect.
+//! This module is the decision half: it takes persisted settings plus what one libinput device
+//! can actually do, and produces the exact `config_*` values to apply. [`super::runtime`] holds
+//! the thin applier that pushes them onto a real `libinput::Device`.
 //!
-//! This module holds the decision half. It takes the persisted settings
-//! plus what one libinput device can actually do, and produces the exact
-//! set of `config_*` values to apply. [`super::runtime`] holds the thin
-//! applier that pushes them onto a real `libinput::Device` — the only part
-//! that needs hardware.
-//!
-//! # Tap-to-click defaults on
-//!
-//! libinput defaults tapping to *off* because it cannot tell a touchpad on
-//! a laptop from a drawing tablet on a desk, and a spurious click from a
-//! resting palm is worse than a missing one. On a laptop that reasoning
-//! inverts: a trackpad you have to physically depress for every click is
-//! the single most-reported "this feels broken" first impression. So the
-//! default here is on, palm detection and disable-while-typing are turned
-//! on alongside it to buy back what libinput was being cautious about, and
-//! the setting remains the user's to flip.
+//! libinput defaults tapping to *off* because it can't tell a laptop touchpad from a desk
+//! drawing tablet, and a spurious click from a resting palm is worse than a missing one. On a
+//! laptop that reasoning inverts — a trackpad requiring physical depression per click is the
+//! most-reported "this feels broken" first impression — so the default here is on, with palm
+//! detection and disable-while-typing turned on alongside it to buy back what libinput was cautious about; the setting remains the user's to flip.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -35,8 +21,7 @@ pub const TAP_TO_CLICK_KEY: &str = "tap_to_click";
 pub const POINTER_SPEED_KEY: &str = "pointer_speed";
 pub const KEY_REPEAT_KEY: &str = "key_repeat";
 
-/// Slowest auto-repeat the `key_repeat` slider can select, in keys per
-/// second. Below this, holding a key feels broken rather than slow.
+/// Slowest auto-repeat the `key_repeat` slider can select, in keys per second — below this, holding a key feels broken rather than slow.
 pub const REPEAT_RATE_MIN: u32 = 10;
 /// Fastest auto-repeat the slider can select, in keys per second.
 pub const REPEAT_RATE_MAX: u32 = 50;
@@ -45,23 +30,17 @@ pub const REPEAT_DELAY_MAX_MS: u32 = 600;
 /// Shortest delay before repeat starts, in milliseconds.
 pub const REPEAT_DELAY_MIN_MS: u32 = 200;
 
-/// The persisted input preferences, with the defaults applied.
-///
-/// Mirrors the shape `apps/settings` writes; the defaults here match the
-/// ones that pane starts from, so a user who has never opened Settings and
-/// one who opened it and changed nothing get the same session.
+/// The persisted input preferences, with the defaults applied. Mirrors the shape
+/// `apps/settings` writes; the defaults match that pane's starting values, so a user who never opened Settings and one who opened it and changed nothing get the same session.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct InputSettings {
-    /// Content-follows-finger scrolling. Off by default, matching the
-    /// Settings pane.
+    /// Content-follows-finger scrolling. Off by default, matching the Settings pane.
     pub natural_scroll: bool,
     /// Tap the touchpad to click. **On** by default — see the module docs.
     pub tap_to_click: bool,
-    /// Pointer acceleration, `0.0` (slowest) … `1.0` (fastest), `0.5`
-    /// being libinput's neutral profile.
+    /// Pointer acceleration, `0.0` (slowest) … `1.0` (fastest), `0.5` being libinput's neutral profile.
     pub pointer_speed: f64,
-    /// Keyboard auto-repeat, `0.0` (slow, long delay) … `1.0` (fast, short
-    /// delay).
+    /// Keyboard auto-repeat, `0.0` (slow, long delay) … `1.0` (fast, short delay).
     pub key_repeat: f64,
 }
 
@@ -77,21 +56,22 @@ impl Default for InputSettings {
 }
 
 impl InputSettings {
-    /// Parse the `input` section of a settings document. Every field falls
-    /// back to its default independently, so a document that only sets
-    /// `tap_to_click` leaves the rest alone, and a value of the wrong JSON
-    /// type is treated as absent rather than as a reason to discard the
-    /// whole section.
+    /// Parse the `input` section of a settings document. Every field falls back to its default
+    /// independently, so a document that only sets `tap_to_click` leaves the rest alone, and a wrong-typed value is treated as absent rather than discarding the whole section.
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
-        let bool_at = |k: &str, fallback: bool| section.get(k).and_then(|v| v.as_bool()).unwrap_or(fallback);
+        let bool_at = |k: &str, fallback: bool| {
+            section
+                .get(k)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(fallback)
+        };
         let unit_at = |k: &str, fallback: f64| {
             section
                 .get(k)
-                .and_then(|v| v.as_f64())
+                .and_then(serde_json::Value::as_f64)
                 .filter(|v| v.is_finite())
-                .map(|v| v.clamp(0.0, 1.0))
-                .unwrap_or(fallback)
+                .map_or(fallback, |v| v.clamp(0.0, 1.0))
         };
         Self {
             natural_scroll: bool_at(NATURAL_SCROLL_KEY, d.natural_scroll),
@@ -101,31 +81,23 @@ impl InputSettings {
         }
     }
 
-    /// Read the live settings file. Any failure yields the defaults — a
-    /// corrupt config must never leave the session without a working
-    /// touchpad.
+    /// Read the live settings file. Any failure yields the defaults — a corrupt config must never leave the session without a working touchpad.
     pub fn load() -> Self {
         Self::from_section(&settings_store::load_section(SECTION))
     }
 
-    /// libinput's pointer-acceleration speed for this setting: the slider's
-    /// `0.0 … 1.0` mapped onto libinput's `-1.0 … 1.0`, so the midpoint
-    /// lands exactly on the untouched default of `0.0`.
+    /// libinput's pointer-acceleration speed for this setting: the slider's `0.0 … 1.0` mapped onto libinput's `-1.0 … 1.0`, so the midpoint lands exactly on the untouched default of `0.0`.
     pub fn accel_speed(&self) -> f64 {
         (self.pointer_speed.clamp(0.0, 1.0) * 2.0) - 1.0
     }
 
-    /// Keyboard auto-repeat as `(delay, rate in keys per second)`.
-    ///
-    /// The two move together and in opposite directions: a "faster" repeat
-    /// setting means both a shorter wait before it starts and a shorter
-    /// gap between keys. Exposing them as one slider is only honest if the
-    /// mapping does that.
+    /// Keyboard auto-repeat as `(delay, rate in keys per second)`. The two move together in
+    /// opposite directions — "faster" means both a shorter wait before it starts and a shorter gap between keys — so exposing them as one slider is only honest if the mapping does that.
     pub fn key_repeat_params(&self) -> (Duration, u32) {
         let t = self.key_repeat.clamp(0.0, 1.0);
-        let rate = REPEAT_RATE_MIN as f64 + t * (REPEAT_RATE_MAX - REPEAT_RATE_MIN) as f64;
-        let delay =
-            REPEAT_DELAY_MAX_MS as f64 - t * (REPEAT_DELAY_MAX_MS - REPEAT_DELAY_MIN_MS) as f64;
+        let rate = f64::from(REPEAT_RATE_MIN) + t * f64::from(REPEAT_RATE_MAX - REPEAT_RATE_MIN);
+        let delay = f64::from(REPEAT_DELAY_MAX_MS)
+            - t * f64::from(REPEAT_DELAY_MAX_MS - REPEAT_DELAY_MIN_MS);
         (
             Duration::from_millis(delay.round() as u64),
             rate.round() as u32,
@@ -135,22 +107,15 @@ impl InputSettings {
 
 /// How often the settings file is stat'ed for changes.
 ///
-/// A poll rather than an inotify watch: the compositor already has a loop
-/// running at the display's cadence, and one `stat` a second on a file in
-/// the page cache is far less machinery than a filesystem watcher plus its
-/// event source, for a change a human makes at most a few times a session.
+/// A poll rather than an inotify watch: the compositor already loops at the display's cadence, and one `stat` a second on a page-cached file is far less machinery than a filesystem watcher, for a change a human makes at most a few times a session.
 pub const SETTINGS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Notices when the settings file changes, so a preference the user just
-/// flipped in Settings takes effect without restarting the session.
+/// Notices when the settings file changes, so a preference just flipped in Settings takes effect without restarting the session.
 pub struct SettingsWatch {
     path: Option<PathBuf>,
-    /// Modification time as of the last check. `None` before the first
-    /// check, and while the file does not exist.
+    /// Modification time as of the last check. `None` before the first check, and while the file doesn't exist.
     last: Option<SystemTime>,
-    /// Whether a check has happened at all. Distinguishes "no file yet"
-    /// from "not looked yet", so the file appearing for the first time
-    /// counts as a change rather than as the baseline.
+    /// Whether a check has happened at all — distinguishes "no file yet" from "not looked yet", so the file appearing for the first time counts as a change rather than the baseline.
     primed: bool,
     next_check: Option<Instant>,
     interval: Duration,
@@ -168,8 +133,7 @@ impl SettingsWatch {
         Self::at(settings_store::settings_path())
     }
 
-    /// Watch an explicit path — how the tests drive it without touching
-    /// the user's real configuration.
+    /// Watch an explicit path — how the tests drive it without touching the user's real configuration.
     pub fn at(path: Option<PathBuf>) -> Self {
         Self {
             path,
@@ -180,21 +144,18 @@ impl SettingsWatch {
         }
     }
 
-    /// Use a different poll interval. Tests set it to zero so they do not
-    /// have to wait out a real second.
+    /// Use a different poll interval; tests set it to zero so they don't wait out a real second.
     pub fn with_interval(mut self, interval: Duration) -> Self {
         self.interval = interval;
         self
     }
 
-    /// Whether the settings file has changed since the last time this
-    /// returned `true`. Rate-limited to [`Self::with_interval`]; calls in
-    /// between are free.
+    /// Whether the settings file has changed since the last time this returned `true`. Rate-limited to [`Self::with_interval`]; calls in between are free.
     pub fn changed(&mut self, now: Instant) -> bool {
-        if let Some(next) = self.next_check {
-            if now < next {
-                return false;
-            }
+        if let Some(next) = self.next_check
+            && now < next
+        {
+            return false;
         }
         self.next_check = Some(now + self.interval);
         let Some(path) = self.path.as_ref() else {
@@ -205,17 +166,13 @@ impl SettingsWatch {
         self.primed = true;
         let moved = mtime != self.last;
         self.last = mtime;
-        // The first look establishes the baseline rather than reporting a
-        // change — otherwise every session start would re-apply settings
-        // that were already applied at construction.
+        // The first look establishes the baseline rather than reporting a change — otherwise every session start would re-apply settings already applied at construction.
         moved && !first_look
     }
 }
 
-/// What one libinput device is capable of. Every field is a question
-/// libinput answers per device (`config_tap_finger_count`,
-/// `config_scroll_has_natural_scroll`, `config_accel_is_available`, …), so
-/// the plan below never asks a device for something it does not have.
+/// What one libinput device is capable of. Every field is a question libinput answers per
+/// device (`config_tap_finger_count`, `config_scroll_has_natural_scroll`, `config_accel_is_available`, …), so the plan below never asks a device for something it doesn't have.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceCaps {
     /// The device reports tap fingers — i.e. it is a touchpad.
@@ -231,43 +188,33 @@ pub struct DeviceCaps {
 }
 
 impl DeviceCaps {
-    /// A touchpad is the device class the laptop-specific defaults exist
-    /// for: tapping, disable-while-typing, and two-finger scrolling.
+    /// A touchpad is the device class the laptop-specific defaults exist for: tapping, disable-while-typing, and two-finger scrolling.
     pub fn is_touchpad(&self) -> bool {
         self.supports_tap
     }
 }
 
-/// The configuration to push onto one device. `None` means "this device
-/// cannot be told that, so don't ask".
+/// The configuration to push onto one device. `None` means "this device cannot be told that, so don't ask".
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct DevicePlan {
     pub tap: Option<bool>,
-    /// Tap-and-drag rides with tapping: a user who taps to click expects
-    /// tap-hold-move to drag. Turning tapping on without it produces a
-    /// touchpad that clicks but cannot drag a window.
+    /// Tap-and-drag rides with tapping: a user who taps to click expects tap-hold-move to drag. Turning tapping on without it produces a touchpad that clicks but cannot drag a window.
     pub tap_drag: Option<bool>,
     pub natural_scroll: Option<bool>,
     pub disable_while_typing: Option<bool>,
     pub middle_emulation: Option<bool>,
-    /// Present as milli-units (`accel_speed * 1000`, rounded) so the plan
-    /// stays `Eq` and comparable in tests; the applier divides it back.
+    /// Present as milli-units (`accel_speed * 1000`, rounded) so the plan stays `Eq` and comparable in tests; the applier divides it back.
     pub accel_speed_milli: Option<i32>,
 }
 
 impl DevicePlan {
     /// libinput's acceleration speed, back in its own `-1.0 … 1.0` units.
     pub fn accel_speed(&self) -> Option<f64> {
-        self.accel_speed_milli.map(|m| m as f64 / 1000.0)
+        self.accel_speed_milli.map(|m| f64::from(m) / 1000.0)
     }
 }
 
-/// Decide what to configure on a device with `caps`, given `settings`.
-///
-/// Applied on device *add* and re-applied on every settings change, so
-/// this has to be a pure function of the two inputs: a plan that depended
-/// on what the device was last set to would drift the moment a device is
-/// re-plugged.
+/// Decide what to configure on a device with `caps`, given `settings` — a pure function of the two inputs, since it's applied on device *add* and re-applied on every settings change (a plan depending on prior state would drift on re-plug).
 pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
     DevicePlan {
         tap: caps.supports_tap.then_some(settings.tap_to_click),
@@ -275,12 +222,9 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
         natural_scroll: caps
             .supports_natural_scroll
             .then_some(settings.natural_scroll),
-        // Only touchpads get disable-while-typing, and they get it
-        // unconditionally: it is what makes tap-to-click safe to default
-        // on, so it is not a separate preference to forget to set.
+        // Only touchpads get disable-while-typing, and unconditionally: it's what makes tap-to-click safe to default on, so it's not a separate preference to forget to set.
         disable_while_typing: caps.supports_dwt.then_some(true),
-        // A touchpad with no physical middle button is the norm; without
-        // emulation there is no way to middle-click at all.
+        // A touchpad with no physical middle button is the norm; without emulation there's no way to middle-click at all.
         middle_emulation: caps.supports_middle_emulation.then_some(true),
         accel_speed_milli: caps
             .supports_accel
@@ -326,13 +270,11 @@ mod tests {
         DeviceCaps::default()
     }
 
-    // ---------------- settings parsing ----------------
+    // settings parsing
 
     #[test]
     fn tap_to_click_defaults_on_for_a_laptop() {
-        // The headline default. libinput says off; on a laptop that is the
-        // wrong answer, and an empty settings file is exactly the state a
-        // fresh install is in.
+        // The headline default: libinput says off, but that's the wrong answer on a laptop, and an empty settings file is exactly the state a fresh install is in.
         assert!(InputSettings::default().tap_to_click);
         assert!(InputSettings::from_section(&section(json!({}))).tap_to_click);
     }
@@ -381,12 +323,11 @@ mod tests {
         assert_eq!(s.key_repeat, 0.0);
     }
 
-    // ---------------- derived values ----------------
+    // derived values
 
     #[test]
     fn the_midpoint_pointer_speed_is_libinputs_neutral() {
-        // 0.5 must map to exactly 0.0, or every user who never touched the
-        // slider gets a different acceleration than libinput's default.
+        // 0.5 must map to exactly 0.0, or every user who never touched the slider gets a different acceleration than libinput's default.
         assert_eq!(InputSettings::default().accel_speed(), 0.0);
     }
 
@@ -418,8 +359,14 @@ mod tests {
         let (fast_delay, fast_rate) = fast.key_repeat_params();
         assert_eq!(slow_rate, REPEAT_RATE_MIN);
         assert_eq!(fast_rate, REPEAT_RATE_MAX);
-        assert_eq!(slow_delay, Duration::from_millis(REPEAT_DELAY_MAX_MS as u64));
-        assert_eq!(fast_delay, Duration::from_millis(REPEAT_DELAY_MIN_MS as u64));
+        assert_eq!(
+            slow_delay,
+            Duration::from_millis(u64::from(REPEAT_DELAY_MAX_MS))
+        );
+        assert_eq!(
+            fast_delay,
+            Duration::from_millis(u64::from(REPEAT_DELAY_MIN_MS))
+        );
         assert!(
             fast_rate > slow_rate && fast_delay < slow_delay,
             "one slider, both directions"
@@ -433,7 +380,7 @@ mod tests {
         assert_eq!(delay, Duration::from_millis(400));
     }
 
-    // ---------------- per-device plans ----------------
+    // per-device plans
 
     #[test]
     fn a_touchpad_gets_tapping_dragging_and_palm_protection() {
@@ -465,9 +412,7 @@ mod tests {
 
     #[test]
     fn a_mouse_is_never_asked_about_tapping() {
-        // `config_tap_set_enabled` on a device with no tap fingers is an
-        // error return every call; not asking is the whole point of the
-        // capability gate.
+        // `config_tap_set_enabled` on a device with no tap fingers errors every call; not asking is the whole point of the capability gate.
         let plan = plan_for(&InputSettings::default(), &mouse());
         assert_eq!(plan.tap, None);
         assert_eq!(plan.tap_drag, None);
@@ -504,8 +449,7 @@ mod tests {
 
     #[test]
     fn a_keyboard_gets_an_empty_plan() {
-        // Nothing in the pointer half applies; the keyboard half rides on
-        // `key_repeat_params` in the seat, not on a device config.
+        // Nothing in the pointer half applies; the keyboard half rides on `key_repeat_params` in the seat, not a device config.
         assert_eq!(
             plan_for(&InputSettings::default(), &keyboard()),
             DevicePlan::default()
@@ -514,9 +458,7 @@ mod tests {
 
     #[test]
     fn the_plan_is_a_pure_function_of_settings_and_caps() {
-        // Re-applying after a settings change must produce the same plan a
-        // freshly-plugged device would get — otherwise a re-plug silently
-        // changes behaviour.
+        // Re-applying after a settings change must produce the same plan a freshly-plugged device would get — otherwise a re-plug silently changes behaviour.
         let s = InputSettings {
             tap_to_click: false,
             natural_scroll: true,
@@ -533,10 +475,11 @@ mod tests {
         assert!(!keyboard().is_touchpad());
     }
 
-    // ---------------- settings watch ----------------
+    // settings watch
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("qos-input-watch-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("qos-input-watch-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir.join("settings.json")
     }
@@ -547,8 +490,7 @@ mod tests {
 
     #[test]
     fn the_first_look_is_a_baseline_not_a_change() {
-        // Otherwise every session start re-applies settings that were
-        // already applied while constructing the backend.
+        // Otherwise every session start re-applies settings already applied while constructing the backend.
         let path = scratch("baseline");
         std::fs::write(&path, "{}").expect("write");
         let mut w = watch(&path);
@@ -563,10 +505,7 @@ mod tests {
         let mut w = watch(&path);
         assert!(!w.changed(Instant::now()), "baseline");
 
-        // A same-second rewrite can land on the same mtime on filesystems
-        // with coarse timestamps, so move it explicitly rather than racing
-        // the clock — the watch's contract is "the mtime moved", and this
-        // is the honest way to make it move in a test.
+        // A same-second rewrite can land on the same mtime on filesystems with coarse timestamps, so move it explicitly rather than racing the clock — the watch's contract is "the mtime moved".
         std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("rewrite");
         let moved = std::time::SystemTime::now() + Duration::from_secs(2);
         let f = std::fs::File::options()
@@ -586,9 +525,7 @@ mod tests {
 
     #[test]
     fn the_file_appearing_for_the_first_time_counts_as_a_change() {
-        // A fresh install has no settings.json until the user opens
-        // Settings; the first write is exactly when the compositor has to
-        // start honouring it.
+        // A fresh install has no settings.json until the user opens Settings; the first write is exactly when the compositor has to start honouring it.
         let path = scratch("appear");
         let _ = std::fs::remove_file(&path);
         let mut w = watch(&path);
@@ -600,12 +537,10 @@ mod tests {
 
     #[test]
     fn checks_are_rate_limited() {
-        // The loop runs at the display's cadence; stat'ing 144 times a
-        // second for a file a human edits occasionally is waste.
+        // The loop runs at the display's cadence; stat'ing 144 times a second for a rarely-edited file is waste.
         let path = scratch("ratelimit");
         std::fs::write(&path, "{}").expect("write");
-        let mut w =
-            SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
+        let mut w = SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_hours(1));
         let now = Instant::now();
         assert!(!w.changed(now), "baseline");
         std::fs::remove_file(&path).expect("remove");
@@ -617,8 +552,7 @@ mod tests {
 
     #[test]
     fn a_watch_with_no_settings_path_never_reports_a_change() {
-        // No config directory at all — a container with no HOME. The
-        // compositor must not spin on it.
+        // No config directory at all — a container with no HOME. The compositor must not spin on it.
         let mut w = SettingsWatch::at(None).with_interval(Duration::ZERO);
         assert!(!w.changed(Instant::now()));
         assert!(!w.changed(Instant::now()));

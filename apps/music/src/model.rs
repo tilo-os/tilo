@@ -62,7 +62,7 @@ pub struct Track {
 
 impl Track {
     pub fn duration_ms(&self) -> u64 {
-        self.duration_s as u64 * 1000
+        u64::from(self.duration_s) * 1000
     }
 }
 
@@ -82,20 +82,15 @@ pub struct Playlist {
 /// Per-track offline/cache state. Models the "downloads / caching" layer:
 /// a track is either streamed on demand, actively downloading (with a
 /// progress fraction) or fully cached for offline playback.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum CacheState {
     /// Not cached — streamed live from the source.
+    #[default]
     Streamed,
     /// Download in flight; `0.0..=1.0`.
     Downloading(f32),
     /// Fully downloaded and available offline.
     Cached,
-}
-
-impl Default for CacheState {
-    fn default() -> Self {
-        CacheState::Streamed
-    }
 }
 
 /// Repeat mode for the play queue.
@@ -123,7 +118,7 @@ impl RepeatMode {
             RepeatMode::One => "one",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "all" => RepeatMode::All,
             "one" => RepeatMode::One,
@@ -204,10 +199,14 @@ impl Library {
         self.tracks.get(id)
     }
     pub fn artist_name(&self, id: &str) -> &str {
-        self.artists.get(id).map(|a| a.name.as_str()).unwrap_or("Unknown Artist")
+        self.artists
+            .get(id)
+            .map_or("Unknown Artist", |a| a.name.as_str())
     }
     pub fn album_title(&self, id: &str) -> &str {
-        self.albums.get(id).map(|a| a.title.as_str()).unwrap_or("Unknown Album")
+        self.albums
+            .get(id)
+            .map_or("Unknown Album", |a| a.title.as_str())
     }
     pub fn cache_state(&self, id: &str) -> CacheState {
         self.cache.get(id).copied().unwrap_or_default()
@@ -215,17 +214,23 @@ impl Library {
 
     /// Tracks of an album, ordered by track number.
     pub fn album_tracks(&self, album: &str) -> Vec<&Track> {
-        let mut v: Vec<&Track> =
-            self.tracks.values().filter(|t| t.album_id == album).collect();
+        let mut v: Vec<&Track> = self
+            .tracks
+            .values()
+            .filter(|t| t.album_id == album)
+            .collect();
         v.sort_by_key(|t| t.track_no);
         v
     }
 
     /// Albums of an artist, newest first.
     pub fn artist_albums(&self, artist: &str) -> Vec<&Album> {
-        let mut v: Vec<&Album> =
-            self.albums.values().filter(|a| a.artist_id == artist).collect();
-        v.sort_by(|a, b| b.year.cmp(&a.year));
+        let mut v: Vec<&Album> = self
+            .albums
+            .values()
+            .filter(|a| a.artist_id == artist)
+            .collect();
+        v.sort_by_key(|a| std::cmp::Reverse(a.year));
         v
     }
 
@@ -253,7 +258,10 @@ impl Library {
         v.sort_by(|a, b| {
             self.artist_name(&a.artist_id)
                 .cmp(self.artist_name(&b.artist_id))
-                .then(self.album_title(&a.album_id).cmp(self.album_title(&b.album_id)))
+                .then(
+                    self.album_title(&a.album_id)
+                        .cmp(self.album_title(&b.album_id)),
+                )
                 .then(a.track_no.cmp(&b.track_no))
         });
         v
@@ -262,7 +270,7 @@ impl Library {
     /// Most-played tracks, descending.
     pub fn top_tracks(&self, n: usize) -> Vec<&Track> {
         let mut v: Vec<&Track> = self.tracks.values().collect();
-        v.sort_by(|a, b| b.plays.cmp(&a.plays));
+        v.sort_by_key(|t| std::cmp::Reverse(t.plays));
         v.into_iter().take(n).collect()
     }
 
@@ -296,12 +304,15 @@ impl Library {
             .values()
             .filter(|t| {
                 t.title.to_lowercase().contains(&needle)
-                    || self.artist_name(&t.artist_id).to_lowercase().contains(&needle)
+                    || self
+                        .artist_name(&t.artist_id)
+                        .to_lowercase()
+                        .contains(&needle)
                     || artist_genre(&t.artist_id).contains(&needle)
             })
             .map(|t| t.id.clone())
             .collect();
-        tracks.sort_by_key(|id| self.tracks.get(id).map(|t| u64::MAX - t.plays).unwrap_or(0));
+        tracks.sort_by_key(|id| self.tracks.get(id).map_or(0, |t| u64::MAX - t.plays));
         let albums: Vec<AlbumId> = self
             .albums
             .values()
@@ -319,7 +330,11 @@ impl Library {
             })
             .map(|a| a.id.clone())
             .collect();
-        SearchResults { tracks, albums, artists }
+        SearchResults {
+            tracks,
+            albums,
+            artists,
+        }
     }
 
     pub fn playlist(&self, id: &str) -> Option<&Playlist> {
@@ -348,12 +363,18 @@ impl Library {
     /// Liked tracks ordered by artist / album / track number (a virtual
     /// "Liked Songs" playlist surfaced in the UI).
     pub fn liked_tracks(&self) -> Vec<&Track> {
-        let mut v: Vec<&Track> =
-            self.liked.iter().filter_map(|id| self.tracks.get(id)).collect();
+        let mut v: Vec<&Track> = self
+            .liked
+            .iter()
+            .filter_map(|id| self.tracks.get(id))
+            .collect();
         v.sort_by(|a, b| {
             self.artist_name(&a.artist_id)
                 .cmp(self.artist_name(&b.artist_id))
-                .then(self.album_title(&a.album_id).cmp(self.album_title(&b.album_id)))
+                .then(
+                    self.album_title(&a.album_id)
+                        .cmp(self.album_title(&b.album_id)),
+                )
                 .then(a.track_no.cmp(&b.track_no))
         });
         v
@@ -361,7 +382,10 @@ impl Library {
 
     /// Track ids of the "Liked Songs" virtual playlist, in display order.
     pub fn liked_ids(&self) -> Vec<TrackId> {
-        self.liked_tracks().into_iter().map(|t| t.id.clone()).collect()
+        self.liked_tracks()
+            .into_iter()
+            .map(|t| t.id.clone())
+            .collect()
     }
 }
 

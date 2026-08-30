@@ -15,7 +15,7 @@
 //! automerge-backed implementation; [`LocalTransport`] is the no-op one.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 
 /// Playhead drift (ms) beyond which a follower hard-seeks to the host instead
 /// of letting the small gap ride. Below it the follower stays in sync by simply
@@ -48,7 +48,7 @@ impl TransportState {
             return self.position_ms;
         }
         let elapsed = now_ms.saturating_sub(self.epoch_ms);
-        self.position_ms + (elapsed as f64 * self.rate.max(0.0) as f64) as u64
+        self.position_ms + (elapsed as f64 * f64::from(self.rate.max(0.0))) as u64
     }
 }
 
@@ -121,13 +121,17 @@ impl Default for CrdtTransport {
 impl CrdtTransport {
     /// A fresh, empty transport document (no state published yet).
     pub fn new() -> Self {
-        Self { doc: AutoCommit::new() }
+        Self {
+            doc: AutoCommit::new(),
+        }
     }
 
     /// Rebuild a transport from a full saved document (a late-joiner adopting a
     /// peer's snapshot).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, automerge::AutomergeError> {
-        Ok(Self { doc: AutoCommit::load(bytes)? })
+        Ok(Self {
+            doc: AutoCommit::load(bytes)?,
+        })
     }
 
     /// The full document, for a late-joiner snapshot handoff.
@@ -193,10 +197,18 @@ impl TransportSync for CrdtTransport {
         // Best-effort: a `put` on the root map only fails for a genuinely
         // corrupt document, which can't happen for scalars we control.
         let _ = self.doc.put(ROOT, K_PRESENT, ScalarValue::Boolean(true));
-        let _ = self.doc.put(ROOT, K_PLAYING, ScalarValue::Boolean(state.playing));
-        let _ = self.doc.put(ROOT, K_POSITION, ScalarValue::Uint(state.position_ms));
-        let _ = self.doc.put(ROOT, K_RATE, ScalarValue::F64(state.rate as f64));
-        let _ = self.doc.put(ROOT, K_EPOCH, ScalarValue::Uint(state.epoch_ms));
+        let _ = self
+            .doc
+            .put(ROOT, K_PLAYING, ScalarValue::Boolean(state.playing));
+        let _ = self
+            .doc
+            .put(ROOT, K_POSITION, ScalarValue::Uint(state.position_ms));
+        let _ = self
+            .doc
+            .put(ROOT, K_RATE, ScalarValue::F64(f64::from(state.rate)));
+        let _ = self
+            .doc
+            .put(ROOT, K_EPOCH, ScalarValue::Uint(state.epoch_ms));
     }
 
     fn latest(&self) -> Option<TransportState> {
@@ -220,18 +232,41 @@ mod tests {
 
     #[test]
     fn projection_freezes_while_paused_and_advances_while_playing() {
-        let paused = TransportState { playing: false, position_ms: 4_000, rate: 1.0, epoch_ms: 10_000 };
-        assert_eq!(paused.projected_position(99_999), 4_000, "paused playhead is frozen");
+        let paused = TransportState {
+            playing: false,
+            position_ms: 4_000,
+            rate: 1.0,
+            epoch_ms: 10_000,
+        };
+        assert_eq!(
+            paused.projected_position(99_999),
+            4_000,
+            "paused playhead is frozen"
+        );
 
-        let playing = TransportState { playing: true, position_ms: 4_000, rate: 1.0, epoch_ms: 10_000 };
+        let playing = TransportState {
+            playing: true,
+            position_ms: 4_000,
+            rate: 1.0,
+            epoch_ms: 10_000,
+        };
         // 2.5s of wall-clock since epoch → +2500ms.
         assert_eq!(playing.projected_position(12_500), 6_500);
     }
 
     #[test]
     fn projection_honours_rate() {
-        let fast = TransportState { playing: true, position_ms: 0, rate: 2.0, epoch_ms: 0 };
-        assert_eq!(fast.projected_position(1_000), 2_000, "2x rate doubles the advance");
+        let fast = TransportState {
+            playing: true,
+            position_ms: 0,
+            rate: 2.0,
+            epoch_ms: 0,
+        };
+        assert_eq!(
+            fast.projected_position(1_000),
+            2_000,
+            "2x rate doubles the advance"
+        );
     }
 
     #[test]
@@ -246,7 +281,12 @@ mod tests {
     #[test]
     fn local_transport_never_yields_a_state() {
         let mut t = LocalTransport;
-        t.publish(&TransportState { playing: true, position_ms: 1, rate: 1.0, epoch_ms: 1 });
+        t.publish(&TransportState {
+            playing: true,
+            position_ms: 1,
+            rate: 1.0,
+            epoch_ms: 1,
+        });
         assert!(t.latest().is_none());
     }
 
@@ -254,10 +294,15 @@ mod tests {
     fn crdt_transport_round_trips_published_state() {
         let mut host = CrdtTransport::new();
         assert!(host.latest().is_none(), "nothing published yet");
-        let state = TransportState { playing: true, position_ms: 7_250, rate: 1.5, epoch_ms: 1_700_000 };
+        let state = TransportState {
+            playing: true,
+            position_ms: 7_250,
+            rate: 1.5,
+            epoch_ms: 1_700_000,
+        };
         host.publish(&state);
         let got = host.latest().expect("state present after publish");
-        assert_eq!(got.playing, true);
+        assert!(got.playing);
         assert_eq!(got.position_ms, 7_250);
         assert!((got.rate - 1.5).abs() < 1e-6);
         assert_eq!(got.epoch_ms, 1_700_000);
@@ -270,7 +315,12 @@ mod tests {
         let mut host = CrdtTransport::new();
         let mut follower = CrdtTransport::new();
 
-        host.publish(&TransportState { playing: true, position_ms: 3_000, rate: 1.0, epoch_ms: 500 });
+        host.publish(&TransportState {
+            playing: true,
+            position_ms: 3_000,
+            rate: 1.0,
+            epoch_ms: 500,
+        });
         let delta = host.save_incremental();
         follower.merge_incremental(&delta).unwrap();
 
@@ -279,8 +329,15 @@ mod tests {
         assert!(f.playing);
 
         // A later host publish (a pause + new epoch) reaches the follower too.
-        host.publish(&TransportState { playing: false, position_ms: 8_000, rate: 1.0, epoch_ms: 6_000 });
-        follower.merge_incremental(&host.save_incremental()).unwrap();
+        host.publish(&TransportState {
+            playing: false,
+            position_ms: 8_000,
+            rate: 1.0,
+            epoch_ms: 6_000,
+        });
+        follower
+            .merge_incremental(&host.save_incremental())
+            .unwrap();
         let f2 = follower.latest().unwrap();
         assert_eq!(f2.position_ms, 8_000);
         assert!(!f2.playing);

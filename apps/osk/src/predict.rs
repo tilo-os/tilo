@@ -28,7 +28,7 @@ const BIGRAMS_TXT: &str = include_str!("../data/bigrams.txt");
 #[derive(Clone, Debug)]
 pub struct Predictor {
     dict: Dictionary,
-    /// prev_word -> [(next_word_index_into_dict_or_string, weight)]. We keep
+    /// `prev_word` -> [(`next_word_index_into_dict_or_string`, weight)]. We keep
     /// the successor strings directly (they are all dictionary words) for a
     /// simple, allocation-light lookup.
     bigrams: HashMap<String, Vec<(String, u32)>>,
@@ -91,7 +91,7 @@ impl Predictor {
     /// * `prefix` — the in-progress word fragment (may be empty).
     ///
     /// Scoring blends three signals:
-    /// * **bigram** — P(word | prev_word) from the bigram table (dominant when
+    /// * **bigram** — P(word | `prev_word`) from the bigram table (dominant when
     ///   present),
     /// * **prefix** — does the candidate start with `prefix` (required when
     ///   `prefix` is non-empty),
@@ -111,7 +111,7 @@ impl Predictor {
             return Vec::new();
         }
         let prefix = prefix.to_lowercase();
-        let prev = prev_word.map(|w| w.to_lowercase());
+        let prev = prev_word.map(str::to_lowercase);
 
         // Accumulate the best score per candidate word.
         let mut scores: HashMap<String, f32> = HashMap::new();

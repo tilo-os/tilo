@@ -1,4 +1,4 @@
-//! Live backend — real YouTube data via the pure-Rust `rustypipe` InnerTube
+//! Live backend — real `YouTube` data via the pure-Rust `rustypipe` `InnerTube`
 //! client. **Compiled only under `--features live`.**
 //!
 //! `rustypipe` is async (tokio); the [`YtBackend`] trait is sync because it is
@@ -15,10 +15,10 @@
 //! * `query.channel_videos(id).await` → channel + uploads
 //! * `query.trending().await` → `Vec<VideoItem>`
 //! * `query.player(id).await` → `VideoPlayer` (stream URLs) — gated behind a
-//!   PoToken
+//!   `PoToken`
 //!
-//! ## PoToken
-//! rustypipe has **no `PoTokenProvider` trait**; it drives PoTokens through an
+//! ## `PoToken`
+//! rustypipe has **no `PoTokenProvider` trait**; it drives `PoTokens` through an
 //! external `rustypipe-botguard` *binary* (`RustyPipeBuilder::botguard_bin` /
 //! `no_botguard` / `botguard_snapshot_file` / `po_token_cache`) or you mint
 //! in-process with the `rustypipe-botguard` library's `Botguard::mint_token`.
@@ -35,13 +35,12 @@
 use rustypipe::client::RustyPipe;
 use rustypipe::model::richtext::ToPlaintext;
 use rustypipe::model::{
-    ChannelItem, Comment as RpComment, PlaylistItem, Verification, VideoCodec, VideoFormat,
-    VideoItem, VideoPlayer as RpVideoPlayer, VideoStream, YouTubeItem,
+    ChannelItem, Comment as RpComment, PlaylistItem, Verification, VideoItem, YouTubeItem,
 };
 use rustypipe::param::search_filter::{ItemType, Order, SearchFilter, UploadDate};
 
 use crate::backend::potoken::{NullPoToken, PoTokenProvider};
-use crate::backend::{BackendError, BackendOutcome, BackendResult, StreamHandle, YtBackend};
+use crate::backend::{BackendError, BackendOutcome, BackendResult, YtBackend};
 use crate::model::{Channel, Comment, Playlist, Video};
 
 /// A rustypipe search split into Tube's three result kinds. Used to enrich the
@@ -85,12 +84,12 @@ pub struct RustyPipeBackend {
 }
 
 impl RustyPipeBackend {
-    /// Construct with the default (null) PoToken provider — metadata only.
+    /// Construct with the default (null) `PoToken` provider — metadata only.
     pub fn new() -> Result<Self, BackendError> {
         Self::with_potoken(Box::new(NullPoToken))
     }
 
-    /// Construct with an explicit PoToken provider. The provider's capability
+    /// Construct with an explicit `PoToken` provider. The provider's capability
     /// selects whether rustypipe's botguard path is enabled.
     pub fn with_potoken(provider: Box<dyn PoTokenProvider>) -> Result<Self, BackendError> {
         // A multi-thread runtime (not current-thread): rustypipe fires internal
@@ -119,7 +118,11 @@ impl RustyPipeBackend {
                 builder.build()
             })
             .map_err(|e| BackendError(format!("rustypipe build: {e}")))?;
-        Ok(Self { rp, rt, potoken_desc })
+        Ok(Self {
+            rp,
+            rt,
+            potoken_desc,
+        })
     }
 
     fn block<F, T>(&self, fut: F) -> T
@@ -131,13 +134,17 @@ impl RustyPipeBackend {
 
     /// Run one search and split the results into videos, playlists and creator
     /// rows — the enrichment source for the primary backend, which returns only
-    /// videos (and no avatars). Real InnerTube data in a single call.
+    /// videos (and no avatars). Real `InnerTube` data in a single call.
     pub fn search_items(&self, query: &str) -> Result<SearchItems, BackendError> {
         let q = self.rp.query();
         let res = self
             .block(async { q.search::<YouTubeItem, _>(query).await })
             .map_err(|e| BackendError(format!("search_items: {e}")))?;
-        let mut out = SearchItems { videos: Vec::new(), playlists: Vec::new(), channels: Vec::new() };
+        let mut out = SearchItems {
+            videos: Vec::new(),
+            playlists: Vec::new(),
+            channels: Vec::new(),
+        };
         for it in res.items.items {
             match it {
                 YouTubeItem::Video(v) => out.videos.push(map_video_item(v)),
@@ -157,11 +164,13 @@ impl RustyPipeBackend {
         let videos: Vec<Video> = pl.videos.items.into_iter().map(map_video_item).collect();
         let (channel_id, channel_name) = pl
             .channel
-            .map(|c| (c.id, c.name))
-            .unwrap_or_else(|| (String::new(), "Unknown".into()));
+            .map_or_else(|| (String::new(), "Unknown".into()), |c| (c.id, c.name));
         let thumb = best_thumb(&pl.thumbnail);
         let thumbnail_url = if thumb.is_empty() {
-            videos.first().map(|v| v.thumbnail_url.clone()).unwrap_or_default()
+            videos
+                .first()
+                .map(|v| v.thumbnail_url.clone())
+                .unwrap_or_default()
         } else {
             thumb
         };
@@ -181,12 +190,13 @@ impl RustyPipeBackend {
 
 /// Map a rustypipe [`VideoItem`] onto Tube's [`Video`]. Fields rustypipe doesn't
 /// carry on a list item (description, likes, comments, sponsor) default empty
-/// and are filled in by a later `video_details` / SponsorBlock fetch.
+/// and are filled in by a later `video_details` / `SponsorBlock` fetch.
 fn map_video_item(it: VideoItem) -> Video {
     let channel = it.channel;
-    let (channel_id, channel_name, channel_avatar_url) = channel
-        .map(|c| (c.id, c.name, best_thumb(&c.avatar)))
-        .unwrap_or_else(|| (String::new(), "Unknown".into(), String::new()));
+    let (channel_id, channel_name, channel_avatar_url) = channel.map_or_else(
+        || (String::new(), "Unknown".into(), String::new()),
+        |c| (c.id, c.name, best_thumb(&c.avatar)),
+    );
     Video {
         id: it.id.clone(),
         title: it.name,
@@ -222,7 +232,7 @@ fn map_video_item(it: VideoItem) -> Video {
 fn best_thumb(thumbs: &[rustypipe::model::Thumbnail]) -> String {
     thumbs
         .iter()
-        .max_by_key(|t| t.width as u64 * t.height as u64)
+        .max_by_key(|t| u64::from(t.width) * u64::from(t.height))
         .map(|t| absolute_url(&t.url))
         .unwrap_or_default()
 }
@@ -256,8 +266,7 @@ fn initials(name: &str) -> String {
 fn map_playlist_item(p: PlaylistItem) -> Playlist {
     let (channel_id, channel_name) = p
         .channel
-        .map(|c| (c.id, c.name))
-        .unwrap_or_else(|| (String::new(), "Unknown".into()));
+        .map_or_else(|| (String::new(), "Unknown".into()), |c| (c.id, c.name));
     Playlist {
         id: p.id.clone(),
         title: p.name,
@@ -288,13 +297,13 @@ fn map_channel_item(c: ChannelItem) -> Channel {
 
 /// Map a rustypipe [`RpComment`] onto Tube's plain [`Comment`].
 fn map_comment(c: RpComment) -> Comment {
-    let author = c.author.map(|a| a.name).unwrap_or_else(|| "Unknown".into());
+    let author = c.author.map_or_else(|| "Unknown".into(), |a| a.name);
     let initials = initials(&author);
     Comment {
         author,
         initials,
         text: c.text.to_plaintext(),
-        likes: c.like_count.unwrap_or(0) as u64,
+        likes: u64::from(c.like_count.unwrap_or(0)),
         time_ago: c.publish_date_txt,
         pinned: c.pinned,
         hearted: c.hearted,
@@ -312,32 +321,6 @@ fn videos_from_items(items: impl IntoIterator<Item = YouTubeItem>) -> Vec<Video>
             _ => None,
         })
         .collect()
-}
-
-/// Pick the smallest H.264-in-MP4 stream we can actually decode, preferring an
-/// adaptive video-only DASH stream (its `mdat` fragments are a pure run of video
-/// NAL units) over a progressive/muxed one. Returns the stream and whether it is
-/// adaptive. Skips DRM-protected tracks — those cannot be decoded here.
-fn pick_avc_mp4(player: &RpVideoPlayer) -> Option<(&VideoStream, bool)> {
-    let decodable = |s: &VideoStream| {
-        s.codec == VideoCodec::Avc1 && s.format == VideoFormat::Mp4 && s.drm_systems.is_empty()
-    };
-    let area = |s: &VideoStream| s.width as u64 * s.height as u64;
-
-    if let Some(s) = player
-        .video_only_streams
-        .iter()
-        .filter(|s| decodable(s) && s.init_range.is_some() && s.index_range.is_some())
-        .min_by_key(|s| area(s))
-    {
-        return Some((s, true));
-    }
-    player
-        .video_streams
-        .iter()
-        .filter(|s| decodable(s))
-        .min_by_key(|s| area(s))
-        .map(|s| (s, false))
 }
 
 impl YtBackend for RustyPipeBackend {
@@ -374,7 +357,7 @@ impl YtBackend for RustyPipeBackend {
             duration: 0,
             // `description` is rustypipe's `RichText`; flatten to plain text.
             description: d.description.to_plaintext(),
-            likes: d.like_count.unwrap_or(0) as u64,
+            likes: u64::from(d.like_count.unwrap_or(0)),
             thumbnail_url: crate::backend::yt_thumb_url(&d.id),
             seed: d.id,
             category: "Video".into(),
@@ -405,7 +388,10 @@ impl YtBackend for RustyPipeBackend {
             banner_url: String::new(),
         };
         let uploads = ch.content.items.into_iter().map(map_video_item).collect();
-        Ok(BackendResult::Channel { channel: Box::new(channel), uploads })
+        Ok(BackendResult::Channel {
+            channel: Box::new(channel),
+            uploads,
+        })
     }
 
     fn related(&self, id: &str) -> BackendOutcome {
@@ -415,7 +401,12 @@ impl YtBackend for RustyPipeBackend {
         let d = self
             .block(async { q.video_details(id).await })
             .map_err(|e| BackendError(format!("related: {e}")))?;
-        let vids = d.recommended.items.into_iter().map(map_video_item).collect();
+        let vids = d
+            .recommended
+            .items
+            .into_iter()
+            .map(map_video_item)
+            .collect();
         Ok(BackendResult::Videos(vids))
     }
 
@@ -424,7 +415,9 @@ impl YtBackend for RustyPipeBackend {
         let items = self
             .block(async { q.trending().await })
             .map_err(|e| BackendError(format!("trending: {e}")))?;
-        Ok(BackendResult::Videos(items.into_iter().map(map_video_item).collect()))
+        Ok(BackendResult::Videos(
+            items.into_iter().map(map_video_item).collect(),
+        ))
     }
 
     fn comments(&self, id: &str) -> Result<Vec<Comment>, BackendError> {
@@ -457,43 +450,6 @@ impl YtBackend for RustyPipeBackend {
             .map_err(|e| BackendError(format!("popular_search {query:?}: {e}")))?;
         Ok(BackendResult::Videos(videos_from_items(res.items.items)))
     }
-
-    fn resolve_video_stream(&self, id: &str) -> Result<StreamHandle, BackendError> {
-        // `player()` tries the iOS then TV clients (neither needs a PoToken), so
-        // this resolves real, directly-playable stream URLs without BotGuard.
-        let q = self.rp.query();
-        let player = self
-            .block(async { q.player(id).await })
-            .map_err(|e| BackendError(format!("player {id}: {e}")))?;
-        let (s, adaptive) = pick_avc_mp4(&player).ok_or_else(|| {
-            BackendError(format!(
-                "no decodable H.264/MP4 stream for {id} (client={:?}; {} video-only + {} muxed \
-                 streams — likely VP9/AV1-only or DRM)",
-                player.client_type,
-                player.video_only_streams.len(),
-                player.video_streams.len()
-            ))
-        })?;
-        // googlevideo checks the media request's UA against the client that
-        // resolved the URL — replay the exact one rustypipe used.
-        let user_agent = self.rp.query().user_agent(player.client_type).into_owned();
-        Ok(StreamHandle {
-            url: s.url.clone(),
-            user_agent,
-            itag: s.itag,
-            mime: s.mime.clone(),
-            is_avc: true,
-            is_mp4: true,
-            adaptive,
-            width: s.width,
-            height: s.height,
-            fps: s.fps,
-            quality: s.quality.clone(),
-            content_length: s.size,
-            init_range: s.init_range.as_ref().map(|r| (r.start as u64, r.end as u64)),
-            index_range: s.index_range.as_ref().map(|r| (r.start as u64, r.end as u64)),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -509,7 +465,10 @@ mod tests {
             "https://yt3.ggpht.com/abc=s176",
         );
         // Already-absolute and empty URLs pass through untouched.
-        assert_eq!(absolute_url("https://yt3.ggpht.com/x"), "https://yt3.ggpht.com/x");
+        assert_eq!(
+            absolute_url("https://yt3.ggpht.com/x"),
+            "https://yt3.ggpht.com/x"
+        );
         assert_eq!(absolute_url("http://example.com/y"), "http://example.com/y");
         assert_eq!(absolute_url(""), "");
     }
@@ -529,7 +488,9 @@ mod tests {
         let comments = backend.comments("aqz-KE-bpKQ").expect("real comments call");
         assert!(!comments.is_empty(), "the video has top comments");
         assert!(
-            comments.iter().any(|c| !c.text.is_empty() && !c.author.is_empty()),
+            comments
+                .iter()
+                .any(|c| !c.text.is_empty() && !c.author.is_empty()),
             "at least one comment has real author + text"
         );
     }

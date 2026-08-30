@@ -17,7 +17,10 @@ pub fn fill_round(scene: &mut Scene, tf: Affine, rect: Rect, radius: f64, color:
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let r = radius.min(rect.width() * 0.5).min(rect.height() * 0.5).max(0.0);
+    let r = radius
+        .min(rect.width() * 0.5)
+        .min(rect.height() * 0.5)
+        .max(0.0);
     let shape = RoundedRect::from_rect(rect, r);
     scene.fill(Fill::NonZero, tf, color, None, &shape);
 }
@@ -34,7 +37,10 @@ pub fn stroke_round(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let r = radius.min(rect.width() * 0.5).min(rect.height() * 0.5).max(0.0);
+    let r = radius
+        .min(rect.width() * 0.5)
+        .min(rect.height() * 0.5)
+        .max(0.0);
     let shape = RoundedRect::from_rect(rect, r);
     scene.stroke(&Stroke::new(width), tf, color, None, &shape);
 }
@@ -100,6 +106,7 @@ pub fn text(
 }
 
 /// Convenience: regular-weight single-line text, no wrap.
+#[allow(clippy::too_many_arguments)]
 pub fn label(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -110,7 +117,18 @@ pub fn label(
     x: f64,
     y: f64,
 ) -> (f32, f32) {
-    text(scene, tr, tf, s, size, color, x, y, TextWeight::Regular, None)
+    text(
+        scene,
+        tr,
+        tf,
+        s,
+        size,
+        color,
+        x,
+        y,
+        TextWeight::Regular,
+        None,
+    )
 }
 
 /// Push a rectangular clip layer; remember to `scene.pop_layer()`.
@@ -125,7 +143,7 @@ pub fn truncate_to(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Str
         return String::new();
     }
     let (w, _) = tr.measure(s, size, None);
-    if (w as f64) <= max_w {
+    if f64::from(w) <= max_w {
         return s.to_string();
     }
     let mut out = String::new();
@@ -133,7 +151,7 @@ pub fn truncate_to(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Str
     for ch in s.chars() {
         let candidate = format!("{out}{ch}{ell}");
         let (cw, _) = tr.measure(&candidate, size, None);
-        if (cw as f64) > max_w {
+        if f64::from(cw) > max_w {
             break;
         }
         out.push(ch);
@@ -158,4 +176,95 @@ pub fn palette_color(theme: &Theme, idx: usize) -> Color {
         c.semantic.danger,
     ];
     ring[idx % ring.len()]
+}
+
+/// Blend `a` toward `b` by `t` (0 = all `a`, 1 = all `b`), in sRGB.
+///
+/// Crate-private rather than a shared `mix()`: that helper is already
+/// duplicated as a public utility across 7+ crates in this workspace and
+/// belongs promoted into `ui`, not copied an 8th time as another public copy
+/// here.
+pub(crate) fn blend_toward(a: Color, b: Color, t: f64) -> Color {
+    use ui::color_compat::ColorCompat;
+    let t = t.clamp(0.0, 1.0) as f32;
+    let lerp = |x: u8, y: u8| {
+        (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color::from_rgb8(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+}
+
+/// Move `ink` toward whichever of black/white it needs, until it clears
+/// `target` contrast against `bg` — and return the first step that does.
+///
+/// A participant's colour is assigned to tell people apart, not to be readable
+/// on any particular surface, so painting text in it is a contrast defect
+/// waiting to happen: the same blue that reads cleanly on a light card is
+/// unreadable on a dark one, and the high-contrast theme's ground is neither.
+/// This keeps the colour recognisably theirs while making the text legible on
+/// the ground it actually lands on.
+///
+/// Both directions are tried, not just the one the background suggests: a
+/// mid-toned ground can be short of the target in the obvious direction and
+/// clear it in the other, and stopping after one direction is how a run ends up
+/// at 4.38:1 in exactly one theme. `fallback` is used only when neither
+/// direction can reach the target, and only if it does better than the closest
+/// step found.
+pub fn legible_on(ink: Color, bg: Color, target: f64, fallback: Color) -> Color {
+    use ui::a11y::contrast_ratio;
+    if contrast_ratio(ink, bg) >= target {
+        return ink;
+    }
+    let bg_is_light = ui::a11y::relative_luminance(bg) >= 0.5;
+    let first = if bg_is_light {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    };
+    let second = if bg_is_light {
+        Color::WHITE
+    } else {
+        Color::BLACK
+    };
+    let mut best = ink;
+    let mut best_ratio = contrast_ratio(ink, bg);
+    for toward in [first, second] {
+        for step in 1..=24 {
+            let candidate = blend_toward(ink, toward, f64::from(step) / 24.0);
+            let r = contrast_ratio(candidate, bg);
+            if r >= target {
+                return candidate;
+            }
+            if r > best_ratio {
+                best_ratio = r;
+                best = candidate;
+            }
+        }
+    }
+    if contrast_ratio(fallback, bg) > best_ratio {
+        fallback
+    } else {
+        best
+    }
+}
+
+/// Strengthen a tint until it stands `target` apart from the ground it sits on.
+///
+/// Unlike [`legible_on`], the first thing tried is more of the colour the tint
+/// came from — a band that gets darker by turning grey has stopped saying whose
+/// it is, which is the only reason the band exists. Only when saturating the
+/// tint still falls short does it move toward black or white.
+pub fn band_at_least(tint: Color, own: Color, ground: Color, target: f64) -> Color {
+    use ui::a11y::contrast_ratio;
+    if contrast_ratio(tint, ground) >= target {
+        return tint;
+    }
+    for step in 1..=16 {
+        let candidate = blend_toward(tint, own, f64::from(step) / 16.0);
+        if contrast_ratio(candidate, ground) >= target {
+            return candidate;
+        }
+    }
+    legible_on(own, ground, target, own)
 }

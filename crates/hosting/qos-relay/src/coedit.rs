@@ -31,7 +31,7 @@
 //! | `CollabEvent::RemotePresenceUpdate { .. }`       | [`Inbound::Presence`]          |
 //!
 //! Keeping the mapping here — rather than importing `ui` — mirrors the
-//! `collab-bridge` crate, which likewise translates the toolkit
+//! native shell collaboration service, which likewise translates the toolkit
 //! protocol without pulling `ui`/wgpu into a transport crate.
 //!
 //! # Presence attribution
@@ -60,7 +60,8 @@ use crate::transport::Envelope;
 
 /// Body carried inside an [`Envelope::Delta`]. Self-describing so the
 /// receiver can route unsigned vs. signed toolkit deltas without extra
-/// wire state; the host never inspects it.
+/// wire state. Retention metadata is deliberately visible to the host while
+/// the document body remains opaque.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoeditPayload {
     /// A raw Automerge incremental delta — the `SyncIncremental` /
@@ -71,6 +72,24 @@ pub enum CoeditPayload {
     /// here; signature + role validation is the broker/host's job, not
     /// the transport's.
     Signed(Vec<u8>),
+    /// A complete, idempotent state checkpoint for one logical document.
+    /// The host replaces the previous checkpoint and its older tail for the
+    /// same channel, allowing a device with no prior queue to bootstrap.
+    Checkpoint {
+        /// Stable digest of the logical document route.
+        channel: [u8; 32],
+        /// Opaque collaboration message.
+        body: Vec<u8>,
+    },
+    /// An incremental update retained after the latest checkpoint for this
+    /// channel. It is replayed to first-time subscribers as well as queued to
+    /// already-known offline members.
+    RetainedDelta {
+        /// Stable digest of the logical document route.
+        channel: [u8; 32],
+        /// Opaque collaboration message.
+        body: Vec<u8>,
+    },
 }
 
 impl CoeditPayload {
@@ -229,6 +248,21 @@ impl RelayCoeditSession {
         self.publish_payload(CoeditPayload::Signed(op_bytes))
     }
 
+    /// Publish and retain a complete checkpoint for `channel`.
+    pub fn publish_checkpoint(&self, channel: [u8; 32], body: Vec<u8>) -> Result<(), CoeditError> {
+        self.publish_payload(CoeditPayload::Checkpoint { channel, body })
+    }
+
+    /// Publish an incremental update and retain it after the current channel
+    /// checkpoint so a device that has never connected can catch up.
+    pub fn publish_retained_delta(
+        &self,
+        channel: [u8; 32],
+        body: Vec<u8>,
+    ) -> Result<(), CoeditError> {
+        self.publish_payload(CoeditPayload::RetainedDelta { channel, body })
+    }
+
     fn publish_payload(&self, payload: CoeditPayload) -> Result<(), CoeditError> {
         self.client
             .send(Envelope::Delta {
@@ -296,6 +330,15 @@ impl RelayCoeditSession {
                                 op_bytes,
                             });
                         }
+                        Some(
+                            CoeditPayload::Checkpoint { body: data, .. }
+                            | CoeditPayload::RetainedDelta { body: data, .. },
+                        ) => {
+                            return Some(Inbound::Delta {
+                                author: author_device_public_key,
+                                data,
+                            });
+                        }
                         None => continue,
                     }
                 }
@@ -340,8 +383,7 @@ impl RelayCoeditSession {
 fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_nanos() as u64)
 }
 
 #[cfg(test)]
@@ -349,12 +391,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn coedit_payload_round_trips_both_variants() {
+    fn coedit_payload_round_trips_all_variants() {
         let unsigned = CoeditPayload::Unsigned(vec![1, 2, 3, 4]);
         let signed = CoeditPayload::Signed(vec![9, 8, 7]);
+        let checkpoint = CoeditPayload::Checkpoint {
+            channel: [3; 32],
+            body: vec![6, 5],
+        };
+        let retained = CoeditPayload::RetainedDelta {
+            channel: [4; 32],
+            body: vec![2, 1],
+        };
 
-        assert_eq!(CoeditPayload::decode(&unsigned.encode()), Some(unsigned));
-        assert_eq!(CoeditPayload::decode(&signed.encode()), Some(signed));
+        for payload in [unsigned, signed, checkpoint, retained] {
+            assert_eq!(CoeditPayload::decode(&payload.encode()), Some(payload));
+        }
     }
 
     #[test]

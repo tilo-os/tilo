@@ -24,7 +24,6 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
@@ -32,7 +31,7 @@ use qos_actions::{
 };
 
 use crate::doc::PdfDoc;
-use crate::model::{AnnoKind, Annotation, Comment, PtRect, Reply, Swatch, MARGIN};
+use crate::model::{AnnoKind, Annotation, Comment, MARGIN, PtRect, Reply, Swatch};
 
 /// Registry `type_id` for every PDF-reader action.
 pub const PDF_VIEWER_ACTION_TYPE: &str = "pdf_viewer.action";
@@ -58,7 +57,9 @@ impl AnnoGeom {
                 w: rect.w,
                 h: rect.h,
             },
-            AnnoKind::Ink { points } => AnnoGeom::Ink { points: points.clone() },
+            AnnoKind::Ink { points } => AnnoGeom::Ink {
+                points: points.clone(),
+            },
             AnnoKind::Note { x, y } => AnnoGeom::Note { x: *x, y: *y },
         }
     }
@@ -68,7 +69,9 @@ impl AnnoGeom {
             AnnoGeom::Highlight { x, y, w, h } => AnnoKind::Highlight {
                 rect: PtRect::new(*x, *y, *w, *h),
             },
-            AnnoGeom::Ink { points } => AnnoKind::Ink { points: points.clone() },
+            AnnoGeom::Ink { points } => AnnoKind::Ink {
+                points: points.clone(),
+            },
             AnnoGeom::Note { x, y } => AnnoKind::Note { x: *x, y: *y },
         }
     }
@@ -271,7 +274,11 @@ pub fn set_annotation_color_action(id: &str, color: Swatch) -> PdfViewerAction {
 }
 
 pub fn set_annotation_position_action(id: &str, x: f64, y: f64) -> PdfViewerAction {
-    PdfViewerAction::SetAnnotationPosition { id: id.to_string(), x, y }
+    PdfViewerAction::SetAnnotationPosition {
+        id: id.to_string(),
+        x,
+        y,
+    }
 }
 
 pub fn delete_annotation_action(id: &str) -> PdfViewerAction {
@@ -311,7 +318,10 @@ pub fn set_comment_body_action(id: &str, body: &str) -> PdfViewerAction {
 }
 
 pub fn set_comment_resolved_action(id: &str, resolved: bool) -> PdfViewerAction {
-    PdfViewerAction::SetCommentResolved { id: id.to_string(), resolved }
+    PdfViewerAction::SetCommentResolved {
+        id: id.to_string(),
+        resolved,
+    }
 }
 
 pub fn add_reply_action(comment_id: &str, author: &str, body: &str) -> PdfViewerAction {
@@ -473,7 +483,12 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
             "Colour",
             "yellow, green, pink, blue, purple",
             ExecutionLocus::ClientLocal,
-            move |name: &str| encode(&set_annotation_color_action(&aid, Swatch::parse(name.trim()))),
+            move |name: &str| {
+                encode(&set_annotation_color_action(
+                    &aid,
+                    Swatch::parse(name.trim()),
+                ))
+            },
         ));
         res = res.with_action(encode_spec(
             "delete",
@@ -481,7 +496,10 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
             &delete_annotation_action(&a.id),
         ));
 
-        for c in comments.iter().filter(|c| c.anno_id.as_deref() == Some(a.id.as_str())) {
+        for c in comments
+            .iter()
+            .filter(|c| c.anno_id.as_deref() == Some(a.id.as_str()))
+        {
             res = res.with_child(comment_resource(c, &ctx.author));
         }
         root = root.with_child(res);
@@ -573,10 +591,7 @@ mod tests {
 
         // The seeded free comment (pinned to no annotation) is a document child.
         assert!(
-            document
-                .children
-                .iter()
-                .any(|r| r.kind == "pdf.comment"),
+            document.children.iter().any(|r| r.kind == "pdf.comment"),
             "a free-comment resource hangs off the document"
         );
 
@@ -586,8 +601,14 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("Add note")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete annotation")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete comment")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Delete annotation")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete comment")),
+            "{labels:?}"
+        );
     }
 
     /// Deleting an annotation through its action removes the annotation *and*
@@ -601,13 +622,20 @@ mod tests {
         let comments = PdfDoc::list_comments(doc);
         let target = annos
             .iter()
-            .find(|a| comments.iter().any(|c| c.anno_id.as_deref() == Some(a.id.as_str())))
+            .find(|a| {
+                comments
+                    .iter()
+                    .any(|c| c.anno_id.as_deref() == Some(a.id.as_str()))
+            })
             .expect("a seeded annotation with a pinned comment");
         let pinned = comments
             .iter()
             .filter(|c| c.anno_id.as_deref() == Some(target.id.as_str()))
             .count();
-        assert!(pinned >= 1, "precondition: the annotation has a pinned comment");
+        assert!(
+            pinned >= 1,
+            "precondition: the annotation has a pinned comment"
+        );
 
         let action = delete_annotation_action(&target.id);
         let encoded = encode(&action);
@@ -616,7 +644,9 @@ mod tests {
         qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         assert!(
-            PdfDoc::list_annotations(doc).iter().all(|a| a.id != target.id),
+            PdfDoc::list_annotations(doc)
+                .iter()
+                .all(|a| a.id != target.id),
             "the annotation is gone"
         );
         assert!(
@@ -641,7 +671,9 @@ mod tests {
         let a = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Highlight { rect: PtRect::new(70.0, 300.0, 120.0, 12.0) },
+            kind: AnnoKind::Highlight {
+                rect: PtRect::new(70.0, 300.0, 120.0, 12.0),
+            },
             color: Swatch::Green,
             author: "You".into(),
         };
@@ -668,8 +700,13 @@ mod tests {
             before_len + 1,
             "the action added the highlight"
         );
-        let entry = state.peek_last_undo().expect("exactly one undo boundary recorded");
-        assert_eq!(entry.before, before_heads, "the boundary brackets the action");
+        let entry = state
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
+        assert_eq!(
+            entry.before, before_heads,
+            "the boundary brackets the action"
+        );
         assert_eq!(
             entry.author.as_ref(),
             Some(&local_author),
@@ -693,16 +730,22 @@ mod tests {
     fn action_replays_byte_identical_on_a_peer() {
         let (_app, state) = open_with_markup();
         // Two replicas sharing history.
-        let mut a = state.doc.clone();
+        let mut a = state.doc;
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let anno = Annotation {
             id: Annotation::new_id(),
             page: 2,
-            kind: AnnoKind::Ink { points: vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)] },
+            kind: AnnoKind::Ink {
+                points: vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)],
+            },
             color: Swatch::Blue,
             author: "You".into(),
         };
@@ -713,7 +756,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(
             PdfDoc::list_annotations(&a).len(),
             PdfDoc::list_annotations(&b).len(),
@@ -739,7 +786,10 @@ mod tests {
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&delete_annotation_action(anno_id));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth"
+        );
 
         // And a comment's edit spec matches the edit builder for the same text.
         let comment = &anno.children[0];
@@ -747,6 +797,9 @@ mod tests {
         let edit_spec = comment.actions.iter().find(|a| a.id == "edit").unwrap();
         let from_spec = prompted_encode(edit_spec, "revised");
         let from_builder = encode(&set_comment_body_action(cid, "revised"));
-        assert_eq!(from_spec.payload, from_builder.payload, "edit is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "edit is one source of truth"
+        );
     }
 }

@@ -1,9 +1,8 @@
 //! 2-of-2 DKG end-to-end tests.
 //!
-//! Simulates two devices running FROST DKG, then producing a
-//! threshold signature that verifies through
-//! `collab_types::verify_event`. This is the canonical
-//! Phase 8 first-enrolment flow.
+//! Simulates two devices running FROST DKG, then producing a threshold
+//! signature that verifies through `collab_types::verify_event` — the
+//! canonical first-enrolment flow.
 
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{
@@ -21,14 +20,12 @@ fn run_two_device_dkg() -> (ThresholdIdentity, ThresholdIdentity) {
 
     // Bootstrap device A in single-device mode.
     let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng_a).unwrap();
-    // Device B starts fresh — in production it would be a
-    // factory-default device. For DKG we just need a fresh
-    // ThresholdIdentity placeholder; we will overwrite it via
-    // adopt_dkg_outcome.
+    // Device B starts fresh — in production a factory-default device.
+    // For DKG we just need a placeholder `ThresholdIdentity`, overwritten
+    // via adopt_dkg_outcome.
     let mut b = ThresholdIdentity::bootstrap_single_device(&mut rng_b).unwrap();
 
-    // Both devices initiate DKG with new (t=2, n=2). Device A is
-    // share 1, Device B is share 2.
+    // Both devices initiate DKG with new (t=2, n=2): A is share 1, B is share 2.
     let (mut s_a, r1_a) = a.begin_enrolment(1, 2, 2, &mut rng_a).unwrap();
     let (mut s_b, r1_b) = b.begin_enrolment(2, 2, 2, &mut rng_b).unwrap();
 
@@ -36,8 +33,8 @@ fn run_two_device_dkg() -> (ThresholdIdentity, ThresholdIdentity) {
     let r2_a_out = s_a.receive_round1(std::slice::from_ref(&r1_b)).unwrap();
     let r2_b_out = s_b.receive_round1(std::slice::from_ref(&r1_a)).unwrap();
 
-    // Round-2: route each Round-2 message to its addressee. A
-    // sends to B (index 2), B sends to A (index 1).
+    // Round-2: route each message to its addressee — A sends to B
+    // (index 2), B sends to A (index 1).
     let r2_for_a: Vec<EnrolmentRound2> = vec![r2_b_out[&1].clone()];
     let r2_for_b: Vec<EnrolmentRound2> = vec![r2_a_out[&2].clone()];
 
@@ -92,8 +89,8 @@ fn dkg_produces_matching_group_public_key_on_both_devices() {
 
 #[test]
 fn dkg_rotates_group_public_key_away_from_bootstrap() {
-    // The 1-of-1 bootstrap key MUST differ from the 2-of-2 DKG
-    // key. The spec accepts this rotation per Phase 8 design.
+    // The 1-of-1 bootstrap key MUST differ from the 2-of-2 DKG key —
+    // this rotation is accepted by the design.
     let mut rng_a = ChaCha20Rng::from_seed([1u8; 32]);
     let mut rng_b = ChaCha20Rng::from_seed([2u8; 32]);
     let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng_a).unwrap();
@@ -120,9 +117,9 @@ fn two_device_threshold_sign_verifies_via_qos_collab_types() {
     let canon = canonical_bytes(&payload).unwrap();
     let sig = threshold_sign(&a, &b, &canon);
 
-    // Verify via qos-collab-types' Ed25519 path — the very
-    // verifier the rest of the system uses. If this passes,
-    // the threshold sig is byte-compatible with ed25519-dalek.
+    // Verify via qos-collab-types' Ed25519 path — the verifier the rest
+    // of the system uses. If this passes, the threshold sig is
+    // byte-compatible with ed25519-dalek.
     verify_event(&payload, &sig, &a.group_public_key)
         .expect("threshold-produced sig must verify via collab_types::verify_event");
 }
@@ -138,13 +135,11 @@ fn two_device_threshold_sign_also_passes_frost_verifier() {
 
 #[test]
 fn single_partial_cannot_aggregate_below_threshold() {
-    // To produce a partial at all FROST needs commitments from
-    // every signer in the round-2 quorum (otherwise round-2
-    // fails with "Incorrect number of commitments"). So drive
-    // both A and B through round-2 with the same commitment
-    // set, but then try to aggregate using only A's partial.
-    // The aggregator must reject — `threshold - 1` partials is
-    // insufficient.
+    // To produce a partial at all FROST needs commitments from every
+    // signer in the round-2 quorum (else round-2 fails with "Incorrect
+    // number of commitments"). So drive both A and B through round-2
+    // with the same commitment set, but aggregate using only A's
+    // partial — the aggregator must reject `threshold - 1` as insufficient.
     let (a, b) = run_two_device_dkg();
     let mut rng_a = ChaCha20Rng::from_seed([3u8; 32]);
     let mut rng_b = ChaCha20Rng::from_seed([4u8; 32]);
@@ -154,7 +149,9 @@ fn single_partial_cannot_aggregate_below_threshold() {
     let r1_a = a.sign_round1(&mut rng_a).unwrap();
     let r1_b = b.sign_round1(&mut rng_b).unwrap();
     let commitments = vec![r1_a.commitment.clone(), r1_b.commitment.clone()];
-    let p_a = a.sign_round2_raw(r1_a.nonces, &canon, &commitments).unwrap();
+    let p_a = a
+        .sign_round2_raw(r1_a.nonces, &canon, &commitments)
+        .unwrap();
     // Drop B's partial — pretend it never made it back.
     let _drop_b_partial = b
         .sign_round2_raw(r1_b.nonces, &canon, &commitments)
@@ -172,9 +169,8 @@ fn single_partial_cannot_aggregate_below_threshold() {
 
 #[test]
 fn deterministic_dkg_for_fixed_seeds() {
-    // Two independent runs with the same seeds must produce
-    // the same group public key. Useful for replay-based tests
-    // and reproducible CI.
+    // Two independent runs with the same seeds must produce the same
+    // group public key — useful for replay-based and reproducible CI tests.
     let (a1, _b1) = run_two_device_dkg();
     let (a2, _b2) = run_two_device_dkg();
     assert_eq!(a1.group_public_key, a2.group_public_key);

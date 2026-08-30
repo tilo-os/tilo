@@ -42,13 +42,7 @@ fn runtime_install_list_verify_remove_roundtrip() {
 
     // install
     let out = Command::new(install_bin())
-        .args([
-            "runtime",
-            "install",
-            "--version",
-            "test-1.0.0",
-            "--from",
-        ])
+        .args(["runtime", "install", "--version", "test-1.0.0", "--from"])
         .arg(host.path())
         .env("XDG_DATA_HOME", xdg.path())
         .env("HOME", xdg.path())

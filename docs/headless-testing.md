@@ -57,23 +57,43 @@ ls -la $QOS_TEST_CONTROL
 
 The compositor prints `nirios compositor test_control listening on "<path>"` to stderr once the socket is ready to accept.
 
+### Put `TMPDIR` somewhere with room
+
+`/tmp` is a 16 GB tmpfs shared with everything else on the box, and a
+few concurrent `rustc` processes will fill it. When they do, anything
+that asks for a temporary file fails — harnesses here allocate session
+roots through `tempfile` — and the error surfaces from inside that call
+as `Quota exceeded`, a bare exit 1, or simply empty output. It reads
+like a bug in whatever you were testing, which is the expensive part.
+
+Point it at real disk before a run that spawns sessions:
+
+```bash
+TMPDIR=$HOME/tmp ./scripts/headless-examples/peers-cross-both-ways.py
+```
+
+Keep session roots short (`/tmp/qs-xxxx`-shaped): a unix socket path has
+a hard ~108-byte limit, and a deep temp directory silently pushes the
+control socket past it.
+
 ### Easiest path: the `qos-control` CLI
 
 A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
 
 ```bash
-cargo build -p shell --bin qos-control      # builds alongside shell
+cargo build -p shell --bin qos-control      # lands in target/debug, NOT on PATH
+alias qc='cargo run -q --bin qos-control --' # or: cargo install --path shell --bin qos-control
 
-qos-control list-targets                             # PNAME (X, Y, W, H) per line
-qos-control click add_workspace                      # click_named
-qos-control click-at 400 300                         # click_at
-qos-control drag 100 100 300 200 12                  # drag with 12 motion steps
-qos-control key Enter                                # named key OR single char
-qos-control type "hello"                             # one press+release per character
-qos-control modifiers ctrl,shift                     # comma-separated set; empty clears all
-qos-control snapshot /tmp/state.png                  # PNG to disk
-qos-control state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
-qos-control raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
+qc list-targets                             # PNAME (X, Y, W, H) per line
+qc click add_workspace                      # click_named
+qc click-at 400 300                         # click_at
+qc drag 100 100 300 200 12                  # drag with 12 motion steps
+qc key Enter                                # named key OR single char
+qc type "hello"                             # one press+release per character
+qc modifiers ctrl,shift                     # comma-separated set; empty clears all
+qc snapshot /tmp/state.png                  # PNG to disk
+qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
+qc raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
 ```
 
 Default socket: `$QOS_TEST_CONTROL` env var, else `/tmp/nirios.sock`. Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
@@ -212,6 +232,14 @@ For exploratory / partial flows, see `scripts/headless-examples/` (full walkthro
 - `drag-demo.py` — press-motions-release
 - `full-loop.py` — the end-to-end above
 - `spawn-headless.sh` — shell helper to start the compositor + wait for socket
+
+Alongside those, the `*-proof.py` scripts in the same directory stand up
+**two or three real compositors** with separate identities and homes, put
+them in one room, and assert across them. Reach for one of those when the
+question is about collaboration rather than about one session's chrome —
+`peers-cross-both-ways.py` is the presence regression net (each session
+must paint the other's cursor, under the name the room gave it), and
+`named-peer-proof.py` covers naming through a running app.
 
 If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`):
 

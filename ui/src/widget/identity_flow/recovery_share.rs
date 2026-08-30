@@ -13,13 +13,9 @@
 //! For first-run, the identity is in 1-of-1 bootstrap mode — there is
 //! no real recovery share yet. We show a deterministic placeholder
 //! mnemonic derived from the identity's public key so the user goes
-//! through the "write it down" muscle-memory; the screen's caption
-//! tells them the real recovery share is generated when they pair a
-//! second device.
-//!
-//! This is the only way to handle "first-run shows a recovery card"
-//! given the engine's invariants. Once a second device pairs,
-//! screen 2 is re-presented with the proper threshold-mode mnemonic.
+//! through the "write it down" muscle-memory; the caption tells them
+//! the real share is generated once they pair a second device, at
+//! which point this screen is re-presented with the real mnemonic.
 
 use std::collections::HashMap;
 
@@ -33,8 +29,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::text_selection::clipboard_copy;
+use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
 
@@ -73,15 +70,19 @@ pub struct RecoveryShareScreen {
     continue_rect: Rect,
     ack_rect: Rect,
     /// Click target spanning the checkbox AND its label, so the user
-    /// can tap anywhere on the "I've written them down somewhere safe"
-    /// row to tick the box (matching every other form on the planet).
-    /// `ack_rect` stays the visual checkbox geometry; this rect is
-    /// the structural hit target.
+    /// can tap anywhere on the row to tick the box. `ack_rect` stays
+    /// the visual checkbox geometry.
     ack_hit_rect: Rect,
     last_cursor: Point,
     /// Most recent clipboard write status — surfaced so a sandbox
     /// failure ("clipboard owner refused") doesn't fail silently.
     clipboard_message: Option<String>,
+}
+
+impl Default for RecoveryShareScreen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RecoveryShareScreen {
@@ -172,6 +173,11 @@ impl RecoveryShareScreen {
         self.clipboard_message.as_deref()
     }
 
+    // Mirrors `Widget::handle_event`'s parameter list on purpose --
+    // this is invoked from the trait impl, forwarding the same event,
+    // scale, modifiers, CRDT handle, and out-params the screen host
+    // received; bundling it would mean bundling the trait method too.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -232,26 +238,24 @@ impl Widget for RecoveryShareScreen {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(900.0),
-                    height: Dimension::length(640.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(900.0),
+                height: Dimension::length(640.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_w = 680.0;
         let card_h = 540.0;
@@ -259,19 +263,14 @@ impl Widget for RecoveryShareScreen {
         let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
         let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
         let pad = 32.0;
-        // Copy button (right of the header).
         self.copy_rect = Rect::new(
             card.x1 - pad - 140.0,
             card.y0 + pad,
             card.x1 - pad,
             card.y0 + pad + 36.0,
         );
-        // Acknowledgement checkbox + label band, bottom of card.
-        // The 18×18 visible square is the *visual* checkbox; the row
-        // it sits on is the *clickable* region — anywhere on the
-        // label or its checkbox toggles. ~360 px label width is
-        // generous enough for any reasonable translation of
-        // "I've written them down somewhere safe".
+        // ~360 px label width is generous enough for any reasonable
+        // translation of "I've written them down somewhere safe".
         self.ack_rect = Rect::new(
             card.x0 + pad,
             card.y1 - pad - 80.0,
@@ -284,7 +283,6 @@ impl Widget for RecoveryShareScreen {
             self.ack_rect.x1 + 360.0,
             self.ack_rect.y1 + 4.0,
         );
-        // Continue button, bottom-right.
         self.continue_rect = Rect::new(
             card.x1 - pad - 160.0,
             card.y1 - pad - 44.0,
@@ -326,7 +324,6 @@ impl Widget for RecoveryShareScreen {
             &RoundedRect::from_rect(card, radius),
         );
 
-        // Title.
         text_renderer.draw_text(
             scene,
             "Your recovery words",
@@ -335,7 +332,6 @@ impl Widget for RecoveryShareScreen {
             transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
             None,
         );
-        // Caption.
         text_renderer.draw_text(
             scene,
             "Write these 24 words down. They restore your identity if you lose every device.",
@@ -345,7 +341,6 @@ impl Widget for RecoveryShareScreen {
             None,
         );
 
-        // Copy button.
         let copy_bg = if self.copy_hovered {
             theme.bg_hover
         } else {
@@ -373,7 +368,7 @@ impl Widget for RecoveryShareScreen {
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
-                    self.copy_rect.x0 + (self.copy_rect.width() - cw as f64) / 2.0,
+                    self.copy_rect.x0 + (self.copy_rect.width() - f64::from(cw)) / 2.0,
                     self.copy_rect.y0 + (self.copy_rect.height() - 13.0) / 2.0,
                 )),
             None,
@@ -390,7 +385,6 @@ impl Widget for RecoveryShareScreen {
             let col = i % 4;
             let x = grid_x + col as f64 * col_w;
             let y = grid_y + row as f64 * row_h;
-            // Number prefix.
             let prefix = format!("{:>2}.", i + 1);
             text_renderer.draw_text(
                 scene,
@@ -410,7 +404,6 @@ impl Widget for RecoveryShareScreen {
             );
         }
 
-        // Acknowledgement checkbox.
         let check_bg = if self.acknowledged {
             theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
         } else {
@@ -431,13 +424,9 @@ impl Widget for RecoveryShareScreen {
             &RoundedRect::from_rect(self.ack_rect, 3.0),
         );
         if self.acknowledged {
-            // White tick.
             let mut p = vello::kurbo::BezPath::new();
             p.move_to((self.ack_rect.x0 + 4.0, self.ack_rect.center().y));
-            p.line_to((
-                self.ack_rect.x0 + 7.5,
-                self.ack_rect.y1 - 4.0,
-            ));
+            p.line_to((self.ack_rect.x0 + 7.5, self.ack_rect.y1 - 4.0));
             p.line_to((self.ack_rect.x1 - 3.0, self.ack_rect.y0 + 4.0));
             scene.stroke(
                 &Stroke::new(2.0),
@@ -452,8 +441,7 @@ impl Widget for RecoveryShareScreen {
             "I've written them down somewhere safe",
             13.0,
             theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((self.ack_rect.x1 + 8.0, self.ack_rect.y0 + 2.0)),
+            transform * Affine::translate((self.ack_rect.x1 + 8.0, self.ack_rect.y0 + 2.0)),
             None,
         );
         if let Some(msg) = &self.clipboard_message {
@@ -467,7 +455,6 @@ impl Widget for RecoveryShareScreen {
             );
         }
 
-        // Continue button.
         let cont_enabled = self.is_continue_enabled();
         let cont_bg = if !cont_enabled {
             theme.tokens.colors.surfaces.base
@@ -496,7 +483,7 @@ impl Widget for RecoveryShareScreen {
             cont_text_color,
             transform
                 * Affine::translate((
-                    self.continue_rect.x0 + (self.continue_rect.width() - lw as f64) / 2.0,
+                    self.continue_rect.x0 + (self.continue_rect.width() - f64::from(lw)) / 2.0,
                     self.continue_rect.y0 + (self.continue_rect.height() - 14.0) / 2.0,
                 )),
             None,
@@ -517,7 +504,7 @@ impl Widget for RecoveryShareScreen {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RecoveryShareScreen"
     }
 

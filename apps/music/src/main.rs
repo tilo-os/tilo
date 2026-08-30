@@ -1,26 +1,42 @@
 //! Music — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//! - default — run the live winit event loop via `ui::App`.
+//! - `--shots PATH` — render one offscreen frame to a PNG and exit (headless
+//!   screenshot; identical passes to the live app).
 //!
 //! Optional flags for `--shots`:
-//!   * `--viewport WxH`   — render at a custom size (e.g. `--viewport 480x820`
-//!                          to capture the narrow / overlay-sidebar layout).
-//!   * `--scenario NAME`  — stage a named interaction state for the single
-//!                          frame (see `music::app_root_for_shot`); `sidebar`
-//!                          snaps the navigation sidebar open.
+//! - `--viewport WxH` — render at a custom size (e.g. `--viewport 480x820` to
+//!   capture the narrow / overlay-sidebar layout).
+//! - `--scenario NAME` — stage a named interaction state for the single frame
+//!   (see `music::app_root_for_shot`); `sidebar` snaps the navigation sidebar
+//!   open.
+
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -39,7 +55,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Join all trailing args so an unquoted multi-word query
         // (`--probe aurora runaway`) is still taken as one search.
         let query = args[pos + 1..].join(" ");
-        let query = if query.trim().is_empty() { "aurora runaway".to_string() } else { query };
+        let query = if query.trim().is_empty() {
+            "aurora runaway".to_string()
+        } else {
+            query
+        };
         return run_probe(&query);
     }
 
@@ -62,7 +82,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Headless per-frame benchmark: render a view offscreen N times and report
     // the layout+draw cost distribution. Reproducible + display-free.
     if let Some(pos) = args.iter().position(|a| a == "--bench") {
-        let n: usize = args.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(300);
+        let n: usize = args
+            .get(pos + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300);
         let viewport = parse_value_arg(&args, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
@@ -80,7 +103,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--live` captures the real screen: fetch live Home/album/artist content
         // + real cover art off-thread, wait for it to settle, then render.
         let live = args.iter().any(|a| a == "--live")
-            || std::env::var("QOS_MUSIC_LIVE").map(|v| !v.is_empty()).unwrap_or(false);
+            || std::env::var("QOS_MUSIC_LIVE").is_ok_and(|v| !v.is_empty());
         if live {
             let play = parse_value_arg(&args, "--play")
                 .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
@@ -154,7 +177,10 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         stream.bitrate / 1000
     );
     println!("   mime: {}", stream.mime);
-    println!("   API content-length: {} bytes ({mib:.2} MiB)", stream.size_bytes);
+    println!(
+        "   API content-length: {} bytes ({mib:.2} MiB)",
+        stream.size_bytes
+    );
     println!("   URL: {}", stream.url);
 
     // Independent proof the URL actually serves audio bytes.
@@ -170,8 +196,15 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
             for section in &home.sections {
                 println!("   [{}] ({} items)", section.title, section.items.len());
                 for it in section.items.iter().take(3) {
-                    let art = if it.cover_url.is_empty() { "no-cover" } else { "cover\u{2713}" };
-                    println!("        \u{2022} {}  \u{2014}  {}   [{art}]", it.title, it.subtitle);
+                    let art = if it.cover_url.is_empty() {
+                        "no-cover"
+                    } else {
+                        "cover\u{2713}"
+                    };
+                    println!(
+                        "        \u{2022} {}  \u{2014}  {}   [{art}]",
+                        it.title, it.subtitle
+                    );
                 }
             }
         }
@@ -207,7 +240,13 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("\n== real album page ==  (album id: {alid})");
         match backend.album(&alid) {
             Ok(al) => {
-                println!("   {} \u{2014} {} ({}), {} tracks", al.title, al.artist_name, al.year, al.tracks.len());
+                println!(
+                    "   {} \u{2014} {} ({}), {} tracks",
+                    al.title,
+                    al.artist_name,
+                    al.year,
+                    al.tracks.len()
+                );
                 for tk in al.tracks.iter().take(3) {
                     println!("        {}. {} [{}]", tk.title, tk.artist, tk.video_id);
                 }
@@ -251,7 +290,11 @@ fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("   Content-Range: {cr}");
     }
     let sig: String = bytes.iter().take(12).map(|b| format!("{b:02x} ")).collect();
-    println!("   received {} bytes; first 12: {}", bytes.len(), sig.trim_end());
+    println!(
+        "   received {} bytes; first 12: {}",
+        bytes.len(),
+        sig.trim_end()
+    );
     if !status.is_success() || bytes.is_empty() {
         return Err(format!("stream URL did not serve bytes (HTTP {status})").into());
     }
@@ -259,7 +302,7 @@ fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Best-effort GStreamer decode of the resolved stream to a fake sink (no
+/// Best-effort `GStreamer` decode of the resolved stream to a fake sink (no
 /// speakers needed). Only compiled with the `audio` feature; on missing codec
 /// plugins it reports honestly rather than claiming audio it didn't produce.
 #[cfg(all(feature = "live", feature = "audio"))]
@@ -283,7 +326,10 @@ fn probe_decode(url: &str) {
     let no_aac = gstreamer::ElementFactory::find("avdec_aac").is_none()
         && gstreamer::ElementFactory::find("faad").is_none();
     if !missing.is_empty() {
-        println!("   [decode] missing GStreamer plugins: {}", missing.join(", "));
+        println!(
+            "   [decode] missing GStreamer plugins: {}",
+            missing.join(", ")
+        );
     }
     let Ok(playbin) = gstreamer::ElementFactory::make("playbin").build() else {
         println!("   [decode] no playbin element — skipping");
@@ -409,12 +455,28 @@ fn run_bench(n: usize, viewport: (u32, u32)) -> Result<(), Box<dyn std::error::E
     let mut state = ui::State::new();
 
     // Warm up (first frame builds text-shape caches etc.).
-    let _ = render_widget_frame(widget.as_mut(), &mut state, viewport, &mut tr, &theme, &presence, &permission);
+    let _ = render_widget_frame(
+        widget.as_mut(),
+        &mut state,
+        viewport,
+        &mut tr,
+        &theme,
+        &presence,
+        &permission,
+    );
 
     let mut samples = Vec::with_capacity(n);
     for _ in 0..n {
         let t0 = Instant::now();
-        let _ = render_widget_frame(widget.as_mut(), &mut state, viewport, &mut tr, &theme, &presence, &permission);
+        let _ = render_widget_frame(
+            widget.as_mut(),
+            &mut state,
+            viewport,
+            &mut tr,
+            &theme,
+            &presence,
+            &permission,
+        );
         samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -433,7 +495,7 @@ fn run_bench(n: usize, viewport: (u32, u32)) -> Result<(), Box<dyn std::error::E
 }
 
 /// Run one offscreen frame against `widget` and return the drawn Vello scene.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_widget_frame(
     widget: &mut dyn Widget,
     state: &mut ui::State,
@@ -486,7 +548,14 @@ fn render_widget_frame(
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    widget.draw_with_presence(&mut scene, Affine::IDENTITY, text_renderer, theme, presence, permission);
+    widget.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        text_renderer,
+        theme,
+        presence,
+        permission,
+    );
     scene
 }
 
@@ -543,7 +612,15 @@ fn render_live_shot_to_png(
     let mut state = ui::State::new();
 
     let mut frame = |app: &mut music::MusicApp, state: &mut ui::State| {
-        render_widget_frame(app, state, viewport, &mut tr, &theme, &presence, &permission)
+        render_widget_frame(
+            app,
+            state,
+            viewport,
+            &mut tr,
+            &theme,
+            &presence,
+            &permission,
+        )
     };
 
     if let Some(q) = play {

@@ -7,9 +7,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use vello::peniko::Color;
 
+use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::ColorCompat;
 
 use crate::draw;
 use crate::graph::GraphLayout;
@@ -74,12 +74,8 @@ impl HistoryView {
                 path.line_to(Point::new(x1, y1));
             } else {
                 // S-curve between lanes.
-                let my = (y0 + y1) / 2.0;
-                path.curve_to(
-                    Point::new(x0, my),
-                    Point::new(x1, my),
-                    Point::new(x1, y1),
-                );
+                let my = f64::midpoint(y0, y1);
+                path.curve_to(Point::new(x0, my), Point::new(x1, my), Point::new(x1, y1));
             }
             scene.stroke(&Stroke::new(2.0), t, color, None, &path);
         }
@@ -108,14 +104,20 @@ impl HistoryView {
             let is_merge = commit.parents.len() > 1;
             let dr = if is_merge { DOT_R + 1.5 } else { DOT_R };
             draw::fill_round(
-                scene, t,
-                Rect::new(cx - dr, cy - dr, cx + dr, cy + dr), dr, dot_color,
+                scene,
+                t,
+                Rect::new(cx - dr, cy - dr, cx + dr, cy + dr),
+                dr,
+                dot_color,
             );
             if is_merge {
                 // Hollow center to mark a merge.
                 draw::fill_round(
-                    scene, t,
-                    Rect::new(cx - 2.0, cy - 2.0, cx + 2.0, cy + 2.0), 2.0, c.surfaces.base,
+                    scene,
+                    t,
+                    Rect::new(cx - 2.0, cy - 2.0, cx + 2.0, cy + 2.0),
+                    2.0,
+                    c.surfaces.base,
                 );
             }
 
@@ -131,8 +133,16 @@ impl HistoryView {
             }
 
             // Summary.
-            let summary_y = if commit.refs.is_empty() { y + 10.0 } else { y + 10.0 };
-            let sx = if commit.refs.is_empty() { text_x } else { text_x };
+            let summary_y = if commit.refs.is_empty() {
+                y + 10.0
+            } else {
+                y + 10.0
+            };
+            let sx = if commit.refs.is_empty() {
+                text_x
+            } else {
+                text_x
+            };
             // If there are refs, draw the summary on the second line; else first.
             let (sy, avail) = if commit.refs.is_empty() {
                 (summary_y, area.x1 - sx - 90.0)
@@ -140,24 +150,68 @@ impl HistoryView {
                 (y + 30.0, area.x1 - sx - 90.0)
             };
             draw::text_weighted(
-                scene, tr, t, &commit.summary, 13.0, c.text_primary, sx, sy, Some(avail as f32),
+                scene,
+                tr,
+                t,
+                &commit.summary,
+                13.0,
+                c.text_primary,
+                sx,
+                sy,
+                Some(avail as f32),
                 TextWeight::Medium,
             );
 
             // Author + time + short hash on the meta line.
             let meta_y = sy + 18.0;
             let acolor = draw::author_color(theme, &commit.author_email);
-            draw::text(scene, tr, t, &commit.author_name, 11.0, acolor, sx, meta_y, None);
-            let aw = tr.measure(&commit.author_name, 11.0, None).0 as f64;
+            draw::text(
+                scene,
+                tr,
+                t,
+                &commit.author_name,
+                11.0,
+                acolor,
+                sx,
+                meta_y,
+                None,
+            );
+            let aw = f64::from(tr.measure(&commit.author_name, 11.0, None).0);
             let meta = format!("·  {}", commit.when);
-            draw::text(scene, tr, t, &meta, 11.0, c.text_dim, sx + aw + 8.0, meta_y, None);
+            draw::text(
+                scene,
+                tr,
+                t,
+                &meta,
+                11.0,
+                c.text_dim,
+                sx + aw + 8.0,
+                meta_y,
+                None,
+            );
 
             // Short hash, right-aligned.
             let short: String = commit.id.chars().take(7).collect();
-            let hw = draw::mono_width(tr, &short, 11.5) as f64;
-            draw::mono(scene, tr, t, &short, 11.5, c.neutral[5], area.x1 - hw - 14.0, y + 10.0);
+            let hw = f64::from(draw::mono_width(tr, &short, 11.5));
+            draw::mono(
+                scene,
+                tr,
+                t,
+                &short,
+                11.5,
+                c.neutral[5],
+                area.x1 - hw - 14.0,
+                y + 10.0,
+            );
 
-            draw::hline(scene, t, y + ROW_H, area.x0 + 8.0, area.x1 - 8.0, c.surface_white_5);
+            draw::hline(
+                scene,
+                t,
+                y + ROW_H,
+                area.x0 + 8.0,
+                area.x1 - 8.0,
+                c.surface_white_5,
+            );
         }
 
         scene.pop_layer();
@@ -193,19 +247,49 @@ impl HistoryView {
 
         // Summary.
         draw::text_weighted(
-            scene, tr, t, &commit.summary, 16.0, c.text_primary, x, y, Some(w), TextWeight::Semibold,
+            scene,
+            tr,
+            t,
+            &commit.summary,
+            16.0,
+            c.text_primary,
+            x,
+            y,
+            Some(w),
+            TextWeight::Semibold,
         );
-        let sh = tr.measure_weighted(&commit.summary, 16.0, Some(w), TextWeight::Semibold).1 as f64;
+        let sh = f64::from(
+            tr.measure_weighted(&commit.summary, 16.0, Some(w), TextWeight::Semibold)
+                .1,
+        );
         y += sh + 14.0;
 
         // Author block with avatar.
         let acolor = draw::author_color(theme, &commit.author_email);
         draw::avatar(scene, tr, t, theme, x, y, 32.0, &commit.author_name, acolor);
         draw::text_weighted(
-            scene, tr, t, &commit.author_name, 13.0, c.text_primary, x + 42.0, y, None,
+            scene,
+            tr,
+            t,
+            &commit.author_name,
+            13.0,
+            c.text_primary,
+            x + 42.0,
+            y,
+            None,
             TextWeight::Medium,
         );
-        draw::text(scene, tr, t, &commit.author_email, 11.5, c.text_dim, x + 42.0, y + 17.0, None);
+        draw::text(
+            scene,
+            tr,
+            t,
+            &commit.author_email,
+            11.5,
+            c.text_dim,
+            x + 42.0,
+            y + 17.0,
+            None,
+        );
         y += 44.0;
 
         // Metadata grid.
@@ -213,12 +297,38 @@ impl HistoryView {
         y = meta_row(scene, tr, t, theme, x, y, w, "commit", &short, true);
         y = meta_row(scene, tr, t, theme, x, y, w, "date", &commit.when, false);
         if !commit.parents.is_empty() {
-            let parents: Vec<String> = commit.parents.iter().map(|p| p.chars().take(7).collect()).collect();
-            y = meta_row(scene, tr, t, theme, x, y, w, "parents", &parents.join(", "), true);
+            let parents: Vec<String> = commit
+                .parents
+                .iter()
+                .map(|p| p.chars().take(7).collect())
+                .collect();
+            y = meta_row(
+                scene,
+                tr,
+                t,
+                theme,
+                x,
+                y,
+                w,
+                "parents",
+                &parents.join(", "),
+                true,
+            );
         }
         if !commit.refs.is_empty() {
             let refs: Vec<String> = commit.refs.iter().map(|r| r.name.clone()).collect();
-            y = meta_row(scene, tr, t, theme, x, y, w, "refs", &refs.join(", "), false);
+            y = meta_row(
+                scene,
+                tr,
+                t,
+                theme,
+                x,
+                y,
+                w,
+                "refs",
+                &refs.join(", "),
+                false,
+            );
         }
 
         y += 8.0;
@@ -227,24 +337,71 @@ impl HistoryView {
 
         // Body message.
         if !commit.body.is_empty() {
-            draw::text(scene, tr, t, &commit.body, 13.0, c.neutral[7], x, y, Some(w));
-            let bh = tr.measure(&commit.body, 13.0, Some(w)).1 as f64;
+            draw::text(
+                scene,
+                tr,
+                t,
+                &commit.body,
+                13.0,
+                c.neutral[7],
+                x,
+                y,
+                Some(w),
+            );
+            let bh = f64::from(tr.measure(&commit.body, 13.0, Some(w)).1);
             y += bh + 18.0;
         }
 
         // Changed files (for the sample / loaded commits).
         if !commit.files.is_empty() {
             draw::text_weighted(
-                scene, tr, t, "Changed files", 12.0, c.text_dim, x, y, None, TextWeight::Semibold,
+                scene,
+                tr,
+                t,
+                "Changed files",
+                12.0,
+                c.text_dim,
+                x,
+                y,
+                None,
+                TextWeight::Semibold,
             );
             y += 24.0;
             for f in &commit.files {
                 let badge = f.kind.badge();
-                draw::mono(scene, tr, t, badge, 12.0, draw::kind_color(theme, f.kind), x, y);
-                draw::text(scene, tr, t, &f.path, 12.0, c.text_primary, x + 18.0, y, Some(w - 80.0));
+                draw::mono(
+                    scene,
+                    tr,
+                    t,
+                    badge,
+                    12.0,
+                    draw::kind_color(theme, f.kind),
+                    x,
+                    y,
+                );
+                draw::text(
+                    scene,
+                    tr,
+                    t,
+                    &f.path,
+                    12.0,
+                    c.text_primary,
+                    x + 18.0,
+                    y,
+                    Some(w - 80.0),
+                );
                 let counts = format!("+{} -{}", f.additions, f.deletions);
-                let cw = draw::mono_width(tr, &counts, 10.5) as f64;
-                draw::mono(scene, tr, t, &counts, 10.5, c.text_dim, area.x1 - pad - cw, y + 1.0);
+                let cw = f64::from(draw::mono_width(tr, &counts, 10.5));
+                draw::mono(
+                    scene,
+                    tr,
+                    t,
+                    &counts,
+                    10.5,
+                    c.text_dim,
+                    area.x1 - pad - cw,
+                    y + 1.0,
+                );
                 y += 24.0;
             }
         }

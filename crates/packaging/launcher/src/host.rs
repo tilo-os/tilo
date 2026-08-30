@@ -7,51 +7,44 @@
 //!
 //! ## Why a host application is not sandboxed
 //!
-//! A `.desktop` entry is a text file naming a command line. It is not a
-//! package manifest: nothing in it says which paths the program needs,
-//! which devices, which services, or which network hosts. qOS's sandbox
-//! is *derived* from those declarations — [`crate::sandbox`] turns a
-//! manifest into bind mounts, [`crate::seccomp`] into a syscall filter,
-//! [`crate::landlock`] into an FS ruleset. With no manifest there is
-//! nothing to derive, and a sandbox invented here would be a guess
-//! presented as a policy.
+//! A `.desktop` entry is a text file naming a command line, not a
+//! package manifest: nothing in it says which paths, devices, services
+//! or network hosts the program needs. qOS's sandbox is *derived* from
+//! those declarations — [`crate::sandbox`] turns a manifest into bind
+//! mounts, [`crate::seccomp`] into a syscall filter, [`crate::landlock`]
+//! into an FS ruleset. With no manifest there's nothing to derive, and a
+//! sandbox invented here would be a guess presented as policy.
 //!
-//! For a Flatpak specifically it is not even a guess that could work.
-//! `flatpak run` builds its own sandbox, which needs `unshare(2)`,
-//! `mount(2)` and `pivot_root(2)`; [`crate::seccomp`]'s baseline denies
-//! all three. It also needs `/usr/bin/flatpak`, the Flatpak
-//! installation tree and the system D-Bus, none of which qOS's sandbox
-//! binds, and it needs a network namespace, which `--unshare-all`
-//! removes. Nesting the two does not double the confinement — it
-//! produces `bwrap: execvp flatpak: No such file or directory`, or a
-//! seccomp kill.
+//! For a Flatpak specifically it's not even a guess that could work:
+//! `flatpak run` builds its own sandbox, needing `unshare(2)`,
+//! `mount(2)` and `pivot_root(2)`, all of which [`crate::seccomp`]'s
+//! baseline denies, plus `/usr/bin/flatpak`, its installation tree and
+//! system D-Bus (none of which qOS's sandbox binds), plus a network
+//! namespace, which `--unshare-all` removes. Nesting the two doesn't
+//! double the confinement — it produces `bwrap: execvp flatpak: No such
+//! file or directory`, or a seccomp kill.
 //!
 //! ## What the user is therefore told
 //!
 //! A host application runs with the user's own identity, files and
-//! network, exactly as it would under any other desktop. It has:
+//! network, exactly as under any other desktop: no `QOS_WORKSPACE_ID`
+//! (no collaboration room, no per-room partition), no capability file
+//! (workspace grants describe what a *sandboxed* app may reach, and
+//! passing them here would assert a limit that doesn't exist), and no
+//! `QOS_APP_DIR` (it writes to the user's real `$HOME`).
 //!
-//! - no `QOS_WORKSPACE_ID` — no collaboration room, and no per-room
-//!   partition of anything it writes;
-//! - no capability file — workspace grants describe what a *sandboxed*
-//!   app may reach and there is no sandbox here to enforce them
-//!   against, so passing them would assert a limit that does not exist;
-//! - no `QOS_APP_DIR` — it writes to the user's real `$HOME`, not to
-//!   the one directory a qOS app is given.
-//!
-//! Those three absences are why the desktop labels host applications
-//! separately in the palette and on the window, and why this module
-//! prints a one-line notice naming the app it is about to run
-//! unconfined. The risk being managed is not escape — there was never
-//! a sandbox to escape — it is a user who cannot tell the two kinds of
-//! application apart.
+//! Those absences are why the desktop labels host applications
+//! separately and why this module prints a one-line notice naming the
+//! app it's about to run unconfined — the risk managed is not escape
+//! (there was never a sandbox to escape), it's a user who can't tell
+//! the two kinds of application apart.
 //!
 //! ## What *is* controlled
 //!
 //! The environment. See [`desktop_entry::launch`]: the child is spawned
 //! from an explicit allowlist plus the display handoff, so the
-//! compositor's own `QOS_*` variables do not leak into a process that
-//! is not subject to them.
+//! compositor's own `QOS_*` variables don't leak into a process not
+//! subject to them.
 
 use std::process::ExitStatus;
 
@@ -75,33 +68,29 @@ impl HostError {
     }
 }
 
-/// Resolve `desktop_id` on this system and run it, unconfined.
-///
-/// Blocks until the application exits, relaying its exit status — the
-/// same shape as [`crate::run::run_with`], so the compositor's launch
-/// worker treats both kinds of launch identically.
+/// Resolve `desktop_id` on this system and run it, unconfined. Blocks
+/// until the application exits, relaying its exit status — the same
+/// shape as [`crate::run::run_with`], so the compositor's launch worker
+/// treats both kinds of launch identically.
 pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostError> {
     let launch = plan_host(desktop_id, env)?;
     spawn(&launch)
 }
 
 /// Resolve `desktop_id` into the exact command line and environment a
-/// launch would use, without starting anything.
-///
-/// Exists so "what will this actually run, and with what?" is
-/// answerable before it runs — the question that matters most for a
-/// launch with no sandbox around it.
+/// launch would use, without starting anything — so "what will this
+/// actually run, and with what?" is answerable before it runs, the
+/// question that matters most for a launch with no sandbox around it.
 pub fn plan_host(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
     Ok(plan_by_id(desktop_id, env)?)
 }
 
 /// Run an already-planned launch. Split out so a caller that built the
-/// plan itself (to show the user what it would run, say) does not have
-/// to resolve the entry twice.
+/// plan itself doesn't have to resolve the entry twice.
 pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
-    // Deliberately on stderr and deliberately unconditional. A launch
-    // that skips the sandbox says so where the compositor's log, a
-    // journal and a developer's terminal will all see it.
+    // Deliberately on stderr and unconditional: a launch that skips the
+    // sandbox says so where the compositor's log, journal and a
+    // developer's terminal will all see it.
     eprintln!(
         "qos-launcher: running host application {} ({}) UNCONFINED — \
          no qOS sandbox, no workspace room, no per-room state. {} {}",
@@ -132,10 +121,9 @@ mod tests {
     use super::*;
     use crate::run::{LaunchMode, RunError, RunOptions};
 
-    /// A perfectly valid package manifest. The refusal being tested has
+    /// A perfectly valid package manifest — the refusal being tested has
     /// to come from the launch *mode*, not from anything wrong with the
-    /// package — a broken manifest would fail for its own reasons and
-    /// prove nothing.
+    /// package.
     fn example_manifest() -> crate::manifest::MinimalManifest {
         toml::from_str(
             "[package]\nid = \"dev.qos.example\"\nversion = \"1.0.0\"\n\
@@ -174,12 +162,9 @@ mod tests {
             },
             ..Default::default()
         };
-        let err = crate::run::run_with_captured(
-            &manifest,
-            std::path::Path::new("/nonexistent"),
-            &opts,
-        )
-        .expect_err("the second door into the sandbox builder is closed too");
+        let err =
+            crate::run::run_with_captured(&manifest, std::path::Path::new("/nonexistent"), &opts)
+                .expect_err("the second door into the sandbox builder is closed too");
         assert!(matches!(err, RunError::HostAppNotAPackage { .. }));
     }
 
@@ -193,7 +178,8 @@ mod tests {
         )
         .expect_err("nothing has that id");
         assert!(
-            err.to_string().contains("dev.qos.definitely-not-installed-anywhere"),
+            err.to_string()
+                .contains("dev.qos.definitely-not-installed-anywhere"),
             "the error must name what could not be found: {err}"
         );
     }

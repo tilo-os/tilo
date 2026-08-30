@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ReadDoc, Value};
-use settings::categories::Category;
 use settings::SettingsApp;
+use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
 use ui::text_render::TextRenderer;
 use ui::widget::Widget;
@@ -90,7 +90,13 @@ fn find_rect(app: &SettingsApp, name: &str, test_id: Option<&str>) -> Option<Rec
 
 /// Drive a full left-click (cursor move → press → release) at `p` through
 /// the production event path.
-fn click_at(app: &mut SettingsApp, taffy: &TaffyTree<()>, node: NodeId, doc: &mut AutoCommit, p: Point) {
+fn click_at(
+    app: &mut SettingsApp,
+    taffy: &TaffyTree<()>,
+    node: NodeId,
+    doc: &mut AutoCommit,
+    p: Point,
+) {
     let root = automerge::ROOT;
     let mods = winit::event::Modifiers::default();
     let cursor = winit::event::WindowEvent::CursorMoved {
@@ -110,13 +116,27 @@ fn click_at(app: &mut SettingsApp, taffy: &TaffyTree<()>, node: NodeId, doc: &mu
     for ev in [&cursor, &press, &release] {
         let mut handled = false;
         let mut focus = None;
-        app.handle_event(ev, 1.0, &mods, doc, &root, &mut handled, &mut focus, node, taffy);
+        app.handle_event(
+            ev,
+            1.0,
+            &mods,
+            doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            taffy,
+        );
     }
 }
 
 /// Navigate to `target` by clicking its sidebar row through the production
 /// path, then rebuild + re-lay-out as the host does. Returns the live tree.
-fn navigate(app: &mut SettingsApp, doc: &mut AutoCommit, target: Category) -> (TaffyTree<()>, NodeId) {
+fn navigate(
+    app: &mut SettingsApp,
+    doc: &mut AutoCommit,
+    target: Category,
+) -> (TaffyTree<()>, NodeId) {
     let (taffy, node) = lay_out(app);
     let row = find_rect(app, "SidebarRow", Some(target.label()))
         .unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
@@ -153,7 +173,10 @@ fn clicking_back_button_returns_to_list() {
     let (taffy, node) = lay_out_at(&mut app, NW, NH);
     app.sync(&mut doc, &automerge::ROOT);
     assert!(app.is_narrow(), "440px resolves to the narrow layout");
-    assert!(!app.sidebar_open(), "starts on the content screen (list hidden)");
+    assert!(
+        !app.sidebar_open(),
+        "starts on the content screen (list hidden)"
+    );
 
     // The back arrow is drawn by the app-shell (not a child widget), so
     // hit-test it by its resolved rect and click it through the real path.
@@ -163,7 +186,10 @@ fn clicking_back_button_returns_to_list() {
     app.sync(&mut doc, &automerge::ROOT);
     let _ = app.take_structure_dirty();
     let _ = lay_out_at(&mut app, NW, NH);
-    assert!(app.sidebar_open(), "back navigates to the standalone list screen");
+    assert!(
+        app.sidebar_open(),
+        "back navigates to the standalone list screen"
+    );
     assert!(
         app.back_button_rect().width() <= 0.0,
         "the list screen has no back button"
@@ -182,8 +208,8 @@ fn network_wifi_toggle_drives_state() {
     // The pane rebuilt during navigate re-seeds on its first sync; run one
     // sync to consume that seed so the flip below isn't clobbered.
     app.sync(&mut doc, &root);
-    let before = read_bool(&doc, settings::panes::network::WIFI_ENABLED_KEY)
-        .expect("wifi key seeded");
+    let before =
+        read_bool(&doc, settings::panes::network::WIFI_ENABLED_KEY).expect("wifi key seeded");
     // Flip it the way the Toggle widget would on click, then sync.
     let _ = doc.put(&root, settings::panes::network::WIFI_ENABLED_KEY, !before);
     app.sync(&mut doc, &root);
@@ -198,7 +224,7 @@ fn network_wifi_toggle_drives_state() {
 
 /// Every category is reachable by a real click and renders a non-empty
 /// content pane — the per-panel navigation guard. (Complements
-/// category_nav.rs's deeper per-panel assertions; here we additionally
+/// `category_nav.rs`'s deeper per-panel assertions; here we additionally
 /// confirm the primary CRDT key each interactive pane seeds is present.)
 #[test]
 fn all_panels_navigate_and_seed_their_controls() {

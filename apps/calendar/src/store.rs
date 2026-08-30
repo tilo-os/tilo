@@ -69,8 +69,7 @@ pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
         let is_ics = path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("ics"))
-            .unwrap_or(false);
+            .is_some_and(|e| e.eq_ignore_ascii_case("ics"));
         if !is_ics {
             continue;
         }
@@ -78,7 +77,7 @@ pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
             .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::UNIX_EPOCH);
-        if best.as_ref().map(|(m, _)| modified > *m).unwrap_or(true) {
+        if best.as_ref().is_none_or(|(m, _)| modified > *m) {
             best = Some((modified, path));
         }
     }
@@ -89,7 +88,7 @@ pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ObjType, ReadDoc, ROOT};
+    use automerge::{ObjType, ROOT, ReadDoc};
 
     fn tmp_dir() -> PathBuf {
         let p = std::env::temp_dir().join(format!("cal-store-{}", uuid::Uuid::new_v4()));
@@ -105,7 +104,7 @@ mod tests {
         doc.put_object(&ROOT, "events", ObjType::Map).unwrap();
         save(&path, &mut doc).unwrap();
 
-        let mut loaded = load(&path).expect("file present after save");
+        let loaded = load(&path).expect("file present after save");
         assert!(matches!(
             loaded.get(&ROOT, "events"),
             Ok(Some((automerge::Value::Object(ObjType::Map), _)))

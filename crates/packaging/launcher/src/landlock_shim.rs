@@ -3,23 +3,21 @@
 //!
 //! ## Why a shim
 //!
-//! `bwrap` needs broad filesystem access to *build* the sandbox
-//! (mount, bind, pivot_root). We can't Landlock the bwrap process.
-//! But Landlock is path-based and irrevocable for the calling process
-//! and all its descendants — so it must be applied *inside* the
-//! namespace, after the mount setup finishes, before the app binary
-//! takes over.
+//! `bwrap` needs broad filesystem access to *build* the sandbox (mount,
+//! bind, `pivot_root`), so it can't be Landlocked. But Landlock is
+//! path-based and irrevocable for the calling process and all its
+//! descendants, so it must be applied *inside* the namespace, after
+//! mount setup finishes and before the app binary takes over.
 //!
-//! We achieve that by having bwrap `exec` this launcher again (via a
-//! bind of its own binary), with a hidden `__sandbox-exec` first
-//! argument. The re-entered launcher parses the argv following the
-//! token, builds a Landlock ruleset against the *sandbox-side* paths,
-//! calls `restrict_self()`, and then `execvp`s the real app.
+//! Achieved by having bwrap `exec` this launcher again (via a bind of
+//! its own binary), with a hidden `__sandbox-exec` first argument. The
+//! re-entered launcher parses the argv following the token, builds a
+//! Landlock ruleset against the *sandbox-side* paths, calls
+//! `restrict_self()`, then `execvp`s the real app.
 //!
 //! Landlock is strictly additive: on any error (kernel too old, ruleset
-//! construction failed) we log and still exec the app — bwrap + seccomp
-//! + netns remain in force. The mantra matches the compositor shim:
-//! never fail a launch on Landlock alone.
+//! construction failed) it logs and still execs the app — bwrap +
+//! seccomp + netns remain in force. Never fail a launch on Landlock alone.
 
 use std::ffi::CString;
 use std::path::PathBuf;
@@ -43,16 +41,15 @@ pub struct ShimArgs {
     pub rw: Vec<PathBuf>,
     /// Deny all TCP bind/connect (ABI ≥ 4).
     pub net_restricted: bool,
-    /// Egress gate socket, sandbox-side. When set, the shim starts the
+    /// Egress gate socket, sandbox-side — when set, the shim starts the
     /// loopback relay before restricting itself.
     pub net_gate: Option<PathBuf>,
     /// Loopback port the relay listens on, and the only TCP port the
     /// app is permitted to connect to.
     pub net_gate_port: Option<u16>,
-    /// Skip Landlock entirely. Used when the shim is in the argv only
-    /// to host the relay — a ruleset with no rules denies everything,
-    /// so "no FS policy" has to be said explicitly rather than being
-    /// spelled as an empty rule list.
+    /// Skip Landlock entirely. Used when the shim is in the argv only to
+    /// host the relay — an empty ruleset denies everything, so "no FS
+    /// policy" must be said explicitly.
     pub no_landlock: bool,
     /// The real app argv to `execvp` after restricting.
     pub command: Vec<String>,
@@ -68,7 +65,9 @@ pub enum ShimParseError {
 impl std::fmt::Display for ShimParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ShimParseError::DanglingValue(flag) => write!(f, "flag `{flag}` expects a path argument"),
+            ShimParseError::DanglingValue(flag) => {
+                write!(f, "flag `{flag}` expects a path argument")
+            }
             ShimParseError::MissingSeparator => write!(f, "missing `--` separator"),
             ShimParseError::EmptyCommand => write!(f, "no command after `--`"),
         }
@@ -83,7 +82,6 @@ impl ShimArgs {
     /// Grammar:
     /// `[--ro <p>]* [--rw <p>]* [--net-restricted] [--no-landlock]
     ///  [--net-gate <sock> --net-gate-port <n>] -- <cmd> [args]`.
-    ///
     /// Unknown flags before `--` are silently skipped (forward-compat).
     pub fn parse(args: &[String]) -> Result<ShimArgs, ShimParseError> {
         let mut parsed = ShimArgs::default();
@@ -108,14 +106,15 @@ impl ShimArgs {
                         "--ro" => parsed.ro.push(PathBuf::from(value)),
                         "--rw" => parsed.rw.push(PathBuf::from(value)),
                         "--net-gate" => parsed.net_gate = Some(PathBuf::from(value)),
-                        // A port we can't parse must not silently become
-                        // "no port", which would leave the app pinned by
-                        // Landlock to nothing and unable to reach the
-                        // relay at all.
+                        // A port we can't parse must not silently become "no port", which
+                        // would leave the app pinned by Landlock to nothing, unable to reach
+                        // the relay at all.
                         _ => {
-                            parsed.net_gate_port = Some(value.parse().map_err(|_| {
-                                ShimParseError::DanglingValue(arg.clone())
-                            })?)
+                            parsed.net_gate_port = Some(
+                                value
+                                    .parse()
+                                    .map_err(|_| ShimParseError::DanglingValue(arg.clone()))?,
+                            );
                         }
                     }
                     i += 1;
@@ -169,17 +168,12 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError
     let abi = TARGET_ABI;
 
     let mut ruleset = Ruleset::default().handle_access(AccessFs::from_all(abi))?;
-    // Two shapes of network restriction, and they are mutually
-    // exclusive:
-    //
-    // - `net_restricted`: no network was granted. Deny every TCP
-    //   bind and connect. Belt and braces over an already-empty
-    //   namespace.
-    // - `net_gate_port`: specific hosts were granted, and the app
-    //   reaches them through the relay on loopback. Deny every TCP
-    //   bind and every connect *except* that one port. So even if a
-    //   future change accidentally gave this namespace a route, the
-    //   app still cannot open a socket to anywhere but the gate.
+    // Two mutually exclusive shapes of network restriction:
+    // `net_restricted` denies every TCP bind/connect (belt and braces over
+    // an already-empty namespace); `net_gate_port` denies every TCP
+    // bind/connect except that one port, so even a future change that
+    // accidentally gave this namespace a route still can't open a socket
+    // to anywhere but the gate.
     let gate_port = args.net_gate_port.filter(|_| args.net_gate.is_some());
     if args.net_restricted || gate_port.is_some() {
         ruleset = ruleset.handle_access(AccessNet::from_all(abi))?;
@@ -210,9 +204,8 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError
 
 pub fn apply(args: &ShimArgs) -> LandlockOutcome {
     if args.no_landlock {
-        // Not "apply an empty policy" — an empty ruleset denies
-        // everything. The shim is in this argv only to host the egress
-        // relay.
+        // Not "apply an empty policy" — an empty ruleset denies everything.
+        // The shim is in this argv only to host the egress relay.
         return LandlockOutcome::NotEnforced;
     }
     match build_and_restrict(args) {
@@ -226,19 +219,19 @@ pub fn apply(args: &ShimArgs) -> LandlockOutcome {
 
 /// Start the in-sandbox half of the egress gate, in a child process.
 ///
-/// Forked *before* `restrict_self`, so the relay is not subject to the
+/// Forked *before* `restrict_self`, so the relay isn't subject to the
 /// app's Landlock policy — it needs to open the gate socket and bind a
-/// loopback port, both of which the app itself is denied.
+/// loopback port, both denied to the app.
 ///
-/// That the relay is unrestricted inside the sandbox costs nothing:
-/// it lives in the same namespaces as the app, so anything it can do
-/// the app could do by talking to the gate socket directly. It is a
-/// convenience for unmodified HTTP clients, not a privilege boundary —
-/// the boundary is the far end of the unix socket, in the launcher.
+/// Costs nothing that the relay is unrestricted: it lives in the same
+/// namespaces as the app, so anything it can do the app could do by
+/// talking to the gate socket directly — a convenience for unmodified
+/// HTTP clients, not a privilege boundary (that's the far end of the
+/// unix socket, in the launcher).
 ///
 /// The child dies with the sandbox: `--unshare-all` includes a PID
-/// namespace, so when the app (PID 1 in that namespace) exits the
-/// kernel tears the namespace down and takes the relay with it.
+/// namespace, so when the app (PID 1) exits the kernel tears the
+/// namespace down and takes the relay with it.
 fn spawn_relay(gate: &std::path::Path, port: u16) {
     // SAFETY: `fork` in a single-threaded process. The shim has not
     // started any threads at this point — it is straight-line argv
@@ -303,24 +296,22 @@ fn exec_real_command(command: &[String]) -> ! {
         std::process::exit(2);
     };
 
-    let cprogram = match CString::new(program.as_bytes()) {
-        Ok(c) => c,
-        Err(_) => {
-            eprintln!("qos-sandbox-exec: program path contains an interior NUL");
-            std::process::exit(2);
-        }
+    let cprogram = if let Ok(c) = CString::new(program.as_bytes()) {
+        c
+    } else {
+        eprintln!("qos-sandbox-exec: program path contains an interior NUL");
+        std::process::exit(2);
     };
 
-    let cargs: Vec<CString> = match command
+    let cargs: Vec<CString> = if let Ok(v) = command
         .iter()
         .map(|a| CString::new(a.as_bytes()))
         .collect::<Result<_, _>>()
     {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("qos-sandbox-exec: argument contains an interior NUL");
-            std::process::exit(2);
-        }
+        v
+    } else {
+        eprintln!("qos-sandbox-exec: argument contains an interior NUL");
+        std::process::exit(2);
     };
 
     let cargv: Vec<*const libc::c_char> = cargs
@@ -374,7 +365,10 @@ mod tests {
     #[test]
     fn missing_separator_is_error() {
         let args = vec!["--ro".into(), "/usr".into()];
-        assert_eq!(ShimArgs::parse(&args), Err(ShimParseError::MissingSeparator));
+        assert_eq!(
+            ShimArgs::parse(&args),
+            Err(ShimParseError::MissingSeparator)
+        );
     }
 
     #[test]

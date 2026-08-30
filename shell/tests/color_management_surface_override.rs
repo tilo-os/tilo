@@ -1,13 +1,12 @@
 //! Client-attached image description takes precedence over the
-//! config-driven default in the flatpak share session's
-//! `stream_start_msg`.
+//! config-driven default in the flatpak share session's `stream_start_msg`.
 //!
 //! The compositor's Wayland dispatch calls
-//! [`SharedFlatpakSession::set_color_override`] whenever the client
-//! commits a `wp_color_management_surface_v1.set_image_description`;
-//! the test verifies that a subsequent `stream_start_msg` reports the
-//! client's declared BT.2020 PQ colorimetry + HEVC Main10 codec label
-//! even though the session was constructed with `hdr: None`.
+//! [`SharedFlatpakSession::set_color_override`] whenever the client commits
+//! a `wp_color_management_surface_v1.set_image_description`; a subsequent
+//! `stream_start_msg` must report the client's declared BT.2020 PQ
+//! colorimetry + HEVC Main10 codec even though the session was constructed
+//! with `hdr: None`.
 
 use shell::collab::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
@@ -58,9 +57,8 @@ fn default_stream_start_reports_sdr_bt709() {
 #[test]
 fn client_attached_image_description_wins_over_config() {
     let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config()).expect("session");
-    // Simulate what the compositor's `wp_color_management_surface_v1`
-    // dispatch does after a `commit`: push the client's declared
-    // colorimetry onto the session.
+    // What the compositor's `wp_color_management_surface_v1` dispatch does
+    // after a `commit`: push the client's declared colorimetry onto the session.
     session.set_color_override(hdr10_pq(), Some(Hdr10Metadata::reference_bt2020()));
 
     match session.stream_start_msg() {
@@ -71,9 +69,8 @@ fn client_attached_image_description_wins_over_config() {
             bit_depth,
             ..
         } => {
-            // HDR transfer flips the codec label to Main10 + bumps
-            // bit depth to 10, even though the session config said
-            // SDR.
+            // HDR transfer flips the codec label to Main10 and bumps bit depth to 10,
+            // even though the session config said SDR.
             assert_eq!(codec, "hevc-main10");
             assert_eq!(bit_depth, 10);
             assert_eq!(colorimetry, Some(hdr10_pq()));
@@ -87,8 +84,7 @@ fn client_attached_image_description_wins_over_config() {
 fn unset_image_description_falls_back_to_config_default() {
     let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config()).expect("session");
     session.set_color_override(hdr10_pq(), None);
-    // Now the client sends `unset_image_description` — the compositor
-    // calls `clear_color_override`.
+    // `unset_image_description` — the compositor calls `clear_color_override`.
     session.clear_color_override();
 
     match session.stream_start_msg() {
@@ -108,10 +104,8 @@ fn unset_image_description_falls_back_to_config_default() {
 
 #[test]
 fn client_sdr_override_downgrades_hdr_config() {
-    // The workspace was configured for HDR; the client then attaches
-    // an SDR image description. The client's intent wins — the
-    // session must not force PQ on a client that says it's rendering
-    // BT.709.
+    // The workspace was configured for HDR and the client then attaches an SDR
+    // description: client intent wins, so the session must not force PQ.
     let mut cfg = sdr_config();
     cfg.hdr = Some(shell::collab::hdr_metadata::HdrConfig::pq_reference());
     let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, cfg).expect("session");

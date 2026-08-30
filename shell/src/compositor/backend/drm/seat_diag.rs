@@ -72,10 +72,7 @@ pub struct SeatEnvironment {
 impl SeatEnvironment {
     /// Read the live environment. The only impure function in this module.
     pub fn detect() -> Self {
-        Self::detect_with(
-            |k| std::env::var(k).ok(),
-            |p| Path::new(p).exists(),
-        )
+        Self::detect_with(|k| std::env::var(k).ok(), |p| Path::new(p).exists())
     }
 
     /// [`Self::detect`] with the two effects injected, so tests can build
@@ -273,14 +270,25 @@ pub fn classify(raw: &str, env: &SeatEnvironment) -> SeatFailureKind {
     SeatFailureKind::Unclassified
 }
 
+/// Convenience for the runtime: build the full diagnosis from a live
+/// libseat error. Kept here so the hardware path has one call to make.
+pub fn diagnose_live(raw: impl Into<String>) -> SeatFailure {
+    SeatFailure::diagnose(raw, SeatEnvironment::detect())
+}
+
+/// Paths this module probes, exposed so a caller can log what it looked
+/// at. Not used by [`classify`] — it reads the booleans instead.
+pub fn probed_paths() -> [PathBuf; 2] {
+    [PathBuf::from(SEATD_SOCKET), PathBuf::from(LOGIND_SEAT_DIR)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// The exact error the user hit: libseat tried logind, then seatd, and
     /// reported ENOSYS because neither was usable.
-    const ENOSYS: &str =
-        "FailedToOpenSession(Os { code: 38, kind: Unsupported, message: \"Function not implemented\" })";
+    const ENOSYS: &str = "FailedToOpenSession(Os { code: 38, kind: Unsupported, message: \"Function not implemented\" })";
 
     fn env() -> SeatEnvironment {
         SeatEnvironment::default()
@@ -307,10 +315,7 @@ mod tests {
 
     #[test]
     fn detect_with_reads_the_socket_and_seat_dir_through_the_probe() {
-        let e = SeatEnvironment::detect_with(
-            |_| None,
-            |p| p == SEATD_SOCKET,
-        );
+        let e = SeatEnvironment::detect_with(|_| None, |p| p == SEATD_SOCKET);
         assert!(e.seatd_socket, "the seatd socket probe must be consulted");
         assert!(!e.logind_seats);
     }
@@ -442,8 +447,6 @@ mod tests {
 
     #[test]
     fn the_message_names_the_observed_environment_and_the_vt_remedy() {
-        // The whole point of the diagnosis: the operator reads one message
-        // and knows both what was seen and what to do.
         let e = SeatEnvironment {
             session_id: None,
             seat: None,
@@ -537,8 +540,6 @@ mod tests {
     #[test]
     fn detect_reads_the_real_environment_without_panicking() {
         let live = SeatEnvironment::detect();
-        // Whatever this machine looks like, classification must terminate
-        // with one of the five verdicts rather than panicking.
         let kind = classify(ENOSYS, &live);
         assert!(matches!(
             kind,
@@ -549,16 +550,4 @@ mod tests {
                 | SeatFailureKind::Unclassified
         ));
     }
-}
-
-/// Convenience for the runtime: build the full diagnosis from a live
-/// libseat error. Kept here so the hardware path has one call to make.
-pub fn diagnose_live(raw: impl Into<String>) -> SeatFailure {
-    SeatFailure::diagnose(raw, SeatEnvironment::detect())
-}
-
-/// Paths this module probes, exposed so a caller can log what it looked
-/// at. Not used by [`classify`] — it reads the booleans instead.
-pub fn probed_paths() -> [PathBuf; 2] {
-    [PathBuf::from(SEATD_SOCKET), PathBuf::from(LOGIND_SEAT_DIR)]
 }

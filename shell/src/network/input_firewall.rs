@@ -1,48 +1,17 @@
 //! The firewall every remote-input event crosses before it reaches the seat.
 //!
-//! A peer with write access to a shared surface is driving the owner's
-//! physical seat. Without a filter that is a full keyboard and mouse on the
-//! host's machine: a guest could type a TTY-switch chord, move the pointer
-//! anywhere on the output, click through whatever the host has drawn on top,
-//! or hold the input queue open at line rate. The share record says *whether*
-//! a peer may drive a surface; this module says *what* it may drive, *where*,
-//! and *how fast*.
+//! Order: kill switch, session lock, physical priority, region, z-order,
+//! scrubber, rate limit. A check that cannot observe its answer denies
+//! rather than passes. The read-only flag and surface ownership are
+//! checked earlier, by the share registry in
+//! [`crate::compositor::state::State::apply_remote_input`].
 //!
-//! Checks, in the order they run. Every one of them refuses when it cannot
-//! answer — an unobservable subject is a denial, never a pass.
-//!
-//! | Check | Refuses |
-//! |---|---|
-//! | Kill switch | everything, until the host clears it |
-//! | Session lock | everything, until the host authenticates |
-//! | Physical priority | everything for [`PHYSICAL_PRIORITY_WINDOW`] after any local input |
-//! | Region | a coordinate outside the shared surface's content rect |
-//! | Z-order | a coordinate where that surface is not the topmost thing on screen |
-//! | Scrubber | system chords, and any key while the surface lacks keyboard focus |
-//! | Rate limit | more than [`MAX_EVENTS_PER_SECOND`], or a click burst |
-//!
-//! The read-only flag and surface ownership are checked before this, by the
-//! share registry, in [`crate::compositor::state::State::apply_remote_input`]
-//! — the whole pipeline reads top to bottom there.
-//!
-//! # Coordinates
-//!
-//! A peer sees only the surface it was shared, so it sends **surface-local**
-//! logical pixels (see [`crate::shell::peer_view::PeerView`]). The seat wants
-//! global output coordinates. The region check is what makes that translation
-//! safe: an accepted event is re-emitted with its coordinate moved into the
-//! surface's on-screen rect, so a peer can only ever address points inside
-//! the rectangle it was actually given.
-//!
-//! # Why the shell's own chord table
-//!
-//! The scrubber does not carry its own list of forbidden chords. It asks
-//! [`crate::compositor::client_input::shell_owns_chord`] — the same table that
-//! decides whether the *local* user's keystroke belongs to the shell rather
-//! than to the focused client. A chord the shell grabs for itself is exactly
-//! one a guest must not be able to synthesise, so the two cannot drift. On top
-//! of that table sit the chords the shell never sees because the kernel or the
-//! session takes them first: `Ctrl+Alt+F1..F12` and `Ctrl+Alt+Delete`.
+//! Peers send surface-local pixels; the region check is what makes
+//! translating them into global coordinates safe. The scrubber reuses
+//! [`crate::compositor::client_input::shell_owns_chord`] rather than its own
+//! chord list, so local and remote denials cannot drift; `Ctrl+Alt+F1..F12`
+//! and `Ctrl+Alt+Delete` never reach the shell — the kernel/session takes
+//! them first.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -53,9 +22,7 @@ use crate::compositor::client_input::{ChordMods, chord_key_for_evdev, shell_owns
 use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
 
-/// How long local input keeps the remote side out. The host reaching for
-/// their own mouse or keyboard is an unambiguous "I am taking over"; a
-/// guest whose motion interleaves with the host's fights the cursor.
+/// How long local input keeps the remote side out — the host reaching for their own input is an unambiguous takeover.
 pub const PHYSICAL_PRIORITY_WINDOW: Duration = Duration::from_millis(500);
 
 /// Sustained ceiling on events a single peer may deliver, per second.
@@ -64,17 +31,13 @@ pub const MAX_EVENTS_PER_SECOND: usize = 120;
 /// The window [`MAX_EVENTS_PER_SECOND`] is measured over.
 pub const RATE_WINDOW: Duration = Duration::from_secs(1);
 
-/// Clicks inside [`CLICK_BURST_WINDOW`] that are still tolerated. The
-/// *next* one is a burst.
+/// Clicks inside [`CLICK_BURST_WINDOW`] still tolerated before the next one is a burst.
 pub const CLICK_BURST_LIMIT: usize = 10;
 
 /// The window a click burst is measured over.
 pub const CLICK_BURST_WINDOW: Duration = Duration::from_millis(100);
 
-/// How long a peer stays blocked after tripping the click burst. The
-/// design calls for "a temporary block" without naming a duration; one
-/// second is long enough to break an automated click storm and short
-/// enough that a human who trackpad-fumbled is not locked out.
+/// How long a peer stays blocked after a click burst — long enough to break an automated storm, short enough not to lock out a trackpad fumble.
 pub const CLICK_BURST_BLOCK: Duration = Duration::from_secs(1);
 
 /// evdev keycodes the scrubber names directly.
@@ -91,27 +54,20 @@ mod keycode {
     pub const RIGHT_ALT: u32 = 100;
 }
 
-/// Why an event did not reach the seat.
-///
-/// Carried out of the firewall rather than collapsed to a bool so the
-/// compositor can log which rule fired and tests can assert on the
-/// specific denial rather than merely on "something dropped it".
+/// Why an event did not reach the seat — an enum, not a bool, so callers can log which rule fired and tests can assert the specific denial.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Denial {
     /// The host hit the kill switch.
     KillSwitch,
-    /// The session is locked. Nobody drives this seat, least of all
-    /// someone who is not in the room.
+    /// The session is locked; nobody drives this seat remotely.
     SessionLocked,
-    /// The host used their own keyboard or mouse within the last
-    /// [`PHYSICAL_PRIORITY_WINDOW`].
+    /// The host used their own keyboard or mouse within [`PHYSICAL_PRIORITY_WINDOW`].
     PhysicalPriority,
     /// The share exists but the owner marked it read-only.
     ReadOnly,
     /// No share record for this `(peer, surface)` pair at all.
     NotShared,
-    /// The compositor has not told the firewall what is on screen, so
-    /// neither the region nor the z-order question can be answered.
+    /// The compositor has not published a screen, so region and z-order can't be answered.
     NoView,
     /// The surface is shared but is not currently on screen.
     NotOnScreen,
@@ -119,8 +75,7 @@ pub enum Denial {
     OutsideRegion,
     /// Something else is on top at that point — the clickjacking refusal.
     Occluded,
-    /// A button arrived before any motion established where the peer's
-    /// pointer is, so there is no coordinate to check.
+    /// A button arrived before any motion established the peer's pointer position.
     NoPointerPosition,
     /// A system chord the shell (or the kernel) reserves.
     SystemChord,
@@ -130,8 +85,7 @@ pub enum Denial {
     SurfaceMismatch,
     /// More than [`MAX_EVENTS_PER_SECOND`] in the last second.
     RateLimited,
-    /// More than [`CLICK_BURST_LIMIT`] clicks inside
-    /// [`CLICK_BURST_WINDOW`], or still inside the resulting block.
+    /// More than [`CLICK_BURST_LIMIT`] clicks inside [`CLICK_BURST_WINDOW`], or still inside the resulting block.
     ClickBurst,
 }
 
@@ -158,30 +112,21 @@ impl Denial {
     }
 }
 
-/// What the compositor last told the firewall about the screen.
-///
-/// A default-constructed view has observed nothing, and every check that
-/// needs it refuses. That is deliberate: a firewall that silently passes
-/// events because nobody published a layout is worse than one that blocks
-/// a feature until the compositor wires it up.
+/// What the compositor last told the firewall about the screen; a default
+/// view has observed nothing, so every check needing it refuses deliberately.
 #[derive(Debug, Clone, Default)]
 pub struct ShellView {
-    /// Foreign tiles front-to-back, exactly as
-    /// [`crate::compositor::client_input::foreign_tiles`] enumerates them.
+    /// Foreign tiles front-to-back, as [`crate::compositor::client_input::foreign_tiles`] enumerates them.
     tiles: Vec<(SurfaceId, Rect)>,
-    /// The surface holding the seat's keyboard focus, or `None` when the
-    /// shell's own chrome owns the keyboard.
+    /// The surface holding keyboard focus, or `None` when shell chrome owns it.
     keyboard_focus: Option<SurfaceId>,
-    /// Shell chrome (overlay, palette, permission prompt) is drawn over
-    /// the tiles and is taking input.
+    /// Shell chrome (overlay, palette, permission prompt) is drawn over the tiles and taking input.
     chrome_captures: bool,
     /// An overlay is open, so the shell grabs `Escape`.
     overlay_open: bool,
-    /// The session lock is up. Nothing on this screen belongs to anyone
-    /// until the host authenticates.
+    /// The session lock is up; nothing on screen belongs to anyone until the host authenticates.
     session_locked: bool,
-    /// Set by every real publish. Distinguishes "nothing is on screen"
-    /// from "nobody has looked".
+    /// Set by every real publish, distinguishing "nothing on screen" from "nobody looked".
     observed: bool,
 }
 
@@ -203,10 +148,7 @@ impl ShellView {
         }
     }
 
-    /// Mark the session locked. The lock surface covers the output and
-    /// takes every local keystroke; a remote peer must not be able to
-    /// drive what is underneath it, and the tile list says nothing about
-    /// the lock because the lock is not part of the tiled tree.
+    /// Mark the session locked; the lock surface isn't part of the tiled tree, so this stops a remote peer driving what's underneath it directly.
     pub fn locked(mut self, locked: bool) -> Self {
         self.session_locked = locked;
         self
@@ -230,10 +172,7 @@ impl ShellView {
             .map(|(_, r)| *r)
     }
 
-    /// The surface actually on top at `point` (global coordinates).
-    ///
-    /// Front-to-back order comes from the compositor's own enumeration,
-    /// so this answers the same question local pointer routing does.
+    /// The surface actually on top at `point` (global coordinates), from the compositor's own front-to-back enumeration.
     pub fn topmost_at(&self, point: (f64, f64)) -> Option<SurfaceId> {
         let p = Point::new(point.0, point.1);
         self.tiles
@@ -252,21 +191,14 @@ struct PeerState {
     clicks: VecDeque<Instant>,
     /// Set when a click burst trips; every event is refused until it passes.
     blocked_until: Option<Instant>,
-    /// Modifier keys this peer is currently holding, derived from the key
-    /// stream it has actually sent.
-    ///
-    /// The wire carries a `modifiers` bitfield, but that field is written
-    /// by the peer and a peer that wants a forbidden chord simply sends
-    /// zero. Modifier state is therefore reconstructed from the keycodes
-    /// the peer sends, and the declared bitfield is unioned on top — it
-    /// can only ever add denials, never remove one.
+    /// Modifier keys this peer holds, derived from its key stream — the wire's
+    /// `modifiers` field is peer-written, so it only adds denials, never removes one.
     held: HeldMods,
     /// Where this peer's pointer was last accepted, and on which surface.
     cursor: Option<(SurfaceId, (f64, f64))>,
 }
 
-/// Modifier keys held down, tracked per side so a two-Ctrl release order
-/// cannot leave a phantom modifier latched.
+/// Modifier keys held, tracked per side so a two-Ctrl release order can't leave a phantom modifier latched.
 #[derive(Debug, Default, Clone, Copy)]
 struct HeldMods {
     ctrl_left: bool,
@@ -280,8 +212,7 @@ struct HeldMods {
 }
 
 impl HeldMods {
-    /// Fold a key transition into the held set. Returns `true` when the
-    /// keycode was a modifier.
+    /// Fold a key transition into the held set; returns `true` when the keycode was a modifier.
     fn note(&mut self, keycode: u32, pressed: bool) -> bool {
         let slot = match keycode {
             keycode::LEFT_CTRL => &mut self.ctrl_left,
@@ -308,12 +239,8 @@ impl HeldMods {
     }
 }
 
-/// The remote-input firewall.
-///
-/// One per compositor, living on
-/// [`crate::compositor::state::State`]. Holds the screen view the
-/// coordinate checks read, the host-override latches, and per-peer
-/// budgets.
+/// The remote-input firewall: one per compositor, living on
+/// [`crate::compositor::state::State`]; holds the screen view, host-override latches, and per-peer budgets.
 #[derive(Debug, Default)]
 pub struct RemoteInputFirewall {
     view: ShellView,
@@ -327,9 +254,8 @@ impl RemoteInputFirewall {
         Self::default()
     }
 
-    /// Publish what is on screen. Called once per compositor tick, after
-    /// keyboard focus has been reconciled, so the view a remote event is
-    /// judged against is the one the local user is looking at.
+    /// Publish what is on screen. Called once per tick after keyboard focus is
+    /// reconciled, so a remote event is judged against what the local user sees.
     pub fn publish_view(&mut self, view: ShellView) {
         self.view = view;
     }
@@ -366,34 +292,27 @@ impl RemoteInputFirewall {
         self.peers.remove(&peer);
     }
 
-    /// The host overrides, checked before anything about the share. Both
-    /// are absolute and neither needs to look at the event.
+    /// The host overrides, checked before anything about the share — both are absolute and don't need to look at the event.
     pub fn host_override(&self, now: Instant) -> Option<Denial> {
         if self.kill_switch {
             return Some(Denial::KillSwitch);
         }
-        // The lock surface takes every local keystroke and covers the
-        // output, but it is not part of the tiled tree, so the tile list
-        // alone would still name a client as topmost underneath it.
-        // Refused here instead — a locked machine has no driver at all.
+        // The lock surface isn't part of the tiled tree, so the tile list alone
+        // would show a client as topmost underneath it — refused here instead.
         if self.view.session_locked {
             return Some(Denial::SessionLocked);
         }
-        if let Some(last) = self.last_local_input {
-            if now.saturating_duration_since(last) < PHYSICAL_PRIORITY_WINDOW {
-                return Some(Denial::PhysicalPriority);
-            }
+        if let Some(last) = self.last_local_input
+            && now.saturating_duration_since(last) < PHYSICAL_PRIORITY_WINDOW
+        {
+            return Some(Denial::PhysicalPriority);
         }
         None
     }
 
-    /// Run the region, z-order, scrubber and rate-limit checks.
-    ///
-    /// `surface` is the share the event arrived under; the share's
-    /// existence and its read-only flag have already been checked by the
-    /// caller. Returns the event to inject — pointer coordinates
-    /// translated from surface-local into global output space — or the
-    /// rule that refused it.
+    /// Run the region, z-order, scrubber and rate-limit checks; share existence
+    /// and read-only are already checked by the caller. Returns the translated
+    /// event to inject, or the rule that refused it.
     pub fn review(
         &mut self,
         peer: PeerId,
@@ -401,10 +320,8 @@ impl RemoteInputFirewall {
         event: &InputEvent,
         now: Instant,
     ) -> Result<InputEvent, Denial> {
-        // Every event a peer offers is counted, whichever check ends up
-        // refusing it. A flood of events that are individually denied is
-        // still a flood, and it must not buy the attacker a fresh budget
-        // for the one event that would have passed.
+        // Every offered event is counted, whichever check refuses it, so a flood
+        // of denied events can't buy a fresh budget for one that would pass.
         self.note_offered(peer, now);
 
         if !self.view.observed {
@@ -413,16 +330,13 @@ impl RemoteInputFirewall {
 
         let outcome = self.check(peer, surface, event, now);
         if let Ok(InputEvent::PointerMotion { x, y }) = &outcome {
-            // Latch where the peer's pointer now is, so a button arriving
-            // without its own coordinate is checked against a point that
-            // itself passed region + z-order.
+            // Latch where the peer's pointer now is, so a coordinate-less button is checked against a point that already passed region + z-order.
             self.peer_mut(peer).cursor = Some((surface, (*x, *y)));
         }
         outcome
     }
 
-    /// The checks proper, split out so [`Self::review`] owns the
-    /// bookkeeping that has to happen whatever the verdict.
+    /// The checks proper, split out so [`Self::review`] owns the bookkeeping that always runs.
     fn check(
         &mut self,
         peer: PeerId,
@@ -440,10 +354,8 @@ impl RemoteInputFirewall {
                 })
             }
             InputEvent::PointerButton { button, pressed } => {
-                // A button carries no coordinate, so it is checked where
-                // the peer's last accepted motion put the pointer. No
-                // motion yet means there is no point to check, and an
-                // unanswerable check refuses.
+                // A button carries no coordinate, so it's checked against the last
+                // accepted motion; no motion means no point, and refuses.
                 let Some((cursor_surface, local)) = self.peer_mut(peer).cursor else {
                     return Err(Denial::NoPointerPosition);
                 };
@@ -458,9 +370,7 @@ impl RemoteInputFirewall {
                 })
             }
             InputEvent::PointerEnter { surface: target } => {
-                // The inner surface is what the focus grab is applied to.
-                // Left unchecked it is a way to point the host's keyboard
-                // at a surface the peer was never shared.
+                // The inner surface is what the focus grab applies to — unchecked, it points the host's keyboard at a surface the peer was never shared.
                 if *target != surface {
                     return Err(Denial::SurfaceMismatch);
                 }
@@ -490,29 +400,23 @@ impl RemoteInputFirewall {
         }
     }
 
-    /// Region + z-order for one surface-local coordinate. Returns the
-    /// global point to inject.
+    /// Region + z-order for one surface-local coordinate; returns the global point to inject.
     fn locate(&self, surface: SurfaceId, local: (f64, f64)) -> Result<(f64, f64), Denial> {
         let Some(rect) = self.view.rect(surface) else {
             return Err(Denial::NotOnScreen);
         };
-        // Region: the coordinate has to name a point inside the content
-        // rect the peer was actually shown. Half-open on the far edge so
-        // a point on the boundary belongs to exactly one tile.
+        // Region: must fall inside the content rect shown; half-open on the far edge so a boundary point belongs to one tile.
         if !(local.0 >= 0.0 && local.1 >= 0.0 && local.0 < rect.width() && local.1 < rect.height())
         {
             return Err(Denial::OutsideRegion);
         }
         let global = (rect.x0 + local.0, rect.y0 + local.1);
-        // Z-order: chrome drawn over the tiles takes the whole screen, so
-        // nothing beneath it is topmost anywhere.
+        // Z-order: chrome drawn over the tiles takes the whole screen, so nothing beneath it is topmost anywhere.
         if self.view.chrome_captures {
             return Err(Denial::Occluded);
         }
-        // Otherwise ask the live tile order what is really on top there.
-        // Trusting the share record instead is the clickjacking hole:
-        // a surface can be shared, and simultaneously be underneath
-        // something the host put in front of it.
+        // Otherwise ask the live tile order — trusting the share record instead is
+        // the clickjacking hole: a shared surface can sit underneath something the host put in front of it.
         match self.view.topmost_at(global) {
             Some(top) if top == surface => Ok(global),
             _ => Err(Denial::Occluded),
@@ -533,57 +437,49 @@ impl RemoteInputFirewall {
         let chrome_captures = self.view.chrome_captures;
 
         let state = self.peer_mut(peer);
-        // Track the peer's own modifier stream first, so a modifier this
-        // event presses counts towards the chord it is part of.
+        // Track the peer's own modifier stream first, so a modifier this event presses counts towards its own chord.
         let is_modifier = state.held.note(keycode, pressed);
-        let mods = state.held.mods().union(ChordMods::from_xkb_bits(declared_modifiers));
+        let mods = state
+            .held
+            .mods()
+            .union(ChordMods::from_xkb_bits(declared_modifiers));
 
-        // Focus guard. A keystroke only injects while the shared surface
-        // is the one the seat's keyboard is pointed at; the moment the
-        // host focuses anything else — another window, or the shell's own
-        // chrome — the remote keyboard stream goes silent. Checked before
-        // the chord table so a peer cannot type *anything* into a private
-        // window, chord or not.
+        // Focus guard: a keystroke injects only while the shared surface holds
+        // keyboard focus, checked before the chord table so a peer can't type into a private window.
         if chrome_captures || focus != Some(surface) {
             return Err(Denial::FocusMuted);
         }
 
-        // The Super key is refused outright rather than only in
-        // combination: it opens the shell's own launcher on its own, and
-        // holding it is the first half of every compositor chord.
+        // Super is refused outright: it opens the shell's launcher alone and is half of every compositor chord.
         if matches!(keycode, keycode::LEFT_META | keycode::RIGHT_META) {
             return Err(Denial::SystemChord);
         }
 
-        // A bare modifier transition is not a chord; it has to reach the
-        // seat or the client's own xkb state drifts from the compositor's.
+        // A bare modifier transition isn't a chord; it must still reach the seat or the client's xkb state drifts from the compositor's.
         if is_modifier {
             return Ok(());
         }
 
         let chord = chord_key_for_evdev(keycode);
 
-        // Everything the shell grabs from the local user. One table, so a
-        // chord added to the shell is refused here without anyone
-        // remembering to update a second list.
+        // Everything the shell grabs from local input, in one table, so a chord added to the shell is refused here automatically.
         if shell_owns_chord(chord, mods, overlay_open) {
             return Err(Denial::SystemChord);
         }
 
-        // Chords the shell never classifies because something below it
-        // takes them first: the kernel's VT switch, and the session's
-        // interrupt.
+        // Chords the shell never classifies because the kernel/session takes them first: VT switch and interrupt.
         if mods.ctrl && mods.alt {
-            if matches!(chord, crate::compositor::client_input::ChordKey::Function(_)) {
+            if matches!(
+                chord,
+                crate::compositor::client_input::ChordKey::Function(_)
+            ) {
                 return Err(Denial::SystemChord);
             }
             if keycode == keycode::DELETE {
                 return Err(Denial::SystemChord);
             }
         }
-        // `Alt+Tab` is a window-switch convention everywhere; the shell
-        // does not bind it today, and a guest must still not be able to
-        // send it.
+        // Alt+Tab isn't bound by the shell today, but a guest must still not be able to send it.
         if mods.alt && keycode == keycode::TAB {
             return Err(Denial::SystemChord);
         }
@@ -609,8 +505,7 @@ impl RemoteInputFirewall {
             state.blocked_until = None;
         }
 
-        // `note_offered` already pruned and pushed this event, so the
-        // window holds it. More than the ceiling means this one is over.
+        // note_offered already pruned and pushed this event; more than the ceiling means this one is over.
         if state.events.len() > MAX_EVENTS_PER_SECOND {
             return Err(Denial::RateLimited);
         }
@@ -828,9 +723,8 @@ mod tests {
         );
     }
 
-    /// The wire's `modifiers` field is written by the peer. A guest that
-    /// wants a forbidden chord simply declares zero, so the scrubber has
-    /// to reconstruct modifier state from the key stream itself.
+    /// The wire's `modifiers` field is peer-written; a guest wanting a
+    /// forbidden chord declares zero, so the scrubber reconstructs modifiers from the key stream.
     #[test]
     fn a_vt_switch_chord_is_refused_even_with_the_modifier_field_zeroed() {
         let mut fw = firewall();
@@ -945,8 +839,7 @@ mod tests {
         );
     }
 
-    /// A chord the *shell* grabs is refused by the same table, without
-    /// this module naming it: `Ctrl+K` opens the search palette.
+    /// A chord the shell grabs is refused by the same table without naming it here: `Ctrl+K` opens the search palette.
     #[test]
     fn a_chord_the_shell_grabs_is_refused_from_the_shared_table() {
         let mut fw = firewall();
@@ -1068,7 +961,6 @@ mod tests {
             ),
             Err(Denial::ClickBurst),
         );
-        // And it lifts.
         assert!(
             fw.review(
                 PEER,
@@ -1100,7 +992,7 @@ mod tests {
         assert_eq!(fw.host_override(Instant::now()), Some(Denial::KillSwitch));
         // Time does not lift it — only the host does.
         assert_eq!(
-            fw.host_override(Instant::now() + Duration::from_secs(3600)),
+            fw.host_override(Instant::now() + Duration::from_hours(1)),
             Some(Denial::KillSwitch),
         );
         fw.clear_kill_switch();
@@ -1128,8 +1020,7 @@ mod tests {
                 Err(Denial::OutsideRegion),
             );
         }
-        // The budget is spent, so a legitimate event is refused too — a
-        // flood of junk cannot be used to reset the meter.
+        // The budget is spent, so a legitimate event is refused too — a flood of junk can't be used to reset the meter.
         let at = t0 + Duration::from_micros(MAX_EVENTS_PER_SECOND as u64);
         assert_eq!(
             fw.review(
@@ -1143,14 +1034,9 @@ mod tests {
     }
 }
 
-/// Denials proven through the production injection path.
-///
-/// Everything here drives
-/// [`crate::compositor::state::State::review_remote_input`] — the one door
-/// between the network and the seat — against a real `State` with a real
-/// smithay `Seat`, and asserts both the rule that refused the event *and*
-/// that the seat did not move. A test that only asserted the return value
-/// would still pass if the refusal happened after injection.
+/// Denials proven through the production injection path, against a real
+/// `State`/`Seat`, asserting both the refusal rule and that the seat didn't
+/// move — a return-value-only check would pass even if the refusal happened after injection.
 #[cfg(test)]
 mod production_path {
     use super::*;
@@ -1171,8 +1057,7 @@ mod production_path {
         y1: 350.0,
     };
 
-    /// A `State` with a live seat, one writable share, and one shared
-    /// surface on screen holding keyboard focus.
+    /// A `State` with a live seat, one writable share, and one shared surface on screen holding keyboard focus.
     fn staged() -> State {
         let event_loop: EventLoop<'static, State> =
             EventLoop::try_new().expect("calloop event loop");
@@ -1181,9 +1066,12 @@ mod production_path {
         state
             .share_registry
             .insert(PEER, SHARED, StreamingShare::new());
-        state
-            .remote_input_firewall
-            .publish_view(ShellView::new(vec![(SHARED, TILE)], Some(SHARED), false, false));
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(SHARED, TILE)],
+            Some(SHARED),
+            false,
+            false,
+        ));
         state
     }
 
@@ -1206,8 +1094,7 @@ mod production_path {
             .any(|k| u32::from(*k) == keycode)
     }
 
-    /// Put the peer's pointer somewhere legitimate so button events have
-    /// a coordinate to be judged at.
+    /// Put the peer's pointer somewhere legitimate so button events have a coordinate to be judged at.
     fn establish_cursor(state: &mut State) {
         state
             .review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y: 10.0 })
@@ -1245,13 +1132,7 @@ mod production_path {
         assert_eq!(pointer_at(&state), before);
     }
 
-    /// Region: a coordinate outside the rect the guest was actually shown.
-    ///
-    /// The tile is 400x300, so `(700, 20)` is off its right-hand side. It
-    /// is nonetheless a real point on the output — under the previous
-    /// code, which injected a peer's surface-local coordinates as if they
-    /// were output-space ones, that is a pointer the guest could park
-    /// anywhere on the host's screen.
+    /// Region: a coordinate outside the shown rect — the tile is 400x300, so `(700, 20)` is off its right edge but still on the output.
     #[test]
     fn a_coordinate_outside_the_shared_region_never_moves_the_host_pointer() {
         let mut state = staged();
@@ -1275,9 +1156,8 @@ mod production_path {
         );
     }
 
-    /// An accepted coordinate is translated out of the guest's
-    /// surface-local space into the host's output space — the guest can
-    /// only ever address points inside the rectangle it was given.
+    /// An accepted coordinate is translated from the guest's surface-local
+    /// space into host output space — it can only address points inside the shared rect.
     #[test]
     fn an_accepted_coordinate_lands_inside_the_shared_tile() {
         let mut state = staged();
@@ -1287,17 +1167,14 @@ mod production_path {
         assert_eq!(pointer_at(&state), (110.0, 70.0));
     }
 
-    /// Z-order: the shared surface is underneath something else at that
-    /// point. This is the clickjacking refusal — the share record still
-    /// says the guest may drive this surface, and the answer is still no.
+    /// Z-order: the shared surface sits underneath something else at that point — the clickjacking refusal.
     #[test]
     fn a_click_aimed_at_an_occluded_surface_is_dropped() {
         let mut state = staged();
         establish_cursor(&mut state);
         let before = pointer_at(&state);
 
-        // The host raises a private window over the shared one. The share
-        // is untouched; only the screen changed.
+        // The host raises a private window over the shared one; the share is untouched, only the screen changed.
         state.remote_input_firewall.publish_view(ShellView::new(
             vec![(PRIVATE, TILE), (SHARED, TILE)],
             Some(SHARED),
@@ -1322,12 +1199,8 @@ mod production_path {
         );
     }
 
-    /// Scrubber: `Ctrl+Alt+F2` is the kernel's VT switch. A guest holding
-    /// it would drop the host to a text console.
-    ///
-    /// Sent the way a peer really sends a chord — modifier keycodes in
-    /// their own events, with the wire's `modifiers` field left at zero,
-    /// which is exactly what a guest after a forbidden chord would do.
+    /// Scrubber: `Ctrl+Alt+F2` is the kernel's VT switch. Sent as a real peer
+    /// would — modifier keycodes in their own events, wire `modifiers` left at zero.
     #[test]
     fn ctrl_alt_f2_from_a_guest_never_reaches_a_client() {
         let mut state = staged();
@@ -1364,8 +1237,7 @@ mod production_path {
         );
     }
 
-    /// Scrubber, focus guard: the host moves focus to a private window
-    /// and the guest's keyboard goes silent mid-stream.
+    /// Scrubber, focus guard: the host moves focus to a private window and the guest's keyboard goes silent mid-stream.
     #[test]
     fn keystrokes_stop_the_instant_the_host_focuses_a_private_window() {
         let mut state = staged();
@@ -1396,7 +1268,10 @@ mod production_path {
 
         // The host clicks into a window that is not shared.
         state.remote_input_firewall.publish_view(ShellView::new(
-            vec![(SHARED, TILE), (PRIVATE, Rect::new(600.0, 50.0, 900.0, 350.0))],
+            vec![
+                (SHARED, TILE),
+                (PRIVATE, Rect::new(600.0, 50.0, 900.0, 350.0)),
+            ],
             Some(PRIVATE),
             false,
             false,
@@ -1413,11 +1288,13 @@ mod production_path {
         );
 
         assert_eq!(verdict, Err(Denial::FocusMuted));
-        assert!(!key_is_down(&state, A), "a muted keystroke reached the seat");
+        assert!(
+            !key_is_down(&state, A),
+            "a muted keystroke reached the seat"
+        );
     }
 
-    /// Rate limit: 120 events a second sustained, and the next one is
-    /// refused.
+    /// Rate limit: 120 events/sec sustained, and the next one is refused.
     #[test]
     fn the_hundred_and_twenty_first_event_in_a_second_is_dropped() {
         let mut state = staged();
@@ -1433,9 +1310,7 @@ mod production_path {
         let verdict =
             state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 11.0, y: 11.0 });
 
-        // The rate window is wall-clock. If this machine took longer than
-        // the window to deliver the burst, the test never asked the
-        // question it claims to — say so rather than passing quietly.
+        // Scrubber, focus guard: focus moves to a private window and the guest's keyboard goes silent mid-stream.
         let elapsed = started.elapsed();
         assert!(
             elapsed < RATE_WINDOW,
@@ -1445,8 +1320,7 @@ mod production_path {
         assert_eq!(verdict, Err(Denial::RateLimited));
     }
 
-    /// Rate limit, burst half: a click storm trips a block, and the
-    /// block covers everything the peer sends, not only further clicks.
+    /// Rate limit, burst half: a click storm trips a block covering everything the peer sends, not only further clicks.
     #[test]
     fn a_click_storm_is_blocked_before_the_eleventh_click_reaches_the_seat() {
         let mut state = staged();
@@ -1475,8 +1349,7 @@ mod production_path {
             },
         );
 
-        // The burst window is wall-clock. A machine slow enough to spread
-        // eleven clicks over more than 100 ms never asked the question.
+        // The burst window is wall-clock; a machine slow enough to spread eleven clicks over 100ms never asked the question.
         let elapsed = started.elapsed();
         assert!(
             elapsed < CLICK_BURST_WINDOW,
@@ -1485,16 +1358,14 @@ mod production_path {
         );
         assert_eq!(verdict, Err(Denial::ClickBurst));
 
-        // Motion is not a click, and it is refused too: the block is on
-        // the peer, not on the button.
+        // Motion isn't a click either, and is refused too — the block is on the peer, not the button.
         assert_eq!(
             state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 }),
             Err(Denial::ClickBurst),
         );
     }
 
-    /// Scrubber: `Super` opens the shell's own launcher and is the first
-    /// half of every compositor chord. A guest never gets to press it.
+    /// Scrubber: `Super` opens the shell's launcher and is the first half of every compositor chord; a guest never gets to press it.
     #[test]
     fn the_super_key_from_a_guest_never_reaches_a_client() {
         let mut state = staged();
@@ -1517,12 +1388,8 @@ mod production_path {
         );
     }
 
-    /// A locked session has no driver, remote least of all.
-    ///
-    /// The lock surface is not part of the tiled tree: the tiles under
-    /// it stay laid out and stay topmost as far as the tree knows, so
-    /// this is not covered by the z-order check and would otherwise be a
-    /// guest typing into a window the host needs a password to reach.
+    /// A locked session has no driver, remote least of all — the lock surface
+    /// isn't part of the tiled tree, so this isn't covered by the z-order check on its own.
     #[test]
     fn a_locked_session_refuses_remote_input_that_would_otherwise_pass() {
         let mut state = staged();
@@ -1591,9 +1458,7 @@ mod production_path {
         }
         assert_eq!(pointer_at(&state), before);
 
-        // The latch is what makes it a panic key rather than a policy
-        // tweak: republishing the screen does not undo it, and neither
-        // does anything the guest can send.
+        // The latch makes this a panic key, not a policy tweak: republishing the screen doesn't undo it.
         state.remote_input_firewall.publish_view(ShellView::new(
             vec![(SHARED, TILE)],
             Some(SHARED),
@@ -1604,8 +1469,7 @@ mod production_path {
             state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 }),
             Err(Denial::KillSwitch),
         );
-        // And write access is gone underneath it, so clearing the latch
-        // alone does not hand control back.
+        // Write access is gone too, so clearing the latch alone doesn't hand control back.
         state.remote_input_firewall.clear_kill_switch();
         assert_eq!(
             state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 }),
@@ -1613,9 +1477,7 @@ mod production_path {
         );
     }
 
-    /// A guest cannot outrun the kill switch: the latch is checked before
-    /// anything about the share, ahead of the per-peer budget, so a peer
-    /// flooding the queue is refused on the same rule as a quiet one.
+    /// A guest can't outrun the kill switch: checked before anything about the share, ahead of the per-peer budget.
     #[test]
     fn a_flooding_peer_cannot_suppress_the_kill_switch() {
         let mut state = staged();
@@ -1633,16 +1495,12 @@ mod production_path {
         }
     }
 
-    /// A focus grab is a way to point the host's keyboard somewhere. A
-    /// guest must not be able to aim it at a surface outside its share.
+    /// A focus grab points the host's keyboard somewhere; a guest must not be able to aim it outside its share.
     #[test]
     fn a_focus_grab_naming_an_unshared_surface_is_refused() {
         let mut state = staged();
-        let verdict = state.review_remote_input(
-            PEER,
-            SHARED,
-            InputEvent::PointerEnter { surface: PRIVATE },
-        );
+        let verdict =
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerEnter { surface: PRIVATE });
         assert_eq!(verdict, Err(Denial::SurfaceMismatch));
         assert!(
             state.remote_seats.seat(PEER).is_none(),
@@ -1650,8 +1508,7 @@ mod production_path {
         );
     }
 
-    /// The deny-biased default: a compositor that has not published a
-    /// screen cannot answer where an event would land, so it refuses.
+    /// The deny-biased default: a compositor that hasn't published a screen can't answer where an event would land, so it refuses.
     #[test]
     fn a_compositor_that_has_published_no_screen_refuses_remote_input() {
         let event_loop: EventLoop<'static, State> =

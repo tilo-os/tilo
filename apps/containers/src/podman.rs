@@ -79,8 +79,7 @@ pub fn engine_available() -> bool {
         .arg("--format")
         .arg("{{.Host.Arch}}")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Collect a full snapshot from the live engine, or an honest empty snapshot
@@ -129,8 +128,10 @@ fn podman_connection_label() -> String {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown".into());
+        .map_or_else(
+            || "unknown".into(),
+            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        );
     format!("podman {version} · rootless")
 }
 
@@ -180,7 +181,11 @@ fn list_containers() -> Option<Vec<Container>> {
         .into_iter()
         .map(|e| {
             let name = e.names.first().cloned().unwrap_or_else(|| e.id.clone());
-            let status = ContainerStatus::parse(if !e.state.is_empty() { &e.state } else { &e.status });
+            let status = ContainerStatus::parse(if e.state.is_empty() {
+                &e.status
+            } else {
+                &e.state
+            });
             let ports = e
                 .ports
                 .into_iter()
@@ -188,7 +193,11 @@ fn list_containers() -> Option<Vec<Container>> {
                 .map(|p| PortMapping {
                     host_port: p.host_port,
                     container_port: p.container_port,
-                    protocol: if p.protocol.is_empty() { "tcp".into() } else { p.protocol },
+                    protocol: if p.protocol.is_empty() {
+                        "tcp".into()
+                    } else {
+                        p.protocol
+                    },
                 })
                 .collect();
             let stat = stats
@@ -273,8 +282,8 @@ fn parse_percent(s: &str) -> f32 {
 /// `(used_bytes, limit_bytes)`.
 fn parse_mem_usage(s: &str) -> (u64, u64) {
     let mut parts = s.split('/');
-    let used = parts.next().map(parse_size).unwrap_or(0);
-    let limit = parts.next().map(parse_size).unwrap_or(0);
+    let used = parts.next().map_or(0, parse_size);
+    let limit = parts.next().map_or(0, parse_size);
     (used, limit)
 }
 
@@ -326,11 +335,10 @@ fn list_images() -> Option<Vec<Image>> {
     let mut images: Vec<Image> = entries
         .into_iter()
         .map(|e| {
-            let (repository, tag) = e
-                .names
-                .first()
-                .map(|n| split_reference(n))
-                .unwrap_or_else(|| ("<none>".into(), "<none>".into()));
+            let (repository, tag) = e.names.first().map_or_else(
+                || ("<none>".into(), "<none>".into()),
+                |n| split_reference(n),
+            );
             Image {
                 id: e.id,
                 repository,
@@ -341,7 +349,7 @@ fn list_images() -> Option<Vec<Image>> {
             }
         })
         .collect();
-    images.sort_by(|a, b| a.reference().cmp(&b.reference()));
+    images.sort_by_key(super::model::Image::reference);
     Some(images)
 }
 
@@ -385,7 +393,11 @@ fn list_volumes() -> Option<Vec<Volume>> {
             let in_use_by = usage.iter().filter(|n| **n == e.name).count() as u32;
             Volume {
                 name: e.name,
-                driver: if e.driver.is_empty() { "local".into() } else { e.driver },
+                driver: if e.driver.is_empty() {
+                    "local".into()
+                } else {
+                    e.driver
+                },
                 mountpoint: e.mountpoint,
                 created: e.created_at,
                 in_use_by,
@@ -408,10 +420,10 @@ fn volume_usage() -> Vec<String> {
     // `{{.Mounts}}` prints comma-separated mount sources; named volumes show
     // as their bare name (no leading slash).
     String::from_utf8_lossy(&out.stdout)
-        .split(|c| c == ',' || c == '\n' || c == ' ')
-        .map(|s| s.trim())
+        .split([',', '\n', ' '])
+        .map(str::trim)
         .filter(|s| !s.is_empty() && !s.starts_with('/'))
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 
@@ -421,7 +433,10 @@ fn volume_usage() -> Vec<String> {
 /// `distrobox list` is the canonical reader; when the CLI is absent we fall
 /// back to filtering podman's container list by label.
 fn list_distroboxes() -> Vec<DistroBox> {
-    let out = match Command::new("distrobox").args(["list", "--no-color"]).output() {
+    let out = match Command::new("distrobox")
+        .args(["list", "--no-color"])
+        .output()
+    {
         Ok(o) if o.status.success() => o,
         _ => return Vec::new(),
     };
@@ -429,7 +444,7 @@ fn list_distroboxes() -> Vec<DistroBox> {
     let mut boxes = Vec::new();
     // distrobox list is a `|`-delimited table: ID | NAME | STATUS | IMAGE
     for line in text.lines().skip(1) {
-        let cols: Vec<&str> = line.split('|').map(|c| c.trim()).collect();
+        let cols: Vec<&str> = line.split('|').map(str::trim).collect();
         if cols.len() < 4 {
             continue;
         }
@@ -479,7 +494,7 @@ pub fn fetch_logs(container_id: &str, tail: usize) -> Vec<String> {
             let mut lines: Vec<String> = String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .chain(String::from_utf8_lossy(&o.stderr).lines())
-                .map(|l| l.to_string())
+                .map(std::string::ToString::to_string)
                 .collect();
             if lines.len() > tail {
                 lines = lines.split_off(lines.len() - tail);
@@ -522,9 +537,20 @@ pub fn inspect_into(container: &mut Container) {
         container.mounts = mounts
             .iter()
             .map(|m| Mount {
-                source: m.get("Source").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                destination: m.get("Destination").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                read_only: !m.get("RW").and_then(|v| v.as_bool()).unwrap_or(true),
+                source: m
+                    .get("Source")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                destination: m
+                    .get("Destination")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                read_only: !m
+                    .get("RW")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true),
             })
             .collect();
     }
@@ -768,9 +794,15 @@ mod tests {
 
     #[test]
     fn split_reference_separates_tag() {
-        assert_eq!(split_reference("docker.io/library/nginx:1.27"), ("docker.io/library/nginx".into(), "1.27".into()));
+        assert_eq!(
+            split_reference("docker.io/library/nginx:1.27"),
+            ("docker.io/library/nginx".into(), "1.27".into())
+        );
         // registry-with-port host must not be mistaken for a tag.
-        assert_eq!(split_reference("registry.local:5000/app"), ("registry.local:5000/app".into(), "latest".into()));
+        assert_eq!(
+            split_reference("registry.local:5000/app"),
+            ("registry.local:5000/app".into(), "latest".into())
+        );
     }
 
     #[test]

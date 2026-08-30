@@ -1,29 +1,21 @@
 //! `ActionPalette` — the one Ctrl+K surface for a `ui::App`.
 //!
 //! The **resource + action model** ([`qos_actions`]) is the foundation: the
-//! focused app instance publishes a tree of open [`Resource`]s, each exporting
-//! [`ActionSpec`](qos_actions::ActionSpec)s — the operations Ctrl+K offers. On
-//! top of that, an app can fold in *searchable content* by handing the palette a
-//! set of [`SearchProvider`](crate::search::SearchProvider)s (contacts, files,
-//! …); their hits appear as navigable result rows in the same surface.
+//! focused app instance publishes a tree of open [`Resource`]s, each
+//! exporting [`ActionSpec`](qos_actions::ActionSpec)s — the operations
+//! Ctrl+K offers. An app can also fold in *searchable content* via
+//! [`SearchProvider`](crate::search::SearchProvider)s (contacts, files, …);
+//! their hits appear as navigable result rows in the same surface.
 //!
-//! One registry, one renderer, one flow:
-//!
-//! * **Input** is the shared [`SearchField`](crate::widget::SearchField).
-//! * **Results** are rendered by the shared
-//!   [`SearchResultsView`](crate::widget::SearchResultsView), grouped by kind:
-//!   an **Actions** group from the resource tree's `ActionSpec`s, plus one group
-//!   per [`SearchProvider`] (e.g. **Contacts**) for searchable content.
-//! * **Activation** does the right thing per row kind:
-//!     - an **action** row resolves to its [`EncodedAction`] and
-//!       [`dispatch`](qos_actions::dispatch)es through `qos_actions` — the same
-//!       path a remote peer replays — honoring the action's
-//!       [`ExecutionLocus`](qos_actions::ExecutionLocus); a
-//!       [`Prompted`](qos_actions::ActionInput::Prompted) action first collects
-//!       its argument in the field.
-//!     - a **content** (search-provider) row hands its opaque `action_id` back to
-//!       the app so it can navigate to the chosen record — presentation, never a
-//!       CRDT mutation.
+//! One registry, one renderer, one flow: input is the shared
+//! [`SearchField`](crate::widget::SearchField); results render through
+//! [`SearchResultsView`](crate::widget::SearchResultsView), grouped by kind.
+//! An action row resolves to its [`EncodedAction`] and
+//! [`dispatch`](qos_actions::dispatch)es through `qos_actions` — the same
+//! path a remote peer replays — with a
+//! [`Prompted`](qos_actions::ActionInput::Prompted) action first collecting
+//! its argument in the field; a content row hands its opaque `action_id`
+//! back to the app to navigate, never a CRDT mutation.
 //!
 //! The host ([`crate::app::App`]) drains a completed activation with
 //! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
@@ -40,13 +32,13 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::search::{fuzzy_score, SearchGroup, SearchProvider, SearchResult};
+use crate::search::{SearchGroup, SearchProvider, SearchResult, fuzzy_score};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use qos_actions::{
-    dispatch, flatten, ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction,
-    Resource,
+    ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction, Resource, dispatch,
+    flatten,
 };
 
 /// The group header for the focused app's exported actions.
@@ -150,17 +142,24 @@ impl ActionPalette {
     /// action becomes an **Actions** row; rebuilds the result set + index.
     pub fn load_open_resources(&mut self, resources: &[Resource]) {
         self.resources = resources.to_vec();
-        self.rebuild(&self.field.value().to_string());
+        // `.to_string()` is load-bearing here, not redundant: it ends the
+        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
+        #[allow(clippy::unnecessary_to_owned)]
+        let query = self.field.value().to_string();
+        self.rebuild(&query);
     }
 
     /// Fold in searchable-content sources. Their hits appear as navigable result
     /// rows, grouped by each provider's kind.
     pub fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>) {
         self.providers = providers;
-        self.rebuild(&self.field.value().to_string());
+        // `.to_string()` is load-bearing here, not redundant: it ends the
+        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
+        #[allow(clippy::unnecessary_to_owned)]
+        let query = self.field.value().to_string();
+        self.rebuild(&query);
     }
 
-    /// Whether the palette is currently open.
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -177,13 +176,11 @@ impl ActionPalette {
         self.rebuild("");
     }
 
-    /// Close the palette.
     pub fn close(&mut self) {
         self.open = false;
         self.arg = None;
     }
 
-    /// The current query text.
     pub fn query(&self) -> &str {
         self.field.value()
     }
@@ -204,12 +201,10 @@ impl ActionPalette {
             .collect()
     }
 
-    /// Number of selectable rows.
     pub fn len(&self) -> usize {
         self.results.len()
     }
 
-    /// Whether there are no rows.
     pub fn is_empty(&self) -> bool {
         self.results.is_empty()
     }
@@ -224,14 +219,11 @@ impl ActionPalette {
         self.results.cursor()
     }
 
-    /// Whether the field is collecting a prompted action's argument.
     pub fn in_argument_mode(&self) -> bool {
         self.arg.is_some()
     }
 
-    /// Activate the highlighted row, exactly as pressing Enter would: an
-    /// immediate action is queued for `take_dispatch`; a prompted action opens
-    /// the argument step; a content row is queued for `take_navigation`.
+    /// Activate the highlighted row, exactly as pressing Enter would.
     pub fn activate_selected(&mut self) {
         let Some(id) = self.results.selected_action_id().map(str::to_string) else {
             return;
@@ -240,10 +232,9 @@ impl ActionPalette {
     }
 
     /// Drain a completed action activation and dispatch it against `doc` +
-    /// `transport`, honoring its [`ExecutionLocus`](qos_actions::ExecutionLocus).
-    /// Decoding goes through [`ActionRegistry::decode`] — the same path a remote
-    /// peer uses to replay. Returns `None` when no action is pending (e.g. the
-    /// last activation was a navigation, or opened the argument step).
+    /// `transport`. Decoding goes through [`ActionRegistry::decode`] — the
+    /// same path a remote peer uses to replay. `None` when no action is
+    /// pending (e.g. the last activation was a navigation).
     pub fn take_dispatch(
         &mut self,
         doc: &mut AutoCommit,
@@ -295,9 +286,8 @@ impl ActionPalette {
         }
     }
 
-    /// Rebuild the result set for `query`: exported actions (fuzzy-filtered) as
-    /// the **Actions** group, then each provider's hits as its own group. Ranks
-    /// on a shared footing and rebuilds the resolve index.
+    /// Rebuild the result set for `query`: exported actions (fuzzy-filtered)
+    /// as the **Actions** group, then each provider's hits as its own group.
     fn rebuild(&mut self, query: &str) {
         let mut rows: Vec<SearchResult> = Vec::new();
         let mut index: HashMap<String, RowResolution> = HashMap::new();
@@ -334,7 +324,10 @@ impl ActionPalette {
         for provider in &self.providers {
             for hit in provider.search(query) {
                 let row_id = format!("{NAV_PREFIX}{}", hit.action_id);
-                index.insert(row_id.clone(), RowResolution::Navigate(hit.action_id.clone()));
+                index.insert(
+                    row_id.clone(),
+                    RowResolution::Navigate(hit.action_id.clone()),
+                );
                 let mut r = SearchResult::new(hit.kind.clone(), hit.title.clone(), row_id)
                     .with_score(hit.score);
                 if let Some(sub) = &hit.subtitle {
@@ -351,8 +344,8 @@ impl ActionPalette {
         self.results.set_groups(rank_and_group(query, rows));
     }
 
-    /// Position the palette at `origin` with the given `width`, laying out the
-    /// field and sizing the results overlay. Called each frame before `draw`.
+    /// Position the palette at `origin` with `width`. Called each frame
+    /// before `draw`.
     pub fn layout(&mut self, theme: &Theme, origin: Point, width: f64) {
         // Field: build a fresh 2-node tree so `handle_event` can resolve the
         // inner text input's node, then place it at the top of the card.
@@ -368,10 +361,9 @@ impl ActionPalette {
                     height: AvailableSpace::Definite(FIELD_H as f32),
                 },
                 |known, available, id, _, _| {
-                    node_map
-                        .get(&id)
-                        .map(|&p| unsafe { (*p).measure(known, available, tr) })
-                        .unwrap_or(Size::ZERO)
+                    node_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                        (*p).measure(known, available, tr)
+                    })
                 },
             )
             .expect("field layout");
@@ -401,15 +393,15 @@ impl ActionPalette {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.field.draw(scene, transform, text_renderer, theme, presence);
-        self.results.draw(scene, transform, text_renderer, theme, presence);
+        self.field
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.results
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    /// Feed a keyboard event to the open palette. Returns whether it was
-    /// consumed. While open, the palette is modal over the keyboard: it swallows
-    /// every key so nothing leaks to the app behind it. Typing drives the query;
-    /// Up/Down + Enter drive the results; Escape closes (or cancels an argument
-    /// step).
+    /// Feed a keyboard event to the open palette; returns whether consumed.
+    /// While open, the palette is modal: it swallows every key so nothing
+    /// leaks to the app behind it.
     pub fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -456,9 +448,7 @@ impl ActionPalette {
         // other key edits the query and re-runs the search.
         let nav = matches!(
             &key.logical_key,
-            Key::Named(NamedKey::ArrowUp)
-                | Key::Named(NamedKey::ArrowDown)
-                | Key::Named(NamedKey::Enter)
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Enter)
         );
         if nav {
             self.route_to_results(event, modifiers, doc, path);
@@ -535,10 +525,9 @@ impl ActionPalette {
     }
 }
 
-/// Rank `rows` by fit against `query` and bucket by kind. Groups appear in the
-/// order their best row ranks; within a group, rows stay ranked. Reuses the
-/// shared [`fuzzy_score`] primitive so a hit from one source is comparable to a
-/// hit from another. Caps each group so no single source floods the overlay.
+/// Rank `rows` by fit against `query` and bucket by kind. Reuses the shared
+/// [`fuzzy_score`] primitive so a hit from one source is comparable to a hit
+/// from another. Caps each group so no single source floods the overlay.
 fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
     /// A provider bias notch is worth this many query-match points.
     const BIAS_WEIGHT: i32 = 4;
@@ -549,7 +538,7 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
         r.score * BIAS_WEIGHT + bonus
     };
     let mut ranked = rows;
-    ranked.sort_by(|a, b| key(b).cmp(&key(a)));
+    ranked.sort_by_key(|b| std::cmp::Reverse(key(b)));
     let mut groups: Vec<SearchGroup> = Vec::new();
     for r in ranked {
         if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
@@ -557,7 +546,10 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
                 g.results.push(r);
             }
         } else {
-            groups.push(SearchGroup { kind: r.kind.clone(), results: vec![r] });
+            groups.push(SearchGroup {
+                kind: r.kind.clone(),
+                results: vec![r],
+            });
         }
     }
     groups
@@ -567,7 +559,7 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ReadDoc, ScalarValue, ROOT};
+    use automerge::{ROOT, ReadDoc, ScalarValue};
     use qos_actions::{
         Action, ActionError, ActionRegistry, ActionSpec, Doc, ExecutionLocus, LocalTransport,
     };
@@ -583,7 +575,11 @@ mod tests {
     const NOTE_TYPE: &str = "test.note";
     impl Action for Note {
         fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-            doc.put(&ROOT, self.key.as_str(), ScalarValue::Str(self.value.as_str().into()))?;
+            doc.put(
+                &ROOT,
+                self.key.as_str(),
+                ScalarValue::Str(self.value.as_str().into()),
+            )?;
             Ok(())
         }
     }
@@ -602,7 +598,10 @@ mod tests {
                     "mark",
                     "Mark done",
                     NOTE_TYPE,
-                    &Note { key: "marked".into(), value: "yes".into() },
+                    &Note {
+                        key: "marked".into(),
+                        value: "yes".into(),
+                    },
                 )
                 .unwrap(),
             )
@@ -613,8 +612,14 @@ mod tests {
                 "e.g. Widget",
                 ExecutionLocus::ClientLocal,
                 |s: &str| {
-                    EncodedAction::encode(NOTE_TYPE, &Note { key: "name".into(), value: s.into() })
-                        .unwrap()
+                    EncodedAction::encode(
+                        NOTE_TYPE,
+                        &Note {
+                            key: "name".into(),
+                            value: s.into(),
+                        },
+                    )
+                    .unwrap()
                 },
             ))
     }
@@ -644,8 +649,14 @@ mod tests {
         p.open();
 
         let groups: Vec<String> = p.results.groups().iter().map(|g| g.kind.clone()).collect();
-        assert!(groups.contains(&ACTIONS_KIND.to_string()), "Actions group present: {groups:?}");
-        assert!(groups.contains(&"People".to_string()), "content group present: {groups:?}");
+        assert!(
+            groups.contains(&ACTIONS_KIND.to_string()),
+            "Actions group present: {groups:?}"
+        );
+        assert!(
+            groups.contains(&"People".to_string()),
+            "content group present: {groups:?}"
+        );
 
         let labels = p.result_labels();
         assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
@@ -677,11 +688,16 @@ mod tests {
             .expect("dispatch ok");
         assert!(matches!(d, Dispatched::AppliedLocal(_)));
         assert_eq!(
-            doc.get(&ROOT, "marked").unwrap().and_then(|(v, _)| v.to_str().map(str::to_string)),
+            doc.get(&ROOT, "marked")
+                .unwrap()
+                .and_then(|(v, _)| v.to_str().map(str::to_string)),
             Some("yes".to_string()),
         );
         assert!(!p.is_open(), "an immediate action closes the palette");
-        assert!(p.take_navigation().is_none(), "an action is not a navigation");
+        assert!(
+            p.take_navigation().is_none(),
+            "an action is not a navigation"
+        );
     }
 
     /// Activating a CONTENT row queues a navigation (its opaque id), NOT a
@@ -730,7 +746,10 @@ mod tests {
             .expect("rename row");
         p.set_cursor(idx);
         p.activate_selected();
-        assert!(p.in_argument_mode(), "a prompted action opens the argument step");
+        assert!(
+            p.in_argument_mode(),
+            "a prompted action opens the argument step"
+        );
         assert!(p.is_open(), "still open while collecting the argument");
 
         // Type the argument into the field and confirm.
@@ -747,7 +766,9 @@ mod tests {
             .expect("dispatch ok");
         assert!(matches!(d, Dispatched::AppliedLocal(_)));
         assert_eq!(
-            doc.get(&ROOT, "name").unwrap().and_then(|(v, _)| v.to_str().map(str::to_string)),
+            doc.get(&ROOT, "name")
+                .unwrap()
+                .and_then(|(v, _)| v.to_str().map(str::to_string)),
             Some("Sprocket".to_string()),
             "the action carries the typed argument",
         );
@@ -757,8 +778,9 @@ mod tests {
         // SAFETY: `handle_key` only reads `logical_key` + `state`.
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;

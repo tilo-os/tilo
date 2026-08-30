@@ -28,12 +28,17 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+# `tracing` and `anyhow` are still load-bearing here even though a
+# workspace-wide sweep dropped them as unused: `tracing::` appears in five
+# modules (decode, title rendering, audio and the app itself) and `shot.rs`
+# returns `anyhow::Result`. Dropping them fails the build outright, not
+# merely a lint.
 tracing.workspace = true
 tracing-subscriber.workspace = true
+anyhow.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 
 # Real decode/preview/export runs through GStreamer, linked ONLY under the
 # `gst` feature so the default fleet build (and `--shots`) compiles without
@@ -70,3 +75,6 @@ decode = ["media/decode", "dep:gstreamer", "dep:gstreamer-app"]
 # Real export through GStreamer (encode + mux to a real file). Heavier; needs
 # the gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
 gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode"]
+
+[lints]
+workspace = true

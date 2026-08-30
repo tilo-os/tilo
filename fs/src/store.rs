@@ -1,12 +1,9 @@
 //! The content plane: a content-addressed blob store with an in-memory cache.
 //!
-//! File bytes are stored as iroh-blobs blobs, addressed by their blake3 hash.
-//! The namespace CRDT (see [`crate::namespace`]) only ever holds those hashes;
-//! the actual bytes are ingested here on write and hydrated here on read.
-//!
-//! Backing store is an iroh-blobs `FsStore` rooted at `--cache-dir` so content
-//! survives restarts (and the bootc root can stay read-only), with an in-memory
-//! `moka` cache in front for hot range reads. Tests use the `MemStore` backend.
+//! File bytes are iroh-blobs blobs addressed by blake3 hash; the namespace
+//! CRDT only ever holds those hashes. Backing store is an iroh-blobs
+//! `FsStore` rooted at `--cache-dir` (survives restarts, keeps the bootc root
+//! read-only), with a `moka` cache in front for hot range reads. Tests use `MemStore`.
 
 use std::path::Path;
 
@@ -25,7 +22,6 @@ enum Backend {
     Fs(FsStore),
 }
 
-/// Content-addressed blob store + hot-bytes cache.
 pub struct ContentStore {
     backend: Backend,
     cache: Cache<Hash, Bytes>,
@@ -51,7 +47,6 @@ impl ContentStore {
         }
     }
 
-    /// The underlying iroh-blobs store handle.
     pub fn store(&self) -> &Store {
         match &self.backend {
             Backend::Mem(m) => m,
@@ -72,10 +67,8 @@ impl ContentStore {
         Ok(tag.hash)
     }
 
-    /// Content-defined-chunk `data`, ingest each chunk (the store dedups
-    /// identical chunks), and ingest a manifest describing them. Returns the
-    /// manifest hash (`None` for empty input). Editing part of a large file
-    /// only stores the chunks that actually changed.
+    /// Content-defined-chunk `data`, ingest each chunk (deduped) + a manifest
+    /// describing them. Returns the manifest hash (`None` if empty); editing part of a large file only stores the changed chunks.
     pub async fn write_content(&self, data: &[u8]) -> Result<Option<Hash>> {
         if data.is_empty() {
             return Ok(None);
@@ -115,7 +108,6 @@ impl ContentStore {
         Ok(())
     }
 
-    /// Whether `hash` is available locally without hitting the network.
     pub async fn has(&self, hash: Hash) -> bool {
         if self.cache.contains_key(&hash) {
             return true;

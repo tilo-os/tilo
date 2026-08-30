@@ -65,7 +65,7 @@ impl Len {
     fn dim(self) -> Dimension {
         match self {
             Len::Auto => Dimension::auto(),
-            Len::Fill => percent(1.0),
+            Len::Fill => percent(1.0_f32),
             Len::Px(p) => length(p),
             Len::Pct(p) => percent(p),
         }
@@ -126,7 +126,7 @@ pub struct Flex {
     /// Like `overlay` for positioning (absolute, fills the containing block and
     /// stacks over siblings) but WITHOUT the modal pointer capture: events that
     /// miss this box's interactive children fall through to the content beneath.
-    /// Used for a small on-video affordance (the SponsorBlock "Skip" button).
+    /// Used for a small on-video affordance (the `SponsorBlock` "Skip" button).
     float: bool,
 
     surface: Option<Surface>,
@@ -156,7 +156,11 @@ impl Flex {
             min_w: None,
             min_h: None,
             max_w: None,
-            align: if axis == Axis::Row { Align::Center } else { Align::Start },
+            align: if axis == Axis::Row {
+                Align::Center
+            } else {
+                Align::Start
+            },
             justify: Justify::Start,
             wrap: false,
             grid_min_col: None,
@@ -389,10 +393,10 @@ impl Widget for Flex {
             // in-flow siblings.
             inset: if self.overlay || self.float {
                 taffy::Rect {
-                    left: length(0.0),
-                    right: length(0.0),
-                    top: length(0.0),
-                    bottom: length(0.0),
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(0.0_f32),
+                    bottom: length(0.0_f32),
                 }
             } else {
                 taffy::Rect::auto()
@@ -415,7 +419,7 @@ impl Widget for Flex {
             // right-edge gutter. Empty (no-op) in flex/block mode.
             grid_template_columns: self
                 .grid_min_col
-                .map(|min| vec![repeat("auto-fill", vec![minmax(length(min), fr(1.0))])])
+                .map(|min| vec![repeat("auto-fill", vec![minmax(length(min), fr(1.0_f32))])])
                 .unwrap_or_default(),
             gap: taffy::Size {
                 width: length(self.gap),
@@ -432,17 +436,17 @@ impl Widget for Flex {
                 height: self.height.dim(),
             },
             min_size: taffy::Size {
-                width: self.min_w.map(length).unwrap_or(taffy::Dimension::auto()),
-                height: self.min_h.map(length).unwrap_or(taffy::Dimension::auto()),
+                width: self.min_w.map_or(taffy::Dimension::auto(), length),
+                height: self.min_h.map_or(taffy::Dimension::auto(), length),
             },
             max_size: taffy::Size {
-                width: self.max_w.map(length).unwrap_or(taffy::Dimension::auto()),
+                width: self.max_w.map_or(taffy::Dimension::auto(), length),
                 height: taffy::Dimension::auto(),
             },
             flex_grow: self.grow,
             flex_shrink: self.shrink,
             flex_basis: if self.grow > 0.0 {
-                length(0.0)
+                length(0.0_f32)
             } else {
                 taffy::Dimension::auto()
             },
@@ -462,23 +466,23 @@ impl Widget for Flex {
         let _ = theme;
 
         let node = if child_nodes.is_empty() {
-            taffy.new_leaf(style).unwrap()
+            super::leaf_node(taffy, style)
         } else {
-            taffy.new_with_children(style, &child_nodes).unwrap()
+            super::parent_node(taffy, style, &child_nodes)
         };
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        let w = layout.size.width.max(layout.content_size.width) as f64;
-        let h = layout.size.height.max(layout.content_size.height) as f64;
+        let layout = super::node_layout(taffy, node);
+        let w = f64::from(layout.size.width.max(layout.content_size.width));
+        let h = f64::from(layout.size.height.max(layout.content_size.height));
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + w,
-            origin.y + layout.location.y as f64 + h,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + w,
+            origin.y + f64::from(layout.location.y) + h,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node) {
@@ -507,7 +511,13 @@ impl Widget for Flex {
         }
 
         if self.clip {
-            scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &self.rect);
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &self.rect,
+            );
         }
         // In-flow children first, then floating children on top (z-order).
         for c in self.children.iter_mut().filter(|c| !c.is_floating()) {
@@ -542,13 +552,33 @@ impl Widget for Flex {
             self.paint_surface(scene, transform, s);
         }
         if self.clip {
-            scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &self.rect);
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &self.rect,
+            );
         }
         for c in self.children.iter_mut().filter(|c| !c.is_floating()) {
-            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            c.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
         for c in self.children.iter_mut().filter(|c| c.is_floating()) {
-            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            c.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
         if self.clip {
             scene.pop_layer();
@@ -572,7 +602,15 @@ impl Widget for Flex {
             if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
                 let cn = child_nodes[idx];
                 self.children[idx].handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    cn,
+                    taffy,
                 );
                 return;
             }
@@ -584,7 +622,15 @@ impl Widget for Flex {
                     continue;
                 }
                 cw.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    cn,
+                    taffy,
                 );
                 if *handled {
                     break;
@@ -596,7 +642,15 @@ impl Widget for Flex {
                         continue;
                     }
                     cw.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        cn,
+                        taffy,
                     );
                     if *handled {
                         break;
@@ -646,7 +700,10 @@ impl Widget for Flex {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(|c| c.as_ref()).collect()
+        self.children
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.children
@@ -680,13 +737,16 @@ impl Widget for Flex {
         self.children.iter().any(|c| c.is_layout_dirty())
     }
     fn take_structure_dirty(&mut self) -> bool {
-        self.children
-            .iter_mut()
-            .map(|c| c.take_structure_dirty())
-            .fold(false, |a, d| a || d)
+        // Not `.any()`: every child's dirty flag must be taken, not just the
+        // first that's set, so this must not short-circuit.
+        let mut dirty = false;
+        for c in &mut self.children {
+            dirty |= c.take_structure_dirty();
+        }
+        dirty
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Flex"
     }
     fn test_id(&self) -> Option<&str> {

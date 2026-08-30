@@ -52,7 +52,7 @@ use qos_actions::{
 
 use crate::doc::SlidesDoc;
 use crate::model::{
-    new_id, Background, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign,
+    Background, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign, new_id,
 };
 
 /// Registry `type_id` for every Slides action.
@@ -235,7 +235,12 @@ pub enum SlidesAction {
     DeleteElement { slide: usize, id: String },
     /// Move element `id` to its **final** top-left after a drag drop or a
     /// keyboard nudge (never the intermediate per-frame drag positions).
-    MoveElement { slide: usize, id: String, x: f64, y: f64 },
+    MoveElement {
+        slide: usize,
+        id: String,
+        x: f64,
+        y: f64,
+    },
     /// Resize (and reposition) element `id` to its **final** rect after a drag
     /// drop.
     ResizeElement {
@@ -270,10 +275,11 @@ impl Action for SlidesAction {
                 // A deck always keeps at least one slide. The count is read from
                 // the document's base state, so the guard evaluates identically
                 // on every replica.
-                if let Some(deck) = SlidesDoc::load(doc) {
-                    if deck.slides.len() > 1 && *idx < deck.slides.len() {
-                        SlidesDoc::remove_slide(doc, *idx);
-                    }
+                if let Some(deck) = SlidesDoc::load(doc)
+                    && deck.slides.len() > 1
+                    && *idx < deck.slides.len()
+                {
+                    SlidesDoc::remove_slide(doc, *idx);
                 }
             }
             SlidesAction::MoveSlide { from, to } => {
@@ -468,7 +474,11 @@ pub fn resize_element_action(
     }
 }
 
-pub fn restyle_element_action(slide: usize, id: impl Into<String>, patch: StylePatch) -> SlidesAction {
+pub fn restyle_element_action(
+    slide: usize,
+    id: impl Into<String>,
+    patch: StylePatch,
+) -> SlidesAction {
     SlidesAction::RestyleElement {
         slide,
         id: id.into(),
@@ -502,7 +512,12 @@ pub fn restyle_f64_action(slide: usize, id: impl Into<String>, key: &str, v: f64
 }
 
 /// Restyle one bool property (`"bold"`, `"italic"`).
-pub fn restyle_bool_action(slide: usize, id: impl Into<String>, key: &str, v: bool) -> SlidesAction {
+pub fn restyle_bool_action(
+    slide: usize,
+    id: impl Into<String>,
+    key: &str,
+    v: bool,
+) -> SlidesAction {
     let mut patch = StylePatch::default();
     match key {
         "bold" => patch.bold = Some(v),
@@ -532,13 +547,17 @@ pub fn lower_element_action(slide: usize, id: impl Into<String>) -> SlidesAction
 pub fn new_slide_template() -> Slide {
     let mut s = Slide::new(Layout::TitleContent);
     s.add(Element::text("New slide", 96.0, 90.0, 1088.0, 100.0, 54.0).with(|e| e.bold = true));
-    s.add(Element::shape(ElementKind::Rect, 96.0, 188.0, 150.0, 8.0).with(|e| {
-        e.fill = "accent".into();
-        e.radius = 4.0;
-    }));
-    s.add(Element::text("Add your content…", 96.0, 230.0, 900.0, 300.0, 32.0).with(|e| {
-        e.fill = "text-dim".into();
-    }));
+    s.add(
+        Element::shape(ElementKind::Rect, 96.0, 188.0, 150.0, 8.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 4.0;
+        }),
+    );
+    s.add(
+        Element::text("Add your content…", 96.0, 230.0, 900.0, 300.0, 32.0).with(|e| {
+            e.fill = "text-dim".into();
+        }),
+    );
     s
 }
 
@@ -612,13 +631,15 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
     // is not asserted for byte-equality against a builder — every other action
     // here is deterministic and is.
     let at = ctx.slides.len();
-    deck = deck.with_action(ActionSpec::immediate(
-        "add-slide",
-        "Add slide",
-        SLIDES_ACTION_TYPE,
-        &insert_slide_action(at, &new_slide_template()),
-    )
-    .expect("encode add-slide"));
+    deck = deck.with_action(
+        ActionSpec::immediate(
+            "add-slide",
+            "Add slide",
+            SLIDES_ACTION_TYPE,
+            &insert_slide_action(at, &new_slide_template()),
+        )
+        .expect("encode add-slide"),
+    );
 
     // Deck-level: set the accent theme, one row per palette.
     for kind in PaletteKind::ALL {
@@ -643,18 +664,24 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
 
         // Duplicate this slide immediately after it. Its ids are reminted at
         // authoring, baked into the payload, so the action replays identically.
-        slide = slide.with_action(ActionSpec::immediate(
-            "duplicate",
-            "Duplicate slide",
-            SLIDES_ACTION_TYPE,
-            &SlidesAction::InsertSlide {
-                at: idx + 1,
-                slide: sr.data.reminted(),
-            },
-        )
-        .expect("encode duplicate-slide"));
+        slide = slide.with_action(
+            ActionSpec::immediate(
+                "duplicate",
+                "Duplicate slide",
+                SLIDES_ACTION_TYPE,
+                &SlidesAction::InsertSlide {
+                    at: idx + 1,
+                    slide: sr.data.reminted(),
+                },
+            )
+            .expect("encode duplicate-slide"),
+        );
 
-        slide = slide.with_action(immediate_spec("delete", "Delete slide", &delete_slide_action(idx)));
+        slide = slide.with_action(immediate_spec(
+            "delete",
+            "Delete slide",
+            &delete_slide_action(idx),
+        ));
 
         for layout in Layout::ALL {
             slide = slide.with_action(immediate_spec(
@@ -739,15 +766,6 @@ mod tests {
         (app, doc)
     }
 
-    /// Dispatch an action through the executor, as the on-screen affordance path
-    /// does.
-    fn dispatch(doc: &mut AutoCommit, action: &SlidesAction) {
-        let encoded = encode(action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-    }
-
     /// Ctrl+K on Slides yields the deck root exporting "Add slide" + a theme row
     /// per palette, a `slides.slide:<id>` child per slide (duplicate / delete /
     /// layout / background), and a `slides.element:<id>` per element (delete /
@@ -763,7 +781,11 @@ mod tests {
         assert!(deck_actions.contains(&"add-slide"), "{deck_actions:?}");
         assert!(deck_actions.contains(&"theme-emerald"), "{deck_actions:?}");
 
-        assert_eq!(deck.children.len(), seed_deck().slides.len(), "one child per slide");
+        assert_eq!(
+            deck.children.len(),
+            seed_deck().slides.len(),
+            "one child per slide"
+        );
         let slide = &deck.children[0];
         assert_eq!(slide.kind, "slides.slide");
         let s_actions: Vec<&str> = slide.actions.iter().map(|a| a.id.as_str()).collect();
@@ -774,8 +796,7 @@ mod tests {
 
         let element = slide
             .children
-            .iter()
-            .next()
+            .first()
             .expect("a slide has at least one element");
         assert_eq!(element.kind, "slides.element");
         let e_actions: Vec<&str> = element.actions.iter().map(|a| a.id.as_str()).collect();
@@ -789,7 +810,10 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("Add slide")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete slide")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Delete slide")),
+            "{labels:?}"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -811,28 +835,24 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         let after = SlidesDoc::load(&state.doc).unwrap();
-        assert_eq!(after.slides[0].elements.len(), before - 1, "the action deleted an element");
+        assert_eq!(
+            after.slides[0].elements.len(),
+            before - 1,
+            "the action deleted an element"
+        );
         assert!(
             !after.slides[0].elements.iter().any(|e| e.id == victim),
             "the right element is gone"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         let reverted = SlidesDoc::load(&state.doc).unwrap();
         assert_eq!(
             reverted.slides[0].elements.len(),
@@ -855,7 +875,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // Set the second slide's background — a whole-value write, deterministic
         // against the shared base.
@@ -864,8 +888,15 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
-        assert_eq!(SlidesDoc::load(&b).unwrap().slides[1].background, Background::Deep);
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
+        assert_eq!(
+            SlidesDoc::load(&b).unwrap().slides[1].background,
+            Background::Deep
+        );
     }
 
     /// A z-order raise — recomputed from the document's base state — also replays
@@ -877,7 +908,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let deck = SlidesDoc::load(&a).unwrap();
         // The first (back-most) element of a multi-element slide.
@@ -914,7 +949,11 @@ mod tests {
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "add replayed identically");
-        assert!(SlidesDoc::load(&b).unwrap().slides[0].element(&id).is_some());
+        assert!(
+            SlidesDoc::load(&b).unwrap().slides[0]
+                .element(&id)
+                .is_some()
+        );
     }
 
     /// Single source of truth: the palette's "Delete element" / "Delete slide" /
@@ -932,20 +971,37 @@ mod tests {
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&delete_slide_action(0));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "delete-slide is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "delete-slide is one source of truth"
+        );
 
         // Background spec == builder for the same treatment.
-        let bg_spec = slide.actions.iter().find(|a| a.id == "background-deep").unwrap();
+        let bg_spec = slide
+            .actions
+            .iter()
+            .find(|a| a.id == "background-deep")
+            .unwrap();
         let from_spec = immediate_encode(bg_spec);
         let from_builder = encode(&set_slide_background_action(0, Background::Deep));
-        assert_eq!(from_spec.payload, from_builder.payload, "background is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "background is one source of truth"
+        );
 
         // Delete-element spec == builder, carrying the element's real id.
-        let element = slide.children.iter().next().unwrap();
-        let el_id = element.id.0.trim_start_matches("slides.element:").to_string();
+        let element = slide.children.first().unwrap();
+        let el_id = element
+            .id
+            .0
+            .trim_start_matches("slides.element:")
+            .to_string();
         let del_el = element.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(del_el);
         let from_builder = encode(&delete_element_action(0, el_id));
-        assert_eq!(from_spec.payload, from_builder.payload, "delete-element is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "delete-element is one source of truth"
+        );
     }
 }

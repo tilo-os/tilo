@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "qos-relay"
 version = "0.1.0"
 edition = "2024"
@@ -71,10 +73,10 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 blake3.workspace = true
 hex.workspace = true
+uuid.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["full"] }
-futures-lite.workspace = true
 clap.workspace = true
 toml.workspace = true
 anyhow.workspace = true
@@ -90,3 +92,10 @@ sd-notify.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

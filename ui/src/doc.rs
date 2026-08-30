@@ -1,79 +1,52 @@
 //! CRDT write helpers that keep Automerge documents from churning.
 //!
-//! # Why this module exists
+//! Splicing a whole string on every keystroke (delete all, reinsert new) costs
+//! O(len) ops per edit and, since Automerge tombstones every inserted element
+//! forever, O(len²) accumulated ops over a typing session — the store gets
+//! slower until the app appears to freeze.
 //!
-//! The naive way to reflect an in-memory string into a CRDT `Text` field is to
-//! delete everything and reinsert it:
-//!
-//! ```ignore
-//! let cur = doc.text(&tid).unwrap_or_default();
-//! doc.splice_text(&tid, 0, cur.chars().count() as isize, new_value);
-//! ```
-//!
-//! That turns a single keystroke into O(len) operations and — because Automerge
-//! keeps every inserted element as a tombstone forever — accumulates O(len²) ops
-//! over a typing session. Each subsequent store gets slower until the app
-//! appears to freeze. HIG §6 ("No unbounded per-frame work") forbids it.
-//!
-//! The fix is to diff the current text against the new value down to the common
-//! prefix + suffix and splice **only the changed middle span**, so appending one
-//! character costs one op, not `len`. [`splice_text_diffed`] /
-//! [`put_text_diffed`] do exactly that, and [`put_if_changed`] does the scalar
-//! analogue (write an op only when the value actually differs).
-//!
-//! This is the shared promotion of the pattern first proven in the calculator's
-//! `doc.rs`; every text-heavy system app should route its CRDT writes through
-//! here rather than re-implementing (and re-regressing) the diff.
+//! [`splice_text_diffed`] / [`put_text_diffed`] diff old vs. new down to the
+//! common prefix + suffix and splice only the changed middle span, so one
+//! keystroke costs one op. [`put_if_changed`] is the scalar analogue.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
 
-/// The character-range splice that [`splice_text_diffed`] actually applied,
-/// expressed in *characters* (Automerge `Text` is char-addressed).
-///
-/// A no-op (the new value already equals the current text) is reported as
-/// `TextEdit { pos: 0, del: 0, ins: 0 }` — see [`TextEdit::is_noop`].
+/// The splice [`splice_text_diffed`] applied, in *characters* — Automerge `Text`
+/// is char-addressed, not byte-addressed. A no-op reports `{pos:0, del:0, ins:0}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextEdit {
     /// Char offset where the splice began (== length of the common prefix).
     pub pos: usize,
-    /// Number of chars deleted at `pos`.
     pub del: usize,
-    /// Number of chars inserted at `pos`.
     pub ins: usize,
 }
 
 impl TextEdit {
-    /// Whether nothing was changed (current text already equalled the target).
     pub fn is_noop(&self) -> bool {
         self.del == 0 && self.ins == 0
     }
 }
 
-/// Splice only the changed middle span of an existing `Text` object so that it
-/// ends up equal to `new`.
-///
-/// Computes the longest common prefix and (non-overlapping) suffix between the
-/// object's current text and `new`, then issues a single `splice_text` covering
-/// just the differing middle. Appending one character is one op; an unchanged
-/// value emits no op at all. Returns the [`TextEdit`] that was applied.
-///
-/// This is the anti-churn core — prefer [`put_text_diffed`] when you have a
-/// parent object + key and want the `Text` created on first use.
+/// Prefer [`put_text_diffed`] when you have a parent object + key and want the
+/// `Text` created on first use.
 pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> TextEdit {
     let cur = doc.text(text_id).unwrap_or_default();
     if cur == new {
-        return TextEdit { pos: 0, del: 0, ins: 0 };
+        return TextEdit {
+            pos: 0,
+            del: 0,
+            ins: 0,
+        };
     }
     let cur_chars: Vec<char> = cur.chars().collect();
     let new_chars: Vec<char> = new.chars().collect();
 
-    // Longest common prefix.
     let mut p = 0;
     while p < cur_chars.len() && p < new_chars.len() && cur_chars[p] == new_chars[p] {
         p += 1;
     }
-    // Longest common suffix that doesn't overlap the prefix on either side.
+    // Suffix search bounds exclude the prefix so the two spans can't overlap.
     let mut s = 0;
     while s < cur_chars.len() - p
         && s < new_chars.len() - p
@@ -86,18 +59,15 @@ pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> T
     let ins: String = new_chars[p..new_chars.len() - s].iter().collect();
     let ins_len = new_chars.len() - s - p;
     let _ = doc.splice_text(text_id, p, del as isize, &ins);
-    TextEdit { pos: p, del, ins: ins_len }
+    TextEdit {
+        pos: p,
+        del,
+        ins: ins_len,
+    }
 }
 
-/// Ensure a `Text` object exists at `obj[key]`, then diff-splice `new` into it,
-/// touching only the changed span. Creates the `Text` object on first use.
-///
-/// `key` may be a map key (`&str`/`String`) or a list index (`usize`) — anything
-/// that is `Into<Prop>`. Returns the [`TextEdit`] that was applied (the initial
-/// create inserts the whole value; subsequent calls splice only the diff).
-///
-/// This is the shared replacement for the whole-text-rewrite pattern
-/// `splice_text(id, 0, cur_len, value)`.
+/// Creates the `Text` object on first use (inserting the whole value);
+/// subsequent calls splice only the diff.
 pub fn put_text_diffed<P: Into<Prop>>(
     doc: &mut AutoCommit,
     obj: &ObjId,
@@ -114,14 +84,10 @@ pub fn put_text_diffed<P: Into<Prop>>(
     splice_text_diffed(doc, &tid, new)
 }
 
-/// Put a scalar at `obj[key]` **only if it differs** from what the document
-/// already holds. Returns `true` if an op was emitted, `false` if the value was
-/// already current (a no-op that leaves the document byte-for-byte unchanged).
-///
-/// Re-`put`ting an unchanged scalar every frame permanently grows the document;
-/// this guard makes an unchanged re-store free. For `f64` fields that can hold
-/// `NaN`, keep a bit-exact guard at the call site instead (`NaN != NaN` would
-/// make this re-emit forever).
+/// Returns `true` if an op was emitted. Guards against unbounded document growth
+/// from re-`put`ting an unchanged scalar every frame. `f64` fields that can hold
+/// `NaN` need a bit-exact guard at the call site instead — `NaN != NaN` would
+/// make this re-emit forever.
 pub fn put_if_changed<P: Into<Prop>, V: Into<ScalarValue>>(
     doc: &mut AutoCommit,
     obj: &ObjId,
@@ -154,11 +120,8 @@ mod tests {
 
     #[test]
     fn single_char_append_splices_only_the_new_char() {
-        // The core anti-churn assertion: editing one char in a long text
-        // produces a splice whose length is the *changed span* (one char),
-        // NOT the whole text.
         let mut doc = AutoCommit::new();
-        let long = "abcdefghijklmnopqrstuvwxyz0123456789"; // 36 chars
+        let long = "abcdefghijklmnopqrstuvwxyz0123456789";
         let id = seed_text(&mut doc, "t", long);
         let mut target = long.to_string();
         target.push('!');
@@ -167,12 +130,19 @@ mod tests {
 
         assert_eq!(
             edit,
-            TextEdit { pos: long.chars().count(), del: 0, ins: 1 },
+            TextEdit {
+                pos: long.chars().count(),
+                del: 0,
+                ins: 1
+            },
             "appending one char must splice exactly one char, not rewrite the text"
         );
-        // The insert span is one char even though the text is 36 chars long.
         assert!(edit.ins < long.chars().count());
-        assert_eq!(doc.text(&id).unwrap(), target, "must round-trip to the new value");
+        assert_eq!(
+            doc.text(&id).unwrap(),
+            target,
+            "must round-trip to the new value"
+        );
     }
 
     #[test]
@@ -181,7 +151,6 @@ mod tests {
         let before = "the quick brown fox";
         let id = seed_text(&mut doc, "t", before);
 
-        // "quick" -> "slow": common prefix "the ", common suffix " brown fox".
         let edit = splice_text_diffed(&mut doc, &id, "the slow brown fox");
 
         assert_eq!(edit.pos, 4, "prefix 'the ' is common");
@@ -203,7 +172,14 @@ mod tests {
         let edit = splice_text_diffed(&mut doc, &id, "unchanged");
 
         assert!(edit.is_noop(), "re-storing the same value must be a no-op");
-        assert_eq!(edit, TextEdit { pos: 0, del: 0, ins: 0 });
+        assert_eq!(
+            edit,
+            TextEdit {
+                pos: 0,
+                del: 0,
+                ins: 0
+            }
+        );
         assert_eq!(
             doc.save().len(),
             before,
@@ -215,25 +191,36 @@ mod tests {
     fn put_text_diffed_creates_then_diffs() {
         let mut doc = AutoCommit::new();
 
-        // First call creates the Text object and inserts the whole value.
         let e0 = put_text_diffed(&mut doc, &ROOT, "body", "hello world");
-        assert_eq!(e0, TextEdit { pos: 0, del: 0, ins: 11 });
+        assert_eq!(
+            e0,
+            TextEdit {
+                pos: 0,
+                del: 0,
+                ins: 11
+            }
+        );
 
-        // Second call appends one char → single-char splice, not a rewrite.
         let e1 = put_text_diffed(&mut doc, &ROOT, "body", "hello world!");
-        assert_eq!(e1, TextEdit { pos: 11, del: 0, ins: 1 });
+        assert_eq!(
+            e1,
+            TextEdit {
+                pos: 11,
+                del: 0,
+                ins: 1
+            }
+        );
 
         let (v, tid) = doc.get(&ROOT, "body").unwrap().unwrap();
-        assert!(matches!(v, Value::Object(ObjType::Text)), "field is a CRDT Text");
+        assert!(
+            matches!(v, Value::Object(ObjType::Text)),
+            "field is a CRDT Text"
+        );
         assert_eq!(doc.text(&tid).unwrap(), "hello world!");
     }
 
     #[test]
     fn typing_char_by_char_keeps_the_doc_bounded() {
-        // Reproduces the freeze mechanism on the real write path: append one
-        // char at a time and store after each. The wholesale delete+reinsert
-        // used to accumulate O(len^2) tombstoned ops; the diff-splice keeps
-        // growth ~linear.
         let mut doc = AutoCommit::new();
         let mut s = String::new();
         for i in 0..500 {
@@ -247,22 +234,37 @@ mod tests {
             s.len()
         );
         let (_, tid) = doc.get(&ROOT, "b").unwrap().unwrap();
-        assert_eq!(doc.text(&tid).unwrap(), s, "typed value must round-trip exactly");
+        assert_eq!(
+            doc.text(&tid).unwrap(),
+            s,
+            "typed value must round-trip exactly"
+        );
     }
 
     #[test]
     fn put_if_changed_guards_redundant_writes() {
         let mut doc = AutoCommit::new();
 
-        assert!(put_if_changed(&mut doc, &ROOT, "n", 1i64), "first write happens");
+        assert!(
+            put_if_changed(&mut doc, &ROOT, "n", 1i64),
+            "first write happens"
+        );
         let before = doc.save().len();
 
-        // Same value → no write, no growth.
-        assert!(!put_if_changed(&mut doc, &ROOT, "n", 1i64), "unchanged re-put is a no-op");
-        assert_eq!(doc.save().len(), before, "unchanged re-put must not grow the doc");
+        assert!(
+            !put_if_changed(&mut doc, &ROOT, "n", 1i64),
+            "unchanged re-put is a no-op"
+        );
+        assert_eq!(
+            doc.save().len(),
+            before,
+            "unchanged re-put must not grow the doc"
+        );
 
-        // Changed value → writes.
-        assert!(put_if_changed(&mut doc, &ROOT, "n", 2i64), "changed value writes");
+        assert!(
+            put_if_changed(&mut doc, &ROOT, "n", 2i64),
+            "changed value writes"
+        );
         let got = match doc.get(&ROOT, "n").unwrap().unwrap().0 {
             Value::Scalar(v) => v.to_i64(),
             _ => None,

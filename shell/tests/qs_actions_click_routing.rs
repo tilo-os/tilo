@@ -1,20 +1,9 @@
-//! Click-routing wire-up for the quick-settings panel.
-//!
-//! The goal of this file is *not* to repeat the parser-level unit tests
-//! in `shell/src/shell/qs_actions.rs#mod tests` — those already pin the
-//! brightnessctl/wpctl/nmcli/bluetoothctl stdout shapes the panel parses.
-//! What this file covers is the *click-routing*: when a user clicks the
-//! brightness slider (or volume slider, or Wi-Fi toggle, …) inside the
-//! popover, the host pushes the new value through the
-//! [`QsActions`](shell::shell::qs_actions::QsActions) dispatcher exactly
-//! once and with the expected arguments.
-//!
-//! Strategy: build a real [`ShellOverlayHost`], swap in a
-//! [`RecordingDispatcher`] via [`ShellOverlayHost::with_qs_actions`],
-//! force the QS popover open, then drive the host's `handle_event`
-//! with a synthetic `CursorMoved` + `MouseInput::Pressed` pair targeted
-//! at the slider's bar rect. Read the dispatcher's call log and assert
-//! the expected operation landed.
+//! Click-routing wire-up for the quick-settings panel — not a repeat of
+//! the parser-level unit tests in `shell/src/shell/qs_actions.rs`, which
+//! pin the brightnessctl/wpctl/nmcli/bluetoothctl stdout shapes. Builds a
+//! real [`ShellOverlayHost`], swaps in a [`RecordingDispatcher`], forces
+//! the popover open, drives `handle_event` with a synthetic click at the
+//! slider's bar rect, and reads the dispatcher's call log.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,7 +23,6 @@ use vello::kurbo::Point;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-/// Records every QS action call so the test can assert on the call log.
 #[derive(Default)]
 struct RecordingDispatcher {
     calls: RefCell<Vec<String>>,
@@ -83,10 +71,8 @@ impl QsActions for RecordingDispatcher {
     }
 }
 
-/// Shared recording dispatcher so the test can read calls back after
-/// the dispatcher is moved into the host. The host owns a
-/// `Box<dyn QsActions>`, so we wrap the recorder in an `Rc` and hand
-/// out a separate clone for read-back.
+/// Wraps the recorder in an `Rc` so the test can read calls back after
+/// the dispatcher moves into the host's `Box<dyn QsActions>`.
 #[derive(Default, Clone)]
 struct SharedRecorder(std::rc::Rc<RecordingDispatcher>);
 
@@ -111,9 +97,8 @@ impl QsActions for SharedRecorder {
     }
 }
 
-/// One-strip, one-group, one-tab tree — the smallest topology the
-/// chrome can render. The test never actually hits the workspace
-/// content; the QS popover sits over it.
+/// The smallest topology the chrome can render — the QS popover sits
+/// over workspace content the test never touches.
 fn minimal_tree() -> WorkspaceTree {
     let ws_id = WorkspaceId::new();
     let strip_id = StripId::new();
@@ -140,9 +125,9 @@ fn minimal_tree() -> WorkspaceTree {
     };
     let ws = Workspace {
         strips: vec![strip],
-        // Everything else — including the workspace's durable
-        // collaboration room — comes from the builder, so a field added
-        // to `Workspace` does not break this fixture.
+        // Everything else, including the workspace's durable collaboration room,
+        // comes from the builder, so a field added to `Workspace` does not break
+        // this fixture.
         ..Workspace::test_default(ws_id, "W")
     };
     let mut active_strip = HashMap::new();
@@ -159,11 +144,8 @@ fn minimal_tree() -> WorkspaceTree {
     }
 }
 
-/// Lay out the host into a 1600x900 viewport, returning the taffy
-/// node id + tree so the test can call `handle_event` afterwards. The
-/// host's `self.rect` is set as a side-effect of `apply_layout`, so
-/// geometry helpers like `quick_settings_slider_geometry` can be
-/// called after this returns.
+/// `apply_layout` sets `self.rect`, which geometry helpers like
+/// `quick_settings_slider_geometry` need.
 fn layout_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
     use taffy::{Dimension, Style};
     let theme = Theme::dark();
@@ -205,17 +187,10 @@ fn layout_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) -> (Taff
     (taffy, host_node)
 }
 
-/// Drive a whole click — `CursorMoved`, `Pressed`, `Released` — at
-/// `(x, y)` through the host's `handle_event`. Must be called after
-/// [`layout_host`].
-///
-/// The release matters. Toggle cards and the power chip dispatch on
-/// press, but the sliders deliberately hold their value until the button
-/// comes up: while a drag is live only the fill follows the pointer, and
-/// the value is pushed to the OS once, on release, so dragging the knob
-/// across the bar cannot spawn one `brightnessctl`/`wpctl` per frame. A
-/// press without a release is a grab the user never let go of, and the
-/// panel is right not to commit it.
+/// Drive a whole click — `CursorMoved`, `Pressed`, `Released` — after
+/// [`layout_host`]. The release matters: sliders hold their value until
+/// button-up (so a drag doesn't spawn one process call per frame), while
+/// toggles and the power chip dispatch on press.
 fn click_at(
     host: &mut shell::shell::overlay_host::ShellOverlayHost,
     taffy: &TaffyTree<()>,
@@ -281,7 +256,7 @@ fn brightness_slider_click_routes_to_set_brightness() {
     let (taffy, host_node) = layout_host(&mut host);
     let bar = host.quick_settings_slider_geometry(0).0;
     let click_x = bar.x0 + bar.width() / 3.0;
-    let click_y = (bar.y0 + bar.y1) / 2.0;
+    let click_y = f64::midpoint(bar.y0, bar.y1);
     click_at(&mut host, &taffy, host_node, click_x, click_y);
 
     let calls = recorder.0.calls();
@@ -307,7 +282,7 @@ fn volume_slider_click_routes_to_set_volume() {
     let (taffy, host_node) = layout_host(&mut host);
     let bar = host.quick_settings_slider_geometry(1).0;
     let click_x = bar.x0 + bar.width() / 2.0;
-    let click_y = (bar.y0 + bar.y1) / 2.0;
+    let click_y = f64::midpoint(bar.y0, bar.y1);
     click_at(&mut host, &taffy, host_node, click_x, click_y);
 
     let calls = recorder.0.calls();
@@ -332,8 +307,8 @@ fn wifi_toggle_click_routes_to_set_wifi() {
     host.force_quick_settings_settled();
     let (taffy, host_node) = layout_host(&mut host);
     let card = host.quick_settings_toggle_geometry(0);
-    // Click slightly off the chevron (which would drill-in to wifi
-    // list); the bottom-left corner of the card maps to the toggle hit.
+    // Slightly off the chevron (which would drill in to the wifi list); the
+    // card's bottom-left maps to the toggle hit.
     let click_x = card.x0 + 24.0;
     let click_y = card.y1 - 16.0;
     click_at(&mut host, &taffy, host_node, click_x, click_y);
@@ -387,7 +362,7 @@ fn power_profile_chip_click_routes_to_set_power_profile() {
     let (taffy, host_node) = layout_host(&mut host);
     let pp = host.quick_settings_power_profile_geometry();
     let click_x = pp.x0 + pp.width() / 2.0;
-    let click_y = (pp.y0 + pp.y1) / 2.0;
+    let click_y = f64::midpoint(pp.y0, pp.y1);
     click_at(&mut host, &taffy, host_node, click_x, click_y);
 
     let calls = recorder.0.calls();
@@ -398,21 +373,14 @@ fn power_profile_chip_click_routes_to_set_power_profile() {
 }
 
 #[test]
-fn wifi_drill_in_row_click_routes_to_connect_wifi() {
+fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host.with_qs_actions(Box::new(recorder.clone()));
 
-    // Drill into the Wi-Fi list, holding the result of a scan.
-    //
-    // The panel does not invent networks: `wifi_networks` is empty until
-    // `refresh_quick_settings_from_os` fills it from `nmcli` on the
-    // popover's rising edge, and there is no `nmcli` in a test process.
-    // So the fixture writes what a completed scan writes — two rows, the
-    // second one the currently-connected network — and the assertion
-    // below names the SSID of the row it clicked, which is the part of
-    // the routing that can actually be wrong.
+    // A secured network not yet joined and one already connected take
+    // different click branches.
     let scanned = vec![
         WifiNetwork {
             ssid: "hallway-2g".into(),
@@ -439,16 +407,139 @@ fn wifi_drill_in_row_click_routes_to_connect_wifi() {
     let (taffy, host_node) = layout_host(&mut host);
     let rect = host.quick_settings_rect_for_tests();
     let click_x = rect.x0 + rect.width() / 2.0;
-    // Row 0 of the list: header is 56 px tall, rows are 56 px, so +28
-    // lands mid-row.
-    let click_y = rect.y0 + 56.0 + 28.0;
-    click_at(&mut host, &taffy, host_node, click_x, click_y);
+    // Header is 56 px, rows are 56 px, so +28 into a row lands mid-row.
+    let row_y = |i: usize| rect.y0 + 56.0 + i as f64 * 56.0 + 28.0;
 
+    // Row 0 — secured, not joined: must prompt for a passphrase rather than
+    // firing a connect that would fail silently.
+    click_at(&mut host, &taffy, host_node, click_x, row_y(0));
+    {
+        let st = chrome.borrow();
+        let prompt = st
+            .quick_settings
+            .wifi_password
+            .as_ref()
+            .expect("clicking a secured network must open the passphrase prompt");
+        assert_eq!(
+            prompt.ssid, scanned[0].ssid,
+            "the prompt must name the network that was clicked"
+        );
+    }
+    assert!(
+        recorder.0.calls().is_empty(),
+        "no connect may be attempted before the passphrase is entered; got {:?}",
+        recorder.0.calls()
+    );
+
+    // Row 1 is already connected, so the click connects directly with no
+    // passphrase needed.
+    {
+        let mut st = chrome.borrow_mut();
+        st.quick_settings.wifi_password = None;
+        st.bump();
+    }
+    click_at(&mut host, &taffy, host_node, click_x, row_y(1));
     let calls = recorder.0.calls();
     assert!(
-        calls.contains(&format!("connect_wifi({})", scanned[0].ssid)),
-        "clicking the first Wi-Fi row must connect to that row's SSID \
+        calls.contains(&format!("connect_wifi({})", scanned[1].ssid)),
+        "clicking a network that needs no passphrase must connect to it \
          ({}); got {calls:?}",
-        scanned[0].ssid,
+        scanned[1].ssid
+    );
+}
+
+#[test]
+fn workspace_settings_copy_button_copies_the_invite_link() {
+    use shell::shell::chrome_state::WsTab;
+
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::General;
+        st.bump();
+    }
+    let (taffy, host_node) = layout_host(&mut host);
+    host.force_ws_settings_settled();
+    // Paint once so the modal's geometry is populated the way it is in a
+    // real frame before any click arrives.
+    let _ = &taffy;
+
+    let btn = host.ws_settings_copy_rect_for_tests();
+    assert!(btn.area() > 0.0, "the Copy button has no geometry to click");
+    assert!(
+        host.ws_invite_copied_at_for_tests().is_none(),
+        "nothing should have been copied before the click"
+    );
+
+    let c = btn.center();
+    click_at(&mut host, &taffy, host_node, c.x, c.y);
+
+    assert!(
+        host.ws_invite_copied_at_for_tests().is_some(),
+        "clicking Copy did not run the copy path — the button is painted but not routed"
+    );
+}
+
+/// Guards against a hit rect widened until it swallows the rest of the tab.
+#[test]
+fn a_click_beside_the_copy_button_does_not_copy() {
+    use shell::shell::chrome_state::WsTab;
+
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::General;
+        st.bump();
+    }
+    let (taffy, host_node) = layout_host(&mut host);
+    host.force_ws_settings_settled();
+
+    let btn = host.ws_settings_copy_rect_for_tests();
+    // Well left of the button, still inside the modal body.
+    let p = Point::new(btn.x0 - 160.0, btn.center().y);
+    click_at(&mut host, &taffy, host_node, p.x, p.y);
+
+    assert!(
+        host.ws_invite_copied_at_for_tests().is_none(),
+        "a click beside the Copy button copied anyway"
+    );
+}
+
+/// The ribbon's own geometry is unit-tested in `ui`, but geometry that
+/// nothing routes is exactly the defect the ws-settings Copy button was
+/// — this drives a real click and asserts `active_strip` moved.
+#[test]
+fn clicking_a_strip_ribbon_segment_moves_focus() {
+    let mut tree = minimal_tree();
+    let ws_id = tree.workspaces[0].id;
+    for n in 0..2u64 {
+        tree.workspaces[0].strips.push(Strip {
+            id: StripId(700 + n),
+            name: format!("S{n}"),
+            window_groups: vec![],
+        });
+    }
+    let first = tree.workspaces[0].strips[0].id;
+    tree.active_strip.insert(ws_id, first);
+
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (taffy, host_node) = layout_host(&mut host);
+
+    let ribbon = host.strip_ribbon_for_tests();
+    assert_eq!(ribbon.count, 3, "fixture should present three strips");
+    assert_eq!(ribbon.focused, 0, "focus starts on the first strip");
+
+    let target = ribbon.hit_rect(2).expect("third segment has a target");
+    let c = target.center();
+    click_at(&mut host, &taffy, host_node, c.x, c.y);
+
+    let (_, focused) = chrome.borrow().strip_focus();
+    assert_eq!(
+        focused, 2,
+        "clicking the third ribbon segment must focus the third strip"
     );
 }

@@ -36,17 +36,34 @@ pub enum EngineRequest {
     /// Connect and list the folders for an account.
     Connect { account: AccountConfig },
     /// Fetch the messages of a folder (`UID FETCH` in the live backend).
-    Fetch { account: AccountConfig, folder: Folder },
+    Fetch {
+        account: AccountConfig,
+        folder: Folder,
+    },
     /// Persist a flag change to the server (`UID STORE \Seen`/`\Flagged`).
-    StoreFlag { account: AccountConfig, message: Box<Message> },
+    StoreFlag {
+        account: AccountConfig,
+        message: Box<Message>,
+    },
     /// Move a message to another folder (`UID MOVE`). Carries the full message
     /// so the live backend can locate it on the server by its `Message-ID`.
-    Move { account: AccountConfig, message: Box<Message>, to: Folder },
+    Move {
+        account: AccountConfig,
+        message: Box<Message>,
+        to: Folder,
+    },
     /// Submit a draft via SMTP.
-    Send { account: AccountConfig, draft: Box<Draft> },
+    Send {
+        account: AccountConfig,
+        draft: Box<Draft>,
+    },
     /// Run the OAuth authorization-code + PKCE browser flow for an account and
     /// seal the resulting tokens in the vault under `account_id`.
-    OAuthAuthorize { account_id: String, provider: OAuthProvider, login_hint: String },
+    OAuthAuthorize {
+        account_id: String,
+        provider: OAuthProvider,
+        login_hint: String,
+    },
 }
 
 impl EngineRequest {
@@ -71,9 +88,16 @@ pub enum EngineEvent {
     /// Connection + authentication established.
     Connected { account_id: String },
     /// The mailbox folders the server advertised (`LIST`).
-    Folders { account_id: String, folders: Vec<String> },
+    Folders {
+        account_id: String,
+        folders: Vec<String>,
+    },
     /// A batch of fetched messages for a folder.
-    Fetched { account_id: String, folder: Folder, messages: Vec<Message> },
+    Fetched {
+        account_id: String,
+        folder: Folder,
+        messages: Vec<Message>,
+    },
     /// A send completed; carries the wire byte count.
     Sent { wire_bytes: usize },
     /// An OAuth sign-in completed and the tokens were sealed in the vault.
@@ -98,13 +122,19 @@ impl MailEngine for StubEngine {
     fn handle(&mut self, req: EngineRequest, out: &Sender<EngineEvent>) {
         match req {
             EngineRequest::Connect { account } => {
-                let _ = out.send(EngineEvent::Connected { account_id: account.email });
+                let _ = out.send(EngineEvent::Connected {
+                    account_id: account.email,
+                });
             }
             EngineRequest::Fetch { account, folder } => {
                 // The offline backend has no server to fetch from; the app shows
                 // its bundled corpus. Acknowledge with an empty batch so the
                 // caller's state machine still advances.
-                let _ = out.send(EngineEvent::Fetched { account_id: account.email, folder, messages: Vec::new() });
+                let _ = out.send(EngineEvent::Fetched {
+                    account_id: account.email,
+                    folder,
+                    messages: Vec::new(),
+                });
             }
             EngineRequest::StoreFlag { .. } | EngineRequest::Move { .. } => {
                 // No-op offline; flags persist in the local CRDT.
@@ -119,10 +149,12 @@ impl MailEngine for StubEngine {
                 });
             }
             EngineRequest::Send { account, draft } => {
-                let from = crate::model::Addr::new(account.display_name.clone(), account.email.clone());
+                let from = crate::model::Addr::new(account.display_name.clone(), account.email);
                 match build_mime(&from, &draft) {
                     Ok(bytes) => {
-                        let _ = out.send(EngineEvent::Sent { wire_bytes: bytes.len() });
+                        let _ = out.send(EngineEvent::Sent {
+                            wire_bytes: bytes.len(),
+                        });
                     }
                     Err(e) => {
                         let _ = out.send(EngineEvent::Error {
@@ -159,7 +191,9 @@ pub fn spawn() -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
 
 /// Spawn the worker with a specific backend (used by tests and the `live`
 /// feature).
-pub fn spawn_with(mut backend: Box<dyn MailEngine>) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
+pub fn spawn_with(
+    mut backend: Box<dyn MailEngine>,
+) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
     let (req_tx, req_rx) = std::sync::mpsc::channel::<EngineRequest>();
     let (evt_tx, evt_rx) = std::sync::mpsc::channel::<EngineEvent>();
     std::thread::Builder::new()
@@ -182,7 +216,10 @@ pub mod live {
     use accounts::{AccountId, SecretVault};
     use futures::TryStreamExt;
 
-    use super::*;
+    use super::{
+        AccountConfig, Draft, EngineEvent, EngineRequest, Folder, MailEngine, Message, Sender,
+        build_mime,
+    };
     // AccountConfig / Draft / Folder / Message / Sender / build_mime come via
     // `super::*`; these are the names the parent doesn't already bring in.
     use crate::model::{Addr, AuthMethod};
@@ -212,10 +249,17 @@ pub mod live {
                 .enable_all()
                 .build()
                 .map_err(|e| e.to_string())?;
-            Ok(Self { rt, tls: build_tls_config() })
+            Ok(Self {
+                rt,
+                tls: build_tls_config(),
+            })
         }
 
-        fn handle_fetch(&self, account: &AccountConfig, folder: Folder) -> Result<Vec<Message>, String> {
+        fn handle_fetch(
+            &self,
+            account: &AccountConfig,
+            folder: Folder,
+        ) -> Result<Vec<Message>, String> {
             let creds = resolve_auth(account)?;
             let tls = self.tls.clone();
             self.rt.block_on(fetch_folder(account, folder, &creds, tls))
@@ -227,17 +271,24 @@ pub mod live {
             self.rt.block_on(store_flags(account, message, &creds, tls))
         }
 
-        fn handle_move(&self, account: &AccountConfig, message: &Message, to: Folder) -> Result<(), String> {
+        fn handle_move(
+            &self,
+            account: &AccountConfig,
+            message: &Message,
+            to: Folder,
+        ) -> Result<(), String> {
             let creds = resolve_auth(account)?;
             let tls = self.tls.clone();
-            self.rt.block_on(move_message(account, message, to, &creds, tls))
+            self.rt
+                .block_on(move_message(account, message, to, &creds, tls))
         }
 
         fn handle_send(&self, account: &AccountConfig, draft: &Draft) -> Result<usize, String> {
             let creds = resolve_auth(account)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
             let bytes = build_mime(&from, draft).map_err(|e| e.to_string())?;
-            self.rt.block_on(smtp_send(account, draft, &creds, &bytes))?;
+            self.rt
+                .block_on(smtp_send(account, draft, &creds, &bytes))?;
             Ok(bytes.len())
         }
     }
@@ -252,57 +303,97 @@ pub mod live {
                     let creds = match resolve_auth(&account) {
                         Ok(c) => c,
                         Err(e) => {
-                            let _ = out.send(EngineEvent::Error { context: "connect".into(), message: e });
+                            let _ = out.send(EngineEvent::Error {
+                                context: "connect".into(),
+                                message: e,
+                            });
                             return;
                         }
                     };
                     let tls = self.tls.clone();
                     match self.rt.block_on(list_folders(&account, &creds, tls)) {
                         Ok(folders) => {
-                            let _ = out.send(EngineEvent::Connected { account_id: account.email.clone() });
-                            let _ = out.send(EngineEvent::Folders { account_id: account.email, folders });
+                            let _ = out.send(EngineEvent::Connected {
+                                account_id: account.email.clone(),
+                            });
+                            let _ = out.send(EngineEvent::Folders {
+                                account_id: account.email,
+                                folders,
+                            });
                         }
                         Err(e) => {
-                            let _ = out.send(EngineEvent::Error { context: "connect".into(), message: e });
+                            let _ = out.send(EngineEvent::Error {
+                                context: "connect".into(),
+                                message: e,
+                            });
                         }
                     }
                 }
-                EngineRequest::Fetch { account, folder } => match self.handle_fetch(&account, folder) {
-                    Ok(messages) => {
-                        let _ = out.send(EngineEvent::Fetched { account_id: account.email, folder, messages });
+                EngineRequest::Fetch { account, folder } => {
+                    match self.handle_fetch(&account, folder) {
+                        Ok(messages) => {
+                            let _ = out.send(EngineEvent::Fetched {
+                                account_id: account.email,
+                                folder,
+                                messages,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = out.send(EngineEvent::Error {
+                                context: "fetch".into(),
+                                message: e,
+                            });
+                        }
                     }
-                    Err(e) => {
-                        let _ = out.send(EngineEvent::Error { context: "fetch".into(), message: e });
-                    }
-                },
+                }
                 EngineRequest::StoreFlag { account, message } => {
                     if let Err(e) = self.handle_store(&account, &message) {
-                        let _ = out.send(EngineEvent::Error { context: "flag".into(), message: e });
+                        let _ = out.send(EngineEvent::Error {
+                            context: "flag".into(),
+                            message: e,
+                        });
                     }
                 }
-                EngineRequest::Move { account, message, to } => {
+                EngineRequest::Move {
+                    account,
+                    message,
+                    to,
+                } => {
                     if let Err(e) = self.handle_move(&account, &message, to) {
-                        let _ = out.send(EngineEvent::Error { context: "move".into(), message: e });
+                        let _ = out.send(EngineEvent::Error {
+                            context: "move".into(),
+                            message: e,
+                        });
                     }
                 }
-                EngineRequest::Send { account, draft } => match self.handle_send(&account, &draft) {
-                    Ok(wire_bytes) => {
-                        let _ = out.send(EngineEvent::Sent { wire_bytes });
-                    }
-                    Err(e) => {
-                        let _ = out.send(EngineEvent::Error { context: "smtp".into(), message: e });
-                    }
-                },
-                EngineRequest::OAuthAuthorize { account_id, provider, login_hint } => {
-                    match authorize_oauth(&account_id, provider, &login_hint) {
-                        Ok(()) => {
-                            let _ = out.send(EngineEvent::Authorized { account_id });
+                EngineRequest::Send { account, draft } => {
+                    match self.handle_send(&account, &draft) {
+                        Ok(wire_bytes) => {
+                            let _ = out.send(EngineEvent::Sent { wire_bytes });
                         }
                         Err(e) => {
-                            let _ = out.send(EngineEvent::Error { context: "oauth".into(), message: e });
+                            let _ = out.send(EngineEvent::Error {
+                                context: "smtp".into(),
+                                message: e,
+                            });
                         }
                     }
                 }
+                EngineRequest::OAuthAuthorize {
+                    account_id,
+                    provider,
+                    login_hint,
+                } => match authorize_oauth(&account_id, provider, &login_hint) {
+                    Ok(()) => {
+                        let _ = out.send(EngineEvent::Authorized { account_id });
+                    }
+                    Err(e) => {
+                        let _ = out.send(EngineEvent::Error {
+                            context: "oauth".into(),
+                            message: e,
+                        });
+                    }
+                },
             }
         }
     }
@@ -339,7 +430,10 @@ pub mod live {
                 if account.password.is_empty() {
                     return Err("no password set for this account".into());
                 }
-                Ok(AuthCreds::Password { user, pass: account.password.clone() })
+                Ok(AuthCreds::Password {
+                    user,
+                    pass: account.password.clone(),
+                })
             }
             AuthMethod::OAuth => {
                 let token = access_token_for(&account.email)?;
@@ -354,11 +448,13 @@ pub mod live {
     fn access_token_for(email: &str) -> Result<String, String> {
         let mut vault = SecretVault::open();
         let id = AccountId::from(email.to_string());
-        let secret = vault.get(&id).ok_or("not signed in (no OAuth token in vault)")?;
+        let secret = vault
+            .get(&id)
+            .ok_or("not signed in (no OAuth token in vault)")?;
         let mut tokens =
             oauth::tokens_from_secret(&secret).ok_or("stored credential is not an OAuth token")?;
         if tokens.needs_refresh() {
-            let domain = email.split_once('@').map(|(_, d)| d).unwrap_or("");
+            let domain = email.split_once('@').map_or("", |(_, d)| d);
             let provider = oauth::OAuthProvider::from_domain(domain)
                 .ok_or("cannot refresh: unknown OAuth provider")?;
             let client_id = provider
@@ -390,17 +486,19 @@ pub mod live {
             |url| {
                 let _ = std::process::Command::new("xdg-open").arg(url).spawn();
             },
-            std::time::Duration::from_secs(300),
+            std::time::Duration::from_mins(5),
         )?;
         let mut vault = SecretVault::open();
-        vault.put(&AccountId::from(account_id.to_string()), &oauth::tokens_to_secret(&tokens));
+        vault.put(
+            &AccountId::from(account_id.to_string()),
+            &oauth::tokens_to_secret(&tokens),
+        );
         vault.save();
         Ok(())
     }
 
     /// A connected + authenticated IMAP session over rustls.
-    type ImapSession =
-        async_imap::Session<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
+    type ImapSession = async_imap::Session<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
 
     /// Open a TLS connection and authenticate (password `LOGIN` or `XOAUTH2`).
     async fn connect_session(
@@ -412,7 +510,11 @@ pub mod live {
         if host.is_empty() {
             return Err("no IMAP host".into());
         }
-        let port = if account.imap_port == 0 { 993 } else { account.imap_port };
+        let port = if account.imap_port == 0 {
+            993
+        } else {
+            account.imap_port
+        };
         let tcp = tokio::net::TcpStream::connect((host, port))
             .await
             .map_err(|e| classify_conn_failure(&e.to_string()))?;
@@ -430,7 +532,10 @@ pub mod live {
                 .await
                 .map_err(|(e, _)| classify_conn_failure(&e.to_string())),
             AuthCreds::XOAuth2 { user, token } => {
-                let auth = XOAuth2 { user: user.clone(), token: token.clone() };
+                let auth = XOAuth2 {
+                    user: user.clone(),
+                    token: token.clone(),
+                };
                 client
                     .authenticate("XOAUTH2", auth)
                     .await
@@ -495,8 +600,10 @@ pub mod live {
         let now_min = crate::state::now_minutes();
         let mut session = connect_session(account, creds, tls).await?;
         session.select(mailbox).await.map_err(|e| e.to_string())?;
-        let uids: std::collections::HashSet<u32> =
-            session.uid_search(search).await.map_err(|e| e.to_string())?;
+        let uids: std::collections::HashSet<u32> = session
+            .uid_search(search)
+            .await
+            .map_err(|e| e.to_string())?;
         // Newest ~50 UIDs (highest numbers), so a large mailbox stays responsive.
         let mut uids: Vec<u32> = uids.into_iter().collect();
         uids.sort_unstable();
@@ -505,7 +612,11 @@ pub mod live {
             let _ = session.logout().await;
             return Ok(Vec::new());
         }
-        let set = recent.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let set = recent
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         let messages = {
             let stream = session
                 .uid_fetch(set, "(UID FLAGS INTERNALDATE BODY.PEEK[])")
@@ -516,8 +627,12 @@ pub mod live {
             let mut out = Vec::new();
             for f in &fetches {
                 let Some(body) = f.body() else { continue };
-                let seen = f.flags().any(|fl| matches!(fl, async_imap::types::Flag::Seen));
-                let flagged = f.flags().any(|fl| matches!(fl, async_imap::types::Flag::Flagged));
+                let seen = f
+                    .flags()
+                    .any(|fl| matches!(fl, async_imap::types::Flag::Seen));
+                let flagged = f
+                    .flags()
+                    .any(|fl| matches!(fl, async_imap::types::Flag::Flagged));
                 let internal = f.internal_date().map(|d| d.timestamp() / 60);
                 if let Some(m) = parse_fetched(body, folder, seen, flagged, internal, now_min) {
                     out.push(m);
@@ -540,7 +655,9 @@ pub mod live {
         let query = format!("HEADER MESSAGE-ID \"{}\"", rfc_id.replace('"', ""));
         let uids: std::collections::HashSet<u32> =
             session.uid_search(query).await.map_err(|e| e.to_string())?;
-        uids.into_iter().max().ok_or_else(|| "message not found on the server".into())
+        uids.into_iter()
+            .max()
+            .ok_or_else(|| "message not found on the server".into())
     }
 
     /// STORE `\Seen`/`\Flagged` to match the local message's flag state.
@@ -554,8 +671,16 @@ pub mod live {
         let mut session = connect_session(account, creds, tls).await?;
         session.select(mailbox).await.map_err(|e| e.to_string())?;
         let uid = find_uid(&mut session, message).await?;
-        let seen_op = if message.read { "+FLAGS (\\Seen)" } else { "-FLAGS (\\Seen)" };
-        let flag_op = if message.starred { "+FLAGS (\\Flagged)" } else { "-FLAGS (\\Flagged)" };
+        let seen_op = if message.read {
+            "+FLAGS (\\Seen)"
+        } else {
+            "-FLAGS (\\Seen)"
+        };
+        let flag_op = if message.starred {
+            "+FLAGS (\\Flagged)"
+        } else {
+            "-FLAGS (\\Flagged)"
+        };
         for op in [seen_op, flag_op] {
             let stream = session
                 .uid_store(uid.to_string(), op)
@@ -619,25 +744,35 @@ pub mod live {
         if host.is_empty() {
             return Err("no SMTP host".into());
         }
-        let port = if account.smtp_port == 0 { 465 } else { account.smtp_port };
+        let port = if account.smtp_port == 0 {
+            465
+        } else {
+            account.smtp_port
+        };
         let params = match tls_override {
             Some(p) => p,
             None => TlsParameters::new(host.to_string())
                 .map_err(|e| classify_conn_failure(&e.to_string()))?,
         };
         // 465 → implicit TLS (Wrapper); anything else (587/25) → STARTTLS upgrade.
-        let tls = if port == 465 { Tls::Wrapper(params) } else { Tls::Required(params) };
+        let tls = if port == 465 {
+            Tls::Wrapper(params)
+        } else {
+            Tls::Required(params)
+        };
         let builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
             .port(port)
             .tls(tls);
 
         let (creds_l, mech) = match creds {
-            AuthCreds::Password { user, pass } => {
-                (Credentials::new(user.clone(), pass.clone()), Mechanism::Login)
-            }
-            AuthCreds::XOAuth2 { user, token } => {
-                (Credentials::new(user.clone(), token.clone()), Mechanism::Xoauth2)
-            }
+            AuthCreds::Password { user, pass } => (
+                Credentials::new(user.clone(), pass.clone()),
+                Mechanism::Login,
+            ),
+            AuthCreds::XOAuth2 { user, token } => (
+                Credentials::new(user.clone(), token.clone()),
+                Mechanism::Xoauth2,
+            ),
         };
         let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
             .credentials(creds_l)
@@ -654,7 +789,10 @@ pub mod live {
 
     /// Construct the SMTP envelope (return-path + recipients) from the account
     /// and draft. Recipients that don't parse as addresses are skipped.
-    fn build_envelope(account: &AccountConfig, draft: &Draft) -> Result<lettre::address::Envelope, String> {
+    fn build_envelope(
+        account: &AccountConfig,
+        draft: &Draft,
+    ) -> Result<lettre::address::Envelope, String> {
         use std::str::FromStr;
         let from = lettre::Address::from_str(account.email.trim())
             .map_err(|e| format!("invalid From address: {e}"))?;
@@ -717,7 +855,8 @@ pub mod live {
                 message: &[u8],
                 cert: &rustls::pki_types::CertificateDer<'_>,
                 dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+            {
                 rustls::crypto::verify_tls12_signature(
                     message,
                     cert,
@@ -730,7 +869,8 @@ pub mod live {
                 message: &[u8],
                 cert: &rustls::pki_types::CertificateDer<'_>,
                 dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+            {
                 rustls::crypto::verify_tls13_signature(
                     message,
                     cert,
@@ -770,7 +910,10 @@ pub mod live {
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_no_client_auth()
-            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+            .with_single_cert(
+                vec![cert_der],
+                rustls::pki_types::PrivateKeyDer::Pkcs8(key_der),
+            )
             .unwrap();
             Arc::new(cfg)
         }
@@ -864,7 +1007,11 @@ pub mod live {
         ) {
             // ---- plaintext phase: greeting, EHLO, STARTTLS ----
             let mut plain = BufReader::new(tcp);
-            if plain.write_all(b"220 localhost ESMTP test\r\n").await.is_err() {
+            if plain
+                .write_all(b"220 localhost ESMTP test\r\n")
+                .await
+                .is_err()
+            {
                 return;
             }
             let _ = plain.flush().await;
@@ -930,7 +1077,9 @@ pub mod live {
                     let _ = wr.flush().await;
                     line.clear();
                     let _ = reader.read_line(&mut line).await;
-                    let _ = wr.write_all(b"235 2.7.0 Authentication successful\r\n").await;
+                    let _ = wr
+                        .write_all(b"235 2.7.0 Authentication successful\r\n")
+                        .await;
                 } else if up.starts_with("MAIL FROM") {
                     let _ = wr.write_all(b"250 2.1.0 Ok\r\n").await;
                 } else if up.starts_with("RCPT TO") {
@@ -1012,7 +1161,10 @@ This message was fetched over a real IMAP socket.\r\n"
                 let folders = list_folders(&account, &creds, client_tls.clone())
                     .await
                     .expect("list folders over TLS");
-                assert!(folders.iter().any(|f| f == "INBOX"), "server folders: {folders:?}");
+                assert!(
+                    folders.iter().any(|f| f == "INBOX"),
+                    "server folders: {folders:?}"
+                );
 
                 // … and a real UID FETCH parses the RFC 5322 message into our model.
                 let msgs = fetch_folder(&account, Folder::Inbox, &creds, client_tls)
@@ -1090,7 +1242,10 @@ This message was fetched over a real IMAP socket.\r\n"
                 assert!(text.contains("Subject: SMTP loop works"), "payload: {text}");
                 assert!(text.contains("me@example.com"), "From reached the server");
                 assert!(text.contains("rcpt@example.com"), "To reached the server");
-                assert!(text.contains("Sent over a real SMTP socket."), "body reached the server");
+                assert!(
+                    text.contains("Sent over a real SMTP socket."),
+                    "body reached the server"
+                );
 
                 server.abort();
             });
@@ -1110,8 +1265,17 @@ mod tests {
             email: "me@qos.example".into(),
             ..Default::default()
         };
-        let draft = Draft { to: "you@there.example".into(), subject: "Hi".into(), body: "Body".into(), ..Default::default() };
-        tx.send(EngineRequest::Send { account, draft: Box::new(draft) }).unwrap();
+        let draft = Draft {
+            to: "you@there.example".into(),
+            subject: "Hi".into(),
+            body: "Body".into(),
+            ..Default::default()
+        };
+        tx.send(EngineRequest::Send {
+            account,
+            draft: Box::new(draft),
+        })
+        .unwrap();
         let evt = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
         match evt {
             EngineEvent::Sent { wire_bytes } => assert!(wire_bytes > 0),
@@ -1123,7 +1287,10 @@ mod tests {
     fn stub_connect_acks() {
         let (tx, rx) = spawn_with(Box::new(StubEngine));
         tx.send(EngineRequest::Connect {
-            account: AccountConfig { email: "a@b.example".into(), ..Default::default() },
+            account: AccountConfig {
+                email: "a@b.example".into(),
+                ..Default::default()
+            },
         })
         .unwrap();
         let evt = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();

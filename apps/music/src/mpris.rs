@@ -205,7 +205,7 @@ impl MprisHandle {
         out
     }
 
-    /// Publish the current player state to the bus, emitting PropertiesChanged
+    /// Publish the current player state to the bus, emitting `PropertiesChanged`
     /// for whatever changed. Cheap and deduped: identical/insignificant updates
     /// are dropped so the bus isn't spammed each frame.
     pub fn publish(&mut self, snap: PlayerSnapshot) {
@@ -265,31 +265,31 @@ mod imp {
     use zbus::object_server::SignalContext;
     use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
-    use super::{MprisCommand, PlayerSnapshot, BUS_NAME, OBJECT_PATH};
+    use super::{BUS_NAME, MprisCommand, OBJECT_PATH, PlayerSnapshot};
 
     /// Build the MPRIS `Metadata` map (`a{sv}`) from a snapshot.
     pub(super) fn build_metadata(snap: &PlayerSnapshot) -> HashMap<String, OwnedValue> {
         let mut m: HashMap<String, OwnedValue> = HashMap::new();
         let path = super::track_object_path(&snap.track_id);
-        if let Ok(op) = ObjectPath::try_from(path) {
-            if let Ok(v) = OwnedValue::try_from(Value::from(op)) {
-                m.insert("mpris:trackid".into(), v);
-            }
+        if let Ok(op) = ObjectPath::try_from(path)
+            && let Ok(v) = OwnedValue::try_from(Value::from(op))
+        {
+            m.insert("mpris:trackid".into(), v);
         }
-        if snap.length_us > 0 {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.length_us)) {
-                m.insert("mpris:length".into(), v);
-            }
+        if snap.length_us > 0
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.length_us))
+        {
+            m.insert("mpris:length".into(), v);
         }
-        if !snap.art_url.is_empty() {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.art_url.clone())) {
-                m.insert("mpris:artUrl".into(), v);
-            }
+        if !snap.art_url.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.art_url.clone()))
+        {
+            m.insert("mpris:artUrl".into(), v);
         }
-        if !snap.title.is_empty() {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.title.clone())) {
-                m.insert("xesam:title".into(), v);
-            }
+        if !snap.title.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.title.clone()))
+        {
+            m.insert("xesam:title".into(), v);
         }
         if !snap.artist.is_empty() {
             let artists = vec![snap.artist.clone()];
@@ -297,10 +297,10 @@ mod imp {
                 m.insert("xesam:artist".into(), v);
             }
         }
-        if !snap.album.is_empty() {
-            if let Ok(v) = OwnedValue::try_from(Value::from(snap.album.clone())) {
-                m.insert("xesam:album".into(), v);
-            }
+        if !snap.album.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(snap.album.clone()))
+        {
+            m.insert("xesam:album".into(), v);
         }
         m
     }
@@ -462,7 +462,7 @@ mod imp {
         Ok(())
     }
 
-    /// Emit PropertiesChanged for whichever served properties changed between
+    /// Emit `PropertiesChanged` for whichever served properties changed between
     /// `old` and `new`, then store `new` as the served snapshot. Position is
     /// intentionally excluded (MPRIS clients poll it); a large jump additionally
     /// fires `Seeked`.
@@ -505,9 +505,7 @@ mod imp {
             }
         }
         // A seek within the same track (position moved far without a track change).
-        if old.track_id == new.track_id
-            && (new.position_us - old.position_us).abs() > 2_000_000
-        {
+        if old.track_id == new.track_id && (new.position_us - old.position_us).abs() > 2_000_000 {
             let _ = PlayerIface::seeked(&ctxt, new.position_us).await;
         }
         Ok(())
@@ -537,8 +535,13 @@ mod imp {
             })
             .ok()?;
 
-        let root = RootIface { cmd: cmd_tx.clone() };
-        let player = PlayerIface { snap: initial.clone(), cmd: cmd_tx.clone() };
+        let root = RootIface {
+            cmd: cmd_tx.clone(),
+        };
+        let player = PlayerIface {
+            snap: initial.clone(),
+            cmd: cmd_tx,
+        };
         if rt.block_on(serve(&connection, player, root)).is_err() {
             return None;
         }
@@ -585,7 +588,10 @@ mod tests {
         // A live id like `yt:abc-123` has non-path chars replaced.
         let p = track_object_path("yt:abc-123");
         assert_eq!(p, "/org/mpris/qos_music/track/yt_abc_123");
-        assert!(p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'_'));
+        assert!(
+            p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'_')
+        );
     }
 
     #[test]
@@ -593,10 +599,16 @@ mod tests {
         let base = PlayerSnapshot::default();
         let mut same = base.clone();
         same.position_us = 200_000; // < 1s jitter
-        assert!(!same.should_republish(&base), "sub-second position jitter is ignored");
+        assert!(
+            !same.should_republish(&base),
+            "sub-second position jitter is ignored"
+        );
         let mut playing = base.clone();
         playing.status = PlaybackStatus::Playing;
-        assert!(playing.should_republish(&base), "a status change republishes");
+        assert!(
+            playing.should_republish(&base),
+            "a status change republishes"
+        );
         let mut track = base.clone();
         track.title = "Runaway".into();
         assert!(track.metadata_differs(&base));
@@ -644,8 +656,13 @@ mod tests {
         };
 
         let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
-        let player = imp::PlayerIface { snap: snap.clone(), cmd: cmd_tx.clone() };
-        let root = imp::RootIface { cmd: cmd_tx.clone() };
+        let player = imp::PlayerIface {
+            snap: snap.clone(),
+            cmd: cmd_tx.clone(),
+        };
+        let root = imp::RootIface {
+            cmd: cmd_tx.clone(),
+        };
         let server_builder = Builder::unix_stream(server_sock)
             .server(GUID)
             .expect("guid")
@@ -683,8 +700,10 @@ mod tests {
             .expect("read PlaybackStatus");
         assert_eq!(status, "Playing", "served status reflected over D-Bus");
 
-        let metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
-            player_proxy.get_property("Metadata").await.expect("read Metadata");
+        let metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> = player_proxy
+            .get_property("Metadata")
+            .await
+            .expect("read Metadata");
         let title: String = metadata
             .get("xesam:title")
             .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string))
@@ -697,9 +716,18 @@ mod tests {
         assert_eq!(title, "Runaway", "served metadata reflected over D-Bus");
 
         // Method calls arrive as commands the app would dispatch.
-        player_proxy.call_method("Pause", &()).await.expect("Pause call");
-        player_proxy.call_method("Next", &()).await.expect("Next call");
-        player_proxy.call_method("Play", &()).await.expect("Play call");
+        player_proxy
+            .call_method("Pause", &())
+            .await
+            .expect("Pause call");
+        player_proxy
+            .call_method("Next", &())
+            .await
+            .expect("Next call");
+        player_proxy
+            .call_method("Play", &())
+            .await
+            .expect("Play call");
 
         let mut got = Vec::new();
         for _ in 0..3 {

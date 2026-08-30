@@ -1,41 +1,21 @@
 //! Minimal EDID / CTA-861-G parser for the fields we surface to
-//! `color-management-v1` clients.
-//!
-//! # What we extract
+//! `color-management-v1` clients. Base block per VESA E-EDID 1.4;
+//! extension block per CTA-861-G ("A DTV Profile for Uncompressed High
+//! Speed Digital Interfaces").
 //!
 //! An EDID blob is 128 bytes of base information plus zero or more
 //! 128-byte extension blocks. HDR-capable displays advertise their
-//! peak / average / minimum luminance and their preferred EOTFs (HLG,
-//! ST-2084 PQ, gamma) through a **CTA-861 extension block** containing
-//! two "Extended Data Blocks":
+//! peak/average/minimum luminance and preferred EOTFs (HLG, ST-2084 PQ,
+//! gamma) through a CTA-861 extension block's HDR Static Metadata Data
+//! Block (§7.5.13, `extended_tag = 6`) and Colorimetry Data Block
+//! (§7.5.5, `extended_tag = 5`). We also read the base block's
+//! chromaticity bytes so the compositor reports the display's actual
+//! gamut rather than assuming BT.2020 for every HDR display.
 //!
-//! - **HDR Static Metadata Data Block** (CTA-861-G §7.5.13,
-//!   `extended_tag = 6`) — carries the EOTF bitfield, the static-metadata
-//!   descriptor bitfield, and desired luminances.
-//! - **Colorimetry Data Block** (CTA-861-G §7.5.5, `extended_tag = 5`) —
-//!   advertises BT.2020-cYCC / BT.2020-YCC / BT.2020-RGB / DCI-P3 / etc.
-//!
-//! We also read the base block's chromaticity bytes (CIE 1931 xy of
-//! the R/G/B primaries + white point) so the compositor can report the
-//! display's actual gamut and not just "assume BT.2020" for HDR
-//! displays.
-//!
-//! # What we do NOT parse
-//!
-//! - Detailed Timing Descriptors, monitor names, standard timings,
-//!   established timings. Not needed for color-management.
-//! - DisplayID (a separate spec; a small number of modern displays
-//!   ship DisplayID alongside EDID).
-//! - EDID checksum verification. Callers can layer that on if they
-//!   need it — the parser is defensive against short / malformed
-//!   blobs and returns `HdrDisplayInfo::default_sdr()` rather than
-//!   panicking, so a bogus checksum just falls back to SDR.
-//!
-//! # Reference
-//!
-//! - VESA E-EDID 1.4 base block layout.
-//! - CTA-861-G, "A DTV Profile for Uncompressed High Speed Digital
-//!   Interfaces" — extension block, extended-tag data blocks.
+//! Not parsed: Detailed Timing Descriptors, monitor names, timings,
+//! `DisplayID`, or the EDID checksum (the parser is defensive against
+//! short/malformed blobs and returns `HdrDisplayInfo::default_sdr()`
+//! rather than panicking, so a bogus checksum just falls back to SDR).
 
 use crate::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
 
@@ -43,13 +23,13 @@ use crate::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
 ///
 /// Chromaticity fields are CIE 1931 xy coordinates scaled the same
 /// way the Wayland protocol reports them: (x, y) multiplied by
-/// 1_000_000. So (0.708, 0.292) — BT.2020 red — becomes
-/// (708_000, 292_000).
+/// `1_000_000`. So (0.708, 0.292) — BT.2020 red — becomes
+/// (`708_000`, `292_000`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HdrDisplayInfo {
-    /// R, G, B primary chromaticities in (x_micro, y_micro).
+    /// R, G, B primary chromaticities in (`x_micro`, `y_micro`).
     pub display_primaries: [(u32, u32); 3],
-    /// White-point chromaticity in (x_micro, y_micro).
+    /// White-point chromaticity in (`x_micro`, `y_micro`).
     pub white_point: (u32, u32),
     /// Desired content peak luminance in cd/m². `0` = unknown.
     pub max_luminance_cd_m2: u16,
@@ -96,9 +76,12 @@ impl HdrDisplayInfo {
 /// data block.
 pub fn parse_hdr_display_info(edid: &[u8]) -> HdrDisplayInfo {
     let mut info = HdrDisplayInfo::default_sdr();
-    if edid.len() < 128 {
+    // A fixed-size view, so every constant index below is in bounds by type
+    // rather than by a length check the reader has to keep in mind. EDID comes
+    // off the wire from the display, so a short or hostile blob must not panic.
+    let Some(base) = edid.get(..128).and_then(|b| <&[u8; 128]>::try_from(b).ok()) else {
         return info;
-    }
+    };
 
     // ---- Base-block chromaticities ---------------------------------
     //
@@ -106,31 +89,31 @@ pub fn parse_hdr_display_info(edid: &[u8]) -> HdrDisplayInfo {
     // 10-bit fixed-point (0..=1023 = 0.0..≈1.0). The low 2 bits of
     // each 10-bit value live in a shared byte (25 for R+G, 26 for
     // B+W); the high 8 bits are bytes 27..=34.
-    let lo_rg = edid[25];
-    let lo_bw = edid[26];
-    let hi_rx = edid[27] as u16;
-    let hi_ry = edid[28] as u16;
-    let hi_gx = edid[29] as u16;
-    let hi_gy = edid[30] as u16;
-    let hi_bx = edid[31] as u16;
-    let hi_by = edid[32] as u16;
-    let hi_wx = edid[33] as u16;
-    let hi_wy = edid[34] as u16;
+    let lo_rg = base[25];
+    let lo_bw = base[26];
+    let hi_rx = u16::from(base[27]);
+    let hi_ry = u16::from(base[28]);
+    let hi_gx = u16::from(base[29]);
+    let hi_gy = u16::from(base[30]);
+    let hi_bx = u16::from(base[31]);
+    let hi_by = u16::from(base[32]);
+    let hi_wx = u16::from(base[33]);
+    let hi_wy = u16::from(base[34]);
 
-    let rx = (hi_rx << 2) | ((lo_rg as u16 >> 6) & 0b11);
-    let ry = (hi_ry << 2) | ((lo_rg as u16 >> 4) & 0b11);
-    let gx = (hi_gx << 2) | ((lo_rg as u16 >> 2) & 0b11);
-    let gy = (hi_gy << 2) | ((lo_rg as u16) & 0b11);
-    let bx = (hi_bx << 2) | ((lo_bw as u16 >> 6) & 0b11);
-    let by = (hi_by << 2) | ((lo_bw as u16 >> 4) & 0b11);
-    let wx = (hi_wx << 2) | ((lo_bw as u16 >> 2) & 0b11);
-    let wy = (hi_wy << 2) | ((lo_bw as u16) & 0b11);
+    let rx = (hi_rx << 2) | ((u16::from(lo_rg) >> 6) & 0b11);
+    let ry = (hi_ry << 2) | ((u16::from(lo_rg) >> 4) & 0b11);
+    let gx = (hi_gx << 2) | ((u16::from(lo_rg) >> 2) & 0b11);
+    let gy = (hi_gy << 2) | (u16::from(lo_rg) & 0b11);
+    let bx = (hi_bx << 2) | ((u16::from(lo_bw) >> 6) & 0b11);
+    let by = (hi_by << 2) | ((u16::from(lo_bw) >> 4) & 0b11);
+    let wx = (hi_wx << 2) | ((u16::from(lo_bw) >> 2) & 0b11);
+    let wy = (hi_wy << 2) | (u16::from(lo_bw) & 0b11);
 
     // 10-bit fixed-point → x-micro (× 1e6). Value / 1024 is the raw
     // fractional coordinate; multiplied by 1_000_000 gives micro-CIE.
     let to_micro = |v: u16| -> u32 {
         // Do the divide in u64 to avoid intermediate overflow.
-        ((v as u64 * 1_000_000) / 1024) as u32
+        ((u64::from(v) * 1_000_000) / 1024) as u32
     };
     info.display_primaries = [
         (to_micro(rx), to_micro(ry)),
@@ -151,14 +134,16 @@ pub fn parse_hdr_display_info(edid: &[u8]) -> HdrDisplayInfo {
     //
     // Base block byte 126 = extension count. Extensions are 128 bytes
     // each and start at offset 128, 256, …
-    let ext_count = edid[126] as usize;
-    for i in 0..ext_count {
-        let start = 128 * (i + 1);
-        let end = start + 128;
-        if end > edid.len() {
+    let ext_count = base[126] as usize;
+    for ext in edid
+        .get(128..)
+        .unwrap_or_default()
+        .chunks_exact(128)
+        .take(ext_count)
+    {
+        let Ok(ext): Result<&[u8; 128], _> = ext.try_into() else {
             break;
-        }
-        let ext = &edid[start..end];
+        };
         // CTA-861 extension: tag byte 0 == 0x02. First non-tag byte
         // is the revision, next is the DTD offset.
         if ext[0] != 0x02 {
@@ -170,7 +155,7 @@ pub fn parse_hdr_display_info(edid: &[u8]) -> HdrDisplayInfo {
     info
 }
 
-fn parse_cta861_data_blocks(ext: &[u8], info: &mut HdrDisplayInfo) {
+fn parse_cta861_data_blocks(ext: &[u8; 128], info: &mut HdrDisplayInfo) {
     // Data block collection starts at byte 4 and runs until the DTD
     // offset in byte 2. DTD offset == 0 → no DTDs, block runs to
     // the end minus the 1-byte checksum trailer.
@@ -180,24 +165,32 @@ fn parse_cta861_data_blocks(ext: &[u8], info: &mut HdrDisplayInfo) {
     } else {
         dtd_offset.min(127)
     };
-    let mut i = 4;
-    while i + 1 <= end {
-        // High 3 bits = block tag; low 5 bits = payload length.
-        let header = ext[i];
+    // A header byte carries its own payload length, so a malformed block can
+    // claim more bytes than the extension holds. Every step is a checked `get`
+    // and the cursor only moves forward, so a bad length ends the walk rather
+    // than reading past the block.
+    let mut i = 4usize;
+    while i < end {
+        let Some(&header) = ext.get(i) else { break };
         let tag = header >> 5;
         let len = (header & 0x1f) as usize;
-        let payload_start = i + 1;
-        let payload_end = payload_start + len;
+        let Some(payload_start) = i.checked_add(1) else {
+            break;
+        };
+        let Some(payload_end) = payload_start.checked_add(len) else {
+            break;
+        };
         if payload_end > end {
             break;
         }
-        let payload = &ext[payload_start..payload_end];
-        // Tag 7 = "Use Extended Tag". Byte 0 of the payload is the
-        // extended tag; the remaining bytes are the block-specific
-        // data.
-        if tag == 7 && !payload.is_empty() {
-            let extended_tag = payload[0];
-            let body = &payload[1..];
+        let Some(payload) = ext.get(payload_start..payload_end) else {
+            break;
+        };
+        // Tag 7 = "Use Extended Tag". Byte 0 of the payload is the extended
+        // tag; the rest is block-specific data.
+        if tag == 7
+            && let Some((&extended_tag, body)) = payload.split_first()
+        {
             match extended_tag {
                 5 => parse_colorimetry_data_block(body, info),
                 6 => parse_hdr_static_metadata_block(body, info),
@@ -213,11 +206,11 @@ fn parse_colorimetry_data_block(body: &[u8], info: &mut HdrDisplayInfo) {
     // 2=sYCC601, 3=opYCC601, 4=opRGB, 5=BT2020cYCC, 6=BT2020YCC,
     // 7=BT2020RGB. Any BT2020 bit set → wide-gamut display; we
     // upgrade the named primary hint.
-    if body.is_empty() {
+    let Some(&first) = body.first() else {
         return;
-    }
+    };
     let bt2020_mask = 0b1110_0000;
-    if body[0] & bt2020_mask != 0 {
+    if first & bt2020_mask != 0 {
         info.best_named_primaries = ColorPrimaries::Bt2020;
     }
 }
@@ -238,7 +231,9 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
     if body.is_empty() {
         return;
     }
-    let eotf_bits = body[0];
+    let Some(&eotf_bits) = body.first() else {
+        return;
+    };
     info.supported_transfers.clear();
     // Bit 0 — traditional gamma SDR (BT.1886 / gamma22 territory).
     if eotf_bits & 0b0000_0001 != 0 {
@@ -268,20 +263,20 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
     // Luminance descriptors. Absent bytes = 0 = unknown; we leave
     // the defaults from `default_sdr` in place if the encoding says
     // "not populated".
-    if body.len() >= 3 && body[2] != 0 {
-        let code = body[2] as f32;
+    if let Some(&raw) = body.get(2).filter(|&&b| b != 0) {
+        let code = f32::from(raw);
         let max_cd_m2 = 50.0 * 2f32.powf(code / 32.0);
         info.max_luminance_cd_m2 = max_cd_m2.round().min(10_000.0) as u16;
     }
-    if body.len() >= 4 && body[3] != 0 {
-        let code = body[3] as f32;
+    if let Some(&raw) = body.get(3).filter(|&&b| b != 0) {
+        let code = f32::from(raw);
         let fall_cd_m2 = 50.0 * 2f32.powf(code / 32.0);
         info.max_frame_average_luminance_cd_m2 = fall_cd_m2.round().min(10_000.0) as u16;
     }
-    if body.len() >= 5 && body[4] != 0 {
+    if let Some(&raw) = body.get(4).filter(|&&b| b != 0) {
         // min is derived from max: min = (max_lum * (code/255)^2) / 100
-        let max_lum = info.max_luminance_cd_m2.max(1) as f32;
-        let ratio = body[4] as f32 / 255.0;
+        let max_lum = f32::from(info.max_luminance_cd_m2.max(1));
+        let ratio = f32::from(raw) / 255.0;
         let min_cd_m2 = max_lum * ratio * ratio / 100.0;
         // Convert cd/m² → 1/10000 units (matching Hdr10 metadata).
         info.min_luminance_micro_cd_m2 = (min_cd_m2 * 10_000.0).round() as u32;
@@ -415,11 +410,11 @@ mod tests {
         // (±3000 tolerance for the 10-bit fixed-point round-trip).
         let (rx, ry) = info.display_primaries[0];
         assert!(
-            (rx as i64 - 708_000).abs() < 3_000,
+            (i64::from(rx) - 708_000).abs() < 3_000,
             "red x should ≈ 708_000, got {rx}"
         );
         assert!(
-            (ry as i64 - 292_000).abs() < 3_000,
+            (i64::from(ry) - 292_000).abs() < 3_000,
             "red y should ≈ 292_000, got {ry}"
         );
         assert_eq!(info.best_named_primaries, ColorPrimaries::Bt2020);
@@ -431,13 +426,13 @@ mod tests {
         let info = parse_hdr_display_info(&edid);
         // Peak ≈ 1000 cd/m² (±30 for the rounding path).
         assert!(
-            (info.max_luminance_cd_m2 as i32 - 1000).abs() < 30,
+            (i32::from(info.max_luminance_cd_m2) - 1000).abs() < 30,
             "expected ~1000 nit peak, got {}",
             info.max_luminance_cd_m2
         );
         // Frame-average ≈ 400 cd/m².
         assert!(
-            (info.max_frame_average_luminance_cd_m2 as i32 - 400).abs() < 20,
+            (i32::from(info.max_frame_average_luminance_cd_m2) - 400).abs() < 20,
             "expected ~400 nit FALL, got {}",
             info.max_frame_average_luminance_cd_m2
         );
@@ -489,5 +484,42 @@ mod tests {
             info.supported_transfers,
             vec![TransferCharacteristics::Bt709]
         );
+    }
+
+    /// A display supplies its own EDID, so a malformed one must not take the
+    /// compositor down. Before the parser used checked access, a data-block
+    /// header claiming a payload longer than its block indexed straight past
+    /// the end.
+    #[test]
+    fn a_malformed_blob_never_panics() {
+        let good = hdr_edid_blob();
+        for n in 0..good.len() {
+            let _ = parse_hdr_display_info(&good[..n]);
+        }
+
+        for len_bits in 0..32u8 {
+            let mut edid = hdr_edid_blob();
+            edid[126] = 1;
+            edid[128 + 2] = 0; // DTD offset 0: collection runs to the checksum
+            edid[128 + 4] = (7 << 5) | len_bits; // extended tag, over-long payload
+            let _ = parse_hdr_display_info(&edid);
+        }
+
+        let mut edid = hdr_edid_blob();
+        edid[126] = 255; // more extensions than the blob carries
+        let _ = parse_hdr_display_info(&edid);
+
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        for len in [0usize, 1, 127, 128, 129, 255, 256, 383] {
+            let blob: Vec<u8> = (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    (seed >> 24) as u8
+                })
+                .collect();
+            let _ = parse_hdr_display_info(&blob);
+        }
     }
 }

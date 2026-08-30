@@ -10,7 +10,6 @@
 //!              the config file so the next `run` picks it up.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -93,7 +92,8 @@ fn cmd_init(path: &PathBuf) -> anyhow::Result<()> {
         return Ok(());
     }
     let cfg = RelayConfig::default();
-    cfg.save(path).with_context(|| format!("save {}", path.display()))?;
+    cfg.save(path)
+        .with_context(|| format!("save {}", path.display()))?;
     println!("wrote default config: {}", path.display());
     Ok(())
 }
@@ -124,13 +124,29 @@ fn cmd_unbind(path: &PathBuf, id: u64) -> anyhow::Result<()> {
 
 fn cmd_status(path: &PathBuf) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
-    println!("qos-relay {} (config: {})", qos_relay::VERSION, path.display());
+    println!(
+        "qos-relay {} (config: {})",
+        qos_relay::VERSION,
+        path.display()
+    );
     println!("identity_root: {}", cfg.identity_root.display());
     println!("state_root:    {}", cfg.state_root.display());
     println!("iroh_listen:   {}", cfg.iroh_listen);
     println!("workspaces bound:");
     for ws in &cfg.workspaces {
         println!("  - {} (pin={})", ws.id, ws.pin);
+    }
+    if let Some(metrics) = qos_relay::store::load_metrics(&cfg.state_root)? {
+        println!(
+            "connections: {}/{} authenticated",
+            metrics.conns_authed, metrics.conns_accepted
+        );
+        println!("auth rejected: {}", metrics.auth_rejected);
+        println!(
+            "deltas: {} received, {} fanned out",
+            metrics.deltas_received, metrics.deltas_fanned_out
+        );
+        println!("bytes queued: {}", metrics.bytes_queued);
     }
     Ok(())
 }
@@ -142,7 +158,7 @@ fn cmd_run(path: &PathBuf) -> anyhow::Result<()> {
         .build()
         .context("tokio runtime")?;
     rt.block_on(async move {
-        let identity = load_identity(&cfg.identity_root)?;
+        let identity = load_identity(&cfg.identity_root, &cfg.state_root)?;
         let relay = Relay::start(cfg, identity).await?;
         let addr = relay.node_addr();
         tracing::info!(?addr, "relay online");
@@ -151,24 +167,33 @@ fn cmd_run(path: &PathBuf) -> anyhow::Result<()> {
         // Park until Ctrl-C / SIGTERM.
         wait_for_shutdown().await;
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
-        drop(relay);
+        relay.shutdown().await;
         Ok::<(), anyhow::Error>(())
     })
 }
 
-fn load_identity(root: &std::path::Path) -> anyhow::Result<RelayIdentity> {
+fn load_identity(
+    root: &std::path::Path,
+    state_root: &std::path::Path,
+) -> anyhow::Result<RelayIdentity> {
     let paths = IdentityPaths::under(root);
     let user_public_key = persist::read_public_key(&paths.user_pubkey)
         .with_context(|| format!("read user pubkey {}", paths.user_pubkey.display()))?;
-    let device_signing_key = persist::read_signing_key(&paths.device_privkey)
+    let device_signing_key = persist::read_device_key(&paths.device_privkey)
         .with_context(|| format!("read device secret {}", paths.device_privkey.display()))?;
     let device_cert = persist::read_device_cert(&paths.device_cert)
         .with_context(|| format!("read device cert {}", paths.device_cert.display()))?;
+    let mut revocations = RevocationList::new();
+    for entry in qos_relay::store::load_revocations(state_root)? {
+        revocations
+            .insert(entry)
+            .context("verify persisted relay revocation")?;
+    }
     Ok(RelayIdentity {
         user_public_key,
         device_signing_key,
         device_cert,
-        revocations: RevocationList::new(),
+        revocations,
     })
 }
 
@@ -187,6 +212,4 @@ async fn wait_for_shutdown() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
-    // Give in-flight tasks a tick to close.
-    tokio::time::sleep(Duration::from_millis(100)).await;
 }

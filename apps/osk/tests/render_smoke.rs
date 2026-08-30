@@ -1,5 +1,5 @@
 //! Offscreen render guard for [`OskWidget`]: drives the full
-//! build_layout → compute_layout → apply_layout → draw pipeline and asserts
+//! `build_layout` → `compute_layout` → `apply_layout` → draw pipeline and asserts
 //! the keyboard rasterises substantial non-background content (surface +
 //! toolbar + keycaps + labels).
 //!
@@ -21,7 +21,10 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h))).ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 #[test]

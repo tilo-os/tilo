@@ -7,9 +7,28 @@
 //! process, so it exports no actions and publishes no Ctrl+K resource tree —
 //! proven on the production path.
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 pub mod actions;
 
-pub use crate::inner::{Attr, CellColor, GridPos, Selection, TermModes, TerminalBackend, TerminalPerformer, TerminalWidget, resolve_login_shell};
+pub use crate::inner::{
+    Attr, CellColor, GridPos, Selection, TermModes, TerminalBackend, TerminalPerformer,
+    TerminalWidget, resolve_login_shell,
+};
 
 /// Re-exported so hosts can build a command for [`TerminalWidget::spawn_command`]
 /// without taking a direct dependency on `portable-pty`.

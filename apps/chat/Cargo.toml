@@ -49,6 +49,10 @@ ui = { path = "../../ui" }
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
 # framework's `ui::ActionHost`.
 qos-actions = { path = "../../crates/collab/actions" }
+# The address a message carries when it was authored by selecting something —
+# `Message::reference` — and the vocabulary an agent's own progress on a
+# summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
+qos-reference = { path = "../../crates/collab/reference" }
 # The qOS runtime user-identity loader (QOS_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.
@@ -57,12 +61,10 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 # XDG data-dir resolution for on-disk persistence of the workspace document.
 dirs.workspace = true
 # Reading real image headers (true width/height) for files chosen in the
@@ -93,3 +95,6 @@ qos-callstream = { path = "../../crates/collab/qos-callstream", optional = true 
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

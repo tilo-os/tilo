@@ -1,29 +1,14 @@
-//! Shell-side host for Phase 8's identity ceremony.
+//! Shell-side host for the identity ceremony: persistence
+//! (`~/.config/qos/identity/primary.json`, `0600`), the first-run
+//! trigger, invite-URL parsing, and the in-memory pairing-channel shim.
 //!
-//! Responsibilities:
+//! The on-disk format is plaintext-JSON matching
+//! [`ui::widget::identity_flow::IdentityRecord`] — pending work wraps
+//! the blob with libsecret or keyutils; for now the file mode is the
+//! only mitigation.
 //!
-//! - **Persistence**: read / write `~/.config/qos/identity/primary.json`
-//!   with `0600` permissions. The on-disk format is plaintext-JSON
-//!   matching [`ui::widget::identity_flow::IdentityRecord`].
-//!   **Phase 8.5 follow-up**: wrap the blob with libsecret or
-//!   keyutils — this v1 is plaintext-on-disk with the file mode as
-//!   the only mitigation.
-//! - **First-run trigger**: at compositor boot, query the store; if
-//!   no identity exists, the compositor should display the
-//!   `IdentityFlow` widget before the desktop.
-//! - **Invite URL parsing**: a thin helper around
-//!   `InviteEnvelope::from_url` that the compositor's URL-handler
-//!   table can dispatch to when the user follows a `qos://invite/...`
-//!   link.
-//! - **Pairing-channel shim**: in v1, we ship the in-memory
-//!   `PairingHandshake` straight through. A future revision replaces
-//!   this with a libp2p direct-message channel; the public surface
-//!   is designed so apps consume the trait, not the concrete impl.
-//!
-//! The module is intentionally thin — it bridges the pure-logic
-//! `ui::widget::identity_flow` types to the shell's process. Anything
-//! cryptographic stays in `threshold-identity`; anything visual
-//! stays in `ui`.
+//! Intentionally thin: cryptographic logic stays in
+//! `threshold-identity`, visual logic stays in `ui`.
 
 use std::fs;
 use std::io;
@@ -37,28 +22,30 @@ use ui::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PairingHandshake,
 };
 
-/// Disk-backed `IdentityStore` impl. Writes to
-/// `$XDG_CONFIG_HOME/qos/identity/primary.json` (falling back to
-/// `$HOME/.config/qos/identity/primary.json`), `0600` mode.
+/// Writes to `$XDG_CONFIG_HOME/qos/identity/primary.json` (falling
+/// back to `$HOME/.config/...`), `0600` mode.
 ///
-/// **TODO Phase 8.5:** the blob is currently plaintext JSON. Replace
-/// with a libsecret-encrypted envelope so a hostile process that
-/// reads `/proc/<pid>/maps` of the compositor doesn't trivially
-/// exfiltrate the secret share.
+/// TODO: the blob is currently plaintext JSON. Replace with a
+/// libsecret-encrypted envelope so a hostile process reading
+/// `/proc/<pid>/maps` of the compositor can't trivially exfiltrate the
+/// secret share.
 pub struct DiskIdentityStore {
     path: PathBuf,
 }
 
 impl DiskIdentityStore {
-    /// Construct using the canonical XDG-derived path. Resolves the
-    /// config dir the same way `firstboot::run` does so the boot
-    /// chain is self-consistent.
+    /// Resolves the config dir the same way `firstboot::run` does, so
+    /// the boot chain is self-consistent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity directory can't be resolved or
+    /// created.
     pub fn from_env() -> Result<Self, io::Error> {
         let base = resolve_identity_dir()?;
         fs::create_dir_all(&base)?;
-        // Tighten the directory perms too — the *contents* will be
-        // 0600, but a world-listable directory still leaks "identity
-        // exists" / atime. 0700 is the rest-of-XDG default.
+        // The contents will be 0600, but a world-listable directory
+        // still leaks "identity exists" / atime.
         #[cfg(unix)]
         {
             let mut perm = fs::metadata(&base)?.permissions();
@@ -69,8 +56,7 @@ impl DiskIdentityStore {
         Ok(Self { path })
     }
 
-    /// Construct against an explicit path. Used by tests to point at
-    /// a tempdir without `$HOME` shimming.
+    /// Used by tests to point at a tempdir without `$HOME` shimming.
     pub fn at(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
@@ -79,7 +65,6 @@ impl DiskIdentityStore {
         &self.path
     }
 
-    /// `true` iff a primary identity record exists on disk.
     pub fn identity_present(&self) -> bool {
         self.path.exists()
     }
@@ -101,26 +86,24 @@ impl IdentityStore for DiskIdentityStore {
         }
         // 0600 lands on the temp file, so the record is never readable by
         // anyone else at its final path.
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)
-            .map_err(IdentityFlowError::Io)?;
+        atomic_file::write_with_mode(&self.path, &bytes, 0o600).map_err(IdentityFlowError::Io)?;
         Ok(())
     }
 }
 
-/// Resolve the canonical identity directory: `<config-base>/qos/identity`.
 fn resolve_identity_dir() -> Result<PathBuf, io::Error> {
-    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
-        if !x.is_empty() {
-            return Ok(PathBuf::from(x).join("qos").join("identity"));
-        }
+    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME")
+        && !x.is_empty()
+    {
+        return Ok(PathBuf::from(x).join("qos").join("identity"));
     }
-    if let Some(h) = std::env::var_os("HOME") {
-        if !h.is_empty() {
-            return Ok(PathBuf::from(h)
-                .join(".config")
-                .join("qos")
-                .join("identity"));
-        }
+    if let Some(h) = std::env::var_os("HOME")
+        && !h.is_empty()
+    {
+        return Ok(PathBuf::from(h)
+            .join(".config")
+            .join("qos")
+            .join("identity"));
     }
     Err(io::Error::new(
         io::ErrorKind::NotFound,
@@ -128,12 +111,8 @@ fn resolve_identity_dir() -> Result<PathBuf, io::Error> {
     ))
 }
 
-/// First-run hook: returns `true` iff the compositor should display
-/// the identity-creation ceremony before the desktop.
-///
-/// Implemented as a free function (not a method on the store) so the
-/// boot path can call it without owning the store first — the
-/// IdentityFlow widget wraps the store separately.
+/// A free function, not a method on the store, so the boot path can
+/// call it without owning the store first.
 pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
     match store.load() {
         Ok(None) => true,
@@ -145,26 +124,23 @@ pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
     }
 }
 
-/// Parse a `qos://invite/<base32>` URL into a full `InviteEnvelope`.
 /// Wraps `InviteEnvelope::from_url` plus the signature check so a
 /// caller doesn't need to remember both steps.
+///
+/// # Errors
+///
+/// Returns an error if `url` doesn't parse as an invite envelope, or if
+/// its signature doesn't verify.
 pub fn parse_invite_url(url: &str) -> Result<InviteEnvelope, IdentityFlowError> {
     let env = InviteEnvelope::from_url(url)?;
     env.verify_signature()?;
     Ok(env)
 }
 
-/// Process-wide pairing channel handle.
-///
-/// The shell instantiates one of these at boot and passes the same
-/// `Arc<PairingHandshake>` to both the screen-3 (host) and screen-4
-/// (pairer) wirings. In v1 this is the in-memory shim defined in
-/// `ui::widget::identity_flow`; a libp2p-backed impl will land in
-/// Phase 8.5.
+/// Instantiated once at boot and shared between the host and pairer
+/// wirings. In-memory shim for now; an Iroh-backed impl will land later.
 pub type SharedPairingChannel = Arc<PairingHandshake>;
 
-/// Make a fresh pairing channel suitable for sharing across the
-/// shell.
 pub fn new_pairing_channel() -> SharedPairingChannel {
     Arc::new(PairingHandshake::new())
 }
@@ -184,8 +160,7 @@ mod tests {
             let pid = std::process::id();
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
+                .map_or(0, |d| d.as_nanos());
             let path = base.join(format!("qos-identity-prov-{name}-{pid}-{nonce}"));
             fs::create_dir_all(&path).expect("tempdir");
             Self(path)
@@ -204,7 +179,9 @@ mod tests {
             &id,
             "alice",
             [248, 113, 113],
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
+            SystemTime::UNIX_EPOCH
+                .checked_add(std::time::Duration::from_secs(100))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
         )
         .unwrap()
     }
@@ -254,7 +231,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + std::time::Duration::from_secs(3600),
+            SystemTime::now() + std::time::Duration::from_hours(1),
         )
         .unwrap();
         let url = env.to_url().unwrap();

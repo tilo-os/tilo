@@ -1,42 +1,24 @@
-//! Per-entry **sync / hydration state**, exposed to apps (the file manager)
-//! through the `user.qos.sync` extended attribute.
+//! Per-entry sync/hydration state, exposed to apps through the
+//! `user.qos.sync` extended attribute.
 //!
-//! The collaborative FS *projects* remote metadata immediately — a file shows up
-//! in `readdir` with its real name and size the instant a peer gossips it — but
-//! only *hydrates* the content on first read. An app that wants to tell the user
-//! whether a file is already on disk, still remote, or mid-download needs to see
-//! that distinction.
-//!
-//! Rather than invent a bespoke query socket, the driver answers a single
-//! extended attribute: `getxattr(path, "user.qos.sync")` returns one of
-//! `local` / `projected` / `downloading`. This rides the existing FUSE mount,
-//! needs no qOS-specific client (`getfattr -n user.qos.sync <path>` works), and
-//! is naturally sandbox-safe: any process that can `stat` the file can read its
-//! sync state, nothing more. See [`crate::fs::QuickFS::getxattr`].
+//! The FS projects remote metadata immediately but only hydrates content on
+//! first read, so an app needs a way to tell local from remote from
+//! mid-download. `getxattr(path, "user.qos.sync")` returns `local` /
+//! `projected` / `downloading` — rides the existing mount, no qOS-specific
+//! client needed, and is sandbox-safe: any process that can `stat` the file can read it, nothing more.
 
-/// The extended-attribute name the FUSE driver answers with an entry's sync
-/// state. Read it with `getxattr(path, "user.qos.sync")`.
+/// The xattr name the driver answers with an entry's sync state (`getxattr(path, "user.qos.sync")`).
 pub const SYNC_XATTR: &str = "user.qos.sync";
 
-/// The extended-attribute name the FUSE driver answers with a file's
-/// **thumbnail**: a small PNG preview the host generates as metadata, served
-/// (and cached) ahead of — and independent of — the file's content bytes. Read
-/// it with `getxattr(path, "user.qos.thumb")`; `ENODATA` when the file is not a
-/// previewable type, its content is not local to generate from, and no peer has
-/// gossiped one. Same rationale as [`SYNC_XATTR`]: it rides the existing mount,
-/// needs no bespoke client, and any process that can `stat` the file can read
-/// it. See [`crate::fs::QuickFS::getxattr`].
+/// The xattr name for a file's thumbnail preview. `ENODATA` when not previewable, not locally generatable, and not gossiped yet.
 pub const THUMB_XATTR: &str = "user.qos.thumb";
 
 /// The hydration state of one filesystem entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncState {
-    /// Content is fully present in the local cache — a plain read never touches
-    /// the network. Directories, empty files, and CRDT-backed documents (which
-    /// are materialised from the namespace itself) are always `Local`.
+    /// Fully present locally — a read never touches the network. Directories, empty files, and CRDT documents are always `Local`.
     Local,
-    /// Metadata is projected but the content — or some chunk of it — is not yet
-    /// local. Reading it will hydrate the missing bytes from a peer.
+    /// Metadata is projected but some content is not yet local; reading it will hydrate the missing bytes from a peer.
     Projected,
     /// A hydration fetch for this file's content is in flight right now.
     Downloading,
@@ -69,7 +51,11 @@ mod tests {
 
     #[test]
     fn state_strings_round_trip() {
-        for s in [SyncState::Local, SyncState::Projected, SyncState::Downloading] {
+        for s in [
+            SyncState::Local,
+            SyncState::Projected,
+            SyncState::Downloading,
+        ] {
             assert_eq!(SyncState::parse(s.as_str()), Some(s), "round-trip {s:?}");
         }
         assert_eq!(SyncState::parse("bogus"), None);

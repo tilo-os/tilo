@@ -2,22 +2,21 @@
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.RemoteDesktop.xml`.
 //!
-//! RemoteDesktop lets an app (a remote-control / collaboration client) drive
-//! the seat — inject pointer + keyboard events — after the user consents.
-//! The handshake mirrors ScreenCast:
+//! `RemoteDesktop` lets an app (a remote-control / collaboration client)
+//! drive the seat — inject pointer + keyboard events — after the user
+//! consents. The handshake mirrors `ScreenCast`:
 //!
 //! 1. `CreateSession` — register the session.
 //! 2. `SelectDevices` — the app asks for `pointer | keyboard | touchscreen`
 //!    (a `types` bitmask). We surface the consent prompt here
 //!    (`CapabilityKind::RemoteDesktop`) and record the granted devices.
 //! 3. `Start` — commit; returns the `devices` bitmask the user allowed.
-//! 4. `Notify*` — per-event injection. Each call is gated: the session must
-//!    be started **and** hold the relevant device grant, or the event is
-//!    dropped. Accepted events decode into a
-//!    [`RemoteAction`](crate::network::streaming::RemoteAction) and go to the
-//!    [`RemoteInputInjector`]; the compositor's event loop drains that and
-//!    calls [`State::apply_remote_desktop_action`], which drives the real
-//!    smithay `Seat`, delivering to the surface that holds seat focus.
+//! 4. `Notify*` — per-event injection, gated on the session being started
+//!    **and** holding the relevant device grant. Accepted events decode
+//!    into a [`RemoteAction`](crate::network::streaming::RemoteAction)
+//!    and go to the [`RemoteInputInjector`]; the compositor drains that
+//!    into [`State::apply_remote_desktop_action`], driving the real
+//!    smithay `Seat` at whatever surface holds focus.
 //!
 //! [`State::apply_remote_desktop_action`]: crate::compositor::state::State::apply_remote_desktop_action
 
@@ -32,9 +31,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 use crate::network::streaming::RemoteAction;
 use crate::shell::state::{Capability, Expiry};
 
-use super::{
-    file_chooser::FileChooserBackend, flow, CapabilityKind, PortalContext,
-};
+use super::{CapabilityKind, PortalContext, file_chooser::FileChooserBackend, flow};
 
 /// Device-type bitmask (`RemoteDesktop.AvailableDeviceTypes`).
 pub mod device_type {
@@ -42,14 +39,12 @@ pub mod device_type {
     pub const POINTER: u32 = 2;
     pub const TOUCHSCREEN: u32 = 4;
     /// Everything the seat can be driven with. Touchscreen injection is
-    /// advertised but currently maps onto pointer at the seat, so the v1
-    /// backend gates it the same way.
+    /// advertised but currently maps onto pointer at the seat, so v1 gates it the same way.
     pub const ALL: u32 = KEYBOARD | POINTER | TOUCHSCREEN;
 }
 
 /// Version we advertise. v1 covers `Notify*` (keycode + keysym); the v2
-/// `ConnectToEIS` libei path is a documented follow-up and intentionally
-/// left unadvertised so the frontend doesn't route EIS to us.
+/// `ConnectToEIS` libei path is a documented follow-up, left unadvertised so the frontend doesn't route EIS to us.
 pub const REMOTE_DESKTOP_VERSION: u32 = 1;
 
 /// Freedesktop key/button state: `1` pressed, `0` released.
@@ -57,15 +52,13 @@ fn state_pressed(state: u32) -> bool {
     state == 1
 }
 
-/// Sink for decoded RemoteDesktop `Notify*` actions.
+/// Sink for decoded `RemoteDesktop` `Notify*` actions.
 ///
 /// The portal backend runs on the D-Bus executor; the seat lives on the
-/// compositor thread. Production wires a [`ChannelInjector`] whose receiver
-/// the compositor loop drains into
+/// compositor thread. Production wires a [`ChannelInjector`] whose
+/// receiver the compositor loop drains into
 /// [`State::apply_remote_desktop_action`](crate::compositor::state::State::apply_remote_desktop_action).
-/// Tests use a [`RecordingInjector`] (assert on the decoded actions) or a
-/// [`ChannelInjector`] whose receiver is drained straight into a real
-/// `State` to prove seat delivery.
+/// Tests use a [`RecordingInjector`] or a [`ChannelInjector`] drained straight into a real `State`.
 pub trait RemoteInputInjector: Send + Sync {
     /// Inject one action. Returns whether it was accepted downstream.
     fn inject(&self, action: RemoteAction) -> bool;
@@ -82,8 +75,7 @@ impl RemoteInputInjectorHandle {
         Self { inner }
     }
 
-    /// A handle that drops every action. Default for portal contexts that
-    /// don't host a live seat (e.g. `--portal-server-only`).
+    /// A handle that drops every action — default for portal contexts that don't host a live seat (e.g. `--portal-server-only`).
     pub fn null() -> Self {
         Self {
             inner: Arc::new(NullInjector),
@@ -134,9 +126,8 @@ impl RemoteInputInjector for RecordingInjector {
     }
 }
 
-/// Forwards actions over a channel to the compositor loop — the production
-/// wiring. The compositor inserts the receiver as a calloop source and
-/// applies each action to its `State`.
+/// Forwards actions over a channel to the compositor loop — the
+/// production wiring: the compositor inserts the receiver as a calloop source and applies each action to its `State`.
 pub struct ChannelInjector {
     tx: std::sync::mpsc::Sender<RemoteAction>,
 }
@@ -179,16 +170,14 @@ impl RemoteDesktopBackend {
         }
     }
 
-    /// True if the session is started and holds the `need` device grant.
-    /// Every `Notify*` clears this gate before injecting — a request for a
-    /// device the user didn't grant is silently dropped.
+    /// True if the session is started and holds the `need` device grant —
+    /// every `Notify*` checks this gate; a request for an ungranted device is silently dropped.
     fn gate(&self, session_handle: &ObjectPath<'_>, need: u32) -> bool {
         self.sessions
             .lock()
             .ok()
             .and_then(|s| s.get(&session_handle.to_string()).cloned())
-            .map(|sess| sess.started && (sess.devices & need != 0))
-            .unwrap_or(false)
+            .is_some_and(|sess| sess.started && (sess.devices & need != 0))
     }
 
     /// Decode + route one action if the gate allows it.
@@ -209,8 +198,7 @@ impl RemoteDesktopBackend {
         device_type::ALL
     }
 
-    /// Interface version. Named lowercase to match the spec's `version`
-    /// property (zbus would otherwise PascalCase it to `Version`).
+    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
     #[zbus(property, name = "version")]
     async fn version(&self) -> u32 {
         REMOTE_DESKTOP_VERSION
@@ -238,8 +226,7 @@ impl RemoteDesktopBackend {
         (0, HashMap::new())
     }
 
-    /// `SelectDevices` — request pointer/keyboard/touch access. Surfaces the
-    /// consent prompt and records the granted devices on the session.
+    /// `SelectDevices` — request pointer/keyboard/touch access; surfaces the consent prompt and records the granted devices on the session.
     async fn select_devices(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -274,12 +261,12 @@ impl RemoteDesktopBackend {
         }
 
         if let Ok(mut s) = self.sessions.lock() {
-            let entry = s
-                .entry(session_handle.to_string())
-                .or_insert_with(|| RemoteDesktopSession {
-                    app_id: app_id.clone(),
-                    ..Default::default()
-                });
+            let entry =
+                s.entry(session_handle.to_string())
+                    .or_insert_with(|| RemoteDesktopSession {
+                        app_id: app_id.clone(),
+                        ..Default::default()
+                    });
             entry.devices = types;
             entry.consented = true;
         }
@@ -477,12 +464,14 @@ mod tests {
     use crate::shell::state::{Workspace, WorkspaceId};
 
     fn empty_ws(id: u64) -> Workspace {
-        // `Workspace` grew a durable room id, an owner and a capability
-        // list; the builder keeps this fixture from having to track them.
+        // `Workspace` grew a durable room id, an owner and a capability list; the builder keeps this fixture from having to track them.
         Workspace::test_default(WorkspaceId(id), "rd")
     }
 
-    fn ctx_with(injector: RemoteInputInjectorHandle, resolver: PromptResolver) -> (PortalContext, WorkspaceId) {
+    fn ctx_with(
+        injector: RemoteInputInjectorHandle,
+        resolver: PromptResolver,
+    ) -> (PortalContext, WorkspaceId) {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(70));
         let queue = PromptQueueHandle::new(resolver);
         let map = CallerMap::new();
@@ -509,7 +498,10 @@ mod tests {
         let inj = ChannelInjector::new(tx);
         assert!(inj.inject(RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 }));
         let got = rx.recv().expect("action forwarded");
-        assert_eq!(got, RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 });
+        assert_eq!(
+            got,
+            RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 }
+        );
     }
 
     #[test]
@@ -518,8 +510,7 @@ mod tests {
         assert!(!h.inject(RemoteAction::PointerMotionRelative { dx: 0.0, dy: 0.0 }));
     }
 
-    /// Un-started / un-granted sessions drop `Notify*` — proves the
-    /// permission gate blocks injection until the user consents + Start.
+    /// Un-started / un-granted sessions drop `Notify*` — proves the permission gate blocks injection until the user consents + Start.
     #[test]
     fn notify_dropped_when_session_not_started() {
         let rec = Arc::new(RecordingInjector::new());
@@ -540,8 +531,7 @@ mod tests {
         assert_eq!(rec.actions().len(), 0, "no session => no injection");
     }
 
-    /// A started session with the POINTER grant routes pointer actions but
-    /// still drops keyboard actions it wasn't granted.
+    /// A started session with the POINTER grant routes pointer actions but still drops keyboard actions it wasn't granted.
     #[test]
     fn gate_scopes_to_granted_devices() {
         let rec = Arc::new(RecordingInjector::new());
@@ -553,7 +543,7 @@ mod tests {
         let key = "/s/1".to_string();
         // Hand-stage a started, pointer-only session.
         backend.sessions.lock().unwrap().insert(
-            key.clone(),
+            key,
             RemoteDesktopSession {
                 app_id: "org.remote".into(),
                 devices: device_type::POINTER,

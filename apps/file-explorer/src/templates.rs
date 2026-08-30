@@ -32,7 +32,7 @@ pub fn list_templates(dir: &Path) -> Vec<PathBuf> {
             if name.starts_with('.') {
                 continue;
             }
-            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            if entry.file_type().is_ok_and(|t| t.is_file()) {
                 out.push(entry.path());
             }
         }
@@ -77,7 +77,11 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, ["Document.md", "Spreadsheet.csv"], "files only, sorted, no dotfiles/dirs");
+        assert_eq!(
+            names,
+            ["Document.md", "Spreadsheet.csv"],
+            "files only, sorted, no dotfiles/dirs"
+        );
     }
 
     #[test]
@@ -107,6 +111,9 @@ mod tests {
         assert_eq!(fs::read(&made).unwrap(), b"hello template");
         // A second create de-duplicates the name.
         let made2 = create_from_template(&tmpl, &dest).unwrap();
-        assert_eq!(made2.file_name().unwrap().to_string_lossy(), "Document 2.md");
+        assert_eq!(
+            made2.file_name().unwrap().to_string_lossy(),
+            "Document 2.md"
+        );
     }
 }

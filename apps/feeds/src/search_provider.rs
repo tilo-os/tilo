@@ -56,7 +56,10 @@ pub struct FeedsSearchProvider {
 impl FeedsSearchProvider {
     /// Snapshot the current store into a provider.
     pub fn new(store: &Store) -> Self {
-        Self { feeds: store.feeds.clone(), articles: store.articles.clone() }
+        Self {
+            feeds: store.feeds.clone(),
+            articles: store.articles.clone(),
+        }
     }
 
     /// The `action_id` for an article row.
@@ -71,7 +74,10 @@ impl FeedsSearchProvider {
 
     /// The title of the feed an article belongs to, for its subtitle.
     fn feed_title(&self, feed_id: Id) -> Option<&str> {
-        self.feeds.iter().find(|f| f.id == feed_id).map(|f| f.title.as_str())
+        self.feeds
+            .iter()
+            .find(|f| f.id == feed_id)
+            .map(|f| f.title.as_str())
     }
 }
 
@@ -100,8 +106,13 @@ impl SearchProvider for FeedsSearchProvider {
                 (None, false) => a.author.clone(),
                 (None, true) => String::new(),
             };
-            let mut r = SearchResult::new(ARTICLE_KIND, a.title.clone(), Self::article_action_id(a.id))
-                .with_icon(if a.starred { Icon::Star } else { Icon::FileText });
+            let mut r =
+                SearchResult::new(ARTICLE_KIND, a.title.clone(), Self::article_action_id(a.id))
+                    .with_icon(if a.starred {
+                        Icon::Star
+                    } else {
+                        Icon::FileText
+                    });
             if !subtitle.is_empty() {
                 r = r.with_subtitle(subtitle);
             }
@@ -118,7 +129,11 @@ impl SearchProvider for FeedsSearchProvider {
             }
             let mut r = SearchResult::new(FEED_KIND, f.title.clone(), Self::feed_action_id(f.id))
                 .with_icon(Icon::List);
-            let site = if f.site_url.is_empty() { &f.url } else { &f.site_url };
+            let site = if f.site_url.is_empty() {
+                &f.url
+            } else {
+                &f.site_url
+            };
             if !site.is_empty() {
                 r = r.with_subtitle(site.clone());
             }
@@ -154,7 +169,10 @@ mod tests {
         let some_feed = store.feeds.first().expect("sample has feeds").clone();
         let fword = some_feed.title.split_whitespace().next().unwrap();
         let fhits = provider.search(fword);
-        assert!(fhits.iter().any(|r| r.kind == FEED_KIND), "a feed-title word surfaces a feed row");
+        assert!(
+            fhits.iter().any(|r| r.kind == FEED_KIND),
+            "a feed-title word surfaces a feed row"
+        );
     }
 
     #[test]
@@ -177,8 +195,14 @@ mod tests {
             .into_iter()
             .find(|r| r.action_id == FeedsSearchProvider::article_action_id(a.id))
             .expect("the article is browsable through the registry");
-        assert_eq!(Activation::parse(&hit.action_id), Some(Activation::Article(a.id)));
-        assert!(store.article(a.id).is_some(), "the id resolves to a real stored article");
+        assert_eq!(
+            Activation::parse(&hit.action_id),
+            Some(Activation::Article(a.id))
+        );
+        assert!(
+            store.article(a.id).is_some(),
+            "the id resolves to a real stored article"
+        );
 
         let f = store.feeds.first().unwrap().clone();
         assert_eq!(
@@ -219,7 +243,11 @@ mod tests {
         };
 
         app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(app.selected_article(), Some(id), "activation opened the chosen article");
+        assert_eq!(
+            app.selected_article(),
+            Some(id),
+            "activation opened the chosen article"
+        );
         assert!(
             matches!(app.active_filter(), crate::model::Filter::Feed(_)),
             "activation focused the article's feed so the row is visible"

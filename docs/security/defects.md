@@ -601,7 +601,7 @@ from first run. The same function documents a known TOCTOU window between write 
 **Resolved.** An unreadable key file propagates as an error with the bytes left on disk, and the
 compositor leaves peer sync off rather than syncing an unsalted id space. The key itself is now the
 machine's one device key, so the compositor no longer keeps a network identity of its own; an
-existing installation's libp2p keypair is adopted seed-and-all so the machine keeps its `PeerId`.
+an existing installation's transport key is adopted seed-and-all so the machine keeps its Iroh `EndpointId`.
 The write goes through an atomic write-with-mode, closing the TOCTOU window. Held by
 `shell/src/network/behaviour.rs::tests::unreadable_key_file_raises_instead_of_rotating_identity`
 and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.

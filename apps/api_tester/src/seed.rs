@@ -17,19 +17,20 @@ pub fn collections() -> Vec<Collection> {
             let mut r = Request::new("List users");
             r.method = HttpMethod::Get;
             r.url = "{{base_url}}/users".into();
-            r.params = vec![
-                KeyValue::new("page", "1"),
-                KeyValue::new("per_page", "25"),
-            ];
+            r.params = vec![KeyValue::new("page", "1"), KeyValue::new("per_page", "25")];
             r.headers = vec![KeyValue::new("Accept", "application/json")];
-            r.auth = Auth::Bearer { token: "{{token}}".into() };
+            r.auth = Auth::Bearer {
+                token: "{{token}}".into(),
+            };
             r
         },
         {
             let mut r = Request::new("Get user by id");
             r.method = HttpMethod::Get;
             r.url = "{{base_url}}/users/4291".into();
-            r.auth = Auth::Bearer { token: "{{token}}".into() };
+            r.auth = Auth::Bearer {
+                token: "{{token}}".into(),
+            };
             r
         },
         {
@@ -37,7 +38,9 @@ pub fn collections() -> Vec<Collection> {
             r.method = HttpMethod::Post;
             r.url = "{{base_url}}/users".into();
             r.headers = vec![KeyValue::new("Content-Type", "application/json")];
-            r.auth = Auth::Bearer { token: "{{token}}".into() };
+            r.auth = Auth::Bearer {
+                token: "{{token}}".into(),
+            };
             r.body_mode = BodyMode::Json;
             r.body_text =
                 "{\n  \"name\": \"Grace Hopper\",\n  \"email\": \"grace@navy.mil\"\n}".into();
@@ -47,7 +50,9 @@ pub fn collections() -> Vec<Collection> {
             let mut r = Request::new("Delete user");
             r.method = HttpMethod::Delete;
             r.url = "{{base_url}}/users/4291".into();
-            r.auth = Auth::Bearer { token: "{{token}}".into() };
+            r.auth = Auth::Bearer {
+                token: "{{token}}".into(),
+            };
             r
         },
     ];
@@ -133,7 +138,9 @@ pub fn active_request() -> Request {
         KeyValue::new("Accept", "application/json"),
         KeyValue::new("X-Client", "qos-api-tester"),
     ];
-    r.auth = Auth::Bearer { token: "{{token}}".into() };
+    r.auth = Auth::Bearer {
+        token: "{{token}}".into(),
+    };
     r
 }
 
