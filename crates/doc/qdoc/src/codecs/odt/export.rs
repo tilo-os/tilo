@@ -27,6 +27,10 @@ const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
 </manifest:manifest>"#;
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "matches FormatProvider::export's by-value DocRef; its one call site (odt/mod.rs) is outside this file-only pass's scope"
+)]
 pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
     let preserved = crate::model::preserved_parts(doc.doc, doc.c);
@@ -61,45 +65,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             c.set(name, bytes);
         }
     }
-    // Page header/footer → `styles.xml` master-page: splice regenerated header/footer into a
-    // copy of `styles.xml` (or synthesise one). No-op when the document has neither.
-    if let Some(styles_xml) =
-        super::headers::export_master_headers(&doc, original_styles.as_deref())
-    {
-        let is_new = !had_styles;
-        c.set("styles.xml", styles_xml);
-        if is_new {
-            had_styles = true;
-        }
-    }
-    // Multi-column layout → `styles.xml` page-layout: splice `style:columns` into the first
-    // page-layout properties, preserving the rest. No-op for a single-column document.
-    {
-        let base = c
-            .get("styles.xml")
-            .map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
-        if let Some(styles_xml) = super::columns::export_page_layout_columns(&doc, &base) {
-            let is_new = !had_styles;
-            c.set("styles.xml", styles_xml);
-            if is_new {
-                had_styles = true;
-            }
-        }
-    }
-    // Document default language → `styles.xml` paragraph default-style: splice the BCP-47 tag
-    // (split into `fo:language`/`fo:country`). No-op when the document declares no default language.
-    {
-        let base = c
-            .get("styles.xml")
-            .map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
-        if let Some(styles_xml) = super::language::export_default_language(&doc, &base) {
-            let is_new = !had_styles;
-            c.set("styles.xml", styles_xml);
-            if is_new {
-                had_styles = true;
-            }
-        }
-    }
+    splice_styles_xml(&doc, &mut c, original_styles.as_deref(), &mut had_styles);
     // Document properties → `meta.xml`: regenerate from the canonical properties, merging in
     // any unmodeled `office:meta` children from the preserved original so they survive.
     if let Some(meta_xml) = super::meta::export_meta(&doc, original_meta.as_deref()) {
@@ -117,7 +83,77 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         c.set("META-INF/manifest.xml", MANIFEST.to_vec());
     }
 
-    // Write each image block's blob into the zip as `Pictures/<hash>.<ext>` and collect manifest entries.
+    let pic_entries = write_image_blobs(&snap, &mut c, had_meta, had_styles);
+    if !pic_entries.is_empty() {
+        let manifest = c
+            .get("META-INF/manifest.xml")
+            .map_or_else(|| MANIFEST.to_vec(), <[u8]>::to_vec);
+        c.set(
+            "META-INF/manifest.xml",
+            inject_manifest_entries(&manifest, &pic_entries),
+        );
+    }
+
+    c.set("content.xml", content.into_bytes());
+    c.write()
+}
+
+/// Splice header/footer, multi-column layout, and default-language into `styles.xml`
+/// (synthesising a minimal one if none was preserved). Sets `had_styles` the first time
+/// anything is actually written, so the caller knows whether to add a manifest entry for it.
+fn splice_styles_xml(
+    doc: &DocRef,
+    c: &mut OdtContainer,
+    original_styles: Option<&[u8]>,
+    had_styles: &mut bool,
+) {
+    // Page header/footer → `styles.xml` master-page: splice regenerated header/footer into a
+    // copy of `styles.xml` (or synthesise one). No-op when the document has neither.
+    if let Some(styles_xml) = super::headers::export_master_headers(doc, original_styles) {
+        let is_new = !*had_styles;
+        c.set("styles.xml", styles_xml);
+        if is_new {
+            *had_styles = true;
+        }
+    }
+    // Multi-column layout → `styles.xml` page-layout: splice `style:columns` into the first
+    // page-layout properties, preserving the rest. No-op for a single-column document.
+    {
+        let base = c
+            .get("styles.xml")
+            .map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
+        if let Some(styles_xml) = super::columns::export_page_layout_columns(doc, &base) {
+            let is_new = !*had_styles;
+            c.set("styles.xml", styles_xml);
+            if is_new {
+                *had_styles = true;
+            }
+        }
+    }
+    // Document default language → `styles.xml` paragraph default-style: splice the BCP-47 tag
+    // (split into `fo:language`/`fo:country`). No-op when the document declares no default language.
+    {
+        let base = c
+            .get("styles.xml")
+            .map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
+        if let Some(styles_xml) = super::language::export_default_language(doc, &base) {
+            let is_new = !*had_styles;
+            c.set("styles.xml", styles_xml);
+            if is_new {
+                *had_styles = true;
+            }
+        }
+    }
+}
+
+/// Write each `image` block's blob into the zip as `Pictures/<hash>.<ext>` and return the
+/// manifest entries it needs, seeded with meta.xml/styles.xml when those were (re)written.
+fn write_image_blobs(
+    snap: &DocSnapshot,
+    c: &mut OdtContainer,
+    had_meta: bool,
+    had_styles: bool,
+) -> Vec<(String, &'static str)> {
     let mut pic_entries: Vec<(String, &'static str)> = Vec::new();
     if had_meta {
         pic_entries.push(("meta.xml".to_string(), "text/xml"));
@@ -140,18 +176,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
         }
     }
-    if !pic_entries.is_empty() {
-        let manifest = c
-            .get("META-INF/manifest.xml")
-            .map_or_else(|| MANIFEST.to_vec(), <[u8]>::to_vec);
-        c.set(
-            "META-INF/manifest.xml",
-            inject_manifest_entries(&manifest, &pic_entries),
-        );
-    }
-
-    c.set("content.xml", content.into_bytes());
-    c.write()
+    pic_entries
 }
 
 /// Detect an image's file extension + ODF media type from its magic bytes; unknown payloads fall back to a generic binary stream.
@@ -189,12 +214,15 @@ fn inject_manifest_entries(manifest: &[u8], entries: &[(String, &'static str)]) 
     if inserts.is_empty() {
         return manifest.to_vec();
     }
-    match s.rfind("</manifest:manifest>") {
-        Some(pos) => {
-            let mut out = String::with_capacity(s.len() + inserts.len());
-            out.push_str(&s[..pos]);
+    match s
+        .rfind("</manifest:manifest>")
+        .and_then(|pos| s.get(..pos).zip(s.get(pos..)))
+    {
+        Some((before, after)) => {
+            let mut out = String::with_capacity(s.len().saturating_add(inserts.len()));
+            out.push_str(before);
             out.push_str(&inserts);
-            out.push_str(&s[pos..]);
+            out.push_str(after);
             out.into_bytes()
         }
         None => manifest.to_vec(),
@@ -334,9 +362,10 @@ fn comment_index(snap: &DocSnapshot) -> CommentIndex<'_> {
 
 /// The note id of a `note-ref` mark covering exactly `[i, i+1)`, if any.
 fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<String> {
+    let end = i.saturating_add(1);
     marks
         .iter()
-        .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == i + 1)
+        .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == end)
         .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
 }
 
@@ -410,6 +439,110 @@ fn change_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
 /// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style wrappers
 /// (inner), closing and re-opening each whenever it changes so output stays well-nested even
 /// for overlapping marks; a `note-ref` placeholder emits the referenced inline `text:note`.
+fn close_spans(out: &mut String, open: &mut Vec<String>) {
+    for _ in 0..open.len() {
+        out.push_str("</text:span>");
+    }
+    open.clear();
+}
+
+/// Emits `text:annotation-end`/`text:annotation-start` markers for comments starting/ending
+/// exactly at `i`, closing spans/link first so the annotation element is a clean sibling of
+/// the surrounding inline content.
+fn emit_comment_boundaries(
+    marks: &[MarkSpan],
+    comments: &CommentIndex,
+    out: &mut String,
+    open: &mut Vec<String>,
+    cur_link: &mut Option<String>,
+    i: usize,
+) {
+    let ends = comment_ends_at(marks, i);
+    let starts = comment_starts_at(marks, i);
+    if ends.is_empty() && starts.is_empty() {
+        return;
+    }
+    close_spans(out, open);
+    if cur_link.is_some() {
+        out.push_str("</text:a>");
+        *cur_link = None;
+    }
+    // Ends before starts so an adjacent comment's end closes before the next opens.
+    for id in ends {
+        if let Some(c) = comments.get(&id) {
+            out.push_str(&super::comments::render_annotation_end(c));
+        }
+    }
+    for id in starts {
+        if let Some(c) = comments.get(&id) {
+            out.push_str(&super::comments::render_annotation_start(c));
+        }
+    }
+}
+
+/// Emits `text:bookmark-end`/`text:bookmark-start` markers at `i`, closing spans/link first.
+fn emit_bookmark_boundaries(
+    marks: &[MarkSpan],
+    out: &mut String,
+    open: &mut Vec<String>,
+    cur_link: &mut Option<String>,
+    i: usize,
+) {
+    let ends = bookmark_ends_at(marks, i);
+    let starts = bookmark_starts_at(marks, i);
+    if ends.is_empty() && starts.is_empty() {
+        return;
+    }
+    close_spans(out, open);
+    if cur_link.is_some() {
+        out.push_str("</text:a>");
+        *cur_link = None;
+    }
+    // Ends before starts so an adjacent bookmark's end closes before the next opens.
+    for name in ends {
+        let _ = write!(
+            out,
+            r#"<text:bookmark-end text:name="{}"/>"#,
+            escape_attr(&name)
+        );
+    }
+    for name in starts {
+        let _ = write!(
+            out,
+            r#"<text:bookmark-start text:name="{}"/>"#,
+            escape_attr(&name)
+        );
+    }
+}
+
+/// Emits tracked-change `text:change-end`/`text:change-start` markers at `i`, closing
+/// spans/link first so each marker is a clean sibling of the surrounding content.
+fn emit_change_boundaries(
+    marks: &[MarkSpan],
+    out: &mut String,
+    open: &mut Vec<String>,
+    cur_link: &mut Option<String>,
+    i: usize,
+) {
+    let ends = change_ends_at(marks, i);
+    let starts = change_starts_at(marks, i);
+    if ends.is_empty() && starts.is_empty() {
+        return;
+    }
+    close_spans(out, open);
+    if cur_link.is_some() {
+        out.push_str("</text:a>");
+        *cur_link = None;
+    }
+    // Ends before starts so an adjacent change's end closes before the next opens.
+    for id in ends {
+        out.push_str(&super::changes::render_change_end(&id));
+    }
+    for id in starts {
+        out.push_str(&super::changes::render_change_start(&id));
+    }
+}
+
 fn render_inline(
     text: &str,
     marks: &[MarkSpan],
@@ -423,91 +556,10 @@ fn render_inline(
     let mut out = String::new();
     let mut open: Vec<String> = Vec::new();
     let mut cur_link: Option<String> = None;
-    let close_spans = |out: &mut String, open: &mut Vec<String>| {
-        for _ in 0..open.len() {
-            out.push_str("</text:span>");
-        }
-        open.clear();
-    };
-    // Emit annotation boundary markers at `i`, closing spans/link first so the annotation element is a clean sibling of the surrounding inline content.
-    let emit_comment_boundaries =
-        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
-            let ends = comment_ends_at(marks, i);
-            let starts = comment_starts_at(marks, i);
-            if ends.is_empty() && starts.is_empty() {
-                return;
-            }
-            close_spans(out, open);
-            if cur_link.is_some() {
-                out.push_str("</text:a>");
-                *cur_link = None;
-            }
-            // Ends before starts so an adjacent comment's end closes before the next opens.
-            for id in ends {
-                if let Some(c) = comments.get(&id) {
-                    out.push_str(&super::comments::render_annotation_end(c));
-                }
-            }
-            for id in starts {
-                if let Some(c) = comments.get(&id) {
-                    out.push_str(&super::comments::render_annotation_start(c));
-                }
-            }
-        };
-    // Emit `text:bookmark-end`/`text:bookmark-start` markers at `i`, closing spans/link first.
-    let emit_bookmark_boundaries =
-        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
-            let ends = bookmark_ends_at(marks, i);
-            let starts = bookmark_starts_at(marks, i);
-            if ends.is_empty() && starts.is_empty() {
-                return;
-            }
-            close_spans(out, open);
-            if cur_link.is_some() {
-                out.push_str("</text:a>");
-                *cur_link = None;
-            }
-            // Ends before starts so an adjacent bookmark's end closes before the next opens.
-            for name in ends {
-                let _ = write!(
-                    out,
-                    r#"<text:bookmark-end text:name="{}"/>"#,
-                    escape_attr(&name)
-                );
-            }
-            for name in starts {
-                let _ = write!(
-                    out,
-                    r#"<text:bookmark-start text:name="{}"/>"#,
-                    escape_attr(&name)
-                );
-            }
-        };
-    // Emit tracked-change `text:change-end`/`text:change-start` markers at `i`, closing spans/link first so each marker is a clean sibling of the surrounding content.
-    let emit_change_boundaries =
-        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
-            let ends = change_ends_at(marks, i);
-            let starts = change_starts_at(marks, i);
-            if ends.is_empty() && starts.is_empty() {
-                return;
-            }
-            close_spans(out, open);
-            if cur_link.is_some() {
-                out.push_str("</text:a>");
-                *cur_link = None;
-            }
-            // Ends before starts so an adjacent change's end closes before the next opens.
-            for id in ends {
-                out.push_str(&super::changes::render_change_end(&id));
-            }
-            for id in starts {
-                out.push_str(&super::changes::render_change_start(&id));
-            }
-        };
-    for i in 0..n {
-        emit_comment_boundaries(&mut out, &mut open, &mut cur_link, i);
-        emit_bookmark_boundaries(&mut out, &mut open, &mut cur_link, i);
-        emit_change_boundaries(&mut out, &mut open, &mut cur_link, i);
+    for (i, &ch) in chars.iter().enumerate() {
+        emit_comment_boundaries(marks, comments, &mut out, &mut open, &mut cur_link, i);
+        emit_bookmark_boundaries(marks, &mut out, &mut open, &mut cur_link, i);
+        emit_change_boundaries(marks, &mut out, &mut open, &mut cur_link, i);
         let link = link_at(marks, i);
         if link != cur_link {
             // A link is the outer element, so close any open spans first, then the old link, then open the new link (spans re-open below).
@@ -539,16 +591,16 @@ fn render_inline(
                 open.push(name.clone());
             }
         }
-        if chars[i] == crate::schema::FIELD_PLACEHOLDER
+        if ch == crate::schema::FIELD_PLACEHOLDER
             && let Some(note_id) = note_ref_at(marks, i)
         {
             if let Some(note) = notes.get(&note_id) {
-                *note_ctr += 1;
+                *note_ctr = note_ctr.saturating_add(1);
                 out.push_str(&super::notes::render_inline_note(note, *note_ctr));
             }
             continue;
         }
-        push_escaped(&mut out, chars[i]);
+        push_escaped(&mut out, ch);
     }
     close_spans(&mut out, &mut open);
     if cur_link.is_some() {
@@ -628,9 +680,8 @@ fn image_frame_xml(
     snap: &DocSnapshot,
     graphic_styles: &mut Vec<(String, String)>,
 ) -> Option<String> {
-    let hash = match b.attrs.get("blob") {
-        Some(AttrVal::Str(h)) => h,
-        _ => return None,
+    let Some(AttrVal::Str(hash)) = b.attrs.get("blob") else {
+        return None;
     };
     let bytes = snap.blobs.get(hash)?;
     let href = picture_href(hash, bytes);
@@ -646,7 +697,7 @@ fn image_frame_xml(
     let _ = write!(frame, r#" text:anchor-type="{anchor_type}""#);
     // A graphic automatic style carries the wrap; only emit it when meaningful (a floating frame, since `as-char` ignores wrap in ODF anyway).
     if anchor != "inline" {
-        let gname = format!("gr{}", graphic_styles.len() + 1);
+        let gname = format!("gr{}", graphic_styles.len().saturating_add(1));
         graphic_styles.push((
             gname.clone(),
             super::styles::model_wrap_to_odf(wrap).to_string(),
@@ -756,7 +807,7 @@ fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
     let name = if let Some(s) = list_styles.iter().find(|s| s.key == key) {
         s.name.clone()
     } else {
-        let name = format!("Lqdoc{}", list_styles.len() + 1);
+        let name = format!("Lqdoc{}", list_styles.len().saturating_add(1));
         let xml = list_style_def_xml(&name, fmt, start);
         list_styles.push(ListStyle {
             name: name.clone(),
@@ -785,19 +836,20 @@ fn snap_cell_table(b: &BlockView) -> Option<String> {
 
 fn snap_cell_rc(b: &BlockView) -> (usize, usize) {
     let g = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) if *n >= 0 => *n as usize,
+        Some(AttrVal::Int(n)) if *n >= 0 => usize::try_from(*n).unwrap_or(0),
         _ => 0,
     };
     (g("row"), g("col"))
 }
 
+/// A resolved paragraph automatic style: `(parent style name, paragraph-properties XML,
+/// text-properties XML)`.
+type ParaStyleEntry = (Option<String>, String, String);
+
 /// Get-or-create a paragraph automatic style for `(parent, paragraph-props, text-props)`, returning its `P{n}` name. Dedups identical styles.
-fn register_auto(
-    styles: &mut Vec<(Option<String>, String, String)>,
-    key: (Option<String>, String, String),
-) -> String {
+fn register_auto(styles: &mut Vec<ParaStyleEntry>, key: ParaStyleEntry) -> String {
     if let Some(i) = styles.iter().position(|p| p == &key) {
-        format!("P{}", i + 1)
+        format!("P{}", i.saturating_add(1))
     } else {
         styles.push(key);
         format!("P{}", styles.len())
@@ -809,7 +861,7 @@ fn register_auto(
 fn resolve_para_style(
     b: &BlockView,
     styles: &BTreeMap<String, BTreeMap<String, AttrVal>>,
-    auto: &mut Vec<(Option<String>, String, String)>,
+    auto: &mut Vec<ParaStyleEntry>,
     named_refs: &mut BTreeSet<String>,
 ) -> String {
     let named = match b.attrs.get("style") {
@@ -836,7 +888,15 @@ fn resolve_para_style(
 
 fn fmt_num(f: f64) -> String {
     if f.fract() == 0.0 {
-        format!("{}", f as i64)
+        // Floats have no checked int conversion; clamp to a range no real document
+        // measurement approaches before the cast.
+        let clamped = f.clamp(-1e15, 1e15);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "clamped to ±1e15 above, far inside i64 range"
+        )]
+        let n = clamped as i64;
+        format!("{n}")
     } else {
         let s = format!("{f:.2}");
         s.trim_end_matches('0').trim_end_matches('.').to_string()
@@ -850,13 +910,23 @@ fn style_names_in(xml: &[u8]) -> BTreeSet<String> {
     let needle = "style:name=\"";
     let mut rest = s.as_ref();
     while let Some(p) = rest.find(needle) {
-        rest = &rest[p + needle.len()..];
-        if let Some(end) = rest.find('"') {
-            out.insert(rest[..end].to_string());
-            rest = &rest[end + 1..];
-        } else {
+        let Some(after_needle) = p
+            .checked_add(needle.len())
+            .and_then(|start| rest.get(start..))
+        else {
             break;
+        };
+        rest = after_needle;
+        let Some(end) = rest.find('"') else {
+            break;
+        };
+        if let Some(name) = rest.get(..end) {
+            out.insert(name.to_string());
         }
+        let Some(after_quote) = end.checked_add(1).and_then(|start| rest.get(start..)) else {
+            break;
+        };
+        rest = after_quote;
     }
     out
 }
@@ -866,6 +936,10 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
     let name = super::styles::encode_style_name(id);
     let getf = |k: &str| match props.get(k) {
         Some(AttrVal::Float(f)) => Some(*f),
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "style properties (font size, spacing, indent) are always small; i64 has no checked f64 conversion"
+        )]
         Some(AttrVal::Int(n)) => Some(*n as f64),
         _ => None,
     };
@@ -932,89 +1006,44 @@ use crate::snapshot::BlockView;
 fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>) -> String {
     let mut body = String::new();
     let mut used: BTreeMap<String, String> = BTreeMap::new();
-    let mut pstyles: Vec<(Option<String>, String, String)> = Vec::new();
+    let mut pstyles: Vec<ParaStyleEntry> = Vec::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
     let mut list_styles: Vec<ListStyle> = Vec::new();
-    let list_styles = &mut list_styles;
     let mut graphic_styles: Vec<(String, String)> = Vec::new();
     let notes = note_index(snap);
     let mut note_ctr = 0usize;
-    let note_ctr = &mut note_ctr;
     let comments = comment_index(snap);
-    let comments = &comments;
     let tracked_changes = super::changes::render_tracked_changes(&snap.changes);
     let mut style_attr = |b: &BlockView| -> String {
         resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs)
     };
     let mut i = 0;
-    while i < snap.blocks.len() {
-        let b = &snap.blocks[i];
+    while let Some(b) = snap.blocks.get(i) {
         match b.kind.as_str() {
             "heading" => {
-                let level = match b.attrs.get("level") {
-                    Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
-                    _ => 1,
-                };
-                let sa = style_attr(b);
-                let _ = write!(
-                    body,
-                    r#"<text:h text:outline-level="{level}"{sa}>{}</text:h>"#,
-                    render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr, comments)
+                render_heading(
+                    b,
+                    &mut body,
+                    &mut style_attr,
+                    &mut used,
+                    &notes,
+                    &mut note_ctr,
+                    &comments,
                 );
-                i += 1;
+                i = i.saturating_add(1);
             }
             "list_item" => {
-                // Emit a run of consecutive list items as (possibly nested) ODF lists, reconstructing the
-                // `text:list`/`text:list-item` nesting from each item's 0-based `level`. A nested list lives
-                // inside its parent item, so items stay open until we know whether the next item is deeper;
-                // the list opening a run at a level carries a reconstructed numbering reference when needed.
-                let mut depth: i64 = 0; // number of <text:list> currently open
-                let mut item_open = false; // a <text:list-item> awaiting its close
-                while i < snap.blocks.len() && snap.blocks[i].kind == "list_item" {
-                    let li = &snap.blocks[i];
-                    let target = snap_list_level(li) + 1; // lists that should be open
-                    if target > depth {
-                        // Deeper: open new lists nested inside the current open item. The innermost (last) list
-                        // opened is the one `li` lives in, so it gets `li`'s numbering reference.
-                        while depth < target {
-                            depth += 1;
-                            let open = if depth == target {
-                                open_list_tag(li, list_styles)
-                            } else {
-                                "<text:list>".to_string()
-                            };
-                            body.push_str(&open);
-                        }
-                    } else {
-                        // Sibling or shallower: close the current item, then unwind any deeper lists (each wrapped in its parent item).
-                        if item_open {
-                            body.push_str("</text:list-item>");
-                        }
-                        while depth > target {
-                            body.push_str("</text:list>");
-                            depth -= 1;
-                            body.push_str("</text:list-item>");
-                        }
-                    }
-                    let sa = style_attr(li);
-                    let _ = write!(
-                        body,
-                        r"<text:list-item><text:p{sa}>{}</text:p>",
-                        render_inline(&li.text, &li.marks, &mut used, &notes, note_ctr, comments)
-                    );
-                    item_open = true;
-                    i += 1;
-                }
-                if item_open {
-                    body.push_str("</text:list-item>");
-                }
-                while depth > 0 {
-                    body.push_str("</text:list>");
-                    depth -= 1;
-                    if depth > 0 {
-                        body.push_str("</text:list-item>");
-                    }
-                }
+                render_list_run(
+                    snap,
+                    &mut i,
+                    &mut body,
+                    &mut list_styles,
+                    &mut style_attr,
+                    &mut used,
+                    &notes,
+                    &mut note_ctr,
+                    &comments,
+                );
             }
             "image" => {
                 // Emit a top-level `draw:frame` referencing the blob written as a `Pictures/<hash>.<ext>`
@@ -1022,66 +1051,266 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 if let Some(frame) = image_frame_xml(b, snap, &mut graphic_styles) {
                     body.push_str(&frame);
                 }
-                i += 1;
+                i = i.saturating_add(1);
             }
             "fidelity" => {
                 // Re-emit the preserved unmodeled element verbatim, in place.
                 if let Some(AttrVal::Str(xml)) = b.attrs.get("xml") {
                     body.push_str(xml);
                 }
-                i += 1;
+                i = i.saturating_add(1);
             }
             "cell" => {
-                let tid = snap_cell_table(b).unwrap_or_default();
-                let start = i;
-                while i < snap.blocks.len()
-                    && snap_cell_table(&snap.blocks[i]).as_deref() == Some(tid.as_str())
-                {
-                    i += 1;
-                }
-                let cells = &snap.blocks[start..i];
-                let nrows = cells.iter().map(|c| snap_cell_rc(c).0).max().unwrap_or(0) + 1;
-                let ncols = cells.iter().map(|c| snap_cell_rc(c).1).max().unwrap_or(0) + 1;
-                let _ = write!(body, r#"<table:table table:name="{tid}">"#);
-                let _ = write!(
-                    body,
-                    r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#
+                render_table_run(
+                    snap,
+                    &mut i,
+                    &mut body,
+                    &mut style_attr,
+                    &mut used,
+                    &notes,
+                    &mut note_ctr,
+                    &comments,
                 );
-                for r in 0..nrows {
-                    body.push_str("<table:table-row>");
-                    for c in 0..ncols {
-                        let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
-                        let sa = cell.map(&mut style_attr).unwrap_or_default();
-                        let inner = cell
-                            .map(|cl| {
-                                render_inline(
-                                    &cl.text, &cl.marks, &mut used, &notes, note_ctr, comments,
-                                )
-                            })
-                            .unwrap_or_default();
-                        let _ = write!(
-                            body,
-                            r"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"
-                        );
-                    }
-                    body.push_str("</table:table-row>");
-                }
-                body.push_str("</table:table>");
             }
             _ => {
-                let sa = style_attr(b);
-                let _ = write!(
-                    body,
-                    r"<text:p{sa}>{}</text:p>",
-                    render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr, comments)
+                render_paragraph(
+                    b,
+                    &mut body,
+                    &mut style_attr,
+                    &mut used,
+                    &notes,
+                    &mut note_ctr,
+                    &comments,
                 );
-                i += 1;
+                i = i.saturating_add(1);
             }
         }
     }
 
+    let styles = render_automatic_styles(
+        snap,
+        existing_style_names,
+        &used,
+        &named_refs,
+        &pstyles,
+        &list_styles,
+        &graphic_styles,
+    );
+
+    // Declare the common ODF namespaces so re-emitted fidelity atoms (tables, drawings, …) stay
+    // well-formed. Exotic namespaces are only preserved once the content prologue is (future).
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0">
+<office:automatic-styles>{styles}</office:automatic-styles>
+<office:body><office:text>{tracked_changes}{body}</office:text></office:body>
+</office:document-content>"#
+    )
+}
+
+/// Renders a `heading` block as `text:h`, with its outline level clamped to `1..=6`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same per-document render state build_content_xml's other block handlers share"
+)]
+fn render_heading(
+    b: &BlockView,
+    body: &mut String,
+    style_attr: &mut impl FnMut(&BlockView) -> String,
+    used: &mut BTreeMap<String, String>,
+    notes: &NoteIndex,
+    note_ctr: &mut usize,
+    comments: &CommentIndex,
+) {
+    let level = match b.attrs.get("level") {
+        Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
+        _ => 1,
+    };
+    let sa = style_attr(b);
+    let _ = write!(
+        body,
+        r#"<text:h text:outline-level="{level}"{sa}>{}</text:h>"#,
+        render_inline(&b.text, &b.marks, used, notes, note_ctr, comments)
+    );
+}
+
+/// Renders any block that isn't one of the other recognised kinds as a plain `text:p`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same per-document render state build_content_xml's other block handlers share"
+)]
+fn render_paragraph(
+    b: &BlockView,
+    body: &mut String,
+    style_attr: &mut impl FnMut(&BlockView) -> String,
+    used: &mut BTreeMap<String, String>,
+    notes: &NoteIndex,
+    note_ctr: &mut usize,
+    comments: &CommentIndex,
+) {
+    let sa = style_attr(b);
+    let _ = write!(
+        body,
+        r"<text:p{sa}>{}</text:p>",
+        render_inline(&b.text, &b.marks, used, notes, note_ctr, comments)
+    );
+}
+
+/// Renders a run of consecutive `list_item` blocks starting at `*i` as (possibly nested) ODF
+/// lists, reconstructing the `text:list`/`text:list-item` nesting from each item's 0-based
+/// `level`. A nested list lives inside its parent item, so items stay open until we know
+/// whether the next item is deeper; advances `*i` past the run.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same per-document render state build_content_xml's other block handlers share"
+)]
+fn render_list_run(
+    snap: &DocSnapshot,
+    i: &mut usize,
+    body: &mut String,
+    list_styles: &mut Vec<ListStyle>,
+    style_attr: &mut impl FnMut(&BlockView) -> String,
+    used: &mut BTreeMap<String, String>,
+    notes: &NoteIndex,
+    note_ctr: &mut usize,
+    comments: &CommentIndex,
+) {
+    let mut depth: i64 = 0; // number of <text:list> currently open
+    let mut item_open = false; // a <text:list-item> awaiting its close
+    while let Some(li) = snap.blocks.get(*i).filter(|b| b.kind == "list_item") {
+        let target = snap_list_level(li).saturating_add(1); // lists that should be open
+        if target > depth {
+            // Deeper: open new lists nested inside the current open item. The innermost (last) list
+            // opened is the one `li` lives in, so it gets `li`'s numbering reference.
+            while depth < target {
+                depth = depth.saturating_add(1);
+                let open = if depth == target {
+                    open_list_tag(li, list_styles)
+                } else {
+                    "<text:list>".to_string()
+                };
+                body.push_str(&open);
+            }
+        } else {
+            // Sibling or shallower: close the current item, then unwind any deeper lists (each wrapped in its parent item).
+            if item_open {
+                body.push_str("</text:list-item>");
+            }
+            while depth > target {
+                body.push_str("</text:list>");
+                depth = depth.saturating_sub(1);
+                body.push_str("</text:list-item>");
+            }
+        }
+        let sa = style_attr(li);
+        let _ = write!(
+            body,
+            r"<text:list-item><text:p{sa}>{}</text:p>",
+            render_inline(&li.text, &li.marks, used, notes, note_ctr, comments)
+        );
+        item_open = true;
+        *i = i.saturating_add(1);
+    }
+    if item_open {
+        body.push_str("</text:list-item>");
+    }
+    while depth > 0 {
+        body.push_str("</text:list>");
+        depth = depth.saturating_sub(1);
+        if depth > 0 {
+            body.push_str("</text:list-item>");
+        }
+    }
+}
+
+/// Renders a run of consecutive `cell` blocks belonging to the same table (starting at `*i`)
+/// as an ODF `table:table`; advances `*i` past the run.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same per-document render state build_content_xml's other block handlers share"
+)]
+fn render_table_run(
+    snap: &DocSnapshot,
+    i: &mut usize,
+    body: &mut String,
+    style_attr: &mut impl FnMut(&BlockView) -> String,
+    used: &mut BTreeMap<String, String>,
+    notes: &NoteIndex,
+    note_ctr: &mut usize,
+    comments: &CommentIndex,
+) {
+    let Some(first) = snap.blocks.get(*i) else {
+        return;
+    };
+    let tid = snap_cell_table(first).unwrap_or_default();
+    let start = *i;
+    while snap
+        .blocks
+        .get(*i)
+        .is_some_and(|b| snap_cell_table(b).as_deref() == Some(tid.as_str()))
+    {
+        *i = i.saturating_add(1);
+    }
+    let Some(cells) = snap.blocks.get(start..*i) else {
+        return;
+    };
+    let nrows = cells
+        .iter()
+        .map(|c| snap_cell_rc(c).0)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let ncols = cells
+        .iter()
+        .map(|c| snap_cell_rc(c).1)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let _ = write!(body, r#"<table:table table:name="{tid}">"#);
+    let _ = write!(
+        body,
+        r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#
+    );
+    for r in 0..nrows {
+        body.push_str("<table:table-row>");
+        for c in 0..ncols {
+            let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
+            let sa = match cell {
+                Some(cl) => style_attr(cl),
+                None => String::new(),
+            };
+            let inner = match cell {
+                Some(cl) => render_inline(&cl.text, &cl.marks, used, notes, note_ctr, comments),
+                None => String::new(),
+            };
+            let _ = write!(
+                body,
+                r"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"
+            );
+        }
+        body.push_str("</table:table-row>");
+    }
+    body.push_str("</table:table>");
+}
+
+/// Builds the `office:automatic-styles` body: run marks used inline, common named styles
+/// referenced by a block's `style` attr (skipped if already declared in a preserved
+/// `styles.xml`), per-paragraph resolved styles, list styles, and image-wrap graphic styles.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one style-source parameter per style kind build_content_xml collected; splitting further would just move the coupling"
+)]
+fn render_automatic_styles(
+    snap: &DocSnapshot,
+    existing_style_names: &BTreeSet<String>,
+    used: &BTreeMap<String, String>,
+    named_refs: &BTreeSet<String>,
+    pstyles: &[ParaStyleEntry],
+    list_styles: &[ListStyle],
+    graphic_styles: &[(String, String)],
+) -> String {
     let mut styles = String::new();
-    for (name, props) in &used {
+    for (name, props) in used {
         let _ = write!(
             styles,
             r#"<style:style style:name="{name}" style:family="text"><style:text-properties {props}/></style:style>"#
@@ -1089,7 +1318,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     }
     // Named (common) styles referenced by a block's `style` attr, emitted unless already
     // declared in a preserved styles.xml, so the document's CRDT styles render in LibreOffice.
-    for id in &named_refs {
+    for id in named_refs {
         if existing_style_names.contains(&super::styles::encode_style_name(id)) {
             continue;
         }
@@ -1105,28 +1334,19 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
         let _ = write!(
             styles,
             r#"<style:style style:name="P{}" style:family="paragraph"{parent_attr}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
-            idx + 1
+            idx.saturating_add(1)
         );
     }
-    for ls in list_styles.iter() {
+    for ls in list_styles {
         styles.push_str(&ls.xml);
     }
-    for (name, wrap) in &graphic_styles {
+    for (name, wrap) in graphic_styles {
         let _ = write!(
             styles,
             r#"<style:style style:name="{name}" style:family="graphic"><style:graphic-properties style:wrap="{wrap}"/></style:style>"#
         );
     }
-
-    // Declare the common ODF namespaces so re-emitted fidelity atoms (tables, drawings, …) stay
-    // well-formed. Exotic namespaces are only preserved once the content prologue is (future).
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0">
-<office:automatic-styles>{styles}</office:automatic-styles>
-<office:body><office:text>{tracked_changes}{body}</office:text></office:body>
-</office:document-content>"#
-    )
+    styles
 }
 
 #[cfg(test)]
@@ -1545,7 +1765,7 @@ mod tests {
         let pic = cont
             .parts
             .iter()
-            .find(|(n, _)| n.starts_with("Pictures/") && n.ends_with(".png"))
+            .find(|(n, _)| n.starts_with("Pictures/") && n.to_ascii_lowercase().ends_with(".png"))
             .expect("Pictures/<hash>.png written");
         assert_eq!(pic.1, &TINY_PNG[..], "picture bytes written verbatim");
         let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
@@ -1674,15 +1894,15 @@ mod tests {
     #[test]
     fn nested_list_levels_roundtrip_through_odt() {
         let mut d = Document::new();
-        let a = d.insert_block(None, "list_item");
-        d.splice_text(&a, 0, 0, "a");
-        let b = d.insert_block(Some(&a), "list_item");
-        d.splice_text(&b, 0, 0, "b");
-        let nested = d.insert_block(Some(&b), "list_item");
+        let item_a = d.insert_block(None, "list_item");
+        d.splice_text(&item_a, 0, 0, "a");
+        let item_b = d.insert_block(Some(&item_a), "list_item");
+        d.splice_text(&item_b, 0, 0, "b");
+        let nested = d.insert_block(Some(&item_b), "list_item");
         d.splice_text(&nested, 0, 0, "nested");
         d.as_mut().set_attr(&nested, "level", 1_i64);
-        let c = d.insert_block(Some(&nested), "list_item");
-        d.splice_text(&c, 0, 0, "c");
+        let item_c = d.insert_block(Some(&nested), "list_item");
+        d.splice_text(&item_c, 0, 0, "c");
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
@@ -2221,15 +2441,15 @@ mod tests {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "see ref");
-        let fid = d.insert_footnote(&p, 4); // after "see "
-        let fb = d.insert_note_block(&fid, None, "paragraph").unwrap();
-        d.splice_note_text(&fid, &fb, 0, 0, "a footnote");
+        let fnote_id = d.insert_footnote(&p, 4); // after "see "
+        let fnote_block = d.insert_note_block(&fnote_id, None, "paragraph").unwrap();
+        d.splice_note_text(&fnote_id, &fnote_block, 0, 0, "a footnote");
 
         let p2 = d.insert_block(Some(&p), "paragraph");
         d.splice_text(&p2, 0, 0, "tail");
-        let eid = d.insert_endnote(&p2, 4); // at the end
-        let eb = d.insert_note_block(&eid, None, "paragraph").unwrap();
-        d.splice_note_text(&eid, &eb, 0, 0, "an endnote");
+        let enote_id = d.insert_endnote(&p2, 4); // at the end
+        let enote_block = d.insert_note_block(&enote_id, None, "paragraph").unwrap();
+        d.splice_note_text(&enote_id, &enote_block, 0, 0, "an endnote");
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
@@ -2419,8 +2639,10 @@ mod tests {
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        // (author, body text, (range start, range end)) per comment, for a stable equality check.
+        type CommentSummary = (String, String, Option<(usize, usize)>);
         let authors_texts = |snap: &DocSnapshot| {
-            let mut v: Vec<(String, String, Option<(usize, usize)>)> = snap
+            let mut v: Vec<CommentSummary> = snap
                 .comments
                 .iter()
                 .map(|c| {
@@ -2441,12 +2663,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tracked_changes_roundtrip_through_odt() {
-        use crate::document::MarkValue;
-        use crate::schema::{MARK_DEL, MARK_INS};
-        // A tracked insertion + a tracked deletion (with author) must export as a text:tracked-changes
-        // block + inline change-start/change-end markers, and re-import with kind/author + ranges intact.
+    /// Builds a paragraph "hello world" with a tracked insertion (" there" after "hello", by
+    /// Ada) and a tracked deletion ("world", by Bob), for the tracked-changes round-trip test.
+    fn build_tracked_changes_doc() -> Document {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "hello world");
@@ -2455,10 +2674,12 @@ mod tests {
         // Delete "world" (now chars 12..17 in "hello there world").
         let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00");
         let _ = (ins, del);
+        d
+    }
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
-        let cont = OdtContainer::read(&exported).unwrap();
-        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+    /// Asserts the exported ODT `content.xml` carries the tracked-changes block, both region
+    /// wrappers, both inline change markers, and both authors.
+    fn assert_tracked_changes_xml(content: &str) {
         assert!(
             content.contains("<text:tracked-changes>"),
             "tracked-changes block emitted: {content}"
@@ -2487,6 +2708,20 @@ mod tests {
             content.contains("<dc:creator>Bob</dc:creator>"),
             "del author emitted: {content}"
         );
+    }
+
+    #[test]
+    fn tracked_changes_roundtrip_through_odt() {
+        use crate::document::MarkValue;
+        use crate::schema::{MARK_DEL, MARK_INS};
+        // A tracked insertion + a tracked deletion (with author) must export as a text:tracked-changes
+        // block + inline change-start/change-end markers, and re-import with kind/author + ranges intact.
+        let d = build_tracked_changes_doc();
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert_tracked_changes_xml(content);
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
