@@ -79,6 +79,12 @@ pub fn decide_app_for_drop(item: &DraggedItem) -> AppKind {
 /// Splices a new `Tab` into the active workspace's first strip's first
 /// window group (creating one if none exists) and focuses it. `None`
 /// if the tree has no active workspace.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "public API called across the shell/compositor boundary (compositor::tab_binding, \
+              shell::chrome_state); changing the signature would require editing call sites \
+              outside this file's scope"
+)]
 pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Option<u64> {
     let kind = decide_app_for_drop(&item);
     let label = tab_label_for(&item, &kind);
@@ -116,6 +122,11 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
 /// Splices into the **specific** `(strip_id, group_id)` the pointer was
 /// over at drop time. `None` if either id is stale — a defined no-op
 /// instead of dumping the file into an arbitrary window.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "public API called across the shell/compositor boundary; changing the signature \
+              would require editing call sites outside this file's scope"
+)]
 pub fn apply_workspace_drop_at(
     tree: &mut WorkspaceTree,
     item: DraggedItem,
@@ -155,21 +166,25 @@ pub fn apply_workspace_drop_at_from_path(
     apply_workspace_drop_at(tree, item, strip_id, group_id)
 }
 
-/// Folds `"Editor"` onto `UiAppKind::Settings` as a temporary parking
-/// spot until an `Editor` variant lands on the UI enum.
+/// Folds `"Editor"` (and every other `Other` kind) onto
+/// `UiAppKind::Settings` as a temporary parking spot until an `Editor`
+/// variant lands on the UI enum.
 fn state_kind_to_ui(kind: &AppKind) -> UiAppKind {
     match kind {
         AppKind::Terminal => UiAppKind::Terminal,
         AppKind::FileExplorer => UiAppKind::Files,
         AppKind::Browser => UiAppKind::Browser,
-        AppKind::Settings => UiAppKind::Settings,
-        AppKind::Other(s) if s.eq_ignore_ascii_case("Editor") => UiAppKind::Settings,
-        AppKind::Other(_) => UiAppKind::Settings,
+        AppKind::Settings | AppKind::Other(_) => UiAppKind::Settings,
     }
 }
 
 /// Appends a Stub tile, not a live `Box<dyn AppWidget>` — materialising
 /// one synchronously could spawn subprocesses; content hydrates on focus.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "public API called across the shell/compositor boundary; changing the signature \
+              would require editing call sites outside this file's scope"
+)]
 pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -> Option<u64> {
     let kind = decide_app_for_drop(&item);
     let label = tab_label_for(&item, &kind);
@@ -191,7 +206,12 @@ pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -
     } else {
         let group = RuntimeGroup::with_tabs(vec![tab], WindowWidth::Normal);
         strip.window_groups.push(group);
-        let group = strip.window_groups.last_mut().unwrap();
+        let Some(group) = strip.window_groups.last_mut() else {
+            // Unreachable — the line above just pushed one — but a
+            // dropped tab that silently doesn't focus is a far better
+            // failure than panicking this panic=abort process.
+            return Some(tab_id);
+        };
         group.active_tab = tab_id;
     }
     Some(tab_id)
@@ -363,7 +383,7 @@ mod tests {
             RuntimeTile::Stub { kind, .. } => {
                 assert_eq!(*kind, UiAppKind::Settings);
             }
-            _ => panic!("expected Stub tile"),
+            RuntimeTile::App(_) => panic!("expected Stub tile"),
         }
     }
 
