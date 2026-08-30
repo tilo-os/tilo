@@ -9,6 +9,7 @@ pub mod blobstore;
 pub mod codecs;
 pub mod diff;
 pub mod document;
+pub mod export;
 pub mod format;
 pub mod history;
 pub mod model;
@@ -28,6 +29,7 @@ pub use diff::{
     SheetChange, SheetDiff, SheetDiffSummary, SheetOp, TextRun, diff_snapshots, diff_workbooks,
 };
 pub use document::{DocError, Document, MarkSpan, author_runs};
+pub use export::{ActiveChange, InlineBoundary, InlinePlan, InlinePoint, InlineRun, RangeBoundary};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
 pub use history::VersionMeta;
 pub use model::{Containers, DocMut, DocRef, IdGen, NoteKind, Region, ordered_keys_scan_count};
