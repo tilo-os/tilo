@@ -44,6 +44,7 @@ keys/**/*.private.pem
 .claude/qos-logs/
 .claude/qos-tmp/
 .claude/build/
+.claude/clippy-campaign/
 .claude/worktrees/
 .claude/app-status.md
 .claude/*.log
