@@ -64,9 +64,18 @@ impl SidebarWheel {
             Some(id) => ws.strips.iter().position(|s| s.id == id).unwrap_or(0),
             None => 0,
         };
-        let len = ws.strips.len() as i32;
-        let next_idx = (current_idx as i32 + step).clamp(0, len - 1) as usize;
-        let next_id = ws.strips[next_idx].id;
+        // `step` is always +-1 and `current_idx` a strip-list index (never
+        // near i32::MAX), so this can't overflow; still spelled with
+        // checked/saturating arithmetic rather than asserting that.
+        let last_idx = ws.strips.len().saturating_sub(1);
+        let next_idx = if step < 0 {
+            current_idx.saturating_sub(1)
+        } else {
+            current_idx.saturating_add(1).min(last_idx)
+        };
+        let Some(next_id) = ws.strips.get(next_idx).map(|s| s.id) else {
+            return;
+        };
         tree.active_strip.insert(active_ws, next_id);
     }
 
@@ -103,7 +112,7 @@ impl SidebarWheel {
 
     /// Drives the hint card's alpha.
     pub fn overscroll_progress(&self) -> f32 {
-        (self.overscroll / OVERSCROLL_THRESHOLD).min(1.0).max(0.0)
+        (self.overscroll / OVERSCROLL_THRESHOLD).clamp(0.0, 1.0)
     }
 
     pub fn wants_pointer_capture(&self) -> bool {
