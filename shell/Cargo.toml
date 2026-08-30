@@ -72,6 +72,7 @@ uuid.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
 # `home_dir`/`config_dir`/`cache_dir` API is identical.
 dirs.workspace = true
+qcms.workspace = true
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
 wayland-protocols = "0.32.12"

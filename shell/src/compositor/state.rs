@@ -1575,6 +1575,8 @@ mod tick_hook_tests {
             position,
             size,
             scale,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            color_profile: None,
         }
     }
 
