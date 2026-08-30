@@ -305,10 +305,15 @@ fn the_band_is_filled_flat_with_a_single_colour() {
 
     let (r_in, r_out) = disc.label_band_radii();
     let c = disc.disc_centre();
-    // A row a third of the way down the footprint: inside a sector, clear
-    // of the active wedge's tint at the middle and of the labels, which
-    // sit on the sector centrelines.
-    let y = (c.y - (r_out - r_in) * 0.75).round();
+    // A row inside a sector but off its label. Measured in sectors, not in
+    // band thicknesses: labels sit on the centrelines, so the right offset is
+    // a fraction of the angular step, and a fixed pixel drop lands wherever
+    // the current geometry happens to put it. The band-thickness figure this
+    // used to carry came to exactly one sector when the step widened, which
+    // put the sample straight through the next label.
+    let mid_r = (r_in + r_out) / 2.0;
+    let off = f64::from(disc.spoke_gap_deg()).to_radians() * 0.3;
+    let y = (c.y - mid_r * off.sin()).round();
     let dy = y - c.y;
     // Stay off both edges so the rim strokes and the inner hairline are
     // not in the sample.
