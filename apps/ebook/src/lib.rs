@@ -12,6 +12,7 @@
 
 pub mod actions;
 pub mod app;
+mod comment_overlay;
 pub mod content;
 pub mod doc;
 pub mod epub;
