@@ -5,6 +5,7 @@
 //! 1.25` band (see `text_baseline_centred_with_caret`) so glyphs don't drift
 //! below the caret.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
@@ -93,6 +94,10 @@ pub struct TextInput {
     /// Gates whether edits splice into `state`; false even with a path string
     /// set if it doesn't resolve to a real CRDT object.
     crdt_bound: bool,
+    /// Optional local-only mirror for secrets and other values that must not
+    /// enter an Automerge history. The owner controls its lifetime and can
+    /// zero/clear it immediately after use.
+    external_buffer: Option<Arc<Mutex<String>>>,
     on_change_path: String,
     last_mouse_pos: Point,
     char_x_positions: Vec<f64>,
@@ -208,6 +213,7 @@ impl TextInput {
             last_edit_time: None,
             dirty: false,
             crdt_bound: false,
+            external_buffer: None,
             font_size_override: None,
             plain: false,
             bound_text: None,
@@ -1516,6 +1522,14 @@ impl TextInput {
         self
     }
 
+    /// Mirror edits into caller-owned process-local memory without creating a
+    /// CRDT object. Intended for passwords/PINs; use with [`Self::local`].
+    pub fn with_external_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
+        self.external_buffer = Some(buffer);
+        self.crdt_bound = false;
+        self
+    }
+
     pub fn with_secret(mut self, on: bool) -> Self {
         self.secret = on;
         self
@@ -2123,6 +2137,13 @@ impl TextInput {
 
 impl Widget for TextInput {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if self.dirty
+            && let Some(buffer) = &self.external_buffer
+            && let Ok(mut value) = buffer.lock()
+        {
+            value.clear();
+            value.push_str(&self.text);
+        }
         // Directly-bound Text wins over the string-path mode entirely.
         if let Some(obj_id) = self.bound_text.clone() {
             if let Ok(text) = state.text(&obj_id) {
@@ -4118,6 +4139,21 @@ mod tests {
         plain.text = "hunter2".to_string();
         assert_eq!(plain.display_text(), "hunter2");
         assert_eq!(plain.display_prefix(3), "hun");
+    }
+
+    #[test]
+    fn local_secret_mirrors_without_entering_the_document() {
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let mut input = TextInput::local()
+            .with_external_buffer(Arc::clone(&buffer))
+            .with_secret(true);
+        input.text = "correct horse battery staple".into();
+        input.dirty = true;
+        let mut document = AutoCommit::new();
+        input.sync(&mut document, &automerge::ROOT);
+
+        assert_eq!(&*buffer.lock().unwrap(), "correct horse battery staple");
+        assert!(document.keys(&automerge::ROOT).next().is_none());
     }
 
     #[test]
