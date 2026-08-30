@@ -75,8 +75,13 @@ pub struct Spec {
     pub targets: Option<std::path::PathBuf>,
 }
 
-/// A headless app: real widget tree, real Taffy layout, real event dispatch.
-pub struct Driver {
+/// The canonical display-independent frame pipeline.
+///
+/// Both screenshot rendering and [`Driver`] input scenarios use this type, so
+/// they cannot drift into subtly different sync/layout/draw implementations.
+/// Live [`crate::App`] additionally owns the window and event loop, but follows
+/// the same pass ordering documented by [`Self::relayout`].
+pub struct FrameHarness {
     state: State,
     root: Box<dyn Widget>,
     taffy: TaffyTree<()>,
@@ -111,9 +116,22 @@ pub struct Driver {
     profiler: Option<crate::profiling::FrameProfiler>,
 }
 
-impl Driver {
+/// Backwards-compatible name for the input-driving use of [`FrameHarness`].
+pub type Driver = FrameHarness;
+
+impl FrameHarness {
     /// Stand the app up and run the first layout pass.
     pub fn new(state: State, root: Box<dyn Widget>, viewport: (u32, u32)) -> Self {
+        Self::new_with_theme(state, root, viewport, Theme::dark())
+    }
+
+    /// Stand the app up under an explicit theme and run the first frame.
+    pub fn new_with_theme(
+        state: State,
+        root: Box<dyn Widget>,
+        viewport: (u32, u32),
+        theme: Theme,
+    ) -> Self {
         let mut d = Self {
             state,
             root,
@@ -122,7 +140,7 @@ impl Driver {
             root_node: NodeId::from(0usize),
             child_node: NodeId::from(0usize),
             text: TextRenderer::new(),
-            theme: Theme::dark(),
+            theme,
             scene: Scene::new(),
             records: None,
             room_index: None,
@@ -135,6 +153,25 @@ impl Driver {
         };
         d.relayout();
         d
+    }
+
+    /// Use a different palette for subsequent frames.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.relayout();
+    }
+
+    /// Rasterise the most recently laid-out frame to a PNG.
+    ///
+    /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
+    /// this never runs a separate screenshot-only widget pipeline.
+    pub fn render_png(&self, out: &std::path::Path) {
+        if let Some(parent) = out.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let (w, h) = self.viewport;
+        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        renderer.render_png(&self.scene, vello::peniko::Color::TRANSPARENT, out);
     }
 
     /// Drive a record-aware app: the live document is a record's, and the
@@ -733,14 +770,26 @@ fn value_arg(args: &[String], flag: &str) -> Option<String> {
 pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     let v: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| format!("invalid JSON: {e}"))?;
+    if !v.is_object() {
+        return Err("payload must be a JSON object".to_owned());
+    }
     let mut spec = Spec::default();
-    if let Some(vp) = v.get("viewport").and_then(|x| x.as_array())
-        && vp.len() == 2
-    {
-        spec.viewport = Some((
-            vp[0].as_u64().unwrap_or(0) as u32,
-            vp[1].as_u64().unwrap_or(0) as u32,
-        ));
+    if let Some(value) = v.get("viewport") {
+        let vp = value
+            .as_array()
+            .filter(|vp| vp.len() == 2)
+            .ok_or("viewport must be [width, height]")?;
+        let width = vp[0]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .ok_or("viewport width must be a non-zero u32")?;
+        let height = vp[1]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .ok_or("viewport height must be a non-zero u32")?;
+        spec.viewport = Some((width, height));
     }
     if let Some(p) = v.get("dump").and_then(|x| x.as_str()) {
         spec.dump = Some(p.into());
@@ -756,6 +805,9 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         let obj = a
             .as_object()
             .ok_or_else(|| format!("action must be an object, got {a}"))?;
+        if obj.len() != 1 {
+            return Err("each action must contain exactly one operation".to_owned());
+        }
         let (k, val) = obj
             .iter()
             .next()
@@ -893,6 +945,19 @@ mod tests {
     fn an_unknown_action_is_rejected_rather_than_ignored() {
         let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
         assert!(err.contains("teleport"), "{err}");
+    }
+
+    #[test]
+    fn malformed_headless_viewports_and_actions_are_rejected() {
+        for raw in [
+            r#"{"viewport":[0,600]}"#,
+            r#"{"viewport":[800]}"#,
+            r#"{"viewport":"800x600"}"#,
+            r#"{"actions":[{"key":"Enter","type":"oops"}]}"#,
+            "[]",
+        ] {
+            assert!(parse_spec(raw).is_err(), "accepted {raw}");
+        }
     }
 
     /// A button click must reach the widget through the same
