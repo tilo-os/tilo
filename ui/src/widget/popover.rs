@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -93,6 +93,7 @@ impl Popover {
         }
     }
 
+    #[must_use]
     pub fn with_items<I, S>(mut self, items: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -102,6 +103,7 @@ impl Popover {
         self
     }
 
+    #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -174,8 +176,14 @@ impl Popover {
         if self.items.is_empty() {
             return;
         }
-        let max = self.items.len() as i32 - 1;
-        self.highlighted = (self.highlighted as i32 + dir).clamp(0, max) as usize;
+        let max = self.items.len().saturating_sub(1);
+        self.highlighted = if dir.is_negative() {
+            let step = usize::try_from(dir.unsigned_abs()).unwrap_or(usize::MAX);
+            self.highlighted.saturating_sub(step)
+        } else {
+            let step = usize::try_from(dir).unwrap_or(0);
+            self.highlighted.saturating_add(step).min(max)
+        };
     }
 
     pub fn highlight_first(&mut self) {
@@ -219,7 +227,17 @@ impl Popover {
         if rel < 0.0 {
             return None;
         }
-        let idx = (rel / ROW_H).floor() as usize;
+        let row = (rel / ROW_H).floor();
+        // `point` is already checked against `self.rect` above, so `rel` —
+        // and therefore `row` — is bounded by the popover's own on-screen
+        // height and never approaches usize::MAX.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "row is non-negative (checked via `rel < 0.0` above) and \
+                      bounded by the popover's own on-screen height"
+        )]
+        let idx = row as usize;
         (idx < self.items.len()).then_some(idx)
     }
 
@@ -230,6 +248,11 @@ impl Popover {
     /// Resolve `self.rect` from the anchor, measured option widths, and the
     /// viewport. Callable standalone so a hand-drawn host — or a test — can
     /// place the menu without a full draw.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "n is the popover's own row count — never remotely close to \
+                  f64's exact-integer range"
+    )]
     pub fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let fs = theme.tokens.typography.scale.sm;
         let mut w = MIN_W.max(self.anchor.width());
@@ -257,6 +280,11 @@ impl Popover {
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "idx is a row index into this popover's own (short) item \
+                  list — never remotely close to f64's exact-integer range"
+    )]
     fn row_rect(&self, idx: usize) -> Rect {
         let y0 = self.rect.y0 + PAD_Y + idx as f64 * ROW_H;
         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + ROW_H)
@@ -402,7 +430,7 @@ impl Widget for Popover {
                 label,
                 fs,
                 text_color,
-                transform * Affine::translate((row.x0 + PAD_X + CHECK_W, ty)),
+                transform.pre_translate(Vec2::new(row.x0 + PAD_X + CHECK_W, ty)),
                 None,
                 TextWeight::Medium,
             );
@@ -501,7 +529,7 @@ impl Widget for Popover {
             .map(|(i, label)| {
                 AccessNode::new(Role::MenuItem)
                     .with_name(label.clone())
-                    .with_position(i + 1, n)
+                    .with_position(i.saturating_add(1), n)
                     .with_state(AccessState {
                         focusable: true,
                         focused: self.open && i == self.highlighted,
