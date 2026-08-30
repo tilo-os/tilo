@@ -55,6 +55,7 @@ pub mod peer_view;
 pub mod peer_windows;
 pub mod persist;
 pub mod placement;
+mod power_menu;
 pub mod projection;
 pub mod qs_actions;
 pub mod qs_refresh;
