@@ -23,8 +23,8 @@ path = "src/main.rs"
 # compiles the live engine in.
 default = ["live-media"]
 # The real-time media engine: voice + camera + screen-share over iroh QUIC,
-# GStreamer for microphone/opus capture + playback and camera capture, openh264
-# (bundled source, no system lib) for the H.264 camera/screen codec, and the
+# GStreamer for microphone/opus capture + playback and camera capture,
+# `qos-callstream` for the H.264 camera/screen codec, and the
 # xdg-desktop-portal ScreenCast request over ashpd. OFF by default so the
 # standard build and the `--shots` headless path never need the GStreamer/portal
 # dev stack or a Tokio runtime; the call UI runs fully against simulated/local
@@ -39,7 +39,6 @@ live-media = [
     "dep:gstreamer-app",
     "dep:iroh",
     "dep:tokio",
-    "dep:openh264",
     "dep:ashpd",
     "dep:qos-callstream",
 ]
@@ -79,14 +78,13 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # Live-media-only (feature-gated; never compiled for the default build).
 # Versions pinned to match the workspace lock so no extra copies resolve:
 # gstreamer 0.24 collapses onto the copy `apps/camera` / `apps/tube` /
-# `crates/media` already resolve; iroh 1.0 matches `fs`; openh264 0.9 (source)
-# matches `ui` / `shell` (the same decoder `ui::VideoPlayer::feed_frame` uses);
+# `crates/media` already resolve; iroh 1.0 matches `fs`; `qos-callstream`
+# owns the same openh264 codec used by the shared video player;
 # ashpd 0.9 matches the copy the other portal-using apps resolve.
 gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "sync", "time"] }
-openh264 = { workspace = true, optional = true }
 # Inherit the workspace pin (`default-features = false, features = ["tokio"]`):
 # ashpd's defaults include `async-std`, and enabling it alongside the tokio
 # backend is a hard compile error ("can't enable both async-std & tokio"). Every
