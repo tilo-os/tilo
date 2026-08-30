@@ -14,6 +14,12 @@
 //! cargo test -p quick-desktop --test compositor_test -- --ignored
 //! ```
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

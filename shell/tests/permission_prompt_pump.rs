@@ -4,6 +4,12 @@
 //! again to drain. Asserts queue state and the workspace `grants` map
 //! (Once doesn't persist; Session/Always do).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;

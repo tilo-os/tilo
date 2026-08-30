@@ -9,6 +9,12 @@
 //! parse (incoming) and build (outgoing) paths. The live IMAP/SMTP socket loop
 //! is proven separately by the `--features live` engine tests.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;

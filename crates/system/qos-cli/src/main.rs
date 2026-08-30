@@ -24,6 +24,15 @@
 //! implementation, reached the same way from the button and the command line, so the two
 //! cannot drift.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context, Result, bail};

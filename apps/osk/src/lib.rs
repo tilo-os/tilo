@@ -56,6 +56,14 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
 
 /// The Wayland app-id the on-screen keyboard identifies itself with. The
 /// compositor matches a client's app-id against this to recognise the keyboard

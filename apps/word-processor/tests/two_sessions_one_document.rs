@@ -14,6 +14,12 @@
 //! when the two sides hold *different* content — which is exactly the case a
 //! photograph pasted on one machine creates.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::{Path, PathBuf};
 
 use ui::Widget;

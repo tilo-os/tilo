@@ -10,6 +10,15 @@
 //! the host and silently skipped if absent, since Debian and Fedora
 //! layouts differ and only what exists is copied.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;

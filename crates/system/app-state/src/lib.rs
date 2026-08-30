@@ -10,6 +10,15 @@
 //! actor id lives in a sidecar for restart continuity; [`DocStore::open`]
 //! takes an exclusive `flock` so two live instances never share one.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;

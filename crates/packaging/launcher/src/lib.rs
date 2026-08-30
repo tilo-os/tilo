@@ -23,6 +23,15 @@
 //! When `qos-pkg` lands, the public surface of `manifest` is the only
 //! piece that needs to change.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod appdir;
 pub mod capabilities;
 pub mod dbus_proxy;

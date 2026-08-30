@@ -29,7 +29,6 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-
 // Thin build only: pull the shared toolkit dylib
 // (`libruntime_dylib.so`) into the link graph. It statically contains
 // the `ui` toolkit this app links -- and with it wgpu, vello,
@@ -38,6 +37,15 @@
 // of baking ~18 MB of `.text` into this binary. Naming the crate here
 // is what keeps rustc from eliminating it as unused. Compiled out in
 // normal (static) builds.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 

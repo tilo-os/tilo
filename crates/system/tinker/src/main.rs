@@ -1,5 +1,14 @@
 //! `tinker` — a place to be root that is not the machine.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;

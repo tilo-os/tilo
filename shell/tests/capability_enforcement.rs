@@ -7,6 +7,12 @@
 //! deliberately toward **denial**: "does deny work?", not just "does
 //! allow work?".
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::shell::persist;
 use shell::shell::state::{
     CapOverride, Capability, Effect, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,

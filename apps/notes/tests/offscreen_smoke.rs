@@ -4,6 +4,12 @@
 //! apply_layout → draw` cycle the live `ui::App` uses, with no panic
 //! / no missing layout slot.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use notes::{NotesApp, WELCOME_BODY};

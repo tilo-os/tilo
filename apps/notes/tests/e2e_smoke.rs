@@ -15,6 +15,12 @@
 //! round-trip, `BlockEditor` mutations, the saver pipeline, the
 //! `NotesApp::spawn` reload path — this test catches it.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::Path;
 
 use notes::sidebar::OutEvent;

@@ -1,5 +1,14 @@
 //! Wire contract shared by the qOS shell and projection broker.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 

@@ -14,6 +14,15 @@
 //! current-thread tokio runtime; apps that already own a runtime should
 //! call the `_async` variants directly.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::path::PathBuf;
 
 use tokio::runtime::Builder;

@@ -34,6 +34,15 @@
 //! - No live iroh-blobs serving. The loader crate provides a
 //!   `BlobStore` adapter over a real iroh `Store`.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod blobs;
 pub mod id;
 pub mod manifest;

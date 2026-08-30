@@ -1,5 +1,11 @@
 //! End-to-end collaboration tests over two real Iroh endpoints.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use iroh::address_lookup::memory::MemoryLookup;

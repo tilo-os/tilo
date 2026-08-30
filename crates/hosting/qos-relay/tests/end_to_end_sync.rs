@@ -25,6 +25,12 @@
 //!      delta. B applies it and now fully converges with A across
 //!      *both* edits.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use automerge::transaction::Transactable;

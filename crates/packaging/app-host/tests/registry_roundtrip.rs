@@ -3,6 +3,12 @@
 //! served by a live iroh node, then resolve → download → verify →
 //! install it on a fresh client — plus the fail-closed negatives.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;
 use app_host::store::Store;

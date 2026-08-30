@@ -9,6 +9,12 @@
 //! Concretely: after the author publishes, the author's inbound
 //! channel receives ZERO envelopes over the window.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

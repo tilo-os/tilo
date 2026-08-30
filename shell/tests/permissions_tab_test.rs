@@ -8,6 +8,12 @@
 //! the decision function — never a widget's own cache. Full
 //! build/layout/draw cycle, no GPU.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};

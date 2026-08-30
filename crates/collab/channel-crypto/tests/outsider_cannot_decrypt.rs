@@ -5,6 +5,12 @@
 //! pins that from several angles — a fresh standalone `ChannelGroup`, a
 //! different-channel group, and a tampered ciphertext.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
 

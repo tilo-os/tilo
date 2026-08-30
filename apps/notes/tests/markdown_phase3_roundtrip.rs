@@ -8,6 +8,12 @@
 //! not depend on `ui` for parsing) — this test ensures they emit the
 //! same bytes for the same block list.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use notes::markdown::{BlockSpec, parse, serialize};
 
 #[test]

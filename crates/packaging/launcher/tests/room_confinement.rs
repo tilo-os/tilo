@@ -13,6 +13,12 @@
 //! product, and a boundary whose proof is opt-in is a boundary nobody
 //! checks.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

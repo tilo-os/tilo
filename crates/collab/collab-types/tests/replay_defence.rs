@@ -11,6 +11,12 @@
 //! - Different authors maintaining independent seq spaces — author B
 //!   can use seq=1 even after author A has used seq=1.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::{Duration, SystemTime};
 
 use collab_types::{

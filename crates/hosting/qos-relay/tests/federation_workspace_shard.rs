@@ -8,6 +8,12 @@
 //! federates over no workspace at all. That's the whole shard
 //! isolation mechanism: hosted-set intersection.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

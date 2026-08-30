@@ -10,6 +10,12 @@
 //! (e.g. skipping the revocation check) would slip past the unit
 //! tests but fail here.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use qos_relay::RelayClient;
 use qos_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,

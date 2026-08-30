@@ -11,6 +11,15 @@
 //! cap), [`session`] (the throttle+encode→frame / reframe→decode seam
 //! both the compositor and chat drive).
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod decoder;
 pub mod encoder;
 pub mod session;

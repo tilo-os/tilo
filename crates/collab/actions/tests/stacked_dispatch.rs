@@ -11,6 +11,12 @@
 //! The loop count smokes out the order-dependent flake — an unlucky
 //! actor-sort must not panic or diverge.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use qos_actions::{

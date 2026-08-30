@@ -10,6 +10,12 @@
 //!    auth stage (user B's cert doesn't chain to user A's root);
 //!  - no state for any workspace leaks from B → A.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

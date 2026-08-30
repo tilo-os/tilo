@@ -3,6 +3,12 @@
 //! move. Driven end to end through the widget's real event + layout paths: a
 //! press, a threshold-crossing move that starts the drag, a move over the
 //! target that highlights it, and a release that commits the move.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::common::{Harness, row_center};
 
 use vello::kurbo::Point;

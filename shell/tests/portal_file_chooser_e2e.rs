@@ -9,6 +9,12 @@
 //! Not a real frame loop: the D-Bus call parks on a oneshot, so the test
 //! spawns it and turns the pump by hand, as the compositor's tick would.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

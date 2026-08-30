@@ -8,6 +8,12 @@
 //! the focusable controls exist with the right roles/labels, Tab through them,
 //! and activate one with Enter to prove the real handler runs.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use api_tester::ApiTesterApp;
 use ui::State;
 use ui::a11y::Role;

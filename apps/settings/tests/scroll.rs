@@ -7,6 +7,12 @@
 //! only through the public `Widget` trait (`name`, `get_rect`, `children`) so
 //! the assertions ride the production layout.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use settings::categories::Category;

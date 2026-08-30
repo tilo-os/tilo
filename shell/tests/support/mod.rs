@@ -4,5 +4,11 @@
 //! reach a headless renderer without depending on a helper `quick-ui`
 //! doesn't export.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 pub mod offscreen;
 pub mod snapshot;

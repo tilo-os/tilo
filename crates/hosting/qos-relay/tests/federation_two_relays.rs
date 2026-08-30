@@ -7,6 +7,12 @@
 //! suppresses `PeerRelay` → `PeerRelay` echoes. This test proves the
 //! reuse: no new fan-out, no new transport, no new store path.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

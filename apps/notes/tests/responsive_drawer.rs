@@ -3,6 +3,12 @@
 //! it into a closed overlay drawer, the top-bar button toggles it, and
 //! picking a page selects it and auto-closes the drawer.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use notes::NotesApp;

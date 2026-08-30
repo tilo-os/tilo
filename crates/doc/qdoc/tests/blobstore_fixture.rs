@@ -6,6 +6,12 @@
 //! installs its own store would otherwise pull the store out from under a test
 //! that had just written to it, on another thread, in another file.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// Hold this for as long as a test relies on the process-wide store or transport

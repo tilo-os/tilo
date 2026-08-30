@@ -38,6 +38,15 @@
 //! `total_token_wait_ns` (cumulative latency + throttle wait, for a
 //! mean). `stats()` returns a snapshot.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 

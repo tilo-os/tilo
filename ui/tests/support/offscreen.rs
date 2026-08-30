@@ -4,5 +4,10 @@
 //! crates) should import directly from `ui::offscreen`.
 
 #![allow(unused_imports)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
 
 pub use ui::offscreen::OffscreenRenderer;

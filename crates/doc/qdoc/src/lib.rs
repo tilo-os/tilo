@@ -5,6 +5,15 @@
 //! `Document` model that md/odt/docx map onto. See
 //! `docs/superpowers/specs/2026-06-24-crdt-native-file-formats-design.md`.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod blobstore;
 pub mod codecs;
 pub mod diff;

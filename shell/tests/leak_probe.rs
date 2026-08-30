@@ -5,6 +5,12 @@
 //!
 //! Run: `cargo test -p shell --test leak_probe -- --ignored --nocapture`
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::compositor::frame::FrameBuilder;
 
 fn rss_kb() -> u64 {

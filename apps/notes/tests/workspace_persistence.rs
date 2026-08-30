@@ -1,6 +1,12 @@
 //! End-to-end persistence: build a workspace with several pages,
 //! save it to a tmpdir, reload, and assert nothing got lost.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use notes::Workspace;
 use notes::storage::{load_workspace, save_workspace};
 use tempfile::TempDir;

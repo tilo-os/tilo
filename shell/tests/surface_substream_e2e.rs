@@ -9,6 +9,12 @@
 //! In-process, no real Iroh: substream framing + backpressure is
 //! transport-agnostic. Real QUIC lives in `two_netns_share.rs`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Instant;
 
 use shell::collab::flatpak_share::SharedFlatpakSession;

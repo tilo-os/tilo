@@ -9,6 +9,12 @@
 //! that runs after layout. Reads a real socket, since the defect lives
 //! entirely in what goes on the wire and when.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

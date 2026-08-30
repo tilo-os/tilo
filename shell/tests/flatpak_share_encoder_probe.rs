@@ -3,6 +3,12 @@
 //! `NVENC -> VA-API -> openh264` in priority order. Session-start probe
 //! only — the tracker/encode loop lives in `flatpak_share_e2e.rs`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::collab::encoder::EncoderKind;
 use shell::collab::flatpak_share::SharedFlatpakSession;
 use shell::config::{EncoderChoice, FlatpakShareConfig};

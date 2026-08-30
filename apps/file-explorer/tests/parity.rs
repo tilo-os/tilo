@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use chrono::{Local, TimeZone};
 use file_explorer::model::{Entry, SortBy, SortOrder, format_path, sort_entries};
 use std::path::PathBuf;

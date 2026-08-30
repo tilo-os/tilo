@@ -23,6 +23,11 @@
 //! testing lives in the flatpak_share_e2e VM path.
 
 #![cfg(feature = "vaapi")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
 
 use shell::collab::encoder::{
     Codec, Encoder, EncoderError, EncoderInit, FrameInput, vaapi::VaApiBackend, vaapi::probe,

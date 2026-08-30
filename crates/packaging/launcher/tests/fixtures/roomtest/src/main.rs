@@ -12,6 +12,12 @@
 // Exit code is always 0 — a test that asserted on it couldn't tell
 // "denied" from "the fixture crashed".
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::io::Write;
 
 fn main() {

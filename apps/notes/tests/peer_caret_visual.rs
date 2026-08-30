@@ -8,6 +8,12 @@
 //! Run with `NOTES_CRITIQUE_DIR=/tmp/notes-peer-caret cargo test
 //! -p notes --test peer_caret_visual -- --nocapture --ignored`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use notes::NotesApp;

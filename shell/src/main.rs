@@ -10,6 +10,15 @@
 //! `xdg-desktop-portal` D-Bus backend (so it doesn't race the compositor
 //! for `wayland-N`); `--firstboot` runs first-boot setup, then continues into the normal compositor boot.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use shell::compositor::hosted::HostedOptions;
 use shell::compositor::{self, Mode};
 use shell::shell::identity_provisioning;

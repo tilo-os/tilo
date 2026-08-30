@@ -11,6 +11,12 @@
 //!    1/120 fixed-point encoding), so the scale is genuinely fractional
 //!    rather than rounded to 1x or 2x.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
