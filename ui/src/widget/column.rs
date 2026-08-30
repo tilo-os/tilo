@@ -1,14 +1,15 @@
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
+use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use taffy::style_helpers::{length, percent};
+use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style};
-use taffy::style_helpers::{length, percent};
-use crate::widget::Widget;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
 
 pub struct Column {
     children: Vec<Box<dyn Widget>>,
@@ -19,52 +20,30 @@ pub struct Column {
     extra_top_padding: f32,
     extra_bottom_padding: f32,
     no_padding: bool,
-    /// When `Some(px)`, override the column's default top + bottom
-    /// padding with `px`. Left/right keep using the standard
-    /// `padding_standard * 2` (plus `extra_left_padding`) so the
-    /// sidebar gutter math stays intact. Set this when a column
-    /// should hug the viewport's top + bottom edges tightly without
-    /// dropping the horizontal gutters too (the shell's strip Column
-    /// uses 4 px — close enough to the screen edges that windows
-    /// read as filling the workspace, with just enough room for the
-    /// active-tile shadow not to clip).
+    /// See [`Column::with_vertical_padding`].
     vertical_padding_override: Option<f32>,
-    /// When `Some((left, right))`, override the column's default
-    /// left/right padding (replacing `base + extra_left_padding` on
-    /// the left, `base` on the right). Used by the shell's content
-    /// column so the strip extends all the way to viewport x=0 (the
-    /// wheel disc lives in an overlay layer above the strip and pans
-    /// with the strip's `scroll_x`; the strip itself reserves the
-    /// wheel's width as a `leading_inset` on `GroupRow`). With the
-    /// default standard horizontal padding we'd otherwise leave a
-    /// 24 px wallpaper gap to the left of the wheel disc.
+    /// See [`Column::with_horizontal_padding`].
     horizontal_padding_override: Option<(f32, f32)>,
-    /// When `Some(px)`, override the between-children vertical gap
-    /// (default `theme.gap_standard`). Set to `0.0` for a tightly
-    /// banded stack whose children own their own internal spacing —
-    /// e.g. a chrome column where a full-bleed panel child must sit
-    /// flush against the band above it with no wallpaper seam.
+    /// See [`Column::with_gap`].
     gap_override: Option<f32>,
     intrinsic_height: bool,
-    /// Use `flex_grow: 1 + flex_basis: 0` instead of the default
-    /// `height: percent(1.0)` outer size. The percent variant claims
-    /// 100 % of the parent's height even when the column is a flex
-    /// sibling of a fixed-height header (e.g. the shell's topbar) —
-    /// the sum overflows the parent and any bottom padding ends up
-    /// off-screen. Fill-remaining-height absorbs the leftover space
-    /// after siblings have taken their share, which is what most
-    /// "full-bleed below header" layouts actually want.
+    /// See [`Column::with_fill_remaining_height`].
     fill_remaining_height: bool,
-    /// Subtree scene cache — composition of every descendant's
-    /// own cached scene, recorded once and translated on subsequent
-    /// frames as long as no descendant signals dirty. Saves
-    /// hundreds of `Scene::append` calls per frame when most of
+    /// Composition of every descendant's own cached scene, recorded once and
+    /// translated on subsequent frames as long as no descendant signals
+    /// dirty. Saves hundreds of `Scene::append` calls per frame when most of
     /// the column's content is stable.
     subtree_cache: Scene,
-    /// Rect (at cache-emit time) the subtree was composed against.
-    /// Size mismatch → rebuild; pure translation → reuse with a
+    /// Rect (at cache-emit time) the subtree was composed against. Size
+    /// mismatch → rebuild; pure translation → reuse with a
     /// `translate(delta)` on the outer append.
     cache_rect: vello::kurbo::Rect,
+}
+
+impl Default for Column {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Column {
@@ -110,73 +89,58 @@ impl Column {
         self
     }
 
-    /// Add extra padding on the left edge on top of the column's
-    /// default `padding_standard * 2`. Used to displace a workspace
-    /// area to the right of an absolutely-positioned sidebar without
-    /// shifting the surrounding chrome.
+    /// Extra padding on the left, on top of the default
+    /// `padding_standard * 2`. Used to displace a workspace area to the
+    /// right of an absolutely-positioned sidebar without shifting the
+    /// surrounding chrome.
     pub fn with_extra_left_padding(mut self, px: f32) -> Self {
         self.extra_left_padding = px;
         self
     }
 
-    /// Add extra padding on the top edge on top of the column's default
-    /// vertical padding. Used to reserve room for a floating affordance the
-    /// column doesn't own — e.g. the responsive shell's Back chip, which is
-    /// painted over the top-left of the detail pane, so the content below it
-    /// must start clear of the chip rather than under it.
+    /// Extra padding on top, e.g. to reserve room for a floating
+    /// affordance the column doesn't own (the responsive shell's Back
+    /// chip painted over the detail pane's top-left corner).
     pub fn with_extra_top_padding(mut self, px: f32) -> Self {
         self.extra_top_padding = px;
         self
     }
 
-    /// Add extra padding on the bottom edge on top of the column's
-    /// default `padding_standard * 2`. Used by the shell's content
-    /// column to keep the active window group from touching the
-    /// screen's bottom edge — the default 24 px gutter wasn't enough
-    /// breathing room for tile cards on smaller viewports.
+    /// Extra padding on the bottom, on top of the default
+    /// `padding_standard * 2`.
     pub fn with_extra_bottom_padding(mut self, px: f32) -> Self {
         self.extra_bottom_padding = px;
         self
     }
 
-    /// Override the column's top + bottom padding (replaces the
-    /// default `padding_standard * 2`). Left + right padding still
-    /// uses the standard value plus `extra_left_padding`. Use this
-    /// for layouts where the column needs to hug the viewport's
-    /// top/bottom edges (e.g. the shell strip wants its windows
-    /// almost flush against the topbar / screen bottom).
+    /// Override the column's top + bottom padding (default
+    /// `padding_standard * 2`); left/right are unaffected. For layouts
+    /// that need to hug the viewport's top/bottom edges.
     pub fn with_vertical_padding(mut self, px: f32) -> Self {
         self.vertical_padding_override = Some(px);
         self
     }
 
-    /// Override the column's left + right padding (replaces
-    /// `base + extra_left_padding` on the left, `base` on the
-    /// right). Use this when the column needs to extend to a
-    /// specific viewport range (e.g. the shell's content column
-    /// drops its left padding to zero so the strip can reach
-    /// viewport x=0 and the wheel disc can pan into and out of
-    /// off-screen-left territory cleanly).
+    /// Override the column's left + right padding (replacing
+    /// `base + extra_left_padding` on the left, `base` on the right).
     pub fn with_horizontal_padding(mut self, left: f32, right: f32) -> Self {
         self.horizontal_padding_override = Some((left, right));
         self
     }
 
     /// Override the vertical gap between children (default
-    /// `theme.gap_standard`). Use `0.0` for a tightly banded chrome
-    /// stack where each child owns its own internal spacing and a
-    /// full-bleed panel child must sit flush against the band above it.
+    /// `theme.gap_standard`). `0.0` for a tightly banded stack whose
+    /// children own their own internal spacing.
     pub fn with_gap(mut self, px: f32) -> Self {
         self.gap_override = Some(px);
         self
     }
 
-    /// Switch the column from `height: percent(1.0)` to
-    /// `flex_grow: 1 + flex_basis: 0`. Use this when the column is a
-    /// flex sibling of a fixed-height widget (a topbar, say) — the
-    /// percent variant would claim 100 % of the parent on top of the
-    /// sibling's height, overflowing and pushing the column's own
-    /// bottom padding off-screen.
+    /// Switch from `height: percent(1.0)` to `flex_grow: 1 + flex_basis: 0`.
+    /// Use when the column is a flex sibling of a fixed-height widget (a
+    /// topbar, say) — the percent variant would claim 100% of the parent on
+    /// top of the sibling's height, overflowing and pushing the column's
+    /// own bottom padding off-screen.
     pub fn with_fill_remaining_height(mut self) -> Self {
         self.fill_remaining_height = true;
         self
@@ -213,22 +177,26 @@ impl Widget for Column {
         changed
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let child_nodes: Vec<NodeId> = self.children
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let child_nodes: Vec<NodeId> = self
+            .children
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
-            
-        let node = taffy.new_with_children(
+
+        let node = taffy.parent_node(
             Style {
-                // Intrinsic-height columns run as a Block stack — flex
-                // layout in taffy 0.9 silently truncates children when
-                // the container's main-axis budget runs out, even with
-                // flex_shrink: 0.0 on the parent. The result is an
-                // outer Scrollable that thinks its content stops where
-                // taffy stopped laying out. Block stacks children
-                // without any axis budget, so the column's content
-                // grows to its true sum.
+                // Intrinsic-height columns run as a Block stack: flex layout
+                // in taffy 0.9 silently truncates children once the
+                // container's main-axis budget runs out (even with
+                // flex_shrink: 0.0), leaving an outer Scrollable thinking
+                // content stops where taffy stopped. Block has no axis
+                // budget, so content grows to its true sum.
                 display: if self.intrinsic_height {
                     taffy::Display::Block
                 } else {
@@ -238,11 +206,15 @@ impl Widget for Column {
                 align_items: Some(taffy::AlignItems::FlexStart),
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
-                    width: length(0.0),
+                    width: length(0.0_f32),
                     height: length(self.gap_override.unwrap_or(theme.gap_standard)),
                 },
                 padding: {
-                    let base = if self.no_padding { 0.0 } else { theme.padding_standard * 2.0 };
+                    let base = if self.no_padding {
+                        0.0
+                    } else {
+                        theme.padding_standard * 2.0
+                    };
                     let vert = self.vertical_padding_override.unwrap_or(base);
                     let (left, right) = self
                         .horizontal_padding_override
@@ -255,13 +227,11 @@ impl Widget for Column {
                     }
                 },
                 size: taffy::Size {
-                    width: percent(1.0),
-                    height: if self.intrinsic_height {
-                        taffy::Dimension::auto()
-                    } else if self.fill_remaining_height {
+                    width: percent(1.0_f32),
+                    height: if self.intrinsic_height || self.fill_remaining_height {
                         taffy::Dimension::auto()
                     } else {
-                        percent(1.0)
+                        percent(1.0_f32)
                     },
                 },
                 flex_basis: if self.fill_remaining_height {
@@ -272,72 +242,103 @@ impl Widget for Column {
                 flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
                 ..Default::default()
             },
-            &child_nodes
-        ).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+            &child_nodes,
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        // Use the larger of the own size and the children's content
-        // bounds — taffy can clamp a Block container's reported size
-        // to its parent's available main axis (notably inside a
-        // Scrollable), leaving the rect smaller than the area its
-        // children actually occupy. If we used `layout.size` alone,
-        // `should_cull` would incorrectly discard the whole subtree
-        // once scrolling pushed the under-reported rect off the
-        // viewport, even though children remained on screen.
-        let w = layout.size.width.max(layout.content_size.width) as f64;
-        let h = layout.size.height.max(layout.content_size.height) as f64;
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        // The larger of own size and content bounds: taffy can clamp a
+        // Block container's reported size to its parent's available main
+        // axis (notably inside a Scrollable), and `layout.size` alone would
+        // make `should_cull` discard the subtree once scrolling pushed the
+        // under-reported rect off the viewport, even with children still on
+        // screen.
+        let w = f64::from(layout.size.width.max(layout.content_size.width));
+        let h = f64::from(layout.size.height.max(layout.content_size.height));
         self.rect = vello::kurbo::Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + w,
-            origin.y + layout.location.y as f64 + h,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + w,
+            origin.y + f64::from(layout.location.y) + h,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
-        let children = taffy.children(node).unwrap();
+        let children = taffy.children(node).unwrap_or_default();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
             child_widget.apply_layout(taffy, *child_node, new_origin);
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
         for child in &mut self.children {
             child.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
-        let child_nodes = taffy.children(node_id).unwrap();
-        // Pointer-capture short-circuit: when any child has latched a
-        // drag (e.g. the slider's knob is being dragged) it returns true
-        // from `wants_pointer_capture`. Route ALL events to that child
-        // exclusively for the frame so a drag survives the cursor
-        // crossing a peer widget's rect — without this the peer's
-        // CursorMoved handler can set `handled` and break the loop
-        // before the dragging child gets its event.
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        // A child with a latched drag (e.g. a slider's knob) gets ALL
+        // events exclusively for the frame, so the drag survives the
+        // cursor crossing a peer widget's rect — otherwise the peer's
+        // CursorMoved handler could set `handled` first.
         if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
             let cnode = child_nodes[idx];
-            self.children[idx].handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, cnode, taffy);
+            self.children[idx].handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cnode,
+                taffy,
+            );
             return;
         }
         for (child_widget, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child_widget.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
+            child_widget.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
             if *handled {
                 break;
             }
         }
     }
 
-    /// Propagate pointer-capture intent from any descendant. Without
-    /// this override, an outer Column wrapping a Row containing a
-    /// dragging slider wouldn't see the capture intent (the default
-    /// trait impl returns `false` for leaf widgets, and Column would
-    /// inherit it). The Column's `handle_event` short-circuit then
-    /// wouldn't fire, defeating the purpose.
+    /// Propagate pointer-capture intent from any descendant — without this,
+    /// a Column wrapping a Row containing a dragging slider would inherit
+    /// the leaf-widget default of `false`, and the `handle_event`
+    /// short-circuit above would never fire.
     fn wants_pointer_capture(&self) -> bool {
         self.children.iter().any(|c| c.wants_pointer_capture())
     }
@@ -355,23 +356,43 @@ impl Widget for Column {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(|c| c.as_ref()).collect()
+        self.children
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children.iter_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).collect()
+        self.children
+            .iter_mut()
+            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+            .collect()
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
 
-    fn name(&self) -> &str { "Column" }
+    fn name(&self) -> &'static str {
+        "Column"
+    }
 
-    fn is_focused(&self) -> bool { false }
-    fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
-    fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
+    fn is_focused(&self) -> bool {
+        false
+    }
+    fn needs_commit(&self) -> bool {
+        self.children().iter().any(|c| c.needs_commit())
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            child.on_commit();
+        }
+    }
 
+    // `.any` would short-circuit and skip `take_structure_dirty()` on later
+    // children once one reports dirty, leaving their flags uncleared --
+    // the non-short-circuiting `.fold` below is required, not incidental.
+    #[allow(clippy::unnecessary_fold)]
     fn take_structure_dirty(&mut self) -> bool {
         // Forward to every child; fold over the full set so each child's
         // flag is cleared even if an earlier one already reported dirty.
@@ -385,7 +406,9 @@ impl Widget for Column {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -402,61 +425,73 @@ impl Widget for Column {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
 
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild = self.cache_rect == vello::kurbo::Rect::ZERO
-            || size_changed
-            || any_child_dirty;
+        let needs_rebuild =
+            self.cache_rect == vello::kurbo::Rect::ZERO || size_changed || any_child_dirty;
 
-        if !needs_rebuild {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            scene.append(&self.subtree_cache, Some(transform * Affine::translate((dx, dy))));
-        } else {
-            // Children must rebuild at `Affine::IDENTITY`: vello's
-            // `Scene::append` composes its transform with each stored
-            // primitive transform, so passing `transform` here would
-            // double-apply it on the outer `append` below — at any DPI
-            // scale ≠ 1, cached widgets land off-screen.
+        if needs_rebuild {
+            // Children rebuild at `Affine::IDENTITY`: `Scene::append` composes
+            // its transform with each stored primitive transform, so passing
+            // `transform` here would double-apply it on the outer `append`
+            // below, landing cached widgets off-screen at any DPI scale ≠ 1.
             //
-            // Clear the active viewport for the recursion so children
-            // don't spatially cull themselves out of the cache. If we
-            // left culling on, the cache would only contain primitives
-            // for the *currently visible* sub-range; a subsequent scroll
-            // (cache-hit path, no rebuild) would translate the cache
-            // into a new viewport position where the now-visible widgets
-            // were never recorded — the visible region renders as
-            // background. vello's tile binner skips off-viewport tiles
-            // at compose time anyway, so the wasted-work concern that
-            // motivated culling here is illusory.
+            // Culling is cleared for the recursion too: with it on, the
+            // cache would only hold primitives for the currently-visible
+            // sub-range, and a later scroll (cache-hit, no rebuild) would
+            // translate the cache into a viewport where the now-visible
+            // widgets were never recorded. vello's tile binner already
+            // skips off-viewport tiles at compose time, so nothing is saved
+            // by culling here.
             let prev_vp = presence.viewport.replace(None);
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
             for child in &mut self.children {
-                child.draw_with_presence(&mut local, Affine::IDENTITY, text_renderer, theme, presence, permissions);
+                child.draw_with_presence(
+                    &mut local,
+                    Affine::IDENTITY,
+                    text_renderer,
+                    theme,
+                    presence,
+                    permissions,
+                );
             }
             scene.append(&local, Some(transform));
             self.subtree_cache = local;
             self.cache_rect = self.rect;
             presence.viewport.set(prev_vp);
+        } else {
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            scene.append(
+                &self.subtree_cache,
+                Some(transform * Affine::translate((dx, dy))),
+            );
         }
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }
@@ -601,7 +636,7 @@ mod tests {
     /// pass.
     #[test]
     fn bare_leading_text_in_scrolled_intrinsic_column() {
-        use crate::widget::{Scrollable, ScrollAxis};
+        use crate::widget::{ScrollAxis, Scrollable};
         // The Scrollable hosts the intrinsic column; this is what drives
         // the constrained measure pass that previously zeroed the leading
         // child.
@@ -609,11 +644,15 @@ mod tests {
             .with_intrinsic_height()
             .push(Box::new(Text::new("Section Heading")))
             .push(Box::new(
-                Container::new().with_background().with_child(Box::new(Text::new("Row one"))),
+                Container::new()
+                    .with_background()
+                    .with_child(Box::new(Text::new("Row one"))),
             ))
             .push(Box::new(Text::new("Another Heading")))
             .push(Box::new(
-                Container::new().with_background().with_child(Box::new(Text::new("Row two"))),
+                Container::new()
+                    .with_background()
+                    .with_child(Box::new(Text::new("Row two"))),
             ));
         let mut scroll = Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(inner));
         let _ = lay_out(&mut scroll);
@@ -639,7 +678,9 @@ mod tests {
         let mut col = Column::new()
             .push(Box::new(Text::new("Heading")))
             .push(Box::new(
-                Container::new().with_background().with_child(Box::new(Text::new("Body"))),
+                Container::new()
+                    .with_background()
+                    .with_child(Box::new(Text::new("Body"))),
             ));
         let _ = lay_out(&mut col);
         let text_rect = col.children[0].get_rect();

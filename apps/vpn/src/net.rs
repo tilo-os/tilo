@@ -51,16 +51,15 @@ pub fn parse_wg_transfer(out: &str) -> Option<Transfer> {
         let _peer = cols.next();
         let rx = cols.next();
         let tx = cols.next();
-        let (rx, tx) = match (rx, tx) {
-            (Some(rx), Some(tx)) => (rx, tx),
-            _ => {
-                // Whitespace fallback.
-                let mut ws = line.split_whitespace();
-                let _ = ws.next();
-                match (ws.next(), ws.next()) {
-                    (Some(rx), Some(tx)) => (rx, tx),
-                    _ => continue,
-                }
+        let (rx, tx) = if let (Some(rx), Some(tx)) = (rx, tx) {
+            (rx, tx)
+        } else {
+            // Whitespace fallback.
+            let mut ws = line.split_whitespace();
+            let _ = ws.next();
+            match (ws.next(), ws.next()) {
+                (Some(rx), Some(tx)) => (rx, tx),
+                _ => continue,
             }
         };
         let (Ok(rx), Ok(tx)) = (rx.trim().parse::<u64>(), tx.trim().parse::<u64>()) else {
@@ -125,7 +124,7 @@ pub fn read_sys_bytes(iface: &str) -> Option<Transfer> {
     Some(Transfer { rx, tx })
 }
 
-/// Read the real WireGuard peer transfer totals via `wg show <iface> transfer`.
+/// Read the real `WireGuard` peer transfer totals via `wg show <iface> transfer`.
 /// `None` if `wg` is absent, the interface does not exist, or the command
 /// fails.
 pub fn read_wg_transfer(iface: &str) -> Option<Transfer> {
@@ -153,7 +152,10 @@ pub fn probe_interface_up(iface: &str) -> Option<bool> {
     if !is_valid_iface(iface) {
         return Some(false);
     }
-    let out = Command::new("ip").args(["link", "show", iface]).output().ok()?;
+    let out = Command::new("ip")
+        .args(["link", "show", iface])
+        .output()
+        .ok()?;
     if !out.status.success() {
         // `ip` ran but the interface does not exist → it is not up.
         return Some(false);
@@ -162,7 +164,7 @@ pub fn probe_interface_up(iface: &str) -> Option<bool> {
 }
 
 /// Read the best available real transfer counters for a connection:
-/// `wg show transfer` for WireGuard (per-peer, VPN-accurate), otherwise the
+/// `wg show transfer` for `WireGuard` (per-peer, VPN-accurate), otherwise the
 /// tunnel interface's sysfs counters. `None` when no real source is readable.
 pub fn read_transfer(conn: &Connection) -> Option<Transfer> {
     let iface = crate::config::iface_name(conn);
@@ -176,16 +178,16 @@ pub fn read_transfer(conn: &Connection) -> Option<Transfer> {
     }
 }
 
-/// Whether an OpenVPN daemon for this connection is running, via
-/// `pgrep -f <config-path>`. OpenVPN's tun device name is kernel-assigned, so
+/// Whether an `OpenVPN` daemon for this connection is running, via
+/// `pgrep -f <config-path>`. `OpenVPN`'s tun device name is kernel-assigned, so
 /// process presence is the reliable real signal (matching on the specific
 /// config path avoids counting an unrelated tunnel). `None` if `pgrep` is
 /// unavailable.
 pub fn openvpn_running(conn: &Connection) -> Option<bool> {
-    let needle = conn
-        .config_path()
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| format!("{}.ovpn", conn.name));
+    let needle = conn.config_path().map_or_else(
+        || format!("{}.ovpn", conn.name),
+        std::string::ToString::to_string,
+    );
     let out = Command::new("pgrep").args(["-f", &needle]).output().ok()?;
     match out.status.code() {
         Some(0) => Some(true),  // at least one matching process
@@ -300,9 +302,9 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         // The loopback is always administratively up. If `ip` is unavailable
         // the probe returns None — assert the real result either way rather
         // than fabricate one.
-        match probe_interface_up("lo") {
-            Some(up) => assert!(up, "loopback must report UP"),
-            None => { /* `ip` binary unavailable on this box — honestly unknown */ }
+        if let Some(up) = probe_interface_up("lo") {
+            assert!(up, "loopback must report UP")
+        } else { /* `ip` binary unavailable on this box — honestly unknown */
         }
     }
 
@@ -312,8 +314,7 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         Command::new("ip")
             .args(args)
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     }
 
     #[test]
@@ -337,10 +338,11 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         // byte-counter probes read the real kernel state — no fabrication. On
         // a box without those privileges this branch is honestly skipped; the
         // gated-refusal assertion below still proves the safety boundary.
-        if config::exec_allowed()
-            && ip(&["link", "add", "qtest0", "type", "dummy"])
-        {
-            assert!(ip(&["link", "set", "qtest0", "up"]), "bring the dummy iface up");
+        if config::exec_allowed() && ip(&["link", "add", "qtest0", "type", "dummy"]) {
+            assert!(
+                ip(&["link", "set", "qtest0", "up"]),
+                "bring the dummy iface up"
+            );
             // The status probe now sees a real, UP interface via netlink — this
             // is the true "status reflects the interface state" path, exercised
             // end-to-end against a live kernel device. (Real byte-counter reads

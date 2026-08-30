@@ -1,40 +1,27 @@
 //! Registries configuration — which registries a host resolves
 //! against, in what order, and how much each is trusted.
 //!
-//! Two layers, merged at load time:
-//!
-//! - **Global**: `~/.config/qos/registries.toml` (or
-//!   `$XDG_CONFIG_HOME/qos/registries.toml`). System-wide default set.
-//! - **Per-workspace**: `<workspace>/.qos/registries.toml`. A
-//!   workspace can add registries (e.g. a team's internal one) or
-//!   override the trust of a global one. Workspace entries win on a
-//!   name collision and are consulted before global entries of equal
-//!   priority (more-specific scope first).
-//!
-//! ## File schema (TOML)
+//! Two layers, merged at load time: **global**
+//! (`~/.config/qos/registries.toml` / `$XDG_CONFIG_HOME`) and
+//! **per-workspace** (`<workspace>/.qos/registries.toml`), which can
+//! add registries or override a global one's trust — workspace
+//! entries win on a name collision and sort before global entries of
+//! equal priority.
 //!
 //! ```toml
-//! # A lower `priority` number is consulted first. Default 0.
 //! [[registry]]
 //! name = "central"
 //! base-url = "https://registry.qos.dev"
 //! trust = "ed25519:2f1c…"     # pin the operator key (fail-closed)
-//! priority = 0
-//!
-//! [[registry]]
-//! name = "team"
-//! base-url = "file:///var/lib/qos/team-registry"
-//! trust = "unsigned"          # dev / local only — index sig not required
-//! priority = 10
+//! priority = 0                # lower sorts first, default 0
 //! ```
 //!
-//! `base-url` is either `https://…` (fetched over TLS) or `file://…`
-//! (a self-hosted registry directory — see [`crate::registry_dir`]).
-//! `trust` is `ed25519:<hex>` to require the served index to verify
-//! against that operator key, or `unsigned` to skip the *index*
-//! signature (per-entry publisher signatures are ALWAYS verified,
-//! regardless of trust level — the resolver never installs
-//! unverified bytes).
+//! `base-url` is `https://…` (TLS) or `file://…` (self-hosted — see
+//! [`crate::registry_dir`]). `trust` is `ed25519:<hex>` to require the
+//! served index to verify against that key, or `unsigned` to skip the
+//! *index* signature — per-entry publisher signatures are ALWAYS
+//! verified regardless of trust level; the resolver never installs
+//! unverified bytes.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -42,12 +29,10 @@ use std::path::{Path, PathBuf};
 /// How much a registry is trusted at the *index* level.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegistryTrust {
-    /// Require the served index to carry a valid signature from this
-    /// Ed25519 operator key.
+    /// Require the served index to carry a valid signature from this Ed25519 operator key.
     Key([u8; 32]),
-    /// Do not require an index signature. Only sensible for a
-    /// `file://` registry you host yourself. Publisher signatures on
-    /// each entry are still verified.
+    /// Do not require an index signature — only sensible for a
+    /// self-hosted `file://` registry; publisher signatures on each entry are still verified.
     Unsigned,
 }
 
@@ -82,27 +67,23 @@ pub struct RegistryRef {
     pub name: String,
     pub base_url: String,
     pub trust: RegistryTrust,
-    /// Consulted in ascending order; ties broken by scope
-    /// (workspace before global).
+    /// Consulted in ascending order; ties broken by scope (workspace before global).
     pub priority: i32,
 }
 
 impl RegistryRef {
-    /// Whether `base_url` names a local self-hosted registry
-    /// directory (`file://`).
+    /// Whether `base_url` names a local self-hosted registry directory (`file://`).
     pub fn is_file(&self) -> bool {
         self.base_url.starts_with("file://")
     }
 
     /// The filesystem path for a `file://` registry, else `None`.
     pub fn file_path(&self) -> Option<PathBuf> {
-        self.base_url
-            .strip_prefix("file://")
-            .map(PathBuf::from)
+        self.base_url.strip_prefix("file://").map(PathBuf::from)
     }
 }
 
-// ---- TOML (de)serialisation shims ---------------------------------
+// TOML (de)serialisation shims
 
 #[derive(Serialize, Deserialize)]
 struct RegistryFile {
@@ -170,9 +151,8 @@ pub enum ConfigError {
 
 impl RegistriesConfig {
     /// The built-in default: the central qOS registry. Shipped so a
-    /// fresh install resolves *something* without any config file, but
-    /// the operator key here is a placeholder — a real deployment pins
-    /// the true key in `registries.toml`.
+    /// fresh install resolves *something* without config, but the
+    /// operator key is a placeholder — a real deployment pins the true key.
     pub fn default_central() -> RegistryRef {
         RegistryRef {
             name: "central".to_string(),
@@ -185,17 +165,15 @@ impl RegistriesConfig {
         }
     }
 
-    /// Load + merge the global and per-workspace configs. Missing
-    /// files are not an error. When neither file exists the built-in
-    /// [`Self::default_central`] is returned so resolution has a
-    /// target.
+    /// Load + merge the global and per-workspace configs; missing files
+    /// aren't an error, and if neither exists returns the built-in [`Self::default_central`].
     pub fn load(workspace_root: Option<&Path>) -> Result<Self, ConfigError> {
         Self::load_from(global_path().as_deref(), workspace_root)
     }
 
     /// Merge an explicit global-config path with a workspace root.
-    /// [`Self::load`] calls this with the real global path; tests pass
-    /// a temp path so they never read the host's `~/.config/qos`.
+    /// [`Self::load`] calls this with the real global path; tests pass a
+    /// temp path so they never read the host's ~/.config/qos.
     pub fn load_from(
         global: Option<&Path>,
         workspace_root: Option<&Path>,
@@ -207,9 +185,9 @@ impl RegistriesConfig {
                 merged.push(r);
             }
         }
-        // Workspace entries are pushed AFTER global ones; the merge
-        // step below lets a workspace override a global entry by name
-        // and marks workspace scope so it wins on equal priority.
+        // Workspace entries are pushed AFTER global ones; the merge below
+        // lets a workspace override a global entry by name and marks
+        // workspace scope so it wins on equal priority.
         let mut ws_names = Vec::new();
         if let Some(root) = workspace_root {
             let p = workspace_path(root);
@@ -225,8 +203,7 @@ impl RegistriesConfig {
             merged.push(Self::default_central());
         }
 
-        // Deterministic resolution order: priority asc, then
-        // workspace-scope before global, then name.
+        // Deterministic resolution order: priority asc, then workspace-scope before global, then name.
         merged.sort_by(|a, b| {
             a.priority
                 .cmp(&b.priority)
@@ -270,7 +247,10 @@ fn load_file(path: &Path) -> Result<Vec<RegistryRef>, ConfigError> {
         path: path.display().to_string(),
         source: e,
     })?;
-    file.registries.into_iter().map(RegistryRow::into_ref).collect()
+    file.registries
+        .into_iter()
+        .map(RegistryRow::into_ref)
+        .collect()
 }
 
 /// `~/.config/qos/registries.toml` (honours `$XDG_CONFIG_HOME`).
@@ -362,13 +342,8 @@ priority = 5
         .unwrap();
 
         let cfg = RegistriesConfig::load_from(Some(&global), Some(&ws_root)).unwrap();
-        // The workspace "central" (file://) must have replaced the
-        // global central by name.
-        let central = cfg
-            .registries
-            .iter()
-            .find(|r| r.name == "central")
-            .unwrap();
+        // The workspace "central" (file://) must have replaced the global central by name.
+        let central = cfg.registries.iter().find(|r| r.name == "central").unwrap();
         assert_eq!(central.base_url, "file:///ws/central");
         // priority 0 comes before priority 5.
         assert_eq!(cfg.registries.first().unwrap().name, "central");

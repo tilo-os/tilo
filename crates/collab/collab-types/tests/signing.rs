@@ -8,11 +8,11 @@
 
 use std::time::{Duration, SystemTime};
 
+use collab_types::crypto::VerifyError;
 use collab_types::{
     ArtifactId, AttestationId, ChannelEvent, ChannelId, OpClass, Signature, SignedOp, SpaceId,
     generate_keypair, sign_event, sign_op, verify_event, verify_op,
 };
-use collab_types::crypto::VerifyError;
 
 fn t(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)

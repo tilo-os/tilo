@@ -47,12 +47,12 @@ fn shell_single_quote(s: &str) -> String {
 /// directory as the current executable (the fleet `target/debug/terminal`),
 /// then fall back to `terminal` on `PATH`.
 pub fn terminal_binary() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join("terminal");
-            if sibling.is_file() {
-                return sibling;
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let sibling = dir.join("terminal");
+        if sibling.is_file() {
+            return sibling;
         }
     }
     PathBuf::from("terminal")
@@ -67,9 +67,8 @@ pub fn build_launcher(dir: &Path, stem: &str, command: &str) -> std::io::Result<
     // `SHELL_FALLBACK` lets the launched command's `exec "$SHELL_FALLBACK"`
     // resolve to the user's real shell even though we overrode `SHELL` to
     // point at this script. Default to bash for the interactive fallback.
-    let script = format!(
-        "#!/bin/sh\nexport SHELL_FALLBACK=\"${{SHELL_FALLBACK:-/bin/bash}}\"\n{command}\n"
-    );
+    let script =
+        format!("#!/bin/sh\nexport SHELL_FALLBACK=\"${{SHELL_FALLBACK:-/bin/bash}}\"\n{command}\n");
     std::fs::write(&path, script)?;
     set_executable(&path)?;
     Ok(path)
@@ -91,10 +90,10 @@ fn set_executable(_path: &Path) -> std::io::Result<()> {
 /// Per-user runtime dir for launcher scripts: `$XDG_RUNTIME_DIR/qos-containers`
 /// or a temp fallback.
 pub fn runtime_dir() -> PathBuf {
-    if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
-        if !rt.is_empty() {
-            return PathBuf::from(rt).join("qos-containers");
-        }
+    if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR")
+        && !rt.is_empty()
+    {
+        return PathBuf::from(rt).join("qos-containers");
     }
     std::env::temp_dir().join("qos-containers")
 }
@@ -156,14 +155,23 @@ mod tests {
     fn enter_command_quotes_hostile_box_name() {
         let cmd = distrobox_enter_command("a'; rm -rf ~ #");
         // The injected quote is escaped, not left to break out of the string.
-        assert!(cmd.contains(r"'\''"), "hostile name must be single-quote-escaped: {cmd}");
-        assert!(!cmd.contains("rm -rf ~ #;"), "no unescaped command break: {cmd}");
+        assert!(
+            cmd.contains(r"'\''"),
+            "hostile name must be single-quote-escaped: {cmd}"
+        );
+        assert!(
+            !cmd.contains("rm -rf ~ #;"),
+            "no unescaped command break: {cmd}"
+        );
     }
 
     #[test]
     fn exec_attach_targets_the_container_and_shell() {
         let cmd = exec_attach_command("9f3c1a7be4d2", "/bin/sh");
-        assert!(cmd.contains("podman exec -it '9f3c1a7be4d2' '/bin/sh'"), "{cmd}");
+        assert!(
+            cmd.contains("podman exec -it '9f3c1a7be4d2' '/bin/sh'"),
+            "{cmd}"
+        );
     }
 
     #[test]
@@ -195,10 +203,14 @@ mod tests {
             .and_then(|(_, v)| *v)
             .expect("SHELL env set");
         let shell = shell.to_string_lossy();
-        assert!(shell.contains("qos-term-unit-tc.sh"), "SHELL points at the launcher: {shell}");
+        assert!(
+            shell.contains("qos-term-unit-tc.sh"),
+            "SHELL points at the launcher: {shell}"
+        );
         // The real shell is preserved as the fallback.
         assert!(
-            envs.iter().any(|(k, _)| *k == std::ffi::OsStr::new("SHELL_FALLBACK")),
+            envs.iter()
+                .any(|(k, _)| *k == std::ffi::OsStr::new("SHELL_FALLBACK")),
             "SHELL_FALLBACK preserved"
         );
     }

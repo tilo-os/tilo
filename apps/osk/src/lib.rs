@@ -36,11 +36,27 @@
 //! ## Explicitly out of scope (left as clean seams)
 //! * **Compositor server half** — the `wlr-layer-shell` surface role and the
 //!   compositor side of `virtual-keyboard-v1` / `input-method-v2`.
-//! * **Neural swipe** — the FUTO `swipe-library` (GPL C++ + ExecuTorch `.pte`
+//! * **Neural swipe** — the FUTO `swipe-library` (GPL C++ + `ExecuTorch` `.pte`
 //!   model). Drop a `FutoSwipeModel: SwipeModel` in and the wiring is
 //!   unchanged.
 //!
 //! See [`widget`] for where text injection and swipe plug in.
+
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
 
 /// The Wayland app-id the on-screen keyboard identifies itself with. The
 /// compositor matches a client's app-id against this to recognise the keyboard

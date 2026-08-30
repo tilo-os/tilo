@@ -10,7 +10,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-
 /// Maximum number of measured points retained / plotted across the chart.
 pub const SAMPLES: usize = 56;
 
@@ -28,9 +27,15 @@ pub fn draw_chart(
     up: &[f64],
     connected: bool,
 ) {
-    let radius = theme.tokens.radii.lg as f64;
+    let radius = f64::from(theme.tokens.radii.lg);
     let card = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.base, None, &card);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.base,
+        None,
+        &card,
+    );
     scene.stroke(
         &Stroke::new(1.0),
         transform,
@@ -49,7 +54,7 @@ pub fn draw_chart(
     // Horizontal gridlines (3 divisions).
     let grid_color = theme.tokens.colors.border_white_10.multiply_alpha(0.6);
     for k in 0..=3 {
-        let y = plot.y0 + plot.height() * (k as f64 / 3.0);
+        let y = plot.y0 + plot.height() * (f64::from(k) / 3.0);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -67,7 +72,7 @@ pub fn draw_chart(
     let peak = down
         .iter()
         .chain(up.iter())
-        .cloned()
+        .copied()
         .fold(0.0_f64, f64::max)
         .max(1.0);
     let scale = peak * 1.15;
@@ -102,7 +107,13 @@ fn plot_series(
     }
     area.line_to(Point::new(x_at(n - 1), plot.y1));
     area.close_path();
-    scene.fill(Fill::NonZero, transform, color.multiply_alpha(0.16), None, &area);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        color.multiply_alpha(0.16),
+        None,
+        &area,
+    );
 
     // Stroked line on top.
     let mut line = BezPath::new();

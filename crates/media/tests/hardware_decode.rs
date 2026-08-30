@@ -89,22 +89,35 @@ mod real {
 
         let report = engine.hw_report();
         let caps = report.negotiated_caps.clone().unwrap_or_else(|| {
-            panic!("a frame arrived but its caps were not recorded: {}", report.describe())
+            panic!(
+                "a frame arrived but its caps were not recorded: {}",
+                report.describe()
+            )
         });
         println!("negotiated: {caps}");
 
         match &frame.payload {
             FramePayload::Dmabuf(d) => {
                 println!("zero-copy dmabuf: {}", d.describe());
-                assert!(report.is_dmabuf(), "a dmabuf payload must show in the caps: {caps}");
-                assert!(!d.planes.is_empty(), "a dmabuf frame with no planes is unusable");
+                assert!(
+                    report.is_dmabuf(),
+                    "a dmabuf payload must show in the caps: {caps}"
+                );
+                assert!(
+                    !d.planes.is_empty(),
+                    "a dmabuf frame with no planes is unusable"
+                );
             }
             FramePayload::Planar(p) => {
                 // The hardware path on a decoder with no dmabuf export, and
                 // still a real win: NV12 is 1.5 bytes per pixel against RGBA's
                 // 4, and no colour conversion has happened on the CPU.
                 println!("planar {:?}, {} planes", p.format, p.planes.len());
-                assert_eq!(p.planes.len(), 2, "NV12/P010 carry a luma and a chroma plane");
+                assert_eq!(
+                    p.planes.len(),
+                    2,
+                    "NV12/P010 carry a luma and a chroma plane"
+                );
                 assert!(
                     caps.contains("NV12") || caps.contains("P010"),
                     "a planar payload must match the negotiated caps: {caps}"
@@ -165,7 +178,9 @@ mod real {
         }
 
         let mut e = MediaEngine::with_config(
-            EngineConfig::gpu().silent().with_hw_policy(HwPolicy::Force(DecoderKind::Va)),
+            EngineConfig::gpu()
+                .silent()
+                .with_hw_policy(HwPolicy::Force(DecoderKind::Va)),
         );
         e.open(fixture_source());
         let frame = decode_frame_at(&mut e, 4_000, "dmabuf description");
@@ -210,13 +225,20 @@ mod real {
             img.planes.len()
         );
         for (i, p) in img.planes.iter().enumerate() {
-            assert!(p.stride >= img.width, "plane {i} stride {} is below the width", p.stride);
+            assert!(
+                p.stride >= img.width,
+                "plane {i} stride {} is below the width",
+                p.stride
+            );
             assert!(
                 media::dmabuf::dmabuf_size(&p.fd).unwrap_or(0) > 0,
                 "plane {i}'s fd is not a sizeable buffer"
             );
         }
-        assert!(report.is_dmabuf(), "the caps must agree that this is a dmabuf");
+        assert!(
+            report.is_dmabuf(),
+            "the caps must agree that this is a dmabuf"
+        );
     }
 
     /// One session serves both the preview and thumbnail-style requests, and
@@ -281,7 +303,12 @@ mod hermetic {
             !e.hw_report().is_hardware(),
             "a build with no decoder must never report hardware decode"
         );
-        e.open(media::Source::Remote { url: "https://x/v.mp4".into() });
-        assert!(e.latest_frame().is_some(), "the synthesized fallback still paints");
+        e.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
+        assert!(
+            e.latest_frame().is_some(),
+            "the synthesized fallback still paints"
+        );
     }
 }

@@ -2,47 +2,45 @@
 //! `ui` toolkit.
 //!
 //! Architecture:
-//!   * [`model`]  — pure data: catalog (artists/albums/tracks), playlists,
-//!                  liked songs, saved albums, cache state and live playback.
-//!   * [`seed`]   — the bundled offline sample library (populates `--shots`).
-//!   * [`doc`]    — the Automerge bridge: library + playlists + liked + saved
-//!                  albums + play-state replicate across a user's devices
-//!                  ("our own library layer"), with mutation helpers
-//!                  (create/rename/delete playlist, reorder/remove tracks,
-//!                  toggle like / saved album).
-//!   * [`backend`]— the **swappable** YouTube-Music data source: a
-//!                  [`backend::MusicBackend`] trait with an offline sample impl
-//!                  (default) and a real rustypipe InnerTube impl (`live`
-//!                  feature) that does real song search and resolves a
-//!                  directly-playable audio-stream URL. PoToken is a seam
-//!                  ([`backend::potoken`]).
-//!   * [`stream`] — the non-blocking worker driving [`backend`] off the UI
-//!                  thread (search + stream-resolution requests in, results
-//!                  drained per-frame).
-//!   * [`source`] — legacy Piped/Invidious audio endpoint (network gated behind
-//!                  the `streaming` feature); superseded by [`backend`]/`live`.
-//!   * [`audio`]  — GStreamer `playbin` output + live position query (gated
-//!                  behind `audio`; the playhead tracks the real pipeline).
-//!   * [`lyrics`] — synced-or-plain lyrics: an LRC parser + a bundled sample
-//!                  library (always compiled) + a feature-gated async lrclib
-//!                  fetch worker (`lyrics` feature).
-//!   * [`sync`]   — the CRDT P2P sync seam: a [`sync::LibrarySync`] transport
-//!                  contract, an always-compiled in-process loopback, and a
-//!                  feature-gated live iroh transport (`p2p`).
-//!   * [`storage`]— on-disk persistence of the Automerge document.
-//!   * [`relay`]  — the **headless** library server (`music --relay`): a home
-//!                  server runs the document + sync transport with no GUI so
-//!                  clients sync the library P2P (the qOS self-hosting model).
-//!   * [`art`] / [`icon`] — procedural cover art + vector chrome glyphs.
-//!   * [`app`]    — the root [`MusicApp`] widget that draws the whole UI:
-//!                  collapsible sidebar, right-click track [`ContextMenu`],
-//!                  queue + playlist management, like/heart affordances, and
-//!                  the lyrics view.
+//! - [`model`] — pure data: catalog, playlists, liked/saved state, playback.
+//! - [`seed`] — the bundled offline sample library (`--shots`, tests).
+//! - [`doc`] — the Automerge bridge: library + play-state replicate across a
+//!   user's devices, with the mutation helpers apps/actions dispatch through.
+//! - [`backend`] — the swappable YouTube-Music data source
+//!   ([`backend::MusicBackend`]): an offline sample impl (default) and a real
+//!   rustypipe impl (`live` feature). `PoToken` is a seam ([`backend::potoken`]).
+//! - [`stream`] — the non-blocking worker driving [`backend`] off the UI thread.
+//! - [`source`] — legacy Piped/Invidious endpoint (`streaming` feature),
+//!   superseded by [`backend`]/`live`.
+//! - [`audio`] — `GStreamer` `playbin` output + live position query (`audio`
+//!   feature).
+//! - [`lyrics`] — LRC parsing + a bundled sample library, plus a feature-gated
+//!   async lrclib fetch worker (`lyrics` feature).
+//! - [`sync`] — the CRDT P2P sync seam: a [`sync::LibrarySync`] transport
+//!   contract, an in-process loopback, and a live iroh transport (`p2p`).
+//! - [`storage`] — on-disk persistence of the Automerge document.
+//! - [`relay`] — the headless library server (`music --relay`).
+//! - [`art`] / [`icon`] — procedural cover art + vector chrome glyphs.
+//! - [`app`] — the root [`MusicApp`] widget that draws the whole UI.
 //!
 //! `app_root()` is the single integration point used by both the live event
 //! loop and the `--shots` offscreen renderer.
-//!
-//! [`ContextMenu`]: ui::widget::context_menu::ContextMenu
+
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
 
 pub mod actions;
 pub mod app;
@@ -97,24 +95,14 @@ pub fn app_root() -> Box<dyn Widget> {
 /// is pre-snapped here.
 ///
 /// Recognised scenarios (combine with `QOS_MUSIC_VIEW` to pick the screen):
-/// * `"sidebar"` — the navigation sidebar snapped fully open. Paired with a
-///   narrow `--viewport`, this captures the overlay flap + dimming scrim;
-///   at a wide viewport it simply shows the docked sidebar.
-/// * `"collapsed"` — the docked sidebar snapped collapsed (content full-width),
-///   to capture the docked-collapse affordance.
-/// * `"context"` — a track right-click context menu opened over the library.
-/// * `"new-playlist"` — the inline create-playlist name prompt open.
-/// * `"search-focus"` — the header search pill focused with an empty query, so
-///   the caret sits at the field start (not at the end of the placeholder).
-/// * `"skeleton"` — the Home page in its shimmering skeleton loading state.
-/// * `"nowplaying"` — a bundled track playing (cover art in the transport bar +
-///   a live equalizer on the current row). Pair with a narrow `--viewport` to
-///   capture the compact bottom bar.
-/// * `"queue"` — the Queue view with a live "Next up" list (a bundled track
-///   plays and the sample queue trails it).
-/// * `"lyrics"` — the synced-lyrics view with the current line highlighted.
-/// * `"downloading"` — the song list with a few rows mid-download (the animated
-///   download spinner) beside idle rows.
+/// `sidebar`/`collapsed` — nav sidebar open/collapsed; `context` — track
+/// context menu open; `new-playlist` — inline create-playlist prompt open;
+/// `search-focus` — search pill focused, empty query; `skeleton` — Home in
+/// its loading state; `nowplaying` — a bundled track playing; `queue` — the
+/// Queue view with sample tracks trailing it; `lyrics` — synced-lyrics view;
+/// `downloading` — a few rows mid-download; `search-tabs`/`search-songs`/
+/// `search-artists` — search results filtered to that tab; `artist-page`/
+/// `album-page` — the detail page for a bundled item.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = MusicApp::new();
     // Hermetic: a headless shot never spawns a worker or fetches covers, so the

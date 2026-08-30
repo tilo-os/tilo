@@ -7,9 +7,7 @@
 //! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump the PNGs
 //! (`tooltip_over_icon_button_dark.png` / `_light.png`) for visual review.
 
-mod support;
-
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
@@ -22,7 +20,10 @@ use ui::widget::tooltip;
 use ui::widget::{Button, Widget};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h))).ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 fn render_case(theme: &Theme, bg: Color, name: &str) {
@@ -60,10 +61,9 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
         b.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }
 
-    // Reveal the tooltip over the first (Search) button. The chip is measured,
-    // positioned and painted by the shared primitive — the same call the App's
-    // central TooltipHost makes.
-    let viewport = Rect::new(0.0, 0.0, w as f64, h as f64);
+    // Reveal the tooltip over the first (Search) button via the shared
+    // primitive — the same call the App's central TooltipHost makes.
+    let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
     tooltip::draw_hover_tooltip(
         &mut scene,
         Affine::IDENTITY,
@@ -76,9 +76,8 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
 
     let rgba = renderer.render(&scene, bg);
 
-    // The chip is anchored just below the first button. Sample a pixel inside
-    // that band and assert it is opaque and differs from the background — i.e.
-    // the chip surface actually rasterised where it was anchored.
+    // The chip is anchored just below the first button — sample a pixel there
+    // and assert it's opaque and differs from the background.
     let (bx, by) = (44u32, 78u32);
     let (r, g, b, a) = OffscreenRenderer::sample(&rgba, w, bx, by);
     let bg8 = bg.to_rgba8();
@@ -92,7 +91,10 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
     // And the frame as a whole has substantial painted content (icons + chip).
     let bg_rgba = [bg8.r, bg8.g, bg8.b, bg8.a];
     let non_bg = rgba.chunks_exact(4).filter(|px| px[..4] != bg_rgba).count();
-    assert!(non_bg > 500, "expected painted content ({name}), got {non_bg} px");
+    assert!(
+        non_bg > 500,
+        "expected painted content ({name}), got {non_bg} px"
+    );
 
     if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);

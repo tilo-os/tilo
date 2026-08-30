@@ -1,28 +1,11 @@
-//! Smithay `State` struct — Phase 2 of the real Wayland compositor plan.
+//! Smithay `State` struct: the single value threaded through the calloop
+//! event loop, following smithay's "one big state" convention — every
+//! protocol global attaches via the matching `delegate_*!` macro, expanding
+//! into `Dispatch`/`GlobalDispatch` impls routed to the `*Handler` traits.
+//! References: smithay 0.7 `examples/minimal.rs`, `examples/compositor.rs`.
 //!
-//! Smithay follows a "one big state" convention: a single `State` struct owns
-//! every protocol global (compositor, xdg-shell, shm, seat, output) and is
-//! threaded through the calloop event loop. Each Wayland protocol attaches to
-//! the state via the corresponding `delegate_*!` macro, which expands into
-//! `Dispatch` / `GlobalDispatch` impls that route messages to the matching
-//! `*Handler` trait.
-//!
-//! Phase 2 only sets up the type plumbing — `compile-only`. Actual rendering,
-//! seat input forwarding and surface management happen in Phase 4+.
-//!
-//! References: smithay 0.7 `examples/minimal.rs` and `examples/compositor.rs`,
-//! and `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md` Phase 2.
-//!
-//! ## Module layout
-//!
-//! - [`State`] — the giant state struct that lives for the entire compositor
-//!   lifetime.
-//! - [`ClientState`] — per-client data attached at `insert_client` time. Holds
-//!   the smithay `CompositorClientState` so the compositor handler can hand it
-//!   back from `client_compositor_state`.
-//!
-//! Trait impls (`CompositorHandler`, `XdgShellHandler`, …) and the
-//! `delegate_*!` macros are wired up below.
+//! [`State`] lives for the compositor's lifetime; [`ClientState`] is
+//! per-client data attached at `insert_client` time. Trait impls and `delegate_*!` macros follow.
 
 use std::sync::Arc;
 
@@ -55,6 +38,8 @@ use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -67,7 +52,8 @@ use smithay::{
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
     delegate_ext_data_control, delegate_fractional_scale, delegate_output,
     delegate_pointer_gestures, delegate_primary_selection, delegate_seat, delegate_session_lock,
-    delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_shell,
+    delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
+    delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -76,8 +62,8 @@ use crate::compositor::render_node::{ProbeError, RenderNode};
 use crate::compositor::selection::SelectionState;
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
-use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::input_firewall::{Denial, RemoteInputFirewall};
+use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
 use crate::wayland::color_management::ColorManagerState;
 
@@ -85,18 +71,12 @@ use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
 use std::collections::HashMap;
 
-/// Read the persisted HiDPI display scale from the shared settings store.
+/// Read the persisted `HiDPI` display scale from the shared settings store.
 ///
 /// The Settings app writes `~/.config/qos/settings.json` with a
-/// `"display"` object carrying a `"scale"` number (1.0 = 100 %, 1.5 =
-/// 150 %, …). The compositor reads the same file — and resolves its path
-/// through `settings_store`, so it cannot drift from the apps the way it
-/// had: this was the one reader that applied the XDG rule for a relative
-/// `XDG_CONFIG_HOME` while the apps did not, which put them on two
-/// different files. `settings_store` carries no dependency on the Settings
-/// app; the contract is still the JSON on disk. Any read/parse failure, a
-/// missing file, or a value outside a sane range falls back to `1.0` so a
-/// corrupt config can never leave the session at an unusable zoom.
+/// `"display"` object carrying a `"scale"` number (1.0=100%, …); the
+/// compositor reads the same file via `settings_store`, resolving the same
+/// XDG rule the apps use. Any read/parse failure or out-of-range value falls back to `1.0`.
 fn load_display_scale() -> f64 {
     let Some(path) = settings_store::settings_path() else {
         return 1.0;
@@ -110,28 +90,22 @@ fn load_display_scale() -> f64 {
     match json
         .get("display")
         .and_then(|d| d.get("scale"))
-        .and_then(|s| s.as_f64())
+        .and_then(serde_json::Value::as_f64)
     {
-        // Clamp to the range the Settings control offers (100 %–200 %),
-        // with a small margin, so an out-of-band value can't wedge the UI.
+        // Clamp to the Settings control's range (100%-200%, with margin) so an out-of-band value can't wedge the UI.
         Some(scale) if (0.5..=3.0).contains(&scale) => scale,
         _ => 1.0,
     }
 }
 
-/// Bridges the `ext_session_lock_v1` protocol handler (which runs inside the
+/// Bridges the `ext_session_lock_v1` protocol handler (running inside the
 /// smithay dispatch on [`State`]) to the native run loop that owns the
 /// authoritative lock state + the compositor-drawn lock overlay.
 ///
-/// The protocol and the compositor share **one** locked state: a client
-/// `lock` request stashes the [`SessionLocker`] here and raises
-/// `lock_requested`; the run loop locks the session, paints the overlay, then
-/// confirms via [`SessionLocker::lock`] so the client's `locked` event only
-/// fires once app content is actually hidden. A client `unlock_and_destroy`
-/// raises `unlock_requested`, which the run loop consumes to clear the lock
-/// (the client authenticated on its side; the compositor's own PAM path
-/// authenticates chord/idle-driven locks). Same-thread, so no `Arc`/lock —
-/// the run loop reads these fields directly each tick.
+/// The protocol and compositor share **one** locked state: a client `lock`
+/// stashes the [`SessionLocker`] here and raises `lock_requested`; the run
+/// loop locks, paints the overlay, then confirms via [`SessionLocker::lock`]
+/// so `locked` fires only once content is hidden. `unlock_and_destroy` raises `unlock_requested`. Same-thread, so no `Arc`/lock.
 #[derive(Default)]
 pub struct SessionLockHooks {
     lock_requested: bool,
@@ -140,8 +114,7 @@ pub struct SessionLockHooks {
 }
 
 impl SessionLockHooks {
-    /// Take the "a client asked to lock" edge (clears it; true at most once
-    /// per protocol `lock` request).
+    /// Take the "a client asked to lock" edge (clears it; true at most once per protocol `lock` request).
     pub fn take_lock_requested(&mut self) -> bool {
         std::mem::take(&mut self.lock_requested)
     }
@@ -151,15 +124,12 @@ impl SessionLockHooks {
         std::mem::take(&mut self.unlock_requested)
     }
 
-    /// Take the stashed [`SessionLocker`] so the run loop can confirm the lock
-    /// with `.lock()` after the overlay has been presented. `None` when
-    /// nothing is pending confirmation.
+    /// Take the stashed [`SessionLocker`] so the run loop can confirm the lock after the overlay is presented; `None` if nothing pending.
     pub fn take_pending_locker(&mut self) -> Option<SessionLocker> {
         self.pending_locker.take()
     }
 
-    /// Whether a client currently holds (or is mid-acquiring) the lock —
-    /// there is a locker pending confirmation. Used only by tests.
+    /// Whether a client currently holds (or is mid-acquiring) the lock; used only by tests.
     #[cfg(test)]
     pub fn has_pending_locker(&self) -> bool {
         self.pending_locker.is_some()
@@ -168,306 +138,184 @@ impl SessionLockHooks {
 
 /// The compositor's process-wide state.
 ///
-/// This is the single value the calloop event loop hands to every callback,
-/// so every Wayland global gets unsynchronised mutable access without `Rc` /
-/// `Arc` plumbing.
-///
-/// Future phases will add: a `Space` for window placement, a renderer handle,
-/// the cluster/sandbox model, libp2p collaboration plumbing, etc. For Phase 2
-/// we only need the protocol-globals and the loop / display handles.
+/// The single value the calloop event loop hands to every callback, so every Wayland global gets unsynchronised mutable access without `Rc`/`Arc` plumbing.
 pub struct State {
-    /// Calloop loop handle — used in later phases to register input devices,
-    /// session signals, libinput sources, etc.
+    /// Calloop loop handle — for registering input devices, session signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
-    /// `wayland-server` display handle. Cloneable; used to insert new clients
-    /// when the listening socket accepts a connection.
+    /// `wayland-server` display handle. Cloneable; used to insert new clients when the listening socket accepts a connection.
     pub display_handle: DisplayHandle,
     /// `wl_compositor` + `wl_subcompositor` global state.
     pub compositor_state: CompositorState,
     /// `xdg_wm_base` global state — toplevels and popups.
     pub xdg_shell_state: XdgShellState,
-    /// `wl_shm` global state — software buffer support. Empty extra-format
-    /// list for now; `wl_shm` always advertises ARGB8888 + XRGB8888.
+    /// `zxdg_decoration_manager_v1` global state — who draws the frame
+    /// around a toplevel.
+    ///
+    /// This compositor does, always: a window lives in a tab, and the tab's
+    /// chrome *is* its decoration. Without this global a toolkit has nothing
+    /// to negotiate with and falls back to drawing its own title bar — a
+    /// second frame inside the first, subtracting from the client's configured size.
+    pub xdg_decoration_state: XdgDecorationState,
+    /// `wl_shm` global state — software buffer support; always advertises ARGB8888 + XRGB8888, no extra formats yet.
     pub shm_state: ShmState,
     /// `wl_data_device_manager` global state — the clipboard and
     /// drag-and-drop channel.
     ///
-    /// Not optional in practice, whatever a compositor's own apps need.
-    /// GTK refuses to use a Wayland display at all when this global is
-    /// absent — `gdk_wayland_display_open` checks for `wl_compositor`,
-    /// `wl_shm` and `wl_data_device_manager` together and bails with
-    /// "the Wayland compositor does not provide one or more of the
-    /// required interfaces" if any is missing. So without it every GTK
-    /// application on the machine — which is most Flatpaks — connects,
-    /// is refused, and falls back to an X11 display that does not exist
-    /// either. It never reaches the point of mapping a window, and the
-    /// failure looks like the app being broken rather than the
-    /// compositor being incomplete.
-    ///
-    /// qOS's own toolkit does not use it, which is why it was missing:
-    /// nothing that shipped in-tree ever asked for it.
+    /// Not optional in practice: GTK refuses to use a Wayland display at all
+    /// when absent — `gdk_wayland_display_open` checks for it alongside
+    /// `wl_compositor`/`wl_shm` and bails if any is missing, so every GTK
+    /// app connects, is refused, and falls back to a nonexistent X11
+    /// display. qOS's own toolkit doesn't use it, which is why it was missing.
     pub data_device_state: DataDeviceState,
     /// `zwp_linux_dmabuf_v1` global state — enables clients to attach
     /// GPU-allocated (usually GBM) buffers to their surfaces.
     ///
-    /// The global is created **with default feedback** (protocol
-    /// version 4), which is what carries the `main_device` event. That
-    /// event is the only remaining way a Mesa EGL/Vulkan client can
-    /// learn which GPU to allocate on now that `wl_drm` is gone; a
-    /// version-3 global leaves the client with no device, which it
-    /// reports as `failed to get driver name for fd -1` before failing
-    /// to create its window at all.
-    ///
-    /// The advertised formats are RGBA-family FourCCs under
-    /// `Modifier::Linear` only, because
-    /// [`crate::compositor::foreign::import_dmabuf_rgba`] imports a
-    /// client buffer by CPU-mapping its plane. The compositor
-    /// deliberately advertises exactly what it can composite — offering
-    /// tiled modifiers or multi-planar YUV would make conforming
-    /// clients hand us buffers we would then have to reject on screen.
+    /// Created **with default feedback** (protocol version 4), carrying the
+    /// `main_device` event, now that `wl_drm` is gone the only way a Mesa
+    /// client learns which GPU to allocate on. Advertised formats are
+    /// RGBA-family under `Modifier::Linear` only, matching what [`crate::compositor::foreign::import_dmabuf_rgba`] can CPU-map.
     pub dmabuf_state: DmabufState,
-    /// The advertised `zwp_linux_dmabuf_v1` global handle. Held for
-    /// the process lifetime — dropping it would revoke the global
-    /// from clients that already bound it.
+    /// The advertised `zwp_linux_dmabuf_v1` global handle. Held for the
+    /// process lifetime — dropping it would revoke the global from clients that already bound it.
     ///
-    /// `None` when [`crate::compositor::render_node::probe`] found no
-    /// GPU whose dma-bufs the compositor can actually read (no DRM
-    /// render node at all, or only drivers that can't CPU-map their
-    /// exports). Not advertising is the honest answer there: Mesa then
-    /// takes its `wl_shm` software path, which the compositor composites
-    /// correctly, instead of negotiating dmabufs every frame would have
-    /// to reject.
+    /// `None` when [`crate::compositor::render_node::probe`] found no GPU
+    /// whose dma-bufs the compositor can actually read. Not advertising is
+    /// the honest answer there: Mesa falls back to its `wl_shm` software path instead of offering dmabufs it would have to reject.
     pub dmabuf_global: Option<DmabufGlobal>,
     /// The render node handed to clients as
-    /// `zwp_linux_dmabuf_feedback_v1.main_device`, or the reason none
-    /// was. Kept so the boot log, the test-control state dump and the
-    /// integration tests can all read the *decision* rather than
-    /// re-deriving it.
+    /// `zwp_linux_dmabuf_feedback_v1.main_device`, or the reason none was —
+    /// kept so the boot log, state dump and integration tests read the *decision* rather than re-deriving it.
     pub dmabuf_device: Result<RenderNode, ProbeError>,
-    /// `wl_seat` collection. Phase 2 doesn't add a seat yet; phase 4 will.
+    /// `wl_seat` collection.
     pub seat_state: SeatState<Self>,
     /// Clipboard, primary selection and drag-and-drop.
     ///
     /// Owns the four selection globals plus the compositor's clipboard
-    /// mirror, which is what lets in-process chrome paste without a Wayland
-    /// round trip. See [`crate::compositor::selection`] — in particular for
-    /// why the two data-control globals are gated to privileged clients.
+    /// mirror, letting in-process chrome paste without a Wayland round trip. See [`crate::compositor::selection`] for why the data-control globals are gated to privileged clients.
     pub selection: SelectionState,
-    /// `wl_output` + xdg-output manager. Phase 2 advertises the manager
-    /// global so xdg-output-aware clients (e.g. Mutter's wl-roots tools) can
-    /// bind without erroring; concrete outputs are added in phase 4.
+    /// `wl_output` + xdg-output manager; concrete outputs are added separately.
     pub output_manager_state: OutputManagerState,
-    /// Persisted workspace tree. Phase 6 of the compositor plan adopts
-    /// foreign-client toplevels into this tree as
-    /// [`crate::shell::state::TileContent::Foreign`] tabs (see
-    /// [`crate::compositor::tab_binding::adopt_toplevel`]).
+    /// Persisted workspace tree; foreign-client toplevels adopt into it as [`crate::shell::state::TileContent::Foreign`] tabs.
     pub workspace_tree: WorkspaceTree,
-    /// Peer-sync share registry — Phase 4 Task 4.4. Tracks which peers
-    /// have been granted streaming + input access to which surfaces, and
-    /// the per-peer `read_only` flag. Inbound
-    /// [`crate::network::NeighbourMsg::RemoteInput`] events are filtered
-    /// through this registry before they reach the seat.
+    /// Peer-sync share registry. Tracks which peers have been granted
+    /// streaming + input access to which surfaces, and the per-peer
+    /// `read_only` flag. Inbound [`crate::network::NeighbourMsg::RemoteInput`] events are filtered through this before reaching the seat.
     pub share_registry: ShareRegistry,
     /// The rest of the remote-input firewall: region, z-order, keyboard
     /// scrubber, rate limit, physical-input priority and the kill switch.
-    ///
     /// The share registry decides *whether* a peer may drive a surface;
-    /// this decides what, where and how fast. Fed a view of the screen
-    /// once per tick by the compositor loop — until then it has observed
-    /// nothing and refuses everything.
+    /// this decides what, where and how fast. Fed a view of the screen once per tick — until then it refuses everything.
     pub remote_input_firewall: RemoteInputFirewall,
-    /// Last `RemoteInput` event that survived the share-registry gate.
-    /// Read by integration tests that want to assert seat-equivalent
-    /// injection happened, without spinning up a real `Seat<State>`.
-    /// v2 replaces this with the proper smithay seat-call path.
+    /// Last `RemoteInput` event that survived the share-registry gate; read by tests to assert injection without a real `Seat<State>` (v2 replaces this).
     pub last_remote_input: Option<(MsgPeerId, SurfaceId, InputEvent)>,
-    /// Last `RemoteInput` event the firewall refused, and the rule that
-    /// refused it. The counterpart to `last_remote_input`: a dropped
-    /// event is otherwise invisible, and "nothing happened" is exactly
-    /// what a broken filter also looks like.
+    /// Last `RemoteInput` event the firewall refused, and the rule that refused it — otherwise indistinguishable from a broken filter.
     pub last_remote_input_denial: Option<(MsgPeerId, SurfaceId, Denial)>,
-    /// Per-foreign-surface RGBA staging — Peer-sync Phase 4 v2. The
-    /// compositor's [`CompositorHandler::commit`] hook calls
-    /// [`SurfaceTracker::on_commit`] for every committed surface whose
-    /// id is listed in
-    /// [`crate::shell::state::Workspace::shared_surfaces`]; the
-    /// streaming task drains via [`SurfaceTracker::take_latest`] per
-    /// encode tick.
+    /// Per-foreign-surface RGBA staging. [`CompositorHandler::commit`] calls
+    /// [`SurfaceTracker::on_commit`] for every committed surface listed in
+    /// [`crate::shell::state::Workspace::shared_surfaces`]; the streaming task drains via [`SurfaceTracker::take_latest`] per encode tick.
     pub surface_tracker: SurfaceTracker,
-    /// The compositor's `wl_seat` handle with a pointer device
-    /// already registered. Constructed in [`State::new`] alongside
-    /// the rest of the protocol globals. Peer-sync's
-    /// [`Self::apply_remote_input`] injects pointer motion / button
-    /// events into this seat (D-1 fix) so remote-input traffic
-    /// actually drives the local seat instead of being logged and
-    /// discarded.
-    ///
-    /// Keyboard injection is staged behind a follow-up: smithay's
-    /// keyboard handle needs a configured keymap, and the v1 path
-    /// can ship without it. Pointer motion/button covers the
-    /// foreign-tab remote-control use case the Phase 4 spec calls
-    /// out.
+    /// The compositor's `wl_seat` handle with a pointer device already
+    /// registered, constructed in [`State::new`]. Peer-sync's
+    /// [`Self::apply_remote_input`] injects pointer motion/button events
+    /// into this seat so remote-input traffic drives the local seat instead
+    /// of being logged and discarded. Keyboard injection is staged behind a
+    /// follow-up (needs a configured keymap); pointer is what the foreign-tab remote-control use case needs.
     pub seat: Seat<Self>,
-    /// Monotonic counter for input serials. Smithay's input handles
-    /// require fresh `Serial`s per event; we maintain one per state
-    /// instance so the seat injection in `apply_remote_input` doesn't
-    /// reuse old serials (which would make wayland clients ignore the
-    /// motion / button).
+    /// Monotonic counter for input serials — reusing old `Serial`s would make wayland clients ignore the motion/button.
     pub serial_counter: u32,
-    /// Wall-clock anchor for input timestamps. Pointer events ship
-    /// with a `time: u32` in milliseconds since this instant.
+    /// Wall-clock anchor for input timestamps; pointer events ship `time: u32` in milliseconds since this instant.
     pub start_time: std::time::Instant,
-    /// Per-peer virtual seats.
-    ///
-    /// [`InputEvent::PointerEnter`] auto-grabs the peer's keyboard
-    /// focus onto the target surface for downstream `Key` events;
-    /// [`InputEvent::PointerLeave`] releases the grab. See
-    /// [`crate::compositor::remote_seat::RemoteSeats`] for the full
-    /// contract. Multi-user typing interleaves at the physical seat
-    /// level — this map is bookkeeping for the per-peer focus state,
-    /// not a per-peer independent input pipeline (v1).
+    /// Per-peer virtual seats. [`InputEvent::PointerEnter`] auto-grabs the
+    /// peer's keyboard focus onto the target surface for downstream `Key`
+    /// events; [`InputEvent::PointerLeave`] releases it. See
+    /// [`crate::compositor::remote_seat::RemoteSeats`]; multi-user typing interleaves at the physical seat level (v1: bookkeeping only, not a per-peer pipeline).
     pub remote_seats: RemoteSeats,
-    /// Optional surface-id → WlSurface resolver installed by the
-    /// backend (`native::run` wires this to the compositor's
-    /// wayland-server tracker).
-    ///
-    /// Populated at boot from the same map the render layer uses to
-    /// find surfaces by their protocol id; consulted by
-    /// [`Self::apply_remote_input`]'s keyboard-focus flip on
-    /// `PointerEnter`. When `None` (headless tests) the focus flip is
-    /// a bookkeeping-only no-op — the peer's `RemoteSeat` still
-    /// records the target so tests can observe the focus intent.
+    /// Optional surface-id → `WlSurface` resolver installed by the backend
+    /// (`native::run` wires this to the compositor's wayland-server
+    /// tracker). Populated at boot from the same map the render layer uses;
+    /// consulted by [`Self::apply_remote_input`]'s keyboard-focus flip on
+    /// `PointerEnter`. `None` (headless tests) makes the focus flip a bookkeeping-only no-op.
     pub surface_resolver: Option<Box<dyn Fn(SurfaceId) -> Option<WlSurface> + Send + Sync>>,
     /// Active share sessions keyed by their target `SurfaceId`.
     ///
-    /// The [`CompositorHandler::commit`] hook consults this map on
-    /// every surface commit — when the committed surface is in the map,
-    /// the session's `encode_next_frame` is pumped so a freshly-drawn
-    /// buffer flows through the encoder → substream pipeline on the
-    /// same tick it landed in the compositor. Without this hook the
-    /// encoder would wait for the render loop's next damage pass,
-    /// which introduces a per-frame stall.
-    ///
-    /// Sessions are held by `Arc` because
-    /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s
-    /// `encode_next_frame` takes `&self`; the `Arc` also lets the
-    /// share manager keep an independent handle for the stop path.
+    /// [`CompositorHandler::commit`] consults this map on every surface
+    /// commit — when the surface is in the map, `encode_next_frame` is
+    /// pumped the same tick a fresh buffer lands, avoiding a per-frame
+    /// stall waiting on the next damage pass. Held as `Arc` since
+    /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
     pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
-    /// `wp_color_manager_v1` state — advertised primaries / transfers /
-    /// features, plus the registered global id. HDR clients bind the
-    /// global, query supported capabilities, and attach parametric
-    /// image descriptions to their surfaces; the flatpak-share
-    /// encoder reads the current per-surface description through
-    /// [`crate::wayland::color_management::surface_current_colorimetry`].
+    /// `wp_color_manager_v1` state — advertised primaries/transfers/features
+    /// plus the registered global id. HDR clients bind it, query
+    /// capabilities, and attach parametric image descriptions; the
+    /// flatpak-share encoder reads the current per-surface description through [`crate::wayland::color_management::surface_current_colorimetry`].
     pub color_manager: ColorManagerState,
-    /// `wp_fractional_scale_manager_v1` state — lets HiDPI clients ask the
-    /// compositor for the preferred fractional scale of their surface (as
-    /// a `1/120`-unit integer on the wire). The preferred value the
-    /// compositor sends is [`Self::scale`]; it is pushed to every surface
-    /// on commit so a client that renders at, say, 1.5× produces crisp
-    /// output instead of a bilinearly-upscaled 1× buffer.
+    /// `wp_fractional_scale_manager_v1` state — lets `HiDPI` clients ask the
+    /// compositor for their surface's preferred fractional scale (a
+    /// `1/120`-unit integer). The preferred value is [`Self::scale`],
+    /// pushed on commit so a client rendering at, say, 1.5× produces crisp output instead of a bilinearly-upscaled 1× buffer.
     pub fractional_scale_manager: FractionalScaleManagerState,
-    /// `wp_viewporter` state — the companion protocol to fractional
-    /// scaling. A client that renders a 1.5×-sized buffer uses
-    /// `wp_viewport.set_destination` to declare the logical size the
-    /// buffer maps to, so the compositor scales it correctly (no need for
-    /// integer `wl_surface.set_buffer_scale`, which cannot express 1.5).
+    /// `wp_viewporter` state, fractional scaling's companion protocol — `wp_viewport.set_destination` declares a 1.5×-buffer's logical size, which integer `set_buffer_scale` can't express.
     pub viewporter: ViewporterState,
-    /// Current display scale factor (HiDPI). Sent to clients as the
+    /// Current display scale factor (`HiDPI`), sent to clients as the
     /// preferred `wp_fractional_scale`. Read once at session start from the
-    /// shared settings store (`~/.config/qos/settings.json`, section
-    /// `display.scale`) so the value the Settings app's "Display scale"
-    /// control writes drives what the compositor advertises. Defaults to
-    /// `1.0` when unset or the file is absent.
+    /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
     pub scale: f64,
     /// Every output as `(position, size, scale)` in the compositor's
     /// combined coordinate space, mirrored from the backend.
     ///
-    /// [`Self::scale`] is one number for the whole session, which is only
-    /// right on a machine with one display: a laptop docked to an external
-    /// monitor has a dense panel and a sparse one, and a client told the
-    /// wrong factor renders soft on one of them. This is what lets the
-    /// preferred `wp_fractional_scale` be per-surface — the scale of the
-    /// output the surface is actually on.
+    /// [`Self::scale`] is one number for the whole session, only right on a
+    /// single-display machine — a docked laptop has a dense panel and a sparse one, and the wrong factor renders soft. This is what lets the preferred `wp_fractional_scale` be per-surface.
     pub output_layout: Vec<((i32, i32), (u32, u32), f64)>,
-    /// Preferred scale per client surface id, derived from
-    /// [`Self::output_layout`] and where the surface's tile sits. Refreshed
-    /// by the run loop, which is the only place that has both the output
-    /// table and the laid-out tile rects.
+    /// Preferred scale per client surface id, derived from [`Self::output_layout`] + tile position; refreshed by the run loop, the only place with both.
     pub surface_scales: HashMap<u64, f64>,
-    /// **Transient fullscreen surface** — the window group id of the toplevel
-    /// that currently holds the output fullscreen via
-    /// `xdg_toplevel.set_fullscreen`, or `None` in the normal tiled state.
-    /// Set by [`XdgShellHandler::fullscreen_request`] and cleared by
-    /// `unfullscreen_request` (or by surface destroy). The native render loop
-    /// mirrors this into the `FrameBuilder` each frame so the shell scene
-    /// promotes the group to the whole output; it is deliberately NOT part of
-    /// the persisted `WorkspaceTree` (a live presentation must never survive a
-    /// reboot) and restores the exact prior layout when cleared.
+    /// **Transient fullscreen surface** — the window group id of the
+    /// toplevel currently holding the output fullscreen via
+    /// `xdg_toplevel.set_fullscreen`, or `None`. Set by
+    /// [`XdgShellHandler::fullscreen_request`], cleared by
+    /// `unfullscreen_request` (or surface destroy). The native render loop
+    /// mirrors this into the `FrameBuilder` each frame; deliberately NOT
+    /// part of the persisted `WorkspaceTree` (a live presentation must never survive a reboot).
     pub fullscreen_group: Option<u64>,
-    /// Combined output size in physical pixels, mirrored from the backend by
-    /// the native loop (`(0, 0)` until the first output is known). Used as the
-    /// size sent in a fullscreen `xdg_toplevel` configure so a fullscreened
-    /// client fills the whole output; `(0, 0)` leaves the size unspecified so
-    /// the client keeps its own.
+    /// Combined output size in physical pixels, mirrored from the backend
+    /// (`(0, 0)` until the first output is known). Used as the size in a
+    /// fullscreen `xdg_toplevel` configure; `(0, 0)` leaves the size unspecified so the client keeps its own.
     pub output_size: (i32, i32),
-    /// `ext_session_lock_v1` global state (tracks which outputs a client lock
-    /// has covered). Advertised so `loginctl lock-session` / a conforming lock
-    /// client can drive the session lock through the standard protocol.
+    /// `ext_session_lock_v1` global state (tracks which outputs a client lock covered), letting `loginctl lock-session` drive the lock via protocol.
     pub session_lock_state: SessionLockManagerState,
-    /// Bridge from the protocol handler to the native run loop's authoritative
-    /// lock (see [`SessionLockHooks`]).
+    /// Bridge from the protocol handler to the native run loop's authoritative lock (see [`SessionLockHooks`]).
     pub session_lock: SessionLockHooks,
-    /// `zwp_pointer_gestures_v1` global state — advertises touchpad pinch /
-    /// swipe / hold gestures to clients. On a bare-TTY (DRM) session Mutter
-    /// isn't around to expose gestures, so the compositor advertises this
-    /// itself; winit clients bind it and create a `zwp_pointer_gesture_pinch_v1`
-    /// per pointer. Delivering the gesture events to the focused surface is
-    /// gated on the compositor routing local libinput pointer input through the
-    /// seat (today local input drives the shell chrome, not client surfaces).
+    /// `zwp_pointer_gestures_v1` global state — advertises touchpad
+    /// pinch/swipe/hold gestures to clients. On a bare-TTY (DRM) session
+    /// Mutter isn't around to expose gestures, so the compositor does; winit
+    /// clients bind it per pointer. Delivering to the focused surface is
+    /// gated on routing local libinput input through the seat (today local input drives shell chrome, not client surfaces).
     pub pointer_gestures_state: PointerGesturesState,
     /// Local-input → client-surface routing state: the live foreign-surface
-    /// registry, the seat's keyboard / pointer focus bookkeeping, and the
-    /// queue of foreign toplevels waiting to be mirrored into the shell
-    /// chrome's tab tree. Every method on this field lives in
-    /// [`crate::compositor::client_input`].
+    /// registry, seat focus bookkeeping, and the queue of foreign toplevels
+    /// waiting to be mirrored into the shell chrome's tab tree. Every method lives in [`crate::compositor::client_input`].
     pub client_input: crate::compositor::client_input::ClientInput,
 }
 
 impl State {
-    /// Build a fresh `State` with all protocol globals registered.
-    ///
-    /// Each `*::new::<Self>` / `*::new_with_xdg_output::<Self>` call advertises
-    /// the corresponding Wayland global on the display. The actual `wl_seat`
-    /// is *not* created yet — that happens in phase 4 when input plumbing
-    /// arrives.
+    /// Build a fresh `State` with all protocol globals registered — each `*::new::<Self>` call advertises the corresponding Wayland global.
     pub fn new(loop_handle: LoopHandle<'static, Self>, display_handle: DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        // Advertised to every client, unfiltered: hiding this global just makes a toolkit decorate itself.
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
-        // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU
-        // client to boot against us, and only one of them is the format
-        // list:
+        // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU client:
         //
         // 1. **A main device.** Mesa dropped `wl_drm`, so
-        //    `dmabuf_feedback.main_device` (protocol version 4) is the
-        //    only channel that tells a client which GPU to allocate on.
-        //    A version-3 global — what `DmabufState::create_global`
-        //    builds — gives the client the protocol without the device,
-        //    and EGL dies with `failed to get driver name for fd -1`
-        //    before the client ever maps a toplevel.
-        // 2. **Only formats we can composite.** A client buffer becomes
-        //    tile pixels through `foreign::import_dmabuf_rgba`, which
-        //    CPU-maps the plane fd. That is correct for single-plane
-        //    RGBA under `Modifier::Linear` and nothing else, so that is
-        //    exactly what goes on the wire. (The NV12/P010 the encoder
-        //    path consumes are *capture* formats produced downstream of
-        //    a share session — advertising them to clients would invite
-        //    toplevels we'd have to reject on screen every frame.)
+        //    `dmabuf_feedback.main_device` (protocol version 4) is the only
+        //    channel telling it which GPU to allocate on — a version-3
+        //    global leaves it with none, and EGL dies before mapping a toplevel.
+        // 2. **Only formats we can composite.** `foreign::import_dmabuf_rgba`
+        //    CPU-maps the plane fd — correct only for single-plane RGBA under `Modifier::Linear`, so that's what goes on the wire.
         let dmabuf_formats: Vec<Format> = [
             Fourcc::Argb8888,
             Fourcc::Xrgb8888,
@@ -486,9 +334,7 @@ impl State {
             Ok(node) => {
                 match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
                     Ok(feedback) => {
-                        // Publish the decision for the import side: the
-                        // buffers clients hand us were allocated on this
-                        // GPU, so that is the GPU that must read them back.
+                        // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
                         crate::compositor::render_node::set_advertised(node.path.clone());
                         tracing::info!(
                             target: "shell::compositor::dmabuf",
@@ -504,10 +350,7 @@ impl State {
                         ))
                     }
                     Err(e) => {
-                        // The format table lives in a sealed memfd; if we
-                        // can't create it we cannot send correct feedback,
-                        // and a feedback-less global is the broken state
-                        // this whole block exists to avoid.
+                        // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
                         tracing::error!(
                             target: "shell::compositor::dmabuf",
                             error = %e,
@@ -529,23 +372,13 @@ impl State {
             }
         };
 
-        // D-1 fix: register a real seat with a pointer device so
-        // `apply_remote_input` has something to inject into. The seat
-        // name matches the wayland.rs sibling so multi-binary apps see
-        // a consistent identifier. Keyboard injection ships in the
-        // follow-up — registering the device here would force a keymap
-        // load (`add_keyboard(Default::default(), 200, 25)`) we
-        // intentionally defer.
+        // Register a real seat with a pointer device for `apply_remote_input` to inject into; name matches the wayland.rs sibling for consistency.
         let mut seat = seat_state.new_wl_seat(&display_handle, "quick-desktop");
         seat.add_pointer();
-        // W7 text injection: a keyboard on the seat is required for the
-        // on-screen keyboard's `virtual-keyboard-v1` client (and any future
-        // `input-method`/`text-input` IME) to deliver keys to the focused
-        // surface. Default xkb config; 200ms repeat delay, 25/s rate. Guarded
-        // so a keymap-load failure degrades gracefully instead of panicking.
-        // Keyboard auto-repeat comes from the persisted `input.key_repeat`
-        // preference rather than a hard-coded pair, so the Settings
-        // control the compositor never read now reaches the seat.
+        // A keyboard on the seat is required for the on-screen keyboard's
+        // `virtual-keyboard-v1` client (and any future IME) to deliver keys
+        // to the focused surface. Guarded so a keymap-load failure degrades
+        // gracefully. Auto-repeat comes from the persisted `input.key_repeat` preference rather than a hard-coded pair.
         let (repeat_delay, repeat_rate) =
             crate::compositor::backend::drm::input_config::InputSettings::load()
                 .key_repeat_params();
@@ -556,45 +389,27 @@ impl State {
         ) {
             tracing::warn!("seat: failed to add keyboard (text injection disabled): {e}");
         }
-        // A touchscreen has no way to reach a client without this: the
-        // compositor's own chrome is driven by the synthesised pointer
-        // stream, but a client that wants real multi-touch needs the seat
-        // to advertise `wl_touch`.
+        // A touchscreen can't reach a client without this — chrome uses the synthesised pointer stream, but real multi-touch needs `wl_touch`.
         seat.add_touch();
-        // W7: advertise the virtual-keyboard manager global so the OSK can
-        // inject text. Keys flow through the seat keyboard above to the
-        // focused surface; the global self-registers in the display.
+        // Advertise the virtual-keyboard manager global so the OSK can inject text through the seat keyboard above.
         VirtualKeyboardManagerState::new::<Self, _>(&display_handle, |_client| true);
-        // Advertise the `wp_color_manager_v1` global. Constructing
-        // before the state literal below because `display_handle` is
-        // moved into the struct.
+        // Advertise `wp_color_manager_v1`, before the state literal below since `display_handle` is moved into the struct.
         let color_manager = ColorManagerState::new::<Self>(&display_handle);
-        // Advertise `wp_fractional_scale_manager_v1` + `wp_viewporter`.
-        // Together they let HiDPI clients render at a fractional scale
-        // (e.g. 1.5×) and have the compositor composite the result at the
-        // correct logical size. The preferred scale itself is pushed
-        // per-surface on commit (see `CompositorHandler::commit`).
+        // Advertise `wp_fractional_scale_manager_v1` + `wp_viewporter`
+        // together, letting HiDPI clients render at a fractional scale
+        // (e.g. 1.5×) and have the compositor composite the correct logical size; the preferred scale is pushed per-surface on commit.
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
-        // Advertise `ext_session_lock_manager_v1` so a conforming lock client
-        // (or `loginctl lock-session` routed through one) can lock the session
-        // through the standard protocol. The filter allows every client; the
-        // compositor still owns the on-screen lock UI + authentication.
+        // Advertise `ext_session_lock_manager_v1` for standard-protocol locking; the compositor still owns the lock UI + authentication.
         let session_lock_state =
             SessionLockManagerState::new::<Self, _>(&display_handle, |_client| true);
-        // Read the persisted display scale from the shared settings store
-        // so the compositor advertises the value the Settings app wrote.
+        // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
         let scale = load_display_scale();
-        // Advertise touchpad pinch/swipe/hold gestures so clients (winit apps)
-        // can bind them on a bare-TTY session where no host compositor exposes
-        // the protocol. Constructed before the struct literal because
-        // `display_handle` is moved into the struct.
+        // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
-        // Clipboard + primary selection + drag-and-drop. Advertised before the
-        // struct literal because `display_handle` is moved into it. Selection
-        // *focus* is pushed alongside keyboard focus every tick — see
-        // `client_input::sync_keyboard_focus` — because smithay gates
-        // `set_selection` on keyboard focus.
+        // Clipboard + primary selection + drag-and-drop, advertised before
+        // the struct literal (which moves `display_handle`). Selection
+        // *focus* is pushed alongside keyboard focus every tick — see `client_input::sync_keyboard_focus` — since smithay gates `set_selection` on it.
         let selection = SelectionState::new(&display_handle);
 
         Self {
@@ -602,6 +417,7 @@ impl State {
             display_handle,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             data_device_state,
             dmabuf_state,
@@ -640,22 +456,18 @@ impl State {
     /// Mirror the backend's output table.
     ///
     /// Called at startup and on every hotplug. Dropping the per-surface
-    /// scale cache alongside it is deliberate: the layout is what the
-    /// cached values were derived from, so keeping them would hand
-    /// clients the scale of a monitor that has moved or gone.
+    /// scale cache alongside it is deliberate: the layout the cached values were derived from is gone, so keeping them would hand clients the scale of a monitor that moved.
     pub fn set_output_layout(&mut self, outputs: &[crate::compositor::backend::Output]) {
         self.output_layout = outputs
             .iter()
-            .map(|o| (o.position, o.size, o.scale as f64))
+            .map(|o| (o.position, o.size, f64::from(o.scale)))
             .collect();
         self.surface_scales.clear();
     }
 
     /// The scale a surface whose tile sits at `origin` should render at.
-    ///
     /// Falls back to the session-wide [`Self::scale`] when no output table
-    /// has arrived yet — a hosted or headless run has one display and no
-    /// per-output answer to give.
+    /// has arrived — a hosted/headless run has one display and no per-output answer to give.
     pub fn scale_for_origin(&self, origin: (f64, f64)) -> f64 {
         if self.output_layout.is_empty() {
             return self.scale;
@@ -667,8 +479,7 @@ impl State {
         )
     }
 
-    /// The preferred scale for one client surface: the scale of the output
-    /// it is on, or the session-wide value when it has not been placed.
+    /// The preferred scale for one client surface: its output's scale, or the session-wide value if not yet placed.
     pub fn surface_scale(&self, surface_id: u64) -> f64 {
         self.surface_scales
             .get(&surface_id)
@@ -680,10 +491,7 @@ impl State {
     /// preferred `wp_fractional_scale` to any that changed.
     ///
     /// `placements` is `(surface id, tile origin)`. Only surfaces whose
-    /// value actually moved generate wire traffic — `set_preferred_scale`
-    /// is idempotent, but recomputing the whole table every frame and
-    /// calling it unconditionally would still walk every surface's state
-    /// lock for nothing.
+    /// value actually moved generate wire traffic — recomputing and calling unconditionally would walk every surface's state lock for nothing.
     pub fn update_surface_scales(&mut self, placements: &[(u64, (f64, f64))]) {
         for (surface_id, origin) in placements {
             let scale = self.scale_for_origin(*origin);
@@ -700,37 +508,28 @@ impl State {
                 });
             });
         }
-        // Surfaces that are no longer placed lose their cached scale, so a
-        // re-placed one is recomputed rather than resurrected at whatever
-        // it happened to be last time.
+        // Surfaces no longer placed lose their cached scale, so a re-placed one is recomputed, not resurrected at its last value.
         let live: Vec<u64> = placements.iter().map(|(id, _)| *id).collect();
         self.surface_scales.retain(|id, _| live.contains(id));
     }
 
-    /// Register a share session so the [`CompositorHandler::commit`]
-    /// hook pumps its `encode_next_frame` on every commit of the
-    /// target surface. Replaces any prior session for the same
-    /// surface — the old session's encoder is dropped.
+    /// Register a share session so [`CompositorHandler::commit`] pumps `encode_next_frame` on every commit; replaces any prior session.
     pub fn register_share_session(&mut self, session: Arc<SharedFlatpakSession>) {
         let surface = session.surface_id;
         self.active_sessions.insert(surface, session);
     }
 
-    /// Deregister a share session by surface id. No-op if the surface
-    /// isn't registered. Called when the share ends or the target
-    /// surface is destroyed.
+    /// Deregister a share session by surface id (no-op if unregistered) — called on share end or surface destroy.
     pub fn unregister_share_session(&mut self, surface: SurfaceId) {
         self.active_sessions.remove(&surface);
     }
 
-    /// Stage the buffer a foreign (external-client) toplevel just
-    /// committed so its tab can paint the client's actual pixels.
+    /// Stage the buffer a foreign (external-client) toplevel just committed
+    /// so its tab can paint the client's actual pixels.
     ///
-    /// Split out of [`CompositorHandler::commit`] to keep the hook itself
-    /// a plain dispatch. `wl_shm` and dmabuf are both handled by
-    /// [`crate::compositor::foreign::ForeignFrameStore::capture_commit`];
-    /// a buffer neither path can decode is recorded as an error the tile
-    /// renders, never as a silently stale frame.
+    /// Split out of [`CompositorHandler::commit`] to keep the hook a plain
+    /// dispatch. `wl_shm` and dmabuf are both handled by
+    /// [`crate::compositor::foreign::ForeignFrameStore::capture_commit`]; a buffer neither path can decode is recorded as an error the tile renders, never a silently stale frame.
     fn capture_foreign_surface(&mut self, surface: &WlSurface, surface_id: u64) {
         use crate::compositor::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
@@ -761,41 +560,27 @@ impl State {
         });
     }
 
-    /// Pump the share-session encoder for `surface_id` on a fresh
-    /// commit. Called from [`CompositorHandler::commit`] after
+    /// Pump the share-session encoder for `surface_id` on a fresh commit.
+    /// Called from [`CompositorHandler::commit`] after
     /// [`SurfaceTracker::on_commit`] has staged the buffer bytes.
     ///
-    /// - Returns `false` when no session is registered for
-    ///   `surface_id`, or when the tracker slot is empty (no staged
-    ///   frame this commit — the shared surface committed damage
-    ///   without a new buffer attach, e.g. cursor motion).
-    /// - Returns `true` when the session accepted the deposit and the
-    ///   encode-next-frame tick ran. That does NOT guarantee a frame
-    ///   was emitted — the throttle may have rejected the tick or the
-    ///   encoder may have failed; the frame's absence is surfaced
-    ///   through the session's per-subscriber substream state.
-    ///
-    /// Split out from `commit` so integration tests can drive the
-    /// tick path without spinning up a real `WlSurface`.
+    /// `false` when no session is registered or the tracker slot is empty
+    /// (damage-only commit); `true` when the deposit was accepted and the
+    /// encode tick ran — NOT a guarantee a frame was emitted. Split out so integration tests can drive the tick path without a real `WlSurface`.
     pub fn tick_share_session_for_surface(&mut self, surface_id: SurfaceId) -> bool {
         let Some(session) = self.active_sessions.get(&surface_id).cloned() else {
             return false;
         };
-        // DMABUF-direct path takes priority when the compositor's
-        // commit hook stashed a Dmabuf on this tick — `take_latest_dmabuf`
-        // drains it so a re-tick without a fresh commit finds no
-        // stale entry. Failing over to SHM if no DMABUF is present
-        // covers the mixed-mode case (a client that briefly attaches
-        // a SHM buffer between DMABUF commits).
+        // DMABUF-direct path takes priority when the commit hook stashed a
+        // Dmabuf this tick — `take_latest_dmabuf` drains it so a re-tick
+        // without a fresh commit finds none. Falling back to SHM covers the mixed-mode case (a client briefly attaching SHM between DMABUF commits).
         if let Some(dmabuf) = self.surface_tracker.take_latest_dmabuf(surface_id) {
             session.deposit_captured_dmabuf(dmabuf);
             let emitted = session.encode_next_frame(std::time::Instant::now());
             if emitted.is_some() {
-                // Encoder actually consumed the DMABUF. Only *now* do
-                // we bump the tracker's `dmabuf_direct_count` — the
-                // metric reflects real zero-copy, not "the buffer was
-                // DMABUF-shaped but the encoder rejected it and we
-                // fell back to SHM on the following commit".
+                // Encoder actually consumed the DMABUF. Only *now* do we bump
+                // the tracker's `dmabuf_direct_count` — the metric reflects
+                // real zero-copy, not "DMABUF-shaped but rejected and fell back to SHM".
                 self.surface_tracker.note_capture_path(
                     surface_id,
                     crate::compositor::surface_readback::CapturePath::DmabufDirect,
@@ -811,23 +596,17 @@ impl State {
         true
     }
 
-    /// Mint a fresh `Serial` for input events. Wayland clients expect
-    /// monotonically increasing serials; this counter never wraps in
-    /// practice (a 32-bit space at 1 kHz is 49 days of input traffic).
+    /// Mint a fresh `Serial` for input events — monotonic, and never wraps in practice (32-bit at 1kHz is 49 days of traffic).
     fn next_serial(&mut self) -> Serial {
         self.serial_counter = self.serial_counter.wrapping_add(1);
         Serial::from(self.serial_counter)
     }
 
-    /// Apply a remote-input event from `peer` targeting `surface`.
+    /// Apply a remote-input event from `peer` targeting `surface` — called
+    /// from [`crate::network::NeighbourMsg::RemoteInput`], the only door
+    /// between the network and the seat. Reads top to bottom:
     ///
-    /// The actor's event loop calls this from its
-    /// [`crate::network::NeighbourMsg::RemoteInput`] handler. It is the
-    /// only door between the network and the seat, and the whole input
-    /// firewall reads top to bottom here:
-    ///
-    /// 1. host overrides — the kill switch, the session lock, and
-    ///    physical-input priority;
+    /// 1. host overrides — kill switch, session lock, physical-input priority;
     /// 2. the per-share `read_only` flag;
     /// 3. surface ownership — is there a share for this pair at all;
     /// 4. region — is the coordinate inside the shared surface's rect;
@@ -836,12 +615,8 @@ impl State {
     /// 7. rate limit;
     /// 8. inject into the smithay seat.
     ///
-    /// Steps 4-7 live in [`crate::network::input_firewall`], which also
-    /// translates an accepted pointer coordinate out of the peer's
-    /// surface-local space into the output space the seat wants.
-    ///
-    /// Returns whether the event reached the seat. Use
-    /// [`Self::review_remote_input`] when the refusal reason matters.
+    /// Steps 4-7 live in [`crate::network::input_firewall`]. Returns
+    /// whether the event reached the seat; [`Self::review_remote_input`] gives the refusal reason.
     pub fn apply_remote_input(
         &mut self,
         peer: MsgPeerId,
@@ -851,8 +626,7 @@ impl State {
         self.review_remote_input(peer, surface, event).is_ok()
     }
 
-    /// [`Self::apply_remote_input`], reporting which rule refused the
-    /// event rather than collapsing every refusal to `false`.
+    /// [`Self::apply_remote_input`], reporting which rule refused the event rather than collapsing every refusal to `false`.
     pub fn review_remote_input(
         &mut self,
         peer: MsgPeerId,
@@ -861,16 +635,12 @@ impl State {
     ) -> Result<(), Denial> {
         let now = std::time::Instant::now();
 
-        // The host's own machine wins, unconditionally and before
-        // anything about the share is consulted — including before the
-        // per-peer budget, so a peer flooding the queue is refused on
-        // the same rule as a quiet one and cannot delay a panic key.
+        // The host's own machine wins, unconditionally, before even the per-peer budget — a flooding peer can't delay the panic key.
         if let Some(denial) = self.remote_input_firewall.host_override(now) {
             return Err(self.refuse_remote_input(peer, surface, &event, denial));
         }
 
-        // Read-only, then ownership. `None` covers a peer inventing a
-        // surface id it was never shared.
+        // Read-only, then ownership — `None` covers a peer inventing a surface id it was never shared.
         match self.share_registry.get(peer, surface) {
             Some(share) if share.read_only => {
                 return Err(self.refuse_remote_input(peer, surface, &event, Denial::ReadOnly));
@@ -881,10 +651,7 @@ impl State {
             }
         }
 
-        // Region, z-order, scrubber, rate limit. What comes back is the
-        // event to inject: pointer coordinates have been moved into
-        // output space, having been checked against the rect they were
-        // expressed relative to.
+        // Region, z-order, scrubber, rate limit — what comes back is the event to inject, coordinates already moved into output space.
         let injectable = match self
             .remote_input_firewall
             .review(peer, surface, &event, now)
@@ -893,19 +660,14 @@ impl State {
             Err(denial) => return Err(self.refuse_remote_input(peer, surface, &event, denial)),
         };
 
-        // We can't pass `self` twice (once as `&ShareRegistry` via
-        // `&self.share_registry` and once as `&mut RemoteInputSink`), so
-        // the routing decision is inlined above and the sink call made
-        // directly on ourselves.
+        // Can't pass `self` twice (`&ShareRegistry` and `&mut RemoteInputSink`), so the routing decision is inlined above and the sink call made directly on ourselves.
         RemoteInputSink::apply(self, peer, surface, injectable);
         Ok(())
     }
 
     /// Record a refused remote-input event and hand the reason back.
-    ///
     /// Every denial goes through here so a dropped event is visible in
-    /// production logs with the rule that dropped it, and so
-    /// `last_remote_input_denial` can be asserted on.
+    /// production logs with the rule that dropped it, and `last_remote_input_denial` can be asserted on.
     fn refuse_remote_input(
         &mut self,
         peer: MsgPeerId,
@@ -927,11 +689,7 @@ impl State {
     ///
     /// Flipping the shares as well as latching the firewall is what makes
     /// this survive a restart of the input path — a latch alone would be
-    /// undone by anything that rebuilt the firewall, and the user pressed
-    /// the panic key.
-    ///
-    /// Returns the number of shares that lost write access, so the caller
-    /// can tell the user what just happened.
+    /// undone by anything that rebuilt the firewall. Returns the number of shares that lost write access, so the caller can tell the user what happened.
     pub fn engage_remote_input_kill_switch(&mut self) -> usize {
         self.remote_input_firewall.engage_kill_switch();
         let revoked = self.share_registry.revoke_all_input();
@@ -944,22 +702,14 @@ impl State {
     }
 
     /// Inject a single `org.freedesktop.impl.portal.RemoteDesktop`
-    /// [`RemoteAction`] into the real seat, targeting whatever surface
-    /// currently holds seat focus.
+    /// [`RemoteAction`] into the real seat, targeting whatever surface holds seat focus.
     ///
-    /// This is the *local-app* counterpart to [`Self::apply_remote_input`]
-    /// (which serves *peer-sync* and is gated by the share registry).
-    /// RemoteDesktop consent is mediated by the portal grant + the started
-    /// session's device selection — enforced in the portal backend — so by
-    /// the time an action reaches here it has already cleared consent, and
-    /// this path drives the seat directly. In production the compositor's
-    /// event loop drains a
-    /// [`RemoteInputInjector`](crate::portal::RemoteInputInjector) channel
-    /// and calls this per action.
+    /// The *local-app* counterpart to [`Self::apply_remote_input`]
+    /// (peer-sync, gated by the share registry). `RemoteDesktop` consent is
+    /// mediated by the portal grant + device selection, so an action
+    /// reaching here has already cleared consent and drives the seat directly.
     ///
-    /// Returns `true` when the action reached a live seat device, `false`
-    /// when the relevant device is absent (headless without a seat) or a
-    /// keysym couldn't be resolved to a keycode in the active layout.
+    /// `true` when it reached a live seat device, `false` otherwise (headless, or an unresolvable keysym).
     pub fn apply_remote_desktop_action(&mut self, action: RemoteAction) -> bool {
         let time = self.start_time.elapsed().as_millis() as u32;
         let serial = self.next_serial();
@@ -994,15 +744,14 @@ impl State {
                         time,
                     },
                 );
-                // Also surface the raw delta for clients that consume
-                // `wp_relative_pointer` (games, pointer-locked apps).
+                // Also surface the raw delta for clients consuming `wp_relative_pointer` (games, pointer-locked apps).
                 pointer.relative_motion(
                     self,
                     None,
                     &RelativeMotionEvent {
                         delta: (dx, dy).into(),
                         delta_unaccel: (dx, dy).into(),
-                        utime: (time as u64) * 1000,
+                        utime: u64::from(time) * 1000,
                     },
                 );
                 pointer.frame(self);
@@ -1033,8 +782,8 @@ impl State {
                 let Some(pointer) = self.seat.get_pointer() else {
                     return false;
                 };
-                let mut frame = AxisFrame::new(time)
-                    .source(smithay::backend::input::AxisSource::Continuous);
+                let mut frame =
+                    AxisFrame::new(time).source(smithay::backend::input::AxisSource::Continuous);
                 if dx != 0.0 {
                     frame = frame.value(smithay::backend::input::Axis::Horizontal, dx);
                 }
@@ -1054,13 +803,11 @@ impl State {
                 } else {
                     smithay::backend::input::Axis::Vertical
                 };
-                // One wheel detent == 120 in the high-resolution `v120`
-                // convention; the legacy `value` carries a 15px-per-step
-                // fallback for clients that don't understand v120.
+                // One wheel detent == 120 in the `v120` convention; legacy `value` carries a 15px-per-step fallback for pre-v120 clients.
                 let frame = AxisFrame::new(time)
                     .source(smithay::backend::input::AxisSource::Wheel)
                     .v120(ax, steps * 120)
-                    .value(ax, (steps as f64) * 15.0);
+                    .value(ax, f64::from(steps) * 15.0);
                 pointer.axis(self, frame);
                 pointer.frame(self);
                 true
@@ -1069,32 +816,23 @@ impl State {
                 self.inject_seat_key(keycode as u32, pressed, serial, time)
             }
             RemoteAction::KeyboardKeysym { keysym, pressed } => {
-                match self.keysym_to_keycode(keysym as u32) {
-                    Some(kc) => self.inject_seat_key(kc, pressed, serial, time),
-                    None => {
-                        tracing::debug!(
-                            keysym,
-                            "RemoteDesktop: keysym has no keycode in the active layout; dropped"
-                        );
-                        false
-                    }
+                if let Some(kc) = self.keysym_to_keycode(keysym as u32) {
+                    self.inject_seat_key(kc, pressed, serial, time)
+                } else {
+                    tracing::debug!(
+                        keysym,
+                        "RemoteDesktop: keysym has no keycode in the active layout; dropped"
+                    );
+                    false
                 }
             }
         }
     }
 
     /// Deliver a raw keycode press/release to the seat keyboard. Shared by
-    /// the RemoteDesktop keycode + keysym paths. The keycode is passed
-    /// straight through to smithay's `KeyboardHandle::input` — the same
-    /// convention `network::wayland::WaylandServer::handle_input` and
-    /// [`Self::apply_remote_input`]'s `Key` arm use.
-    fn inject_seat_key(
-        &mut self,
-        keycode: u32,
-        pressed: bool,
-        serial: Serial,
-        time: u32,
-    ) -> bool {
+    /// the `RemoteDesktop` keycode + keysym paths; passed straight through to
+    /// smithay's `KeyboardHandle::input`, the same convention `network::wayland::WaylandServer::handle_input` and [`Self::apply_remote_input`]'s `Key` arm use.
+    fn inject_seat_key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
         };
@@ -1103,23 +841,17 @@ impl State {
         } else {
             KeyState::Released
         };
-        let _: Option<()> = keyboard.input(
-            self,
-            keycode.into(),
-            key_state,
-            serial,
-            time,
-            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
-        );
+        let _: Option<()> =
+            keyboard.input(self, keycode.into(), key_state, serial, time, |_, _, _| {
+                smithay::input::keyboard::FilterResult::<()>::Forward
+            });
         true
     }
 
     /// Reverse-lookup a keysym to a keycode in the seat keyboard's active
     /// layout, so `NotifyKeyboardKeysym` can be delivered even though
     /// smithay's injection API is keycode-oriented. Scans the evdev/xkb
-    /// keycode range for a key whose level-0 symbol matches. Returns `None`
-    /// when the active layout can't produce the keysym (the portal caller
-    /// should fall back to `NotifyKeyboardKeycode`).
+    /// keycode range for a key whose level-0 symbol matches; `None` when the layout can't produce the keysym (caller should fall back to `NotifyKeyboardKeycode`).
     fn keysym_to_keycode(&mut self, target: u32) -> Option<u32> {
         use smithay::input::keyboard::{Keycode, Keysym};
         let keyboard = self.seat.get_keyboard()?;
@@ -1127,15 +859,10 @@ impl State {
         keyboard.with_xkb_state(self, |ctx| {
             let xkb = ctx.xkb().lock().ok()?;
             let layout = xkb.active_layout();
-            // xkb keycodes start at 8 (evdev 0 == xkb 8); 8..=255 covers a
-            // standard keyboard's key range.
+            // xkb keycodes start at 8 (evdev 0 == xkb 8); 8..=255 covers a standard keyboard's key range.
             for raw in 8u32..=255 {
                 let kc: Keycode = raw.into();
-                if xkb
-                    .raw_syms_for_key_in_layout(kc, layout)
-                    .iter()
-                    .any(|s| *s == target)
-                {
+                if xkb.raw_syms_for_key_in_layout(kc, layout).contains(&target) {
                     return Some(raw);
                 }
             }
@@ -1147,29 +874,17 @@ impl State {
 // `RemoteInputSink` impl: receives the gated events from
 // `ShareRegistry::route_to`.
 //
-// The pointer path drives the real smithay `Seat<Self>` (constructed in
-// `State::new`) via `PointerHandle::motion` / `button`, matching the
-// production shape used by `network::wayland::WaylandServer::handle_input`.
+// Pointer drives the real smithay `Seat<Self>` via `PointerHandle::motion`/
+// `button`, matching `network::wayland::WaylandServer::handle_input`.
 //
-// Keyboard injection: `InputEvent::Key { keysym, pressed, modifiers }` fires
-// `KeyboardHandle::input`. The wire `keysym` is treated as a raw keycode
-// (see the `InputEvent` doc for the compat rationale). Modifier state
-// flows via explicit modifier-key press/release events the peer sends —
-// smithay's `KeyboardInternal::key_input` maintains modifier state from
-// the keycode stream, so shifted / ctrl'd key runs work as long as the
-// peer sends the modifier keys in order. The `modifiers` bitfield is
-// recorded into `last_remote_input` for diagnostics and per-user "typing"
-// overlays.
+// Keyboard: `InputEvent::Key { keysym, pressed, modifiers }` fires
+// `KeyboardHandle::input`; the wire `keysym` is a raw keycode. Modifier
+// state flows via explicit modifier press/release events, maintained by
+// smithay's `KeyboardInternal::key_input` from the keycode stream; the wire `modifiers` bitfield is diagnostics only.
 //
-// Focus grab: `PointerEnter { surface }` grabs keyboard focus onto the
-// peer's virtual `RemoteSeat` — physically, the compositor's single
-// `Seat<State>`'s `KeyboardHandle::set_focus` is flipped to point at the
-// target `WlSurface` (resolved via `surface_resolver`). `PointerLeave`
-// releases the grab. When the resolver returns `None` (headless tests,
-// or a peer targeting a surface the local compositor doesn't own), the
-// focus flip is a bookkeeping-only no-op and the peer's `RemoteSeat`
-// still records the intent. Multi-user typing interleaves at the
-// physical seat.
+// Focus grab: `PointerEnter { surface }` flips the single `Seat<State>`'s
+// keyboard focus to the target `WlSurface` (via `surface_resolver`);
+// `PointerLeave` releases it. `None` from the resolver makes the flip a bookkeeping-only no-op.
 impl RemoteInputSink for State {
     fn apply(&mut self, peer: MsgPeerId, surface: SurfaceId, event: InputEvent) {
         tracing::debug!(
@@ -1177,10 +892,7 @@ impl RemoteInputSink for State {
             peer, surface, ?event,
             "remote-input applied"
         );
-        // Mirror the event into `last_remote_input` so legacy callers
-        // / integration tests that introspect the field still see the
-        // routing decision, and per-user "typing" overlays can find
-        // the origin peer id in one place.
+        // Mirror the event into `last_remote_input` for legacy/test callers and per-user "typing" overlays to find the origin peer id.
         self.last_remote_input = Some((peer, surface, event.clone()));
 
         let time = self.start_time.elapsed().as_millis() as u32;
@@ -1188,12 +900,9 @@ impl RemoteInputSink for State {
         match event {
             InputEvent::PointerMotion { x, y } => {
                 if let Some(pointer) = self.seat.get_pointer() {
-                    // No surface focus here — the remote driver
-                    // doesn't know which local wl_surface corresponds
-                    // to its `surface` id. The pointer's logical
-                    // position still updates, which is what the
-                    // compositor's hover / cluster routing layer
-                    // consumes.
+                    // No surface focus here — the remote driver doesn't
+                    // know which local wl_surface corresponds to its
+                    // `surface` id. The pointer's logical position still updates, which the hover/cluster routing layer consumes.
                     pointer.motion(
                         self,
                         None,
@@ -1232,28 +941,22 @@ impl RemoteInputSink for State {
             InputEvent::PointerEnter { surface: target } => {
                 // Grab keyboard focus for the peer's virtual seat.
                 let prev = self.remote_seats.seat_mut(peer).enter(target);
-                // Only flip the physical seat's keyboard focus if the
-                // target actually changed — noisy re-enters otherwise
-                // stomp the client's focus state.
-                if prev != Some(target) {
-                    if let (Some(resolver), Some(keyboard)) =
+                // Only flip the physical seat's keyboard focus if the target changed — noisy re-enters otherwise stomp focus state.
+                if prev != Some(target)
+                    && let (Some(resolver), Some(keyboard)) =
                         (&self.surface_resolver, self.seat.get_keyboard())
-                    {
-                        let target_surface = resolver(target);
-                        keyboard.set_focus(self, target_surface, serial);
-                    }
+                {
+                    let target_surface = resolver(target);
+                    keyboard.set_focus(self, target_surface, serial);
                 }
             }
             InputEvent::PointerLeave { surface: _ } => {
-                // Release the peer's grab. We only clear the physical
-                // seat's keyboard focus if this peer was actually the
-                // one holding it — a `PointerLeave` from a peer that
-                // never entered is a no-op.
+                // Release the peer's grab, only clearing keyboard focus if this peer actually held it — an unentered `PointerLeave` is a no-op.
                 let prev = self.remote_seats.seat_mut(peer).leave();
-                if prev.is_some() {
-                    if let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(self, None, serial);
-                    }
+                if prev.is_some()
+                    && let Some(keyboard) = self.seat.get_keyboard()
+                {
+                    keyboard.set_focus(self, None, serial);
                 }
             }
             InputEvent::Key {
@@ -1261,31 +964,19 @@ impl RemoteInputSink for State {
                 pressed,
                 modifiers: _modifiers,
             } => {
-                // The peer's wire `keysym` is treated as a raw keycode
-                // — see the `InputEvent` doc comment. `KeyboardHandle::input`
-                // walks the seat's xkbcommon state and delivers into the
-                // focused client.
+                // The peer's wire `keysym` is treated as a raw keycode —
+                // see the `InputEvent` doc comment; `KeyboardHandle::input`
+                // delivers into the focused client via the seat's xkbcommon state.
                 //
-                // Modifier state is *not* force-set here: smithay's
-                // internal `key_input` maintains modifier state from
-                // the running keycode stream, so peers that need
-                // Shift+A send Shift-press → A-press → A-release →
-                // Shift-release. The `modifiers` bitfield on the wire
-                // is diagnostics only (recorded in
-                // `last_remote_input`); a follow-up can force-set
-                // modifiers via `Seat::keyboard_shortcuts_inhibitor`
-                // when we want to guarantee a specific mod state
-                // without waiting for the modifier keycode stream.
+                // Modifier state is *not* force-set: smithay's
+                // `key_input` maintains it from the keycode stream, so peers send Shift-press → A-press → A-release → Shift-release; the wire `modifiers` bitfield is diagnostics only.
                 if let Some(keyboard) = self.seat.get_keyboard() {
                     let key_state = if pressed {
                         KeyState::Pressed
                     } else {
                         KeyState::Released
                     };
-                    // Smithay's Keycode wraps u32 — Keysym on the wire
-                    // is the value passed straight through. See the
-                    // wayland.rs sibling's `handle_input` for the
-                    // production shape we mirror here.
+                    // Smithay's Keycode wraps u32 — Keysym on the wire passes straight through, mirroring wayland.rs sibling's `handle_input`.
                     let _: Option<()> =
                         keyboard.input(self, keysym.into(), key_state, serial, time, |_, _, _| {
                             smithay::input::keyboard::FilterResult::<()>::Forward
@@ -1297,45 +988,31 @@ impl RemoteInputSink for State {
 }
 
 /// Per-client state stored in the `wayland-server` `Client` user-data slot.
-///
-/// `CompositorHandler::client_compositor_state` is required to hand back a
-/// `&CompositorClientState` for any given client; smithay's convention is to
-/// stash one inside a `ClientData` impl so it's lifetime-tied to the client.
+/// `CompositorHandler::client_compositor_state` must hand back a
+/// `&CompositorClientState`; smithay's convention is to stash one inside a `ClientData` impl so it's lifetime-tied to the client.
 pub struct ClientState {
     /// Smithay's per-client compositor bookkeeping (transaction queue, scale).
     pub compositor_state: CompositorClientState,
     /// A number unique to this connection for the compositor's lifetime.
     ///
-    /// Exists because a Wayland object id is only unique *within* a client:
-    /// two clients each get id 10 for their first `wl_surface`. The compositor
-    /// keys tabs, share sessions and input routing off a single flat
-    /// `SurfaceId` space, so a bare protocol id makes the second client's
-    /// window collide with the first's — it is never adopted as its own tab,
-    /// and input meant for one is delivered to the other. [`surface_id`]
-    /// composes this index with the protocol id to keep that space flat and
-    /// still unique.
-    ///
-    /// Starts at 1: index 0 is reserved for "the client could not be
-    /// determined", which happens only for an already-dead resource.
+    /// A Wayland object id is only unique *within* a client: two clients each
+    /// get id 10 for their first `wl_surface`. The compositor keys tabs, share
+    /// sessions and input routing off a flat `SurfaceId` space, so a bare
+    /// protocol id would collide across clients. [`surface_id`] composes this
+    /// index with the protocol id to keep that space flat. Starts at 1: index 0 is reserved for "the client could not be determined" (an already-dead resource).
     pub index: u32,
     /// Whether this connection arrived on the compositor's **privileged**
     /// socket rather than the public one.
     ///
-    /// The only thing it currently gates is the clipboard-manager protocol
-    /// pair (`zwlr_data_control_manager_v1` / `ext_data_control_manager_v1`),
-    /// which hands its holder every selection on the seat with no focus
-    /// requirement — see [`crate::compositor::selection`] for the full
-    /// argument. It is a *socket* privilege rather than a flag a client can
-    /// ask for: the sandbox launcher bind-mounts exactly one Wayland socket
-    /// into the sandbox, the public one, so a sandboxed app has no path to a
-    /// privileged connection.
+    /// The only thing it gates is the clipboard-manager protocol pair
+    /// (`zwlr_data_control_manager_v1`/`ext_data_control_manager_v1`), which
+    /// hands its holder every selection on the seat with no focus requirement
+    /// — see [`crate::compositor::selection`]. A *socket* privilege, not a flag
+    /// a client can ask for: the sandbox launcher bind-mounts only the public socket into a sandbox.
     pub privileged: bool,
 }
 
-/// Hand-written rather than derived so every construction path — including
-/// `ClientState::default()` in tests — gets its own [`ClientState::index`]. A
-/// derived `Default` would hand every client index 0 and reintroduce exactly
-/// the collision the field exists to prevent.
+/// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
 impl Default for ClientState {
     fn default() -> Self {
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -1354,8 +1031,7 @@ impl ClientData for ClientState {
 }
 
 impl ClientState {
-    /// Convenience constructor returning an `Arc` so callers can pass it to
-    /// `DisplayHandle::insert_client` directly.
+    /// Convenience constructor returning an `Arc` so callers can pass it to `DisplayHandle::insert_client` directly.
     pub fn new_arc() -> Arc<Self> {
         Arc::new(Self::default())
     }
@@ -1371,34 +1047,22 @@ impl ClientState {
 
 /// The compositor's globally unique id for `surface`.
 ///
-/// A Wayland object id is unique only within one client's connection, so the
-/// bare `protocol_id` of two clients' first surfaces is the same number. Every
-/// place the compositor stores a surface — the workspace tree's foreign tabs,
-/// the input router's surface map, the share registry, the frame tracker —
-/// keys off one flat `SurfaceId`, so that collision let a second client's
-/// window overwrite the first's rather than becoming its own tab.
-///
-/// The id is the client's connection index in the high 32 bits and the
-/// protocol id in the low 32. Both halves are stable for the life of the
-/// object, so an id can be recomputed at any point rather than remembered, and
-/// the value stays a plain `u64` for the peer-sync wire protocol.
+/// A Wayland object id is unique only within one client's connection, so
+/// two clients' first surfaces share the same `protocol_id`. Every place
+/// the compositor stores a surface — tabs, the input router, share
+/// registry, frame tracker — keys off one flat `SurfaceId`, avoiding a
+/// second client's window overwriting the first's. The id is the client's
+/// connection index in the high 32 bits, protocol id in the low 32 — both stable, so it can be recomputed rather than remembered, staying a plain `u64` for the peer-sync wire protocol.
 pub fn surface_id(surface: &WlSurface) -> u64 {
     let index = surface
         .client()
         .and_then(|c| c.get_data::<ClientState>().map(|d| d.index))
-        // A surface whose client is already gone cannot collide with a live
-        // one, and reserving 0 keeps it out of every live client's range.
+        // A surface whose client is gone can't collide with a live one; reserving 0 keeps it out of every live client's range.
         .unwrap_or(0);
-    ((index as u64) << 32) | surface.id().protocol_id() as u64
+    (u64::from(index) << 32) | u64::from(surface.id().protocol_id())
 }
 
-// -----------------------------------------------------------------------------
-// Handler trait impls — Phase 2 stubs.
-// -----------------------------------------------------------------------------
-//
-// All of these are deliberately minimal. Behaviour beyond "compile and accept
-// connections" lands in Phase 4 (input + rendering) and Phase 5 (cluster
-// integration). Until then, surfaces commit into thin air.
+// Handler trait impls.
 
 impl CompositorHandler for State {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -1406,9 +1070,7 @@ impl CompositorHandler for State {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        // Every client we accept is initialised with a `ClientState` in
-        // `native::run`; if that contract is violated we'd rather panic
-        // loudly here than silently corrupt protocol state.
+        // Every accepted client is initialised with a `ClientState` in `native::run`; violating that should panic loudly, not corrupt state.
         &client
             .get_data::<ClientState>()
             .expect("client missing ClientState user-data")
@@ -1418,61 +1080,39 @@ impl CompositorHandler for State {
     fn commit(&mut self, surface: &WlSurface) {
         // HiDPI: push this surface's preferred `wp_fractional_scale` — the
         // scale of the *output it is on*, not one session-wide number,
-        // because a laptop docked to an external monitor has two different
-        // right answers. Runs for every surface (not just shared ones) so
-        // any HiDPI-aware client that created a `wp_fractional_scale_v1`
-        // object learns the scale it should render at.
-        // `set_preferred_scale` is idempotent — it only emits a wire event
-        // when the value actually changes, and it stores the value even
-        // before the client has created the object (smithay replays it on
-        // `get_fractional_scale`).
-        let scale = self.surface_scale(surface.id().protocol_id() as u64);
+        // since a docked laptop has two different right answers. Runs for
+        // every surface so any HiDPI-aware client with a `wp_fractional_scale_v1` object learns its scale. `set_preferred_scale` is idempotent, only emitting a wire event on real change, and stores the value even before the client creates the object (smithay replays it on `get_fractional_scale`).
+        let scale = self.surface_scale(u64::from(surface.id().protocol_id()));
         wl_compositor::with_states(surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
             });
         });
 
-        // Phase 4 v2 — pull the surface's most-recent buffer into the
-        // [`SurfaceTracker`] iff the surface is registered as shared on
-        // any workspace in [`WorkspaceTree`]. Most surfaces aren't
-        // shared, so the lookup short-circuits at the
-        // `is_surface_shared` check before we ever touch the buffer
-        // state. Heavy renderer hooks land in a Phase 4 follow-up.
+        // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
         let surface_id = crate::compositor::state::surface_id(surface);
         let is_shared = self
             .workspace_tree
             .workspaces
             .iter()
             .any(|ws| ws.is_surface_shared(surface_id));
-        // Foreign-surface compositing: a toplevel adopted into a tab needs
-        // its buffer captured every commit so
-        // `compositor::foreign::ForeignSurfaceWidget` can paint it into
-        // the tab's rect. Independent of the collaboration share path
-        // above — a surface can be one, both, or neither.
+        // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         let is_foreign_tab =
-            tab_binding::group_id_for_surface(&self.workspace_tree, surface_id as u64).is_some();
+            tab_binding::group_id_for_surface(&self.workspace_tree, surface_id).is_some();
         if is_foreign_tab {
-            self.capture_foreign_surface(surface, surface_id as u64);
+            self.capture_foreign_surface(surface, surface_id);
         }
         if !is_shared {
             return;
         }
-        // Pull the most recent buffer assignment off the surface's
-        // cached state. `BufferAssignment::NewBuffer(b)` is the
-        // freshly-attached `wl_buffer`; `Removed` means the client
-        // detached and we should drop the tracker slot.
+        // Pull the most recent buffer assignment: `NewBuffer(b)` is freshly-attached; `Removed` means detach — drop the tracker slot.
         wl_compositor::with_states(surface, |states| {
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
-                    // Route through path detection — DMABUF buffers
-                    // take the direct path (recorded via the tracker's
-                    // capture-path counter; encoder pulls the fd from
-                    // the wl_buffer). SHM buffers fall through to the
-                    // readback + swizzle path.
+                    // Path detection: DMABUF takes the direct path (capture-path counter, encoder pulls the fd); SHM falls to readback + swizzle.
                     let (path, result) = self
                         .surface_tracker
                         .on_commit_with_path_detection(surface_id, buffer);
@@ -1481,23 +1121,14 @@ impl CompositorHandler for State {
                         Err(
                             crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported,
                         ) => {
-                            // The tentative path is `DmabufDirect`.
-                            // Pull the Dmabuf off the wl_buffer via
-                            // smithay's dmabuf-role lookup and stash
-                            // it on the tracker — `tick_share_session_for_surface`
-                            // will drain it via
-                            // `take_latest_dmabuf` on the same tick.
+                            // The tentative path is `DmabufDirect`. Pull the
+                            // Dmabuf off the wl_buffer via smithay's dmabuf-role
+                            // lookup and stash it on the tracker —
+                            // `tick_share_session_for_surface` drains it via
+                            // `take_latest_dmabuf` the same tick.
                             //
-                            // If `get_dmabuf` fails despite the
-                            // detection saying "not shm" (a client
-                            // that attached an unrecognised buffer
-                            // type — e.g. `wl_drm` from an obsolete
-                            // MIT-shm-less path), the tracker slot
-                            // stays empty for this tick; the frame
-                            // is dropped and no counter is bumped
-                            // (which is the correct behaviour for
-                            // "we don't know how to handle this
-                            // buffer at all").
+                            // If `get_dmabuf` fails despite detection saying
+                            // "not shm" (an unrecognised buffer type, e.g. `wl_drm`), the tracker slot stays empty this tick — the frame is dropped and no counter bumped, correct for "we don't know how to handle this buffer at all".
                             match smithay::wayland::dmabuf::get_dmabuf(buffer) {
                                 Ok(dmabuf) => {
                                     self.surface_tracker
@@ -1526,19 +1157,14 @@ impl CompositorHandler for State {
                     self.surface_tracker.forget(surface_id);
                 }
                 None => {
-                    // Nothing attached this commit — preserve the
-                    // previously-staged frame so a re-commit without a
-                    // new buffer (e.g. just a damage update) doesn't
-                    // wipe the tracker.
+                    // Nothing attached this commit — preserve the previously-staged frame so a damage-only re-commit doesn't wipe the tracker.
                 }
             }
         });
 
         // Colorimetry passthrough: whatever the client committed with
-        // `wp_color_management_surface_v1.set_image_description`
-        // becomes the wire-tagged colorimetry the share session
-        // reports on stream_start. Unset clears the override so the
-        // config-driven default wins again.
+        // `wp_color_management_surface_v1.set_image_description` becomes
+        // the wire-tagged colorimetry the share session reports on stream_start; unset clears the override so the config-driven default wins again.
         if let Some(session) = self.active_sessions.get(&surface_id).cloned() {
             match crate::wayland::color_management::surface_current_colorimetry(surface) {
                 Some((color, hdr)) => session.set_color_override(color, hdr),
@@ -1546,15 +1172,10 @@ impl CompositorHandler for State {
             }
         }
 
-        // Share-session tick hook: if this surface has an active
-        // Flatpak share session, deposit the freshly-captured RGBA
-        // and pump the encoder in the same tick. Without this hook
-        // the encoder waits for the render loop's next damage sweep,
-        // introducing a full-frame stall between the client's commit
-        // and the frame landing in the substream.
-        //
-        // The delegation to `tick_share_session_for_surface` keeps
-        // the pump logic testable outside of a real `WlSurface`.
+        // Share-session tick hook: if this surface has an active Flatpak
+        // share session, deposit the freshly-captured RGBA and pump the
+        // encoder the same tick — without this the encoder waits for the
+        // render loop's next damage sweep, a full-frame stall. Delegated to `tick_share_session_for_surface` to keep the pump logic testable without a real `WlSurface`.
         let _ = self.tick_share_session_for_surface(surface_id);
     }
 }
@@ -1579,17 +1200,13 @@ impl DmabufHandler for State {
         notifier: ImportNotifier,
     ) {
         // Smithay's `DmabufHandler` is the "can you actually use this
-        // buffer?" gate, and it is the last point at which a client can
-        // still be told *no* in a way it can act on: a failed import
-        // makes `zwp_linux_buffer_params_v1.create` fail, which is a
-        // toolkit's cue to renegotiate or drop to `wl_shm`. Accepting
-        // a buffer we cannot composite would instead leave the client
-        // submitting frames into a tile that shows an error string, with
-        // no protocol-level signal that anything is wrong.
-        //
-        // So the gate is exactly the importer's own precondition —
-        // single-plane, linear (or implicit), RGBA-family — shared with
-        // `foreign::import_dmabuf_rgba` so the two can't drift.
+        // buffer?" gate, and the last point a client can be told *no* in a
+        // way it can act on: a failed import fails `create`, a toolkit's
+        // cue to renegotiate or drop to `wl_shm`. Accepting a buffer we
+        // can't composite would instead leave the client submitting into a
+        // tile showing an error string with no protocol-level signal. So
+        // the gate is exactly the importer's own precondition —
+        // single-plane, linear (or implicit), RGBA-family — shared with `foreign::import_dmabuf_rgba` so the two can't drift.
         if let Err(err) = crate::compositor::foreign::validate_importable(&dmabuf) {
             tracing::warn!(
                 target: "shell::compositor::dmabuf",
@@ -1606,14 +1223,10 @@ impl DmabufHandler for State {
         }
         // `notifier.successful()` registers the Dmabuf as the buffer's
         // user-data so the commit hook can pull it back via
-        // [`smithay::wayland::dmabuf::get_dmabuf`].
-        //
-        // We don't stash the Dmabuf here because we don't yet know
-        // which surface it will land on — a client can import
-        // DMABUFs eagerly and attach them to different surfaces
-        // later. The per-surface caches are populated at commit time
-        // (`foreign::ForeignFrameStore::capture_commit` for tiles,
-        // `SurfaceTracker::note_dmabuf_committed` for share sessions).
+        // [`smithay::wayland::dmabuf::get_dmabuf`]. We don't stash the
+        // Dmabuf here since we don't yet know which surface it will land
+        // on — a client can import DMABUFs eagerly and attach them later.
+        // Per-surface caches are populated at commit time (`foreign::ForeignFrameStore::capture_commit` for tiles, `SurfaceTracker::note_dmabuf_committed` for share sessions).
         let _ = notifier.successful::<Self>();
         tracing::debug!(
             target: "shell::compositor::dmabuf",
@@ -1637,12 +1250,20 @@ impl XdgShellHandler for State {
         &mut self.xdg_shell_state
     }
 
+    /// A client has created an `xdg_toplevel`. Adopt it into the active
+    /// workspace's tab tree, and **do not configure it yet**.
+    ///
+    /// A window here is a tab, so its size is its tab's size, and nobody
+    /// knows that yet: a configure sent before layout could only carry no
+    /// size ("you choose" in xdg-shell), and the client would commit at a
+    /// size the strip never asked for, snapping to the right one a frame later.
+    ///
+    /// The handshake finishes one pass later, in
+    /// [`crate::compositor::foreign::flush_configures`], once layout gives
+    /// this tab a rect. Bounded by a grace period for a tab that never gets laid out.
+    ///
+    /// `app_id` may be unset here; falls back to `anon-<id>`, rewritten by [`Self::app_id_changed`].
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Phase 6 Task 6.1 — adopt the freshly-committed toplevel into
-        // the active workspace's tab tree. The `app_id` may be unset at
-        // this point; `adopt_toplevel` falls back to a synthetic
-        // `anon-<id>` placeholder, and a future Task 6.2 step (re-adopt
-        // on `set_app_id`) rewrites it once the client provides one.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -1652,60 +1273,39 @@ impl XdgShellHandler for State {
         });
         tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id.clone());
 
-        // Register the toplevel with the input router so local keyboard /
-        // pointer events can be delivered to it once it is focused. The
-        // matching chrome-side tab is spliced in by
-        // `client_input::sync_foreign_tabs` on the next run-loop tick.
+        // Register the toplevel with the input router for local key/pointer delivery once focused; the chrome-side tab splices in next tick.
         self.client_input
             .register_toplevel(surface_id, surface.wl_surface().clone(), app_id);
 
-        // Send a default configure so the client can map. Phase 4 will pick a
-        // real size/position from the cluster layout; Phase 2 just needs the
-        // handshake to complete.
-        surface.send_configure();
+        // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
+        crate::compositor::foreign::store().note_adopted(surface_id);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        // Phase 6 Task 6.2 — remove the matching `Foreign` tab so the
-        // chrome stops advertising a destroyed surface.
+        // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        // If the destroyed surface held the output fullscreen, drop the
-        // transient promotion so the layout restores rather than staying
-        // collapsed around a group that no longer exists.
+        // If the destroyed surface held the output fullscreen, drop the transient promotion so layout restores instead of staying collapsed.
         if self.fullscreen_group
             == tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
         {
             self.fullscreen_group = None;
         }
         let _ = tab_binding::close_tab_for_destroyed_surface(&mut self.workspace_tree, surface_id);
-        // C-7 fix: drop the tracker's per-surface buffer slot. The
-        // commit path's `BufferAssignment::Removed` branch already
-        // forgets the slot when a client `attach(NULL)`s before
-        // destroying its toplevel, but a destroy without that prior
-        // detach left the `Vec<u8>` (sized at the buffer's last frame)
-        // allocated forever. Per-surface memory leak; small per
-        // surface, accumulates across long sessions with many
-        // short-lived toplevels.
+        // Drop the tracker's per-surface buffer slot. The commit path's
+        // `BufferAssignment::Removed` branch already forgets the slot on
+        // `attach(NULL)`, but a destroy without that prior detach left the
+        // `Vec<u8>` allocated forever — a small per-surface leak that accumulates across long sessions with many short-lived toplevels.
         self.surface_tracker.drop_surface(surface_id as SurfaceId);
-        // Same reclaim on the foreign-compositing side: the store holds a
-        // full framebuffer per surface, so a destroyed toplevel that kept
-        // its entry would leak `width*height*4` bytes for the life of the
-        // session.
+        // Same reclaim on the foreign-compositing side: a kept entry would leak `width*height*4` bytes for the session's life.
         crate::compositor::foreign::store().forget(surface_id);
-        // Drop the input router's handle so no further key / pointer event
-        // can be aimed at a dead surface, and queue the chrome-side tab
-        // reap for the next run-loop tick.
+        // Drop the input router's handle so no event can target a dead surface, and queue the chrome-side tab reap for next tick.
         self.client_input.unregister_toplevel(surface_id);
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
-        // Phase 7 Task 7.2 — clients call `xdg_toplevel::set_app_id`
-        // *after* `xdg_surface::get_toplevel` fires `new_toplevel`, so
-        // the tab was initially adopted with a synthetic
-        // `anon-<surface_id>` placeholder. Re-read the now-populated
-        // app-id from the surface data and rewrite the tab in-place so
-        // the chrome (and the Phase 7 integration test) see the real
-        // app-id.
+        // Clients call `set_app_id` *after* `get_toplevel` fires
+        // `new_toplevel`, so the tab was adopted with a synthetic
+        // `anon-<surface_id>` placeholder. Re-read the now-populated app-id and rewrite the tab in-place so the chrome (and the integration test) see the real one.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let new_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -1719,8 +1319,7 @@ impl XdgShellHandler for State {
                 surface_id,
                 app_id.clone(),
             );
-            // Mirror the rename onto the chrome-side tab the input router
-            // mounted (or onto its still-pending adoption).
+            // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
     }
@@ -1730,7 +1329,7 @@ impl XdgShellHandler for State {
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        // Popup grabs land in phase 4 alongside the seat plumbing.
+        // Popup grabs aren't wired up yet.
     }
 
     fn reposition_request(
@@ -1743,15 +1342,11 @@ impl XdgShellHandler for State {
     }
 
     /// A client asked to occupy its output fullscreen
-    /// (`xdg_toplevel.set_fullscreen`). We honor it: record which window group
-    /// the surface belongs to (so the native render loop promotes it to the
-    /// whole output — top bar / sidebar / other strips suppressed — and
-    /// restores exactly on exit), and send the client a configure carrying the
-    /// `Fullscreen` state plus the full output size so its own surface fills
-    /// the screen. The `_wl_output` hint is ignored: this compositor spans one
-    /// combined scene across all outputs, so fullscreen always targets the
-    /// single presentation surface (see the multi-output note in
-    /// `plan/compositor.md`).
+    /// (`xdg_toplevel.set_fullscreen`). We honor it: record which window
+    /// group the surface belongs to (so the native render loop promotes it,
+    /// suppressing top bar/sidebar/other strips, and restores exactly on
+    /// exit), and send a configure carrying `Fullscreen` + the full output
+    /// size. The `_wl_output` hint is ignored: this compositor spans one combined scene across all outputs.
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _wl_output: Option<WlOutput>) {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         self.fullscreen_group = tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
@@ -1760,8 +1355,7 @@ impl XdgShellHandler for State {
             state.states.set(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
             );
-            // Size the surface to the whole output when we know it; leave it
-            // untouched otherwise so the client keeps its own extent.
+            // Size the surface to the whole output when known; otherwise leave it untouched so the client keeps its own extent.
             if w > 0 && h > 0 {
                 state.size = Some((w, h).into());
             }
@@ -1769,15 +1363,12 @@ impl XdgShellHandler for State {
         surface.send_configure();
     }
 
-    /// A client dropped out of fullscreen (`xdg_toplevel.unset_fullscreen`),
-    /// or Esc / a compositor exit flowed back through the UI. Clear the
-    /// transient promotion — the native loop restores the exact prior tiling —
-    /// and send a configure clearing the `Fullscreen` state and the imposed
-    /// size so the surface returns to its windowed extent.
+    /// A client dropped out of fullscreen (`unset_fullscreen`), or Esc / a
+    /// compositor exit flowed back through the UI. Clear the transient
+    /// promotion (the native loop restores exact prior tiling) and send a configure clearing `Fullscreen` + the imposed size.
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        // Only clear if THIS surface was the fullscreen one (a stale request
-        // from a background toplevel must not steal another's fullscreen).
+        // Only clear if THIS surface was the fullscreen one — a stale request from a background toplevel must not steal another's.
         if self.fullscreen_group
             == tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
         {
@@ -1790,6 +1381,62 @@ impl XdgShellHandler for State {
             state.size = None;
         });
         surface.send_configure();
+    }
+}
+
+/// Who draws the frame around a toplevel. On qOS, the compositor —
+/// always, and to every client that asks.
+///
+/// States the shell's model, not a preference: a window lives in a
+/// tab, so title/controls/border are the compositor's to draw.
+/// `ServerSide` is the answer regardless of what was requested.
+///
+/// The sharper reason is size: a client that decorates itself
+/// subtracts a title bar from its given size — configured 670x668,
+/// every winit app committed 670x633, a 35px band of empty tab under every window.
+impl XdgDecorationHandler for State {
+    /// The client has asked for a decoration object — the first point the
+    /// compositor can state a mode. Stating it here matters: this configure
+    /// reaches the client before its first buffer, so the size it renders is the one the compositor asked for.
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        Self::decorate(&toplevel);
+    }
+
+    /// The client has stated a preference; answered with the same mode as always, including `ClientSide` — the request this exists to refuse.
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        tracing::debug!(
+            target: "shell::compositor::decoration",
+            surface_id = crate::compositor::state::surface_id(toplevel.wl_surface()),
+            requested = ?mode,
+            "client stated a decoration preference; answering ServerSide",
+        );
+        Self::decorate(&toplevel);
+    }
+
+    /// The client has withdrawn its preference and left the choice to the compositor — it was never anywhere else.
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        Self::decorate(&toplevel);
+    }
+}
+
+impl State {
+    /// Put `ServerSide` in the toplevel's pending state, and send it if the
+    /// client has already had its opening configure.
+    ///
+    /// Smithay only puts a decoration configure on the wire when the mode
+    /// changed or the initial one wasn't sent, so this costs one event per real change.
+    ///
+    /// Before the opening configure, the answer is staged and *not* sent —
+    /// a toolkit negotiates decorations in the same round trip it creates
+    /// the toplevel, and a configure here would be the client's *first*,
+    /// carrying decoration mode and no size, exactly what [`XdgShellHandler::new_toplevel`] stopped sending.
+    fn decorate(toplevel: &ToplevelSurface) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
     }
 }
 
@@ -1817,12 +1464,9 @@ impl OutputHandler for State {}
 impl FractionalScaleHandler for State {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
         // A client just created a `wp_fractional_scale_v1` for this
-        // surface. Seed it with the scale of the output it is on (or the
-        // session-wide one if it has not been placed yet) immediately so
-        // the client doesn't have to wait for its first commit to learn
-        // the preferred scale. `set_preferred_scale` is idempotent and
-        // safe to call before any buffer is attached.
-        let scale = self.surface_scale(surface.id().protocol_id() as u64);
+        // surface. Seed it with the output's scale (or session-wide if not
+        // yet placed) immediately so it doesn't wait for its first commit; `set_preferred_scale` is idempotent and safe before any buffer is attached.
+        let scale = self.surface_scale(u64::from(surface.id().protocol_id()));
         wl_compositor::with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -1831,12 +1475,12 @@ impl FractionalScaleHandler for State {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Delegate macros — wire each protocol's `Dispatch` impls onto `State`.
-// -----------------------------------------------------------------------------
 
 delegate_compositor!(State);
 delegate_xdg_shell!(State);
+// `zxdg_decoration_manager_v1`: how a client is told the compositor draws chrome, rather than left to guess. See `XdgDecorationHandler` above.
+delegate_xdg_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
 delegate_seat!(State);
@@ -1846,31 +1490,24 @@ delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
 
-// Selection: clipboard, primary selection and drag-and-drop. The handler
-// impls live in `compositor::selection` next to the mirror they read and
-// write; only the dispatch wiring belongs here with the other globals.
+// Selection: clipboard, primary selection, drag-and-drop. Handler impls live in `compositor::selection`; only dispatch wiring belongs here.
 delegate_data_device!(State);
 delegate_primary_selection!(State);
 delegate_data_control!(State);
 delegate_ext_data_control!(State);
 
 // `ext_session_lock_v1`: a client can lock the session; while locked the
-// compositor hides all normal client surfaces + routes input only to the lock
-// surface (enforced by the native run loop, which owns the authoritative lock
-// + the compositor-drawn overlay). qOS renders its own lock UI rather than a
-// client lock surface, so the handler bridges a protocol `lock`/`unlock` into
-// that one lock state via [`SessionLockHooks`] instead of compositing a client
-// surface.
+// compositor hides all normal client surfaces + routes input only to the
+// lock surface (enforced by the native run loop, which owns the
+// authoritative lock + overlay). qOS renders its own lock UI rather than a
+// client lock surface, so the handler bridges protocol lock/unlock into that one lock state via [`SessionLockHooks`].
 impl SessionLockHandler for State {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
         &mut self.session_lock_state
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
-        // Raise the request for the run loop to enter the locked state and
-        // paint the overlay; stash the confirmation so the loop calls
-        // `.lock()` only after app content is hidden (the client's `locked`
-        // event must not fire before the screen is actually covered).
+        // Raise the request for the run loop to lock + paint the overlay; stash confirmation so `.lock()` runs only once content is hidden.
         self.session_lock.lock_requested = true;
         self.session_lock.pending_locker = Some(confirmation);
     }
@@ -1881,11 +1518,7 @@ impl SessionLockHandler for State {
     }
 
     fn new_surface(&mut self, surface: LockSurface, _output: WlOutput) {
-        // qOS renders its own lock overlay as compositor chrome, so a client
-        // lock surface is accepted (so a conforming client does not error or
-        // hang) but is not composited — the compositor overlay is the lock UI.
-        // Configure it to the current output size so the client can commit a
-        // correctly-sized buffer per the protocol.
+        // qOS renders its own lock overlay, so a client lock surface is accepted (no error/hang) but not composited; configured to the output size.
         let (w, h) = self.output_size;
         if w > 0 && h > 0 {
             surface.with_pending_state(|state| {
@@ -1897,19 +1530,14 @@ impl SessionLockHandler for State {
 }
 delegate_session_lock!(State);
 
-// `AsRef<ColorManagerState>` lets the color-management `GlobalDispatch`
-// impl reach the advertised-capability list without adding a public
-// getter on `State`.
+// `AsRef<ColorManagerState>` lets the color-management `GlobalDispatch` impl reach the advertised-capability list without a public getter on `State`.
 impl AsRef<ColorManagerState> for State {
     fn as_ref(&self) -> &ColorManagerState {
         &self.color_manager
     }
 }
 
-// `wp_color_manager_v1` + friends live outside smithay's delegate
-// wrappers — we hand-roll them in `wayland::color_management`. The
-// macro invocation below expands to the `Dispatch` /
-// `GlobalDispatch` route-through for every interface in the protocol.
+// `wp_color_manager_v1` + friends live outside smithay's delegate wrappers, hand-rolled in `wayland::color_management`; this macro wires their `Dispatch`/`GlobalDispatch`.
 crate::delegate_color_management!(State);
 
 #[cfg(test)]
@@ -1936,7 +1564,12 @@ mod tick_hook_tests {
         }
     }
 
-    fn out(id: u32, position: (i32, i32), size: (u32, u32), scale: f32) -> crate::compositor::backend::Output {
+    fn out(
+        id: u32,
+        position: (i32, i32),
+        size: (u32, u32),
+        scale: f32,
+    ) -> crate::compositor::backend::Output {
         crate::compositor::backend::Output {
             id: crate::compositor::backend::OutputId(id),
             position,
@@ -1945,8 +1578,7 @@ mod tick_hook_tests {
         }
     }
 
-    /// Before any output table arrives — a hosted or headless run — the
-    /// session-wide scale is the only answer there is.
+    /// Before any output table arrives (hosted/headless run), the session-wide scale is the only answer there is.
     #[test]
     fn without_an_output_table_the_scale_is_the_session_wide_one() {
         let mut state = make_state();
@@ -1955,8 +1587,7 @@ mod tick_hook_tests {
         assert_eq!(state.surface_scale(7), 1.75);
     }
 
-    /// The docked-laptop case: a dense built-in panel beside a sparse
-    /// external monitor. One session-wide number is wrong for one of them.
+    /// The docked-laptop case: a dense built-in panel beside a sparse external monitor — one session-wide number is wrong for one of them.
     #[test]
     fn a_surface_is_told_the_scale_of_the_output_it_sits_on() {
         let mut state = make_state();
@@ -1969,9 +1600,7 @@ mod tick_hook_tests {
         assert_eq!(state.scale_for_origin((2000.0, 100.0)), 1.0);
     }
 
-    /// A window dragged from the laptop panel to the external monitor has
-    /// to be told to re-render at the other one's density. The cache is
-    /// what makes that observable to the commit hook.
+    /// A window dragged to the external monitor has to re-render at its density — the cache is what makes that observable to the commit hook.
     #[test]
     fn moving_a_window_between_outputs_changes_its_recorded_scale() {
         let mut state = make_state();
@@ -1985,8 +1614,7 @@ mod tick_hook_tests {
         assert_eq!(state.surface_scale(42), 1.0);
     }
 
-    /// A surface that is no longer placed must not keep a stale scale: it
-    /// would be handed back on re-placement without being recomputed.
+    /// A surface no longer placed must not keep a stale scale — it would be handed back unrecomputed on re-placement.
     #[test]
     fn an_unplaced_surface_loses_its_cached_scale() {
         let mut state = make_state();
@@ -2002,8 +1630,7 @@ mod tick_hook_tests {
         );
     }
 
-    /// A hotplug invalidates every cached scale, because the layout the
-    /// values were derived from is the thing that moved.
+    /// A hotplug invalidates every cached scale, since the layout the values were derived from is what moved.
     #[test]
     fn a_new_output_layout_drops_the_cached_scales() {
         let mut state = make_state();
@@ -2011,8 +1638,7 @@ mod tick_hook_tests {
         state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 2.0)]);
         state.update_surface_scales(&[(42, (10.0, 10.0))]);
         assert_eq!(state.surface_scale(42), 2.0);
-        // The external monitor is unplugged and the laptop panel is now
-        // the only display, at a different scale.
+        // The external monitor is unplugged; the laptop panel is now the only display, at a different scale.
         state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 1.5)]);
         assert_eq!(
             state.surface_scale(42),
@@ -2036,10 +1662,7 @@ mod tick_hook_tests {
         v
     }
 
-    /// Two commits with a share session registered must produce two
-    /// encoded frames on the session's substream. The commit hook
-    /// pumps `encode_next_frame` once per commit; the substream's
-    /// per-subscriber queue accumulates them.
+    /// Two commits with a share session registered must produce two encoded frames — `encode_next_frame` pumps once per commit into the per-subscriber queue.
     #[test]
     fn two_commits_produce_two_encoded_frames() {
         const W: u32 = 64;
@@ -2056,21 +1679,17 @@ mod tick_hook_tests {
         let mut state = make_state();
         state.register_share_session(session.clone());
 
-        // Simulate the sequence a real commit would produce:
-        // `on_commit` deposits bytes into the tracker (mocked here via
-        // `deposit_for_test`), then the commit handler calls
-        // `tick_share_session_for_surface`. Test drives the tick
-        // directly so no real `WlSurface` is needed.
+        // Simulate the sequence a real commit would produce: `on_commit`
+        // deposits bytes (mocked via `deposit_for_test`), then the commit
+        // handler calls `tick_share_session_for_surface` directly — no real `WlSurface` needed.
         state
             .surface_tracker
             .deposit_for_test(SURFACE, gradient(W, H), W, H);
         let ran = state.tick_share_session_for_surface(SURFACE);
         assert!(ran, "first commit must fire the tick");
-        // Nudge the throttle clock by re-depositing and pumping again
-        // — the throttle is time-based, and in tests two back-to-back
-        // ticks land inside the 33 ms window. Advance the wall clock
-        // by sleeping the interval; the throttle's `should_encode`
-        // reads `Instant::now()` and will accept the second tick.
+        // Nudge the throttle clock by re-depositing and pumping again — the
+        // throttle is time-based and two back-to-back ticks land inside the
+        // 33ms window in tests. Sleep the interval; `should_encode` reads `Instant::now()` and accepts the second tick.
         std::thread::sleep(std::time::Duration::from_millis(40));
         state
             .surface_tracker
@@ -2078,8 +1697,7 @@ mod tick_hook_tests {
         let ran2 = state.tick_share_session_for_surface(SURFACE);
         assert!(ran2, "second commit must fire the tick");
 
-        // Both encoded frames land in the subscriber's substream
-        // queue with monotonic sequence numbers.
+        // Both encoded frames land in the subscriber's substream queue with monotonic sequence numbers.
         let f0 = session
             .poll_stream_frame(VIEWER)
             .expect("first frame on the substream");
@@ -2091,8 +1709,7 @@ mod tick_hook_tests {
         assert!(session.poll_stream_frame(VIEWER).is_none());
     }
 
-    /// A commit for a surface with no registered share session is a
-    /// no-op (no encoder pumped, no substream traffic).
+    /// A commit for a surface with no registered share session is a no-op (no encoder pumped, no substream traffic).
     #[test]
     fn commit_without_active_session_is_noop() {
         let mut state = make_state();
@@ -2102,10 +1719,7 @@ mod tick_hook_tests {
         assert!(!state.tick_share_session_for_surface(999));
     }
 
-    /// A commit with a registered session but no staged frame in the
-    /// tracker returns `false` (nothing to encode). This is the
-    /// damage-only commit path — smithay fires `commit` for cursor
-    /// motion / null-attach without a new buffer.
+    /// A commit with a registered session but no staged frame returns `false` — the damage-only path (cursor motion, null-attach).
     #[test]
     fn commit_without_staged_frame_returns_false() {
         const HOST: PeerId = 0xAAAA;
@@ -2136,17 +1750,14 @@ mod tick_hook_tests {
             .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
         assert!(state.tick_share_session_for_surface(SURFACE));
         state.unregister_share_session(SURFACE);
-        // Post-unregister the tick is a no-op even with a staged
-        // frame.
+        // Post-unregister the tick is a no-op even with a staged frame.
         state
             .surface_tracker
             .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
         assert!(!state.tick_share_session_for_surface(SURFACE));
     }
 
-    /// The `ext_session_lock_v1` bridge reports each lock/unlock request as a
-    /// one-shot edge the run loop consumes: reading it returns `true` once,
-    /// then `false`, so the loop can't re-fire a stale request.
+    /// The `ext_session_lock_v1` bridge reports each lock/unlock request as a one-shot edge: `true` once, then `false`, so the loop can't re-fire it.
     #[test]
     fn session_lock_hooks_report_and_clear_edges() {
         let mut h = SessionLockHooks::default();
@@ -2165,14 +1776,11 @@ mod tick_hook_tests {
         assert!(!h.take_unlock_requested(), "unlock edge is consumed once");
     }
 
-    /// A freshly constructed state advertises the session-lock global (its
-    /// constructor ran `SessionLockManagerState::new` without panicking) and
-    /// starts with no client holding a lock.
+    /// A freshly constructed state advertises the session-lock global and starts with no client holding a lock.
     #[test]
     fn fresh_state_advertises_session_lock_and_starts_unlocked() {
         let mut state = make_state();
-        // Constructing the state ran `SessionLockManagerState::new` (global
-        // advertised) without panic; no client holds a lock yet.
+        // Constructing the state ran `SessionLockManagerState::new` (global advertised) without panic; no client holds a lock yet.
         assert!(!state.session_lock.take_lock_requested());
         assert!(!state.session_lock.take_unlock_requested());
         assert!(!state.session_lock.has_pending_locker());

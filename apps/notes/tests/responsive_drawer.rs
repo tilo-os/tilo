@@ -145,7 +145,13 @@ fn narrow_window_collapses_sidebar_into_toggleable_drawer() {
 
     // The top-bar toggle opens the drawer.
     let btn = app.menu_btn_center_for_test();
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(btn.x, btn.y));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(btn.x, btn.y),
+    );
     dispatch(&mut app, &mut state, &taffy, child, &mouse_press());
     assert!(
         app.drawer_open_for_test(),
@@ -157,7 +163,13 @@ fn narrow_window_collapses_sidebar_into_toggleable_drawer() {
     let row = app
         .sidebar_row_center_for_test(0)
         .expect("row 0 should be laid out");
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(row.x, row.y));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(row.x, row.y),
+    );
     dispatch(&mut app, &mut state, &taffy, child, &mouse_press());
     assert_eq!(
         app.selected_for_test(),

@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -113,22 +113,22 @@ impl Widget for ActionButton {
                 // Grow to share the nav row's width; basis 0 so two
                 // buttons split evenly and a lone button fills the row.
                 flex_grow: 1.0,
-                flex_basis: length(0.0),
+                flex_basis: length(0.0_f32),
                 flex_shrink: 1.0,
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -168,7 +168,13 @@ impl Widget for ActionButton {
 
         // Border: focus ring wins; secondary buttons keep a hairline.
         if self.is_focused && !self.disabled {
-            scene.stroke(&Stroke::new(2.0), transform, theme.border_focus, None, &shape);
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &shape,
+            );
         } else if !self.primary {
             scene.stroke(
                 &Stroke::new(1.0),
@@ -180,8 +186,8 @@ impl Widget for ActionButton {
         }
 
         let (tw, th) = text_renderer.measure(&self.label, LABEL_SIZE, None);
-        let tx = self.rect.center().x - tw as f64 / 2.0;
-        let ty = self.rect.y0 + (self.rect.height() - th as f64) / 2.0;
+        let tx = self.rect.center().x - f64::from(tw) / 2.0;
+        let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
         text_renderer.draw_text(
             scene,
             &self.label,
@@ -254,7 +260,7 @@ impl Widget for ActionButton {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ActionButton"
     }
 

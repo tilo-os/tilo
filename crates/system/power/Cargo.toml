@@ -20,7 +20,6 @@ serde_json = "1.0"
 # One owner for ~/.config/qos/settings.json — path resolution, forgiving reads
 # and non-destructive writes, shared with every other reader of that file.
 settings-store = { path = "../../../crates/system/settings-store" }
-dirs = "6.0.0"
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
 zbus = { version = "4", default-features = false, features = ["tokio"] }
@@ -32,3 +31,6 @@ tokio = { version = "1.52.3", features = ["full"] }
 # Fixture power-supply trees for the sysfs battery reader, so its parsing
 # is tested against real directory layouts rather than a mocked reader.
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

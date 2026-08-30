@@ -1,13 +1,14 @@
-use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
-use vello::Scene;
-use vello::kurbo::{Affine, RoundedRect, Circle, Rect, Point};
-use winit::event::{WindowEvent, MouseButton, ElementState};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
+use crate::widget::TaffyTreeExt;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// Horizontal padding between `rect` and the track on each side.
 /// Both `draw` and `handle_event` use this to translate between
@@ -192,10 +193,22 @@ impl SliderFace {
             disabled: false,
         }
     }
-    pub fn hovered(mut self, v: bool) -> Self { self.hovered = v; self }
-    pub fn dragging(mut self, v: bool) -> Self { self.dragging = v; self }
-    pub fn focused(mut self, v: bool) -> Self { self.focused = v; self }
-    pub fn disabled(mut self, v: bool) -> Self { self.disabled = v; self }
+    pub fn hovered(mut self, v: bool) -> Self {
+        self.hovered = v;
+        self
+    }
+    pub fn dragging(mut self, v: bool) -> Self {
+        self.dragging = v;
+        self
+    }
+    pub fn focused(mut self, v: bool) -> Self {
+        self.focused = v;
+        self
+    }
+    pub fn disabled(mut self, v: bool) -> Self {
+        self.disabled = v;
+        self
+    }
 
     /// The track rect this face paints, so a caller hit-tests the geometry it
     /// actually draws.
@@ -204,7 +217,7 @@ impl SliderFace {
             self.rect.x0 + TRACK_PADDING,
             self.rect.y0 + (self.rect.height() - TRACK_HEIGHT) / 2.0,
             self.rect.x1 - TRACK_PADDING,
-            self.rect.y0 + (self.rect.height() + TRACK_HEIGHT) / 2.0,
+            self.rect.y0 + f64::midpoint(self.rect.height(), TRACK_HEIGHT),
         )
     }
 
@@ -235,7 +248,13 @@ impl Slider {
         let colors = &theme.tokens.colors;
         let track_rect = face.track_rect();
         let track_shape = RoundedRect::from_rect(track_rect, 3.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, colors.neutral[3], None, &track_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.neutral[3],
+            None,
+            &track_shape,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
@@ -287,7 +306,13 @@ impl Slider {
                 );
             }
         }
-        scene.fill(vello::peniko::Fill::NonZero, transform, fill_color, None, &knob_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            fill_color,
+            None,
+            &knob_shape,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(border_width),
             transform,
@@ -314,41 +339,53 @@ impl Slider {
 
 impl Widget for Slider {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str()) {
-            if let Value::Scalar(s) = val {
-                match s.as_ref() {
-                    automerge::ScalarValue::F64(f) => self.value = *f,
-                    automerge::ScalarValue::Int(i) => self.value = *i as f64,
-                    automerge::ScalarValue::Uint(u) => self.value = *u as f64,
-                    _ => {}
-                }
+        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
+            && let Value::Scalar(s) = val
+        {
+            match s.as_ref() {
+                automerge::ScalarValue::F64(f) => self.value = *f,
+                automerge::ScalarValue::Int(i) => self.value = *i as f64,
+                automerge::ScalarValue::Uint(u) => self.value = *u as f64,
+                _ => {}
             }
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(30.0),
             },
             ..Default::default()
-        }).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
         Slider::paint(
             scene,
             transform,
@@ -360,9 +397,23 @@ impl Widget for Slider {
                 .disabled(!self.enabled),
         );
     }
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
         // Disabled: reject all input — no drag, no value change, no hover.
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -380,26 +431,26 @@ impl Widget for Slider {
                     }
                 }
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 // Press uses `rect.contains(last_cursor)` rather than
                 // `is_hovered` so the press latches without depending on
                 // an earlier hover-edge transition (e.g. focus delivered
                 // a press without a preceding `CursorMoved`). On entry
                 // we also jump `value` to the click x — the standard
                 // "press on track to jump" affordance.
-                if *element_state == ElementState::Pressed
-                    && self.rect.contains(self.last_cursor)
-                {
+                if *element_state == ElementState::Pressed && self.rect.contains(self.last_cursor) {
                     self.is_dragging = true;
                     *focus_target = Some(node_id);
                     *handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
                     self.commit_value(new_value, state, root);
-                } else if *element_state == ElementState::Released {
-                    if self.is_dragging {
-                        self.is_dragging = false;
-                        *handled = true;
-                    }
+                } else if *element_state == ElementState::Released && self.is_dragging {
+                    self.is_dragging = false;
+                    *handled = true;
                 }
             }
             _ => {}
@@ -413,7 +464,9 @@ impl Widget for Slider {
         self.is_dragging
     }
 
-    fn name(&self) -> &str { "Slider" }
+    fn name(&self) -> &'static str {
+        "Slider"
+    }
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id_override.as_deref().unwrap_or("slider"))
@@ -423,10 +476,18 @@ impl Widget for Slider {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
-    fn is_enabled(&self) -> bool { self.enabled }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -480,9 +541,16 @@ impl Widget for Slider {
                 self.commit_value((self.value - STEP).clamp(0.0, 1.0), state, path)
             }
             Action::SetValue(v) => {
+                // `f64::from_str` accepts "nan"/"inf"/"-inf" as valid text,
+                // which would otherwise slip a non-finite value into the
+                // CRDT and any serialiser downstream that (rightly) refuses
+                // non-finite floats.
                 let Ok(parsed) = v.trim().trim_end_matches('%').parse::<f64>() else {
                     return false;
                 };
+                if !parsed.is_finite() {
+                    return false;
+                }
                 // Accept either a 0..1 fraction or a 0..100 percentage.
                 let frac = if parsed > 1.0 { parsed / 100.0 } else { parsed };
                 self.commit_value(frac.clamp(0.0, 1.0), state, path)
@@ -495,7 +563,9 @@ impl Widget for Slider {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -512,22 +582,29 @@ impl Widget for Slider {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }
@@ -571,7 +648,7 @@ mod tests {
     /// Drive an event through the slider with default scaffolding.
     fn dispatch(s: &mut Slider, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -604,7 +681,12 @@ mod tests {
         let r2 = s.knob_radius_for_state();
 
         assert!(r0 < r1, "hover must grow knob: idle={}, hover={}", r0, r1);
-        assert!(r1 < r2, "press must grow knob further: hover={}, press={}", r1, r2);
+        assert!(
+            r1 < r2,
+            "press must grow knob further: hover={}, press={}",
+            r1,
+            r2
+        );
     }
 
     #[test]
@@ -681,7 +763,10 @@ mod tests {
     fn with_enabled_false_is_reported_by_is_enabled() {
         let s = Slider::new("any", "value").with_enabled(false);
         assert!(!Widget::is_enabled(&s));
-        assert!(Widget::is_enabled(&Slider::new("any", "value")), "default is enabled");
+        assert!(
+            Widget::is_enabled(&Slider::new("any", "value")),
+            "default is enabled"
+        );
     }
 
     #[test]
@@ -726,9 +811,19 @@ mod tests {
         let root = automerge::ROOT;
         let mut s = Slider::new("any", "value"); // default 0.5
 
-        assert!(Widget::perform_action(&mut s, &Action::Increment, &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut s,
+            &Action::Increment,
+            &mut doc,
+            &root
+        ));
         assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
-        assert!(Widget::perform_action(&mut s, &Action::Decrement, &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut s,
+            &Action::Decrement,
+            &mut doc,
+            &root
+        ));
         assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
 
         // SetValue accepts a 0..100 percentage.
@@ -757,7 +852,12 @@ mod tests {
         let root = automerge::ROOT;
         let mut s = Slider::new("any", "value").with_enabled(false);
         let before = s.value;
-        assert!(!Widget::perform_action(&mut s, &Action::Increment, &mut doc, &root));
+        assert!(!Widget::perform_action(
+            &mut s,
+            &Action::Increment,
+            &mut doc,
+            &root
+        ));
         assert_eq!(s.value, before, "a disabled slider must not change value");
     }
 
@@ -776,4 +876,3 @@ mod tests {
         assert_eq!(s.value, before, "disabled slider must not change its value");
     }
 }
-

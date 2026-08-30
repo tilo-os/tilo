@@ -33,7 +33,11 @@ const GRID_H: usize = 90;
 fn demo_clip() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os("QOS_VE_TEST_CLIP") {
         let p = std::path::PathBuf::from(p);
-        assert!(p.exists(), "$QOS_VE_TEST_CLIP does not exist: {}", p.display());
+        assert!(
+            p.exists(),
+            "$QOS_VE_TEST_CLIP does not exist: {}",
+            p.display()
+        );
         return p;
     }
     let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -102,8 +106,12 @@ fn decode_frame(path: &std::path::Path, at_secs: f64) -> Vec<[u8; 3]> {
         .property("uri", &uri)
         .build()
         .expect("uridecodebin");
-    let convert = gst::ElementFactory::make("videoconvert").build().expect("videoconvert");
-    let scale = gst::ElementFactory::make("videoscale").build().expect("videoscale");
+    let convert = gst::ElementFactory::make("videoconvert")
+        .build()
+        .expect("videoconvert");
+    let scale = gst::ElementFactory::make("videoscale")
+        .build()
+        .expect("videoscale");
     let sink = gst_app::AppSink::builder()
         .caps(
             &gst::Caps::builder("video/x-raw")
@@ -141,18 +149,19 @@ fn decode_frame(path: &std::path::Path, at_secs: f64) -> Vec<[u8; 3]> {
     let target_ms = (at_secs.max(0.0) * 1000.0) as u64;
     let mut out: Option<Vec<[u8; 3]>> = None;
     loop {
-        let Ok(sample) = sink.pull_sample() else { break };
-        let Some(buffer) = sample.buffer() else { continue };
+        let Ok(sample) = sink.pull_sample() else {
+            break;
+        };
+        let Some(buffer) = sample.buffer() else {
+            continue;
+        };
         let pts = buffer.pts().map(|p| p.mseconds()).unwrap_or(0);
-        let Ok(map) = buffer.map_readable() else { continue };
+        let Ok(map) = buffer.map_readable() else {
+            continue;
+        };
         let want = GRID_W * GRID_H * 4;
         if map.len() >= want {
-            out = Some(
-                map[..want]
-                    .chunks(4)
-                    .map(|p| [p[0], p[1], p[2]])
-                    .collect(),
-            );
+            out = Some(map[..want].chunks(4).map(|p| [p[0], p[1], p[2]]).collect());
         }
         if pts >= target_ms {
             break;
@@ -187,7 +196,9 @@ fn mean_abs_diff(a: &[[u8; 3]], b: &[[u8; 3]]) -> f64 {
         .iter()
         .zip(b)
         .map(|(p, q)| {
-            (p[0].abs_diff(q[0]) as f64) + (p[1].abs_diff(q[1]) as f64) + (p[2].abs_diff(q[2]) as f64)
+            (p[0].abs_diff(q[0]) as f64)
+                + (p[1].abs_diff(q[1]) as f64)
+                + (p[2].abs_diff(q[2]) as f64)
         })
         .sum();
     total / (a.len() * 3) as f64
@@ -217,7 +228,9 @@ fn export_as(project: &Project, container: Container) -> std::path::PathBuf {
         ExportStatus::Done { path } => assert_eq!(path, expected.to_string_lossy()),
         other => panic!("export must write a file, got {other:?}"),
     }
-    let bytes = std::fs::metadata(&expected).expect("export file exists").len();
+    let bytes = std::fs::metadata(&expected)
+        .expect("export file exists")
+        .len();
     assert!(bytes > 512, "a real encoded file, got {bytes} bytes");
     println!("wrote {} ({bytes} bytes)", expected.display());
     expected
@@ -411,7 +424,10 @@ fn a_wipe_reaches_the_encoded_file_as_geometry() {
         c.in_point = 20.0;
         c.out_point = 21.0;
         c.transition = kind;
-        c.effects = vec![ClipEffect { kind: EffectKind::Invert, amount: 1.0 }];
+        c.effects = vec![ClipEffect {
+            kind: EffectKind::Invert,
+            amount: 1.0,
+        }];
         p
     };
 
@@ -456,7 +472,6 @@ fn a_wipe_reaches_the_encoded_file_as_geometry() {
     tidy(&wipe);
     tidy(&dissolve);
 }
-
 
 // ---------------------------------------------------------------------------
 // Geometry, titles and time-remap in the encoded file.
@@ -506,7 +521,10 @@ fn title_project(name: &str, words: &str) -> (Project, uuid::Uuid, uuid::Uuid) {
 /// How much of the decoded grid is bright, as a fraction. A white title on
 /// black is exactly this measurement.
 fn bright_fraction(px: &[[u8; 3]]) -> f64 {
-    let lit = px.iter().filter(|q| q[0] > 170 && q[1] > 170 && q[2] > 170).count();
+    let lit = px
+        .iter()
+        .filter(|q| q[0] > 170 && q[1] > 170 && q[2] > 170)
+        .count();
     lit as f64 / px.len() as f64
 }
 
@@ -575,10 +593,7 @@ fn a_transform_moves_the_picture_in_the_encoded_file() {
         cx > GRID_W as f64 * 0.6,
         "the transform moved the title right in the encoded file, got x={cx:.1}",
     );
-    assert!(
-        cy > GRID_H as f64 * 0.6,
-        "and down, got y={cy:.1}",
-    );
+    assert!(cy > GRID_H as f64 * 0.6, "and down, got y={cy:.1}",);
     tidy(&path);
 }
 
@@ -591,18 +606,28 @@ fn a_keyframed_move_is_at_a_different_place_in_each_encoded_second() {
     let (mut p, _, cid) = title_project("title_animated_export", "HELLO");
     {
         let c = p.clip_mut(cid).expect("clip");
-        c.transform = Transform { scale_x: 0.4, scale_y: 0.4, ..Transform::default() };
+        c.transform = Transform {
+            scale_x: 0.4,
+            scale_y: 0.4,
+            ..Transform::default()
+        };
         c.set_key_at(Param::PosY, 0.0, -0.3, Interp::Linear);
         c.set_key_at(Param::PosY, 3.0, 0.3, Interp::Linear);
     }
     let path = export(&p);
     let (_, early) = {
         let f = decode_frame(&path, 0.2);
-        (bright_fraction(&f), bright_centre(&f).expect("lit at the head"))
+        (
+            bright_fraction(&f),
+            bright_centre(&f).expect("lit at the head"),
+        )
     };
     let (_, late) = {
         let f = decode_frame(&path, 2.8);
-        (bright_fraction(&f), bright_centre(&f).expect("lit at the tail"))
+        (
+            bright_fraction(&f),
+            bright_centre(&f).expect("lit at the tail"),
+        )
     };
     assert!(
         late.1 > early.1 + GRID_H as f64 * 0.2,
@@ -826,8 +851,12 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
         .property("uri", &uri)
         .build()
         .expect("uridecodebin");
-    let convert = gst::ElementFactory::make("audioconvert").build().expect("audioconvert");
-    let resample = gst::ElementFactory::make("audioresample").build().expect("audioresample");
+    let convert = gst::ElementFactory::make("audioconvert")
+        .build()
+        .expect("audioconvert");
+    let resample = gst::ElementFactory::make("audioresample")
+        .build()
+        .expect("audioresample");
     let sink = gst_app::AppSink::builder()
         .caps(
             &gst::Caps::builder("audio/x-raw")
@@ -884,8 +913,12 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
         }
         match sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
             Some(sample) => {
-                let Some(buffer) = sample.buffer() else { continue };
-                let Ok(map) = buffer.map_readable() else { continue };
+                let Some(buffer) = sample.buffer() else {
+                    continue;
+                };
+                let Ok(map) = buffer.map_readable() else {
+                    continue;
+                };
                 for c in map.chunks_exact(4) {
                     out.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
                 }
@@ -1037,8 +1070,14 @@ fn assert_audio_round_trip(container: Container) {
     //    wired in by mistake, a mono downmix, or a channel swap all survive a
     //    peak check; none of them survives this.
     let early = ..(SWITCH_SECS * FIXTURE_RATE as f64 * 0.9) as usize;
-    let (l440, l880) = (goertzel(&left[early], LEFT_HZ), goertzel(&left[early], RIGHT_HZ_EARLY));
-    let (r440, r880) = (goertzel(&right[early], LEFT_HZ), goertzel(&right[early], RIGHT_HZ_EARLY));
+    let (l440, l880) = (
+        goertzel(&left[early], LEFT_HZ),
+        goertzel(&left[early], RIGHT_HZ_EARLY),
+    );
+    let (r440, r880) = (
+        goertzel(&right[early], LEFT_HZ),
+        goertzel(&right[early], RIGHT_HZ_EARLY),
+    );
     println!(
         "{container:?} tone energy — left: {LEFT_HZ}Hz={l440:.4} {RIGHT_HZ_EARLY}Hz={l880:.4}  \
          right: {LEFT_HZ}Hz={r440:.4} {RIGHT_HZ_EARLY}Hz={r880:.4}",
@@ -1149,7 +1188,11 @@ fn the_exported_audio_sits_where_the_timeline_puts_it() {
         let out = export_as(&av_project(&name, &video, &audio), container);
         let decoded = decode_audio_full(&out);
         let right = channel(&decoded.pcm, 1);
-        assert!(!right.is_empty(), "there is no audio in {} to locate", out.display());
+        assert!(
+            !right.is_empty(),
+            "there is no audio in {} to locate",
+            out.display()
+        );
 
         let at = tone_switch_secs(&right).unwrap_or_else(|| {
             panic!(
@@ -1234,7 +1277,11 @@ const PLATE_FPS: u32 = 30;
 
 /// Rows `[0.4, 0.6)` of the frame carry the subject; the rest is plate.
 fn plate_pixel(v: f64) -> [u8; 3] {
-    if (0.4..0.6).contains(&v) { SUBJECT_RGB } else { PLATE_RGB }
+    if (0.4..0.6).contains(&v) {
+        SUBJECT_RGB
+    } else {
+        PLATE_RGB
+    }
 }
 
 /// Encode the green-screen plate to `path`.
@@ -1265,7 +1312,9 @@ fn write_plate(path: &std::path::Path) {
         .downcast::<gst_app::AppSrc>()
         .expect("an appsrc");
     src.set_format(gst::Format::Time);
-    pipeline.set_state(gst::State::Playing).expect("start the plate pipeline");
+    pipeline
+        .set_state(gst::State::Playing)
+        .expect("start the plate pipeline");
 
     let mut rgba = vec![255u8; (PLATE_W * PLATE_H * 4) as usize];
     for y in 0..PLATE_H {
@@ -1315,7 +1364,10 @@ fn green_plate() -> std::path::PathBuf {
         write_plate(&path);
     }
     let bytes = std::fs::metadata(&path).expect("the plate exists").len();
-    assert!(bytes > 512, "the plate is a real encoded file, got {bytes} bytes");
+    assert!(
+        bytes > 512,
+        "the plate is a real encoded file, got {bytes} bytes"
+    );
     let frame = decode_frame(&path, 0.4);
     let at = |u: f64, v: f64| {
         let x = ((u * GRID_W as f64) as usize).min(GRID_W - 1);
@@ -1392,8 +1444,10 @@ fn plate_stack(name: &str) -> (Project, uuid::Uuid) {
     // Inverting the lower layer is what makes "the layer beneath showed
     // through" a visible fact rather than an inference: green inverts to
     // magenta, which no part of the upper layer is.
-    p.clip_mut(under).expect("clip").effects =
-        vec![ClipEffect { kind: EffectKind::Invert, amount: 1.0 }];
+    p.clip_mut(under).expect("clip").effects = vec![ClipEffect {
+        kind: EffectKind::Invert,
+        amount: 1.0,
+    }];
     (p, over)
 }
 
@@ -1626,7 +1680,9 @@ fn write_wedge(path: &std::path::Path) {
         .downcast::<gst_app::AppSrc>()
         .expect("an appsrc");
     src.set_format(gst::Format::Time);
-    pipeline.set_state(gst::State::Playing).expect("start the wedge pipeline");
+    pipeline
+        .set_state(gst::State::Playing)
+        .expect("start the wedge pipeline");
 
     let mut rgba = vec![255u8; (WEDGE_W * WEDGE_H * 4) as usize];
     for y in 0..WEDGE_H {
@@ -1692,7 +1748,10 @@ fn grey_wedge() -> std::path::PathBuf {
             q[0].abs_diff(q[1]) < 12 && q[1].abs_diff(q[2]) < 12,
             "and be neutral grey, got {q:?}",
         );
-        assert!(got > last, "the wedge rises: band {i} is {got}, previous {last}");
+        assert!(
+            got > last,
+            "the wedge rises: band {i} is {got}, previous {last}"
+        );
         last = got;
     }
     path
@@ -1780,7 +1839,10 @@ fn a_tone_curve_reaches_the_encoded_file_as_a_table() {
             moved += 1;
         }
     }
-    assert!(moved >= 3, "the curve really reshaped the picture, {moved} bands moved");
+    assert!(
+        moved >= 3,
+        "the curve really reshaped the picture, {moved} bands moved"
+    );
 
     // And the shape is a *shape*: the two ends the curve pins barely move
     // while the midtones move several times as far. A brightness or contrast
@@ -1792,7 +1854,10 @@ fn a_tone_curve_reaches_the_encoded_file_as_a_table() {
     let ends = shift(0).max(shift(WEDGE.len() - 1));
     let mids = (1..WEDGE.len() - 1).map(shift).fold(0.0_f64, f64::max);
     println!("ends moved at most {ends:.1}, midtones up to {mids:.1}");
-    assert!(ends < 20.0, "the pinned ends stay near where they were: {ends:.1}");
+    assert!(
+        ends < 20.0,
+        "the pinned ends stay near where they were: {ends:.1}"
+    );
     assert!(
         mids > ends * 3.0,
         "and the midtones move several times as far: {mids:.1} against {ends:.1}",
@@ -1883,7 +1948,10 @@ fn a_relative_media_path_is_resolved_or_refused_never_stood_in_for() {
     use video_editor::export::{begin_export, output_path};
 
     let clip = demo_clip();
-    let dir = clip.parent().expect("the clip has a directory").to_path_buf();
+    let dir = clip
+        .parent()
+        .expect("the clip has a directory")
+        .to_path_buf();
     let file = clip
         .file_name()
         .expect("the clip has a name")
@@ -1906,7 +1974,10 @@ fn a_relative_media_path_is_resolved_or_refused_never_stood_in_for() {
     match begin_export(&lost, &settings) {
         ExportStatus::Failed { reason } => {
             println!("refused: {reason}");
-            assert!(reason.contains("demo"), "the refusal names the source: {reason:?}");
+            assert!(
+                reason.contains("demo"),
+                "the refusal names the source: {reason:?}"
+            );
         }
         other => panic!("an unresolvable source must refuse, got {other:?}"),
     }
@@ -1927,13 +1998,18 @@ fn a_relative_media_path_is_resolved_or_refused_never_stood_in_for() {
     let detail = horizontal_detail(&exported);
     let source_detail = horizontal_detail(&source);
     let diff = mean_abs_diff(&exported, &source);
-    println!("relative-path export: detail {detail:.2} (source {source_detail:.2}), difference {diff:.2}");
+    println!(
+        "relative-path export: detail {detail:.2} (source {source_detail:.2}), difference {diff:.2}"
+    );
     assert!(
         detail > source_detail * 0.4,
         "the encoded frame has the source's structure, not a flat fill \
          (detail {detail:.2} vs source {source_detail:.2})",
     );
-    assert!(diff < 30.0, "and is the same picture: mean difference {diff:.2}");
+    assert!(
+        diff < 30.0,
+        "and is the same picture: mean difference {diff:.2}"
+    );
 
     video_editor::media::set_project_anchor(None);
     tidy(&out);

@@ -1,26 +1,21 @@
-//! Lightweight startup-timing capture used to measure the effect of
-//! shader precompile, glyph atlas warmth, and other cold-start work.
+//! Lightweight startup-timing capture used to measure the effect of shader precompile, glyph
+//! atlas warmth, and other cold-start work.
 //!
 //! # How it works
 //!
-//! [`mark`] records `Instant::now()` against the module's `origin`
-//! (set at process start). At process exit — or via an explicit
-//! [`dump`] call — the recorded events are serialised to a JSON file
-//! at the path in `QOS_STARTUP_METRICS_PATH`, or
-//! `/tmp/qos-startup-$pid.json` if the env var is unset **and**
+//! [`mark`] records `Instant::now()` against the module's `origin` (set at process start).
+//! At process exit — or via an explicit [`dump`] call — recorded events are serialised to a
+//! JSON file at `QOS_STARTUP_METRICS_PATH`, or `/tmp/qos-startup-$pid.json` if unset **and**
 //! [`init`] was told to enable capture unconditionally.
 //!
-//! Zero overhead when disabled: `mark` reads a single atomic pointer,
-//! and if the env var wasn't set at [`init`] time, the pointer is
-//! `None` and the call returns immediately.
+//! Zero overhead when disabled: `mark` reads a single atomic pointer, and if the env var
+//! wasn't set at [`init`] time, the pointer is `None` and the call returns immediately.
 //!
 //! # Deliberately not `tracing`
 //!
-//! `tracing` events + spans require the subscriber to be online at
-//! the moment of the event. The compositor's
-//! `tracing_subscriber::fmt::init()` runs mid-startup — we want to
-//! measure work that happens BEFORE that init. A raw `Instant` + `Vec`
-//! is unaffected.
+//! `tracing` events + spans require the subscriber to be online at the moment of the event.
+//! The compositor's `tracing_subscriber::fmt::init()` runs mid-startup, and we want to
+//! measure work that happens before that init — a raw `Instant` + `Vec` is unaffected.
 //!
 //! # Output shape
 //!
@@ -40,8 +35,8 @@ use serde::Serialize;
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime};
 
-/// Global capture state. Cheap to check on every [`mark`] call: the
-/// `OnceLock` reads a single atomic pointer.
+/// Global capture state. Cheap to check on every [`mark`] call: the `OnceLock` reads a
+/// single atomic pointer.
 static METRICS: OnceLock<Option<Metrics>> = OnceLock::new();
 
 struct Metrics {
@@ -57,15 +52,11 @@ struct Event {
     ns: u128,
 }
 
-/// Enable capture. Idempotent — subsequent calls are no-ops.
-///
-/// Reads `QOS_STARTUP_METRICS_PATH`. When unset the module stays
-/// disabled and every downstream [`mark`] is a zero-cost load. When
-/// set, the file is written on [`dump`] or when the process exits
-/// through a [`ScopedDumper`].
-///
-/// Callers should run this at the earliest possible point in `main`
-/// so `origin` is a meaningful "process start" reference.
+/// Enable capture. Idempotent — subsequent calls are no-ops. Reads
+/// `QOS_STARTUP_METRICS_PATH`: unset leaves the module disabled with every downstream
+/// [`mark`] a zero-cost load; set means the file is written on [`dump`] or process exit
+/// through a [`ScopedDumper`]. Run this at the earliest possible point in `main` so `origin`
+/// is a meaningful "process start" reference.
 pub fn init() {
     METRICS.get_or_init(|| {
         let path = std::env::var_os("QOS_STARTUP_METRICS_PATH")?;
@@ -83,8 +74,8 @@ pub fn init() {
     });
 }
 
-/// Record `name` at "now". Cheap when capture is disabled — the
-/// `OnceLock::get()` is a single atomic load.
+/// Record `name` at "now". Cheap when capture is disabled — `OnceLock::get()` is a single
+/// atomic load.
 #[inline]
 pub fn mark(name: &str) {
     let Some(Some(m)) = METRICS.get() else { return };
@@ -95,9 +86,8 @@ pub fn mark(name: &str) {
     });
 }
 
-/// Serialise every recorded event to the configured file. Called
-/// automatically at process exit via [`ScopedDumper`]; the explicit
-/// version lets tests dump before drop.
+/// Serialise every recorded event to the configured file. Called automatically at process
+/// exit via [`ScopedDumper`]; the explicit version lets tests dump before drop.
 pub fn dump() {
     let Some(Some(m)) = METRICS.get() else { return };
     let events = m.events.lock().clone();
@@ -111,8 +101,8 @@ pub fn dump() {
     );
 }
 
-/// RAII guard: dumps recorded events when it goes out of scope.
-/// Instantiate at the top of `main` after [`init`].
+/// RAII guard: dumps recorded events when it goes out of scope. Instantiate at the top of
+/// `main` after [`init`].
 pub struct ScopedDumper;
 
 impl Drop for ScopedDumper {
@@ -121,10 +111,9 @@ impl Drop for ScopedDumper {
     }
 }
 
-/// Measure a closure and record the elapsed under `name`. Useful for
-/// wrapping a known-slow phase (font-system construction,
-/// render-context init) without threading marks around it. Records
-/// two events: `<name>` at entry, `<name>-end` at exit.
+/// Measure a closure and record the elapsed under `name`. Useful for wrapping a known-slow
+/// phase (font-system construction, render-context init) without threading marks around it;
+/// records two events, `<name>` at entry and `<name>-end` at exit.
 pub fn span<T>(name: &str, f: impl FnOnce() -> T) -> T {
     mark(name);
     let out = f();
@@ -139,8 +128,7 @@ mod tests {
 
     #[test]
     fn disabled_by_default() {
-        // Without QOS_STARTUP_METRICS_PATH, mark is a no-op — nothing
-        // to assert beyond "no panic".
+        // Without QOS_STARTUP_METRICS_PATH, mark is a no-op — nothing to assert beyond "no panic".
         mark("nothing");
     }
 

@@ -1,97 +1,67 @@
 //! Deterministic byte serialisation for everything that gets signed.
 //!
-//! Signatures verify byte-for-byte, so two peers must agree on the
-//! exact bytes that hash into a signature. The spec specifies
-//! `postcard` as the canonical format because:
+//! Signatures verify byte-for-byte, so two peers must agree exactly.
+//! `postcard` is the canonical format: little-endian, varint-encoded, no
+//! padding or field-reorder leeway (byte sequence is a deterministic
+//! function of struct layout + values); supports `no_std`; round-trips
+//! serde types with no custom derive bookkeeping.
 //!
-//! - postcard is little-endian and varint-encoded, with no padding or
-//!   field-reorder leeway — the byte sequence is a deterministic
-//!   function of the struct layout and the values.
-//! - it supports `no_std` (we may want to verify on embedded devices
-//!   eventually).
-//! - it round-trips serde types without any custom derive bookkeeping.
+//! Every wire type derives `Serialize + Deserialize` with
+//! `#[serde(deny_unknown_fields)]`, so inbound trailing garbage or an
+//! extra field is rejected at decode time, not silently absorbed.
 //!
-//! Every wire type in this crate derives `Serialize + Deserialize`
-//! with `#[serde(deny_unknown_fields)]` so that any inbound trailing
-//! garbage or extra field gets rejected at decode time instead of
-//! silently absorbed.
-//!
-//! ## Signing protocol
-//!
-//! When a struct contains a `signature` field, the signed bytes are
-//! produced by serialising a *helper view* of the struct that omits
-//! the signature field itself. The convention used throughout this
-//! crate is: each signed type provides a `signing_bytes()` method
-//! that builds the helper and feeds it to [`canonical_bytes`]. This
-//! means the same canonical encoder is used everywhere; only the
-//! "what fields are covered by the signature" decision lives in the
-//! per-type helper.
+//! When a struct has a `signature` field, the signed bytes are produced
+//! by serialising a *helper view* that omits the signature — each signed
+//! type provides a `signing_bytes()` method that builds the view and
+//! feeds it to [`canonical_bytes`].
 
 use serde::Serialize;
 use thiserror::Error;
 
-/// Errors that can occur during canonical (de)serialisation.
-///
-/// Wraps `postcard::Error` so callers don't need to import postcard
-/// themselves. Downstream code typically converts this into a
-/// per-domain error type (`VerifyError`, `ValidationError`, etc.).
+/// Errors during canonical (de)serialisation. Wraps `postcard::Error` so
+/// callers needn't import postcard directly; downstream code typically
+/// converts this into a per-domain error type.
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum CanonicalError {
-    /// The value could not be encoded. This is essentially
-    /// unreachable for our types (all `Vec`-shaped fields are
-    /// length-prefixed by postcard) but exposed so callers don't have
-    /// to assume.
+    /// The value could not be encoded — essentially unreachable for this
+    /// crate's types, but exposed so callers don't have to assume.
     #[error("postcard serialisation failed: {0}")]
     Serialize(String),
 
-    /// The bytes could not be decoded. Common causes:
-    /// - truncated input;
-    /// - extra trailing bytes (postcard is exact-length);
-    /// - an enum discriminant out of range;
-    /// - a `deny_unknown_fields` violation (extra struct field).
+    /// The bytes could not be decoded: truncated input, extra trailing bytes
+    /// (postcard is exact-length), an out-of-range enum discriminant, or a
+    /// `deny_unknown_fields` violation.
     #[error("postcard deserialisation failed: {0}")]
     Deserialize(String),
 }
 
-/// Serialise a value to its canonical byte form.
-///
-/// This is the single function every signature in the crate flows
-/// through. Two peers running the same Rust toolchain version *and*
-/// the same crate version will produce identical bytes for the same
-/// input. (Across Rust versions, postcard guarantees stability for a
-/// fixed type definition; the wire risk is a struct field reorder in
-/// this crate, not a compiler update.)
+/// Serialise a value to its canonical byte form — the single function
+/// every signature in the crate flows through. Two peers on the same
+/// Rust toolchain and crate version produce identical bytes for the same
+/// input (postcard guarantees stability across Rust versions for a fixed
+/// type; the wire risk is a field reorder in this crate).
 ///
 /// Returns `Err(CanonicalError::Serialize)` only if the value's
-/// `Serialize` impl returns an error — for all types in this crate
-/// the result is effectively infallible, but we don't unwrap so that
-/// callers can propagate the error if they later add a fallible
-/// serde impl.
+/// `Serialize` impl errors — effectively infallible here, but not
+/// unwrapped so callers can propagate a future fallible impl.
 pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CanonicalError> {
     postcard::to_allocvec(value).map_err(|e| CanonicalError::Serialize(e.to_string()))
 }
 
-/// Decode bytes produced by [`canonical_bytes`] back into a value,
-/// requiring exact-length input.
+/// Decode bytes from [`canonical_bytes`] back into a value, requiring
+/// exact-length input. Bound by `for<'de> Deserialize<'de>` so owned
+/// types are the common case; errors on any decode failure including
+/// trailing bytes after a successful struct decode.
 ///
-/// Bound by `for<'de> Deserialize<'de>` rather than a lifetime
-/// parameter so that owned types are the common case. Returns
-/// `CanonicalError::Deserialize` on any decode failure, including
-/// trailing-bytes leftover after a successful struct decode.
-///
-/// The exact-length check is critical for signature integrity: a
-/// signed envelope is "the bytes I sign over". If the receiver
-/// accepts an envelope plus N trailing bytes, the trailing bytes
-/// are unsigned-but-present data the validator never inspects.
-/// `postcard::take_from_bytes` returns both the decoded value and
-/// the remaining slice; we treat any non-empty remainder as an
-/// error.
+/// The exact-length check is critical for signature integrity: a signed
+/// envelope is "the bytes I sign over" — accepting trailing bytes would
+/// let unsigned-but-present data slip past the validator unnoticed.
 pub fn from_canonical_bytes<T>(bytes: &[u8]) -> Result<T, CanonicalError>
 where
     T: for<'de> serde::Deserialize<'de>,
 {
-    let (value, rest) = postcard::take_from_bytes(bytes)
-        .map_err(|e| CanonicalError::Deserialize(e.to_string()))?;
+    let (value, rest) =
+        postcard::take_from_bytes(bytes).map_err(|e| CanonicalError::Deserialize(e.to_string()))?;
     if !rest.is_empty() {
         return Err(CanonicalError::Deserialize(format!(
             "{} trailing bytes after value",

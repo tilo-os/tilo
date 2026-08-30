@@ -29,10 +29,10 @@ pub fn sample_view() -> HexView {
 pub fn view_for_path(path: &Path) -> HexView {
     match std::fs::read(path) {
         Ok(bytes) => {
-            let name = path
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "untitled".to_string());
+            let name = path.file_name().map_or_else(
+                || "untitled".to_string(),
+                |s| s.to_string_lossy().into_owned(),
+            );
             HexView::new(bytes, name).with_path(path.to_path_buf())
         }
         Err(_) => HexView::empty(),
@@ -56,7 +56,10 @@ mod tests {
     #[test]
     fn view_for_missing_path_is_the_empty_state_not_a_fake_buffer() {
         let v = view_for_path(Path::new("/nonexistent/definitely-not-here.bin"));
-        assert!(!v.has_file(), "an unreadable path must not fabricate a buffer");
+        assert!(
+            !v.has_file(),
+            "an unreadable path must not fabricate a buffer"
+        );
         assert!(v.model().is_empty());
     }
 }

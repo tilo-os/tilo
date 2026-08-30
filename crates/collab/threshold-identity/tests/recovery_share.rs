@@ -1,9 +1,8 @@
 //! Recovery-share export, mnemonic round-trip, and re-import.
 //!
-//! The recovery share is the "paper key" the user prints during
-//! first enrolment. After losing a physical device the user can
-//! re-import the share and reconstitute a working quorum from the
-//! recovery share + surviving devices.
+//! The recovery share is the "paper key" printed during first
+//! enrolment; after losing a device the user re-imports it to
+//! reconstitute a working quorum with surviving devices.
 
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{
@@ -15,8 +14,8 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
 /// Run a 2-of-3 DKG and return the three devices. Share 3 is the
-/// "recovery share" the user prints onto paper; after running the
-/// DKG we discard device C and use the recovery share if needed.
+/// "recovery share" printed to paper; the test discards device C and
+/// uses the recovery share if needed.
 fn setup_2_of_3() -> (ThresholdIdentity, ThresholdIdentity, ThresholdIdentity) {
     let mut rng_a = ChaCha20Rng::from_seed([21u8; 32]);
     let mut rng_b = ChaCha20Rng::from_seed([22u8; 32]);
@@ -31,8 +30,8 @@ fn setup_2_of_3() -> (ThresholdIdentity, ThresholdIdentity, ThresholdIdentity) {
     let (mut s_c, r1_c) = c.begin_enrolment(3, 2, 3, &mut rng_c).unwrap();
 
     let r2_a_out = s_a.receive_round1(&[r1_b.clone(), r1_c.clone()]).unwrap();
-    let r2_b_out = s_b.receive_round1(&[r1_a.clone(), r1_c.clone()]).unwrap();
-    let r2_c_out = s_c.receive_round1(&[r1_a.clone(), r1_b.clone()]).unwrap();
+    let r2_b_out = s_b.receive_round1(&[r1_a.clone(), r1_c]).unwrap();
+    let r2_c_out = s_c.receive_round1(&[r1_a, r1_b]).unwrap();
 
     let r2_for_a: Vec<EnrolmentRound2> = vec![r2_b_out[&1].clone(), r2_c_out[&1].clone()];
     let r2_for_b: Vec<EnrolmentRound2> = vec![r2_a_out[&2].clone(), r2_c_out[&2].clone()];
@@ -66,9 +65,8 @@ fn export_produces_24_word_bip39_mnemonic() {
 fn mnemonic_round_trip_recovers_identical_share() {
     let (_a, _b, c) = setup_2_of_3();
     let rs1 = c.export_recovery_share().unwrap();
-    // Take the mnemonic + metadata, re-encode the exact same
-    // values into a new RecoveryShare, decode, and confirm the
-    // resulting share index matches.
+    // Take the mnemonic + metadata, re-encode into a new RecoveryShare,
+    // decode, and confirm the resulting share index matches.
     let rs2 = threshold_identity::RecoveryShare {
         mnemonic: rs1.mnemonic.clone(),
         share_index: rs1.share_index,
@@ -83,23 +81,18 @@ fn mnemonic_round_trip_recovers_identical_share() {
 
 #[test]
 fn recovery_share_can_re_enter_quorum_after_device_loss() {
-    // Scenario: user has devices A, B, C. Loses A and B. Has the
-    // paper recovery share (we modelled it as device C's share
-    // exported). Wants to sign with the remaining device + the
-    // recovery share.
+    // Scenario: user has devices A, B, C; loses A and B; has the paper
+    // recovery share (modelled as device C's exported share). Wants to
+    // sign with the remaining device + the recovery share.
     //
-    // Set-up: take device A's share as the surviving device.
-    // Take device C's recovery share, adopt it into device A
-    // (after a hypothetical disaster A's share is wiped; we
-    // emulate by adopting C's secret share into A which makes A
-    // signing as "share 3"). Then drive a 2-of-3 sign with A
-    // (now share 3) and B (still share 2). The signature must
+    // Adopt C's recovery share into device A (emulating A signing as
+    // "share 3" after its own share is wiped), then drive a 2-of-3 sign
+    // with A (now share 3) and B (still share 2); the signature must
     // verify against the group public key.
     let (mut a, b, c) = setup_2_of_3();
     let rs = c.export_recovery_share().unwrap();
     let secret_share = ThresholdIdentity::import_recovery_share_full(rs).unwrap();
-    // The user's surviving device A "becomes" the recovery
-    // share holder.
+    // The user's surviving device A "becomes" the recovery share holder.
     a.adopt_recovery_share(secret_share).unwrap();
     // Now A is share 3, B is share 2.
     assert_eq!(a.this_share_index, 3);
@@ -129,9 +122,8 @@ fn recovery_share_can_re_enter_quorum_after_device_loss() {
 fn corrupted_mnemonic_fails_decode() {
     let (_a, _b, c) = setup_2_of_3();
     let rs = c.export_recovery_share().unwrap();
-    // Corrupt: replace the last word with a different valid
-    // BIP39 word so the checksum fails. "abandon" is the first
-    // word of the wordlist.
+    // Corrupt: replace the last word with a different valid BIP39 word
+    // so the checksum fails ("abandon" is the wordlist's first word).
     let mut words: Vec<&str> = rs.mnemonic.split_whitespace().collect();
     if let Some(last) = words.last_mut() {
         *last = "abandon";
@@ -156,12 +148,14 @@ fn corrupted_mnemonic_fails_decode() {
 
 #[test]
 fn export_in_single_device_mode_errors() {
-    // A single-device identity must not expose a "recovery
-    // share" — there is no separation between the device and
-    // the secret. The user has to enrol a second share first.
+    // A single-device identity must not expose a "recovery share" —
+    // there's no separation between the device and the secret; the user
+    // must enrol a second share first.
     let mut rng = ChaCha20Rng::from_seed([99u8; 32]);
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-    let err = id.export_recovery_share().expect_err("must reject single-device export");
+    let err = id
+        .export_recovery_share()
+        .expect_err("must reject single-device export");
     assert!(
         err.to_string().contains("threshold mode"),
         "expected threshold-mode requirement, got: {err}"

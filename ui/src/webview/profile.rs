@@ -1,6 +1,5 @@
-//! Lightweight, always-compiled instrumentation for the WebView
-//! pipeline. Off by default at zero cost; enabled by setting
-//! `QOS_WEBVIEW_PROFILE` in the environment.
+//! Lightweight instrumentation for the `WebView` pipeline. Off by default;
+//! enabled by setting `QOS_WEBVIEW_PROFILE` in the environment.
 //!
 //! What it measures, from the engine thread and the widget:
 //!  * **frame throughput** — inter-frame intervals → frames/sec,
@@ -19,9 +18,9 @@
 //! All timing uses `std::time::Instant`; the whole module is a no-op
 //! (one relaxed atomic load) when disabled.
 
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// Frames between periodic stderr summaries.
@@ -40,16 +39,14 @@ static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 #[inline]
 pub fn enabled() -> bool {
     static INIT: OnceLock<()> = OnceLock::new();
-    INIT.get_or_init(|| {
-        match std::env::var("QOS_WEBVIEW_PROFILE") {
-            Ok(v) if !v.is_empty() && v != "0" => {
-                ENABLED.store(true, Ordering::Relaxed);
-                if v == "trace" {
-                    TRACE.store(true, Ordering::Relaxed);
-                }
+    INIT.get_or_init(|| match std::env::var("QOS_WEBVIEW_PROFILE") {
+        Ok(v) if !v.is_empty() && v != "0" => {
+            ENABLED.store(true, Ordering::Relaxed);
+            if v == "trace" {
+                TRACE.store(true, Ordering::Relaxed);
             }
-            _ => {}
         }
+        _ => {}
     });
     ENABLED.load(Ordering::Relaxed)
 }
@@ -93,10 +90,9 @@ impl State {
     }
 }
 
-/// Note that an interactive command was just sent. `kind` is a short
-/// static label (`"scroll"`, `"mouse"`, `"key"`). Only the first input
-/// after a paint opens a latency window, so a burst reports the latency
-/// of the burst's leading edge to its first repaint.
+/// `kind` is a short static label (`"scroll"`, `"mouse"`, `"key"`). Only
+/// the first input after a paint opens a latency window, so a burst
+/// reports the leading edge's latency to its first repaint.
 #[inline]
 pub fn record_input(kind: &'static str) {
     if !enabled() {
@@ -119,7 +115,8 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     s.started.get_or_insert(now);
 
     if let Some(prev) = s.last_frame {
-        s.intervals_ms.push(now.duration_since(prev).as_secs_f64() * 1000.0);
+        s.intervals_ms
+            .push(now.duration_since(prev).as_secs_f64() * 1000.0);
     }
     s.last_frame = Some(now);
     s.swizzle_us.push(swizzle.as_secs_f64() * 1_000_000.0);
@@ -141,17 +138,19 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     s.frame_count += 1;
     let n = s.frame_count;
     if TRACE.load(Ordering::Relaxed) && n <= TRACE_FRAMES {
-        eprintln!("[webview-profile] frame #{n} {width}x{height} swizzle {:.0}us", swizzle.as_secs_f64() * 1e6);
+        eprintln!(
+            "[webview-profile] frame #{n} {width}x{height} swizzle {:.0}us",
+            swizzle.as_secs_f64() * 1e6
+        );
     }
-    if n % SUMMARY_EVERY == 0 {
+    if n.is_multiple_of(SUMMARY_EVERY) {
         s.print_summary();
     }
 }
 
-/// Record a draw pass: the widget's rect and the frame dimensions it
-/// painted (`None` = placeholder, no frame yet). A rect whose aspect
-/// ratio diverges from the frame's, or a placeholder appearing after
-/// real frames, points at a layout/caching glitch.
+/// `frame_dims` is `None` for a placeholder (no frame yet). A rect whose
+/// aspect ratio diverges from the frame's, or a placeholder appearing
+/// after real frames, points at a layout/caching glitch.
 pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     if !enabled() {
         return;
@@ -161,9 +160,9 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     let n = s.draw_count;
     if TRACE.load(Ordering::Relaxed) && n <= TRACE_FRAMES {
         match frame_dims {
-            Some((w, h)) => eprintln!(
-                "[webview-profile] draw #{n} rect {rect_w:.0}x{rect_h:.0} frame {w}x{h}"
-            ),
+            Some((w, h)) => {
+                eprintln!("[webview-profile] draw #{n} rect {rect_w:.0}x{rect_h:.0} frame {w}x{h}");
+            }
             None => eprintln!(
                 "[webview-profile] draw #{n} rect {rect_w:.0}x{rect_h:.0} PLACEHOLDER (no frame)"
             ),
@@ -173,8 +172,12 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
 
 impl State {
     fn print_summary(&self) {
-        let elapsed = self.started.map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
-        let fps = if elapsed > 0.0 { self.frame_count as f64 / elapsed } else { 0.0 };
+        let elapsed = self.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
+        let fps = if elapsed > 0.0 {
+            self.frame_count as f64 / elapsed
+        } else {
+            0.0
+        };
         eprintln!(
             "[webview-profile] === {frames} frames in {elapsed:.1}s ({fps:.1} fps), {draws} draws, {dims} size-changes ===",
             frames = self.frame_count,
@@ -198,7 +201,11 @@ struct Ring {
 
 impl Ring {
     fn new() -> Self {
-        Self { buf: vec![0.0; SAMPLES], next: 0, len: 0 }
+        Self {
+            buf: vec![0.0; SAMPLES],
+            next: 0,
+            len: 0,
+        }
     }
 
     fn push(&mut self, v: f64) {

@@ -32,7 +32,7 @@ pub struct FileTree {
     rect: Rect,
     /// Snapshot of the visible rows (node ids) computed in `set_project`.
     rows: Vec<TreeId>,
-    /// Cached node metadata for the rows: (id, name, depth, is_folder,
+    /// Cached node metadata for the rows: (id, name, depth, `is_folder`,
     /// expanded). Decoupled from `Project` so `draw` doesn't borrow it.
     row_meta: Vec<RowMeta>,
     project_name: String,
@@ -113,11 +113,6 @@ impl FileTree {
         self.rect = rect;
     }
 
-    /// The tree's current rect (the overlay position, in narrow mode).
-    pub fn rect(&self) -> Rect {
-        self.rect
-    }
-
     pub fn take_events(&mut self) -> Vec<TreeEvent> {
         std::mem::take(&mut self.pending)
     }
@@ -157,17 +152,17 @@ impl Widget for FileTree {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -181,7 +176,13 @@ impl Widget for FileTree {
     ) {
         let c = &theme.tokens.colors;
         // Sidebar background.
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &self.rect,
+        );
 
         // Header: "EXPLORER" + project name.
         let header_rect = Rect::new(
@@ -190,7 +191,13 @@ impl Widget for FileTree {
             self.rect.x1,
             self.rect.y0 + HEADER_HEIGHT,
         );
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &header_rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.base,
+            None,
+            &header_rect,
+        );
         text_renderer.draw_text_weighted(
             scene,
             &self.project_name.to_uppercase(),
@@ -215,7 +222,13 @@ impl Widget for FileTree {
 
             // Active / hover background.
             if self.active == Some(meta.id) {
-                scene.fill(Fill::NonZero, transform, c.surface_white_10, None, &row_rect);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    c.surface_white_10,
+                    None,
+                    &row_rect,
+                );
                 // Accent rail on the left of the active row.
                 let rail = Rect::new(self.rect.x0, y, self.rect.x0 + 2.0, y + ROW_HEIGHT);
                 scene.fill(Fill::NonZero, transform, c.accent[5], None, &rail);
@@ -229,16 +242,31 @@ impl Widget for FileTree {
 
             if meta.is_folder {
                 // Disclosure chevron.
-                draw_chevron(scene, transform, Point::new(icon_cx, icon_cy), meta.expanded, c.text_dim);
+                draw_chevron(
+                    scene,
+                    transform,
+                    Point::new(icon_cx, icon_cy),
+                    meta.expanded,
+                    c.text_dim,
+                );
                 // Folder glyph.
                 draw_folder_icon(
                     scene,
                     transform,
                     Point::new(icon_cx + 14.0, icon_cy),
-                    if meta.expanded { c.accent[6] } else { c.text_dim },
+                    if meta.expanded {
+                        c.accent[6]
+                    } else {
+                        c.text_dim
+                    },
                 );
             } else {
-                draw_file_icon(scene, transform, Point::new(icon_cx + 14.0, icon_cy), c.text_dim);
+                draw_file_icon(
+                    scene,
+                    transform,
+                    Point::new(icon_cx + 14.0, icon_cy),
+                    c.text_dim,
+                );
             }
 
             let label_x = base_x + 28.0 + ICON_PAD;
@@ -272,8 +300,7 @@ impl Widget for FileTree {
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 let new_hover = self.row_at(self.last_cursor);
                 if new_hover != self.hovered {
                     self.hovered = new_hover;
@@ -296,25 +323,23 @@ impl Widget for FileTree {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if self.rect.contains(self.last_cursor) {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => *y as f64 * ROW_HEIGHT,
-                        MouseScrollDelta::PixelDelta(p) => p.y,
-                    };
-                    let content = self.row_meta.len() as f64 * ROW_HEIGHT;
-                    let view = (self.rect.height() - HEADER_HEIGHT).max(0.0);
-                    let max = (content - view).max(0.0);
-                    self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
-                    self.dirty = true;
-                    *handled = true;
-                }
+            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.last_cursor) => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * ROW_HEIGHT,
+                    MouseScrollDelta::PixelDelta(p) => p.y,
+                };
+                let content = self.row_meta.len() as f64 * ROW_HEIGHT;
+                let view = (self.rect.height() - HEADER_HEIGHT).max(0.0);
+                let max = (content - view).max(0.0);
+                self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
+                self.dirty = true;
+                *handled = true;
             }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FileTree"
     }
 
@@ -360,7 +385,12 @@ fn draw_chevron(
 }
 
 /// A simple folder glyph (a rounded rectangle with a tab).
-fn draw_folder_icon(scene: &mut Scene, transform: Affine, center: Point, color: vello::peniko::Color) {
+fn draw_folder_icon(
+    scene: &mut Scene,
+    transform: Affine,
+    center: Point,
+    color: vello::peniko::Color,
+) {
     let w = 11.0;
     let h = 8.0;
     let x0 = center.x - w / 2.0;
@@ -373,7 +403,12 @@ fn draw_folder_icon(scene: &mut Scene, transform: Affine, center: Point, color: 
 }
 
 /// A simple document glyph (a page with a folded corner).
-fn draw_file_icon(scene: &mut Scene, transform: Affine, center: Point, color: vello::peniko::Color) {
+fn draw_file_icon(
+    scene: &mut Scene,
+    transform: Affine,
+    center: Point,
+    color: vello::peniko::Color,
+) {
     let w = 9.0;
     let h = 11.0;
     let x0 = center.x - w / 2.0;

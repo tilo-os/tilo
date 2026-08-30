@@ -226,7 +226,7 @@ mod wayland {
     /// Input-method client holding its own connection + event queue, independent
     /// of the one winit owns.
     ///
-    /// Events the compositor sends (activate / content_type / deactivate / done)
+    /// Events the compositor sends (activate / `content_type` / deactivate / done)
     /// are decoded into [`ImEvent`]s and pushed onto a channel the app loop
     /// drains via [`InputMethodClient::poll`]. Typed text goes the other way via
     /// [`InputMethodClient::commit_text`].
@@ -263,7 +263,7 @@ mod wayland {
             _: &mut Self,
             _: &wl_seat::WlSeat,
             _: wl_seat::Event,
-            _: &(),
+            (): &(),
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
@@ -275,7 +275,7 @@ mod wayland {
             _: &mut Self,
             _: &ZwpInputMethodManagerV2,
             _: <ZwpInputMethodManagerV2 as wayland_client::Proxy>::Event,
-            _: &(),
+            (): &(),
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
@@ -287,7 +287,7 @@ mod wayland {
             state: &mut Self,
             _: &ZwpInputMethodV2,
             event: zwp_input_method_v2::Event,
-            _: &(),
+            (): &(),
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {

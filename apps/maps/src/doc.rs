@@ -55,7 +55,7 @@ mod tests {
         let loaded = MapsDoc::load(&doc).expect("loads back");
         assert_eq!(loaded.places.len(), model.places.len());
         assert_eq!(loaded.selected, model.selected);
-        assert_eq!(loaded.route.is_some(), true);
+        assert!(loaded.route.is_some());
         assert_eq!(loaded.transit.len(), model.transit.len());
     }
 
@@ -81,7 +81,10 @@ mod tests {
             model.recents[0],
             "value round-trips"
         );
-        assert!(grew < 40, "one-char model edit grew doc by {grew} bytes — diff regressed");
+        assert!(
+            grew < 40,
+            "one-char model edit grew doc by {grew} bytes — diff regressed"
+        );
     }
 
     #[test]
@@ -94,6 +97,9 @@ mod tests {
             MapsDoc::save(&mut doc, &model);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-saving the same model grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-saving the same model grew the document {a} -> {b}"
+        );
     }
 }

@@ -1,42 +1,31 @@
-//! Visual E2E journey for a `WindowGroup`: renders the widget through a
-//! sequence of state changes — fresh, search-active, maximized, and
-//! post-close (tab removed) — and asserts each state produces distinct
-//! pixel output.
+//! Visual E2E journey for a `WindowGroup`: renders the widget through
+//! fresh, search-active, maximized, and post-close states and asserts each
+//! produces distinct pixel output — the regression guard for paint paths
+//! `window_group_test.rs` only reaches through state inspection.
 //!
-//! Complements the state-only assertions in `window_group_test.rs` and
-//! `window_group.rs` unit tests: this is the regression guard for the
-//! actual paint paths that those only reach through state inspection.
-//! If the concept-parity indigo focus ring, the maximized title pill, or
-//! the tab-close / spring-layout path ever stops rasterising, one of the
-//! per-state pixel hashes will shift and this test will fail.
+//! Skips gracefully (no panic) when no wgpu adapter is available, so
+//! headless CI without llvmpipe stays green.
 //!
-//! Skips gracefully (eprintln + early return, no panic) when no wgpu
-//! adapter is available, matching the existing `screenshot_test.rs`
-//! behaviour so headless CI without llvmpipe stays green.
-//!
-//! Set `QUICK_UI_SCREENSHOT_DIR=<path>` to write one PNG per state
-//! (`window_group_fresh.png`, `_search.png`, `_maximized.png`,
-//! `_post_close.png`) for by-eye inspection.
+//! Set `QUICK_UI_SCREENSHOT_DIR=<path>` to write one PNG per state for
+//! by-eye inspection.
 
-mod support;
-
+use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
-use support::offscreen::OffscreenRenderer;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{
-    AppKind, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
-};
+use ui::widget::{AppKind, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h)))
-        .ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 fn make_window_group() -> WindowGroup {
@@ -114,16 +103,13 @@ fn render_group(renderer: &mut OffscreenRenderer, group: &mut WindowGroup) -> Ve
     renderer.render(&scene, bg)
 }
 
-/// Cheap 64-bit FNV-1a over the full RGBA buffer. Not a golden-image
-/// comparison — just a deterministic fingerprint good enough to detect
-/// any pixel-level divergence between two renders of the same scene
-/// tree. Insensitive to wgpu adapter choice because the base inputs
-/// (widget tree + theme + font metrics) are deterministic, and the
-/// offscreen pipeline pins AA config.
+/// Cheap 64-bit FNV-1a over the full RGBA buffer — not a golden-image
+/// comparison, just a fingerprint good enough to detect any pixel-level
+/// divergence between two renders.
 fn pixel_hash(buf: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in buf {
-        h ^= *b as u64;
+        h ^= u64::from(*b);
         h = h.wrapping_mul(0x100000001b3);
     }
     h
@@ -145,31 +131,25 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
     eprintln!("wrote {} to {}", name, path.display());
 }
 
-/// Full journey: fresh group → search-active → maximized → after-close.
-/// Every state must produce a distinct pixel hash. If any two match, we
-/// either regressed one of the paint branches (the focus ring, the
-/// maximized floating controls, the tab-close path) or a state change
-/// silently stopped affecting output.
+/// If any two states hash the same, either a paint branch (focus ring,
+/// maximized floating controls, tab-close path) regressed, or a state
+/// change silently stopped affecting output.
 #[test]
 fn window_group_visual_journey_distinguishes_all_states() {
     let (w, h) = (620u32, 200u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping window-group journey");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping window-group journey");
+        return;
     };
 
-    // State 1: fresh group, no flags. Baseline render for comparison.
     let mut group = make_window_group();
     let fresh = render_group(&mut renderer, &mut group);
     let fresh_hash = pixel_hash(&fresh);
     maybe_write_png(&fresh, w, h, "window_group_fresh");
 
-    // State 2: search_active on. Should paint the indigo ring/glow pair
-    // around the whole card — the concept's `ring-4 ring-indigo-500/50
-    // shadow-[0_0_60px_rgba(99,102,241,0.6)]` affordance.
+    // Should paint the indigo ring/glow pair around the whole card.
     group.search_active = true;
     let search = render_group(&mut renderer, &mut group);
     let search_hash = pixel_hash(&search);
@@ -179,9 +159,8 @@ fn window_group_visual_journey_distinguishes_all_states() {
         "search_active must change the rendered output (focus ring + glow)",
     );
 
-    // State 3: maximized (with search_active still on — concept allows
-    // both). Adds the 2 px outline + floating title pill + Restore + ×
-    // pills, so output must again be distinct.
+    // search_active stays on — both can coexist. Adds the 2px outline +
+    // floating title pill + Restore + × pills.
     group.maximized = true;
     let maximized = render_group(&mut renderer, &mut group);
     let maximized_hash = pixel_hash(&maximized);
@@ -195,10 +174,8 @@ fn window_group_visual_journey_distinguishes_all_states() {
         "maximized on top of search_active must paint additional chrome",
     );
 
-    // State 4: post-close. Turn the overlays back off and remove the
-    // active tab — exercises the close path's layout-spring start and
-    // the `remove_tab` branch. Pill count drops 3 → 2; rendered output
-    // must differ from the fresh state.
+    // Turn overlays back off and remove the active tab — exercises the
+    // close path's layout-spring start and the `remove_tab` branch.
     group.maximized = false;
     group.search_active = false;
     let detached = group.detach_tab(1);
@@ -212,25 +189,19 @@ fn window_group_visual_journey_distinguishes_all_states() {
     );
 }
 
-/// Fresh render is reproducible: rendering the same state twice yields
-/// the same image. This is the invariant the journey test relies on —
-/// without it, its pixel-hash comparisons are meaningless.
-///
-/// "The same image" is not the same as "the same bytes": the GPU
-/// rasteriser may move an antialiased edge pixel one 8-bit step between
-/// runs (see the `ui::offscreen` module docs for the mechanism), so
-/// compare with the tolerance that describes and nothing wider. The
-/// journey test's `assert_ne!`s are unaffected — a state change moves
-/// far more than one step on far more than a few pixels.
+/// This is the invariant the journey test relies on — without it, its
+/// pixel-hash comparisons are meaningless. Compared with
+/// [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality:
+/// see the `ui::offscreen` module docs for why GPU rasterisation isn't
+/// bit-identical between runs.
 #[test]
 fn window_group_fresh_render_is_deterministic() {
     let (w, h) = (400u32, 120u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
+        return;
     };
     let mut g1 = make_window_group();
     let mut g2 = make_window_group();

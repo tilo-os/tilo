@@ -39,7 +39,10 @@ impl Harness {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size { width: Dimension::length(w), height: Dimension::length(h) },
+                    size: Size {
+                        width: Dimension::length(w),
+                        height: Dimension::length(h),
+                    },
                     ..Default::default()
                 },
                 &[self_node],
@@ -64,11 +67,17 @@ impl Harness {
             )
             .unwrap();
         app.apply_layout(&taffy, self_node, Point::ORIGIN);
-        Self { app, taffy, self_node, state }
+        Self {
+            app,
+            taffy,
+            self_node,
+            state,
+        }
     }
 
     fn relayout(&mut self) {
-        self.app.apply_layout(&self.taffy, self.self_node, Point::ORIGIN);
+        self.app
+            .apply_layout(&self.taffy, self.self_node, Point::ORIGIN);
     }
 
     fn dispatch(&mut self, event: &WindowEvent) -> bool {
@@ -116,9 +125,16 @@ fn content_scroll(app: &SettingsApp) -> (f64, f64, f64) {
         .into_iter()
         .max_by(|a, b| a.get_rect().x0.partial_cmp(&b.get_rect().x0).unwrap())
         .expect("a content Scrollable exists in the settings tree");
-    let child = *content.children().first().expect("the Scrollable wraps its content column");
+    let child = *content
+        .children()
+        .first()
+        .expect("the Scrollable wraps its content column");
     let vp = content.get_rect();
-    (vp.y0 - child.get_rect().y0, vp.height(), child.get_rect().height())
+    (
+        vp.y0 - child.get_rect().y0,
+        vp.height(),
+        child.get_rect().height(),
+    )
 }
 
 #[test]
@@ -141,7 +157,10 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
     h.wheel(3.0);
     h.relayout();
     let (one, _, _) = content_scroll(&h.app);
-    assert!(one > 0.5, "a wheel-down scrolls the settings content; offset stayed {one}");
+    assert!(
+        one > 0.5,
+        "a wheel-down scrolls the settings content; offset stayed {one}"
+    );
 
     // Fling to the bottom: scrolls further, then clamps — a second identical
     // fling must NOT move it any further (it's parked at the content edge).

@@ -8,7 +8,7 @@
 //! that the selection band renders, the number field + steppers lay out, and
 //! the colour picker embeds cleanly.
 //!
-//! Run:  cargo run -p ui --example text_shots
+//! Run:  cargo run -p ui --example ui-shots -- text_shots
 //! Out:  $TEXT_SHOTS_OUT (default /tmp/text_shots)
 
 use std::collections::HashMap;
@@ -16,11 +16,11 @@ use std::path::PathBuf;
 
 use automerge::{AutoCommit, ROOT};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
-use vello::Scene;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
@@ -40,7 +40,10 @@ fn layout_one(w: &mut dyn Widget, origin: Point) {
     taffy
         .compute_layout_with_measure(
             node,
-            Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MaxContent },
+            Size {
+                width: AvailableSpace::MaxContent,
+                height: AvailableSpace::MaxContent,
+            },
             |known, available, node_id, _, _| {
                 nm.get(&node_id)
                     .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
@@ -56,17 +59,26 @@ fn dispatch(w: &mut dyn Widget, doc: &mut AutoCommit, ev: &WindowEvent) {
     let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let mut handled = false;
     let mut focus_target = None;
-    w.handle_event(ev, 1.0, &Modifiers::default(), doc, &ROOT, &mut handled, &mut focus_target, node, &taffy);
+    w.handle_event(
+        ev,
+        1.0,
+        &Modifiers::default(),
+        doc,
+        &ROOT,
+        &mut handled,
+        &mut focus_target,
+        node,
+        &taffy,
+    );
 }
 
 fn cursor(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: PhysicalPosition::new(x, y) }
+    WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: PhysicalPosition::new(x, y),
+    }
 }
-fn press() -> WindowEvent {
-    WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left }
-}
-
-fn main() {
+pub fn run(_args: &[String]) {
     let dir = std::env::var("TEXT_SHOTS_OUT").unwrap_or_else(|_| "/tmp/text_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
@@ -89,11 +101,18 @@ fn main() {
     ti.set_selection(6, 13); // "Gallery"
 
     // --- NumberInput (font size, click-to-type + steppers) ---------------
-    let mut ni = NumberInput::new(16.0).with_range(8.0, 72.0).with_step(1.0).with_suffix("px");
+    let mut ni = NumberInput::new(16.0)
+        .with_range(8.0, 72.0)
+        .with_step(1.0)
+        .with_suffix("px");
     layout_one(&mut ni, Point::new(40.0, 100.0));
     // Hover the + stepper so its active state is visible in the shot.
     let ni_rect = ni.get_rect();
-    dispatch(&mut ni, &mut doc, &cursor(ni_rect.x1 - 16.0, ni_rect.y0 + 16.0));
+    dispatch(
+        &mut ni,
+        &mut doc,
+        &cursor(ni_rect.x1 - 16.0, ni_rect.y0 + 16.0),
+    );
 
     // --- ColorPicker (embeddable inspector control) ----------------------
     let mut cp = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
@@ -113,7 +132,11 @@ fn main() {
     println!("wrote {}", out.display());
 
     // Sanity assertions on the exercised state.
-    assert_eq!(ti.selection_range_public(), Some((6, 13)), "word selection is live");
+    assert_eq!(
+        ti.selection_range_public(),
+        Some((6, 13)),
+        "word selection is live"
+    );
     assert_eq!(ni.value(), 16.0, "number field seeded");
     assert_eq!(cp.hex_string(), "#6366F1", "picker seeded to indigo");
     println!("OK: selection band + number field + color picker rendered");

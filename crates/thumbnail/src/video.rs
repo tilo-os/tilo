@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use media::{MediaEngine, Source};
 
-use crate::generate::{rgba_to_thumb, RgbaThumb};
+use crate::generate::{RgbaThumb, rgba_to_thumb};
 
 /// How long to wait for the pipeline to produce the first decoded frame.
 const DEADLINE: Duration = Duration::from_secs(6);

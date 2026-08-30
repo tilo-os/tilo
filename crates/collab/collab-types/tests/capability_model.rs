@@ -1,14 +1,10 @@
-//! The capability primitive, exercised through the production
-//! decision functions.
+//! The capability primitive, exercised through the production decision
+//! functions ([`decide_capability`]/[`decide_actor`]) — the same
+//! functions the compositor, portal, filesystem and action broker call,
+//! so nothing here is re-implemented locally.
 //!
-//! Every test here calls `decide_capability` / `decide_actor` — the
-//! same functions the compositor, the portal, the filesystem and the
-//! action broker call. Nothing is re-implemented locally; a test that
-//! passed against a hand-rolled copy of the rules would prove nothing.
-//!
-//! The emphasis is deliberately on **denial**. An access-control model
-//! that has only been shown to permit things has not been shown to work
-//! at all.
+//! Emphasis is deliberately on **denial**: a model only shown to permit
+//! things hasn't been shown to work at all.
 
 use collab_types::caps::{
     Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
@@ -30,10 +26,8 @@ fn artifact_of(app: &str, id: ArtifactId) -> ResourceRef {
     }
 }
 
-// ---------------------------------------------------------------------
-// Apps hold no role, so they can only ever act through a capability.
-// This is what makes the portal prompt the one user-facing dialog.
-// ---------------------------------------------------------------------
+// Apps hold no role, so they can only ever act through a capability
+// — what makes the portal prompt the one user-facing dialog.
 
 #[test]
 fn an_app_with_no_capability_is_denied_everything() {
@@ -122,10 +116,8 @@ fn a_path_grant_does_not_leak_across_a_component_boundary() {
     );
 }
 
-// ---------------------------------------------------------------------
-// Roles govern the room's content. They do not govern the filesystem,
-// devices, or the network — reaching those always needs a capability.
-// ---------------------------------------------------------------------
+// Roles govern the room's content, not the filesystem, devices, or
+// network — reaching those always needs a capability.
 
 #[test]
 fn even_an_owner_needs_a_capability_to_touch_a_path() {
@@ -144,7 +136,13 @@ fn even_an_owner_needs_a_capability_to_touch_a_path() {
     );
 
     assert_eq!(
-        decide_capability(&owner, &ResourceRef::Device("camera".into()), Verb::Read, &[], None),
+        decide_capability(
+            &owner,
+            &ResourceRef::Device("camera".into()),
+            Verb::Read,
+            &[],
+            None
+        ),
         CapDecision::DeniedByRole,
         "devices are outside the room and are capability-only"
     );
@@ -170,19 +168,15 @@ fn even_an_owner_needs_a_capability_to_touch_a_path() {
     );
 }
 
-/// `Scope::Workspace` really does mean *everything*, including paths
-/// and devices — unlike a role, which stops at the room's own content.
+/// `Scope::Workspace` really does mean *everything*, including paths and
+/// devices — unlike a role, which stops at the room's own content.
 ///
-/// This is a sharp edge, pinned deliberately rather than left to be
-/// discovered. It is the right semantics for "this local user is
-/// unrestricted" (`ui::PermissionContext::permissive`), and the wrong
-/// thing to hand a remote peer: a workspace-wide grant to Bob would
-/// give Bob every path on the machine.
-///
-/// The compositor therefore never issues one to a peer — room
-/// membership is written as `Scope::Room`, which does **not** reach
-/// paths (asserted below). If a future call site wants to grant a peer
-/// the run of a room, it must name the room, not the workspace.
+/// A sharp edge, pinned deliberately: right semantics for "this local
+/// user is unrestricted" (`ui::PermissionContext::permissive`), wrong to
+/// hand a remote peer — a workspace-wide grant to Bob would give Bob
+/// every path on the machine. The compositor never issues one to a peer;
+/// room membership is `Scope::Room`, which does **not** reach paths
+/// (asserted below).
 #[test]
 fn a_workspace_wide_grant_reaches_everything_but_a_room_grant_does_not() {
     let path = ResourceRef::FsPath("/etc/shadow".into());
@@ -251,9 +245,7 @@ fn role_base_applies_exactly_to_in_room_resources() {
     assert!(!role_base_applies(&ResourceRef::NetHost("*".into())));
 }
 
-// ---------------------------------------------------------------------
 // A peer without the verb is denied, and the denial names its reason.
-// ---------------------------------------------------------------------
 
 #[test]
 fn a_viewer_cannot_write_and_the_denial_is_attributable() {
@@ -344,10 +336,8 @@ fn a_denied_role_cannot_be_rescued_by_any_capability() {
     );
 }
 
-// ---------------------------------------------------------------------
-// Expiry. A capability past its expiry is not "restricted" — it is
+// Expiry: a capability past its expiry is not "restricted" — it is
 // simply not there.
-// ---------------------------------------------------------------------
 
 #[test]
 fn an_expired_capability_stops_working() {
@@ -383,8 +373,9 @@ fn an_expired_capability_stops_working() {
 fn an_expired_restriction_also_lapses() {
     let editor = Actor::person(Some(Role::Editor), "bob");
     let doc = artifact_of("finance", ArtifactId::new());
-    let caps =
-        vec![CapOverride::restrict_role_in_app(Role::Editor, "finance", Verb::Read).with_expiry(50)];
+    let caps = vec![
+        CapOverride::restrict_role_in_app(Role::Editor, "finance", Verb::Read).with_expiry(50),
+    ];
 
     assert_eq!(
         decide_capability(&editor, &doc, Verb::Write, &caps, Some(10)),
@@ -397,10 +388,8 @@ fn an_expired_restriction_also_lapses() {
     );
 }
 
-// ---------------------------------------------------------------------
-// Nesting. Scopes contain each other; a capability on a container
+// Nesting: scopes contain each other; a capability on a container
 // reaches its contents and nothing else.
-// ---------------------------------------------------------------------
 
 #[test]
 fn an_app_scope_reaches_that_apps_artifacts_and_actions_only() {
@@ -457,11 +446,23 @@ fn an_instance_share_does_not_reach_a_sibling_instance() {
     let caps = vec![CapOverride::share(bob, shared, Verb::Write)];
 
     assert_eq!(
-        decide_capability(&actor, &artifact_of("notes", shared), Verb::Write, &caps, None),
+        decide_capability(
+            &actor,
+            &artifact_of("notes", shared),
+            Verb::Write,
+            &caps,
+            None
+        ),
         CapDecision::Allow
     );
     assert_eq!(
-        decide_capability(&actor, &artifact_of("notes", other), Verb::Write, &caps, None),
+        decide_capability(
+            &actor,
+            &artifact_of("notes", other),
+            Verb::Write,
+            &caps,
+            None
+        ),
         CapDecision::DeniedByRole,
         "sharing one document must not share the next one"
     );
@@ -504,9 +505,7 @@ fn a_network_capability_is_not_a_blanket_one() {
     }
 }
 
-// ---------------------------------------------------------------------
 // Subjects do not bleed into one another.
-// ---------------------------------------------------------------------
 
 #[test]
 fn a_capability_granted_to_one_app_does_not_serve_another() {
@@ -673,10 +672,8 @@ fn a_person_named_by_key_and_by_hex_id_are_the_same_subject() {
     );
 }
 
-// ---------------------------------------------------------------------
-// The hard UI constraint, enforced on the data rather than trusted to
-// the renderer: ad-hoc sharing is never room membership.
-// ---------------------------------------------------------------------
+// The hard UI constraint, enforced on the data rather than trusted
+// to the renderer: ad-hoc sharing is never room membership.
 
 #[test]
 fn sharing_one_file_with_a_person_is_not_room_membership() {
@@ -725,11 +722,8 @@ fn a_role_wide_capability_is_never_a_person_share() {
     assert!(!app_cap.is_room_membership());
 }
 
-// ---------------------------------------------------------------------
-// Serialisation: capabilities persist and replicate, so their wire form
-// has to round-trip and has to tolerate records written before expiry
-// existed.
-// ---------------------------------------------------------------------
+// Serialisation: capabilities persist and replicate, so their wire
+// form has to round-trip and tolerate records written before expiry existed.
 
 #[test]
 fn a_capability_round_trips_through_json() {
@@ -749,7 +743,8 @@ fn a_capability_round_trips_through_json() {
 
 #[test]
 fn a_capability_written_before_expiry_existed_still_loads() {
-    let legacy = r#"{"subject":{"Role":"Editor"},"scope":"Workspace","effect":"Grant","verb":"Write"}"#;
+    let legacy =
+        r#"{"subject":{"Role":"Editor"},"scope":"Workspace","effect":"Grant","verb":"Write"}"#;
     let cap: CapOverride = serde_json::from_str(legacy).expect("legacy record must still load");
     assert_eq!(cap.expiry, Expiry::Never, "no expiry means never expires");
     assert_eq!(cap.id, "");

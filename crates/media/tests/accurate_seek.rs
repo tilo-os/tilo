@@ -37,7 +37,10 @@ mod real {
     fn engine() -> MediaEngine {
         // RGBA acceptance so frame content can be compared pixel by pixel.
         let mut e = MediaEngine::with_config(EngineConfig::default().silent());
-        assert!(e.is_real_decode(), "these assertions require the real pipeline");
+        assert!(
+            e.is_real_decode(),
+            "these assertions require the real pipeline"
+        );
         e.open(fixture_source());
         e
     }
@@ -101,13 +104,18 @@ mod real {
         let keyframe_pts = landed.expect("the keyframe seek produced no new picture within 10s");
         let expected = MID_GOP_MS + base;
         let keyframe_err = (keyframe_pts as i64 - expected as i64).abs();
-        println!("keyframe seek to {MID_GOP_MS}ms landed at {keyframe_pts}ms ({keyframe_err}ms off)");
+        println!(
+            "keyframe seek to {MID_GOP_MS}ms landed at {keyframe_pts}ms ({keyframe_err}ms off)"
+        );
 
         // The accurate path on the same request.
         let mut exact = engine();
         let f = decode_frame_at(&mut exact, MID_GOP_MS, "accurate comparison");
         let exact_err = (f.pts_ms as i64 - expected as i64).abs();
-        println!("accurate seek to {MID_GOP_MS}ms landed at {}ms ({exact_err}ms off)", f.pts_ms);
+        println!(
+            "accurate seek to {MID_GOP_MS}ms landed at {}ms ({exact_err}ms off)",
+            f.pts_ms
+        );
 
         assert!(
             exact_err <= FRAME_MS as i64,
@@ -145,14 +153,24 @@ mod real {
         let a = decode_frame_at(&mut e, MID_GOP_MS, "frame A");
         let b = decode_frame_at(&mut e, MID_GOP_MS + 500, "frame B");
 
-        assert_ne!(a.pts_ms, b.pts_ms, "different times must yield different timestamps");
+        assert_ne!(
+            a.pts_ms, b.pts_ms,
+            "different times must yield different timestamps"
+        );
 
-        let pa = a.to_rgba().expect("RGBA acceptance yields a paintable buffer");
-        let pb = b.to_rgba().expect("RGBA acceptance yields a paintable buffer");
+        let pa = a
+            .to_rgba()
+            .expect("RGBA acceptance yields a paintable buffer");
+        let pb = b
+            .to_rgba()
+            .expect("RGBA acceptance yields a paintable buffer");
         assert_eq!(pa.len(), pb.len());
         let differing = pa.iter().zip(pb.iter()).filter(|(x, y)| x != y).count();
         let pct = differing as f64 / pa.len() as f64 * 100.0;
-        println!("500ms apart: {differing} of {} bytes differ ({pct:.3}%)", pa.len());
+        println!(
+            "500ms apart: {differing} of {} bytes differ ({pct:.3}%)",
+            pa.len()
+        );
         assert!(
             differing > 4096,
             "frames 500ms apart differ in only {differing} bytes — a re-decode \
@@ -165,7 +183,10 @@ mod real {
         let pc = far.to_rgba().expect("paintable");
         let far_diff = pa.iter().zip(pc.iter()).filter(|(x, y)| x != y).count();
         let far_pct = far_diff as f64 / pa.len() as f64 * 100.0;
-        println!("2s apart: {far_diff} of {} bytes differ ({far_pct:.3}%)", pa.len());
+        println!(
+            "2s apart: {far_diff} of {} bytes differ ({far_pct:.3}%)",
+            pa.len()
+        );
         assert!(
             far_diff > differing,
             "pictures 2s apart ({far_diff} bytes) should differ more than ones \
@@ -235,10 +256,18 @@ mod hermetic {
     #[test]
     fn the_synthesized_backend_seeks_to_the_exact_requested_time() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.seek_ms(12_500);
-        assert_eq!(e.position_ms(), 12_500, "no snapping in the fallback either");
-        let f = e.latest_frame().expect("a frame is rendered for the new position");
+        assert_eq!(
+            e.position_ms(),
+            12_500,
+            "no snapping in the fallback either"
+        );
+        let f = e
+            .latest_frame()
+            .expect("a frame is rendered for the new position");
         assert_eq!(f.pts_ms, 12_500);
     }
 }

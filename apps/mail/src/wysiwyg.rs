@@ -87,7 +87,11 @@ struct Block {
 
 impl Block {
     fn paragraph() -> Self {
-        Self { kind: BlockKind::Paragraph, glyphs: Vec::new(), links: Vec::new() }
+        Self {
+            kind: BlockKind::Paragraph,
+            glyphs: Vec::new(),
+            links: Vec::new(),
+        }
     }
 
     fn text(&self) -> String {
@@ -172,9 +176,17 @@ impl Wysiwyg {
             } else {
                 (BlockKind::Paragraph, line)
             };
-            let mut b = Block { kind, glyphs: Vec::new(), links: Vec::new() };
+            let mut b = Block {
+                kind,
+                glyphs: Vec::new(),
+                links: Vec::new(),
+            };
             for ch in body.chars() {
-                b.glyphs.push(Glyph { ch, style: Style::default(), link: None });
+                b.glyphs.push(Glyph {
+                    ch,
+                    style: Style::default(),
+                    link: None,
+                });
             }
             self.blocks.push(b);
         }
@@ -182,7 +194,10 @@ impl Wysiwyg {
             self.blocks.push(Block::paragraph());
         }
         let last = self.blocks.len() - 1;
-        self.caret = Caret { block: last, glyph: self.blocks[last].glyphs.len() };
+        self.caret = Caret {
+            block: last,
+            glyph: self.blocks[last].glyphs.len(),
+        };
         self.anchor = None;
         self.dirty = true;
     }
@@ -199,15 +214,26 @@ impl Wysiwyg {
         if self.blocks.len() == 1 && self.blocks[0].glyphs.is_empty() {
             self.blocks.clear();
         }
-        let mut b = Block { kind, glyphs: Vec::new(), links: Vec::new() };
+        let mut b = Block {
+            kind,
+            glyphs: Vec::new(),
+            links: Vec::new(),
+        };
         for (text, style) in segments {
             for ch in text.chars() {
-                b.glyphs.push(Glyph { ch, style: *style, link: None });
+                b.glyphs.push(Glyph {
+                    ch,
+                    style: *style,
+                    link: None,
+                });
             }
         }
         self.blocks.push(b);
         let last = self.blocks.len() - 1;
-        self.caret = Caret { block: last, glyph: self.blocks[last].glyphs.len() };
+        self.caret = Caret {
+            block: last,
+            glyph: self.blocks[last].glyphs.len(),
+        };
         self.dirty = true;
     }
 
@@ -294,10 +320,10 @@ impl Wysiwyg {
             if g.style.underline {
                 frag = format!("<u>{frag}</u>");
             }
-            if let Some(li) = g.link {
-                if let Some(href) = block.links.get(li) {
-                    frag = format!("<a href=\"{}\">{frag}</a>", escape_attr(href));
-                }
+            if let Some(li) = g.link
+                && let Some(href) = block.links.get(li)
+            {
+                frag = format!("<a href=\"{}\">{frag}</a>", escape_attr(href));
             }
             out.push_str(&frag);
             idx = end;
@@ -384,7 +410,10 @@ impl Wysiwyg {
             }
             // Re-select what we just inserted and link it.
             let end = self.caret;
-            let start = Caret { block: end.block, glyph: end.glyph - href.chars().count() };
+            let start = Caret {
+                block: end.block,
+                glyph: end.glyph - href.chars().count(),
+            };
             self.anchor = Some(start);
             self.caret = end;
         }
@@ -409,7 +438,11 @@ impl Wysiwyg {
         if anchor == self.caret {
             return None;
         }
-        Some(if anchor <= self.caret { (anchor, self.caret) } else { (self.caret, anchor) })
+        Some(if anchor <= self.caret {
+            (anchor, self.caret)
+        } else {
+            (self.caret, anchor)
+        })
     }
 
     /// The `[start, end)` glyph range of block `bi` that lies inside selection
@@ -421,7 +454,7 @@ impl Wysiwyg {
         (s.min(len), e.min(len))
     }
 
-    fn selection_glyphs<'a>(&'a self, a: Caret, b: Caret) -> impl Iterator<Item = &'a Glyph> + 'a {
+    fn selection_glyphs(&self, a: Caret, b: Caret) -> impl Iterator<Item = &Glyph> + '_ {
         (a.block..=b.block).flat_map(move |bi| {
             let (s, e) = self.block_selection_bounds(bi, a, b);
             self.blocks[bi].glyphs[s..e].iter()
@@ -462,14 +495,23 @@ impl Wysiwyg {
         self.delete_selection();
         let style = self.pending;
         let b = &mut self.blocks[self.caret.block];
-        b.glyphs.insert(self.caret.glyph, Glyph { ch, style, link: None });
+        b.glyphs.insert(
+            self.caret.glyph,
+            Glyph {
+                ch,
+                style,
+                link: None,
+            },
+        );
         self.caret.glyph += 1;
         self.dirty = true;
     }
 
     fn split_block(&mut self) {
         self.delete_selection();
-        let tail = self.blocks[self.caret.block].glyphs.split_off(self.caret.glyph);
+        let tail = self.blocks[self.caret.block]
+            .glyphs
+            .split_off(self.caret.glyph);
         let cur_kind = self.blocks[self.caret.block].kind;
         // Pressing Enter in a list continues the list; elsewhere a new
         // paragraph. An Enter on an empty list item exits the list.
@@ -484,9 +526,16 @@ impl Wysiwyg {
             BlockKind::Bullet | BlockKind::Numbered => cur_kind,
             _ => BlockKind::Paragraph,
         };
-        let new = Block { kind: new_kind, glyphs: tail, links: Vec::new() };
+        let new = Block {
+            kind: new_kind,
+            glyphs: tail,
+            links: Vec::new(),
+        };
         self.blocks.insert(self.caret.block + 1, new);
-        self.caret = Caret { block: self.caret.block + 1, glyph: 0 };
+        self.caret = Caret {
+            block: self.caret.block + 1,
+            glyph: 0,
+        };
         self.pending = Style::default();
         self.dirty = true;
     }
@@ -496,7 +545,9 @@ impl Wysiwyg {
             return;
         }
         if self.caret.glyph > 0 {
-            self.blocks[self.caret.block].glyphs.remove(self.caret.glyph - 1);
+            self.blocks[self.caret.block]
+                .glyphs
+                .remove(self.caret.glyph - 1);
             self.caret.glyph -= 1;
         } else if self.caret.block > 0 {
             // Merge with previous block.
@@ -505,7 +556,10 @@ impl Wysiwyg {
             let moved = std::mem::take(&mut self.blocks[self.caret.block].glyphs);
             self.blocks[prev].glyphs.extend(moved);
             self.blocks.remove(self.caret.block);
-            self.caret = Caret { block: prev, glyph: prev_len };
+            self.caret = Caret {
+                block: prev,
+                glyph: prev_len,
+            };
         }
         self.dirty = true;
     }
@@ -546,7 +600,11 @@ impl Wysiwyg {
     /// toolbar's active-button highlighting.
     pub fn active_marks(&self) -> Style {
         if let Some((a, b)) = self.ordered_selection() {
-            let mut all = Style { bold: true, italic: true, underline: true };
+            let mut all = Style {
+                bold: true,
+                italic: true,
+                underline: true,
+            };
             let mut any = false;
             for g in self.selection_glyphs(a, b) {
                 any = true;
@@ -563,7 +621,9 @@ impl Wysiwyg {
 
     /// Block kind at the caret — drives toolbar block-button highlighting.
     pub fn active_block_kind(&self) -> BlockKind {
-        self.blocks.get(self.caret.block).map(|b| b.kind).unwrap_or(BlockKind::Paragraph)
+        self.blocks
+            .get(self.caret.block)
+            .map_or(BlockKind::Paragraph, |b| b.kind)
     }
 
     pub fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -592,7 +652,7 @@ impl Wysiwyg {
                 BlockKind::Heading(_) => (15.0, TextWeight::Semibold),
                 _ => (FONT_SIZE, TextWeight::Regular),
             };
-            let line_h = (size as f64) * 1.25 + LINE_GAP;
+            let line_h = f64::from(size) * 1.25 + LINE_GAP;
             let indent = match b.kind {
                 BlockKind::Bullet | BlockKind::Numbered => LIST_INDENT,
                 BlockKind::Quote => QUOTE_INDENT,
@@ -602,14 +662,33 @@ impl Wysiwyg {
 
             // Quote bar.
             if matches!(b.kind, BlockKind::Quote) {
-                let bar = Rect::new(self.rect.x0 + PAD_X, y, self.rect.x0 + PAD_X + 3.0, y + line_h - LINE_GAP);
+                let bar = Rect::new(
+                    self.rect.x0 + PAD_X,
+                    y,
+                    self.rect.x0 + PAD_X + 3.0,
+                    y + line_h - LINE_GAP,
+                );
                 scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5], None, &bar);
             }
             // List marker.
             if matches!(b.kind, BlockKind::Bullet) {
-                tr.draw_text(scene, "•", size, c.text_dim, t * Affine::translate((self.rect.x0 + PAD_X + 4.0, y)), None);
+                tr.draw_text(
+                    scene,
+                    "•",
+                    size,
+                    c.text_dim,
+                    t * Affine::translate((self.rect.x0 + PAD_X + 4.0, y)),
+                    None,
+                );
             } else if matches!(b.kind, BlockKind::Numbered) {
-                tr.draw_text(scene, &format!("{list_num}."), size, c.text_dim, t * Affine::translate((self.rect.x0 + PAD_X, y)), None);
+                tr.draw_text(
+                    scene,
+                    &format!("{list_num}."),
+                    size,
+                    c.text_dim,
+                    t * Affine::translate((self.rect.x0 + PAD_X, y)),
+                    None,
+                );
                 list_num += 1;
             }
             if !matches!(b.kind, BlockKind::Numbered) {
@@ -624,12 +703,28 @@ impl Wysiwyg {
             while idx < b.glyphs.len() {
                 let g = &b.glyphs[idx];
                 let mut end = idx + 1;
-                while end < b.glyphs.len() && b.glyphs[end].style == g.style && b.glyphs[end].link == g.link {
+                while end < b.glyphs.len()
+                    && b.glyphs[end].style == g.style
+                    && b.glyphs[end].link == g.link
+                {
                     end += 1;
                 }
                 let run: String = b.glyphs[idx..end].iter().map(|x| x.ch).collect();
-                let col = if g.link.is_some() { c.accent[4] } else { c.text_primary };
-                let (rw, _) = tr.measure_weighted(&run, size, None, if g.style.bold { TextWeight::Bold } else { weight });
+                let col = if g.link.is_some() {
+                    c.accent[4]
+                } else {
+                    c.text_primary
+                };
+                let (rw, _) = tr.measure_weighted(
+                    &run,
+                    size,
+                    None,
+                    if g.style.bold {
+                        TextWeight::Bold
+                    } else {
+                        weight
+                    },
+                );
                 tr.draw_text_styled(
                     scene,
                     &run,
@@ -637,47 +732,68 @@ impl Wysiwyg {
                     col,
                     t * Affine::translate((x, y)),
                     None,
-                    if g.style.bold { TextWeight::Bold } else { weight },
+                    if g.style.bold {
+                        TextWeight::Bold
+                    } else {
+                        weight
+                    },
                     g.style.italic,
                     false,
                 );
                 if g.style.underline || g.link.is_some() {
-                    let uy = y + size as f64 * 1.05;
-                    let ul = Rect::new(x, uy, x + rw as f64, uy + 1.2);
+                    let uy = y + f64::from(size) * 1.05;
+                    let ul = Rect::new(x, uy, x + f64::from(rw), uy + 1.2);
                     scene.fill(vello::peniko::Fill::NonZero, t, col, None, &ul);
                 }
                 // Per-character xs (approximate by even division within run for
                 // caret hit precision; exact enough at body sizes).
                 let n = (end - idx) as f64;
                 for k in 1..=(end - idx) {
-                    xs.push(x + rw as f64 * (k as f64) / n);
+                    xs.push(x + f64::from(rw) * (k as f64) / n);
                 }
-                x += rw as f64;
+                x += f64::from(rw);
                 idx = end;
             }
 
-            let brect = Rect::new(bx, y, self.rect.x0 + PAD_X + content_w, y + line_h - LINE_GAP);
+            let brect = Rect::new(
+                bx,
+                y,
+                self.rect.x0 + PAD_X + content_w,
+                y + line_h - LINE_GAP,
+            );
             // Caret.
             if self.focused && self.caret.block == bi {
                 let cx = *xs.get(self.caret.glyph).unwrap_or(&bx);
-                let car = Rect::new(cx, y, cx + 1.6, y + size as f64 * 1.2);
+                let car = Rect::new(cx, y, cx + 1.6, y + f64::from(size) * 1.2);
                 scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5], None, &car);
             }
             // Selection highlight.
-            if let Some((sa, sb)) = self.ordered_selection() {
-                if bi >= sa.block && bi <= sb.block {
-                    let (s, e) = self.block_selection_bounds(bi, sa, sb);
-                    let x0 = *xs.get(s).unwrap_or(&bx);
-                    let x1 = *xs.get(e).unwrap_or(&x);
-                    if x1 > x0 {
-                        let sel = Rect::new(x0, y, x1, y + size as f64 * 1.2);
-                        scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5].with_alpha_factor(0.28), None, &sel);
-                    }
+            if let Some((sa, sb)) = self.ordered_selection()
+                && bi >= sa.block
+                && bi <= sb.block
+            {
+                let (s, e) = self.block_selection_bounds(bi, sa, sb);
+                let x0 = *xs.get(s).unwrap_or(&bx);
+                let x1 = *xs.get(e).unwrap_or(&x);
+                if x1 > x0 {
+                    let sel = Rect::new(x0, y, x1, y + f64::from(size) * 1.2);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        t,
+                        c.accent[5].with_alpha_factor(0.28),
+                        None,
+                        &sel,
+                    );
                 }
             }
             self.block_rects.push(brect);
             self.glyph_xs.push(xs);
-            y += line_h + if matches!(b.kind, BlockKind::Heading(_)) { BLOCK_GAP } else { 2.0 };
+            y += line_h
+                + if matches!(b.kind, BlockKind::Heading(_)) {
+                    BLOCK_GAP
+                } else {
+                    2.0
+                };
         }
     }
 
@@ -693,28 +809,30 @@ impl Wysiwyg {
         let mut best = 0usize;
         let mut best_dy = f64::MAX;
         for (i, r) in self.block_rects.iter().enumerate() {
-            let dy = if pt.y < r.y0 { r.y0 - pt.y } else if pt.y > r.y1 { pt.y - r.y1 } else { 0.0 };
+            let dy = if pt.y < r.y0 {
+                r.y0 - pt.y
+            } else if pt.y > r.y1 {
+                pt.y - r.y1
+            } else {
+                0.0
+            };
             if dy < best_dy {
                 best_dy = dy;
                 best = i;
             }
         }
-        let glyph = self
-            .glyph_xs
-            .get(best)
-            .map(|xs| {
-                let mut g = 0;
-                let mut bd = f64::MAX;
-                for (k, &gx) in xs.iter().enumerate() {
-                    let d = (gx - pt.x).abs();
-                    if d < bd {
-                        bd = d;
-                        g = k;
-                    }
+        let glyph = self.glyph_xs.get(best).map_or(0, |xs| {
+            let mut g = 0;
+            let mut bd = f64::MAX;
+            for (k, &gx) in xs.iter().enumerate() {
+                let d = (gx - pt.x).abs();
+                if d < bd {
+                    bd = d;
+                    g = k;
                 }
-                g
-            })
-            .unwrap_or(0);
+            }
+            g
+        });
         self.caret = Caret { block: best, glyph };
         self.pending = Style::default();
         self.dirty = true;
@@ -742,23 +860,46 @@ impl Wysiwyg {
         if !self.focused {
             return false;
         }
-        let WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: ElementState::Pressed, .. }, .. } = event else {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    text,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
             return false;
         };
         // Keyboard shortcuts for inline marks (Ctrl-B/I/U).
-        if ctrl {
-            if let Key::Character(ch) = logical_key {
-                match ch.to_ascii_lowercase().as_str() {
-                    "b" => { self.toggle_inline(InlineMark::Bold); return true; }
-                    "i" => { self.toggle_inline(InlineMark::Italic); return true; }
-                    "u" => { self.toggle_inline(InlineMark::Underline); return true; }
-                    "a" => { self.select_all(); return true; }
-                    _ => {}
+        if ctrl && let Key::Character(ch) = logical_key {
+            match ch.to_ascii_lowercase().as_str() {
+                "b" => {
+                    self.toggle_inline(InlineMark::Bold);
+                    return true;
                 }
+                "i" => {
+                    self.toggle_inline(InlineMark::Italic);
+                    return true;
+                }
+                "u" => {
+                    self.toggle_inline(InlineMark::Underline);
+                    return true;
+                }
+                "a" => {
+                    self.select_all();
+                    return true;
+                }
+                _ => {}
             }
         }
         match logical_key {
-            Key::Named(NamedKey::Backspace) => { self.backspace(); true }
+            Key::Named(NamedKey::Backspace) => {
+                self.backspace();
+                true
+            }
             Key::Named(NamedKey::Delete) => {
                 if self.ordered_selection().is_some() {
                     self.delete_selection();
@@ -768,15 +909,27 @@ impl Wysiwyg {
                 }
                 true
             }
-            Key::Named(NamedKey::Enter) => { self.split_block(); true }
-            Key::Named(NamedKey::Space) => { self.insert_char(' '); true }
-            Key::Named(NamedKey::ArrowLeft) => { self.move_caret(-1, shift); true }
-            Key::Named(NamedKey::ArrowRight) => { self.move_caret(1, shift); true }
-            Key::Named(NamedKey::Tab) => { false }
+            Key::Named(NamedKey::Enter) => {
+                self.split_block();
+                true
+            }
+            Key::Named(NamedKey::Space) => {
+                self.insert_char(' ');
+                true
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.move_caret(-1, shift);
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.move_caret(1, shift);
+                true
+            }
+            Key::Named(NamedKey::Tab) => false,
             _ => {
                 if let Some(txt) = text {
                     let s = txt.as_str();
-                    if !s.is_empty() && !s.chars().any(|ch| ch.is_control()) {
+                    if !s.is_empty() && !s.chars().any(char::is_control) {
                         for ch in s.chars() {
                             self.insert_char(ch);
                         }
@@ -794,7 +947,10 @@ impl Wysiwyg {
         }
         self.anchor = Some(Caret { block: 0, glyph: 0 });
         let last = self.blocks.len() - 1;
-        self.caret = Caret { block: last, glyph: self.blocks[last].glyphs.len() };
+        self.caret = Caret {
+            block: last,
+            glyph: self.blocks[last].glyphs.len(),
+        };
         self.dirty = true;
     }
 }
@@ -886,10 +1042,14 @@ mod tests {
     fn adjacent_list_items_share_one_list() {
         let mut ed = Wysiwyg::new();
         ed.set_focus(true);
-        for ch in "One".chars() { ed.insert_char(ch); }
+        for ch in "One".chars() {
+            ed.insert_char(ch);
+        }
         ed.set_block_kind(BlockKind::Bullet);
         ed.split_block();
-        for ch in "Two".chars() { ed.insert_char(ch); }
+        for ch in "Two".chars() {
+            ed.insert_char(ch);
+        }
         // split_block continues the bullet list
         let html = ed.to_html();
         assert_eq!(html.matches("<ul>").count(), 1, "got: {html}");
@@ -911,7 +1071,9 @@ mod tests {
     fn plain_export_keeps_list_markers() {
         let mut ed = Wysiwyg::new();
         ed.set_focus(true);
-        for ch in "task".chars() { ed.insert_char(ch); }
+        for ch in "task".chars() {
+            ed.insert_char(ch);
+        }
         ed.set_block_kind(BlockKind::Bullet);
         assert_eq!(ed.to_plain(), "• task");
     }
@@ -920,10 +1082,15 @@ mod tests {
     fn link_wraps_selection_in_anchor() {
         let mut ed = Wysiwyg::new();
         ed.set_focus(true);
-        for ch in "site".chars() { ed.insert_char(ch); }
+        for ch in "site".chars() {
+            ed.insert_char(ch);
+        }
         ed.select_all();
         ed.set_link("https://qos.example");
         let html = ed.to_html();
-        assert!(html.contains("<a href=\"https://qos.example\">"), "got: {html}");
+        assert!(
+            html.contains("<a href=\"https://qos.example\">"),
+            "got: {html}"
+        );
     }
 }

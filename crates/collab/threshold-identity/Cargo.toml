@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "threshold-identity"
 version = "0.1.0"
 edition = "2024"
@@ -23,7 +25,7 @@ collab-types = { path = "../collab-types" }
 # FROST-Ed25519 (RFC 9591 ciphersuite). The `serialization` feature
 # brings in `Signature::serialize`/`deserialize`, `VerifyingKey::serialize`,
 # `KeyPackage::serialize`/`deserialize`, etc. — needed for both the
-# wire types (round-1 / round-2 messages traveling over libp2p) and
+# wire types (round-1 / round-2 messages traveling over Iroh) and
 # the recovery-share encoder. `serialization` implies `serde`.
 frost-ed25519 = { version = "3", features = ["serialization"] }
 
@@ -78,3 +80,10 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 # Same dep that qos-collab-types uses for ArtifactId / ChannelId /
 # SpaceId UUIDs; we mint a few in the SignedOp interop test.
 uuid.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

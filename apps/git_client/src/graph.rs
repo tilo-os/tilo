@@ -63,14 +63,13 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
         let mut my_lane = lanes.iter().position(|l| l.as_deref() == Some(id.as_str()));
         if my_lane.is_none() {
             // Not reserved (a tip / branch head) — take the first free lane.
-            my_lane = lanes.iter().position(|l| l.is_none());
+            my_lane = lanes.iter().position(std::option::Option::is_none);
         }
-        let my_lane = match my_lane {
-            Some(l) => l,
-            None => {
-                lanes.push(None);
-                lanes.len() - 1
-            }
+        let my_lane = if let Some(l) = my_lane {
+            l
+        } else {
+            lanes.push(None);
+            lanes.len() - 1
         };
         lane_of[row] = my_lane;
         commits[row].lane = my_lane;
@@ -90,7 +89,9 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
 
             // Does the parent already have a reserved lane? Reuse it so two
             // children of the same commit converge.
-            let existing = lanes.iter().position(|l| l.as_deref() == Some(parent.as_str()));
+            let existing = lanes
+                .iter()
+                .position(|l| l.as_deref() == Some(parent.as_str()));
             let to_lane = if let Some(l) = existing {
                 l
             } else if pi == 0 {
@@ -105,13 +106,12 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
                 my_lane
             } else {
                 // Merge parent: allocate a fresh lane.
-                let free = lanes.iter().position(|l| l.is_none());
-                let l = match free {
-                    Some(l) => l,
-                    None => {
-                        lanes.push(None);
-                        lanes.len() - 1
-                    }
+                let free = lanes.iter().position(std::option::Option::is_none);
+                let l = if let Some(l) = free {
+                    l
+                } else {
+                    lanes.push(None);
+                    lanes.len() - 1
                 };
                 lanes[l] = Some(parent.clone());
                 l
@@ -148,7 +148,10 @@ mod tests {
             author_email: "t@example.com".into(),
             when: "now".into(),
             time: 0,
-            parents: parents.iter().map(|p| p.to_string()).collect(),
+            parents: parents
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             refs: vec![],
             lane: 0,
             files: vec![],
@@ -157,11 +160,7 @@ mod tests {
 
     #[test]
     fn linear_history_stays_in_one_lane() {
-        let mut commits = vec![
-            commit("c", &["b"]),
-            commit("b", &["a"]),
-            commit("a", &[]),
-        ];
+        let mut commits = vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
         let layout = layout(&mut commits);
         assert!(layout.lane_of.iter().all(|&l| l == 0));
         assert_eq!(layout.lanes, 1);
@@ -187,11 +186,7 @@ mod tests {
 
     #[test]
     fn every_row_has_a_lane() {
-        let mut commits = vec![
-            commit("c", &["b"]),
-            commit("b", &["a"]),
-            commit("a", &[]),
-        ];
+        let mut commits = vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
         let layout = layout(&mut commits);
         assert_eq!(layout.lane_of.len(), commits.len());
     }

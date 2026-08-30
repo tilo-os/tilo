@@ -1,23 +1,20 @@
 //! `guard`, `scan` and `quarantine` — and what they honestly are.
 //!
 //! The reference runtime backs these with a resident daemon that carries
-//! signatures. qOS has no such thing and this module does not pretend to one.
-//! What it does instead is report and act on facts the runtime actually knows:
+//! signatures. qOS has no such thing, and this module does not pretend to
+//! one — it reports and acts on facts the runtime actually knows:
 //!
-//! - `guard status` — the enforcement that is really in place right now, read
-//!   back from the kernel and the session rather than from the configuration
-//!   that asked for it. A Landlock ruleset that only partially applied says so.
-//! - `scan <path>` — everything the runtime can establish about a path: which
-//!   side of the read-only base it came from, whether rpm owns it and whether
-//!   it still matches what rpm installed, whether it is executable, setuid or
-//!   setgid, and whether it is inside a directory you trusted. No verdict, and
-//!   no claim that a clean result means the file is safe.
-//! - `quarantine` — a real, user-driven mechanism: move a file into the layer's
-//!   quarantine directory with its executable bits cleared, list what is there,
-//!   restore it. Nothing puts a file there automatically, because nothing here
-//!   is entitled to that judgement.
+//! - `guard status` — the enforcement really in place right now, read back
+//!   from the kernel and the session, not the configuration that asked for
+//!   it. A Landlock ruleset that only partially applied says so.
+//! - `scan <path>` — everything establishable about a path (base side, rpm
+//!   ownership and match, executable/setuid/setgid, trusted-dir membership)
+//!   with no verdict and no claim that clean means safe.
+//! - `quarantine` — move a file into the layer's quarantine with its
+//!   executable bits cleared, list it, restore it; nothing is quarantined
+//!   automatically, because nothing here is entitled to that judgement.
 //!
-//! Stating the limit is the feature. A `scan` that returned "clean" from a
+//! Stating the limit is the feature: a `scan` that returned "clean" from a
 //! runtime with no signatures would be worse than no `scan` at all.
 
 use std::path::{Path, PathBuf};
@@ -51,22 +48,19 @@ impl LandlockOutcome {
     }
 }
 
-/// Cap at V4, the same as the app sandbox's shim: V5 adds rights this runtime
-/// has no use for, and asking for them turns a fully-enforced ruleset into a
-/// partially-enforced one on kernels that are otherwise fine.
+/// Cap at V4, matching the app sandbox's shim: V5 adds rights this runtime
+/// doesn't use, turning a fully-enforced ruleset partial on some kernels.
 pub const TARGET_ABI: ABI = ABI::V4;
 
 /// Restrict the calling process, and every descendant, to `rw` and `ro`.
+/// Called by the guest's first process inside the namespace, immediately
+/// before it execs the shell. Irreversible, which is the point.
 ///
-/// Called by the guest's first process inside the namespace, immediately before
-/// it execs the shell. Irreversible, which is the point.
-///
-/// Landlock is defence in depth here and not the primary boundary — the mount
-/// namespace already contains only what was bound, so a path the guest was not
-/// granted is absent rather than unreadable. What this adds is that a directory
-/// granted read-only stays read-only even if something later remounts it, and
-/// that the enforcement is a kernel fact `guard status` can report rather than
-/// a claim about the argv.
+/// Landlock is defence in depth, not the primary boundary — the mount
+/// namespace already contains only what was bound, so an ungranted path is
+/// absent rather than unreadable. What this adds: a read-only grant stays
+/// read-only even if something later remounts it, and the enforcement is a
+/// kernel fact `guard status` can report, not a claim about the argv.
 pub fn restrict_self(rw: &[PathBuf], ro: &[PathBuf]) -> LandlockOutcome {
     let abi = TARGET_ABI;
     let all = AccessFs::from_all(abi);
@@ -96,11 +90,10 @@ pub fn restrict_self(rw: &[PathBuf], ro: &[PathBuf]) -> LandlockOutcome {
                         return LandlockOutcome::Errored;
                     }
                 },
-                // A path that is not in the namespace needs no rule; it is
-                // already unreachable. Refusing to start over it would make an
-                // absent optional directory fatal.
+                // A path not in the namespace needs no rule — it's already unreachable;
+                // refusing to start over it would make an absent optional directory fatal.
                 Err(e) => {
-                    tracing::debug!(path = %path.display(), error = %e, "landlock: skipping absent path")
+                    tracing::debug!(path = %path.display(), error = %e, "landlock: skipping absent path");
                 }
             }
         }
@@ -118,19 +111,16 @@ pub fn restrict_self(rw: &[PathBuf], ro: &[PathBuf]) -> LandlockOutcome {
     }
 }
 
-/// Ask the kernel whether the Landlock ruleset is really in force, by trying
-/// something it forbids.
+/// Ask the kernel whether the Landlock ruleset is really in force, by
+/// trying something it forbids. [`restrict_self`] gives the guest's root
+/// read-only access, so creating an entry at `/` is refused when the
+/// ruleset applied and succeeds when it did not; either way the probe
+/// leaves nothing behind.
 ///
-/// [`restrict_self`] gives the guest's root read-only access and read-write
-/// access to the trees below it, so creating an entry directly at `/` is
-/// refused when the ruleset applied and succeeds when it did not — the root is
-/// a tmpfs and the guest is uid 0 in its own namespace. Nothing survives either
-/// way: on the success path the probe removes what it made.
-///
-/// This is deliberately a probe and not a reading of `/proc/self/status`. Not
-/// every kernel reports Landlock there, and a status line that says "installed"
-/// because the code path ran is exactly the kind of check that passes when it
-/// cannot see.
+/// Deliberately a probe, not a read of `/proc/self/status`: not every
+/// kernel reports Landlock there, and a status line that says "installed"
+/// because the code path ran is exactly the check that passes when it
+/// can't see.
 pub fn landlock_probe() -> LandlockOutcome {
     let probe = Path::new("/").join(format!(".ush-landlock-probe-{}", std::process::id()));
     match std::fs::create_dir(&probe) {
@@ -168,10 +158,8 @@ pub struct ScanReport {
     pub notes: Vec<String>,
 }
 
-/// Scan one path.
-///
-/// `trusted` is the list from the policy, so the report can say whether writing
-/// here would reach the host.
+/// Scan one path. `trusted` is the policy's list, so the report can say
+/// whether writing here would reach the host.
 pub fn scan(path: &Path, trusted: &[PathBuf]) -> ScanReport {
     use std::os::unix::fs::PermissionsExt;
 
@@ -223,16 +211,14 @@ pub fn scan(path: &Path, trusted: &[PathBuf]) -> ScanReport {
         );
     }
     if report.modified_since_install {
-        report.notes.push(
-            "rpm says this file no longer matches what its package installed."
-                .into(),
-        );
+        report
+            .notes
+            .push("rpm says this file no longer matches what its package installed.".into());
     }
     if report.in_trusted_dir {
-        report.notes.push(
-            "inside a directory you trusted, so a write here reaches the host."
-                .into(),
-        );
+        report
+            .notes
+            .push("inside a directory you trusted, so a write here reaches the host.".into());
     }
     // The limit, stated every time rather than in a footnote.
     report.notes.push(NO_DATABASE.into());
@@ -240,9 +226,7 @@ pub fn scan(path: &Path, trusted: &[PathBuf]) -> ScanReport {
 }
 
 /// The sentence every [`ScanReport`] carries, on every path through [`scan`].
-///
-/// A `scan` that could return without it would sooner or later be read as a
-/// clean bill of health, which this runtime is in no position to give.
+/// Without it, a `scan` would sooner or later be read as a clean bill of health.
 pub const NO_DATABASE: &str = "no signature or reputation check was performed: \
      this runtime ships no such database. A clean report means nothing above \
      was true, not that the file is safe.";
@@ -274,16 +258,14 @@ fn rpm_verify_failed(package: &str, path: &Path) -> bool {
 }
 
 /// Move a file into the layer's quarantine, clearing its executable bits.
-///
-/// Returns where it went. The original path stops resolving, so anything that
-/// was going to run it now fails to find it — which is the whole mechanism.
+/// The original path stops resolving, so nothing can find it to run —
+/// that's the whole mechanism.
 pub fn quarantine_add(path: &Path, quarantine_dir: &Path) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(quarantine_dir)?;
     let name = path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "unnamed".into());
+        .map_or_else(|| "unnamed".into(), |n| n.to_string_lossy().into_owned());
     // Keep the original location in the stored name: restoring has to put it
     // back where it came from, and a bare basename cannot say where that was.
     let encoded = path.to_string_lossy().replace('/', "%2F");
@@ -323,7 +305,7 @@ pub fn quarantine_list(quarantine_dir: &Path) -> Vec<QuarantineEntry> {
             Some(QuarantineEntry {
                 at: at.parse().ok()?,
                 original: PathBuf::from(encoded.replace("%2F", "/")),
-                bytes: e.metadata().ok().map(|m| m.len()).unwrap_or(0),
+                bytes: e.metadata().ok().map_or(0, |m| m.len()),
                 stored_at,
             })
         })
@@ -415,7 +397,11 @@ mod tests {
             "the original must stop resolving, or nothing has been quarantined"
         );
         let mode = std::fs::metadata(&stored).unwrap().permissions().mode();
-        assert_eq!(mode & 0o7111, 0, "quarantined file is still runnable: {mode:o}");
+        assert_eq!(
+            mode & 0o7111,
+            0,
+            "quarantined file is still runnable: {mode:o}"
+        );
 
         let listed = quarantine_list(&q);
         assert_eq!(listed.len(), 1);
@@ -442,35 +428,66 @@ mod tests {
         );
     }
 
-    /// Outside a guest nothing has restricted this process, and creating an
-    /// entry at `/` is refused by ordinary permissions rather than by Landlock.
-    /// The probe must not read that as enforcement — a status line that says
-    /// "enforcing" on an unconfined process is worse than none.
+    /// The probe's answer must follow from what `/` actually allows, and leave
+    /// nothing behind either way. Which arm it takes is a property of the
+    /// machine, not the code — asserted here rather than assumed, since running
+    /// as root (every container) makes `/` writable and `NotEnforced` the true
+    /// answer; failing on that would assert the machine is a workstation, not
+    /// that the probe is right.
     #[test]
-    fn the_landlock_probe_does_not_mistake_a_read_only_root_for_enforcement() {
-        // Running as an unprivileged user on a normal machine, `/` is not
-        // writable, so this exercises the third arm.
+    fn the_landlock_probe_answers_for_what_root_actually_allows() {
+        // Ask `/` the same question the probe will, under a different name,
+        // so the two cannot collide.
+        let canary =
+            std::path::Path::new("/").join(format!(".ush-landlock-canary-{}", std::process::id()));
+        let root_is_writable = match std::fs::create_dir(&canary) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir(&canary);
+                true
+            }
+            Err(_) => false,
+        };
+
         let outcome = landlock_probe();
-        assert!(
-            matches!(
+        if root_is_writable {
+            // Nothing stopped the write, so nothing is enforcing. Claiming
+            // otherwise on an unconfined process is the failure this guards.
+            assert_eq!(
                 outcome,
-                LandlockOutcome::FullyEnforced | LandlockOutcome::Errored
-            ),
-            "the probe must never report NotEnforced by creating a directory it \
-             could not clean up: {outcome:?}"
-        );
+                LandlockOutcome::NotEnforced,
+                "`/` accepted a new directory, so the probe must not claim \
+                 anything is enforcing: {outcome:?}"
+            );
+        } else {
+            // The write was refused. Whatever refused it, the probe must not
+            // read the refusal as "unconfined".
+            assert!(
+                matches!(
+                    outcome,
+                    LandlockOutcome::FullyEnforced | LandlockOutcome::Errored
+                ),
+                "`/` refused a new directory, so the probe must not report \
+                 NotEnforced: {outcome:?}"
+            );
+        }
+
         assert!(
             !std::path::Path::new("/")
                 .join(format!(".ush-landlock-probe-{}", std::process::id()))
                 .exists(),
             "the probe left something behind at /"
         );
+        assert!(!canary.exists(), "the canary was left behind at /");
     }
 
     #[test]
     fn the_landlock_outcomes_describe_themselves_honestly() {
         assert!(LandlockOutcome::NotEnforced.describe().contains("NOT"));
         assert!(LandlockOutcome::Errored.describe().contains("NOT"));
-        assert!(LandlockOutcome::PartiallyEnforced.describe().contains("partially"));
+        assert!(
+            LandlockOutcome::PartiallyEnforced
+                .describe()
+                .contains("partially")
+        );
     }
 }

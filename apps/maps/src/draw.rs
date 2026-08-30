@@ -14,7 +14,11 @@ use ui::text_render::{TextRenderer, TextWeight};
 pub fn mix(a: Color, b: Color, t: f32) -> Color {
     let a = a.to_rgba8();
     let b = b.to_rgba8();
-    let l = |x: u8, y: u8| (x as f32 * (1.0 - t) + y as f32 * t).round().clamp(0.0, 255.0) as u8;
+    let l = |x: u8, y: u8| {
+        (f32::from(x) * (1.0 - t) + f32::from(y) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     Color::from_rgba8(l(a.r, b.r), l(a.g, b.g), l(a.b, b.b), l(a.a, b.a))
 }
 
@@ -44,7 +48,14 @@ pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: 
     scene.fill(Fill::NonZero, t, color, None, &rect.to_rounded_rect(radius));
 }
 
-pub fn stroke_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, width: f64, color: Color) {
+pub fn stroke_rrect(
+    scene: &mut Scene,
+    t: Affine,
+    rect: Rect,
+    radius: f64,
+    width: f64,
+    color: Color,
+) {
     scene.stroke(
         &Stroke::new(width),
         t,
@@ -58,7 +69,14 @@ pub fn fill_circle(scene: &mut Scene, t: Affine, center: Point, r: f64, color: C
     scene.fill(Fill::NonZero, t, color, None, &Circle::new(center, r));
 }
 
-pub fn stroke_circle(scene: &mut Scene, t: Affine, center: Point, r: f64, width: f64, color: Color) {
+pub fn stroke_circle(
+    scene: &mut Scene,
+    t: Affine,
+    center: Point,
+    r: f64,
+    width: f64,
+    color: Color,
+) {
     scene.stroke(&Stroke::new(width), t, color, None, &Circle::new(center, r));
 }
 
@@ -76,7 +94,9 @@ pub fn polyline(scene: &mut Scene, t: Affine, pts: &[Point], width: f64, color: 
     for p in &pts[1..] {
         path.line_to(*p);
     }
-    let stroke = Stroke::new(width).with_caps(Cap::Round).with_join(Join::Round);
+    let stroke = Stroke::new(width)
+        .with_caps(Cap::Round)
+        .with_join(Join::Round);
     scene.stroke(&stroke, t, color, None, &path);
 }
 
@@ -87,7 +107,9 @@ pub fn fill_path(scene: &mut Scene, t: Affine, path: &BezPath, color: Color) {
 
 /// Stroke a prebuilt path with round caps/joins.
 pub fn stroke_path(scene: &mut Scene, t: Affine, path: &BezPath, width: f64, color: Color) {
-    let stroke = Stroke::new(width).with_caps(Cap::Round).with_join(Join::Round);
+    let stroke = Stroke::new(width)
+        .with_caps(Cap::Round)
+        .with_join(Join::Round);
     scene.stroke(&stroke, t, color, None, path);
 }
 
@@ -109,7 +131,13 @@ pub fn polygon(scene: &mut Scene, t: Affine, pts: &[Point], color: Color) {
 pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color, border: Color) {
     // Faux drop-shadow: a slightly larger, very transparent black plate.
     let shadow = Rect::new(rect.x0 - 1.0, rect.y0 + 3.0, rect.x1 + 1.0, rect.y1 + 5.0);
-    fill_rrect(scene, t, shadow, radius + 1.0, Color::from_rgba8(0, 0, 0, 46));
+    fill_rrect(
+        scene,
+        t,
+        shadow,
+        radius + 1.0,
+        Color::from_rgba8(0, 0, 0, 46),
+    );
     fill_rrect(scene, t, rect, radius, fill);
     stroke_rrect(scene, t, rect, radius, 1.0, border);
 }
@@ -140,7 +168,15 @@ pub fn text_w(
     color: Color,
     weight: TextWeight,
 ) {
-    tr.draw_text_weighted(scene, s, size, color, t * Affine::translate((x, y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        None,
+        weight,
+    );
 }
 
 /// Left-aligned text clipped to `max_w` (ellipsised by cosmic-text wrap).
@@ -156,7 +192,14 @@ pub fn text_clip(
     max_w: f64,
 ) {
     let s = ellipsize(tr, s, size, max_w);
-    tr.draw_text(scene, &s, size, color, t * Affine::translate((x, y)), Some(max_w as f32 + 1.0));
+    tr.draw_text(
+        scene,
+        &s,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        Some(max_w as f32 + 1.0),
+    );
 }
 
 /// Right-aligned text with the right edge at `x_right`.
@@ -176,7 +219,7 @@ pub fn text_right(
         s,
         size,
         color,
-        t * Affine::translate((x_right - w as f64, y)),
+        t * Affine::translate((x_right - f64::from(w), y)),
         None,
     );
 }
@@ -194,13 +237,13 @@ pub fn text_center(
     color: Color,
 ) {
     let (w, _) = tr.measure(s, size, None);
-    let x = x0 + ((x1 - x0) - w as f64) / 2.0;
+    let x = x0 + ((x1 - x0) - f64::from(w)) / 2.0;
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
 }
 
 /// Measure text width.
 pub fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
-    tr.measure(s, size, None).0 as f64
+    f64::from(tr.measure(s, size, None).0)
 }
 
 /// Hard-truncate `s` with an ellipsis so it fits within `max_w` at `size`.

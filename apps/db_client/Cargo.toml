@@ -16,14 +16,11 @@ ui = { path = "../../ui" }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 # Real network drivers. Both are synchronous, matching the sync `rusqlite`
 # path so the whole engine layer stays blocking (the `postgres` crate wraps
@@ -33,3 +30,6 @@ rusqlite = { version = "0.37.0", features = ["bundled"] }
 # can enable `rustls-tls` on both.
 postgres = "0.19"
 mysql = { version = "25", default-features = false, features = ["minimal"] }
+
+[lints]
+workspace = true

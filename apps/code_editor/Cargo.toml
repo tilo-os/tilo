@@ -27,13 +27,11 @@ terminal = { path = "../terminal" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 # Syntax highlighting. We use syntect purely as a tokenizer: its Sublime
 # syntax definitions classify each span into a scope stack, which we map to
 # a small set of OS-theme-derived colors (see `highlight.rs`). The
@@ -52,3 +50,6 @@ url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

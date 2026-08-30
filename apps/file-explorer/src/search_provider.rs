@@ -43,7 +43,10 @@ impl PlacesSearchProvider {
     /// Resolve an `action_id` produced by this provider back into a destination
     /// path. Returns `None` for an id this provider did not emit.
     pub fn parse_action_id(action_id: &str) -> Option<PathBuf> {
-        action_id.strip_prefix(ACTION_PREFIX).filter(|s| !s.is_empty()).map(PathBuf::from)
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
     }
 }
 
@@ -77,7 +80,12 @@ mod tests {
 
     fn places() -> Vec<Favorite> {
         vec![
-            Favorite { label: "Home".into(), path: "/home/tester".into(), is_home: true, kind: FavKind::Home },
+            Favorite {
+                label: "Home".into(),
+                path: "/home/tester".into(),
+                is_home: true,
+                kind: FavKind::Home,
+            },
             Favorite {
                 label: "Documents".into(),
                 path: "/home/tester/Documents".into(),
@@ -96,10 +104,20 @@ mod tests {
     #[test]
     fn provider_finds_a_place_by_label_or_path() {
         let provider = PlacesSearchProvider::new(places());
-        assert!(provider.search("projects").iter().any(|r| r.title == "Projects"));
+        assert!(
+            provider
+                .search("projects")
+                .iter()
+                .any(|r| r.title == "Projects")
+        );
         // A path-only match (the "code" segment isn't in any label) still hits.
-        assert!(provider.search("code").iter().any(|r| r.title == "Projects"));
-        assert!(provider.search("").len() == 3);
+        assert!(
+            provider
+                .search("code")
+                .iter()
+                .any(|r| r.title == "Projects")
+        );
+        assert_eq!(provider.search("").len(), 3);
     }
 
     #[test]
@@ -136,16 +154,17 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::create_dir_all(&cfg).unwrap();
 
-        let mut app = crate::files_app::FileExplorerWidget::with_persistence(
-            Some(cfg.clone()),
-            Some(home.clone()),
-        );
+        let mut app =
+            crate::files_app::FileExplorerWidget::with_persistence(Some(cfg), Some(home.clone()));
         // Move away from Home so activation demonstrably navigates back.
         app.navigate(sub.clone());
         assert_eq!(app.current_path(), sub);
 
         let providers = app.search_providers();
-        assert!(!providers.is_empty(), "the file explorer publishes a search provider");
+        assert!(
+            !providers.is_empty(),
+            "the file explorer publishes a search provider"
+        );
         let hit = providers[0]
             .search("")
             .into_iter()
@@ -154,7 +173,11 @@ mod tests {
 
         let mut doc = AutoCommit::new();
         app.activate_search_result(&hit.action_id, &mut doc, &ROOT);
-        assert_eq!(app.current_path(), home, "activation navigated to the chosen place");
+        assert_eq!(
+            app.current_path(),
+            home,
+            "activation navigated to the chosen place"
+        );
 
         std::fs::remove_dir_all(&base).ok();
     }

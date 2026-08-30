@@ -1,21 +1,15 @@
 //! HEADLINE INTEROP — threshold sigs ↔ `collab-types`.
 //!
-//! This is the test the whole crate was built for: a signature
-//! produced by collaborative threshold signing across multiple
-//! devices must verify byte-for-byte through the standard
-//! Ed25519 verification path in `collab_types`, with no
-//! special "threshold mode" needed.
-//!
-//! If any test here fails, the report back to the orchestrator
-//! must call out the precise verifier path that rejected the
-//! signature — silently shipping a quietly-broken signing path
-//! is much worse than no signing path at all.
+//! The test the whole crate was built for: a signature produced by
+//! collaborative threshold signing across multiple devices must verify
+//! byte-for-byte through the standard Ed25519 path in `collab_types`,
+//! with no special "threshold mode" needed.
 
 use std::time::SystemTime;
 
 use collab_types::{
     ArtifactId, ArtifactKind, ChannelEvent, ChannelId, ChannelState, Ed25519PublicKey, Identity,
-    OpClass, Role, SignedOp, Signature, SpaceId, canonical_bytes, verify_event,
+    OpClass, Role, Signature, SignedOp, SpaceId, canonical_bytes, verify_event,
 };
 use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
@@ -43,11 +37,7 @@ fn dkg_two() -> (ThresholdIdentity, ThresholdIdentity) {
     (a, b)
 }
 
-fn threshold_sign(
-    a: &ThresholdIdentity,
-    b: &ThresholdIdentity,
-    canon: &[u8],
-) -> Signature {
+fn threshold_sign(a: &ThresholdIdentity, b: &ThresholdIdentity, canon: &[u8]) -> Signature {
     let mut rng_a = ChaCha20Rng::from_seed([40u8; 32]);
     let mut rng_b = ChaCha20Rng::from_seed([41u8; 32]);
     let r1_a: SigningRound1 = a.sign_round1(&mut rng_a).unwrap();
@@ -71,11 +61,9 @@ fn threshold_sig_verifies_via_qos_collab_types_verify_event_on_bytes() {
 
 #[test]
 fn threshold_sig_verifies_over_channel_event_genesis() {
-    // A more realistic semantic test: sign a `ChannelEvent::Genesis`
-    // with the threshold identity and verify through the same path
-    // the broker uses. The signed bytes flow through the variant's
-    // `signing_bytes()` helper so we exercise the same encoder as
-    // the production signing path in qos-collab-types.
+    // A more realistic test: sign a `ChannelEvent::Genesis` with the
+    // threshold identity and verify through the broker's own path, via
+    // the variant's `signing_bytes()` helper.
     let (a, b) = dkg_two();
     let mut genesis = ChannelEvent::Genesis {
         channel_id: ChannelId::new(),
@@ -85,12 +73,10 @@ fn threshold_sig_verifies_over_channel_event_genesis() {
         created_at: SystemTime::UNIX_EPOCH,
         signature: Signature::from_bytes([0u8; 64]),
     };
-    // `collab_types`'s convention for verifying an event:
-    //   bytes = event.signing_bytes();
-    //   verify_event(&bytes, &signature, &public_key);
-    // and `verify_event` itself canonicalises its first argument
-    // again — so the signed pre-image is `canonical_bytes(&bytes)`,
-    // i.e. double-canonicalisation. Threshold-sign over that.
+    // collab_types verifies an event as bytes = event.signing_bytes();
+    // verify_event(&bytes, &signature, &public_key) — and verify_event
+    // canonicalises its argument again, so the pre-image is
+    // canonical_bytes(&bytes). Threshold-sign over that.
     let signing_bytes = genesis.signing_bytes().unwrap();
     let double_canon = canonical_bytes(&signing_bytes).unwrap();
     let sig = threshold_sign(&a, &b, &double_canon);
@@ -102,14 +88,10 @@ fn threshold_sig_verifies_over_channel_event_genesis() {
     {
         *s = sig;
     }
-    // Now re-verify via verify_event, the same way the validator
-    // would. `verify_event` consumes the signing-bytes view, not
-    // the full enum, because the signature does not cover its own
-    // signature field.
-    if let ChannelEvent::Genesis {
-        ref signature, ..
-    } = genesis
-    {
+    // Re-verify via verify_event, the way the validator would — it
+    // consumes the signing-bytes view, not the full enum, since the
+    // signature doesn't cover its own field.
+    if let ChannelEvent::Genesis { ref signature, .. } = genesis {
         let bytes = genesis.signing_bytes().unwrap();
         verify_event(&bytes, signature, &a.group_public_key)
             .expect("threshold-signed Genesis must verify via verify_event");
@@ -118,23 +100,20 @@ fn threshold_sig_verifies_over_channel_event_genesis() {
 
 #[test]
 fn threshold_signed_op_passes_inbound_validator() {
-    // The grand-finale test: build a SignedOp signed via threshold,
-    // run it through the full eight-step inbound-op validator,
-    // and confirm validation succeeds. This proves the threshold
-    // signature is treated as a regular Ed25519 sig by every
-    // production verification path.
+    // The grand-finale test: build a SignedOp signed via threshold, run
+    // it through the full eight-step validator, and confirm it passes —
+    // proving threshold signatures are treated as regular Ed25519 by
+    // every production path.
     use std::collections::HashMap;
 
     use collab_types::{Attestation, AttestationId, Claim, RoleAttestation, generate_keypair};
 
     let (a, b) = dkg_two();
 
-    // The author of the SignedOp is the *group* threshold
-    // identity. Its attestation, however, must be signed by an
-    // authorised signer (the channel owner). For this test the
-    // channel owner is a separate single-device key — the
-    // typical case where the channel was created by a different
-    // identity than the one whose ops are being validated.
+    // The SignedOp's author is the *group* threshold identity, but its
+    // attestation must be signed by an authorised signer (the channel
+    // owner) — a separate single-device key, the typical case where the
+    // channel creator differs from the identity whose ops are validated.
     let (owner_sk, owner_pk) = generate_keypair();
     let channel_id = ChannelId::new();
     let space = SpaceId(uuid::Uuid::new_v4());
@@ -143,7 +122,7 @@ fn threshold_signed_op_passes_inbound_validator() {
     // the threshold identity (`a.group_public_key`) has the
     // Editor role on this channel.
     let now = SystemTime::UNIX_EPOCH;
-    let later = now + std::time::Duration::from_secs(60 * 60 * 24 * 365);
+    let later = now + std::time::Duration::from_hours(8760);
     let attestation_id = AttestationId::new();
     let mut attestation = Attestation {
         id: attestation_id,
@@ -167,7 +146,7 @@ fn threshold_signed_op_passes_inbound_validator() {
         a.group_public_key,
         attestation_id,
         OpClass::Splice,
-        now + std::time::Duration::from_secs(60),
+        now + std::time::Duration::from_mins(1),
         1,
     );
     // Sign the op via threshold.
@@ -188,9 +167,8 @@ fn threshold_signed_op_passes_inbound_validator() {
     state.authorised_signers.push(owner_pk);
     state.artifacts.insert(artifact, ArtifactKind::Note);
 
-    // We don't enforce clearance here — leave channel_min_clearance
-    // as None. The validator should pass all 8 steps including
-    // the cryptographic signature check on the threshold sig.
+    // channel_min_clearance stays None — the validator should pass all
+    // 8 steps including the threshold signature check.
     collab_types::validate_inbound_op(&op, &mut state)
         .expect("HEADLINE: threshold-signed SignedOp must pass validate_inbound_op");
 

@@ -1,68 +1,14 @@
-//! DRM/KMS + libseat + udev + libinput backend for running on a TTY
-//! without a parent Wayland/X11 compositor.
+//! DRM/KMS + libseat + udev + libinput backend for running on a TTY without a parent
+//! Wayland/X11 compositor.
 //!
-//! # Structure
+//! Hardware-touching code stays thin; decision logic lives in a pure module beside it, since a
+//! compositor backend can't be exercised on the dev machine and only GPU-free parts can be proven.
 //!
-//! The hardware-touching code is deliberately thin, and everything that
-//! decides anything lives in a pure module beside it — a compositor
-//! backend cannot be exercised on the machine it is developed on, so the
-//! only parts that can be proven are the ones that do not need a GPU.
-//!
-//! * [`devices`] — KMS node filtering, preferred-mode selection.
-//! * [`seat_diag`] — turning a libseat failure into an actionable
-//!   diagnosis. libseat reports one `ENOSYS` for three different causes.
-//! * [`session`] — the pause/resume state machine, and the *ordered*
-//!   sequence a VT switch or a suspend needs on the way out and back.
-//! * [`hotplug`] — diffing live outputs against what is connected now,
-//!   re-packing the layout, and clamping the pointer into it.
-//! * [`scale`] — per-output scale from the panel's physical size.
-//! * [`input_config`] — libinput device policy from the persisted
-//!   preferences, and the watch that notices them changing.
-//! * [`gestures`] — which gestures are the shell's and which are the
-//!   focused client's, and what the shell's ones mean.
-//! * [`outputs`] — `OutputId` allocation, stable per `(device, connector)`
-//!   so an output survives re-enumeration with its identity intact.
-//! * [`runtime`] — hardware glue: opens the seat, enumerates udev + DRM
-//!   connectors, wires libinput, and performs what the modules above
-//!   decide. Builds the inner calloop loop.
-//! * [`scanout`] — modeset, page flip, hardware cursor, and the card
-//!   handle the loop thread keeps open for hotplug and DRM master.
-//! * [`paint`] — CPU-fallback vello → RGBA bridge for the page-flip
-//!   path. See its module docs for the DMA-BUF follow-up plan.
-//!
-//! # Approach chosen for vello-on-DRM
-//!
-//! **CPU fallback.** Vello renders into a wgpu offscreen texture; we
-//! copy the bytes back into a CPU buffer (`VelloDrmBridge::paint`)
-//! and hand them to the page-flip side. Zero-copy DMA-BUF interop
-//! (`wgpu::hal::vulkan` external memory → smithay
-//! `GlesRenderer::import_dmabuf`) remains the follow-up.
-//!
-//! # Threading
-//!
-//! The scanouts move to the render thread at startup
-//! ([`Backend::take_presenter`]), which is where presentation belongs.
-//! Everything that reconfigures them — hotplug, VT switches, resume —
-//! originates on the loop thread and reaches across through one channel
-//! of [`runtime::ScanoutCommand`]s, drained at the top of each frame. That
-//! keeps the scanouts single-owner and orders every reconfiguration
-//! against the frames around it, so a flip can never be issued into a
-//! scanout that is being torn down.
-//!
-//! # Why `DrmBackend::new` can still fail on a dev machine
-//!
-//! Acquiring a libseat session needs a free seat the caller owns. A
-//! desktop already running a Wayland/X11 compositor holds that seat, and
-//! a shell inside a container is not in a logind session at all. Both
-//! surface as the same `ENOSYS`; [`seat_diag`] tells them apart and says
-//! which one happened.
-//!
-//! # Hardware verification status
-//!
-//! Boot-on-a-real-TTY validation remains a follow-up; the integration
-//! test `drm_backend_boot_smoke` is gated by
-//! `NIRIOS_DRM_HARDWARE_TEST=1` and skipped by default — flip the env
-//! var on a TTY to assert backend construction succeeds.
+//! [`devices`] KMS node/mode selection · [`seat_diag`] disambiguates libseat's one `ENOSYS` for
+//! three causes · [`session`] pause/resume ordering · [`hotplug`] output diffing/re-layout ·
+//! [`scale`] per-output scale · [`input_config`] libinput policy · [`gestures`] shell vs. client
+//! gesture routing · [`outputs`] stable `OutputId` allocation · [`runtime`] hardware glue + the
+//! inner calloop loop · [`scanout`] modeset/flip/cursor/card handle · [`paint`] CPU-fallback vello → RGBA bridge.
 
 pub mod devices;
 pub mod gestures;
@@ -87,67 +33,45 @@ use crate::compositor::present::Presenter;
 pub use runtime::DrmBackendError;
 use runtime::{ScanoutCommand, ScanoutEntry};
 
-/// Public-facing handle. Wraps [`runtime::DrmRuntime`] which owns the
-/// libseat session + udev + libinput, plus a [`paint::VelloDrmBridge`]
-/// for the vello → RGBA bytes path.
+/// Public-facing handle. Wraps [`runtime::DrmRuntime`] (libseat session + udev + libinput) plus a [`paint::VelloDrmBridge`] for the vello → RGBA bytes path.
 pub struct DrmBackend {
     inner: runtime::DrmRuntime,
-    /// Cached list returned by [`Backend::outputs`]. Refreshed from
-    /// `inner.dispatch.output_meta` on construction and whenever the
-    /// connector set changes.
+    /// Cached list from [`Backend::outputs`], refreshed from `inner.dispatch.output_meta` on construction and whenever the connector set changes.
     outputs: Vec<Output>,
-    /// CPU-fallback vello → RGBA bridge. `None` until the first output
-    /// is known (we can't allocate the offscreen texture without a
-    /// size). Lazily constructed in `submit_frame`.
+    /// CPU-fallback vello → RGBA bridge. `None` until the first output is known (can't size the offscreen texture yet); lazily constructed in `submit_frame`.
     paint: Option<paint::VelloDrmBridge>,
-    /// Track D2: when `true` the display is DPMS-off / scanout is
-    /// stopped, so [`Backend::submit_frame`] short-circuits (no paint,
-    /// no present) until [`Backend::set_dpms`] turns it back on. Avoids
-    /// racing a frame against the disabled CRTC.
+    /// When `true` the display is DPMS-off / scanout stopped, so [`Backend::submit_frame`]
+    /// short-circuits (no paint, no present) until [`Backend::set_dpms`] re-enables it — avoids racing a frame against the disabled CRTC.
     blanked: bool,
-    /// Presentation interval of the fastest connected mode, computed at
-    /// construction.
-    ///
-    /// Cached rather than derived on demand because
-    /// [`Backend::take_presenter`] moves the scanouts to the render
-    /// thread — a `refresh_interval` that read them would start returning
-    /// `None` the moment the split happened, silently dropping the
-    /// compositor back to the 60 Hz fallback on a 144 Hz panel.
+    /// Presentation interval of the fastest connected mode, computed at construction and cached — see [`Self::refresh_from`] for why it can't be derived on demand.
     refresh: Option<std::time::Duration>,
-    /// Reconfiguration channel, held only while this backend still owns
-    /// its scanouts inline. Handed to the presenter along with them.
+    /// Reconfiguration channel, held only while this backend still owns its scanouts inline; handed to the presenter along with them.
     commands: Option<Receiver<ScanoutCommand>>,
-    /// True between a session pause and the matching resume, for the
-    /// inline path. Distinct from `blanked`: blanked is "the screen
-    /// should be off", paused is "these CRTCs belong to another session
-    /// right now". Presenting under either is wrong.
+    /// True between a session pause and matching resume, for the inline path. Distinct from
+    /// `blanked` ("screen should be off") — `paused` means these CRTCs belong to another session right now; presenting under either is wrong.
     paused: bool,
 }
 
 impl DrmBackend {
-    /// Acquire the seat, enumerate DRM devices + connectors, attach
-    /// libinput, and return a `Backend` ready for the compositor loop.
-    /// Returns a `DrmBackendError` on any failure — the binary entry
-    /// point catches it and `eprintln!`s a friendly message rather
-    /// than panicking, matching the existing skeleton's contract.
+    /// Acquire the seat, enumerate DRM devices + connectors, attach libinput, and return a `Backend`
+    /// ready for the compositor loop. Returns `DrmBackendError` on failure (never panics) — the binary catches it and prints a friendly message.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut inner = runtime::DrmRuntime::new()?;
         let commands = inner.commands.take();
         let outputs = Self::refresh_outputs(&inner);
-        // Pace to the *fastest* connected mode: the compositor paints one
-        // scene across the combined geometry, so there is a single cadence
-        // to pick, and a slower output showing every Nth frame beats
-        // throttling the fast panel to the slow one's rate.
+        // Pace to the *fastest* connected mode: the compositor paints one scene across the combined
+        // geometry, so there's one cadence to pick — showing every Nth frame on a slower output beats throttling the fast panel down.
         let refresh = Self::refresh_from(&inner);
-        match refresh {
-            Some(d) => tracing::info!(
+        if let Some(d) = refresh {
+            tracing::info!(
                 hz = 1.0 / d.as_secs_f64(),
                 "DRM backend: pacing to the connector's mode timing"
-            ),
-            None => tracing::warn!(
+            );
+        } else {
+            tracing::warn!(
                 "DRM backend: no connector reported a usable mode refresh; \
-                 the compositor will fall back to its default cadence"
-            ),
+             the compositor will fall back to its default cadence"
+            );
         }
         Ok(Self {
             inner,
@@ -160,21 +84,16 @@ impl DrmBackend {
         })
     }
 
-    /// Collect the current public [`Output`] list from the runtime's
-    /// dispatch state. Stable order — we sort by `OutputId.0` so
-    /// callers (and tests) see deterministic output indices.
+    /// Collect the current public [`Output`] list from the runtime's dispatch state, sorted by `OutputId.0` for deterministic output indices.
     fn refresh_outputs(inner: &runtime::DrmRuntime) -> Vec<Output> {
         let mut outs: Vec<Output> = inner.dispatch.output_meta.values().cloned().collect();
         outs.sort_by_key(|o| o.id.0);
         outs
     }
 
-    /// The cadence to pace to: the fastest connected mode.
-    ///
-    /// Read from the loop thread's record of the live outputs rather than
-    /// from the scanouts, because the scanouts move to the render thread —
-    /// asking them would start returning `None` the moment they did, and
-    /// silently drop a 144 Hz panel to the 60 Hz fallback.
+    /// The cadence to pace to: the fastest connected mode. Read from the loop thread's record of
+    /// live outputs rather than the scanouts, because the scanouts move to the render thread —
+    /// asking them would start returning `None` the moment they did, silently dropping a 144 Hz panel to 60 Hz.
     fn refresh_from(inner: &runtime::DrmRuntime) -> Option<std::time::Duration> {
         inner.dispatch.live.iter().filter_map(|l| l.refresh).min()
     }
@@ -184,45 +103,27 @@ impl DrmBackend {
     }
 }
 
-/// The presentation half of [`DrmBackend`]: the per-connector scanouts
-/// plus the vello→XRGB8888 bridge, moved onto the render thread by
-/// [`Backend::take_presenter`].
+/// The presentation half of [`DrmBackend`]: the per-connector scanouts plus the vello→XRGB8888
+/// bridge, moved onto the render thread by [`Backend::take_presenter`].
 ///
 /// # Why this split is safe
 ///
-/// The scanouts are the *only* part of the DRM runtime the frame path
-/// touches (`grep '\.scanouts'` finds them in `submit_frame`,
-/// `set_dpms`, and their construction, nowhere else). Everything the
-/// input path needs stays on the loop thread:
-///
-/// * libseat/udev/libinput and the runtime's inner calloop —
-///   `poll_events` still drives them from the loop thread.
-/// * the hardware cursor. [`CursorPlanes`](super::scanout::CursorPlanes)
-///   owns its own dup of the card fd, so pointer motion keeps moving the
-///   KMS cursor plane at input rate, now genuinely decoupled from paint.
-///
-/// The card fds are plain file descriptors and are usable from any
-/// thread; page-flip completions are read here and nowhere else, so no
-/// other thread can steal them.
+/// The scanouts are the *only* part of the DRM runtime the frame path touches; input-path state
+/// (libseat/udev/libinput, the runtime's inner calloop) stays on the loop thread, and the
+/// hardware cursor ([`CursorPlanes`](super::scanout::CursorPlanes)) owns its own dup of the card
+/// fd, so pointer motion moves the KMS plane at input rate, decoupled from paint. Card fds are
+/// plain fds usable from any thread; page-flip completions are read only here.
 pub struct DrmPresenter {
     scanouts: Vec<ScanoutEntry>,
     outputs: Vec<Output>,
-    /// Pointer position in combined coordinates, for the software-cursor
-    /// fallback only. Updated from the loop thread through
-    /// [`Presenter::set_pointer`]-equivalent messages; when the hardware
-    /// cursor plane is active this is unused.
+    /// Pointer position in combined coordinates, for the software-cursor fallback only — unused
+    /// when the hardware cursor plane is active. Updated from the loop thread via `Presenter::set_pointer`-equivalent messages.
     pointer: (f64, f64),
     paint: Option<paint::VelloDrmBridge>,
     blanked: bool,
-    /// True between a session pause and the matching resume. Distinct
-    /// from `blanked`: blanked is "the user's screen should be off",
-    /// paused is "these CRTCs are not ours right now". Presenting under
-    /// either is wrong, but only the second one means the hardware has to
-    /// be rebuilt before presenting can start again.
+    /// True between a session pause and matching resume. Distinct from `blanked`: `paused` means these CRTCs aren't ours right now and the hardware must be rebuilt before presenting resumes.
     paused: bool,
-    /// Reconfiguration commands from the loop thread — hotplug, VT
-    /// switches, resume. Drained at the top of every frame so a change
-    /// lands between frames rather than during one.
+    /// Reconfiguration commands from the loop thread (hotplug, VT switches, resume), drained at the top of every frame so a change lands between frames, not during one.
     commands: Option<Receiver<ScanoutCommand>>,
 }
 
@@ -248,30 +149,28 @@ impl DrmPresenter {
         }
         {
             let bridge = self.paint.as_mut().expect("paint just initialised");
-            if bridge.size() != target_size {
-                if let Err(e) = bridge.resize(target_size.0, target_size.1) {
-                    tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-                    return;
-                }
+            if bridge.size() != target_size
+                && let Err(e) = bridge.resize(target_size.0, target_size.1)
+            {
+                tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
+                return;
             }
         }
 
         if self.scanouts.len() == 1 {
             let bridge = self.paint.as_mut().expect("paint allocated above");
             let cursor = Some(self.pointer);
-            self.scanouts[0]
-                .scanout
-                .present_into(cursor, |dst, pitch| {
-                    if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
-                        tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
-                    }
-                });
+            self.scanouts[0].scanout.present_into(cursor, |dst, pitch| {
+                if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
+                    tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
+                }
+            });
             return;
         }
 
         let completed = self.scanouts[0].scanout.poll_flip_completions();
         for c in &completed {
-            for e in self.scanouts.iter_mut() {
+            for e in &mut self.scanouts {
                 e.scanout.mark_flip_complete(*c);
             }
         }
@@ -286,15 +185,15 @@ impl DrmPresenter {
         };
         let pointer = self.pointer;
         let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
-        for e in self.scanouts.iter_mut() {
+        for e in &mut self.scanouts {
             let (px, py) = e.position;
             let (ow, oh) = e.scanout.size();
-            let local_cursor = if pointer.0 >= px as f64
-                && pointer.0 < (px + ow as i32) as f64
-                && pointer.1 >= py as f64
-                && pointer.1 < (py + oh as i32) as f64
+            let local_cursor = if pointer.0 >= f64::from(px)
+                && pointer.0 < f64::from(px + ow as i32)
+                && pointer.1 >= f64::from(py)
+                && pointer.1 < f64::from(py + oh as i32)
             {
-                Some((pointer.0 - px as f64, pointer.1 - py as f64))
+                Some((pointer.0 - f64::from(px), pointer.1 - f64::from(py)))
             } else {
                 None
             };
@@ -302,7 +201,15 @@ impl DrmPresenter {
             let sy = py.max(0) as usize;
             e.scanout.present_no_drain(local_cursor, |dst, pitch| {
                 swizzle_subrect_rgba_to_xrgb8888(
-                    rgba, cw, ch, sx, sy, dst, pitch, ow as usize, oh as usize,
+                    rgba,
+                    cw,
+                    ch,
+                    sx,
+                    sy,
+                    dst,
+                    pitch,
+                    ow as usize,
+                    oh as usize,
                 );
             });
         }
@@ -326,12 +233,8 @@ impl DrmPresenter {
     }
 }
 
-/// Apply one reconfiguration to a scanout set.
-///
-/// Shared by the presenter (the normal case, running on the render
-/// thread) and by [`DrmBackend`] itself for the inline path a backend
-/// takes before its presenter is split off — one implementation, so
-/// hotplug behaves the same whichever side owns the scanouts.
+/// Apply one reconfiguration to a scanout set. Shared by the presenter (normal case, render
+/// thread) and by [`DrmBackend`] itself for the inline path before the presenter splits off — one implementation, so hotplug behaves the same on either side.
 fn apply_scanout_command(
     cmd: ScanoutCommand,
     scanouts: &mut Vec<ScanoutEntry>,
@@ -345,22 +248,13 @@ fn apply_scanout_command(
             add,
             outputs: table,
         } => {
-            // Dropping a scanout closes its dup of the card fd and
-            // releases the CRTC, which is the whole teardown an unplugged
-            // display needs.
-            //
-            // There is no per-device page-flip source to register or
-            // withdraw alongside it: every scanout on a card dups one
-            // open file description, so *all* crtcs' flip completions
-            // arrive on a single event stream that `render` drains once
-            // and routes by crtc. A newly-modeset output is therefore
-            // already being drained the moment it lands here, and a
-            // removed one takes its pending completion with it.
+            // Dropping a scanout closes its dup of the card fd and releases the CRTC — full teardown for
+            // an unplugged display. No per-device page-flip source to register/withdraw: every scanout on
+            // a card dups one open file description, so all crtcs' completions arrive on one event stream
+            // that `render` drains once and routes by crtc; a removed output takes its pending completion with it.
             scanouts.retain(|e| !remove.contains(&e.id));
             scanouts.extend(add);
-            // Positions come from the loop thread's re-layout: the
-            // survivors have to move too, because the set was re-packed
-            // to close the hole an unplugged display left.
+            // Positions come from the loop thread's re-layout: survivors move too, since the set was re-packed to close the hole an unplugged display left.
             for entry in scanouts.iter_mut() {
                 if let Some(o) = table.iter().find(|o| o.id == entry.id) {
                     entry.position = o.position;
@@ -400,37 +294,32 @@ impl Presenter for DrmPresenter {
 
     fn set_dpms(&mut self, on: bool) {
         self.blanked = !on;
-        for e in self.scanouts.iter_mut() {
+        for e in &mut self.scanouts {
             e.scanout.set_dpms(on);
         }
     }
 }
 
 impl Backend for DrmBackend {
-    /// Inline presentation. Only reached when the presenter has *not*
-    /// been split off (the compositor takes it at startup); kept so a
-    /// caller that never splits still paints.
+    /// The hardware cursor plane composites itself; where there is none, the scanout draws the
+    /// fallback into the framebuffer (`scanout::draw_cursor`) — either way the pointer is on screen without the scene carrying it.
+    fn has_cursor_plane(&self) -> bool {
+        true
+    }
+
+    /// Inline presentation, reached only when the presenter hasn't been split off yet — kept so a caller that never splits still paints.
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
-        // Track D2: while blanked the CRTCs are disabled — painting +
-        // presenting would either be wasted work or re-light the panels
-        // out from under the idle/lock logic. Skip entirely until
-        // `set_dpms(true)` restores scanout. `paused` is the other
-        // reason not to present: the CRTCs belong to another session
-        // until it switches back.
+        // While blanked the CRTCs are disabled — painting/presenting would be wasted or re-light the
+        // panel out from under idle/lock logic; skip until `set_dpms(true)`. `paused` is the other reason: the CRTCs belong to another session until it switches back.
         if self.blanked || self.paused {
             return;
         }
-        // No live outputs (modeset failed at construction): nothing to
-        // paint into. The compositor still serves its wayland socket
-        // headless.
+        // No live outputs (modeset failed at construction): nothing to paint into; the compositor still serves its wayland socket headless.
         if self.inner.scanouts.is_empty() {
             return;
         }
 
-        // The compositor paints one scene spanning the bounding box of
-        // every output; each output then presents its own sub-rect. For a
-        // single output this equals that output's size, so the bridge is
-        // sized exactly as before B3.
+        // The compositor paints one scene spanning the bounding box of every output; each output presents its own sub-rect (equals the output's size for a single output).
         let target_size = combined_geometry(&self.outputs);
         if target_size.0 == 0 || target_size.1 == 0 {
             return;
@@ -448,21 +337,17 @@ impl Backend for DrmBackend {
         }
         {
             let bridge = self.paint.as_mut().expect("paint just initialised");
-            if bridge.size() != target_size {
-                if let Err(e) = bridge.resize(target_size.0, target_size.1) {
-                    tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-                    return;
-                }
+            if bridge.size() != target_size
+                && let Err(e) = bridge.resize(target_size.0, target_size.1)
+            {
+                tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
+                return;
             }
         }
 
-        // Single-output fast path (Track B1, unchanged): render the scene
-        // and swizzle it straight into the one scanout's back dumb buffer
-        // (XRGB8888) in a single fused pass — no intermediate tight-RGBA
-        // copy — then page-flip (or dirty_framebuffer fallback). The
-        // cursor is only consulted by the software-cursor fallback; the
-        // hardware cursor plane composites itself. This path is
-        // byte-identical to before multi-output landed.
+        // Single-output fast path: render the scene and swizzle it straight into the one scanout's
+        // back dumb buffer (XRGB8888) in a single fused pass — no intermediate RGBA copy — then
+        // page-flip (or dirty_framebuffer fallback). The cursor is only consulted by the software-cursor fallback.
         if self.inner.scanouts.len() == 1 {
             let bridge = self.paint.as_mut().expect("paint allocated above");
             let cursor = Some(self.inner.dispatch.pointer);
@@ -476,22 +361,17 @@ impl Backend for DrmBackend {
             return;
         }
 
-        // Multi-output path (Track B3). All per-connector scanouts dup the
-        // one card fd, so every crtc's page-flip completion lands on a
-        // single event stream: drain it ONCE (on the primary) and route
-        // each completion to its owning scanout by crtc. Draining per
-        // scanout would let the primary swallow its siblings' completions
-        // and wedge their `flip_pending`.
+        // Multi-output path: all per-connector scanouts dup the one card fd, so every crtc's flip
+        // completion lands on a single event stream — drain it ONCE (on the primary) and route by crtc;
+        // draining per scanout would let the primary swallow its siblings' completions and wedge their `flip_pending`.
         let completed = self.inner.scanouts[0].scanout.poll_flip_completions();
         for c in &completed {
-            for e in self.inner.scanouts.iter_mut() {
+            for e in &mut self.inner.scanouts {
                 e.scanout.mark_flip_complete(*c);
             }
         }
 
-        // Render the combined scene ONCE into a tight RGBA buffer, then
-        // reuse it: swizzle each output's sub-rect into its own scanout's
-        // dumb buffer (the fused single-pass swizzle, per output).
+        // Render the combined scene ONCE into a tight RGBA buffer, then swizzle each output's sub-rect into its own scanout's dumb buffer (fused single-pass, per output).
         let bridge = self.paint.as_mut().expect("paint allocated above");
         let rgba = match bridge.paint(scene) {
             Ok(b) => b,
@@ -502,19 +382,17 @@ impl Backend for DrmBackend {
         };
         let pointer = self.inner.dispatch.pointer;
         let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
-        for e in self.inner.scanouts.iter_mut() {
+        for e in &mut self.inner.scanouts {
             let (px, py) = e.position;
             let (ow, oh) = e.scanout.size();
-            // Software-cursor fallback only: draw the cursor (in output-
-            // local coords) on the output it's over. The hardware cursor
-            // plane, when active, ignores this and is driven from the
-            // input path via `CursorPlanes`.
-            let local_cursor = if pointer.0 >= px as f64
-                && pointer.0 < (px + ow as i32) as f64
-                && pointer.1 >= py as f64
-                && pointer.1 < (py + oh as i32) as f64
+            // Software-cursor fallback only: draw the cursor (output-local coords) on the output it's over.
+            // The hardware cursor plane, when active, ignores this and is driven from the input path via `CursorPlanes`.
+            let local_cursor = if pointer.0 >= f64::from(px)
+                && pointer.0 < f64::from(px + ow as i32)
+                && pointer.1 >= f64::from(py)
+                && pointer.1 < f64::from(py + oh as i32)
             {
-                Some((pointer.0 - px as f64, pointer.1 - py as f64))
+                Some((pointer.0 - f64::from(px), pointer.1 - f64::from(py)))
             } else {
                 None
             };
@@ -538,10 +416,7 @@ impl Backend for DrmBackend {
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
         self.inner.dispatch_pending();
-        // Before the presenter is split off the scanouts are still here,
-        // so the reconfigurations addressed to "whoever owns them" have to
-        // be applied here too. After the split this receiver is gone and
-        // the presenter drains the same channel instead.
+        // Before the presenter splits off, the scanouts are still here, so reconfigurations addressed to "whoever owns them" apply here too; after the split the presenter drains the same channel.
         if self.commands.is_some() {
             let pending: Vec<ScanoutCommand> = self
                 .commands
@@ -558,15 +433,11 @@ impl Backend for DrmBackend {
                 );
             }
         }
-        // A hotplug rewrote the output table on the loop thread; publish
-        // it so `outputs()` — which the compositor reads to size its scene
-        // and to advertise `wl_output` globals — reflects the change.
+        // A hotplug rewrote the output table on the loop thread; publish it so `outputs()` (which the compositor reads to size its scene / advertise `wl_output` globals) reflects the change.
         if std::mem::take(&mut self.inner.dispatch.outputs_changed) {
             self.outputs = Self::refresh_outputs(&self.inner);
-            // The cadence is the fastest connected mode, and "connected"
-            // just changed. Unplugging the 144 Hz panel of a pair must not
-            // leave the compositor pacing to a rate the remaining display
-            // cannot present at.
+            // The cadence is the fastest connected mode, and "connected" just changed — unplugging the 144
+            // Hz panel of a pair must not leave the compositor pacing to a rate the remaining display can't present at.
             self.refresh = self.recompute_refresh();
         }
         for ev in self.inner.dispatch.events.drain(..) {
@@ -578,31 +449,19 @@ impl Backend for DrmBackend {
         &self.outputs
     }
 
-    /// The primary connector's mode, converted from its raw timing
-    /// (pixel clock over htotal×vtotal) rather than the rounded
-    /// `vrefresh`, so a 59.94 Hz panel is paced at 59.94 and not at 60.
+    /// The primary connector's mode, converted from its raw timing (pixel clock / htotal×vtotal)
+    /// rather than the rounded `vrefresh`, so a 59.94 Hz panel paces at 59.94, not 60.
     ///
-    /// Multi-output: the compositor paints one scene across every output,
-    /// so there is a single cadence to pick. We pace to the *fastest*
-    /// connected mode — a slower output then simply shows every Nth
-    /// frame, whereas pacing to the slowest would throttle the fast panel
-    /// to the slow one's rate. Per-output cadence needs per-output scene
-    /// submission, which the single-combined-scene model does not have.
+    /// Multi-output: one scene across every output needs one cadence — the *fastest* connected mode, so a slower output shows every Nth frame rather than throttling the fast panel.
     fn refresh_interval(&self) -> Option<std::time::Duration> {
         self.refresh
     }
 
     fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {
         if self.inner.scanouts.is_empty() {
-            // Modeset failed for every connector: there is nothing to
-            // present into and the compositor runs headless-on-DRM. Keep
-            // it on the inline path rather than spawning a thread that
-            // would only ever early-return.
-            //
-            // The command channel stays here so a display plugged in later
-            // still reconfigures something — the backend adopts the new
-            // scanouts inline, and the compositor's next `take_presenter`
-            // (there isn't one) is not what makes the display work.
+            // Modeset failed for every connector: nothing to present into, so the compositor runs
+            // headless-on-DRM rather than spawning a thread that would only early-return. The command
+            // channel stays here so a display plugged in later still reconfigures something — the backend adopts new scanouts inline, with no `take_presenter` call to hand them to.
             return None;
         }
         let scanouts = std::mem::take(&mut self.inner.scanouts);
@@ -613,28 +472,21 @@ impl Backend for DrmBackend {
             paint: self.paint.take(),
             blanked: self.blanked,
             paused: self.paused,
-            // The scanouts and the commands addressed to them travel
-            // together: whoever owns one owns the other.
+            // The scanouts and the commands addressed to them travel together: whoever owns one owns the other.
             commands: self.commands.take(),
         }))
     }
 
-    /// Track D2: power **every** connected output on / off. Delegates to
-    /// [`scanout::DrmScanout::set_dpms`] (legacy DPMS property + CRTC
-    /// toggle) for each scanout and flips the `blanked` gate that
-    /// `submit_frame` reads. No scanouts (modeset failed at construction)
-    /// → only the gate flips, so a headless DRM run still tracks the
-    /// state without a panel.
+    /// Power **every** connected output on/off, delegating to [`scanout::DrmScanout::set_dpms`]
+    /// (legacy DPMS + CRTC toggle) per scanout and flipping the `blanked` gate `submit_frame` reads. No scanouts (modeset failed at construction) → only the gate flips, so a headless run still tracks state.
     fn set_dpms(&mut self, on: bool) {
         self.blanked = !on;
-        // Remember it on the session so a VT switch back restores the
-        // state the session was in rather than unconditionally lighting
-        // the panel — a machine that switched VTs while idle-blanked must
-        // not come back awake.
+        // Remember it on the session so a VT switch back restores the state the session was in, rather
+        // than unconditionally lighting the panel — a machine idle-blanked before a VT switch must not come back awake.
         if let Some(s) = self.inner.dispatch.session.as_ref() {
             s.set_dpms(on);
         }
-        for e in self.inner.scanouts.iter_mut() {
+        for e in &mut self.inner.scanouts {
             e.scanout.set_dpms(on);
         }
     }
@@ -658,11 +510,9 @@ mod tests {
 
     /// The reconfiguration path with no live scanouts.
     ///
-    /// Building a `ScanoutEntry` needs a modeset connector, so the
-    /// scanout-touching half of `Reconfigure` and `Resume` cannot be
-    /// exercised off hardware. What can — and what the black-screen bugs
-    /// actually turned on — is the *gating*: whether the presenter will
-    /// paint at all, and which output table it believes in.
+    /// Building a `ScanoutEntry` needs a modeset connector, so the scanout-touching half of
+    /// `Reconfigure`/`Resume` can't be exercised off hardware; what can be exercised is the
+    /// *gating* — whether the presenter paints at all, and which output table it believes in.
     #[test]
     fn a_pause_stops_the_presenter_and_a_resume_starts_it() {
         let mut scanouts: Vec<ScanoutEntry> = Vec::new();
@@ -676,7 +526,10 @@ mod tests {
             &mut paused,
             &mut blanked,
         );
-        assert!(paused, "a paused session must not present into CRTCs it lost");
+        assert!(
+            paused,
+            "a paused session must not present into CRTCs it lost"
+        );
 
         apply_scanout_command(
             ScanoutCommand::Resume { dpms_on: true },
@@ -691,8 +544,7 @@ mod tests {
 
     #[test]
     fn resuming_a_blanked_session_leaves_the_panels_off() {
-        // Restoring a session that was idle-blanked must not light the
-        // screen: the user turned it off, and a VT switch is not consent.
+        // Restoring a session that was idle-blanked must not light the screen: the user turned it off, and a VT switch is not consent.
         let mut scanouts: Vec<ScanoutEntry> = Vec::new();
         let mut outputs: Vec<Output> = Vec::new();
         let (mut paused, mut blanked) = (true, false);
@@ -709,10 +561,7 @@ mod tests {
 
     #[test]
     fn a_reconfigure_adopts_the_new_output_table() {
-        // The presenter sizes its paint buffer from `combined_geometry` of
-        // this table and presents each output's sub-rect from its
-        // position, so adopting it is what makes an unplugged monitor stop
-        // being painted for.
+        // The presenter sizes its paint buffer from `combined_geometry` of this table and presents each output's sub-rect from its position, so adopting it is what makes an unplugged monitor stop being painted for.
         let mut scanouts: Vec<ScanoutEntry> = Vec::new();
         let mut outputs: Vec<Output> = vec![
             Output::new(OutputId(0), (1920, 1080), 1.0),
@@ -744,23 +593,15 @@ mod tests {
         );
     }
 
-    /// The DRM backend's construction must surface a real error
-    /// (`Box<dyn Error>`) on any dev machine that isn't on a free TTY.
-    /// The exact text varies (`failed to open libseat session: ...`
-    /// vs. `no KMS-capable DRM devices found`) — we only assert it's
-    /// `Err`, not a panic, so this test is portable across CI.
+    /// The DRM backend's construction must surface a real error (`Box<dyn Error>`) on any dev
+    /// machine off a free TTY. Exact text varies; we only assert `Err`, not a panic, so this test is portable across CI.
     #[test]
     fn drm_backend_new_returns_err_when_no_seat_available() {
-        // On the dev machine this test runs under, there's already a
-        // Wayland/X11 compositor holding the seat. libseat refuses
-        // with an error, which is exactly the contract we want.
+        // On the dev machine this runs under, a Wayland/X11 compositor already holds the seat; libseat refuses with an error — exactly the contract we want.
         match DrmBackend::new() {
             Ok(_) => {
-                // If construction unexpectedly succeeds — e.g. running
-                // on a bare TTY in CI — that's also fine; the assert
-                // below converts it into a benign skip. We don't want
-                // to gate the test on `is_err()` because then a real
-                // hardware run would fail it.
+                // If construction unexpectedly succeeds (e.g. a bare TTY in CI), that's also fine — the assert
+                // below converts it into a benign skip rather than gating on `is_err()`, so a real hardware run wouldn't fail it.
             }
             Err(e) => {
                 let msg = format!("{e}");
@@ -772,22 +613,17 @@ mod tests {
         }
     }
 
-    /// Verify `outputs()` returns the populated list when the runtime
-    /// has synthesised outputs. We can't call `DrmRuntime::new` from a
-    /// dev machine, so we exercise the production helper
-    /// `refresh_outputs` directly on a synthesised dispatch state.
+    /// Verify `outputs()` returns the populated list when the runtime has synthesised outputs. Can't
+    /// call `DrmRuntime::new` from a dev machine, so exercise `refresh_outputs` directly on a synthesised dispatch state.
     #[test]
     fn drm_backend_outputs_returns_populated_list_when_runtime_has_outputs() {
         let synthesized = vec![
             (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
             (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
         ];
-        let dispatch = runtime::DrmRuntime::synthesize_for_tests(synthesized.clone());
+        let dispatch = runtime::DrmRuntime::synthesize_for_tests(synthesized);
 
-        // Mirror what `refresh_outputs` does — but we exercise the
-        // sort-stability and shape via the same logic the production
-        // path uses. We can't easily build a full `DrmRuntime` so we
-        // copy that helper's policy here for the test.
+        // Mirror what `refresh_outputs` does: we can't easily build a full `DrmRuntime`, so copy that helper's sort/shape policy here for the test.
         let mut outs: Vec<Output> = dispatch.output_meta.values().cloned().collect();
         outs.sort_by_key(|o| o.id.0);
 
@@ -802,39 +638,22 @@ mod tests {
         assert_eq!(outs[1].size, (1280, 720));
     }
 
-    /// The legacy Phase 5 implementation latched a "scene discarded"
-    /// `tracing::warn!` in `submit_frame` (gated on a
-    /// `warned_about_vello` boolean field). Phase 5.2 replaced that
-    /// path with `VelloDrmBridge::paint`. We assert the new shape
-    /// directly: the bridge field exists and the legacy latch field
-    /// does not.
-    ///
-    /// Verifying via the production type's shape (rather than a
-    /// `tracing` capture) keeps the test fast and dependency-free
-    /// while pinning the contract: any future refactor that re-adds
-    /// a "fail-silent" path needs to also re-design this test.
+    /// The bridge field must exist and the legacy "scene discarded" warn-and-latch field must not,
+    /// so a future refactor re-adding a fail-silent path has to re-design this test. Verified via the production type's shape (not a `tracing` capture) to keep the test fast and dependency-free.
     #[test]
     fn drm_backend_does_not_warn_about_vello_anymore() {
-        // Pull the Debug-derived shape via raw source text — but only
-        // the *struct-definition* line range, so neither the test
-        // body nor doc-comments interfere with the assertion.
-        //
-        // We anchor on the public struct declaration: `pub struct
-        // DrmBackend {` … `}`. The field list between is what's left.
+        // Pull the struct's field list via raw source text, anchored on `pub struct DrmBackend {` … the first following `}`, so neither the test body nor doc-comments interfere.
         let src = include_str!("mod.rs");
         let start = src
             .find("pub struct DrmBackend {")
             .expect("struct DrmBackend must exist in mod.rs");
-        // Find the first `}` after start (the struct's closing brace).
         let after = &src[start..];
         let end = after.find("\n}").expect("struct must close") + start;
         let struct_def = &src[start..=end + 1];
-        // The new bridge field must be present.
         assert!(
             struct_def.contains("paint:"),
             "Phase 5.2: DrmBackend struct must carry a `paint:` field for the bridge. Got:\n{struct_def}"
         );
-        // The legacy latch field must be gone.
         assert!(
             !struct_def.contains("warned_about_vello"),
             "Phase 5.2: DrmBackend struct must drop the legacy latch field. Got:\n{struct_def}"

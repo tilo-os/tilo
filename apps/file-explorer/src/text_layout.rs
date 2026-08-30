@@ -22,7 +22,7 @@ pub const OPTICAL_LIFT: f64 = 0.2;
 /// on the middle of a box of height `h` starting at `y0` — level with an icon
 /// centered in the same box.
 pub fn centered_text_y(y0: f64, h: f64, size: f32) -> f64 {
-    y0 + (h - size as f64) / 2.0 - size as f64 * OPTICAL_LIFT
+    y0 + (h - f64::from(size)) / 2.0 - f64::from(size) * OPTICAL_LIFT
 }
 
 #[cfg(test)]
@@ -36,10 +36,16 @@ mod tests {
         // text rises to meet an icon centered in the same row.
         let naive = 10.0 + (34.0 - 15.0) / 2.0;
         let optical = centered_text_y(10.0, 34.0, 15.0);
-        assert!(optical < naive, "optical y ({optical}) lifts above naive ({naive})");
+        assert!(
+            optical < naive,
+            "optical y ({optical}) lifts above naive ({naive})"
+        );
         // The lift scales with the font size (a larger run needs a larger lift).
         let small = 0.0 + (34.0 - 12.0) / 2.0 - centered_text_y(0.0, 34.0, 12.0);
         let large = 0.0 + (34.0 - 24.0) / 2.0 - centered_text_y(0.0, 34.0, 24.0);
-        assert!(large > small, "lift grows with font size: {large} > {small}");
+        assert!(
+            large > small,
+            "lift grows with font size: {large} > {small}"
+        );
     }
 }

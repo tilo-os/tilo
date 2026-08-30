@@ -1,29 +1,16 @@
-//! Interactive image viewer with pan + zoom semantics.
+//! Interactive image viewer with pan + zoom semantics, unlike the static
+//! [`crate::widget::Image`] widget: scroll-wheel zoom, click-drag pan, and
+//! a deterministic "fit to viewport" reset. Interaction state (zoom, pan,
+//! drag origin) lives on the widget directly; CRDT reflection is out of scope.
 //!
-//! Unlike the static [`crate::widget::Image`] widget, [`ImageViewer`] is
-//! built for inspection: scroll-wheel zoom, click-and-drag pan, and a
-//! deterministic "fit to viewport" reset. The widget owns its
-//! interaction state directly (zoom factor, pan offset, drag origin) —
-//! collaboration-aware reflection into the CRDT is out of scope for the
-//! initial cut; if a future spec needs synced pan/zoom this widget
-//! grows a `sync` body, not a redesign.
-//!
-//! ## Coordinate model
-//!
-//! - `zoom == 1.0` is the "contain" baseline: the image is uniformly
-//!   scaled so its longer axis fits exactly inside `self.rect` (the
-//!   shorter axis ends up with margin on either side). That mirrors
-//!   CSS `object-fit: contain`.
-//! - Higher zooms multiply the baseline scale; `pan` is then an
-//!   *image-space* offset applied after the scale. Storing pan in
-//!   image space (rather than pixels) keeps the pan velocity constant
-//!   across zooms: dragging by N pixels moves the visible image by N
-//!   logical pixels regardless of current scale.
-//! - Scroll-wheel zoom centres on the cursor: we compute the
-//!   image-space point under the cursor before the scale change and
-//!   nudge `pan` so the same image-space point lands under the same
-//!   screen pixel afterwards. Without this, zooming "to a feature"
-//!   would feel like the image was sliding away from the pointer.
+//! Coordinate model: `zoom == 1.0` is the "contain" baseline (mirrors CSS
+//! `object-fit: contain`). Higher zooms multiply that baseline scale, and
+//! `pan` is an *image-space* offset applied after it — storing pan in image
+//! space rather than pixels keeps drag velocity constant across zooms.
+//! Scroll-wheel zoom centres on the cursor by re-projecting the image-space
+//! point under it before/after the scale change and nudging `pan` to keep
+//! that point fixed on screen — otherwise zooming "to a feature" would feel
+//! like the image sliding away from the pointer.
 
 use std::collections::HashMap;
 
@@ -37,13 +24,14 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Minimum/maximum zoom factor. Below 0.1 the image becomes effectively
 /// invisible; above 10.0 the sampling artifacts dominate over content.
 const ZOOM_MIN: f32 = 0.1;
 const ZOOM_MAX: f32 = 10.0;
-/// Per-notch zoom factor: one wheel tick (LineDelta y == 1.0) multiplies
+/// Per-notch zoom factor: one wheel tick (`LineDelta` y == 1.0) multiplies
 /// the zoom by `ZOOM_STEP`. Chosen to feel responsive without skipping
 /// over detail — `1.1` per notch matches Krita/Inkscape defaults.
 const ZOOM_STEP: f32 = 1.1;
@@ -63,10 +51,8 @@ pub struct ImageViewer {
 }
 
 impl ImageViewer {
-    /// Construct a viewer at the "fit to viewport" baseline. The image
-    /// is borrowed by `Arc` underneath, so cloning the inner
-    /// `peniko::ImageData` is cheap — the caller may share the same source
-    /// with other widgets.
+    /// The image is `Arc`-backed, so cloning the inner `peniko::ImageData`
+    /// is cheap — the caller may share the same source with other widgets.
     pub fn new(image: peniko::ImageData) -> Self {
         Self {
             image,
@@ -78,45 +64,37 @@ impl ImageViewer {
         }
     }
 
-    /// Reset to the "contain" baseline: `zoom = 1.0`, `pan = ZERO`.
-    /// Useful as a double-click handler or toolbar button target.
     pub fn fit_to_viewport(&mut self) {
         self.zoom = 1.0;
         self.pan = Vec2::ZERO;
     }
 
-    /// Current zoom multiplier on top of the fit-to-viewport baseline.
     pub fn zoom(&self) -> f32 {
         self.zoom
     }
 
-    /// Current pan offset in image-space pixels (i.e. measured at
-    /// `zoom == 1.0`).
+    /// Image-space pixels (i.e. measured at `zoom == 1.0`).
     pub fn pan(&self) -> Vec2 {
         self.pan
     }
 
-    /// Test-only setter for [`Self::zoom`]. Bypasses the wheel-event
-    /// path so tests can stage state directly without simulating a
-    /// chain of `MouseWheel` events.
+    /// Bypasses the wheel-event path so tests can stage state directly
+    /// without simulating a chain of `MouseWheel` events.
     #[cfg(test)]
     pub fn set_zoom(&mut self, z: f32) {
         self.zoom = z;
     }
 
-    /// Test-only setter for [`Self::pan`]. See [`Self::set_zoom`].
     #[cfg(test)]
     pub fn set_pan(&mut self, p: Vec2) {
         self.pan = p;
     }
 
-    /// Baseline "contain" scale factor: the multiplier that fits the
-    /// image inside `self.rect` at `zoom == 1.0`. Returns `0.0` if
-    /// either the image or the viewport has a zero dimension — callers
-    /// must check before using the result.
+    /// Returns `0.0` if either the image or the viewport has a zero
+    /// dimension — callers must check before using the result.
     fn base_scale(&self) -> f64 {
-        let iw = self.image.width as f64;
-        let ih = self.image.height as f64;
+        let iw = f64::from(self.image.width);
+        let ih = f64::from(self.image.height);
         if iw <= 0.0 || ih <= 0.0 {
             return 0.0;
         }
@@ -128,16 +106,15 @@ impl ImageViewer {
         (rw / iw).min(rh / ih)
     }
 
-    /// Convert a logical-pixel point inside `self.rect` to image-space
-    /// pixel coordinates given the current zoom and pan. Inverse of
-    /// the brush-transform we'll build in `paint`. `None` when the
-    /// effective scale is zero (degenerate image or viewport).
+    /// Inverse of the destination-quad transform built in `draw`.
+    /// `None` when the effective scale is zero (degenerate image or
+    /// viewport).
     fn screen_to_image(&self, screen: Vec2) -> Option<Vec2> {
         let base = self.base_scale();
         if base <= 0.0 {
             return None;
         }
-        let total_scale = base * self.zoom as f64;
+        let total_scale = base * f64::from(self.zoom);
         // Centre of the rect — the image is anchored here at pan=0.
         let cx = (self.rect.x0 + self.rect.x1) * 0.5;
         let cy = (self.rect.y0 + self.rect.y1) * 0.5;
@@ -160,28 +137,26 @@ impl Widget for ImageViewer {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 1.0,
-                flex_shrink: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -193,9 +168,8 @@ impl Widget for ImageViewer {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Background fill: any region of the rect not covered by the
-        // scaled image gets the theme's base surface so the letterbox
-        // bars match adjacent chrome.
+        // Any region not covered by the scaled image gets the theme's
+        // base surface so the letterbox bars match adjacent chrome.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -215,27 +189,30 @@ impl Widget for ImageViewer {
         if base <= 0.0 {
             return;
         }
-        let total_scale = base * self.zoom as f64;
-        let iw = self.image.width as f64;
-        let ih = self.image.height as f64;
+        let total_scale = base * f64::from(self.zoom);
+        let iw = f64::from(self.image.width);
+        let ih = f64::from(self.image.height);
         let dw = iw * total_scale;
         let dh = ih * total_scale;
         let cx = (self.rect.x0 + self.rect.x1) * 0.5;
         let cy = (self.rect.y0 + self.rect.y1) * 0.5;
-        // The image's pixel (0,0) lands at the top-left of the scaled
-        // destination quad, which is centred on the rect midpoint and
-        // then translated by `pan * total_scale` (pan is in image-space
-        // units, so it scales with zoom).
+        // Centred on the rect midpoint, then translated by `pan *
+        // total_scale` (pan is image-space, so it scales with zoom).
         let dx = cx - dw * 0.5 + self.pan.x * total_scale;
         let dy = cy - dh * 0.5 + self.pan.y * total_scale;
 
-        // Clip to the rect so pan/zoom doesn't bleed over adjacent
-        // chrome when the image is bigger than its viewport.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &self.rect);
+        // Clips so pan/zoom doesn't bleed over adjacent chrome when
+        // the image is bigger than its viewport.
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &self.rect,
+        );
 
-        // `scene.draw_image` accepts an `Affine` that maps the image's
-        // unit pixel space directly into world space — so a scale-then-
-        // translate composes our destination quad.
+        // `draw_image` maps the image's unit pixel space directly into
+        // world space, so scale-then-translate composes the quad.
         let img_transform = transform
             * Affine::translate((dx, dy))
             * Affine::scale_non_uniform(total_scale, total_scale);
@@ -261,17 +238,14 @@ impl Widget for ImageViewer {
                 let logical = Vec2::new(position.x / scale_factor, position.y / scale_factor);
                 let prev = self.cursor;
                 self.cursor = Some(logical);
-                // Drag: continuous pan as long as the left button is
-                // held. `pan` is image-space, so divide the screen
-                // delta by the total scale; using `base * zoom` keeps
-                // the on-screen translation rate equal to the cursor
-                // delta regardless of zoom level (drag 50px → image
-                // shifts 50px under the cursor).
+                // `pan` is image-space, so the screen delta is divided by
+                // the total scale — a drag of 50px shifts the image 50px
+                // under the cursor regardless of zoom level.
                 if let (Some(start), Some(prev_pos)) = (self.drag_origin, prev) {
-                    let _ = start; // origin retained so we don't lose drag intent across events with no movement
+                    let _ = start;
                     let base = self.base_scale();
                     if base > 0.0 {
-                        let total_scale = base * self.zoom as f64;
+                        let total_scale = base * f64::from(self.zoom);
                         let delta = logical - prev_pos;
                         self.pan += Vec2::new(delta.x / total_scale, delta.y / total_scale);
                         *handled = true;
@@ -307,10 +281,9 @@ impl Widget for ImageViewer {
                 if !inside {
                     return;
                 }
-                // Normalise both delta variants to a "lines scrolled"
-                // scalar. PixelDelta is converted with a 100-pixel
-                // notch (matches winit's documented convention on
-                // platforms that report pixel deltas for trackpads).
+                // PixelDelta is normalised to a "lines scrolled" scalar
+                // with a 100-pixel notch, matching winit's convention for
+                // platforms that report pixel deltas for trackpads.
                 let scroll_y = match delta {
                     MouseScrollDelta::LineDelta(_, y) => *y,
                     MouseScrollDelta::PixelDelta(pp) => (pp.y as f32) / 100.0,
@@ -319,12 +292,9 @@ impl Widget for ImageViewer {
                     return;
                 }
 
-                // Anchor: compute the image-space point under the
-                // cursor before changing zoom. After the zoom update
-                // we re-project the cursor; the difference is how far
-                // the image would have slid out from under the
-                // pointer, so we counter-translate `pan` by that
-                // amount to keep the anchor pixel fixed on screen.
+                // The image-space point under the cursor is re-projected
+                // after the zoom change; `pan` is counter-translated by
+                // the difference to keep it fixed on screen.
                 let cursor = self.cursor.expect("cursor inside-check passed");
                 let before = self.screen_to_image(cursor);
                 let factor = ZOOM_STEP.powf(scroll_y);
@@ -335,9 +305,6 @@ impl Widget for ImageViewer {
                 }
                 self.zoom = new_zoom;
                 if let (Some(before), Some(after)) = (before, self.screen_to_image(cursor)) {
-                    // `after - before` is how the anchor moved in
-                    // image-space due to the zoom change; add it to
-                    // pan to cancel out.
                     self.pan += after - before;
                 }
                 *handled = true;
@@ -346,14 +313,13 @@ impl Widget for ImageViewer {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ImageViewer"
     }
 
-    /// Accessibility: the viewer presents a single image; `Role::Image`.
-    /// There is no alt-text field on the viewer (it's a pan/zoom canvas around
-    /// raw `ImageData`), so the node carries no intrinsic name — a host that
-    /// knows the source can supply one via its own wrapping `Image`.
+    /// No alt-text field on the viewer (it's a pan/zoom canvas around
+    /// raw `ImageData`), so the node carries no intrinsic name — a host
+    /// that knows the source can supply one via its own wrapping `Image`.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         Some(AccessNode::new(Role::Image))
@@ -372,8 +338,7 @@ mod tests {
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
-    /// Build a 16×16 opaque-white image suitable for tests. Cheap to
-    /// construct; the `Arc` inside `Blob` keeps clones zero-copy.
+    /// 16×16 opaque white; the `Arc` inside `Blob` keeps clones zero-copy.
     fn make_image() -> Image {
         let pixels = vec![255u8; 4 * 16 * 16];
         let blob = Blob::new(Arc::new(pixels));
@@ -394,10 +359,9 @@ mod tests {
         assert_eq!(node.role, Role::Image);
     }
 
-    /// Synthesise the unsafe-but-conventional dummy `DeviceId` winit
-    /// expects in tests. `DeviceId` has no public constructor, so
-    /// `mem::zeroed` is the standard escape hatch other widget tests
-    /// in this crate use (see `group_row.rs`).
+    /// `DeviceId` has no public constructor; `mem::zeroed` is the
+    /// standard escape hatch other widget tests in this crate use
+    /// (see `group_row.rs`).
     fn dummy_device_id() -> winit::event::DeviceId {
         // SAFETY: DeviceId is an opaque wrapper around a platform u64;
         // a zeroed value is what winit itself uses for the "no device"
@@ -415,8 +379,7 @@ mod tests {
     #[test]
     fn image_viewer_scroll_up_zooms_in() {
         let mut iv = ImageViewer::new(make_image());
-        // Stage a viewport rect by bypassing taffy — the layout pass
-        // would otherwise need a parent.
+        // Bypasses taffy — a real layout pass would need a parent.
         iv.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
 
         let dev = dummy_device_id();
@@ -426,10 +389,9 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::DEFAULT).unwrap();
+        let node = taffy.leaf_node(Style::DEFAULT);
 
-        // Cursor moved into the centre of the rect first so the
-        // wheel handler's `inside` check passes.
+        // So the wheel handler's `inside` check passes.
         iv.handle_event(
             &WindowEvent::CursorMoved {
                 device_id: dev,
@@ -445,7 +407,6 @@ mod tests {
             &taffy,
         );
 
-        // Positive y wheel delta → zoom in.
         iv.handle_event(
             &WindowEvent::MouseWheel {
                 device_id: dev,
@@ -473,10 +434,8 @@ mod tests {
     #[test]
     fn image_viewer_drag_pans() {
         let mut iv = ImageViewer::new(make_image());
-        // Apply layout indirectly by stuffing a rect into the field —
-        // the wheel test above does the same and the public surface
-        // doesn't need a setter for the rect (callers run through
-        // taffy in production).
+        // The public surface doesn't need a rect setter — callers run
+        // through taffy in production.
         iv.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
 
         let dev = dummy_device_id();
@@ -486,9 +445,8 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::DEFAULT).unwrap();
+        let node = taffy.leaf_node(Style::DEFAULT);
 
-        // 1. Park cursor inside the rect.
         iv.handle_event(
             &WindowEvent::CursorMoved {
                 device_id: dev,
@@ -504,7 +462,6 @@ mod tests {
             &taffy,
         );
 
-        // 2. Press left button to start the drag.
         iv.handle_event(
             &WindowEvent::MouseInput {
                 device_id: dev,
@@ -525,9 +482,8 @@ mod tests {
             "Pressed inside rect must start a drag"
         );
 
-        // 3. Move cursor 30px right, 20px down. Pan must shift in
-        // the same direction; the magnitude is delta / base_scale
-        // (zoom is 1.0, so total_scale == base_scale).
+        // Move cursor 30px right, 20px down; the magnitude is delta /
+        // base_scale (zoom is 1.0, so total_scale == base_scale).
         iv.handle_event(
             &WindowEvent::CursorMoved {
                 device_id: dev,
@@ -543,7 +499,6 @@ mod tests {
             &taffy,
         );
 
-        // 4. Release.
         iv.handle_event(
             &WindowEvent::MouseInput {
                 device_id: dev,

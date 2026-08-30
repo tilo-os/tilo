@@ -85,7 +85,7 @@ impl IdentityPaths {
 #[derive(Debug, Error)]
 pub enum PersistError {
     /// I/O failure. Preserves the underlying `io::Error` so the
-    /// caller can inspect the ErrorKind.
+    /// caller can inspect the `ErrorKind`.
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     /// A secret file was reachable by users not entitled to it.
@@ -205,8 +205,8 @@ pub enum DeviceKeyOutcome {
 /// Load this device's signing key, generating one on first boot.
 ///
 /// This is the root of every network and document identity on the
-/// machine: the same 32 bytes derive the libp2p peer id, the iroh node
-/// id, the CRDT author, and the filesystem access subject. There is
+/// machine: the same 32 bytes derive the Iroh endpoint id, the CRDT
+/// author, and the filesystem access subject. There is
 /// exactly one per device and no subsystem mints its own.
 ///
 /// **A key file that exists but cannot be read is an error, never a
@@ -503,7 +503,10 @@ mod tests {
             PersistError::Io(e) => assert_eq!(e.kind(), io::ErrorKind::AlreadyExists),
             other => panic!("expected AlreadyExists, got {other:?}"),
         }
-        assert_eq!(read_device_key(&paths.device_privkey).unwrap().to_bytes(), seed);
+        assert_eq!(
+            read_device_key(&paths.device_privkey).unwrap().to_bytes(),
+            seed
+        );
     }
 
     #[test]

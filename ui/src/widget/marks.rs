@@ -1,37 +1,28 @@
 //! Inline marks model used by [`RichTextLine`].
 //!
 //! A `MarkSpan` is a half-open byte range `[start, end)` over a
-//! [`RichTextLine`]'s text plus a [`Mark`] tag. Spans are stored
-//! sorted by `start` (and non-overlapping when possible). Multiple
-//! marks may cover the same byte range — bold + italic on the same
-//! word produces two `MarkSpan`s, not one fused `MarkSpan { mark:
-//! BoldItalic, .. }`.
+//! [`RichTextLine`]'s text plus a [`Mark`] tag, stored sorted by `start`.
+//! Multiple marks may cover the same byte range — bold + italic on the same
+//! word produces two `MarkSpan`s, not one fused `BoldItalic` variant.
 //!
-//! ## Overlapping marks
+//! Two marks of different kinds may share a range, but two marks of the same
+//! kind never overlap — the mutation helpers ([`toggle_mark_range`]) enforce
+//! this by merging touching same-kind spans and removing same-kind spans
+//! fully covered by the toggle range.
 //!
-//! v0.1: **two marks of different kinds may share a range** (so a
-//! word can be both bold and italic), but **two marks of the same
-//! kind never overlap**. The mutation helpers ([`toggle_mark_range`])
-//! enforce this by merging touching same-kind spans and removing
-//! same-kind spans that get fully covered by the toggle range.
-//!
-//! ## Nested markdown — out of scope for v0.1
-//!
-//! The serialiser emits `**bold *italic***` etc.; the parser accepts
-//! the same. But the model treats bold + italic as independent marks
-//! — we don't materialise a "bold-italic" enum variant. This is
+//! Nested markdown (`**bold *italic***`) is out of scope: the serialiser
+//! emits it and the parser accepts it, but the model treats bold + italic as
+//! independent marks rather than materialising a "bold-italic" variant —
 //! enough for round-trip stability on documents we produce.
 
 use std::ops::Range;
 
 use uuid::Uuid;
 
-/// Stable identifier for a page link target.
-///
-/// `RichTextLine` doesn't own page identity — that's the notes app's
-/// concern — so we use a UUID here. The notes app's `PageId` is itself
-/// a `uuid::Uuid`, so a `Mark::Link(PageId)` round-trips through the
-/// markdown layer.
+/// Stable identifier for a page link target. `RichTextLine` doesn't own page
+/// identity — that's the notes app's concern — so a UUID is used here; the
+/// notes app's `PageId` is itself a `uuid::Uuid`, so `Mark::Link(PageId)`
+/// round-trips through the markdown layer.
 pub type PageId = Uuid;
 
 /// One inline mark applied to a byte range of a [`RichTextLine`].
@@ -53,9 +44,8 @@ pub enum Mark {
 }
 
 impl Mark {
-    /// True iff `other` is the same *kind* of mark (regardless of
-    /// payload). Used by mutation helpers to fold overlapping
-    /// same-kind spans without conflating Link(a) with Link(b).
+    /// True iff `other` is the same *kind* of mark, regardless of payload
+    /// (so `Link(a)` and `Link(b)` are not conflated).
     pub fn same_kind(&self, other: &Mark) -> bool {
         matches!(
             (self, other),
@@ -102,9 +92,8 @@ pub fn range_fully_covered(spans: &[MarkSpan], range: &Range<usize>, mark: &Mark
     if range.start >= range.end {
         return false;
     }
-    // Walk same-kind spans sorted by start; track the rightmost end of
-    // contiguous coverage. If at any point our needle's `current`
-    // byte falls outside that coverage, return false.
+    // Walk same-kind spans sorted by start, tracking the rightmost end of
+    // contiguous coverage.
     let mut covered = range.start;
     let mut sorted: Vec<&Range<usize>> = spans
         .iter()
@@ -126,12 +115,9 @@ pub fn range_fully_covered(spans: &[MarkSpan], range: &Range<usize>, mark: &Mark
     covered >= range.end
 }
 
-/// Apply a toggle of `mark` over `range`:
-///
-/// - If `range` is fully covered by same-kind spans → remove the
-///   coverage (clip / split existing same-kind spans).
-/// - Otherwise → add a new span and merge touching same-kind spans
-///   into one contiguous run.
+/// Apply a toggle of `mark` over `range`: if fully covered by same-kind
+/// spans, remove the coverage (clip/split); otherwise add a new span and
+/// merge touching same-kind spans into one contiguous run.
 pub fn toggle_mark_range(
     spans: &mut Vec<MarkSpan>,
     range: Range<usize>,
@@ -159,19 +145,15 @@ pub fn remove_mark_from_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, ma
             continue;
         }
         if s.range.end <= range.start || s.range.start >= range.end {
-            // No overlap.
             out.push(s);
             continue;
         }
-        // Left fragment.
         if s.range.start < range.start {
             out.push(MarkSpan::new(s.range.start..range.start, s.mark.clone()));
         }
-        // Right fragment.
         if s.range.end > range.end {
             out.push(MarkSpan::new(range.end..s.range.end, s.mark.clone()));
         }
-        // Middle is dropped.
     }
     out.sort_by_key(|s| s.range.start);
     *spans = out;
@@ -188,7 +170,6 @@ pub fn add_mark_to_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, mark: M
             out.push(s);
             continue;
         }
-        // Overlapping or touching: merge.
         if s.range.end >= start && s.range.start <= end {
             start = start.min(s.range.start);
             end = end.max(s.range.end);
@@ -196,27 +177,23 @@ pub fn add_mark_to_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, mark: M
             out.push(s);
         }
     }
-    // Preserve payload of Link mark from any merged span if the
-    // toggle is adding the same kind (e.g. dragging a link extension
-    // shouldn't change the target). For simplicity, the new payload
-    // wins. Most callers pass the same Link payload anyway.
+    // A merged Link span's payload is not preserved — the new payload wins.
+    // Simpler, and most callers pass the same Link payload anyway.
     out.push(MarkSpan::new(start..end, mark));
     out.sort_by_key(|s| s.range.start);
     *spans = out;
 }
 
-/// Adjust every span's range by a splice at byte `at`: inserting
-/// `inserted_len` bytes (positive) or removing `removed_len` bytes.
-/// Used to keep marks aligned after a user edit.
-///
-/// Semantics:
-/// - Insertion at `at`: spans entirely before `at` are untouched.
-///   Spans entirely at or after `at` are shifted by `inserted_len`.
-///   Spans straddling `at` are extended on the right.
-/// - Deletion of `[at, at+removed_len)`: spans entirely before `at`
-///   untouched. Spans entirely inside the deleted region are dropped.
-///   Spans straddling are clipped.
-pub fn shift_after_edit(spans: &mut Vec<MarkSpan>, at: usize, inserted_len: usize, removed_len: usize) {
+/// Adjust every span's range by a splice at byte `at`, to keep marks
+/// aligned after a user edit. Insertion: spans at/after `at` shift right,
+/// straddling spans extend right. Deletion of `[at, at+removed_len)`: spans
+/// entirely inside are dropped, straddling spans are clipped.
+pub fn shift_after_edit(
+    spans: &mut Vec<MarkSpan>,
+    at: usize,
+    inserted_len: usize,
+    removed_len: usize,
+) {
     if inserted_len == 0 && removed_len == 0 {
         return;
     }
@@ -234,8 +211,8 @@ pub fn shift_after_edit(spans: &mut Vec<MarkSpan>, at: usize, inserted_len: usiz
             } else if end <= at {
                 // entirely before — no change.
             } else {
-                // overlaps deletion: figure new span as the union of
-                // the portions before `at` and after `removed_end`.
+                // Overlaps deletion: union of the portions before `at`
+                // and after `removed_end`.
                 let before = if s.range.start < at {
                     Some(s.range.start..at.min(s.range.end))
                 } else {
@@ -248,11 +225,9 @@ pub fn shift_after_edit(spans: &mut Vec<MarkSpan>, at: usize, inserted_len: usiz
                 };
                 match (before, after) {
                     (Some(b), Some(a)) => {
-                        // Glue the two halves: a mark that spans
-                        // across a deletion stays one mark. (Notion
-                        // / Word / Quill behaviour — deleting glue
-                        // between two bold halves yields one bold
-                        // word, not two.)
+                        // A mark spanning a deletion stays one mark (Notion/
+                        // Word/Quill behaviour: deleting glue between two
+                        // bold halves yields one bold word, not two).
                         let a_start = a.start - removed_len;
                         let a_end = a.end - removed_len;
                         out.push(MarkSpan::new(b.start..a_end.max(b.end), s.mark.clone()));
@@ -293,10 +268,8 @@ pub fn shift_after_edit(spans: &mut Vec<MarkSpan>, at: usize, inserted_len: usiz
     *spans = out;
 }
 
-/// Partition `text` into contiguous segments [start, end) tagged with
-/// the set of marks active inside that segment. Marks of different
-/// kinds may co-occur. Useful for the render path: one `draw_text`
-/// call per segment with the appropriate styling.
+/// A contiguous [start, end) segment tagged with the set of marks active
+/// inside it. One `draw_text` call per segment on the render path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkSegment {
     pub range: Range<usize>,
@@ -340,7 +313,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
             boundaries.push(s.range.end);
         }
     }
-    boundaries.sort();
+    boundaries.sort_unstable();
     boundaries.dedup();
     let mut out = Vec::with_capacity(boundaries.len());
     for w in boundaries.windows(2) {

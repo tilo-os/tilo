@@ -14,7 +14,7 @@ use std::path::Path;
 use calamine::{Data, Range, Reader};
 use rust_xlsxwriter::{Format, Formula, Workbook};
 
-use crate::model::{format_value, CellFormat, CellValue};
+use crate::model::{CellFormat, CellValue, format_value};
 
 /// One exported/imported cell: the canonical raw to store (numbers as plain
 /// numerics, text as-is), the format to render it with, and — when the cell
@@ -33,7 +33,11 @@ pub struct ImportedCell {
 impl ImportedCell {
     /// A plain value cell (no formula).
     fn value(raw: String, format: CellFormat) -> Self {
-        Self { raw, format, formula: None }
+        Self {
+            raw,
+            format,
+            formula: None,
+        }
     }
 }
 
@@ -110,7 +114,7 @@ where
     R::Error: std::error::Error + Send + Sync + 'static,
 {
     let mut tables = Vec::new();
-    let names = wb.sheet_names().to_vec();
+    let names = wb.sheet_names();
     for name in names {
         let range = wb.worksheet_range(&name)?;
         // Formulas are optional: a value-only workbook (or a reader hiccup)
@@ -452,10 +456,7 @@ mod tests {
         // XLSX bodies have no leading '=' and plain A1 refs.
         assert_eq!(normalize_read_formula("SUM(A1:A3)"), "=SUM(A1:A3)");
         // ODF formulas carry a namespace prefix and bracketed refs.
-        assert_eq!(
-            normalize_read_formula("of:=SUM([.A1:.A3])"),
-            "=SUM(A1:A3)"
-        );
+        assert_eq!(normalize_read_formula("of:=SUM([.A1:.A3])"), "=SUM(A1:A3)");
         assert_eq!(normalize_read_formula("of:=[.B2]+[.C2]"), "=B2+C2");
         // A cross-table qualifier is dropped down to the bare cell.
         assert_eq!(normalize_read_formula("of:=[.$A$1]"), "=$A$1");

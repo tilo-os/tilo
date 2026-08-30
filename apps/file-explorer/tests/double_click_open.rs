@@ -8,9 +8,7 @@
 //! preceding `CursorMoved` misses the row and the folder never opens. These
 //! tests drive the real widget through a rebuild between the two clicks and
 //! prove the second click still opens the folder.
-
-mod common;
-use common::{row_center, Harness};
+use crate::common::{Harness, row_center};
 
 /// A temp dir containing a single folder (row 0) plus a file.
 fn dir_with_folder() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -30,7 +28,11 @@ fn single_click_selects_row_zero_but_does_not_open() {
     h.move_cursor(p);
     h.press();
     h.release();
-    assert_eq!(h.w.selected_indices(), vec![0], "the row under the cursor is selected");
+    assert_eq!(
+        h.w.selected_indices(),
+        vec![0],
+        "the row under the cursor is selected"
+    );
     assert_eq!(h.w.current_path(), start, "a single click never navigates");
 }
 
@@ -74,5 +76,9 @@ fn fast_double_click_without_a_rebuild_also_opens() {
     h.release();
     h.press();
     h.release();
-    assert_eq!(h.w.current_path(), folder, "a fast double-click opens the folder");
+    assert_eq!(
+        h.w.current_path(),
+        folder,
+        "a fast double-click opens the folder"
+    );
 }

@@ -1,9 +1,9 @@
 //! Where a version's name lives: in the document, with the changes it names.
 //!
-//! A name that lived in the widget would vanish on close, and a name that lived
-//! beside the document would never reach a collaborator. So a name is written
-//! into the same CRDT as the content it describes — one record at the document
-//! root per named range, keyed by the range it covers.
+//! A name that lived in the widget would vanish on close, and a name that
+//! lived beside the document would never reach a collaborator. So a name
+//! is written into the same CRDT as the content it describes — one record
+//! at the document root per named range, keyed by the range it covers:
 //!
 //! ```text
 //! ROOT
@@ -14,36 +14,18 @@
 //!      at    : <unix millis>
 //! ```
 //!
-//! # Why the key is the range's first change
+//! The key is the range's first change, not minted per writer: two people
+//! naming the same run then collide on one map key, and automerge's own
+//! conflict rule resolves it deterministically and identically on every
+//! peer (the loser stays reachable via `get_conflicts`). Records sit at the
+//! root rather than under one container map for the same reason at a
+//! coarser grain: a container created independently by two peers naming
+//! *different* ranges at the same time would have one discarded whole,
+//! silently losing a name. Flat, prefixed root keys have no container to
+//! race over.
 //!
-//! Two people naming **the same** run of changes at the same time is the case a
-//! shared history has to survive. Because the key is derived from the range
-//! rather than minted per writer, both writes land on the same map key, and
-//! automerge's own map-conflict rule picks one winner — deterministically, and
-//! identically on every peer. The losing name is not destroyed: it is still in
-//! the change graph and still reachable through `get_conflicts`.
-//!
-//! # Why the records sit at the root rather than under one container map
-//!
-//! A container would have to be created by whoever names first, and two peers
-//! that both name first create two containers under one key. Automerge resolves
-//! *that* conflict too — by discarding one container and every record inside it.
-//! Two people naming two different ranges at the same time would then silently
-//! lose one name. Flat, prefixed root keys have no container to race over, so
-//! only genuinely-colliding ranges ever conflict.
-//!
-//! Overlapping-but-different ranges are a different question, and it is
-//! answered at read time by
-//! [`group_entries`](crate::widget::history_group::group_entries) rather than
-//! here — this module only stores what people wrote.
-//!
-//! # These writes are changes too
-//!
-//! Naming a version commits into the document, so it appears in the change
-//! graph like anything else. It is deliberately **not** given a row of its own
-//! in the history surfaces: the name is already on screen as the group's title,
-//! and a "1 field" row directly under the band it named is noise. See
-//! [`is_group_marker`], which is what the producer filters on.
+//! Naming a version is a change like any other, but is deliberately not
+//! given its own row in the history surfaces — see [`is_group_marker`].
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -52,22 +34,18 @@ use automerge::{AutoCommit, ObjId, ObjType, PatchAction, Prop, ReadDoc, ScalarVa
 
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
-use crate::widget::history_group::{from_hex16, hex16, NamedRange};
+use crate::widget::history_group::{NamedRange, from_hex16, hex16};
 
-/// Prefix of the root keys holding this document's named ranges.
-///
 /// Namespaced so it cannot collide with an app's own schema: `qdoc` uses
 /// `content` / `comments` / `props`, and the shell's room document uses
 /// `workspaces` / `active`.
 pub const GROUPS_KEY: &str = "qos:group:";
 
-/// Longest name accepted. A version name is a label, not a paragraph; past this
-/// it stops fitting anywhere it is rendered and starts being a way to make
-/// another user's timeline unreadable.
+/// A version name is a label, not a paragraph; past this it stops fitting
+/// anywhere it is rendered and starts being a way to make another user's
+/// timeline unreadable.
 pub const MAX_LABEL_LEN: usize = 120;
 
-/// Read every named range out of `doc`.
-///
 /// Records that do not parse (a corrupted key, a missing label) are skipped
 /// rather than guessed at — a band in the wrong place is worse than no band.
 pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<NamedRange> {
@@ -89,8 +67,9 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         let by = str_at(doc, &rec, "by");
         let created = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
-            .map(|ms| UNIX_EPOCH + Duration::from_millis(ms as u64))
-            .unwrap_or(UNIX_EPOCH);
+            .map_or(UNIX_EPOCH, |ms| {
+                UNIX_EPOCH + Duration::from_millis(ms as u64)
+            });
         out.push(NamedRange {
             id: key.clone(),
             label,
@@ -105,12 +84,10 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
     out
 }
 
-/// Name the run of changes from `start` to `end`, or open an unbounded run when
-/// `end` is `None`.
-///
-/// Returns the record id (which is also the document key). The transaction is
-/// left open — the host commits, so the naming lands stamped and attributed
-/// like any other edit.
+/// Names the run of changes from `start` to `end`, or opens an unbounded run
+/// when `end` is `None`. Returns the record id (also the document key). The
+/// transaction is left open — the host commits, so the naming lands stamped
+/// and attributed like any other edit.
 pub fn name_range(
     doc: &mut AutoCommit,
     start: &HistoryEntryId,
@@ -122,8 +99,7 @@ pub fn name_range(
     let by = doc.get_actor().to_hex_string();
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis() as i64);
     // Replacing the whole record rather than patching fields keeps a rename and
     // a re-scope atomic: a peer never observes the new label against the old
     // range.
@@ -158,12 +134,10 @@ pub fn clear_name(doc: &mut AutoCommit, record_id: &str) -> bool {
     doc.delete(automerge::ROOT, record_id).is_ok()
 }
 
-/// True when every patch in `patches` lands inside the named-range map — i.e.
-/// the change did nothing but name a version.
-///
-/// The producer uses this to keep naming out of the row list. An empty patch
-/// set is **not** a marker: a change that did nothing visible is still a change,
-/// and hiding it would be a different (and dishonest) behaviour.
+/// True when every patch in `patches` lands inside the named-range map — used
+/// by the producer to keep naming out of the row list. An empty patch set is
+/// **not** a marker: a change that did nothing visible is still a change, and
+/// hiding it would be a different (and dishonest) behaviour.
 pub fn is_group_marker(patches: &[automerge::Patch]) -> bool {
     !patches.is_empty()
         && patches.iter().all(|p| match p.path.first() {
@@ -255,9 +229,7 @@ mod tests {
 
     #[test]
     fn two_peers_naming_the_same_range_converge_on_one_name() {
-        // The key is the range, not the writer — so this is a map conflict,
-        // which automerge resolves the same way on both sides. Whichever name
-        // wins, both peers must see the *same* one, and exactly one band.
+        // Same key = map conflict, resolved identically on both sides.
         let mut alice = AutoCommit::new();
         alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
         alice.put(automerge::ROOT, "seed", "x").unwrap();
@@ -321,7 +293,7 @@ mod tests {
         assert!(!patches.is_empty());
         assert!(is_group_marker(&patches), "got {patches:?}");
 
-        // A real edit is not a marker, even one that also happens to be small.
+        // A real edit is not a marker, even a small one.
         let before = doc.get_heads();
         doc.put(automerge::ROOT, "content", "hello there").unwrap();
         doc.commit();

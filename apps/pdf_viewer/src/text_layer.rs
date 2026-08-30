@@ -70,7 +70,11 @@ impl PageText {
         for (ch, rect) in glyphs {
             let byte_start = text.len();
             text.push(ch);
-            chars.push(CharBox { ch, rect, byte_start });
+            chars.push(CharBox {
+                ch,
+                rect,
+                byte_start,
+            });
         }
         PageText { text, chars }
     }
@@ -93,7 +97,11 @@ impl PageText {
         if q.is_empty() || q.len() > self.chars.len() {
             return out;
         }
-        let hay: Vec<char> = self.chars.iter().map(|c| fold(c.ch, opts.case_sensitive)).collect();
+        let hay: Vec<char> = self
+            .chars
+            .iter()
+            .map(|c| fold(c.ch, opts.case_sensitive))
+            .collect();
         let n = hay.len();
         let m = q.len();
         let mut i = 0;
@@ -102,7 +110,11 @@ impl PageText {
                 let before_ok = i == 0 || !is_word(hay[i - 1]);
                 let after_ok = i + m >= n || !is_word(hay[i + m]);
                 if !opts.whole_word || (before_ok && after_ok) {
-                    out.push(TextMatch { page, char_start: i, char_len: m });
+                    out.push(TextMatch {
+                        page,
+                        char_start: i,
+                        char_len: m,
+                    });
                     i += m; // non-overlapping, mirroring model::search
                     continue;
                 }
@@ -131,7 +143,7 @@ impl PageText {
             if y >= c.rect.y - 2.0 && y <= c.rect.y + c.rect.h + 2.0 {
                 let cx = c.rect.x + c.rect.w / 2.0;
                 let d = (cx - x).abs();
-                if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                if best.is_none_or(|(_, bd)| d < bd) {
                     best = Some((i, d));
                 }
             }
@@ -150,7 +162,7 @@ impl PageText {
             }
             let (cx, cy) = c.rect.center();
             let d = (cx - x).hypot(cy - y);
-            if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            if best.is_none_or(|(_, bd)| d < bd) {
                 best = Some((i, d));
             }
         }
@@ -305,11 +317,17 @@ mod tests {
         assert_eq!(hits.len(), 1);
         let m = hits[0];
         // The matched glyph run reads back as the query.
-        assert_eq!(pt.text_for_range(m.char_start, m.char_start + m.char_len), "text");
+        assert_eq!(
+            pt.text_for_range(m.char_start, m.char_start + m.char_len),
+            "text"
+        );
         // And resolves to a single band on row 1, spanning the four glyphs.
         let bands = pt.bands_for_range(m.char_start, m.char_start + m.char_len);
         assert_eq!(bands.len(), 1, "one row -> one band");
-        assert!((bands[0].w - 32.0).abs() < 0.01, "band spans four 8pt glyphs");
+        assert!(
+            (bands[0].w - 32.0).abs() < 0.01,
+            "band spans four 8pt glyphs"
+        );
         assert!((bands[0].y - 10.0).abs() < 0.01, "band sits on row 1");
     }
 
@@ -318,8 +336,15 @@ mod tests {
         let pt = sample_layer();
         assert_eq!(pt.search(1, "PDF", SearchOptions::default()).len(), 1);
         assert_eq!(pt.search(1, "pdf", SearchOptions::default()).len(), 1);
-        let cs = SearchOptions { case_sensitive: true, ..Default::default() };
-        assert_eq!(pt.search(1, "pdf", cs).len(), 0, "case-sensitive misses lowercase");
+        let cs = SearchOptions {
+            case_sensitive: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            pt.search(1, "pdf", cs).len(),
+            0,
+            "case-sensitive misses lowercase"
+        );
         assert_eq!(pt.search(1, "PDF", cs).len(), 1);
     }
 
@@ -328,9 +353,16 @@ mod tests {
         // "layer" contains "aye"; whole-word must reject it, substring accept.
         let pt = sample_layer();
         assert_eq!(pt.search(1, "aye", SearchOptions::default()).len(), 1);
-        let ww = SearchOptions { whole_word: true, ..Default::default() };
+        let ww = SearchOptions {
+            whole_word: true,
+            ..Default::default()
+        };
         assert_eq!(pt.search(1, "aye", ww).len(), 0);
-        assert_eq!(pt.search(1, "layer", ww).len(), 1, "the full word still matches");
+        assert_eq!(
+            pt.search(1, "layer", ww).len(),
+            1,
+            "the full word still matches"
+        );
     }
 
     #[test]

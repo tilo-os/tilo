@@ -1,24 +1,21 @@
-//! In-process broadcaster for [`NeighbourMsg`] — Phase 1 Task 1.2.
+//! In-process broadcaster for [`NeighbourMsg`].
 //!
-//! [`Hub`] is a synchronous fan-out used by tests and by the hosted
-//! single-process collaboration mode. Real cross-host delivery happens via
-//! [`crate::network::p2p`]; both transports share the [`NeighbourMsg`] envelope
-//! so subscriber implementations are transport-agnostic.
+//! [`Hub`] is a synchronous fan-out used by tests and the hosted
+//! single-process collaboration mode; real cross-host delivery happens
+//! via [`crate::network::p2p`], and both transports share the
+//! [`NeighbourMsg`] envelope so subscriber implementations stay transport-agnostic.
 
 use crate::network::protocol::NeighbourMsg;
 use crate::shell::state::PeerOrigin;
 
 /// Anything that wants to receive broadcast traffic.
 ///
-/// `id()` is the subscriber's identity and is also used to suppress echo —
-/// a [`Hub::broadcast`] call with `from == sub.id()` will skip that
-/// subscriber.
+/// `id()` is the subscriber's identity and also suppresses echo — a
+/// [`Hub::broadcast`] call with `from == sub.id()` skips that subscriber.
 ///
 /// `origin()` is the *transport* identity messages from this subscriber
-/// carry, which is what a receiver may base an authority decision on. It
-/// defaults to the subscriber id because an in-process subscriber has no
-/// other identity; a subscriber standing in for a real peer overrides it
-/// with that peer's [`PeerOrigin`].
+/// carry, which a receiver may base an authority decision on — defaults
+/// to the subscriber id, overridden by a subscriber standing in for a real peer with that peer's [`PeerOrigin`].
 pub trait TopicSubscriber {
     fn id(&self) -> u64;
     fn origin(&self) -> PeerOrigin {
@@ -29,9 +26,8 @@ pub trait TopicSubscriber {
 
 /// Synchronous broadcast bus.
 ///
-/// Subscribers are owned by the hub. To inspect a subscriber from tests,
-/// wrap the underlying state in `Arc<Mutex<_>>` and attach a thin proxy
-/// that forwards [`TopicSubscriber`] calls to it.
+/// Subscribers are owned by the hub. To inspect one from tests, wrap the
+/// underlying state in `Arc<Mutex<_>>` and attach a thin proxy that forwards [`TopicSubscriber`] calls to it.
 pub struct Hub {
     subscribers: Vec<Box<dyn TopicSubscriber>>,
 }
@@ -48,21 +44,17 @@ impl Hub {
         self.subscribers.push(sub);
     }
 
-    /// Deliver `msg` to every subscriber whose id is not `from`.
-    ///
-    /// The sender is named to receivers by its own
-    /// [`TopicSubscriber::origin`] rather than by the raw `from` id, so a
-    /// subscriber standing in for a real peer delivers under that peer's
-    /// identity. A `from` that is not attached is named by its id, which
-    /// is the only thing known about it.
+    /// Deliver `msg` to every subscriber whose id is not `from`. The sender
+    /// is named to receivers by its own [`TopicSubscriber::origin`] rather
+    /// than the raw `from` id, so a subscriber standing in for a real peer
+    /// delivers under that peer's identity; an unattached `from` is named by its id, the only thing known about it.
     pub fn broadcast(&mut self, from: u64, msg: NeighbourMsg) {
         let origin = self
             .subscribers
             .iter()
             .find(|s| s.id() == from)
-            .map(|s| s.origin())
-            .unwrap_or_else(|| PeerOrigin::hub(from));
-        for sub in self.subscribers.iter_mut() {
+            .map_or_else(|| PeerOrigin::hub(from), |s| s.origin());
+        for sub in &mut self.subscribers {
             if sub.id() != from {
                 sub.handle(&origin, &msg);
             }

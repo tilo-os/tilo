@@ -1,16 +1,12 @@
 //! Manifest-level tests: TOML round-trip, schema validation,
 //! service-req parsing.
 
-mod fixtures;
-
+use crate::fixtures;
 use pkg::manifest::{Manifest, PortalPolicy, Requirement, ServiceReq, ServiceReqParseError};
 use pkg::validate::{ManifestError, validate_manifest};
 
 fn render_with_dummy_key() -> String {
-    fixtures::render_template(
-        fixtures::SAMPLE_APP_MANIFEST_TEMPLATE,
-        &"aa".repeat(32),
-    )
+    fixtures::render_template(fixtures::SAMPLE_APP_MANIFEST_TEMPLATE, &"aa".repeat(32))
 }
 
 #[test]
@@ -195,10 +191,7 @@ fn portal_policy_rejects_typo() {
 
 #[test]
 fn cli_block_roundtrips() {
-    let src = fixtures::render_template(
-        fixtures::CLI_APP_MANIFEST_TEMPLATE,
-        &"aa".repeat(32),
-    );
+    let src = fixtures::render_template(fixtures::CLI_APP_MANIFEST_TEMPLATE, &"aa".repeat(32));
     let m = Manifest::from_toml_str(&src).expect("decode");
     let ep = m.entrypoint.as_ref().expect("entrypoint");
     assert_eq!(ep.r#type, pkg::EntrypointType::Cli);
@@ -212,10 +205,7 @@ fn cli_block_roundtrips() {
 
 #[test]
 fn entrypoint_type_both_prefers_split_bins() {
-    let src = fixtures::render_template(
-        fixtures::BOTH_APP_MANIFEST_TEMPLATE,
-        &"aa".repeat(32),
-    );
+    let src = fixtures::render_template(fixtures::BOTH_APP_MANIFEST_TEMPLATE, &"aa".repeat(32));
     let m = Manifest::from_toml_str(&src).expect("decode");
     let ep = m.entrypoint.as_ref().expect("entrypoint");
     assert_eq!(ep.r#type, pkg::EntrypointType::Both);
@@ -240,10 +230,7 @@ fn entrypoint_type_both_prefers_split_bins() {
 fn entrypoint_type_defaults_to_gui() {
     // The original SAMPLE_APP_MANIFEST_TEMPLATE has no `type` — it
     // should decode as Gui and pass validation.
-    let src = fixtures::render_template(
-        fixtures::SAMPLE_APP_MANIFEST_TEMPLATE,
-        &"aa".repeat(32),
-    );
+    let src = fixtures::render_template(fixtures::SAMPLE_APP_MANIFEST_TEMPLATE, &"aa".repeat(32));
     let m = Manifest::from_toml_str(&src).expect("decode");
     let ep = m.entrypoint.as_ref().expect("entrypoint");
     assert_eq!(ep.r#type, pkg::EntrypointType::Gui);
@@ -253,10 +240,7 @@ fn entrypoint_type_defaults_to_gui() {
 
 #[test]
 fn cli_manifest_validates() {
-    let src = fixtures::render_template(
-        fixtures::CLI_APP_MANIFEST_TEMPLATE,
-        &"aa".repeat(32),
-    );
+    let src = fixtures::render_template(fixtures::CLI_APP_MANIFEST_TEMPLATE, &"aa".repeat(32));
     let m = Manifest::from_toml_str(&src).expect("decode");
     validate_manifest(&m).expect("cli manifest validates");
 }

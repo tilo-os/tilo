@@ -27,6 +27,7 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 const PAD: f64 = 14.0;
@@ -63,9 +64,13 @@ impl Trend {
 
 /// The tile height with a delta line vs. without.
 fn tile_height(has_delta: bool, theme: &Theme) -> f64 {
-    let caption = theme.tokens.typography.scale.sm as f64;
-    let value = theme.tokens.typography.scale.x2l as f64;
-    let delta = if has_delta { 6.0 + theme.tokens.typography.scale.sm as f64 } else { 0.0 };
+    let caption = f64::from(theme.tokens.typography.scale.sm);
+    let value = f64::from(theme.tokens.typography.scale.x2l);
+    let delta = if has_delta {
+        6.0 + f64::from(theme.tokens.typography.scale.sm)
+    } else {
+        0.0
+    };
     PAD * 2.0 + caption + 6.0 + value + delta
 }
 
@@ -87,10 +92,21 @@ fn paint_stat_tile(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    // Card surface.
-    let card = RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64);
-    scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &card);
-    scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &card);
+    let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.raised,
+        None,
+        &card,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.border_standard,
+        None,
+        &card,
+    );
 
     let caption_size = theme.tokens.typography.scale.sm;
     let value_size = theme.tokens.typography.scale.x2l;
@@ -99,7 +115,6 @@ fn paint_stat_tile(
     let x = rect.x0 + PAD;
     let mut y = rect.y0 + PAD;
 
-    // Caption.
     text_renderer.draw_text(
         scene,
         caption,
@@ -109,7 +124,6 @@ fn paint_stat_tile(
         None,
     );
 
-    // Top-right icon.
     if let Some(icon) = icon {
         let ir = Rect::from_center_size(
             Point::new(rect.x1 - PAD - ICON_D / 2.0, rect.y0 + PAD + ICON_D / 2.0),
@@ -118,9 +132,8 @@ fn paint_stat_tile(
         icon.draw_with_stroke(scene, transform, ir, theme.text_dim, 1.6);
     }
 
-    y += caption_size as f64 + 6.0;
+    y += f64::from(caption_size) + 6.0;
 
-    // Value.
     text_renderer.draw_text(
         scene,
         value,
@@ -129,16 +142,15 @@ fn paint_stat_tile(
         transform * Affine::translate((x, y)),
         None,
     );
-    y += value_size as f64 + 6.0;
+    y += f64::from(value_size) + 6.0;
 
-    // Delta line.
     if let Some((delta_text, trend)) = delta {
         let col = trend.color(theme);
         let mut dx = x;
         if let Some(arrow) = trend.arrow() {
-            let ar = Rect::new(dx, y, dx + delta_size as f64, y + delta_size as f64);
+            let ar = Rect::new(dx, y, dx + f64::from(delta_size), y + f64::from(delta_size));
             arrow.draw_with_stroke(scene, transform, ar, col, 1.8);
-            dx += delta_size as f64 + 2.0;
+            dx += f64::from(delta_size) + 2.0;
         }
         text_renderer.draw_text(
             scene,
@@ -162,7 +174,6 @@ pub struct StatTile {
 }
 
 impl StatTile {
-    /// Construct a tile with a caption and value string.
     pub fn new(caption: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             caption: caption.into(),
@@ -174,32 +185,28 @@ impl StatTile {
         }
     }
 
-    /// Add a small icon in the tile's top-right corner.
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
-    /// Tint the value with a colour (e.g. a load/health semantic colour).
     /// Defaults to `theme.text_primary` when unset.
     pub fn with_value_color(mut self, color: Color) -> Self {
         self.value_color = Some(color);
         self
     }
 
-    /// Add a delta/trend line under the value (e.g. `("12%", Trend::Up)`).
+    /// E.g. `("12%", Trend::Up)`.
     pub fn with_delta(mut self, text: impl Into<String>, trend: Trend) -> Self {
         self.delta = Some((text.into(), trend));
         self
     }
 
-    /// The value colour this tile paints with, given `theme`.
     pub fn value_color(&self, theme: &Theme) -> Color {
         self.value_color.unwrap_or(theme.text_primary)
     }
 
-    /// Immediate-mode paint of a stat tile filling `rect`, for apps that render
-    /// straight to a `Scene`.
+    /// For apps that render straight to a `Scene`.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         scene: &mut Scene,
@@ -214,7 +221,16 @@ impl StatTile {
         delta: Option<(&str, Trend)>,
     ) {
         paint_stat_tile(
-            scene, transform, text_renderer, theme, rect, caption, value, value_color, icon, delta,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rect,
+            caption,
+            value,
+            value_color,
+            icon,
+            delta,
         );
     }
 }
@@ -229,17 +245,21 @@ impl Widget for StatTile {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let h = tile_height(self.delta.is_some(), theme) as f32;
-        // Grow to share a row evenly, but keep the fixed content height.
-        let node = taffy
-            .new_leaf(Style {
-                flex_grow: 1.0,
-                flex_basis: length(0.0),
-                min_size: taffy::Size { width: length(120.0), height: length(h) },
-                size: taffy::Size { width: percent(1.0), height: length(h) },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        // Grows to share a row evenly, but keeps the fixed content height.
+        let node = taffy.leaf_node(Style {
+            flex_grow: 1.0,
+            flex_basis: length(0.0_f32),
+            min_size: taffy::Size {
+                width: length(120.0_f32),
+                height: length(h),
+            },
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(h),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -250,16 +270,19 @@ impl Widget for StatTile {
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let theme = Theme::dark();
-        taffy::Size { width: 160.0, height: tile_height(self.delta.is_some(), &theme) as f32 }
+        taffy::Size {
+            width: 160.0,
+            height: tile_height(self.delta.is_some(), &theme) as f32,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -301,14 +324,18 @@ impl Widget for StatTile {
         // Stat tiles are informational — no input handling.
     }
 
-    fn name(&self) -> &str { "StatTile" }
+    fn name(&self) -> &'static str {
+        "StatTile"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // "CPU: 42%" — caption is the name, value is the value. The delta, if
-        // present, joins the value so a reader announces the trend too.
+        // Delta, if present, joins the value so a reader announces the
+        // trend too.
         let value = match &self.delta {
             Some((d, _)) => format!("{} ({})", self.value, d),
             None => self.value.clone(),
@@ -331,28 +358,37 @@ mod tests {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut widgets: Vec<StatTile> = (0..tiles).map(|i| StatTile::new(format!("m{i}"), "1")).collect();
+        let mut widgets: Vec<StatTile> = (0..tiles)
+            .map(|i| StatTile::new(format!("m{i}"), "1"))
+            .collect();
         let mut nodes = Vec::new();
         for w in widgets.iter_mut() {
             nodes.push(w.build_layout(&mut taffy, &theme, &mut node_map));
         }
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    gap: taffy::Size { width: length(12.0), height: length(0.0) },
-                    size: taffy::Size { width: length(600.0), height: length(120.0) },
-                    ..Default::default()
+        let root = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Row,
+                gap: taffy::Size {
+                    width: length(12.0_f32),
+                    height: length(0.0_f32),
                 },
-                &nodes,
-            )
-            .unwrap();
+                size: taffy::Size {
+                    width: length(600.0_f32),
+                    height: length(120.0_f32),
+                },
+                ..Default::default()
+            },
+            &nodes,
+        );
         taffy
-            .compute_layout(root, taffy::Size {
-                width: taffy::AvailableSpace::Definite(600.0),
-                height: taffy::AvailableSpace::Definite(120.0),
-            })
+            .compute_layout(
+                root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(600.0),
+                    height: taffy::AvailableSpace::Definite(120.0),
+                },
+            )
             .unwrap();
         for (w, n) in widgets.iter_mut().zip(nodes.iter()) {
             w.apply_layout(&taffy, *n, Point::ZERO);
@@ -366,7 +402,11 @@ mod tests {
         assert_eq!(rects.len(), 3);
         let w0 = rects[0].width();
         for r in &rects {
-            assert!((r.width() - w0).abs() < 1.0, "all tiles share width, got {} vs {w0}", r.width());
+            assert!(
+                (r.width() - w0).abs() < 1.0,
+                "all tiles share width, got {} vs {w0}",
+                r.width()
+            );
         }
         // Three tiles + 2×12px gaps must fit in 600px.
         assert!((w0 * 3.0 + 24.0 - 600.0).abs() < 2.0, "widths + gaps ≈ 600");
@@ -384,8 +424,14 @@ mod tests {
     #[test]
     fn trend_colors_are_semantic() {
         let theme = Theme::dark();
-        assert_eq!(Trend::Up.color(&theme), theme.tokens.colors.semantic.success);
-        assert_eq!(Trend::Down.color(&theme), theme.tokens.colors.semantic.danger);
+        assert_eq!(
+            Trend::Up.color(&theme),
+            theme.tokens.colors.semantic.success
+        );
+        assert_eq!(
+            Trend::Down.color(&theme),
+            theme.tokens.colors.semantic.danger
+        );
         assert_eq!(Trend::Flat.color(&theme), theme.text_dim);
         assert_eq!(Trend::Up.arrow(), Some(Icon::ChevronUp));
         assert_eq!(Trend::Flat.arrow(), None, "a flat trend draws no arrow");
@@ -396,8 +442,12 @@ mod tests {
         let theme = Theme::dark();
         let plain = StatTile::new("CPU", "42%");
         assert_eq!(plain.value_color(&theme), theme.text_primary);
-        let tinted = StatTile::new("CPU", "99%").with_value_color(theme.tokens.colors.semantic.danger);
-        assert_eq!(tinted.value_color(&theme), theme.tokens.colors.semantic.danger);
+        let tinted =
+            StatTile::new("CPU", "99%").with_value_color(theme.tokens.colors.semantic.danger);
+        assert_eq!(
+            tinted.value_color(&theme),
+            theme.tokens.colors.semantic.danger
+        );
     }
 
     #[test]
@@ -411,8 +461,16 @@ mod tests {
             .with_delta("12%", Trend::Up);
         t.rect = Rect::new(0.0, 0.0, 160.0, 100.0);
         t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let fills = scene.encoding().draw_tags.iter().filter(|x| **x == DrawTag::COLOR).count();
-        assert!(fills > 4, "card + caption + value + icon + delta ⇒ many fills, got {fills}");
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|x| **x == DrawTag::COLOR)
+            .count();
+        assert!(
+            fills > 4,
+            "card + caption + value + icon + delta ⇒ many fills, got {fills}"
+        );
     }
 
     #[test]
@@ -422,6 +480,10 @@ mod tests {
         let node = Widget::accessibility(&t).expect("stat tile exposes a11y");
         assert_eq!(node.role, Role::Group);
         assert_eq!(node.name.as_deref(), Some("CPU"));
-        assert_eq!(node.value.as_deref(), Some("42% (3%)"), "delta joins the announced value");
+        assert_eq!(
+            node.value.as_deref(),
+            Some("42% (3%)"),
+            "delta joins the announced value"
+        );
     }
 }

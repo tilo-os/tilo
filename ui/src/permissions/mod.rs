@@ -2,22 +2,21 @@
 //!
 //! There is exactly **one** permission model in qOS: the capability
 //! model in [`collab_types::caps`] — `(subject × scope × verb)`
-//! evaluated by [`decide_capability`], which is deny-biased and
-//! fail-closed. This module does not define a second one. It is the
-//! toolkit-side *adapter*:
+//! evaluated by [`decide_capability`], deny-biased and fail-closed. This
+//! module is the toolkit-side *adapter*, not a second model:
 //!
 //! - a widget declares "acting on me needs verb `V` on resource `R`"
 //!   by returning a [`PermissionScope`] from `Widget::permission_scope`;
-//! - the host (compositor, or an app that knows better) installs the
-//!   [`Actor`] and the [`CapOverride`] set those declarations are
-//!   decided against, via [`PermissionContext::from_capabilities`];
-//! - [`PermissionContext::check`] answers, by calling
+//! - the host installs the [`Actor`] and [`CapOverride`] set those
+//!   declarations are decided against, via
+//!   [`PermissionContext::from_capabilities`];
+//! - [`PermissionContext::check`] answers by calling
 //!   [`decide_capability`]. Nothing here decides anything itself.
 //!
-//! Every vocabulary word below — subject, scope, verb, expiry, effect —
-//! is re-exported from `collab-types` rather than redefined, so a
-//! capability minted by the compositor, persisted to disk, or replicated
-//! to a peer is the *same value* the toolkit evaluates.
+//! Every vocabulary word — subject, scope, verb, expiry, effect — is
+//! re-exported from `collab-types` rather than redefined, so a
+//! capability minted, persisted, or replicated is the *same value* the
+//! toolkit evaluates.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,10 +33,9 @@ pub const LOCAL_USER: &str = "local";
 /// Which system app a presence key or a permission scope refers to.
 ///
 /// This is an *identity*, not a policy: it names an app so a presence
-/// cursor can be scoped to it and so [`PermissionScope::app_kind`] can
-/// build the corresponding [`ResourceRef::App`]. The stable string
-/// [`AppKind::app_id`] returns is the same app id the compositor's
-/// portal and a `Principal::App` subject use.
+/// cursor can be scoped to it. The stable string [`AppKind::app_id`]
+/// returns is the same app id the compositor's portal and a
+/// `Principal::App` subject use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum AppKind {
     Terminal,
@@ -64,34 +62,28 @@ impl AppKind {
 /// A person's stable id, as apps and presence spell it.
 ///
 /// Interchangeable with [`Principal::Person`] — see
-/// [`UserId::principal`]. Kept as a distinct newtype only because
-/// presence, collaboration rosters and app code all pass a bare user
-/// string around and gain nothing from carrying a tagged enum.
+/// [`UserId::principal`]. Kept as a distinct newtype since presence and
+/// app code pass a bare user string around and gain nothing from a
+/// tagged enum.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct UserId(pub String);
 
 impl UserId {
-    /// This user as a capability subject principal.
     pub fn principal(&self) -> Principal {
         Principal::Person(self.0.clone())
     }
 }
 
 /// What a widget asks permission for: a resource, and the verb needed
-/// to act on it.
-///
-/// Both halves are the capability model's own types — there is no
-/// toolkit-local resource or op enum to keep in sync.
+/// to act on it. Both halves are the capability model's own types —
+/// there is no toolkit-local resource or op enum to keep in sync.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionScope {
-    /// The thing being acted on.
     pub resource: ResourceRef,
-    /// The verb the action needs.
     pub op: Verb,
 }
 
 impl PermissionScope {
-    /// Acting on the workspace itself.
     pub fn workspace(op: Verb) -> Self {
         Self {
             resource: ResourceRef::Workspace,
@@ -99,7 +91,6 @@ impl PermissionScope {
         }
     }
 
-    /// Acting on an app's surface, by app id.
     pub fn app(app_id: impl Into<String>, op: Verb) -> Self {
         Self {
             resource: ResourceRef::App(app_id.into()),
@@ -107,7 +98,6 @@ impl PermissionScope {
         }
     }
 
-    /// Acting on a known system app's surface.
     pub fn app_kind(kind: AppKind, op: Verb) -> Self {
         Self::app(kind.app_id(), op)
     }
@@ -126,22 +116,16 @@ impl PermissionScope {
 }
 
 /// The actor + capability set a frame's permission checks are decided
-/// against.
-///
-/// Held by `App`, passed into `Widget::draw_with_presence`, and
-/// consulted by `app::dispatch_gated_event` before a gated widget ever
-/// sees an event. Construct it with [`PermissionContext::permissive`]
-/// (the local unrestricted user) or
-/// [`PermissionContext::from_capabilities`] (a real actor with a real
-/// capability set).
+/// against. Held by `App`, consulted by `app::dispatch_gated_event`
+/// before a gated widget ever sees an event. Construct with
+/// [`PermissionContext::permissive`] (the local unrestricted user) or
+/// [`PermissionContext::from_capabilities`] (a real actor + capabilities).
 #[derive(Clone, Debug)]
 pub struct PermissionContext {
     /// The acting person's id, when the actor names one. Empty for an
     /// app / agent / token actor, which is not a person.
     user: UserId,
-    /// Who is asking.
     actor: Actor,
-    /// The capabilities in force.
     caps: Vec<CapOverride>,
     /// The instant expiry is evaluated against (seconds since the Unix
     /// epoch). `None` disables expiry evaluation entirely and should be
@@ -150,20 +134,17 @@ pub struct PermissionContext {
 }
 
 impl PermissionContext {
-    /// The **unrestricted local user**: one person, holding one
-    /// explicit workspace-wide [`Verb::Admin`] capability.
+    /// The **unrestricted local user**: one person holding one explicit
+    /// workspace-wide [`Verb::Admin`] capability.
     ///
-    /// This is not a bypass flag and there is no bypass flag — the
-    /// permissiveness is a real [`CapOverride`] that
-    /// [`decide_capability`] evaluates like any other, and it can be
+    /// Not a bypass flag — the permissiveness is a real [`CapOverride`]
+    /// that [`decide_capability`] evaluates like any other, and can be
     /// inspected, printed, or revoked. `Scope::Workspace` covers every
-    /// resource including filesystem paths, devices and network hosts,
-    /// which is exactly what "this machine's owner, working alone"
-    /// means.
+    /// resource including filesystem paths, devices and network hosts.
     ///
-    /// It is the right context for a solo install, `--shots`, and any
-    /// session the compositor has not handed a narrower one. It is the
-    /// **wrong** context for anything acting on a remote peer's behalf.
+    /// Right for a solo install, `--shots`, and any session the
+    /// compositor has not handed a narrower one. **Wrong** for anything
+    /// acting on a remote peer's behalf.
     pub fn permissive() -> Self {
         Self::from_capabilities(
             Actor::person(Some(Role::Owner), LOCAL_USER),
@@ -175,9 +156,8 @@ impl PermissionContext {
     }
 
     /// Build a context from a real actor and the capabilities it holds.
-    ///
-    /// Expiry is evaluated against the wall clock at construction
-    /// time; use [`PermissionContext::at_unix_time`] to pin it.
+    /// Expiry is evaluated against the wall clock at construction time;
+    /// use [`PermissionContext::at_unix_time`] to pin it.
     pub fn from_capabilities(actor: Actor, caps: Vec<CapOverride>) -> Self {
         let user = UserId(
             actor
@@ -197,15 +177,13 @@ impl PermissionContext {
         }
     }
 
-    /// Evaluate expiry against a fixed instant instead of the wall
-    /// clock. Deterministic, so tests can prove a lapsed capability is
-    /// dead.
+    /// Evaluate expiry against a fixed instant instead of the wall clock,
+    /// so tests can prove a lapsed capability is dead.
     pub fn at_unix_time(mut self, now: u64) -> Self {
         self.now = Some(now);
         self
     }
 
-    /// Add a capability to the set.
     pub fn granting(mut self, cap: CapOverride) -> Self {
         self.caps.push(cap);
         self
@@ -216,7 +194,6 @@ impl PermissionContext {
         &self.user
     }
 
-    /// Who is asking.
     pub fn actor(&self) -> &Actor {
         &self.actor
     }
@@ -232,7 +209,6 @@ impl PermissionContext {
         &self.caps
     }
 
-    /// The raw decision for `(resource, verb)`.
     pub fn decide(&self, resource: &ResourceRef, op: Verb) -> CapDecision {
         decide_capability(&self.actor, resource, op, &self.caps, self.now)
     }
@@ -244,10 +220,8 @@ impl PermissionContext {
     }
 
     /// [`PermissionContext::check`] with the reason, so a caller can
-    /// surface a toast that distinguishes "your role doesn't allow
-    /// this" from "a restriction on this scope blocks it".
-    ///
-    /// `None` means allowed; `Some` always carries a denial.
+    /// distinguish "your role doesn't allow this" from "a restriction on
+    /// this scope blocks it". `None` means allowed.
     pub fn check_with_denied_feedback(&self, scope: &PermissionScope) -> Option<CapDecision> {
         match self.decide(&scope.resource, scope.op) {
             CapDecision::Allow => None,
@@ -270,22 +244,29 @@ mod tests {
     use super::*;
 
     /// The permissive context must be permissive *because of a
-    /// capability*, not because of a special case in the checker. If
-    /// the grant is dropped, the same actor is denied — that is what
-    /// proves there is no bypass.
+    /// capability*, not a special case in the checker: drop the grant
+    /// and the same actor is denied.
     #[test]
     fn permissive_is_a_capability_not_a_bypass() {
         let ctx = PermissionContext::permissive();
-        assert!(ctx.check(&PermissionScope::path("/var/workspace/secret.png", Verb::Read)));
+        assert!(ctx.check(&PermissionScope::path(
+            "/var/workspace/secret.png",
+            Verb::Read
+        )));
         assert_eq!(ctx.capabilities().len(), 1);
         assert_eq!(ctx.capabilities()[0].verb, Verb::Admin);
         assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
 
-        // Same actor, no capability: the filesystem is out of reach,
-        // because a role confers no base authority over paths.
-        let stripped =
-            PermissionContext::from_capabilities(Actor::person(Some(Role::Owner), LOCAL_USER), vec![]);
-        assert!(!stripped.check(&PermissionScope::path("/var/workspace/secret.png", Verb::Read)));
+        // Same actor, no capability: a role confers no base authority
+        // over paths.
+        let stripped = PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Owner), LOCAL_USER),
+            vec![],
+        );
+        assert!(!stripped.check(&PermissionScope::path(
+            "/var/workspace/secret.png",
+            Verb::Read
+        )));
     }
 
     /// NEGATIVE: a Viewer may read an artifact but must not write it.
@@ -318,8 +299,7 @@ mod tests {
             "the denial must be attributed to the role, not to a restriction"
         );
 
-        // …and the check is not denying everything indiscriminately:
-        // reading is exactly what a Viewer may do.
+        // …reading is exactly what a Viewer may do.
         let read = PermissionScope {
             resource: artifact,
             op: Verb::Read,
@@ -344,8 +324,7 @@ mod tests {
             .at_unix_time(999);
         assert!(live.check(&scope), "before the deadline the grant holds");
 
-        let lapsed =
-            PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(1_001);
+        let lapsed = PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(1_001);
         assert!(
             !lapsed.check(&scope),
             "after the deadline the grant is gone"
@@ -358,8 +337,7 @@ mod tests {
         );
     }
 
-    /// A `Restrict` capability caps authority below the role baseline,
-    /// and says so.
+    /// A `Restrict` capability caps authority below the role baseline.
     #[test]
     fn restriction_denies_and_is_attributed_to_the_restriction() {
         let ctx = PermissionContext::from_capabilities(
@@ -384,7 +362,10 @@ mod tests {
     fn actor_without_role_or_capability_is_denied_everything() {
         let ctx = PermissionContext::from_capabilities(Actor::app("dev.example.thing"), vec![]);
         assert!(!ctx.check(&PermissionScope::workspace(Verb::Read)));
-        assert!(!ctx.check(&PermissionScope::app_kind(AppKind::FileExplorer, Verb::Read)));
+        assert!(!ctx.check(&PermissionScope::app_kind(
+            AppKind::FileExplorer,
+            Verb::Read
+        )));
         assert!(!ctx.check(&PermissionScope::path("/etc/shadow", Verb::Read)));
         assert!(ctx.user().0.is_empty(), "an app is not a person");
     }

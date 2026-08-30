@@ -19,6 +19,8 @@ dist/rpm/build/
 .env.local
 scripts/headless-examples/__pycache__/
 scripts/__pycache__/
+tools/__pycache__/
+tools/**/__pycache__/
 
 # qOS signing keys — PRIVATE material is NEVER committed (see keys/README.md).
 # Public keys (keys/*.pub, keys/*.public.pem) ARE tracked — verifiers need them.
@@ -27,11 +29,6 @@ keys/*.password
 keys/*.private.pem
 keys/**/*.key
 keys/**/*.private.pem
-
-# Signing keys — private material must never be committed (public keys are tracked)
-keys/*.key
-keys/*.password
-keys/*.private.pem
 # runtime CRDT session artifacts (e.g. ui/examples write session.crdt)
 *.crdt
 .claude/test-scratch/
@@ -44,6 +41,9 @@ keys/*.private.pem
 .claude/qos-build-sem/
 .claude/qos-target/
 .claude/qos-tools/
+.claude/qos-logs/
+.claude/qos-tmp/
+.claude/build/
 .claude/worktrees/
 .claude/app-status.md
 .claude/*.log
@@ -52,6 +52,3 @@ keys/*.private.pem
 # freshly built qos-rollback binary into the composefs build context
 os/dev/composefs/01-hardening.toml
 os/dev/composefs/stage/
-
-# Recorded demo output. Large binaries; regenerate with scripts/yc-demo.py --record.
-.claude/demo-artifacts/

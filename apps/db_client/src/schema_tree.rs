@@ -5,9 +5,9 @@
 
 use std::collections::HashSet;
 
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 
 use crate::model::RelationKind;
 use crate::session::Session;
@@ -30,9 +30,17 @@ pub enum TreeClick {
 /// click y-coordinate back to an action.
 #[derive(Clone)]
 enum Row {
-    Schema { name: String },
-    Table { name: String },
-    Column { table: String, text: String, icon: String },
+    Schema {
+        name: String,
+    },
+    Table {
+        name: String,
+    },
+    Column {
+        table: String,
+        text: String,
+        icon: String,
+    },
 }
 
 pub struct SchemaTree {
@@ -44,6 +52,12 @@ pub struct SchemaTree {
     selected: Option<String>,
     /// Rows produced by the last `draw`, used for hit-testing.
     rows: Vec<Row>,
+}
+
+impl Default for SchemaTree {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SchemaTree {
@@ -118,7 +132,11 @@ impl SchemaTree {
                 if self.expanded_tables.contains(&table.name) {
                     for col in &table.columns {
                         let pk = if col.primary_key { "  PK" } else { "" };
-                        let nn = if col.not_null && !col.primary_key { " ·" } else { "" };
+                        let nn = if col.not_null && !col.primary_key {
+                            " ·"
+                        } else {
+                            ""
+                        };
                         let text = format!("{}{}{}  {}", col.name, pk, nn, col.decl_type);
                         rows.push(Row::Column {
                             table: table.name.clone(),
@@ -223,7 +241,7 @@ impl SchemaTree {
                             &cnt,
                             11.0,
                             theme.text_dim,
-                            t * Affine::translate((r.x1 - cw as f64 - 12.0, y + 5.0)),
+                            t * Affine::translate((r.x1 - f64::from(cw) - 12.0, y + 5.0)),
                             None,
                         );
                     }
@@ -231,15 +249,26 @@ impl SchemaTree {
                 Row::Table { name } => {
                     let selected = self.selected.as_deref() == Some(name.as_str());
                     if selected {
-                        scene.fill(Fill::NonZero, t, p.selection, None, &row_rect.to_rounded_rect(5.0));
+                        scene.fill(
+                            Fill::NonZero,
+                            t,
+                            p.selection,
+                            None,
+                            &row_rect.to_rounded_rect(5.0),
+                        );
                     } else if hover {
-                        scene.fill(Fill::NonZero, t, p.hover, None, &row_rect.to_rounded_rect(5.0));
+                        scene.fill(
+                            Fill::NonZero,
+                            t,
+                            p.hover,
+                            None,
+                            &row_rect.to_rounded_rect(5.0),
+                        );
                     }
                     let open = self.expanded_tables.contains(name);
                     let tri = if open { "▾" } else { "▸" };
                     let info = session.schema.find_table(name);
-                    let is_view =
-                        info.map(|t| t.kind == RelationKind::View).unwrap_or(false);
+                    let is_view = info.is_some_and(|t| t.kind == RelationKind::View);
                     tr.draw_text(
                         scene,
                         tri,
@@ -272,31 +301,40 @@ impl SchemaTree {
                         Some((r.width() - INDENT - 80.0) as f32),
                     );
                     // Row count badge.
-                    if let Some(info) = info {
-                        if let Some(rc) = info.row_count {
-                            let badge = format!("{rc}");
-                            let (bw, _) = tr.measure(&badge, 10.5, None);
-                            tr.draw_text(
-                                scene,
-                                &badge,
-                                10.5,
-                                theme.text_dim,
-                                t * Affine::translate((r.x1 - bw as f64 - 14.0, y + 5.0)),
-                                None,
-                            );
-                        }
+                    if let Some(info) = info
+                        && let Some(rc) = info.row_count
+                    {
+                        let badge = format!("{rc}");
+                        let (bw, _) = tr.measure(&badge, 10.5, None);
+                        tr.draw_text(
+                            scene,
+                            &badge,
+                            10.5,
+                            theme.text_dim,
+                            t * Affine::translate((r.x1 - f64::from(bw) - 14.0, y + 5.0)),
+                            None,
+                        );
                     }
                 }
-                Row::Column { table, text, icon, .. } => {
+                Row::Column {
+                    table, text, icon, ..
+                } => {
                     if hover {
-                        scene.fill(Fill::NonZero, t, p.hover, None, &row_rect.to_rounded_rect(5.0));
+                        scene.fill(
+                            Fill::NonZero,
+                            t,
+                            p.hover,
+                            None,
+                            &row_rect.to_rounded_rect(5.0),
+                        );
                     }
                     // Resolve the type colour from the live schema so it
                     // tracks the theme (avoids storing a stale colour).
                     let (icon_color, _cls) = self
                         .column_class(session, table, text)
-                        .map(|c| (theme.type_color(c), c))
-                        .unwrap_or((theme.text_dim, crate::model::TypeClass::Unknown));
+                        .map_or((theme.text_dim, crate::model::TypeClass::Unknown), |c| {
+                            (theme.type_color(c), c)
+                        });
 
                     // Type icon chip.
                     let chip = Rect::new(

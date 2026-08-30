@@ -1,23 +1,21 @@
 //! The power **service** — the async orchestrator that pairs the pure policy
-//! ([`super::policy`], [`super::battery`], [`super::inhibit`]) with the real
-//! `systemd-logind` / `UPower` glue ([`super::logind`], [`super::upower`]).
+//! ([`super::policy`], [`super::battery`], [`super::inhibit`]) with the real `systemd-logind`
+//! / `UPower` glue ([`super::logind`], [`super::upower`]).
 //!
-//! It runs on a background tokio runtime (the compositor spawns it next to the
-//! notification service) and:
+//! Runs on a background tokio runtime (spawned by the compositor next to the notification
+//! service) and:
 //!
-//! * takes a logind *block* lock so logind delegates the lid switch and power
-//!   key to the compositor's policy;
-//! * mirrors the [`InhibitRegistry`] into a logind `idle:sleep` block lock, so
-//!   an app holding a qOS inhibitor also holds off logind's own idle handling;
-//! * polls the battery, runs the threshold [`BatteryMonitor`], and pushes
-//!   low/critical toasts + a critical auto-suspend;
+//! * takes a logind *block* lock so logind delegates the lid switch and power key to the
+//!   compositor's policy;
+//! * mirrors the [`InhibitRegistry`] into a logind `idle:sleep` block lock;
+//! * polls the battery, runs the threshold [`BatteryMonitor`], and pushes low/critical toasts
+//!   + a critical auto-suspend;
 //! * reacts to lid changes per policy (suspend / lock / ignore);
-//! * drains [`PowerCommand::Suspend`] requests from the compositor loop and
-//!   issues `logind.Suspend`;
-//! * resets the compositor's idle timer on resume (`PrepareForSleep(false)`).
+//! * drains [`PowerCommand::Suspend`] requests and issues `logind.Suspend`;
+//! * resets the compositor's idle timer on resume.
 //!
-//! The reaction *mappings* (battery events → signals, lid → effect) are pure
-//! functions tested below; `run` only wires them to real streams.
+//! The reaction *mappings* (battery events → signals, lid → effect) are pure functions
+//! tested below; `run` only wires them to real streams.
 
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
@@ -50,10 +48,9 @@ impl From<Option<PowerAction>> for Effect {
     }
 }
 
-/// Decide the effect of a lid observation given the previous state. Only a
-/// genuine open→closed edge acts; the first observation (`prev == None`) or a
-/// lid that stays closed just records. Pure — the async [`PowerService`] calls
-/// exactly this.
+/// Decide the effect of a lid observation given the previous state. Only a genuine
+/// open→closed edge acts; the first observation (`prev == None`) or a lid that stays closed
+/// just records. Pure — the async [`PowerService`] calls exactly this.
 pub fn lid_edge_effect(prev: Option<bool>, now: bool, policy: &PowerPolicy) -> Effect {
     if now && prev == Some(false) {
         Effect::from(policy.on_lid(true))
@@ -62,12 +59,9 @@ pub fn lid_edge_effect(prev: Option<bool>, now: bool, policy: &PowerPolicy) -> E
     }
 }
 
-/// Map battery-threshold events to the compositor signals + whether to
-/// auto-suspend. Pure: this is what [`PowerService::run`] applies for real.
-pub fn battery_reaction(
-    events: &[BatteryEvent],
-    policy: &PowerPolicy,
-) -> (Vec<PowerSignal>, bool) {
+/// Map battery-threshold events to the compositor signals + whether to auto-suspend. Pure:
+/// this is what [`PowerService::run`] applies for real.
+pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<PowerSignal>, bool) {
     let mut signals = Vec::new();
     let mut suspend = false;
     for ev in events {
@@ -101,8 +95,8 @@ pub fn battery_reaction(
     (signals, suspend)
 }
 
-/// The running power service. Construct with [`Self::connect`], then
-/// [`Self::run`] on a tokio runtime.
+/// The running power service. Construct with [`Self::connect`], then [`Self::run`] on a
+/// tokio runtime.
 pub struct PowerService {
     logind: LogindManager,
     upower: UPowerMonitor,
@@ -110,22 +104,20 @@ pub struct PowerService {
     registry: InhibitRegistry,
     policy: PowerPolicy,
     battery: BatteryMonitor,
-    /// Last observed lid state, for edge detection (act only on the
-    /// open→closed transition, not on every poll while it stays closed).
+    /// Last observed lid state, for edge detection (act only on the open→closed transition, not
+    /// on every poll while it stays closed).
     last_lid_closed: Option<bool>,
-    /// The "delegate lid/power-key to us" block lock, held for the service's
-    /// lifetime.
+    /// The "delegate lid/power-key to us" block lock, held for the service's lifetime.
     _delegate_lock: Option<LogindInhibitor>,
-    /// The logind `idle:sleep` lock mirroring the registry (present iff the
-    /// registry currently holds any inhibitor).
+    /// The logind `idle:sleep` lock mirroring the registry (present iff the registry currently
+    /// holds any inhibitor).
     idle_sleep_lock: Option<LogindInhibitor>,
 }
 
 impl PowerService {
-    /// Connect to logind + UPower on a shared system-bus connection and take
-    /// the delegate lock. Errors if the system bus / daemons are unreachable
-    /// — the caller (the compositor) downgrades that to a warning and keeps
-    /// running with the pure policy only.
+    /// Connect to logind + `UPower` on a shared system-bus connection and take the delegate lock.
+    /// Errors if the system bus / daemons are unreachable — the caller (the compositor)
+    /// downgrades that to a warning and keeps running with the pure policy only.
     pub async fn connect(
         bridge: PowerBridge,
         registry: InhibitRegistry,
@@ -135,8 +127,8 @@ impl PowerService {
         let logind = LogindManager::with_connection(&conn).await?;
         let upower = UPowerMonitor::with_connection(&conn).await?;
 
-        // Best-effort: if logind refuses the delegate lock we still run our
-        // policy; logind may just also act on the lid. Do not fail startup.
+        // Best-effort: if logind refuses the delegate lock we still run our policy; logind may
+        // just also act on the lid. Do not fail startup.
         let delegate = match logind.delegate_handled_keys().await {
             Ok(l) => {
                 info!(target: "qos::power", "logind: delegating lid/power-key to compositor policy");
@@ -161,24 +153,21 @@ impl PowerService {
         })
     }
 
-    /// Run the service loop until the process ends. Never returns under
-    /// normal operation.
+    /// Run the service loop until the process ends. Never returns under normal operation.
     pub async fn run(mut self) {
         let policy = self.policy;
         info!(target: "qos::power", ?policy, "power service started");
 
-        // Prompt cadence for commands + registry mirroring + lid polling;
-        // battery is polled less often (every `BATTERY_POLL_EVERY` ticks).
+        // Prompt cadence for commands + registry mirroring + lid polling; battery is polled less
+        // often (every `BATTERY_POLL_EVERY` ticks).
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         const BATTERY_POLL_EVERY: u32 = 80; // 250ms * 80 = 20s
         let mut ticks: u32 = 0;
 
-        // Resume stream (best-effort; a failed subscribe just disables the
-        // resume timer reset).
+        // Resume stream (best-effort; a failed subscribe just disables the resume timer reset).
         let mut sleep_stream = self.logind.receive_prepare_for_sleep().await.ok();
 
-        // Prime battery + lid so a machine that boots already-low / lid-closed
-        // reacts promptly.
+        // Prime battery + lid so a machine that boots already-low / lid-closed reacts promptly.
         self.poll_battery().await;
         self.poll_lid().await;
 
@@ -189,7 +178,7 @@ impl PowerService {
                     self.mirror_inhibit_registry().await;
                     self.poll_lid().await;
                     ticks = ticks.wrapping_add(1);
-                    if ticks % BATTERY_POLL_EVERY == 0 {
+                    if ticks.is_multiple_of(BATTERY_POLL_EVERY) {
                         self.poll_battery().await;
                     }
                 }
@@ -227,8 +216,8 @@ impl PowerService {
         }
     }
 
-    /// Poll the lid and, on the open→closed edge, apply the lid policy.
-    /// Edge-triggered so we act once per close, not every tick it stays shut.
+    /// Poll the lid and, on the open→closed edge, apply the lid policy. Edge-triggered so we
+    /// act once per close, not every tick it stays shut.
     async fn poll_lid(&mut self) {
         let closed = match self.upower.lid_is_closed().await {
             Ok(c) => c,
@@ -273,9 +262,8 @@ impl PowerService {
         }
     }
 
-    /// Take/release the logind `idle:sleep` block lock to match the qOS
-    /// inhibitor registry, so an app holding a qOS inhibitor also blocks
-    /// logind's own idle/suspend handling.
+    /// Take/release the logind `idle:sleep` block lock to match the qOS inhibitor registry, so
+    /// an app holding a qOS inhibitor also blocks logind's own idle/suspend handling.
     async fn mirror_inhibit_registry(&mut self) {
         let inhibited = self.registry.is_inhibited();
         match (inhibited, self.idle_sleep_lock.is_some()) {
@@ -301,9 +289,8 @@ impl PowerService {
         }
     }
 
-    /// Issue the real suspend, if logind says it can. The inhibitor registry
-    /// is the compositor's gate for *idle* suspend; lid/critical suspends are
-    /// deliberate and proceed regardless.
+    /// Issue the real suspend, if logind says it can. The inhibitor registry is the compositor's
+    /// gate for *idle* suspend; lid/critical suspends are deliberate and proceed regardless.
     async fn do_suspend(&self) {
         match self.logind.can_suspend().await {
             Ok(v) if v == "yes" => {
@@ -317,8 +304,8 @@ impl PowerService {
     }
 }
 
-/// `select!` helper: poll an `Option<Stream>`, or park forever when absent so
-/// the branch is simply inert rather than a busy `None`.
+/// `select!` helper: poll an `Option<Stream>`, or park forever when absent so the branch is
+/// simply inert rather than a busy `None`.
 async fn next_or_pending<S: futures_util::Stream + Unpin>(
     stream: &mut Option<S>,
 ) -> Option<S::Item> {
@@ -403,16 +390,23 @@ mod tests {
         assert!(!suspend);
     }
 
-    /// End-to-end pure path: a discharging battery crossing the low then the
-    /// critical threshold produces exactly the toasts + suspend the service
-    /// would apply — the same `BatteryMonitor` + `battery_reaction` the async
-    /// loop uses, minus the bus.
+    /// End-to-end pure path: a discharging battery crossing the low then the critical threshold
+    /// produces exactly the toasts + suspend the service would apply — the same `BatteryMonitor`
+    /// + `battery_reaction` the async loop uses, minus the bus.
     #[test]
     fn monitor_plus_reaction_full_discharge() {
         use crate::battery::BatteryState;
-        let p = PowerPolicy { low_battery_percent: 15, critical_battery_percent: 5, ..Default::default() };
+        let p = PowerPolicy {
+            low_battery_percent: 15,
+            critical_battery_percent: 5,
+            ..Default::default()
+        };
         let mut mon = BatteryMonitor::new();
-        let disch = |pct| BatterySnapshot { present: true, percent: pct, state: BatteryState::Discharging };
+        let disch = |pct| BatterySnapshot {
+            present: true,
+            percent: pct,
+            state: BatteryState::Discharging,
+        };
 
         // Healthy: nothing.
         let (s, _) = battery_reaction(&mon.evaluate(&disch(40), &p), &p);

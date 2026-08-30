@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "shell"
 version = "0.1.0"
 edition = "2024"
@@ -71,7 +73,6 @@ serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-once_cell.workspace = true
 chrono = { workspace = true, default-features = true }
 uuid.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
@@ -80,7 +81,13 @@ dirs.workspace = true
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
 wayland-protocols = "0.32.12"
-libp2p.workspace = true
+iroh.workspace = true
+iroh-base.workspace = true
+iroh-gossip.workspace = true
+iroh-mdns-address-lookup.workspace = true
+bytes.workspace = true
+futures-lite.workspace = true
+blake3.workspace = true
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "backend_winit",
@@ -102,7 +109,6 @@ smithay = { version = "0.7", default-features = false, features = [
 # panicking — the host machine (Gnome already holds the seat) needs the
 # `--backend drm` path to fail cleanly with a useful diagnostic.
 thiserror.workspace = true
-calloop-wayland-source = "0.4.1"
 
 ui = { path = "../ui" }
 # The record/room-index store. The compositor keeps one document per room
@@ -166,19 +172,17 @@ libc.workspace = true
 # the namespace, so it layers on top of bwrap + seccomp + netns. Linux-only;
 # best-effort at runtime (degrades silently on kernels without Landlock).
 landlock.workspace = true
-# Phase 3 Task 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
-# `network::invite` encodes / decodes signed peer-invite tokens as base64-url
-# wrapped JSON, with the owner's libp2p PeerId rendered as base58. Both crates
-# are already pulled in transitively by libp2p; pinning them here is a one-line
-# Cargo edit and avoids relying on transitive re-exports of unrelated deps.
+# Peer invitations are base64-url wrapped signed JSON tickets containing the
+# owner's stable iroh EndpointAddr.
 base64.workspace = true
-bs58 = "0.5.1"
+bs58.workspace = true
 # Phase 4 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
 # software H.264 encode/decode for foreign-surface streaming between peers.
 # `source` feature builds Cisco's OpenH264 in-tree (vs. dlopen'ing the system
 # copy), which keeps the test image self-contained — bootc is immutable so we
 # can't rely on a runtime-installed `libopenh264.so`.
 openh264.workspace = true
+qos-projector = { path = "../crates/system/projector" }
 # Hardware H.264 encode (VA-API / NVENC) via libavcodec. Opt-in behind
 # the `vaapi` / `nvenc` features. `default-features = false` +
 # `features = ["codec", "software-scaling"]` pulls only libavcodec +
@@ -213,7 +217,7 @@ qos-bluez = { path = "../crates/system/qos-bluez" }
 png.workspace = true
 # Phase 3 of `2026-06-29-spaces-channels-and-cryptographic-roles.md`:
 # the broker validates inbound `SignedOp` envelopes against the
-# channel's role table before fan-out; the libp2p actor carries them
+# channel's role table before fan-out; the Iroh actor carries them
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `qos-collab-types`.
 collab-types = { path = "../crates/collab/collab-types" }
@@ -236,7 +240,6 @@ rand_core = { workspace = true, features = ["getrandom"] }
 # the SDK-side client wrappers we reuse in tests; `runtime-portal`
 # supplies the connected-fd lift + service-fd lookup.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
-runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `qos-launcher` binary to build the actual bwrap + seccomp + Landlock
@@ -252,6 +255,7 @@ desktop-entry = { package = "qos-desktop-entry", path = "../crates/system/deskto
 # the cert against the workspace owner's root key and cross-check
 # the revocation list before accepting any of the peer's CRDT ops.
 qos-user-identity = { path = "../crates/identity/qos-user-identity" }
+qos-relay = { path = "../crates/hosting/qos-relay" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry
@@ -279,7 +283,6 @@ tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
 wayland-client.workspace = true
-tokio-test = "0.4"
 # Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
 # `src/network/protocol.rs`. `qos-collab-types` already uses this for
 # signing; the test verifies `NeighbourMsg::AppCrdtIncrementalSigned`
@@ -323,7 +326,7 @@ vello_encoding.workspace = true
 tempfile.workspace = true
 # `tests/portal_test.rs` joins the server- and client-side handshake of an
 # in-process p2p zbus pair via `futures_util::try_join!`. Already pulled in
-# transitively (libp2p, zbus, tokio) — pinning it here is just for the
+# transitively (Iroh, zbus, tokio) — pinning it here is just for the
 # `try_join!` macro at the test-fixture call site.
 futures-util.workspace = true
 # Serializes the 8 `apply_grants`-calling tests in `sandbox::profile`
@@ -348,3 +351,10 @@ naga = { version = "29", features = ["wgsl-in"] }
 [[bin]]
 name = "qos-control"
 path = "src/bin/qos-control.rs"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

@@ -126,7 +126,9 @@ impl MailDoc {
 
     pub fn get_compose_format(doc: &AutoCommit) -> Option<String> {
         match doc.get(&ROOT, "ui") {
-            Ok(Some((Value::Object(ObjType::Map), ui))) => Self::read_str(doc, &ui, "compose_format"),
+            Ok(Some((Value::Object(ObjType::Map), ui))) => {
+                Self::read_str(doc, &ui, "compose_format")
+            }
             _ => None,
         }
     }
@@ -210,7 +212,8 @@ impl MailDoc {
                 if let Some(s) = Self::read_bool(doc, &entry, "starred") {
                     m.starred = s;
                 }
-                if let Some(f) = Self::read_str(doc, &entry, "folder").and_then(|s| folder_from_key(&s))
+                if let Some(f) =
+                    Self::read_str(doc, &entry, "folder").and_then(|s| folder_from_key(&s))
                 {
                     m.folder = f;
                 }
@@ -228,10 +231,10 @@ impl MailDoc {
         ui::doc::put_if_changed(doc, &acc, "display_name", cfg.display_name.as_str());
         ui::doc::put_if_changed(doc, &acc, "email", cfg.email.as_str());
         ui::doc::put_if_changed(doc, &acc, "imap_host", cfg.imap_host.as_str());
-        ui::doc::put_if_changed(doc, &acc, "imap_port", cfg.imap_port as i64);
+        ui::doc::put_if_changed(doc, &acc, "imap_port", i64::from(cfg.imap_port));
         ui::doc::put_if_changed(doc, &acc, "imap_tls", cfg.imap_tls);
         ui::doc::put_if_changed(doc, &acc, "smtp_host", cfg.smtp_host.as_str());
-        ui::doc::put_if_changed(doc, &acc, "smtp_port", cfg.smtp_port as i64);
+        ui::doc::put_if_changed(doc, &acc, "smtp_port", i64::from(cfg.smtp_port));
         ui::doc::put_if_changed(doc, &acc, "smtp_tls", cfg.smtp_tls);
         ui::doc::put_if_changed(doc, &acc, "username", cfg.username.as_str());
         ui::doc::put_if_changed(doc, &acc, "auth", cfg.auth.as_key());
@@ -472,10 +475,10 @@ fn read_str_list(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     let n = doc.length(list);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        if let Ok(Some((Value::Scalar(v), _))) = doc.get(list, i) {
-            if let ScalarValue::Str(s) = v.as_ref() {
-                out.push(s.to_string());
-            }
+        if let Ok(Some((Value::Scalar(v), _))) = doc.get(list, i)
+            && let ScalarValue::Str(s) = v.as_ref()
+        {
+            out.push(s.to_string());
         }
     }
     out
@@ -612,7 +615,10 @@ mod tests {
             MailDoc::store_account(&mut doc, &cfg);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-storing an unchanged account grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-storing an unchanged account grew the document {a} -> {b}"
+        );
     }
 
     #[test]
@@ -638,13 +644,19 @@ mod tests {
         MailDoc::create_folder(&mut doc, "f-b", "Travel");
         assert_eq!(
             MailDoc::list_folders(&doc),
-            vec![("f-a".to_string(), "Receipts".to_string()), ("f-b".to_string(), "Travel".to_string())]
+            vec![
+                ("f-a".to_string(), "Receipts".to_string()),
+                ("f-b".to_string(), "Travel".to_string())
+            ]
         );
         MailDoc::rename_folder(&mut doc, "f-a", "Invoices");
         // Renaming an unknown id does nothing.
         MailDoc::rename_folder(&mut doc, "ghost", "X");
         MailDoc::delete_folder(&mut doc, "f-b");
-        assert_eq!(MailDoc::list_folders(&doc), vec![("f-a".to_string(), "Invoices".to_string())]);
+        assert_eq!(
+            MailDoc::list_folders(&doc),
+            vec![("f-a".to_string(), "Invoices".to_string())]
+        );
     }
 
     #[test]
@@ -672,11 +684,18 @@ mod tests {
         assert_eq!(m.folder, Folder::Archive);
         assert_eq!(m.labels, vec!["work"]);
 
-        let draft = Draft { to: "x@y.example".into(), subject: "Hi".into(), ..Default::default() };
+        let draft = Draft {
+            to: "x@y.example".into(),
+            subject: "Hi".into(),
+            ..Default::default()
+        };
         MailDoc::store_draft(&mut doc, &draft);
         assert!(!MailDoc::load_draft(&doc).to.is_empty());
         MailDoc::clear_draft(&mut doc);
-        assert!(MailDoc::load_draft(&doc).to.is_empty(), "discard clears the persisted draft");
+        assert!(
+            MailDoc::load_draft(&doc).to.is_empty(),
+            "discard clears the persisted draft"
+        );
     }
 
     #[test]
@@ -694,6 +713,9 @@ mod tests {
             MailDoc::store_draft(&mut doc, &draft);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-storing an unchanged draft grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-storing an unchanged draft grew the document {a} -> {b}"
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Real end-to-end round-trips against live PostgreSQL and MySQL servers,
+//! Real end-to-end round-trips against live `PostgreSQL` and `MySQL` servers,
 //! driven through the production [`Session`] path (`add_connection` opens the
 //! real engine, `run_query` runs real SQL, and the schema is introspected from
 //! the live catalog).
@@ -13,7 +13,7 @@
 //! Env vars (all optional except the gate):
 //!   Postgres: `QOS_DB_TEST_PG` (gate), `QOS_DB_TEST_PG_HOST` (def 127.0.0.1),
 //!             `_PORT` (5432), `_USER` (postgres), `_PASS` (""), `_DB` (postgres)
-//!   MySQL:    `QOS_DB_TEST_MYSQL` (gate), `QOS_DB_TEST_MYSQL_HOST` (127.0.0.1),
+//!   `MySQL`:    `QOS_DB_TEST_MYSQL` (gate), `QOS_DB_TEST_MYSQL_HOST` (127.0.0.1),
 //!             `_PORT` (3306), `_USER` (root), `_PASS` (""), `_DB` (mysql)
 
 use db_client::model::{ConnectionProfile, Engine};
@@ -31,7 +31,9 @@ fn unique_table() -> String {
 #[test]
 fn postgres_real_round_trip() {
     if std::env::var("QOS_DB_TEST_PG").is_err() {
-        eprintln!("skipping postgres_real_round_trip: set QOS_DB_TEST_PG to run against a live server");
+        eprintln!(
+            "skipping postgres_real_round_trip: set QOS_DB_TEST_PG to run against a live server"
+        );
         return;
     }
 
@@ -58,7 +60,7 @@ fn postgres_real_round_trip() {
         s.status
     );
     // DDL is non-select.
-    assert!(create.map(|r| !r.is_select).unwrap_or(true));
+    assert!(create.is_none_or(|r| !r.is_select));
 
     s.run_query(&format!(
         "INSERT INTO {table} (id, name) VALUES (1, 'alice'), (2, 'bob')"

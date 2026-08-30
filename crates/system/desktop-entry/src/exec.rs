@@ -2,20 +2,17 @@
 //!
 //! Two steps the spec keeps separate, and so does this module:
 //!
-//! 1. **Split.** `Exec` is a command line with its own quoting rules —
-//!    double quotes group, and inside them `\` escapes `"`, `` ` ``,
-//!    `$` and `\`. It is *not* shell syntax: there is no globbing, no
-//!    variable expansion, no pipes, and a program that treats it as
-//!    shell syntax has handed a `.desktop` file the ability to run
-//!    anything.
-//! 2. **Expand.** `%f %F %u %U %i %c %k` are substituted with what the
-//!    caller is actually opening. The deprecated codes (`%d %D %n %N
-//!    %v %m`) are dropped, per the spec's "must be removed".
+//! 1. **Split.** `Exec` is a command line with its own quoting rules — double quotes group,
+//!    and inside them `\` escapes `"`, `` ` ``, `$` and `\`. It is *not* shell syntax: no
+//!    globbing, no variable expansion, no pipes — treating it as shell syntax would hand a
+//!    `.desktop` file the ability to run anything.
+//! 2. **Expand.** `%f %F %u %U %i %c %k` are substituted with what the caller is actually
+//!    opening. The deprecated codes (`%d %D %n %N %v %m`) are dropped, per the spec's "must
+//!    be removed".
 //!
-//! Flatpak's `--file-forwarding` markers (`@@`, `@@u`) are understood
-//! too: they bracket the argument positions `flatpak run` rewrites into
-//! sandbox paths. With no documents to open they bracket nothing, and an
-//! empty pair is removed rather than passed on.
+//! Flatpak's `--file-forwarding` markers (`@@`, `@@u`) are understood too: they bracket the
+//! argument positions `flatpak run` rewrites into sandbox paths. With no documents to open
+//! they bracket nothing, and an empty pair is removed rather than passed on.
 
 use std::path::Path;
 
@@ -28,10 +25,8 @@ pub enum ExecError {
     Empty,
 }
 
-/// Split an `Exec=` value into tokens, honouring the spec's quoting.
-///
-/// Field codes are left as-is — [`expand`] substitutes them, because
-/// only the caller knows what is being opened.
+/// Split an `Exec=` value into tokens, honouring the spec's quoting. Field codes are left
+/// as-is — [`expand`] substitutes them, since only the caller knows what is being opened.
 pub fn split_exec(raw: &str) -> Result<Vec<String>, ExecError> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -53,8 +48,7 @@ pub fn split_exec(raw: &str) -> Result<Vec<String>, ExecError> {
                         None => return Err(ExecError::UnterminatedQuote),
                         Some('"') => break,
                         Some('\\') => match chars.next() {
-                            // The four characters the spec says must be
-                            // escaped inside a quoted argument.
+                            // The four characters the spec says must be escaped inside a quoted argument.
                             Some(esc @ ('"' | '`' | '$' | '\\')) => cur.push(esc),
                             Some(other) => {
                                 cur.push('\\');
@@ -84,11 +78,10 @@ pub fn split_exec(raw: &str) -> Result<Vec<String>, ExecError> {
 /// What a field code is substituted with.
 #[derive(Debug, Clone, Default)]
 pub struct ExpandContext<'a> {
-    /// Absolute paths the app is being asked to open. Feeds `%f`/`%F`,
-    /// and `%u`/`%U` as `file://` URLs when no explicit URL was given.
+    /// Absolute paths the app is being asked to open. Feeds `%f`/`%F`, and `%u`/`%U` as
+    /// `file://` URLs when no explicit URL was given.
     pub files: &'a [String],
-    /// URLs the app is being asked to open. Feeds `%u`/`%U`; falls back
-    /// to `files` when empty.
+    /// URLs the app is being asked to open. Feeds `%u`/`%U`; falls back to `files` when empty.
     pub urls: &'a [String],
     /// The entry's `Icon=`, for `%i`.
     pub icon: Option<&'a str>,
@@ -98,13 +91,10 @@ pub struct ExpandContext<'a> {
     pub path: Option<&'a Path>,
 }
 
-/// Expand field codes in an already-split argv.
-///
-/// Codes expand *within* a token, so `--file=%f` works; the list codes
-/// (`%F`, `%U`) and `%i` expand to zero or more tokens, which is only
-/// meaningful when the code is the whole token — the spec requires that,
-/// and a list code embedded in a larger token is dropped rather than
-/// concatenated into nonsense.
+/// Expand field codes in an already-split argv. Codes expand *within* a token, so
+/// `--file=%f` works; the list codes (`%F`, `%U`) and `%i` expand to zero or more tokens,
+/// only meaningful when the code is the whole token — a list code embedded in a larger token
+/// is dropped rather than concatenated into nonsense.
 pub fn expand(argv: &[String], ctx: &ExpandContext<'_>) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(argv.len());
     let urls: Vec<String> = if ctx.urls.is_empty() {
@@ -133,15 +123,10 @@ pub fn expand(argv: &[String], ctx: &ExpandContext<'_>) -> Vec<String> {
     strip_empty_forwarding_markers(out)
 }
 
-/// Substitute the single-value codes inside one token. `None` means the
-/// token expanded to nothing and must be dropped entirely — which is
-/// what a bare `%f` with no file to open has to do, since passing an
-/// empty string would look like a filename of `""`.
-fn expand_in_token(
-    token: &str,
-    ctx: &ExpandContext<'_>,
-    urls: &[String],
-) -> Option<String> {
+/// Substitute the single-value codes inside one token. `None` means the token expanded to
+/// nothing and must be dropped entirely — what a bare `%f` with no file to open has to do,
+/// since an empty string would look like a filename of `""`.
+fn expand_in_token(token: &str, ctx: &ExpandContext<'_>, urls: &[String]) -> Option<String> {
     if !token.contains('%') {
         return Some(token.to_string());
     }
@@ -173,36 +158,28 @@ fn expand_in_token(
                     out.push_str(&path.to_string_lossy());
                 }
             }
-            // The list codes are only valid as a whole token; reaching
-            // here means one was embedded in a larger argument, which
-            // the spec forbids. Drop the whole token rather than guess.
+            // The list codes are only valid as a whole token; reaching here means one was embedded in a
+            // larger argument, which the spec forbids. Drop the whole token rather than guess.
             Some('F' | 'U' | 'i') => return None,
             // Deprecated: "must be removed".
             Some('d' | 'D' | 'n' | 'N' | 'v' | 'm') => {}
-            // A trailing or unknown code. Keep neither the `%` nor the
-            // letter: an unknown code is not a literal.
+            // A trailing or unknown code. Keep neither the `%` nor the letter: an unknown code is not a literal.
             Some(_) | None => {}
         }
     }
-    // Two ways a token disappears. Either a value code had no value —
-    // `--file=%f` with nothing to open must not become `--file=`, which
-    // an app would read as an empty filename — or the token was nothing
-    // *but* codes that expanded away, which is what a deprecated code
-    // does. Both leave no argument behind rather than an empty one.
+    // Two ways a token disappears: a value code with no value (`--file=%f` must not become
+    // `--file=`, an empty filename) or a token that was nothing but codes that expanded away
+    // (a deprecated code). Both leave no argument behind rather than an empty one.
     if dropped_value || out.is_empty() {
         return None;
     }
     Some(out)
 }
 
-/// Remove `@@ … @@` / `@@u … @@` pairs that ended up empty.
-///
-/// `flatpak run --file-forwarding` uses these to mark which arguments
-/// are paths it should rewrite for the sandbox. When the launch opens
-/// nothing, the field code between them expanded away and the pair is
-/// left bracketing empty space; `flatpak` tolerates that, but passing a
-/// marker with nothing in it is noise in every log and every `ps`
-/// listing, so it goes.
+/// Remove `@@ … @@` / `@@u … @@` pairs that ended up empty. `flatpak run --file-forwarding`
+/// uses these to mark arguments it should rewrite for the sandbox; when the launch opens
+/// nothing, the pair ends up bracketing empty space — `flatpak` tolerates that, but it's
+/// noise in every log and `ps` listing, so it goes.
 fn strip_empty_forwarding_markers(argv: Vec<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(argv.len());
     let mut i = 0;
@@ -218,11 +195,9 @@ fn strip_empty_forwarding_markers(argv: Vec<String>) -> Vec<String> {
     out
 }
 
-/// `/home/u/a b.txt` → `file:///home/u/a%20b.txt`.
-///
-/// Percent-encodes everything outside the URL "unreserved" set plus `/`,
-/// which is the separator. Deliberately minimal: this exists so `%u`
-/// gets a well-formed URL, not to be a general URL library.
+/// `/home/u/a b.txt` → `file:///home/u/a%20b.txt`. Percent-encodes everything outside the
+/// URL "unreserved" set plus `/` (the separator). Deliberately minimal — exists so `%u` gets
+/// a well-formed URL, not to be a general URL library.
 pub fn path_to_url(path: &str) -> String {
     if path.contains("://") {
         return path.to_string();
@@ -289,8 +264,8 @@ mod tests {
         );
     }
 
-    /// A launch with nothing to open must not pass an empty argument —
-    /// an app reading argv[1] would see a filename of `""`.
+    /// A launch with nothing to open must not pass an empty argument — an app reading argv[1]
+    /// would see a filename of `""`.
     #[test]
     fn field_codes_with_nothing_to_open_leave_no_argument_behind() {
         let ctx = ExpandContext::default();
@@ -302,8 +277,7 @@ mod tests {
             vec!["app"],
             "`--file=` with no filename after it is worse than no argument"
         );
-        // A genuinely empty quoted argument is not a field code and
-        // survives.
+        // A genuinely empty quoted argument is not a field code and survives.
         assert_eq!(expand(&split(r#"app "" x"#), &ctx), vec!["app", "", "x"]);
     }
 

@@ -13,7 +13,7 @@
 use ui::theme::Theme;
 use ui::widget::{Row, Spacer, Text, Widget};
 
-use crate::widgets::{card, caption, hgap, rows, El};
+use crate::widgets::{El, caption, card, hgap, rows};
 
 /// One shortcut: what it does and the chord that triggers it.
 #[derive(Clone, Copy, Debug)]
@@ -25,19 +25,43 @@ pub struct Shortcut {
 /// Global compositor shortcuts — handled by the shell's key dispatch,
 /// available from anywhere in the session.
 pub const GLOBAL: &[Shortcut] = &[
-    Shortcut { action: "Open search", chord: "Super  K" },
-    Shortcut { action: "Toggle workspace overview", chord: "Super  Tab" },
-    Shortcut { action: "Lock the screen", chord: "Super  L" },
-    Shortcut { action: "Dismiss the current overlay", chord: "Esc" },
+    Shortcut {
+        action: "Open search",
+        chord: "Super  K",
+    },
+    Shortcut {
+        action: "Toggle workspace overview",
+        chord: "Super  Tab",
+    },
+    Shortcut {
+        action: "Lock the screen",
+        chord: "Super  L",
+    },
+    Shortcut {
+        action: "Dismiss the current overlay",
+        chord: "Esc",
+    },
 ];
 
 /// Text-editing shortcuts — handled by the toolkit's text input, available in
 /// any editable field across every qOS app.
 pub const EDITING: &[Shortcut] = &[
-    Shortcut { action: "Select all", chord: "Ctrl  A" },
-    Shortcut { action: "Copy", chord: "Ctrl  C" },
-    Shortcut { action: "Paste", chord: "Ctrl  V" },
-    Shortcut { action: "Cut", chord: "Ctrl  X" },
+    Shortcut {
+        action: "Select all",
+        chord: "Ctrl  A",
+    },
+    Shortcut {
+        action: "Copy",
+        chord: "Ctrl  C",
+    },
+    Shortcut {
+        action: "Paste",
+        chord: "Ctrl  V",
+    },
+    Shortcut {
+        action: "Cut",
+        chord: "Ctrl  X",
+    },
 ];
 
 pub fn build() -> Box<dyn Widget> {

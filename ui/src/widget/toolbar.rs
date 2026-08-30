@@ -3,35 +3,29 @@
 //! computed item extent exceeds the toolbar's rect along its orientation
 //! axis.
 //!
-//! This widget owns its layout end-to-end (it doesn't delegate child
-//! sizing to Taffy). `build_layout` measures each item along the
-//! orientation axis (using `TextRenderer`-style approximations so the
-//! pass stays GPU-free) and writes the visible-count + overflow flag
-//! used by `apply_layout` to place rects. Spacers soak the residual
-//! axis space after fixed items have been measured; the overflow chip
-//! always wins a slot on the trailing edge once visibility drops below
-//! the item count.
-//!
-//! See `ui/src/widget/tabs.rs` for the strip-of-rects precedent
-//! this implementation follows.
+//! Owns its layout end-to-end rather than delegating child sizing to Taffy:
+//! `build_layout` measures each item (GPU-free `TextRenderer`-style
+//! approximations) and writes the visible-count + overflow flag
+//! `apply_layout` places rects from. Spacers soak the residual axis space;
+//! the overflow chip always wins a trailing slot once visibility drops
+//! below the item count. See `tabs.rs` for the strip-of-rects precedent.
 
 use automerge::{AutoCommit, ObjId};
+use std::collections::HashMap;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use std::collections::HashMap;
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Approximate per-character width used by `build_layout` to size button
-/// labels without invoking `TextRenderer` (build_layout doesn't get one).
-/// Matches the heuristic used by `tabs.rs::apply_layout` (`approx_char_w =
-/// 7.0`) so a Toolbar laid out in isolation reads at the same density as
-/// a TabBar built alongside it.
+/// labels without invoking `TextRenderer`. Matches `tabs.rs::apply_layout`'s
+/// heuristic so a Toolbar reads at the same density as a `TabBar` beside it.
 const APPROX_CHAR_W: f64 = 7.0;
 
 /// Width (Horizontal) or height (Vertical) of a Separator line. Always
@@ -147,21 +141,17 @@ impl Toolbar {
     /// Axis extent one item occupies: a button's label plus padding, a
     /// separator's hairline plus its surrounding air, and zero for a
     /// spacer (which is sized from the residual, not measured).
-    ///
-    /// Uses the same `APPROX_CHAR_W` heuristic the module header
-    /// describes, so the pass stays GPU-free and `build_layout` — which
-    /// gets no `TextRenderer` — can call it.
     fn measure_item_axis(&self, item: &ToolbarItem, theme: &Theme) -> f64 {
         match item {
             ToolbarItem::Spacer => 0.0,
-            ToolbarItem::Separator => SEPARATOR_LINE_PX + 2.0 * theme.tokens.spacing.s2 as f64,
+            ToolbarItem::Separator => SEPARATOR_LINE_PX + 2.0 * f64::from(theme.tokens.spacing.s2),
             ToolbarItem::Button { label, .. } => {
-                let pad = 2.0 * theme.tokens.spacing.s3 as f64;
+                let pad = 2.0 * f64::from(theme.tokens.spacing.s3);
                 let text_axis = match self.orientation {
                     Orientation::Horizontal => label.chars().count() as f64 * APPROX_CHAR_W,
-                    Orientation::Vertical => theme.tokens.typography.scale.sm as f64,
+                    Orientation::Vertical => f64::from(theme.tokens.typography.scale.sm),
                 };
-                (text_axis + pad).max(theme.tokens.spacing.s8 as f64)
+                (text_axis + pad).max(f64::from(theme.tokens.spacing.s8))
             }
         }
     }
@@ -169,14 +159,12 @@ impl Toolbar {
     /// Decide how many leading items fit inside `axis_extent`, writing
     /// [`Self::visible_count`] (and therefore [`Self::has_overflow`]).
     ///
-    /// Greedy from the leading edge: take items while they fit. The
-    /// moment one doesn't, the trailing edge has to give up
-    /// [`OVERFLOW_CHIP_AXIS_PX`] to the `…` chip, so the fit is
-    /// re-checked against the smaller budget — otherwise the last item
-    /// admitted would sit underneath the chip.
-    ///
-    /// Spacers measure zero and are always admitted; they soak the
-    /// residual in `apply_layout`.
+    /// Greedy from the leading edge: take items while they fit. The moment
+    /// one doesn't, the trailing edge has to give up
+    /// [`OVERFLOW_CHIP_AXIS_PX`] to the `…` chip, so the fit is re-checked
+    /// against the smaller budget — otherwise the last item admitted would
+    /// sit underneath the chip. Spacers measure zero and are always
+    /// admitted; they soak the residual in `apply_layout`.
     pub fn recompute_visible(&mut self, axis_extent: f64, theme: &Theme) {
         if self.items.is_empty() {
             self.visible_count = 0;
@@ -202,10 +190,9 @@ impl Toolbar {
             used += e;
             n += 1;
         }
-        // Collapsing everything leaves a toolbar that is only a `…`
-        // chip. That is the honest answer for a genuinely tiny strip,
-        // but never collapse when the items would have fit without the
-        // chip's own reservation.
+        // Collapsing everything leaves a toolbar that is only a `…` chip —
+        // honest for a genuinely tiny strip, but never collapse when the
+        // items would have fit without the chip's own reservation.
         self.visible_count = n.min(self.items.len().saturating_sub(1));
     }
 
@@ -215,7 +202,6 @@ impl Toolbar {
     pub fn is_overflow_open(&self) -> bool {
         self.overflow_open
     }
-
 }
 
 impl Widget for Toolbar {
@@ -227,24 +213,22 @@ impl Widget for Toolbar {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The toolbar takes the full available extent along its
-        // orientation axis and a fixed cross-axis size. Cross-axis size
-        // is derived from the button padding + sm typography slug so the
-        // strip reads as compact chrome.
-        let cross_axis_size =
-            theme.tokens.typography.scale.sm + 2.0 * theme.tokens.spacing.s2;
+        // Fixed cross-axis size, derived from the button padding + sm
+        // typography slug so the strip reads as compact chrome.
+        let cross_axis_size = theme.tokens.typography.scale.sm + 2.0 * theme.tokens.spacing.s2;
         let (w, h) = match self.orientation {
             Orientation::Horizontal => (Dimension::auto(), Dimension::length(cross_axis_size)),
             Orientation::Vertical => (Dimension::length(cross_axis_size), Dimension::auto()),
         };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size { width: w, height: h },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: w,
+                height: h,
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         // Measure against whatever axis extent the last layout gave us.
         // On the very first pass `self.rect` is empty, so fall back to
         // "everything fits" rather than collapsing the whole strip into
@@ -256,27 +240,20 @@ impl Widget for Toolbar {
         if axis_extent > 0.0 {
             self.recompute_visible(axis_extent, theme);
         } else if self.visible_count == 0 {
-            // Never laid out and nobody has measured for us: assume
-            // everything fits rather than collapsing the whole strip
-            // into an overflow chip before it has ever been sized.
             self.visible_count = self.items.len();
         }
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
 
-        // Resize the per-item rect cache, then place each item along the
-        // orientation axis. Visible items get their measured extent;
-        // spacers split the residual space evenly; over-budget items
-        // collapse into the overflow chip on the trailing edge.
         self.item_rects.clear();
         self.item_rects.resize(self.items.len(), Rect::ZERO);
         if self.items.is_empty() {
@@ -290,11 +267,10 @@ impl Widget for Toolbar {
             Orientation::Vertical => self.rect.height(),
         };
 
-        // Overflow decision: how many leading items fit the real axis budget,
-        // folding the rest into the trailing overflow chip. build_layout only
-        // has the theme (not the final width); apply_layout has the post-taffy
-        // width, so the fit is computed here, using the same approximate,
-        // theme-free extents as the placement pass below so the two agree.
+        // build_layout only has the theme (not the final width); apply_layout
+        // has the post-taffy width, so the overflow fit is decided here,
+        // using the same approximate, theme-free extents as the placement
+        // pass below so the two agree.
         let item_axis = |it: &ToolbarItem| -> f64 {
             match it {
                 ToolbarItem::Spacer => 0.0,
@@ -312,8 +288,6 @@ impl Widget for Toolbar {
         if total_extent <= axis_total {
             self.visible_count = self.items.len();
         } else {
-            // Reserve room for the overflow chip, then take leading items
-            // until the next one would exceed the budget.
             let budget = (axis_total - OVERFLOW_CHIP_AXIS_PX).max(0.0);
             let mut acc = 0.0;
             let mut fit = 0usize;
@@ -328,23 +302,20 @@ impl Widget for Toolbar {
             self.visible_count = fit;
         }
 
-        // Gather measured extents for the items we know are visible.
-        // Spacers report 0 here so we can compute the residual space
-        // they share.
         let n_visible = self.visible_count.min(self.items.len());
         let overflow = self.has_overflow();
 
-        // Re-derive each visible item's axis extent. We need a `Theme`
-        // for `measure_item_axis`; reach into the cross-axis dimension
-        // of `self.rect` for a sane fallback by recomputing without
-        // padding constants — this path is only taken when build_layout
-        // is skipped (synthetic test setup), so the measurements are
-        // approximate but deterministic.
+        // `apply_layout` has no `Theme`, so extents are recomputed here
+        // with the same hardcoded constants as `item_axis` above rather
+        // than calling `measure_item_axis` — approximate, but deterministic
+        // and consistent with the overflow decision just made.
         let mut measured_axes = vec![0.0_f64; n_visible];
         let mut spacer_count = 0usize;
         for (i, it) in self.items.iter().take(n_visible).enumerate() {
             match it {
-                ToolbarItem::Spacer => { spacer_count += 1; }
+                ToolbarItem::Spacer => {
+                    spacer_count += 1;
+                }
                 ToolbarItem::Separator => {
                     measured_axes[i] = SEPARATOR_LINE_PX + 8.0;
                 }
@@ -361,7 +332,11 @@ impl Widget for Toolbar {
         let used: f64 = measured_axes.iter().sum();
         let chip_reserve = if overflow { OVERFLOW_CHIP_AXIS_PX } else { 0.0 };
         let residual = (axis_total - used - chip_reserve).max(0.0);
-        let per_spacer = if spacer_count > 0 { residual / spacer_count as f64 } else { 0.0 };
+        let per_spacer = if spacer_count > 0 {
+            residual / spacer_count as f64
+        } else {
+            0.0
+        };
 
         let cross_start = match self.orientation {
             Orientation::Horizontal => self.rect.y0,
@@ -377,33 +352,26 @@ impl Widget for Toolbar {
             Orientation::Vertical => self.rect.y0,
         };
 
-        for i in 0..n_visible {
-            let extent = if matches!(self.items[i], ToolbarItem::Spacer) {
+        for (i, item) in self.items.iter().take(n_visible).enumerate() {
+            let extent = if matches!(item, ToolbarItem::Spacer) {
                 per_spacer
             } else {
                 measured_axes[i]
             };
             let r = match self.orientation {
-                Orientation::Horizontal => Rect::new(
-                    axis_cursor,
-                    cross_start,
-                    axis_cursor + extent,
-                    cross_end,
-                ),
-                Orientation::Vertical => Rect::new(
-                    cross_start,
-                    axis_cursor,
-                    cross_end,
-                    axis_cursor + extent,
-                ),
+                Orientation::Horizontal => {
+                    Rect::new(axis_cursor, cross_start, axis_cursor + extent, cross_end)
+                }
+                Orientation::Vertical => {
+                    Rect::new(cross_start, axis_cursor, cross_end, axis_cursor + extent)
+                }
             };
             self.item_rects[i] = r;
             axis_cursor += extent;
         }
-        // Items beyond `visible_count` keep `Rect::ZERO` — they're not
-        // rendered as their own rect and any hover state targeting them
-        // is silently dropped on the next `handle_event` (CursorMoved
-        // looks at `item_rects` directly).
+        // Items beyond `visible_count` keep `Rect::ZERO`: not rendered as
+        // their own rect, and any hover targeting them is silently dropped
+        // on the next `handle_event` (CursorMoved reads `item_rects`).
         for r in self.item_rects.iter_mut().skip(n_visible) {
             *r = Rect::ZERO;
         }
@@ -437,7 +405,7 @@ impl Widget for Toolbar {
         _presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        let radius = tokens.radii.sm as f64;
+        let radius = f64::from(tokens.radii.sm);
         let font_size = tokens.typography.scale.sm;
         let n_visible = self.visible_count.min(self.items.len());
 
@@ -455,16 +423,10 @@ impl Widget for Toolbar {
                         tokens.colors.surfaces.raised
                     };
                     let shape = RoundedRect::from_rect(r, radius);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        bg,
-                        None,
-                        &shape,
-                    );
+                    scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
                     let (tw, th) = text_renderer.measure(label, font_size, None);
-                    let tx = r.center().x - tw as f64 / 2.0;
-                    let ty = r.center().y - th as f64 / 2.0;
+                    let tx = r.center().x - f64::from(tw) / 2.0;
+                    let ty = r.center().y - f64::from(th) / 2.0;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -478,7 +440,7 @@ impl Widget for Toolbar {
                     // Hairline divider perpendicular to the orientation
                     // axis. Margin `s2` from each end along the cross
                     // axis (so the line doesn't kiss the toolbar edge).
-                    let margin = tokens.spacing.s2 as f64;
+                    let margin = f64::from(tokens.spacing.s2);
                     let line_rect = match self.orientation {
                         Orientation::Horizontal => {
                             let cx = r.center().x;
@@ -525,8 +487,8 @@ impl Widget for Toolbar {
             scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             let label = "…";
             let (tw, th) = text_renderer.measure(label, font_size, None);
-            let tx = self.overflow_rect.center().x - tw as f64 / 2.0;
-            let ty = self.overflow_rect.center().y - th as f64 / 2.0;
+            let tx = self.overflow_rect.center().x - f64::from(tw) / 2.0;
+            let ty = self.overflow_rect.center().y - f64::from(th) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -566,8 +528,7 @@ impl Widget for Toolbar {
                         *handled = true;
                     }
                 }
-                let new_oh =
-                    self.has_overflow() && self.overflow_rect.contains(pos);
+                let new_oh = self.has_overflow() && self.overflow_rect.contains(pos);
                 if new_oh != self.overflow_hover {
                     self.overflow_hover = new_oh;
                     *handled = true;
@@ -580,11 +541,11 @@ impl Widget for Toolbar {
             } => {
                 let n_visible = self.visible_count.min(self.items.len());
                 for i in 0..n_visible {
-                    if self.item_hover.get(i).copied().unwrap_or(false) {
-                        if let ToolbarItem::Button { on_click, .. } = &mut self.items[i] {
-                            on_click();
-                            *handled = true;
-                        }
+                    if self.item_hover.get(i).copied().unwrap_or(false)
+                        && let ToolbarItem::Button { on_click, .. } = &mut self.items[i]
+                    {
+                        on_click();
+                        *handled = true;
                     }
                 }
                 if self.overflow_hover && self.has_overflow() {
@@ -596,7 +557,7 @@ impl Widget for Toolbar {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Toolbar"
     }
 
@@ -639,16 +600,11 @@ mod tests {
     /// `item_rects` and `visible_count` populated.
     fn lay_out(mut tb: Toolbar, axis_extent: f64) -> Toolbar {
         let theme = Theme::dark();
-        // `visible_count` is derived in `apply_layout` from the taffy-computed
-        // rect, so driving the real build_layout → compute_layout →
-        // apply_layout pipeline below (pinned to `axis_extent` width) is what
-        // populates it — no separate pre-pass needed.
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = tb.build_layout(&mut taffy, &theme, &mut node_map);
-        // Force the toolbar's outer rect to span `axis_extent` along its
-        // orientation axis. Taffy's auto sizing would shrink to content
-        // otherwise.
+        // Force the outer rect to span `axis_extent`; taffy's auto sizing
+        // would otherwise shrink to content.
         taffy
             .set_style(
                 node,
@@ -675,8 +631,7 @@ mod tests {
     }
 
     /// Render `tb` into a fresh scene and return the scene so tests can
-    /// inspect `DrawTag::COLOR` counts. Mirrors the helper in
-    /// `progress_bar.rs::tests::render`.
+    /// inspect `DrawTag::COLOR` counts.
     fn render(tb: &mut Toolbar) -> Scene {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -738,11 +693,8 @@ mod tests {
     /// strictly less than 10.
     #[test]
     fn toolbar_overflow_creates_overflow_button() {
-        // Each button measures roughly `len(label) * 7 + 2 * s3 (8) = 30`
-        // for "B0".."B9" (label len 2 → 14 + 16 = 30, clamped at `s8`
-        // which is 32 in dark theme). Ten buttons → ~320 px total. A
-        // 150 px budget should fit ~4 buttons with room for the overflow
-        // chip (24 px), forcing the remainder to collapse.
+        // Ten buttons at ~30px each (~320px total) in a 150px budget must
+        // overflow, fitting only a handful with room for the chip (24px).
         let tb = lay_out(n_button_toolbar(10), 150.0);
         assert!(
             tb.has_overflow(),
@@ -769,12 +721,9 @@ mod tests {
         );
     }
 
-    /// `[Button, Separator, Button]` — the divider line is painted as a
-    /// thin filled rect, so it shows up as an extra COLOR draw tag
-    /// alongside the two button backgrounds. The `separator_count`
-    /// accessor pins the structural contract independently of the
-    /// scene-encoding check, so a future refactor that switches the
-    /// separator to a `scene.stroke` doesn't silently break the test.
+    /// `[Button, Separator, Button]` — the divider paints as a thin filled
+    /// rect (an extra COLOR draw tag). `separator_count` pins the structural
+    /// contract independently of the scene-encoding check.
     #[test]
     fn toolbar_separator_paints_a_divider_line() {
         let mut tb = Toolbar::new(Orientation::Horizontal)

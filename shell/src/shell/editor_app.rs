@@ -1,23 +1,16 @@
 //! Editor — a code-leaning sibling to [`super::notes_app::NotesApp`].
 //!
-//! Both sit on the same [`CrdtTextBody`]: one Automerge `Text` under
-//! [`BODY_KEY`], the same narrow-splice edit path, the same caret
-//! arithmetic. What makes this one the *editor* is entirely in `draw` —
-//! discrete lines behind a left-edge line-number gutter and a token-level
-//! syntax sweep, mirroring the concept's `EditorApp.tsx` mock at
-//! `nirios-concept/src/components/apps/EditorApp.tsx`.
+//! Both sit on the same [`CrdtTextBody`]; what makes this one the *editor*
+//! is entirely in `draw` — discrete lines behind a line-number gutter and a
+//! token-level syntax sweep.
 //!
-//! The concept uses the Catppuccin Mocha palette hard-coded into the mock.
-//! Per `CLAUDE.md`, shell widgets must read from the OS-controlled [`Theme`]
-//! rather than bake in a palette, so we map "gutter / body / keyword /
-//! string / accent" onto the existing theme tokens (neutral ramp + accent
-//! ramp + semantic colors). The visual cue that separates "Editor" from
-//! "Notes" is the gutter + per-line rendering, not a bespoke palette.
+//! Colours read from the OS-controlled [`Theme`] rather than a bespoke
+//! palette, so "gutter / body / keyword / string / accent" map onto
+//! existing neutral/accent/semantic tokens.
 //!
-//! Syntax coloring is intentionally minimal: a token-level sweep that tints
-//! string literals, numbers, and a fixed keyword set. Anything more
-//! ambitious (TS/TSX AST, multi-line strings, templating) is out of scope
-//! for the parity milestone — the mock itself only shows a frozen snippet.
+//! Syntax coloring is intentionally minimal: string literals, numbers, and
+//! a fixed keyword set. A real AST, multi-line strings, or templating are
+//! out of scope.
 
 use std::collections::HashMap;
 
@@ -25,8 +18,8 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::text_selection::line_boundaries;
+use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
@@ -37,8 +30,8 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 /// Automerge key under the tile's root where the editor body lives.
-/// Deliberately distinct from `NotesApp::BODY_KEY` so Notes and Editor
-/// tiles hosted in the same shell don't stomp on each other's text.
+/// Distinct from `NotesApp::BODY_KEY` so Notes and Editor tiles hosted in
+/// the same shell don't stomp on each other's text.
 pub const BODY_KEY: &str = "editor_body";
 
 const PADDING_X: f64 = 20.0;
@@ -47,9 +40,7 @@ const TEXT_SIZE: f32 = 14.0;
 const LINE_HEIGHT: f32 = TEXT_SIZE * 1.5;
 const GUTTER_WIDTH: f64 = 44.0;
 
-/// Default seed used when the CRDT is empty on first boot. A short TSX
-/// snippet that exercises every highlight class: keywords, strings,
-/// numbers, punctuation.
+/// First-boot seed: a short TSX snippet exercising every highlight class.
 const DEFAULT_SEED: &str = "\
 // EditorApp — CRDT-backed code surface\n\
 import { useState } from 'react';\n\
@@ -89,7 +80,6 @@ impl EditorApp {
         app
     }
 
-    /// Convenience: pre-seed with the default TSX snippet.
     pub fn with_default_snippet() -> Self {
         Self::with_seed(DEFAULT_SEED)
     }
@@ -117,12 +107,10 @@ impl EditorApp {
         line_boundaries(&self.body.text, pos).0
     }
 
-    /// Byte offset of the end of the line `pos` sits on (the next `\n`, or
-    /// the end of the buffer on the last line).
+    /// Byte offset of the end of the line `pos` sits on (next `\n`, or EOF).
     fn line_end(&self, pos: usize) -> usize {
         line_boundaries(&self.body.text, pos).1
     }
-
 }
 
 impl Default for EditorApp {
@@ -144,17 +132,10 @@ enum TokClass {
     Punct,
 }
 
-/// A tiny JS/TSX-leaning tokenizer. Recognizes:
-///
-///   - `//`-to-EOL line comments
-///   - `'…'` / `"…"` / `` `…` `` string literals (no interpolation)
-///   - Numeric literals (digits, optionally with a dot)
-///   - Identifier-keyword hits from a fixed set
-///   - Punctuation (everything else non-whitespace)
-///
-/// Output is a flat list of (start_byte, end_byte, class) triples against
-/// the input slice. Whitespace is emitted as `Plain` so the caller can
-/// advance the pen without a second pass.
+/// A tiny JS/TSX-leaning tokenizer: line comments, string literals (no
+/// interpolation), numeric literals, keyword/identifier, punctuation.
+/// Output is a flat list of (`start_byte`, `end_byte`, class) triples;
+/// whitespace is `Plain` so the caller advances the pen in one pass.
 fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
     const KEYWORDS: &[&str] = &[
         "import",
@@ -214,7 +195,6 @@ fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
-        // Line comment: '//' … EOL
         if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
             out.push((i, bytes.len(), TokClass::Comment));
             return out;
@@ -228,7 +208,6 @@ fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
             out.push((start, i, TokClass::Plain));
             continue;
         }
-        // String literal: ' " ` — consume until matching quote (or EOL).
         if b == b'\'' || b == b'"' || b == b'`' {
             let quote = b;
             let start = i;
@@ -247,7 +226,6 @@ fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
             out.push((start, i, TokClass::StringLit));
             continue;
         }
-        // Number: optional leading digit, then digits and at most one dot.
         if b.is_ascii_digit() {
             let start = i;
             let mut saw_dot = false;
@@ -269,7 +247,6 @@ fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
             out.push((start, i, TokClass::Number));
             continue;
         }
-        // Identifier / keyword.
         if b.is_ascii_alphabetic() || b == b'_' || b == b'$' {
             let start = i;
             while i < bytes.len() {
@@ -289,7 +266,6 @@ fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
             out.push((start, i, class));
             continue;
         }
-        // Fall-through: a single punctuation byte.
         out.push((i, i + 1, TokClass::Punct));
         i += 1;
     }
@@ -308,7 +284,7 @@ impl Widget for EditorApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        full_bleed_leaf(taffy, node_map, self as *mut dyn Widget)
+        full_bleed_leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -324,17 +300,18 @@ impl Widget for EditorApp {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        // Foreground on the white window-card: slate-900 for body, slate-500
-        // for gutter, slate-400 for comments.
-        let body_color = tokens.colors.neutral[1];
-        let gutter_color = tokens.colors.neutral[5];
-        let gutter_bg = tokens.colors.neutral[9]; // slate-100: a whisper tint
+        // No background of its own, so every neutral here is ink *on the
+        // window card* — hence `Theme::on_card` rather than fixed ramp slots.
+        let ink = theme.on_card();
+        let body_color = ink.ink;
+        let gutter_color = ink.ink_dim;
+        let gutter_bg = ink.tint; // a whisper tint of the card, either way round
         let keyword_color = tokens.colors.accent[5]; // indigo-500
         let string_color = tokens.colors.semantic.success; // emerald
         let number_color = tokens.colors.semantic.warning; // amber
-        let comment_color = tokens.colors.neutral[6];
-        let punct_color = tokens.colors.neutral[4];
-        let ident_color = tokens.colors.neutral[2];
+        let comment_color = ink.ink_tertiary;
+        let punct_color = ink.ink_dim;
+        let ident_color = ink.ink;
         let caret_color = tokens.colors.accent[5];
 
         // Header row: "Editor" title + hint on the right.
@@ -361,13 +338,12 @@ impl Widget for EditorApp {
             gutter_color,
             transform
                 * Affine::translate((
-                    self.rect.x1 - PADDING_X - hw as f64,
-                    self.rect.y0 + 18.0 + (title_size - hint_size) as f64 / 2.0,
+                    self.rect.x1 - PADDING_X - f64::from(hw),
+                    self.rect.y0 + 18.0 + f64::from(title_size - hint_size) / 2.0,
                 )),
             None,
         );
 
-        // Gutter strip (a narrow tinted column behind the line numbers).
         let body_top = self.rect.y0 + PADDING_Y;
         let gutter_rect = Rect::new(
             self.rect.x0 + PADDING_X,
@@ -377,9 +353,7 @@ impl Widget for EditorApp {
         );
         scene.fill(Fill::NonZero, transform, gutter_bg, None, &gutter_rect);
 
-        // Lines: iterate `split('\n')` and draw each at its vertical slot.
-        // Clip to the tile so a very long body doesn't overflow below the
-        // window card's rounded corner.
+        // Clip so a very long body doesn't overflow the card's rounded corner.
         let clip_rect = Rect::new(self.rect.x0, body_top, self.rect.x1, self.rect.y1);
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -414,13 +388,12 @@ impl Widget for EditorApp {
         };
 
         for (row, line) in self.body.text.split('\n').enumerate() {
-            let y = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
+            let y = body_top + (row as f64) * f64::from(LINE_HEIGHT) + 2.0;
             if y > self.rect.y1 {
                 break;
             }
 
-            // Line number (right-aligned within the gutter with a 6 px
-            // right-pad so digits don't kiss the divider).
+            // 6px right-pad so digits don't kiss the divider.
             let num = format!("{}", row + 1);
             let (num_w, _) = tr.measure(&num, TEXT_SIZE, None);
             tr.draw_text(
@@ -430,13 +403,12 @@ impl Widget for EditorApp {
                 gutter_color,
                 transform
                     * Affine::translate((
-                        self.rect.x0 + PADDING_X + GUTTER_WIDTH - num_w as f64 - 6.0,
+                        self.rect.x0 + PADDING_X + GUTTER_WIDTH - f64::from(num_w) - 6.0,
                         y,
                     )),
                 None,
             );
 
-            // Token spans.
             let tokens_on_line = tokenize(line);
             let mut pen_x = content_x;
             for (start, end, class) in tokens_on_line {
@@ -460,25 +432,23 @@ impl Widget for EditorApp {
                         None,
                     );
                     let (w, _) = tr.measure(slice, TEXT_SIZE, None);
-                    pen_x += w as f64;
+                    pen_x += f64::from(w);
                 }
             }
 
-            // Caret on the line that owns the cursor.
             if self.focused && row == cursor_line {
                 let (prefix_w, _) = tr.measure(cursor_col_prefix, TEXT_SIZE, None);
-                let caret_x = content_x + prefix_w as f64;
+                let caret_x = content_x + f64::from(prefix_w);
                 let caret = Rect::new(
                     caret_x,
                     y - 2.0,
                     caret_x + 1.5,
-                    y + LINE_HEIGHT as f64 - 2.0,
+                    y + f64::from(LINE_HEIGHT) - 2.0,
                 );
                 scene.fill(Fill::NonZero, transform, caret_color, None, &caret);
             }
         }
 
-        // Thin gutter / body divider rule.
         let divider = Rect::new(
             gutter_rect.x1,
             gutter_rect.y0,
@@ -493,43 +463,32 @@ impl Widget for EditorApp {
             &divider,
         );
 
-        // Peer carets + selections. Read `PresenceCtx` keyed by the editor
-        // body and paint a per-peer caret bar + translucent selection fill
-        // on top of the locally-rendered text. Char-index is mapped to
-        // byte index via `char_indices` so a peer whose caret walks past
-        // the text boundary simply lands at end-of-buffer.
+        // Char-index maps to byte index so a peer caret past the text
+        // boundary simply lands at end-of-buffer.
         let key = self.body.presence_key();
         if let Some(carets) = presence.carets.get(&key) {
-            for (user, caret_char) in carets.iter() {
+            for (user, caret_char) in carets {
                 let byte_idx = self.body.char_index_to_byte(*caret_char);
                 let row = self.body.text[..byte_idx].matches('\n').count();
                 let line_start_byte = self.line_start(byte_idx);
                 let prefix = &self.body.text[line_start_byte..byte_idx];
                 let (prefix_w, _) = tr.measure(prefix, TEXT_SIZE, None);
-                let x = content_x + prefix_w as f64;
-                let y = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
-                // `ui::PresenceCtx::draw_peer_caret` takes the caret
-                // geometry as a `Rect` plus the scene transform — match
-                // the widget-side carets in `TextInput` / `RichTextLine`
-                // (2 px wide, full line height) so a peer caret is
-                // visually identical to the local user's. Use the
-                // parent `transform` so HiDPI scaling carries through.
-                let caret_rect = Rect::new(x, y, x + 2.0, y + LINE_HEIGHT as f64);
+                let x = content_x + f64::from(prefix_w);
+                let y = body_top + (row as f64) * f64::from(LINE_HEIGHT) + 2.0;
+                // 2px wide, full line height — matches the local caret in
+                // `TextInput` / `RichTextLine`.
+                let caret_rect = Rect::new(x, y, x + 2.0, y + f64::from(LINE_HEIGHT));
                 presence.draw_peer_caret(scene, theme, transform, user, caret_rect);
             }
         }
 
         if let Some(selections) = presence.selections.get(&key) {
-            for (user, range) in selections.iter() {
+            for (user, range) in selections {
                 if range.is_empty() {
                     continue;
                 }
-                // Walk the selection line-by-line: for each line that
-                // intersects [range.start, range.end], build a rect from
-                // the selection's first column to its last column on that
-                // line. Multi-line selections therefore produce one rect
-                // per visual row, matching how editors conventionally
-                // render per-line selection bands.
+                // Walk line-by-line, one rect per visual row (the
+                // conventional per-line selection band).
                 let sel_start_byte = self.body.char_index_to_byte(range.start);
                 let sel_end_byte = self.body.char_index_to_byte(range.end);
                 let mut byte_cursor = sel_start_byte;
@@ -542,24 +501,23 @@ impl Widget for EditorApp {
                     let span = &self.body.text[byte_cursor..line_end_byte];
                     let (pre_w, _) = tr.measure(pre, TEXT_SIZE, None);
                     let (span_w, _) = tr.measure(span, TEXT_SIZE, None);
-                    let x0 = content_x + pre_w as f64;
-                    let x1 = x0 + span_w as f64;
-                    let y0 = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
-                    let y1 = y0 + LINE_HEIGHT as f64;
+                    let x0 = content_x + f64::from(pre_w);
+                    let x1 = x0 + f64::from(span_w);
+                    let y0 = body_top + (row as f64) * f64::from(LINE_HEIGHT) + 2.0;
+                    let y1 = y0 + f64::from(LINE_HEIGHT);
                     line_rects.push(Rect::new(x0, y0, x1, y1));
-                    // Advance to the start of the next line (skip the `\n`).
                     byte_cursor = line_end_byte;
-                    if byte_cursor < self.body.text.len() && self.body.text.as_bytes()[byte_cursor] == b'\n' {
+                    if byte_cursor < self.body.text.len()
+                        && self.body.text.as_bytes()[byte_cursor] == b'\n'
+                    {
                         byte_cursor += 1;
                         row += 1;
                     } else {
                         break;
                     }
                 }
-                // `ui::PresenceCtx::draw_peer_selection` paints a single
-                // `Rect` per call; emit one call per visual line so multi-
-                // line selections render as a band per row. Use the
-                // parent `transform` so HiDPI scaling carries through.
+                // One call per visual line — `draw_peer_selection` paints a
+                // single `Rect`.
                 for line_rect in &line_rects {
                     presence.draw_peer_selection(scene, theme, transform, user, *line_rect);
                 }
@@ -658,10 +616,8 @@ impl Widget for EditorApp {
                         }
                     }
                     Key::Named(NamedKey::ArrowUp) => {
-                        // Move caret up one line, preserving the column
-                        // offset where possible. Columns are measured in
-                        // bytes within the line — fine for ASCII code and
-                        // "close enough" for mixed utf-8 given the clamp.
+                        // Columns are byte offsets within the line — fine
+                        // for ASCII, "close enough" for mixed UTF-8 given the clamp.
                         let line_start = self.line_start(self.cursor_pos);
                         let col = self.cursor_pos - line_start;
                         if line_start > 0 {
@@ -699,7 +655,7 @@ impl Widget for EditorApp {
                     _ => {
                         if let Some(t) = text {
                             let s = t.as_str();
-                            if !s.is_empty() && !s.chars().all(|c| c.is_control()) {
+                            if !s.is_empty() && !s.chars().all(char::is_control) {
                                 self.insert_text(state, root, s);
                                 *handled = true;
                             }
@@ -711,13 +667,12 @@ impl Widget for EditorApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "EditorApp"
     }
 
-    /// The record this tab's document is. Folded into the body's presence
-    /// key so a peer's caret arriving for one tab is not drawn in another
-    /// tab of the same app.
+    /// Folded into the body's presence key so a peer's caret for one tab
+    /// isn't drawn in another tab of the same app.
     fn set_record_scope(&mut self, record: &ui::record::RecordId) {
         self.body.set_record(record);
     }
@@ -766,7 +721,7 @@ impl AppWidget for EditorApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "Editor"
     }
     fn app_icon(&self) -> IconDescriptor {
@@ -794,7 +749,6 @@ mod tests {
     #[test]
     fn tokenize_separates_keyword_string_number() {
         let toks = tokenize("const count = 0; return 'hi';");
-        // "const" at offset 0 is a Keyword
         let has_keyword = toks.iter().any(|(s, e, c)| {
             *c == TokClass::Keyword && "const" == &"const count = 0; return 'hi';"[*s..*e]
         });
@@ -840,10 +794,8 @@ mod tests {
     #[test]
     fn body_presence_key_names_the_record_and_the_body_field() {
         use ui::presence::{PathSegment, PresenceKey};
-        // Stable contract: the shell seeds presence state under this
-        // exact key, so a peer's caret/selection for the editor body
-        // materialises where `draw` looks for it.
-        //
+        // Stable contract: the shell seeds presence under this exact key,
+        // so a peer's caret/selection materialises where `draw` looks.
         // Unhosted — no record named yet — it is the bare field.
         let mut app = EditorApp::new();
         let key = app
@@ -856,10 +808,9 @@ mod tests {
             other => panic!("expected PresenceKey::Widget, got {other:?}"),
         }
 
-        // Hosted in a tab, the record comes first. Two Editor tabs are two
-        // documents with an `editor_body` each, so a key that only named
-        // the field would address both at once and a peer's caret would be
-        // drawn in whichever tab painted last.
+        // Hosted in a tab, the record comes first — otherwise two Editor
+        // tabs would share a key and a peer's caret would draw in whichever
+        // tab painted last.
         let record = ui::record::RecordId::for_tab(0x2b);
         app.set_record_scope(&record);
         match app.presence_key().expect("still publishes") {
@@ -889,9 +840,7 @@ mod tests {
 
     #[test]
     fn arrow_down_preserves_column_across_lines() {
-        // Manual smoke: verify that line_start / line_end work as expected
-        // on a two-line buffer. We drive the caret arithmetic that the
-        // handle_event ArrowDown branch would perform.
+        // Drives the caret arithmetic the handle_event ArrowDown branch performs.
         let app = EditorApp::with_seed("abcd\nefgh");
         // Cursor at col 2 of line 0 → byte offset 2.
         let pos = 2;

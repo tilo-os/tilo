@@ -10,6 +10,11 @@
 use crate::model::{BlockKind, ContentBlock};
 
 /// Convert an HTML fragment into renderable blocks.
+// `flush!` resets `kind` after emitting a block, which is right at every
+// call site but the last one before the function returns. Rewriting the
+// macro to skip the reset there would trade a correct invariant for a
+// warning.
+#[allow(unused_assignments)]
 pub fn to_blocks(html: &str) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
     let mut buf = String::new();
@@ -104,21 +109,19 @@ fn handle_tag(
         .unwrap_or("");
     let closing = tag.starts_with('/');
 
-    let flush = |blocks: &mut Vec<ContentBlock>,
-                 buf: &mut String,
-                 kind: &mut BlockKind,
-                 pre: bool| {
-        let text = if pre {
-            buf.trim_matches('\n').to_string()
-        } else {
-            collapse_ws(buf)
+    let flush =
+        |blocks: &mut Vec<ContentBlock>, buf: &mut String, kind: &mut BlockKind, pre: bool| {
+            let text = if pre {
+                buf.trim_matches('\n').to_string()
+            } else {
+                collapse_ws(buf)
+            };
+            if !text.is_empty() {
+                blocks.push(ContentBlock::new(*kind, text));
+            }
+            buf.clear();
+            *kind = BlockKind::Paragraph;
         };
-        if !text.is_empty() {
-            blocks.push(ContentBlock::new(*kind, text));
-        }
-        buf.clear();
-        *kind = BlockKind::Paragraph;
-    };
 
     match name {
         "p" | "div" | "section" | "article" => {
@@ -133,9 +136,7 @@ fn handle_tag(
             set_block(blocks, buf, kind, closing, BlockKind::Heading3, *in_pre)
         }
         "li" => set_block(blocks, buf, kind, closing, BlockKind::Bullet, *in_pre),
-        "blockquote" => {
-            set_block(blocks, buf, kind, closing, BlockKind::Quote, *in_pre)
-        }
+        "blockquote" => set_block(blocks, buf, kind, closing, BlockKind::Quote, *in_pre),
         "pre" => {
             if closing {
                 flush(blocks, buf, kind, true);

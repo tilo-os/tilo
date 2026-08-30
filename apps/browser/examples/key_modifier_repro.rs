@@ -37,7 +37,12 @@ paint();
 </script></body></html>"#;
 
 fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {
-    engine.frames().lock().unwrap().as_ref().map(|f| (f.rgba.clone(), f.width, f.height))
+    engine
+        .frames()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|f| (f.rgba.clone(), f.width, f.height))
 }
 
 /// Count pixels near green / red / white and return the dominant label.
@@ -66,7 +71,11 @@ fn dominant(rgba: &[u8]) -> (&'static str, [u64; 3]) {
 
 fn main() {
     let engine: SharedEngine = WpeEngine::new().expect("engine");
-    engine.send(WebViewCommand::Resize { width: 800, height: 400, scale_factor: 1.0 });
+    engine.send(WebViewCommand::Resize {
+        width: 800,
+        height: 400,
+        scale_factor: 1.0,
+    });
     let url = format!("data:text/html,{}", urlencode(PAGE));
     engine.send(WebViewCommand::Navigate(url));
     engine.send(WebViewCommand::SetFocused(true));
@@ -84,16 +93,33 @@ fn main() {
     }
     std::thread::sleep(Duration::from_millis(400));
     let before = latest(&*engine).map(|(r, _, _)| dominant(&r)).unwrap();
-    println!("before keypress: {}  counts(g,r,w)={:?}", before.0, before.1);
+    println!(
+        "before keypress: {}  counts(g,r,w)={:?}",
+        before.0, before.1
+    );
 
     // Ctrl+Backspace (down then up).
-    let mods = KeyModifiers { ctrl: true, ..Default::default() };
-    engine.send(WebViewCommand::Key { key: KeyInput::Named(NamedKey::Backspace), down: true, modifiers: mods });
-    engine.send(WebViewCommand::Key { key: KeyInput::Named(NamedKey::Backspace), down: false, modifiers: mods });
+    let mods = KeyModifiers {
+        ctrl: true,
+        ..Default::default()
+    };
+    engine.send(WebViewCommand::Key {
+        key: KeyInput::Named(NamedKey::Backspace),
+        down: true,
+        modifiers: mods,
+    });
+    engine.send(WebViewCommand::Key {
+        key: KeyInput::Named(NamedKey::Backspace),
+        down: false,
+        modifiers: mods,
+    });
 
     std::thread::sleep(Duration::from_millis(600));
     let after = latest(&*engine).map(|(r, _, _)| dominant(&r)).unwrap();
-    println!("after ctrl+backspace: {}  counts(g,r,w)={:?}", after.0, after.1);
+    println!(
+        "after ctrl+backspace: {}  counts(g,r,w)={:?}",
+        after.0, after.1
+    );
 }
 
 /// Minimal percent-encoding for the data: URL body.
@@ -101,7 +127,9 @@ fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }

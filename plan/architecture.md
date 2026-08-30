@@ -2,7 +2,7 @@
 
 ## Overview
 
-qOS (codename **nirios**) is a collaborative, spatial Linux OS built on Fedora Bootc. Instead of a traditional desktop metaphor, users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
+qOS (codename **nirios**) is a collaborative Linux OS built on Fedora Bootc. See `README.md` in this directory for the resource/action model the rest follows from. Users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
 
 ## System Stack
 
@@ -24,7 +24,7 @@ qOS (codename **nirios**) is a collaborative, spatial Linux OS built on Fedora B
 │  │     shell (Spatial Smithay Compositor)      │ │
 │  │  ┌───────────┐ ┌──────────┐ ┌───────────────────┐  │ │
 │  │  │  Smithay  │ │ vello +  │ │  Collaboration    │  │ │
-│  │  │  (proto)  │ │  wgpu    │ │  (libp2p+automerge)│ │ │
+│  │  │  (proto)  │ │  wgpu    │ │   (Iroh+automerge) │ │ │
 │  │  └───────────┘ └──────────┘ └───────────────────┘  │ │
 │  │  ┌───────────┐ ┌──────────┐ ┌───────────────────┐  │ │
 │  │  │  openh264 │ │ PipeWire │ │   Control socket  │  │ │
@@ -61,7 +61,7 @@ qOS (codename **nirios**) is a collaborative, spatial Linux OS built on Fedora B
 - See `plan/compositor.md`.
 
 ### 3. Collaboration + Sandbox Layer
-- **Collaboration:** `libp2p` (gossipsub + mdns + noise + tcp + yamux) carries one topic per workspace (`/nirios/ws/<id>/v1`). CRDT changes ride on top via `automerge`'s incremental change protocol.
+- **Collaboration:** Iroh gossip carries direct workspace traffic; the authenticated Iroh workspace host persists and store-and-forwards durable changes. CRDT changes ride on top via `automerge`'s incremental change protocol.
 - **Surface streaming:** owners encode foreign-client surfaces to H.264 (openh264 software path) and publish them on the workspace topic. Peers decode in a `peer_view` widget; their input events are serialised and replayed into the owner's smithay seat.
 - **Sandbox:** every workspace pins a per-workspace `SandboxProfile` rendered into `bwrap` argv, with a seccomp-bpf blocklist, a private DBus session bus, and a per-workspace Wayland bridge socket. The portal D-Bus backend (`org.freedesktop.impl.portal.*`) gates capability requests through the compositor's prompt UI.
 - See `plan/collaboration.md`, `plan/security.md`.
@@ -88,7 +88,7 @@ xdg_toplevel maps → app-id present
 ```
 Local mutation → WorkspaceTree write (cache + automerge AutoCommit)
   → SyncReq heartbeat (every 2 s) or immediate Publish
-  → libp2p gossipsub workspace topic
+  → Iroh gossip workspace topic and optional persistent workspace host
   → remote peer: NeighbourMsg::SyncResp { changes }
   → WorkspaceTree::apply_changes → rebuild_cache_from_doc → re-render
 ```
@@ -159,7 +159,7 @@ quickdesktop/                            # workspace root
 │       ├── shell/                       # WorkspaceTree, overlays, chrome, network bridge
 │       ├── sandbox/                     # bwrap profile, seccomp blob, spawn
 │       ├── portal/                      # FileChooser, ScreenCast, Camera D-Bus backends
-│       ├── network/                     # libp2p actor, behaviour, hub, replica, encoder, invite
+│       ├── network/                     # Iroh actor, identity, hub, replica, encoder, invite
 │       └── bin/{shots,qos-control}/  # e2e harness + control-socket CLI
 ├── fs/                                  # FUSE3 driver
 ├── apps/{terminal,file-explorer,browser,…}/  # native apps

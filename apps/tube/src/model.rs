@@ -20,8 +20,8 @@ pub fn norm_channel_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// SponsorBlock segment categories. These map 1:1 onto the official
-/// SponsorBlock API category strings (`api_key`), so the same enum is
+/// `SponsorBlock` segment categories. These map 1:1 onto the official
+/// `SponsorBlock` API category strings (`api_key`), so the same enum is
 /// used both for the on-screen seek-bar markers and for the live query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum Category {
@@ -48,7 +48,7 @@ impl Category {
         Category::Filler,
     ];
 
-    /// The SponsorBlock API key (`category` field in the JSON response).
+    /// The `SponsorBlock` API key (`category` field in the JSON response).
     pub fn api_key(self) -> &'static str {
         match self {
             Category::Sponsor => "sponsor",
@@ -93,7 +93,7 @@ impl Category {
         }
     }
 
-    /// The official SponsorBlock colour identity (RGB), kept here so the
+    /// The official `SponsorBlock` colour identity (RGB), kept here so the
     /// seek-bar legend matches what users already recognise. These are the
     /// brand colours of the *data source*, not OS chrome — chrome (panels,
     /// text, surfaces) still comes from the [`ui::theme::Theme`].
@@ -111,7 +111,7 @@ impl Category {
     }
 }
 
-/// How Tube treats a SponsorBlock category, per-category. This is the
+/// How Tube treats a `SponsorBlock` category, per-category. This is the
 /// Grayjay-style three-way mode (not a plain on/off): each category can be
 /// auto-skipped, merely marked with a manual skip button, or ignored entirely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ impl SkipMode {
     }
 }
 
-/// One SponsorBlock segment within a video, in seconds.
+/// One `SponsorBlock` segment within a video, in seconds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Segment {
     pub category: Category,
@@ -245,7 +245,12 @@ pub struct SearchTypeFilter {
 
 impl Default for SearchTypeFilter {
     fn default() -> Self {
-        Self { video: true, playlist: true, creator: true, pristine: true }
+        Self {
+            video: true,
+            playlist: true,
+            creator: true,
+            pristine: true,
+        }
     }
 }
 
@@ -310,14 +315,14 @@ pub struct Channel {
 pub struct Video {
     pub id: VideoId,
     pub title: String,
-    /// DeArrow community-sourced, non-clickbait title. When DeArrow is
+    /// `DeArrow` community-sourced, non-clickbait title. When `DeArrow` is
     /// enabled this replaces [`title`]; an indicator badge marks it.
     #[serde(default)]
     pub dearrow_title: Option<String>,
     pub channel_id: ChannelId,
     pub channel_name: String,
     pub channel_seed: String,
-    /// Real uploader avatar URL carried on a feed/search list item (YouTube
+    /// Real uploader avatar URL carried on a feed/search list item (`YouTube`
     /// returns it on the channel tag). Used to populate the channel record's
     /// [`Channel::avatar_url`] so Home/Search cards show the real creator icon
     /// without a separate channel-page fetch. Empty on the offline sample.
@@ -335,7 +340,7 @@ pub struct Video {
     #[serde(default)]
     pub thumbnail_url: String,
     pub category: String,
-    /// Marks whether DeArrow has a community thumbnail for this video
+    /// Marks whether `DeArrow` has a community thumbnail for this video
     /// (we render a "neutral frame" treatment instead of the clickbait
     /// frame when [`Settings::dearrow_thumbnails`] is on).
     #[serde(default)]
@@ -349,17 +354,15 @@ pub struct Video {
 }
 
 impl Video {
-    /// The title to display given the DeArrow toggle.
-    pub fn display_title<'a>(&'a self, dearrow: bool) -> &'a str {
-        if dearrow {
-            if let Some(t) = &self.dearrow_title {
-                return t;
-            }
+    /// The title to display given the `DeArrow` toggle.
+    pub fn display_title(&self, dearrow: bool) -> &str {
+        if dearrow && let Some(t) = &self.dearrow_title {
+            return t;
         }
         &self.title
     }
 
-    /// Whether a DeArrow alternative exists *and* is active.
+    /// Whether a `DeArrow` alternative exists *and* is active.
     pub fn dearrow_active(&self, dearrow: bool) -> bool {
         dearrow && self.dearrow_title.is_some()
     }
@@ -373,14 +376,14 @@ pub struct Settings {
     /// to auto-skip (matches the upstream extension default of "skip everything
     /// but filler").
     pub categories: BTreeMap<String, SkipMode>,
-    /// DeArrow master switch. When off, neither titles nor thumbnails are
+    /// `DeArrow` master switch. When off, neither titles nor thumbnails are
     /// replaced regardless of the two sub-toggles below.
     pub dearrow_enabled: bool,
     /// Replace clickbait titles with the community-sourced factual one.
     #[serde(default = "default_true")]
     pub dearrow_titles: bool,
     pub dearrow_thumbnails: bool,
-    /// Show the crowdsourced dislike count (Return YouTube Dislike) on the watch
+    /// Show the crowdsourced dislike count (Return `YouTube` Dislike) on the watch
     /// page alongside likes.
     #[serde(default = "default_true")]
     pub return_dislike_enabled: bool,
@@ -424,13 +427,16 @@ impl Default for Settings {
 
 impl Settings {
     /// The effective [`SkipMode`] for a category: the master switch forces
-    /// `Disabled` when SponsorBlock is off; otherwise the stored per-category
+    /// `Disabled` when `SponsorBlock` is off; otherwise the stored per-category
     /// mode (defaulting to auto-skip for an absent key).
     pub fn mode_of(&self, c: Category) -> SkipMode {
         if !self.sponsorblock_enabled {
             return SkipMode::Disabled;
         }
-        self.categories.get(c.api_key()).copied().unwrap_or(SkipMode::Skip)
+        self.categories
+            .get(c.api_key())
+            .copied()
+            .unwrap_or(SkipMode::Skip)
     }
 
     /// Whether the category is marked/considered at all (Show or Auto-skip).
@@ -450,16 +456,20 @@ impl Settings {
 
     /// Cycle a category's mode: Auto-skip → Show → Off → Auto-skip.
     pub fn cycle_category(&mut self, c: Category) {
-        let cur = self.categories.get(c.api_key()).copied().unwrap_or(SkipMode::Skip);
+        let cur = self
+            .categories
+            .get(c.api_key())
+            .copied()
+            .unwrap_or(SkipMode::Skip);
         self.categories.insert(c.api_key().to_string(), cur.next());
     }
 
-    /// Whether DeArrow title replacement is active (master + titles sub-toggle).
+    /// Whether `DeArrow` title replacement is active (master + titles sub-toggle).
     pub fn dearrow_titles_on(&self) -> bool {
         self.dearrow_enabled && self.dearrow_titles
     }
 
-    /// Whether DeArrow thumbnail replacement is active (master + thumbs toggle).
+    /// Whether `DeArrow` thumbnail replacement is active (master + thumbs toggle).
     pub fn dearrow_thumbs_on(&self) -> bool {
         self.dearrow_enabled && self.dearrow_thumbnails
     }
@@ -467,7 +477,7 @@ impl Settings {
 
 /// Where the catalogue currently on screen came from. Drives the top-bar
 /// status pill ("Live" vs "Sample") so the user always knows whether they are
-/// looking at real YouTube data or the bundled offline sample.
+/// looking at real `YouTube` data or the bundled offline sample.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataSource {
     /// True once a live backend has actually returned real data this session.
@@ -479,7 +489,10 @@ pub struct DataSource {
 
 impl Default for DataSource {
     fn default() -> Self {
-        Self { live: false, label: "sample data".into() }
+        Self {
+            live: false,
+            label: "sample data".into(),
+        }
     }
 }
 
@@ -573,13 +586,13 @@ pub struct TubeModel {
     /// Ordered related-video ids returned by the live backend for [`related_of`].
     #[serde(default)]
     pub related_hits: Vec<VideoId>,
-    /// Crowdsourced dislike counts (Return YouTube Dislike), keyed by video id.
+    /// Crowdsourced dislike counts (Return `YouTube` Dislike), keyed by video id.
     /// Kept off [`Video`] so the API result folds in without a catalogue rewrite.
     #[serde(default)]
     pub dislikes: BTreeMap<VideoId, u64>,
-    /// DeArrow community thumbnail URLs (a rendered frame at the top-voted
+    /// `DeArrow` community thumbnail URLs (a rendered frame at the top-voted
     /// timestamp, or a submitted image), keyed by video id. Used in place of the
-    /// clickbait frame when DeArrow thumbnails are enabled.
+    /// clickbait frame when `DeArrow` thumbnails are enabled.
     #[serde(default)]
     pub dearrow_thumb_url: BTreeMap<VideoId, String>,
     /// Whether the home/trending feed is currently being fetched from the live
@@ -704,10 +717,10 @@ impl TubeModel {
     /// The like count to display for a video: the base count plus one while the
     /// user has liked it this session, so the pill's number tracks its state.
     pub fn display_likes(&self, v: &Video) -> u64 {
-        v.likes + if self.is_liked(&v.id) { 1 } else { 0 }
+        v.likes + u64::from(self.is_liked(&v.id))
     }
 
-    /// The crowdsourced dislike count for a video (Return YouTube Dislike), once
+    /// The crowdsourced dislike count for a video (Return `YouTube` Dislike), once
     /// fetched. `None` until it lands (or when disabled).
     pub fn dislikes_of(&self, id: &str) -> Option<u64> {
         self.dislikes.get(id).copied()
@@ -718,12 +731,11 @@ impl TubeModel {
     /// video's own thumbnail. Keeps the DeArrow/original choice in one place so
     /// every card + poster stays consistent.
     pub fn display_thumbnail_url<'a>(&'a self, v: &'a Video) -> &'a str {
-        if self.settings.dearrow_thumbs_on() {
-            if let Some(url) = self.dearrow_thumb_url.get(&v.id) {
-                if !url.is_empty() {
-                    return url;
-                }
-            }
+        if self.settings.dearrow_thumbs_on()
+            && let Some(url) = self.dearrow_thumb_url.get(&v.id)
+            && !url.is_empty()
+        {
+            return url;
         }
         &v.thumbnail_url
     }
@@ -761,7 +773,7 @@ impl TubeModel {
             .collect()
     }
 
-    /// Insert or update a video by id, preserving any SponsorBlock segments /
+    /// Insert or update a video by id, preserving any `SponsorBlock` segments /
     /// comments already fetched for it (a fresh list item carries neither).
     pub fn upsert_video(&mut self, v: Video) {
         if let Some(slot) = self.videos.iter_mut().find(|x| x.id == v.id) {
@@ -838,10 +850,10 @@ impl TubeModel {
         if id.is_empty() || url.is_empty() {
             return;
         }
-        if let Some(ch) = self.channels.iter_mut().find(|c| c.id == id) {
-            if ch.avatar_url.is_empty() {
-                ch.avatar_url = url.to_string();
-            }
+        if let Some(ch) = self.channels.iter_mut().find(|c| c.id == id)
+            && ch.avatar_url.is_empty()
+        {
+            ch.avatar_url = url.to_string();
         }
     }
 
@@ -856,7 +868,7 @@ impl TubeModel {
         }
         let nname = norm_channel_name(name);
         let mut changed = false;
-        for ch in self.channels.iter_mut() {
+        for ch in &mut self.channels {
             let matches = (!id.is_empty() && ch.id == id)
                 || (!nname.is_empty() && norm_channel_name(&ch.name) == nname);
             if matches && ch.avatar_url.is_empty() {
@@ -883,11 +895,11 @@ impl TubeModel {
         if by_name.is_empty() {
             return;
         }
-        for ch in self.channels.iter_mut() {
-            if ch.avatar_url.is_empty() {
-                if let Some(url) = by_name.get(&norm_channel_name(&ch.name)) {
-                    ch.avatar_url = url.clone();
-                }
+        for ch in &mut self.channels {
+            if ch.avatar_url.is_empty()
+                && let Some(url) = by_name.get(&norm_channel_name(&ch.name))
+            {
+                ch.avatar_url = url.clone();
             }
         }
     }
@@ -906,7 +918,10 @@ impl TubeModel {
         self.search_hits_query.clear();
         self.related_hits.clear();
         self.related_of.clear();
-        self.data_source = DataSource { live: true, label: label.into() };
+        self.data_source = DataSource {
+            live: true,
+            label: label.into(),
+        };
     }
 
     /// Simple case-insensitive title/channel search.
@@ -930,8 +945,11 @@ impl TubeModel {
     /// (offline / before a live response lands).
     pub fn search_display(&self, query: &str) -> Vec<&Video> {
         if self.search_hits_query == query && !self.search_hits.is_empty() {
-            let hits: Vec<&Video> =
-                self.search_hits.iter().filter_map(|id| self.video(id)).collect();
+            let hits: Vec<&Video> = self
+                .search_hits
+                .iter()
+                .filter_map(|id| self.video(id))
+                .collect();
             if !hits.is_empty() {
                 return hits;
             }
@@ -944,8 +962,11 @@ impl TubeModel {
     /// same-category heuristic.
     pub fn related_display(&self, id: &str) -> Vec<&Video> {
         if self.related_of == id && !self.related_hits.is_empty() {
-            let hits: Vec<&Video> =
-                self.related_hits.iter().filter_map(|rid| self.video(rid)).collect();
+            let hits: Vec<&Video> = self
+                .related_hits
+                .iter()
+                .filter_map(|rid| self.video(rid))
+                .collect();
             if !hits.is_empty() {
                 return hits;
             }
@@ -956,7 +977,10 @@ impl TubeModel {
     /// "Up next" suggestions for a watch page: same category first, then
     /// fill with the rest, excluding the current video.
     pub fn related(&self, id: &str) -> Vec<&Video> {
-        let cat = self.video(id).map(|v| v.category.clone()).unwrap_or_default();
+        let cat = self
+            .video(id)
+            .map(|v| v.category.clone())
+            .unwrap_or_default();
         let mut same: Vec<&Video> = self
             .videos
             .iter()
@@ -1000,8 +1024,10 @@ mod tests {
 
     #[test]
     fn sponsorblock_master_switch_overrides_categories() {
-        let mut s = Settings::default();
-        s.sponsorblock_enabled = false;
+        let s = Settings {
+            sponsorblock_enabled: false,
+            ..Settings::default()
+        };
         assert!(!s.category_enabled(Category::Sponsor));
         assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
         assert!(!s.should_auto_skip(Category::Sponsor));
@@ -1019,7 +1045,11 @@ mod tests {
         assert_eq!(s.mode_of(Category::Intro), SkipMode::Disabled);
         assert!(!s.category_enabled(Category::Intro));
         s.cycle_category(Category::Intro);
-        assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip, "cycles back to Auto-skip");
+        assert_eq!(
+            s.mode_of(Category::Intro),
+            SkipMode::Skip,
+            "cycles back to Auto-skip"
+        );
     }
 
     #[test]
@@ -1029,7 +1059,10 @@ mod tests {
         s.dearrow_titles = false;
         assert!(!s.dearrow_titles_on() && s.dearrow_thumbs_on());
         s.dearrow_enabled = false;
-        assert!(!s.dearrow_titles_on() && !s.dearrow_thumbs_on(), "master gates both");
+        assert!(
+            !s.dearrow_titles_on() && !s.dearrow_thumbs_on(),
+            "master gates both"
+        );
     }
 
     #[test]
@@ -1055,8 +1088,14 @@ mod tests {
     fn search_type_filter_first_click_narrows_to_that_type() {
         let mut f = SearchTypeFilter::default();
         f.click(SearchType::Playlist);
-        assert!(!f.shows(SearchType::Video), "first click deselects the others");
-        assert!(f.shows(SearchType::Playlist), "first click selects the clicked type");
+        assert!(
+            !f.shows(SearchType::Video),
+            "first click deselects the others"
+        );
+        assert!(
+            f.shows(SearchType::Playlist),
+            "first click selects the clicked type"
+        );
         assert!(!f.shows(SearchType::Creator));
         assert!(!f.pristine);
     }
@@ -1107,21 +1146,33 @@ mod tests {
         // on the id-A record so its cards resolve.
         let changed = m.adopt_channel_avatar("UC_B", "Blender Studio", "https://yt3/av");
         assert!(changed, "adopt reported a change");
-        assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/av", "matched by name");
+        assert_eq!(
+            m.channel("UC_A").unwrap().avatar_url,
+            "https://yt3/av",
+            "matched by name"
+        );
 
         // A fresh stub matched by exact id.
         m.channels.push(chan("UC_C", "Other Creator", ""));
         m.adopt_channel_avatar("UC_C", "irrelevant name", "https://yt3/c");
-        assert_eq!(m.channel("UC_C").unwrap().avatar_url, "https://yt3/c", "matched by id");
+        assert_eq!(
+            m.channel("UC_C").unwrap().avatar_url,
+            "https://yt3/c",
+            "matched by id"
+        );
     }
 
     #[test]
     fn adopt_channel_avatar_never_overwrites_an_existing_avatar() {
         let mut m = TubeModel::default();
-        m.channels.push(chan("UC_A", "Chan", "https://yt3/original"));
+        m.channels
+            .push(chan("UC_A", "Chan", "https://yt3/original"));
         let changed = m.adopt_channel_avatar("UC_A", "Chan", "https://yt3/other");
         assert!(!changed);
-        assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/original");
+        assert_eq!(
+            m.channel("UC_A").unwrap().avatar_url,
+            "https://yt3/original"
+        );
     }
 
     #[test]
@@ -1140,7 +1191,8 @@ mod tests {
         // The video card's uploader record (id A) has no avatar; a creator-row
         // record (id B) for the same creator has one. Reconcile must fill A.
         m.channels.push(chan("UC_A", "Blender Studio", ""));
-        m.channels.push(chan("UC_B", "Blender Studio", "https://yt3/bs"));
+        m.channels
+            .push(chan("UC_B", "Blender Studio", "https://yt3/bs"));
         m.reconcile_channel_avatars();
         assert_eq!(
             m.channel("UC_A").unwrap().avatar_url,
@@ -1174,8 +1226,15 @@ mod tests {
             video_ids: vec![],
         });
         let p = m.playlist("PL1").unwrap();
-        assert_eq!(p.video_ids.len(), 3, "stub upsert keeps the fetched video list");
-        assert_eq!(p.thumbnail_url, "https://x/t.jpg", "but refreshes other fields");
+        assert_eq!(
+            p.video_ids.len(),
+            3,
+            "stub upsert keeps the fetched video list"
+        );
+        assert_eq!(
+            p.thumbnail_url, "https://x/t.jpg",
+            "but refreshes other fields"
+        );
     }
 
     #[test]
@@ -1250,7 +1309,7 @@ mod tests {
             views: 1,
             published: "now".into(),
             duration: 60,
-            description: "".into(),
+            description: String::new(),
             likes: 0,
             seed: "x".into(),
             thumbnail_url: String::new(),

@@ -50,21 +50,43 @@ pub struct InlineText {
 
 impl InlineText {
     pub fn new(text: impl Into<String>, marks: Vec<MarkSpan>) -> Self {
-        Self { text: text.into(), marks }
+        Self {
+            text: text.into(),
+            marks,
+        }
     }
     pub fn plain(text: impl Into<String>) -> Self {
-        Self { text: text.into(), marks: Vec::new() }
+        Self {
+            text: text.into(),
+            marks: Vec::new(),
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockSpec {
     Paragraph(InlineText),
-    Heading { level: u8, text: InlineText },
-    Bullet { indent: u8, text: InlineText },
-    Numbered { indent: u8, text: InlineText },
-    Checklist { indent: u8, done: bool, text: InlineText },
-    CodeBlock { lang: Option<String>, text: String },
+    Heading {
+        level: u8,
+        text: InlineText,
+    },
+    Bullet {
+        indent: u8,
+        text: InlineText,
+    },
+    Numbered {
+        indent: u8,
+        text: InlineText,
+    },
+    Checklist {
+        indent: u8,
+        done: bool,
+        text: InlineText,
+    },
+    CodeBlock {
+        lang: Option<String>,
+        text: String,
+    },
     Divider,
 }
 
@@ -121,7 +143,12 @@ impl BlockSpec {
             text: InlineText::plain(s),
         }
     }
-    pub fn checklist_marks(indent: u8, done: bool, s: impl Into<String>, marks: Vec<MarkSpan>) -> Self {
+    pub fn checklist_marks(
+        indent: u8,
+        done: bool,
+        s: impl Into<String>,
+        marks: Vec<MarkSpan>,
+    ) -> Self {
         BlockSpec::Checklist {
             indent: indent.min(MAX_LIST_INDENT),
             done,
@@ -204,75 +231,79 @@ pub fn parse_inline(line: &str) -> InlineText {
     let mut i = 0usize;
     while i < bytes.len() {
         // Inline code.
-        if bytes[i] == b'`' {
-            if let Some(end) = find_unescaped(bytes, i + 1, b'`') {
-                let start = plain.len();
-                plain.push_str(&line[i + 1..end]);
-                let stop = plain.len();
-                marks.push(MarkSpan::new(start..stop, Mark::Code));
-                i = end + 1;
-                continue;
-            }
+        if bytes[i] == b'`'
+            && let Some(end) = find_unescaped(bytes, i + 1, b'`')
+        {
+            let start = plain.len();
+            plain.push_str(&line[i + 1..end]);
+            let stop = plain.len();
+            marks.push(MarkSpan::new(start..stop, Mark::Code));
+            i = end + 1;
+            continue;
         }
         // Page link `[[Title]]`.
-        if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            if let Some(end) = find_pair(bytes, i + 2, b']', b']') {
-                let title = &line[i + 2..end];
-                let start = plain.len();
-                plain.push_str(title);
-                let stop = plain.len();
-                // Use Uuid::nil() as a placeholder; the notes app
-                // resolves titles to ids after parse via
-                // `resolve_link_ids`.
-                marks.push(MarkSpan::new(start..stop, Mark::Link(PageId::nil())));
-                i = end + 2;
-                continue;
-            }
+        if i + 1 < bytes.len()
+            && bytes[i] == b'['
+            && bytes[i + 1] == b'['
+            && let Some(end) = find_pair(bytes, i + 2, b']', b']')
+        {
+            let title = &line[i + 2..end];
+            let start = plain.len();
+            plain.push_str(title);
+            let stop = plain.len();
+            // Use Uuid::nil() as a placeholder; the notes app
+            // resolves titles to ids after parse via
+            // `resolve_link_ids`.
+            marks.push(MarkSpan::new(start..stop, Mark::Link(PageId::nil())));
+            i = end + 2;
+            continue;
         }
         // Bold `**...**` (run before italic so `**` doesn't parse as
         // empty italic).
-        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*' {
-            if let Some(end) = find_pair(bytes, i + 2, b'*', b'*') {
-                // Body may contain nested italic via `*text*`. Recurse.
-                let body = &line[i + 2..end];
+        if i + 1 < bytes.len()
+            && bytes[i] == b'*'
+            && bytes[i + 1] == b'*'
+            && let Some(end) = find_pair(bytes, i + 2, b'*', b'*')
+        {
+            // Body may contain nested italic via `*text*`. Recurse.
+            let body = &line[i + 2..end];
+            let body_parsed = parse_inline(body);
+            let start = plain.len();
+            plain.push_str(&body_parsed.text);
+            let stop = plain.len();
+            marks.push(MarkSpan::new(start..stop, Mark::Bold));
+            // Shift inner marks by `start`.
+            for m in body_parsed.marks {
+                marks.push(MarkSpan::new(
+                    (m.range.start + start)..(m.range.end + start),
+                    m.mark,
+                ));
+            }
+            i = end + 2;
+            continue;
+        }
+        // Italic `*...*`.
+        if bytes[i] == b'*'
+            && let Some(end) = find_unescaped(bytes, i + 1, b'*')
+        {
+            // Empty `**` body wouldn't reach here (bold path
+            // above already claimed it). A lone `*` with no
+            // closing partner falls through.
+            if end > i + 1 {
+                let body = &line[i + 1..end];
                 let body_parsed = parse_inline(body);
                 let start = plain.len();
                 plain.push_str(&body_parsed.text);
                 let stop = plain.len();
-                marks.push(MarkSpan::new(start..stop, Mark::Bold));
-                // Shift inner marks by `start`.
+                marks.push(MarkSpan::new(start..stop, Mark::Italic));
                 for m in body_parsed.marks {
                     marks.push(MarkSpan::new(
                         (m.range.start + start)..(m.range.end + start),
                         m.mark,
                     ));
                 }
-                i = end + 2;
+                i = end + 1;
                 continue;
-            }
-        }
-        // Italic `*...*`.
-        if bytes[i] == b'*' {
-            if let Some(end) = find_unescaped(bytes, i + 1, b'*') {
-                // Empty `**` body wouldn't reach here (bold path
-                // above already claimed it). A lone `*` with no
-                // closing partner falls through.
-                if end > i + 1 {
-                    let body = &line[i + 1..end];
-                    let body_parsed = parse_inline(body);
-                    let start = plain.len();
-                    plain.push_str(&body_parsed.text);
-                    let stop = plain.len();
-                    marks.push(MarkSpan::new(start..stop, Mark::Italic));
-                    for m in body_parsed.marks {
-                        marks.push(MarkSpan::new(
-                            (m.range.start + start)..(m.range.end + start),
-                            m.mark,
-                        ));
-                    }
-                    i = end + 1;
-                    continue;
-                }
             }
         }
         // Fallback: copy the next char verbatim. The markers we
@@ -382,7 +413,8 @@ pub fn serialize_inline(text: &InlineText) -> String {
     }
     let mut marks = text.marks.clone();
     marks.sort_by(|a, b| {
-        a.range.start
+        a.range
+            .start
             .cmp(&b.range.start)
             .then_with(|| priority(&a.mark).cmp(&priority(&b.mark)))
     });
@@ -485,9 +517,7 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
             });
             continue;
         }
-        if let Some(bullet_body) =
-            body.strip_prefix("- ").or_else(|| body.strip_prefix("* "))
-        {
+        if let Some(bullet_body) = body.strip_prefix("- ").or_else(|| body.strip_prefix("* ")) {
             let inline = parse_inline(bullet_body);
             blocks.push(BlockSpec::Bullet {
                 indent: indent.min(MAX_LIST_INDENT),
@@ -702,12 +732,12 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
                 let run_lang = lang.clone();
                 i += 1;
                 while i < blocks.len() {
-                    if let BlockKind::CodeBlock { lang: next_lang } = &blocks[i].kind {
-                        if *next_lang == run_lang {
-                            lines.push(blocks[i].text().to_string());
-                            i += 1;
-                            continue;
-                        }
+                    if let BlockKind::CodeBlock { lang: next_lang } = &blocks[i].kind
+                        && *next_lang == run_lang
+                    {
+                        lines.push(blocks[i].text().to_string());
+                        i += 1;
+                        continue;
                     }
                     break;
                 }
@@ -743,12 +773,12 @@ where
             _ => continue,
         };
         for m in &mut inline.marks {
-            if let Mark::Link(id) = &m.mark {
-                if id.is_nil() {
-                    let title = &inline.text[m.range.clone()];
-                    if let Some(new_id) = resolver(title) {
-                        m.mark = Mark::Link(new_id);
-                    }
+            if let Mark::Link(id) = &m.mark
+                && id.is_nil()
+            {
+                let title = &inline.text[m.range.clone()];
+                if let Some(new_id) = resolver(title) {
+                    m.mark = Mark::Link(new_id);
                 }
             }
         }
@@ -868,7 +898,7 @@ mod tests {
         for md in cases {
             let inline = parse_inline(md);
             let re = serialize_inline(&inline);
-            assert_eq!(re, md, "round-trip failed for {:?}", md);
+            assert_eq!(re, md, "round-trip failed for {md:?}");
         }
     }
 
@@ -923,7 +953,11 @@ Last paragraph.
         let mut blocks = parse("See [[Welcome]] please.\n");
         let target = Uuid::from_u128(42);
         resolve_link_ids(&mut blocks, |title| {
-            if title == "Welcome" { Some(target) } else { None }
+            if title == "Welcome" {
+                Some(target)
+            } else {
+                None
+            }
         });
         match &blocks[0] {
             BlockSpec::Paragraph(t) => {
@@ -978,6 +1012,49 @@ Last paragraph.
         let blocks = specs_to_blocks(&parse(md));
         let re = serialize(&blocks_to_specs(&blocks));
         assert_eq!(re, md, "multi-line code block must round-trip byte-stably");
+    }
+
+    #[test]
+    fn tex_and_typst_formula_fences_round_trip_as_editable_source() {
+        let source = r#"```tex
+\frac{x^2+1}{\sqrt{y}}
+```
+
+```typst visual
+sum_(i=1)^n frac(1, i^2)
+```
+"#;
+        let specs = parse(source);
+        assert_eq!(specs.len(), 2);
+        assert!(matches!(
+            &specs[0],
+            BlockSpec::CodeBlock { lang: Some(lang), text }
+                if lang == "tex" && text.contains("\\frac")
+        ));
+        assert!(matches!(
+            &specs[1],
+            BlockSpec::CodeBlock { lang: Some(lang), text }
+                if lang == "typst visual" && text.contains("sum_")
+        ));
+        assert_eq!(serialize(&specs), source);
+
+        let blocks = specs_to_blocks(&specs);
+        assert_eq!(
+            ui::math::FormulaSyntax::from_fence_language(match &blocks[0].kind {
+                ui::widget::BlockKind::CodeBlock { lang } => lang.as_deref(),
+                _ => None,
+            }),
+            Some(ui::math::FormulaSyntax::Tex)
+        );
+        assert_eq!(
+            ui::math::FormulaDescriptor::from_fence_language(match &blocks[1].kind {
+                ui::widget::BlockKind::CodeBlock { lang } => lang.as_deref(),
+                _ => None,
+            })
+            .map(|descriptor| descriptor.mode),
+            Some(ui::math::FormulaMode::Visual)
+        );
+        assert_eq!(serialize(&blocks_to_specs(&blocks)), source);
     }
 
     #[test]

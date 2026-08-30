@@ -15,31 +15,26 @@ the pixels. There is no assertion in this file that can substitute for
 looking at the image it writes, and the script says so rather than
 reporting a pass it cannot see.
 
-# What this shows today, and what it does not
+# What this shows
 
-A packaged qOS app reaches the compositor's broker over capnp, and the
-capnp broker had no outbound path to the peer network: it could receive
-what other hosts published and could publish nothing itself. That is
-fixed, and this run demonstrates it — **each session renders the other's
-caret and pointer, attributed to the other machine's peer id**. Presence
-is real app traffic taking the full round trip: app → capnp broker →
-libp2p → the far broker's drain → the far app → pixels.
+Both halves of the round trip, in pixels: each session renders the
+other's caret and pointer under the other machine's peer id, **and each
+session's page shows what the other typed**. Every hop is real app
+traffic — app → capnp broker → Iroh → the far broker's drain → the far
+app → pixels.
 
-The **document** does not converge yet, and the reason is one layer
-further up. Two independently started apps each create their own
-Automerge document, and the only frame that makes one adopt the other's
-is the full-state snapshot the toolkit sends as `SyncCRDT`. Neither
-transport republishes a snapshot to peers — the JSON reader loop
-republishes `SyncIncremental` and `Presence` and nothing else, and the
-capnp bridge matches it. So the deltas that now cross correctly refer to
-objects the receiving document has never seen, and land somewhere its
-widgets do not read.
+Two independently started apps each create their own Automerge document,
+so a delta on its own cannot make one adopt the other's: it names
+objects the receiving document has never seen. What bridges them is the
+full-state snapshot a session sends when it sees a peer arrive, which
+the receiver merges before any delta lands on top of it. Both frames are
+unsigned, and both ride the op stream tagged with which kind they are.
 
-Closing that needs a snapshot frame on the peer wire (a new
-`NeighbourMsg` variant, an inbound buffer, and a drain arm delivering it
-as `CRDTUpdate`), which is a change to the peer protocol rather than to
-this bridge. Until then this script's document claim is expected to
-fail, and it says so rather than quietly passing on presence alone.
+That tag is what this run depends on. Without it a reader had only one
+guess available — decode the bytes as a signed envelope, drop them when
+that fails — and every unsigned frame is exactly what that discards. The
+symptom was this script's old expected failure: presence crossed, the
+document did not, and a peer's caret moved over a blank page.
 
 # What the two sessions share, and what they must not
 
@@ -352,12 +347,11 @@ def main() -> int:
         print("  alice (typed):   " + a_png)
         print("  bob   (remote):  " + b_png)
         print()
-        print("  Open both. What holds today is that bob's screen carries")
-        print("  alice's caret and pointer under her machine's peer id — real")
-        print("  app traffic that crossed the network and got painted.")
-        print(f"  What does not hold yet is bob's document showing {args.text!r}:")
-        print("  document adoption rides a full-state snapshot, and no transport")
-        print("  republishes a snapshot to peers. See this file's header.")
+        print("  Open both. Each screen should carry the other's caret and")
+        print("  pointer under that machine's peer id, and both pages should")
+        print(f"  read {args.text!r} — the snapshot that made bob's document")
+        print("  adopt alice's, then her keystrokes applied on top of it.")
+        print("  A caret over a blank page is the failure this proves against.")
         print()
         for s in sessions:
             pub = collab_lines(s, ("publish", "AppCrdt", "broadcast doc delta"))

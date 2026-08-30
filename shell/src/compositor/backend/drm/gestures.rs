@@ -1,66 +1,32 @@
 //! Touchpad gestures, and who gets them.
 //!
-//! libinput reports swipe, pinch and hold gestures on every touchpad. The
-//! DRM event loop used to end its match with `_ => {}`, so all of them —
-//! plus every touch event — were dropped on the floor, while the
-//! compositor advertised `zwp_pointer_gestures_v1` to clients that nothing
-//! ever emitted into.
+//! libinput reports swipe/pinch/hold on every touchpad, for two consumers: clients (a browser's
+//! two-finger pinch-to-zoom, sent over `zwp_pointer_gestures_v1`) and the shell (three- and
+//! four-finger gestures navigating the spatial model without the keyboard). A gesture cannot go
+//! to both — a three-finger swipe that both switched workspace and scrolled the app underneath
+//! is a bug either way. [`claims`] is the single place that decides: 1–2 fingers are the app's,
+//! 3+ are the shell's, matching the convention every desktop trains users on.
 //!
-//! Two consumers want them, and the split between them is the whole
-//! design decision here:
-//!
-//! * **Clients.** A browser wants two-finger pinch-to-zoom. Those events
-//!   go out over `zwp_pointer_gestures_v1` to the focused surface.
-//! * **The shell.** Three- and four-finger gestures are how a laptop
-//!   navigates the spatial model without reaching for the keyboard.
-//!
-//! A gesture cannot go to both — a three-finger swipe that switched the
-//! workspace *and* scrolled the app underneath is a bug in either
-//! direction. [`claims`] is the single place that decides, and the finger
-//! count is the whole rule: 1–2 fingers are the app's, 3+ are the shell's.
-//! That matches the convention every desktop already trains users on, and
-//! it means no client can steal workspace navigation by grabbing.
-//!
-//! # What the shell gestures do
-//!
-//! Nothing new. Each maps onto an interaction the spatial model already
-//! has, with the same direction convention as its keyboard chord:
+//! Each shell gesture maps onto an existing spatial-model interaction, with the same direction convention as its keyboard chord:
 //!
 //! | Gesture                  | Same as                    |
 //! |--------------------------|----------------------------|
-//! | 3-finger swipe up / down | Super+ArrowUp / ArrowDown — switch workspace |
-//! | 3-finger swipe left/right| horizontal scroll over the strip — cycle the group's tabs |
+//! | 3-finger swipe up / down | Super+ArrowUp / `ArrowDown` — switch workspace |
+//! | 3-finger swipe left/right| Super+ArrowLeft / `ArrowRight` — step along the strip |
 //! | 4-finger swipe up / down | Ctrl+Tab — open / close the overview |
 //! | 3+-finger pinch in / out | open / close the overview |
 //!
-//! Workspaces are the vertical axis (the wheel disc spins through them),
-//! tabs within a group are the horizontal one (groups scroll horizontally
-//! within a strip). Inventing a third axis — a free 2-D pan — is exactly
-//! what the compositor design rules out, so the gestures stay on the two
-//! that exist.
-//!
-//! `natural_scroll` inverts the directions, because it is the same
-//! preference and the same finger: a user who has decided content follows
-//! the finger has decided it for gestures too.
+//! Workspaces are the vertical axis, windows along a strip the horizontal one; inventing a
+//! third axis (a free 2-D pan) is exactly what the design rules out. `natural_scroll` inverts
+//! both, since it's the same finger-follows-content preference as regular scrolling.
 
-/// The finger count at which a gesture stops belonging to the focused
-/// client and becomes shell navigation.
+/// The finger count at which a gesture stops belonging to the focused client and becomes shell navigation.
 pub const SHELL_FINGER_THRESHOLD: u32 = 3;
 
-/// How far the gesture centre must travel, in logical pixels, before a
-/// swipe commits to an action.
-///
-/// Large enough that a three-finger rest-and-twitch does not switch
-/// workspaces, small enough that a deliberate flick lands well before the
-/// fingers leave the pad. Roughly one third of a touchpad's usable travel.
+/// How far the gesture centre must travel, in logical pixels, before a swipe commits — large enough that a rest-and-twitch doesn't switch workspaces, small enough that a flick lands before fingers leave the pad (roughly a third of usable travel).
 pub const SWIPE_THRESHOLD: f64 = 100.0;
 
-/// A swipe must be this many times longer on its dominant axis than on the
-/// other before it counts as horizontal or vertical.
-///
-/// Without it, a diagonal drag fires whichever axis crosses the threshold
-/// first, so the same motion switches a workspace on one attempt and
-/// cycles a tab on the next.
+/// A swipe must be this many times longer on its dominant axis than the other before it counts as horizontal or vertical — otherwise a diagonal drag fires whichever axis crosses first, so the same motion means different things on different attempts.
 pub const AXIS_DOMINANCE: f64 = 1.5;
 
 /// Absolute pinch scale below which a pinch reads as "zoom out".
@@ -68,29 +34,25 @@ pub const PINCH_IN_SCALE: f64 = 0.8;
 /// Absolute pinch scale above which a pinch reads as "zoom in".
 pub const PINCH_OUT_SCALE: f64 = 1.25;
 
-/// What the shell should do about a gesture. Every variant maps onto an
-/// existing chrome operation; none of them is a new interaction.
+/// What the shell should do about a gesture. Every variant maps onto an existing chrome operation; none is a new interaction.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GestureAction {
     /// `chrome_state::switch_workspace` — `-1` is up the wheel, `+1` down.
     SwitchWorkspace(i32),
-    /// `chrome_state::cycle_active_tab` — `-1` is the previous tab.
-    CycleTab(i32),
+    /// `ShellOverlayHost::step_focus_along_strip` — `-1` is the window to the left, the same step the Super+Left/Right chord and a horizontal scroll make; a swipe is a third way to ask for it, not a fourth definition of it.
+    StepAlongStrip(i32),
     /// Open the workspace overview (what `Ctrl+Tab` toggles on).
     ShowOverview,
     /// Close it.
     HideOverview,
 }
 
-/// Whether the shell takes a gesture with this many fingers, leaving the
-/// rest for the focused client.
+/// Whether the shell takes a gesture with this many fingers, leaving the rest for the focused client.
 pub fn claims(fingers: u32) -> bool {
     fingers >= SHELL_FINGER_THRESHOLD
 }
 
-/// Tuning the tracker reads. Split out so the direction preference can
-/// follow the user's `natural_scroll` setting without the tracker knowing
-/// where settings come from.
+/// Tuning the tracker reads. Split out so the direction preference can follow the user's `natural_scroll` setting without the tracker knowing where settings come from.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct GestureConfig {
     /// Invert both swipe axes, matching two-finger scrolling.
@@ -107,14 +69,8 @@ impl Default for GestureConfig {
     }
 }
 
-/// Accumulates one gesture and decides, once, what it meant.
-///
-/// A gesture is a stream — begin, many updates, end — and the action has
-/// to fire exactly once inside it. Firing per update would switch five
-/// workspaces on one flick; firing only at `end` would make the desktop
-/// feel like it is lagging a whole gesture behind the hand. So the action
-/// fires the moment the threshold is crossed and then latches until the
-/// gesture ends.
+/// Accumulates one gesture and decides, once, what it meant — a gesture is a stream (begin,
+/// updates, end) and the action must fire exactly once inside it: firing per update would switch five workspaces on one flick, firing only at `end` would feel a gesture behind the hand.
 #[derive(Clone, Debug, Default)]
 pub struct GestureTracker {
     config: GestureConfig,
@@ -136,9 +92,7 @@ impl GestureTracker {
         }
     }
 
-    /// Re-read the direction preference. Called when the settings change,
-    /// mid-session, so an in-flight gesture keeps the convention it began
-    /// with rather than reversing under the finger.
+    /// Re-read the direction preference. Called when settings change mid-session, so an in-flight gesture keeps the convention it began with rather than reversing under the finger.
     pub fn set_config(&mut self, config: GestureConfig) {
         self.config = config;
     }
@@ -147,14 +101,11 @@ impl GestureTracker {
         self.config
     }
 
-    /// Fingers of the gesture currently in flight.
     pub fn active_fingers(&self) -> Option<u32> {
         self.fingers
     }
 
-    /// True while a gesture the *shell* owns is in flight — the signal the
-    /// event loop uses to keep forwarding it away from clients even if the
-    /// finger count is only reported on `begin`.
+    /// True while a gesture the *shell* owns is in flight — the signal the event loop uses to keep forwarding it away from clients even though finger count is only reported on `begin`.
     pub fn shell_owns_current(&self) -> bool {
         self.fingers.is_some_and(claims)
     }
@@ -165,8 +116,7 @@ impl GestureTracker {
         self.fired = false;
     }
 
-    /// Feed one swipe update. Returns the action at the moment the
-    /// threshold is crossed, and `None` for every update after it.
+    /// Feed one swipe update. Returns the action at the moment the threshold is crossed, and `None` for every update after it.
     pub fn swipe_update(&mut self, dx: f64, dy: f64) -> Option<GestureAction> {
         let fingers = self.fingers?;
         if !claims(fingers) || self.fired {
@@ -191,8 +141,7 @@ impl GestureTracker {
         self.fired = false;
     }
 
-    /// Feed one pinch update. `scale` is absolute against the gesture's
-    /// begin, so the thresholds are absolute too.
+    /// Feed one pinch update. `scale` is absolute against the gesture's begin, so the thresholds are absolute too.
     pub fn pinch_update(&mut self, scale: f64) -> Option<GestureAction> {
         let fingers = self.fingers?;
         if !claims(fingers) || self.fired {
@@ -208,11 +157,7 @@ impl GestureTracker {
     }
 }
 
-/// The action a swipe of `fingers` fingers and accumulated `delta` means,
-/// or `None` while it is still below threshold or too diagonal to read.
-///
-/// Pure, and the whole direction policy lives here: the tracker only
-/// handles latching.
+/// The action a swipe of `fingers` fingers and accumulated `delta` means, or `None` while still below threshold or too diagonal to read. Pure — the tracker only handles latching.
 pub fn swipe_action(
     fingers: u32,
     delta: (f64, f64),
@@ -227,8 +172,7 @@ pub fn swipe_action(
     let t = config.swipe_threshold;
     // Vertical: workspaces (3 fingers) or the overview (4).
     if ay >= t && ay >= ax * AXIS_DOMINANCE {
-        // Swiping up moves *up* the wheel, the same direction
-        // Super+ArrowUp goes. dy is negative when the fingers move up.
+        // Swiping up moves *up* the wheel, the same direction Super+ArrowUp goes (dy is negative when fingers move up).
         let dir = if dy < 0.0 { -1 } else { 1 };
         return Some(match fingers {
             3 => GestureAction::SwitchWorkspace(dir),
@@ -241,19 +185,15 @@ pub fn swipe_action(
             }
         });
     }
-    // Horizontal: the tab dimension of the active group. Only three
-    // fingers — a four-finger horizontal swipe has no second axis to mean
-    // anything on, and guessing would make the four-finger gesture
-    // ambiguous rather than useful.
+    // Horizontal: the tab dimension of the active group, three fingers only — a four-finger horizontal swipe has no second axis to mean anything on.
     if ax >= t && ax >= ay * AXIS_DOMINANCE && fingers == 3 {
         let dir = if dx < 0.0 { 1 } else { -1 };
-        return Some(GestureAction::CycleTab(dir));
+        return Some(GestureAction::StepAlongStrip(dir));
     }
     None
 }
 
-/// The action a pinch to absolute `scale` means. Pinching in is zooming
-/// out, which is what the overview is.
+/// The action a pinch to absolute `scale` means. Pinching in is zooming out, which is what the overview is.
 pub fn pinch_action(scale: f64) -> Option<GestureAction> {
     if scale <= PINCH_IN_SCALE {
         Some(GestureAction::ShowOverview)
@@ -279,12 +219,11 @@ mod tests {
         }
     }
 
-    // ---------------- ownership ----------------
+    // ownership
 
     #[test]
     fn one_and_two_finger_gestures_belong_to_the_client() {
-        // Pinch-to-zoom in a browser must keep working; the shell taking
-        // two-finger gestures would break every app that uses them.
+        // Pinch-to-zoom in a browser must keep working; the shell taking two-finger gestures would break every app that uses them.
         assert!(!claims(1));
         assert!(!claims(2));
     }
@@ -296,13 +235,11 @@ mod tests {
         assert!(claims(5));
     }
 
-    // ---------------- swipe direction policy ----------------
+    // swipe direction policy
 
     #[test]
     fn a_three_finger_swipe_up_switches_workspace_the_same_way_the_chord_does() {
-        // Super+ArrowUp is `switch_workspace(-1)`. Swiping up must agree,
-        // or the two ways of doing the same thing disagree about which way
-        // is up.
+        // Super+ArrowUp is `switch_workspace(-1)`. Swiping up must agree, or the two ways of doing the same thing disagree about which way is up.
         assert_eq!(
             swipe_action(3, (0.0, -150.0), &cfg()),
             Some(GestureAction::SwitchWorkspace(-1))
@@ -314,16 +251,15 @@ mod tests {
     }
 
     #[test]
-    fn a_three_finger_swipe_sideways_cycles_the_groups_tabs() {
-        // Swiping left (dx negative) moves forward through the tabs, the
-        // same sense the horizontal-scroll fallback already uses.
+    fn a_three_finger_swipe_sideways_travels_along_the_strip() {
+        // Swiping left (dx negative) travels forward along the strip: the fingers move the way the content does, the same sense a two-finger horizontal scroll already has.
         assert_eq!(
             swipe_action(3, (-150.0, 0.0), &cfg()),
-            Some(GestureAction::CycleTab(1))
+            Some(GestureAction::StepAlongStrip(1))
         );
         assert_eq!(
             swipe_action(3, (150.0, 0.0), &cfg()),
-            Some(GestureAction::CycleTab(-1))
+            Some(GestureAction::StepAlongStrip(-1))
         );
     }
 
@@ -341,8 +277,7 @@ mod tests {
 
     #[test]
     fn a_four_finger_horizontal_swipe_does_nothing() {
-        // Deliberately unassigned: there is no third navigable axis in the
-        // spatial model, and inventing one is what the design rules out.
+        // Deliberately unassigned: there's no third navigable axis in the spatial model, and inventing one is what the design rules out.
         assert_eq!(swipe_action(4, (-300.0, 0.0), &cfg()), None);
     }
 
@@ -354,7 +289,7 @@ mod tests {
         );
         assert_eq!(
             swipe_action(3, (-150.0, 0.0), &natural()),
-            Some(GestureAction::CycleTab(-1))
+            Some(GestureAction::StepAlongStrip(-1))
         );
         assert_eq!(
             swipe_action(4, (0.0, 150.0), &natural()),
@@ -364,16 +299,14 @@ mod tests {
 
     #[test]
     fn a_swipe_below_threshold_does_nothing() {
-        // Three fingers resting on the pad drift. That must not switch a
-        // workspace.
+        // Three fingers resting on the pad drift. That must not switch a workspace.
         assert_eq!(swipe_action(3, (0.0, -30.0), &cfg()), None);
         assert_eq!(swipe_action(3, (20.0, -20.0), &cfg()), None);
     }
 
     #[test]
     fn a_diagonal_swipe_does_nothing_until_one_axis_dominates() {
-        // Equal on both axes: ambiguous, and picking one would make the
-        // same motion do different things on different attempts.
+        // Equal on both axes: ambiguous, and picking one would make the same motion do different things on different attempts.
         assert_eq!(swipe_action(3, (150.0, -150.0), &cfg()), None);
         // Clearly vertical now.
         assert_eq!(
@@ -382,7 +315,7 @@ mod tests {
         );
     }
 
-    // ---------------- pinch policy ----------------
+    // pinch policy
 
     #[test]
     fn pinching_in_shows_the_overview_and_out_hides_it() {
@@ -397,12 +330,11 @@ mod tests {
         assert_eq!(pinch_action(1.1), None);
     }
 
-    // ---------------- tracker latching ----------------
+    // tracker latching
 
     #[test]
     fn a_single_flick_fires_exactly_once() {
-        // The bug this guards: firing per update would switch a workspace
-        // for every millimetre of a long swipe.
+        // The bug this guards: firing per update would switch a workspace for every millimetre of a long swipe.
         let mut t = GestureTracker::new(cfg());
         t.swipe_begin(3);
         let mut fired = Vec::new();
@@ -454,8 +386,7 @@ mod tests {
 
     #[test]
     fn updates_outside_a_gesture_are_ignored() {
-        // libinput can deliver an update after a cancelled end if the
-        // stream is torn; that must not accumulate into the next gesture.
+        // libinput can deliver an update after a cancelled end if the stream is torn; that must not accumulate into the next gesture.
         let mut t = GestureTracker::new(cfg());
         assert_eq!(t.swipe_update(0.0, -500.0), None);
         assert_eq!(t.active_fingers(), None);
@@ -463,8 +394,7 @@ mod tests {
 
     #[test]
     fn the_shell_owns_the_whole_duration_of_a_three_finger_gesture() {
-        // The finger count only arrives on `begin`, so the loop needs the
-        // in-flight answer to route the updates that follow.
+        // The finger count only arrives on `begin`, so the loop needs the in-flight answer to route the updates that follow.
         let mut t = GestureTracker::new(cfg());
         t.swipe_begin(3);
         assert!(t.shell_owns_current());
@@ -480,7 +410,11 @@ mod tests {
         t.pinch_begin(3);
         assert_eq!(t.pinch_update(0.9), None);
         assert_eq!(t.pinch_update(0.6), Some(GestureAction::ShowOverview));
-        assert_eq!(t.pinch_update(0.4), None, "latched for the rest of the pinch");
+        assert_eq!(
+            t.pinch_update(0.4),
+            None,
+            "latched for the rest of the pinch"
+        );
         t.pinch_end();
         t.pinch_begin(3);
         assert_eq!(t.pinch_update(0.4), Some(GestureAction::ShowOverview));

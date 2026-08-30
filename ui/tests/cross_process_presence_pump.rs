@@ -1,17 +1,10 @@
-//! Two-`App` end-to-end test proving that cross-process presence is
-//! actually wired: peer A's pointer broadcast over a real `UnixStream`
-//! lands in peer B's `PresenceCtx::remote_cursors` after a single
+//! Two-`App` end-to-end test: peer A's pointer broadcast over a real
+//! `UnixStream` lands in peer B's `PresenceCtx::remote_cursors` after one
 //! `pump_collab_presence()` tick.
 //!
-//! This is the deliverable for the "wire cross-process presence into
-//! the UI toolkit" task: the existing `real_socket_two_peer.rs` proves
-//! the wire-level fanout works, but stops at `CollabEvent::poll()`
-//! returning the right event. This test goes one step further and
-//! drives the App-side pump, which is what real `cargo run -p
-//! terminal` instances would do every frame.
-//!
-//! Mirrors the broker setup from `real_socket_two_peer.rs` so we
-//! don't reintroduce a bespoke broker per test.
+//! `real_socket_two_peer.rs` stops at `CollabEvent::poll()` returning the right
+//! event; this drives the App-side pump on top, matching what real `cargo run
+//! -p terminal` instances do every frame. Broker setup mirrors that file's.
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -42,18 +35,16 @@ fn write_frame(s: &mut UnixStream, bytes: &[u8]) {
 }
 
 #[test]
+#[serial_test::serial(quick_collab_sock)]
 fn cross_process_pump_lands_remote_cursor_on_peer_b() {
-    // 1. Spin up a per-pid socket so parallel test runs don't collide.
-    let socket_path = std::env::temp_dir().join(format!(
-        "quick-collab-pump-{}.sock",
-        std::process::id()
-    ));
+    // Per-pid socket so parallel test runs don't collide.
+    let socket_path =
+        std::env::temp_dir().join(format!("quick-collab-pump-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket_path);
-    let listener =
-        UnixListener::bind(&socket_path).expect("bind UnixListener for broker");
+    let listener = UnixListener::bind(&socket_path).expect("bind UnixListener for broker");
 
-    // 2. Broker — accept two peers, fan Presence requests from one to
-    // the other tagged with `peer-0` / `peer-1`.
+    // Broker: accept two peers, fan Presence requests from one to the other
+    // tagged with `peer-0` / `peer-1`.
     let (fwd_tx, fwd_rx) = mpsc::channel::<(usize, Vec<u8>)>();
     let broker_socket_path = socket_path.clone();
     let broker = thread::spawn(move || {
@@ -82,17 +73,13 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
             };
             let event = match req {
                 CollabRequest::Hello { .. } => continue,
-                CollabRequest::SyncIncremental { data } => {
-                    CollabEvent::CRDTIncremental { data }
-                }
+                CollabRequest::SyncIncremental { data } => CollabEvent::CRDTIncremental { data },
                 CollabRequest::SyncCRDT { data } => CollabEvent::CRDTUpdate { data },
-                CollabRequest::Presence { key, payload } => {
-                    CollabEvent::RemotePresenceUpdate {
-                        user_id: format!("peer-{src_idx}"),
-                        key,
-                        payload,
-                    }
-                }
+                CollabRequest::Presence { key, payload } => CollabEvent::RemotePresenceUpdate {
+                    user_id: format!("peer-{src_idx}"),
+                    key,
+                    payload,
+                },
                 // Signed-op sync + scrollback fetch aren't part of this
                 // presence-pump scenario — swallow them like `Hello`.
                 CollabRequest::SignedSyncIncremental { .. }
@@ -102,10 +89,10 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                 continue;
             };
             let dst_idx = 1 - src_idx;
-            if let Ok(mut guard) = streams.lock() {
-                if let Some(stream) = guard.get_mut(dst_idx) {
-                    write_frame(stream, &bytes);
-                }
+            if let Ok(mut guard) = streams.lock()
+                && let Some(stream) = guard.get_mut(dst_idx)
+            {
+                write_frame(stream, &bytes);
             }
         }
         for r in readers {
@@ -114,34 +101,26 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
         let _ = std::fs::remove_file(&broker_socket_path);
     });
 
-    // 3. Point CollaborationManager at the broker. SAFETY: per-call
-    // serialisation on the test thread — broker thread doesn't touch
-    // env.
+    // SAFETY: per-call serialisation on the test thread — broker thread doesn't
+    // touch env.
     unsafe {
         std::env::set_var("QUICK_COLLAB_SOCK", &socket_path);
     }
 
-    // Build two Apps with trivial content. Both connect via
-    // CollaborationManager::new() in App::new() → the broker's accept
-    // calls return in order.
+    // Both Apps connect via CollaborationManager::new() in App::new() → the
+    // broker's accept calls return in order, so App A is peer-0.
     let mut app_a = App::new(State::new(), Box::new(Container::new()));
     let mut app_b = App::new(State::new(), Box::new(Container::new()));
 
-    // 4. App A broadcasts a pointer presence under a workspace key.
-    // This is what the App::run loop does on CursorMoved (subject to
-    // the 33 ms throttle, which we bypass here by calling the public
-    // `broadcast_presence` directly).
+    // Bypasses the App::run loop's 33 ms CursorMoved throttle by calling
+    // `broadcast_presence` directly.
     app_a.broadcast_presence(
         PresenceKey::Workspace { id: "home".into() },
         PresencePayload::Pointer { x: 320.0, y: 240.0 },
     );
 
-    // Give the broker a tick to forward.
     thread::sleep(Duration::from_millis(100));
 
-    // 5. App B pumps. The broker tagged the event as peer-0 (App A
-    // was the first connection), so App B's PresenceCtx should now
-    // hold a remote cursor for peer-0 at (320, 240).
     let any = app_b.pump_collab_presence();
     assert!(any, "App B should have processed at least one event");
 
@@ -157,16 +136,14 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
         "remote cursor must record the broadcast coordinates verbatim",
     );
 
-    // 6. The pointers map should ALSO have the entry — widgets that
-    // already read from `pointers[key]` (e.g. the shell's overlay
-    // host) keep working.
+    // Also check `pointers[key]` — widgets like the shell's overlay host read
+    // that map directly rather than `remote_cursors`.
     let key = PresenceKey::Workspace { id: "home".into() };
     let pointer = presence
         .pointer_for(&key, &ui::permissions::UserId("peer-0".into()))
         .expect("pointers[workspace home] should also be populated");
     assert_eq!(pointer, (320.0, 240.0));
 
-    // 7. Now App A "leaves" — App B should purge them everywhere.
     app_a.broadcast_presence(
         PresenceKey::Workspace { id: "home".into() },
         PresencePayload::Left,
@@ -182,7 +159,6 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
         "App A's Left payload should drop their overlay cursor",
     );
 
-    // 8. Clean teardown.
     drop(app_a);
     drop(app_b);
     broker.join().expect("broker thread panicked");

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use roxmltree::Document;
 use zip::ZipArchive;
 
@@ -33,14 +33,11 @@ const COVER_MAX_EDGE: u32 = 480;
 
 type Archive = ZipArchive<Cursor<Vec<u8>>>;
 
-/// A book's stable identity: the BLAKE3 content hash of its EPUB bytes, prefixed
-/// `book:`. Deriving identity from the *bytes* (not the file path or the
-/// publisher's optional `<identifier>`) is what lets reading progress, highlights
-/// and comments follow the book itself — the same `.epub` opened from a different
-/// folder, on another of the reader's devices, or hydrated from the collaborative
-/// workspace resolves to the same id and therefore the same shared resources.
-/// This is the same content-addressing the qOS filesystem uses (`blake3`), so a
-/// book shared over the workspace keeps one identity end to end.
+/// A book's stable identity: the BLAKE3 content hash of its EPUB bytes,
+/// prefixed `book:`. Deriving identity from the bytes (not the file path or
+/// the publisher's optional `<identifier>`) is what lets reading progress,
+/// highlights and comments follow the book across folders, devices, and
+/// peers — the same content-addressing the qOS filesystem uses.
 pub fn content_id(bytes: &[u8]) -> String {
     // 128 bits of the digest is ample to avoid collision across a personal
     // library while keeping the id short enough to read in a CRDT key.
@@ -52,8 +49,7 @@ pub fn content_id(bytes: &[u8]) -> String {
 /// shelf hints supplied by the caller. The book's id is its content hash
 /// ([`content_id`]) so annotations and progress travel with the file.
 pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book> {
-    let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec()))
-        .context("open epub zip")?;
+    let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec())).context("open epub zip")?;
 
     let opf_path = find_opf_path(&mut archive)?;
     let opf_src = read_entry(&mut archive, &opf_path)?;
@@ -77,7 +73,11 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
             .cloned()
             .or_else(|| first_heading(&blocks))
             .unwrap_or_else(|| format!("Chapter {}", chapters.len() + 1));
-        chapters.push(Chapter { title, href: bare.to_string(), blocks });
+        chapters.push(Chapter {
+            title,
+            href: bare.to_string(),
+            blocks,
+        });
     }
 
     if chapters.is_empty() {
@@ -107,9 +107,18 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
 
     Ok(Book {
         id,
-        title: if pkg.title.is_empty() { "Untitled".into() } else { pkg.title },
+        title: if pkg.title.is_empty() {
+            "Untitled".into()
+        } else {
+            pkg.title
+        },
         author: pkg.creator,
         publisher: pkg.publisher,
+        language: if pkg.language.is_empty() {
+            "en".into()
+        } else {
+            pkg.language
+        },
         description: pkg.description,
         chapters,
         cover_tint,
@@ -136,7 +145,11 @@ fn decode_cover(bytes: &[u8]) -> Option<Cover> {
     };
     let rgba = scaled.to_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
-    Some(Cover { rgba: Arc::new(rgba.into_raw()), width, height })
+    Some(Cover {
+        rgba: Arc::new(rgba.into_raw()),
+        width,
+        height,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -144,8 +157,8 @@ fn decode_cover(bytes: &[u8]) -> Option<Cover> {
 // ---------------------------------------------------------------------------
 
 fn find_opf_path(archive: &mut Archive) -> Result<String> {
-    let xml = read_entry(archive, "META-INF/container.xml")
-        .context("read META-INF/container.xml")?;
+    let xml =
+        read_entry(archive, "META-INF/container.xml").context("read META-INF/container.xml")?;
     let doc = Document::parse(&xml).context("parse container.xml")?;
     let rootfile = doc
         .descendants()
@@ -165,6 +178,7 @@ struct OpfPackage {
     title: String,
     creator: String,
     publisher: String,
+    language: String,
     description: String,
     subject: String,
     /// Spine hrefs in reading order (resolved relative to the OPF base).
@@ -193,6 +207,7 @@ impl OpfPackage {
         let title = meta_text("title");
         let creator = meta_text("creator");
         let publisher = meta_text("publisher");
+        let language = meta_text("language");
         let description = meta_text("description");
         let subject = meta_text("subject");
 
@@ -205,7 +220,7 @@ impl OpfPackage {
                     && n.attribute("content").is_some()
             })
             .and_then(|n| n.attribute("content"))
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         // Manifest: id -> (href, properties, media-type)
         let mut manifest = HashMap::new();
@@ -214,10 +229,7 @@ impl OpfPackage {
         // Cover candidates, in descending confidence.
         let mut cover_by_props: Option<String> = None;
         let mut cover_by_name: Option<String> = None;
-        if let Some(man) = doc
-            .descendants()
-            .find(|n| n.has_tag_name("manifest"))
-        {
+        if let Some(man) = doc.descendants().find(|n| n.has_tag_name("manifest")) {
             for item in man.children().filter(|n| n.has_tag_name("item")) {
                 let id = item.attribute("id").unwrap_or_default().to_string();
                 let href = item.attribute("href").unwrap_or_default();
@@ -261,10 +273,10 @@ impl OpfPackage {
                     .or_else(|| manifest.get(toc_id).cloned());
             }
             for itemref in sp.children().filter(|n| n.has_tag_name("itemref")) {
-                if let Some(idref) = itemref.attribute("idref") {
-                    if let Some(href) = manifest.get(idref) {
-                        spine.push(href.clone());
-                    }
+                if let Some(idref) = itemref.attribute("idref")
+                    && let Some(href) = manifest.get(idref)
+                {
+                    spine.push(href.clone());
                 }
             }
         }
@@ -280,6 +292,7 @@ impl OpfPackage {
             title,
             creator,
             publisher,
+            language,
             description,
             subject,
             spine,
@@ -295,22 +308,22 @@ impl OpfPackage {
 // ---------------------------------------------------------------------------
 
 fn read_toc(archive: &mut Archive, pkg: &OpfPackage, base: &str) -> HashMap<String, String> {
-    if let Some(nav) = &pkg.nav_href {
-        if let Ok(src) = read_entry(archive, nav) {
-            let nav_base = parent_dir(nav);
-            let map = parse_nav_doc(&src, &nav_base);
-            if !map.is_empty() {
-                return map;
-            }
+    if let Some(nav) = &pkg.nav_href
+        && let Ok(src) = read_entry(archive, nav)
+    {
+        let nav_base = parent_dir(nav);
+        let map = parse_nav_doc(&src, &nav_base);
+        if !map.is_empty() {
+            return map;
         }
     }
-    if let Some(ncx) = &pkg.ncx_href {
-        if let Ok(src) = read_entry(archive, ncx) {
-            let ncx_base = parent_dir(ncx);
-            let map = parse_ncx(&src, &ncx_base);
-            if !map.is_empty() {
-                return map;
-            }
+    if let Some(ncx) = &pkg.ncx_href
+        && let Ok(src) = read_entry(archive, ncx)
+    {
+        let ncx_base = parent_dir(ncx);
+        let map = parse_ncx(&src, &ncx_base);
+        if !map.is_empty() {
+            return map;
         }
     }
     let _ = base;
@@ -321,7 +334,9 @@ fn read_toc(archive: &mut Archive, pkg: &OpfPackage, base: &str) -> HashMap<Stri
 fn parse_nav_doc(src: &str, base: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let sanitized = src.replace("&nbsp;", "&#160;");
-    let Ok(doc) = Document::parse(&sanitized) else { return out };
+    let Ok(doc) = Document::parse(&sanitized) else {
+        return out;
+    };
     // Find the toc <nav>, or any <nav> as a fallback.
     let nav = doc
         .descendants()
@@ -331,7 +346,7 @@ fn parse_nav_doc(src: &str, base: &str) -> HashMap<String, String> {
             let is_toc = n
                 .attributes()
                 .any(|a| a.name() == "type" && a.value().contains("toc"));
-            if is_toc { 0 } else { 1 }
+            i32::from(!is_toc)
         });
     let scope = nav.unwrap_or_else(|| doc.root_element());
     for a in scope.descendants().filter(|n| n.has_tag_name("a")) {
@@ -348,7 +363,9 @@ fn parse_nav_doc(src: &str, base: &str) -> HashMap<String, String> {
 /// NCX: `<navPoint><navLabel><text>Label</text></navLabel><content src=".."/>`.
 fn parse_ncx(src: &str, base: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    let Ok(doc) = Document::parse(src) else { return out };
+    let Ok(doc) = Document::parse(src) else {
+        return out;
+    };
     for np in doc.descendants().filter(|n| n.has_tag_name("navPoint")) {
         let label = np
             .descendants()
@@ -370,10 +387,10 @@ fn parse_ncx(src: &str, base: &str) -> HashMap<String, String> {
 fn node_text(node: roxmltree::Node) -> String {
     let mut s = String::new();
     for d in node.descendants() {
-        if d.is_text() {
-            if let Some(t) = d.text() {
-                s.push_str(t);
-            }
+        if d.is_text()
+            && let Some(t) = d.text()
+        {
+            s.push_str(t);
         }
     }
     s.trim().to_string()
@@ -383,7 +400,11 @@ fn first_heading(blocks: &[crate::model::Block]) -> Option<String> {
     blocks.iter().find_map(|b| match b {
         crate::model::Block::Heading { spans, .. } => {
             let t: String = spans.iter().map(|s| s.text.as_str()).collect();
-            if t.trim().is_empty() { None } else { Some(t.trim().to_string()) }
+            if t.trim().is_empty() {
+                None
+            } else {
+                Some(t.trim().to_string())
+            }
         }
         _ => None,
     })
@@ -427,8 +448,8 @@ fn parent_dir(path: &str) -> String {
 
 /// Join a relative href onto a base directory and normalise.
 fn join(base: &str, href: &str) -> String {
-    if href.starts_with('/') {
-        return normalize(&href[1..]);
+    if let Some(stripped) = href.strip_prefix('/') {
+        return normalize(stripped);
     }
     if base.is_empty() {
         return normalize(href);
@@ -482,13 +503,24 @@ mod tests {
         let bytes = include_bytes!("../assets/sample.epub");
         let a = parse_epub(bytes, 0, "Fable").unwrap();
         let b = parse_epub(bytes, 3, "Something else").unwrap();
-        assert_eq!(a.id, b.id, "identical bytes → identical id, regardless of caller hints");
+        assert_eq!(
+            a.id, b.id,
+            "identical bytes → identical id, regardless of caller hints"
+        );
         assert!(a.id.starts_with("book:"), "ids are namespaced");
-        assert_eq!(a.id, content_id(bytes), "the book id is exactly the content hash");
+        assert_eq!(
+            a.id,
+            content_id(bytes),
+            "the book id is exactly the content hash"
+        );
 
         let mut tweaked = bytes.to_vec();
         *tweaked.last_mut().unwrap() ^= 0xFF; // one flipped byte = a different file
-        assert_ne!(content_id(&tweaked), a.id, "different bytes → a different book");
+        assert_ne!(
+            content_id(&tweaked),
+            a.id,
+            "different bytes → a different book"
+        );
     }
 
     #[test]
@@ -501,10 +533,12 @@ mod tests {
         // TOC supplied real chapter titles.
         assert!(book.chapters[0].title.contains("Tide-House"));
         // First chapter has a heading + several paragraphs + a blockquote.
-        assert!(book.chapters[0]
-            .blocks
-            .iter()
-            .any(|b| matches!(b, crate::model::Block::Quote { .. })));
+        assert!(
+            book.chapters[0]
+                .blocks
+                .iter()
+                .any(|b| matches!(b, crate::model::Block::Quote { .. }))
+        );
         assert!(book.chapters[0].blocks.len() >= 5);
     }
 }

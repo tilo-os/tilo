@@ -356,7 +356,7 @@ impl MergeModel {
                 hunks.push(MergeHunk {
                     base: lines.clone(),
                     ours: lines.clone(),
-                    theirs: lines.clone(),
+                    theirs: lines,
                     resolution: Resolution::Unchanged,
                     is_change: false,
                 });
@@ -488,15 +488,16 @@ impl MergeModel {
     }
 
     pub fn conflict_count(&self) -> usize {
-        self.hunks.iter().filter(|h| h.resolution.is_conflict()).count()
+        self.hunks
+            .iter()
+            .filter(|h| h.resolution.is_conflict())
+            .count()
     }
 
     pub fn resolved_count(&self) -> usize {
         self.hunks
             .iter()
-            .filter(|h| {
-                h.is_change && !h.resolution.is_conflict()
-            })
+            .filter(|h| h.is_change && !h.resolution.is_conflict())
             .count()
     }
 
@@ -522,7 +523,10 @@ impl MergeModel {
 
     /// The merged output as a flat line list (no terminators).
     pub fn merged_lines(&self) -> Vec<String> {
-        self.hunks.iter().flat_map(|h| h.resolved_lines()).collect()
+        self.hunks
+            .iter()
+            .flat_map(MergeHunk::resolved_lines)
+            .collect()
     }
 }
 
@@ -531,7 +535,7 @@ fn split_lines(s: &str) -> Vec<String> {
     if s.is_empty() {
         return Vec::new();
     }
-    s.lines().map(|l| l.to_string()).collect()
+    s.lines().map(std::string::ToString::to_string).collect()
 }
 
 /// One side of the merge aligned against base.
@@ -562,10 +566,12 @@ impl SideAlign {
         // Walk the structured ops. Each op carries a base (old) range and a
         // side (new) range.
         for op in diff.ops() {
-            use similar::DiffOp::*;
+            use similar::DiffOp::{Delete, Equal, Insert, Replace};
             match *op {
                 Equal { .. } => {}
-                Delete { old_index, old_len, .. } => {
+                Delete {
+                    old_index, old_len, ..
+                } => {
                     for k in old_index..(old_index + old_len) {
                         replace[k] = Some(Vec::new());
                     }
@@ -716,7 +722,11 @@ mod tests {
         let ours = "a\nOURS\nc\n";
         let theirs = "a\nTHEIRS\nc\n";
         let mut m = MergeModel::compute(base, ours, theirs);
-        let idx = m.hunks.iter().position(|h| h.resolution.is_conflict()).unwrap();
+        let idx = m
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .unwrap();
         m.hunks[idx].resolution = Resolution::TookTheirs;
         assert!(m.fully_resolved());
         assert_eq!(m.merged_lines(), vec!["a", "THEIRS", "c"]);
@@ -728,7 +738,11 @@ mod tests {
         let ours = "a\nOURS\nc\n";
         let theirs = "a\nTHEIRS\nc\n";
         let mut m = MergeModel::compute(base, ours, theirs);
-        let idx = m.hunks.iter().position(|h| h.resolution.is_conflict()).unwrap();
+        let idx = m
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .unwrap();
         m.hunks[idx].resolution = Resolution::TookBoth;
         assert_eq!(m.merged_lines(), vec!["a", "OURS", "THEIRS", "c"]);
     }

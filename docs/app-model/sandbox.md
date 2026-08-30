@@ -287,10 +287,24 @@ launches as it always did.
 
 ## What gets into your process
 
+This list is closed, and closed in the enforcing sense: the launcher passes
+`--clearenv` and then puts back exactly what is below. Nothing of the
+compositor's own environment reaches you — not its Wayland socket, not its
+identity path, not an `SSH_AUTH_SOCK` or a `DBUS_SESSION_BUS_ADDRESS` you
+were not given on purpose. If you need something that is not here, it is a
+capability question, not an environment one.
+
 After all three layers, your `main()` sees:
 
 - `argv[0]` = `/var/qos-apps/<pkg-id>/<entrypoint.bin>`.
 - CWD = your payload root inside the sandbox.
+- `PATH=/usr/local/bin:/usr/bin:/bin` — the sandbox's, not the user's. A
+  session `PATH` names host directories that are not in your namespace, and
+  could name a writable one of the user's.
+- The user's locale and clock, when their session set them: `LANG`,
+  `LANGUAGE`, the `LC_*` set, and `TZ`. Plus `TERM` / `COLORTERM` for a CLI
+  entrypoint. These describe the person rather than the session, which is
+  why they are the one thing carried across rather than constructed.
 - `HOME=/run/qos/app`, and `XDG_DATA_HOME` / `XDG_STATE_HOME` /
   `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` inside it. `QOS_APP_DIR` names the
   same directory explicitly.

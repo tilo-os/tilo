@@ -16,6 +16,22 @@
 //! an empty state. The bundled demonstration document ([`model::sample_document`])
 //! is used only by the screenshot harness and the tests.
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 pub mod actions;
 pub mod app;
 pub mod doc;
@@ -26,9 +42,7 @@ pub mod text_layer;
 
 pub use app::PdfApp;
 pub use doc::PdfDoc;
-pub use model::{
-    AnnoKind, Annotation, Comment, Document, Signature, SignatureInk, Swatch, Tool,
-};
+pub use model::{AnnoKind, Annotation, Comment, Document, Signature, SignatureInk, Swatch, Tool};
 
 pub mod source;
 

@@ -157,7 +157,10 @@ mod tests {
             put_text(&mut doc, &root, KEY_CATALOG, &long);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-storing the same text grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-storing the same text grew the document {a} -> {b}"
+        );
     }
 
     #[test]
@@ -171,7 +174,7 @@ mod tests {
         let back = load_catalog(&doc, &root).unwrap();
         assert_eq!(back.len(), cat.len());
         assert_eq!(back[0].name, cat[0].name);
-        assert_eq!(back.last().unwrap().builtin, false);
+        assert!(!back.last().unwrap().builtin);
     }
 
     #[test]

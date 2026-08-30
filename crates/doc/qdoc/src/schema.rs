@@ -4,95 +4,78 @@
 pub const SCHEMA_ID: &str = "qos.richtext";
 pub const SCHEMA_VERSION: i64 = 1;
 
-// Root keys
 pub const KEY_SCHEMA: &str = "schema";
 pub const KEY_SCHEMA_VERSION: &str = "schema_version";
 pub const KEY_BLOCKS: &str = "blocks"; // Map<block_id, block>
 pub const KEY_STYLES: &str = "styles"; // Map<style_id, style def>
-// Preservation layer (the lossless fidelity store for content a codec doesn't
-// model). `preserved` is a `Map<part_name, part>`. A part is stored in one of two
-// equivalent forms:
-//   * **legacy**: a single `Bytes` scalar holding the whole part verbatim;
-//   * **segmented (Tier-4, CRDT-merge-friendly)**: a `Map<segment_id, segment>`
-//     where each `segment` is a sub-map `{ord: Bytes (fractional key), bytes:
-//     Bytes (the atom's verbatim bytes)}`. Concatenating the segments in `ord`
-//     order reproduces the part byte-for-byte. Each segment is an independent
-//     automerge object keyed by a STABLE id (structural-index + content-hash), so
-//     the same atom on two replicas maps to ONE object (it converges) and two
-//     replicas editing DIFFERENT atoms of the same part merge cleanly instead of
-//     clobbering the whole part. Same-atom concurrent edits stay last-writer-wins.
+// Preservation layer (lossless fidelity store for content a codec doesn't model): `preserved` is
+// `Map<part_name, part>`, stored either as a single legacy `Bytes` scalar, or (Tier-4) as a
+// `Map<segment_id, {ord, bytes}>` whose per-atom objects let independent atoms merge across replicas.
 pub const KEY_PRESERVED: &str = "preserved"; // Map<part_name, part>  (preservation layer)
 /// A preserved part's per-atom segment's fractional order key (`Bytes`), under the
 /// segment sub-map. Segments sort by this to reconstruct the part in source order.
 pub const PRESERVED_SEG_ORD: &str = "ord";
-/// A preserved part's per-atom segment's verbatim bytes (`Bytes`), under the
-/// segment sub-map. The concatenation of all segments' bytes (in `ord` order) is
-/// the original part byte-for-byte.
+/// A preserved part's per-atom segment's verbatim bytes (`Bytes`); concatenating all segments in `ord` order reproduces the part byte-for-byte.
 pub const PRESERVED_SEG_BYTES: &str = "bytes";
 pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
-pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, Bytes>  (content-addressed image/binary store)
-// Page header / footer regions. Each is a `Map<block_id, block>` with the exact
-// same shape as `blocks` (fractional order keys, same block fields), holding the
-// ordered paragraph sequence rendered at the top/bottom of every page. Created
-// lazily on first write and opened optionally, so documents authored before the
-// regions existed still open (they then read as having no header/footer).
+// Content-addressed binary references. `blobs` is a `Map<blake3_hex, descriptor>`
+// where a descriptor is a sub-map of *metadata only* — the bytes themselves live
+// outside the CRDT, in the content-addressed store `blobstore` owns.
+//
+// Inline media makes every Automerge replica and durable host log carry the
+// full payload, amplifies sync memory, and puts later edits behind a large
+// change. A reference is only a few dozen bytes, which is why this is the fix
+// rather than a bigger transport message.
+pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, descriptor>
+/// A blob descriptor's media type (`Str`, e.g. `image/png`). Sniffed from the
+/// content on `put_blob`, so it is present for anything we recognise.
+pub const BLOB_MIME: &str = "mime";
+/// A blob descriptor's content length in bytes (`Int`).
+pub const BLOB_LEN: &str = "len";
+/// A blob descriptor's intrinsic pixel width (`Int`), 0 when unknown.
+pub const BLOB_W: &str = "w";
+/// A blob descriptor's intrinsic pixel height (`Int`), 0 when unknown.
+pub const BLOB_H: &str = "h";
+
+// The descriptor fields as `materialize` projects them onto a referencing `image` block's attrs,
+// distinct from `width`/`height` (requested display size, often absent): these are the content's
+// intrinsic size, letting a not-yet-arrived image reserve its space instead of reflowing on arrival.
+pub const ATTR_BLOB_MIME: &str = "blob_mime";
+pub const ATTR_BLOB_BYTES: &str = "blob_bytes";
+pub const ATTR_BLOB_W: &str = "blob_w";
+pub const ATTR_BLOB_H: &str = "blob_h";
+// Page header / footer regions: each a `Map<block_id, block>` with the same shape as `blocks`,
+// holding the paragraph sequence rendered per-page. Created lazily; older documents open with no header/footer.
 pub const KEY_HEADER: &str = "header"; // Map<block_id, block>
 pub const KEY_FOOTER: &str = "footer"; // Map<block_id, block>
 
-// Footnotes / endnotes. A `notes` root map holds `Map<note_id, note>`, where each
-// note is a sub-map carrying its `kind` ("footnote"|"endnote") and a `blocks`
-// child map (the note's content — same shape as the body `blocks`, with
-// fractional order keys). The note is *referenced* from body text by an inline
-// `note-ref` mark over a single placeholder character (U+FFFC), whose value is the
-// note id; the mark merges with concurrent text edits and round-trips through the
-// codecs. Created lazily on first write and opened optionally so documents
-// authored before notes existed still open (they then read as having no notes).
+// Footnotes / endnotes: a `notes` root map of `Map<note_id, note>`, each a sub-map with `kind`
+// and a `blocks` child map (same shape as body `blocks`). Referenced from body text by a `note-ref`
+// mark over a placeholder character (U+FFFC), valued with the note id. Created/opened lazily.
 pub const KEY_NOTES: &str = "notes"; // Map<note_id, note>
 pub const NOTE_KIND: &str = "kind"; // Str ("footnote"|"endnote")
 pub const NOTE_BLOCKS: &str = "blocks"; // Map<block_id, block> (the note body)
 pub const NOTE_KIND_FOOTNOTE: &str = "footnote";
 pub const NOTE_KIND_ENDNOTE: &str = "endnote";
-/// The inline mark naming a note reference. Covers exactly the single placeholder
-/// character (U+FFFC) standing in for the citation; its value is the referenced
-/// note id (a `Str`). Renderers substitute the computed citation number.
+/// The inline mark naming a note reference: covers the single placeholder character (U+FFFC), valued with the referenced note id (a `Str`).
 pub const MARK_NOTE_REF: &str = "note-ref"; // Str — the referenced note id
 
-// Comments / annotations. A `comments` root map holds `Map<comment_id, comment>`,
-// where each comment is a sub-map carrying its `author`, `date` (a free-form string
-// — ISO-8601 in practice) and a `blocks` child map (the comment's content — same
-// shape as the body `blocks`, with fractional order keys, so a comment can hold
-// multiple paragraphs). A comment is *anchored* to body text by an inline `comment`
-// mark whose value is the comment id, covering the commented range `[start, end)`;
-// the mark merges with concurrent text edits and round-trips through the codecs
-// (`office:annotation`/`office:annotation-end` in `.odt`, `commentRangeStart`/
-// `commentRangeEnd` + `commentReference` in `.docx`). Created eagerly (like
-// `notes`) so two replicas that concurrently add a comment share ONE container
-// object and converge; opened optionally so documents authored before comments
-// existed still open (they then read as having no comments).
+// Comments / annotations: a `comments` root map of `Map<comment_id, comment>`, each a sub-map with
+// `author`, `date` (ISO-8601) and a `blocks` child map. Anchored to body text by a `comment` mark
+// valued with the comment id over `[start, end)`. Round-trips through the codecs (ODF
+// `office:annotation`/`-end`; OOXML `commentRangeStart`/`-End`+`commentReference`). Created eagerly so concurrent adds converge on one container.
 pub const KEY_COMMENTS: &str = "comments"; // Map<comment_id, comment>
 pub const COMMENT_AUTHOR: &str = "author"; // Str — the comment author's display name
 pub const COMMENT_DATE: &str = "date"; // Str — the comment timestamp (ISO-8601)
 pub const COMMENT_BLOCKS: &str = "blocks"; // Map<block_id, block> (the comment body)
-/// The inline mark anchoring a comment to a text range. Covers the commented range
-/// `[start, end)`; its value is the comment id (a `Str`). Unlike `note-ref`, this
-/// spans real text rather than a placeholder character.
+/// The inline mark anchoring a comment to a text range `[start, end)`, valued with the comment id (a `Str`); unlike `note-ref`, spans real text rather than a placeholder character.
 pub const MARK_COMMENT: &str = "comment"; // Str — the anchored comment id
 
-// Tracked changes / revision marks. A `changes` root map holds `Map<change_id,
-// change>`, where each change is a sub-map carrying its `author`, `date` (a free-form
-// string — ISO-8601 in practice) and a `kind` ("ins"|"del"). A change is *anchored* to
-// body text by an inline `ins`/`del` mark (matching the change's kind) whose value is
-// the change id, covering the changed range `[start, end)`:
-//   * a tracked **insertion** wraps inserted body text with an `ins` mark — the text
-//     is real content, flagged as proposed-added until accepted;
-//   * a tracked **deletion** marks retained-but-struck body text with a `del` mark —
-//     the text stays in the document (so reviewers can see it) until accept removes it.
-// Both marks merge with concurrent text edits and round-trip through the codecs
-// (`text:tracked-changes`/`text:changed-region` + `text:change-start`/`text:change-end`/
-// `text:change` in `.odt`; `<w:ins>`/`<w:del>`(+`<w:delText>`) run wrappers in `.docx`).
-// Created eagerly (like `comments`) so two replicas that concurrently track a change
-// share ONE container object and converge; opened optionally so documents authored
-// before tracked changes existed still open (they then read as having no changes).
+// Tracked changes / revision marks: a `changes` root map of `Map<change_id, change>`, each a
+// sub-map with `author`, `date` (ISO-8601), and `kind` ("ins"|"del"). Anchored by an `ins`/`del`
+// mark matching the kind, valued with the change id, over `[start, end)`: an insertion wraps
+// proposed-added text; a deletion marks retained-but-struck text until accept removes it. Both
+// round-trip through the codecs (ODF `text:change-*`; OOXML `<w:ins>`/`<w:del>`). Created eagerly so concurrent tracking converges.
 pub const KEY_CHANGES: &str = "changes"; // Map<change_id, change>
 pub const CHANGE_AUTHOR: &str = "author"; // Str — the change author's display name
 pub const CHANGE_DATE: &str = "date"; // Str — the change timestamp (ISO-8601)
@@ -106,40 +89,29 @@ pub const MARK_INS: &str = "ins"; // Str — the anchored (insertion) change id
 /// range. Covers the deleted range `[start, end)`; its value is the change id (a `Str`).
 pub const MARK_DEL: &str = "del"; // Str — the anchored (deletion) change id
 
-// Multi-column section layout. A document-wide column count (and optional gap)
-// stored directly under `meta` as scalar registers, so two replicas changing the
-// column count field-level merge rather than clobbering each other. `columns` is a
-// `Uint` (the number of newspaper-style columns the body text flows across);
-// `column_gap` is an optional `F64` (the gutter between columns, in px). Absent →
-// a single column (the default). This is the shared contract between the qdoc model
-// and the `.odt` page-layout `style:columns` / `.docx` `w:sectPr`→`w:cols` markup.
+// Multi-column section layout: `columns` (Uint) and optional `column_gap` (F64, px) stored as
+// scalar registers under `meta`, so replicas changing the count field-level merge. Absent → single
+// column. Shared contract with `.odt` `style:columns` / `.docx` `w:sectPr`→`w:cols`.
 pub const META_COLUMNS: &str = "columns"; // Uint (under meta) — body column count
 pub const META_COLUMN_GAP: &str = "column_gap"; // F64 (under meta) — inter-column gap (px)
 /// The default body column count when `meta.columns` is unset (a single column).
 pub const DEFAULT_COLUMNS: u32 = 1;
 
-// Document default language. A BCP-47 language tag (`en-US`, `de-DE`, `fr`) stored
-// directly under `meta` as a `Str` register, so two replicas changing the document
-// language field-level merge rather than clobbering each other. Absent → the
-// consumer's locale default (no language declared). This is the shared contract
-// between the qdoc model and the `.odt` default-paragraph-style
-// `fo:language`/`fo:country` / `.docx` `docDefaults`→`w:rPrDefault`→`w:lang` markup.
-// Surfaced on the snapshot as `DocSnapshot.language`. Supports spell-check locale
-// selection and accessibility/screen-reader language.
+// Document default language: a BCP-47 tag (`en-US`, `de-DE`, `fr`) as a `Str` register under
+// `meta`, so replicas changing it field-level merge. Absent → consumer's locale default. Shared
+// contract with `.odt` `fo:language`/`fo:country` / `.docx` `w:rPrDefault`→`w:lang`.
 pub const META_LANGUAGE: &str = "language"; // Str (under meta) — document default BCP-47 tag
-/// The inline mark naming a per-run language override (a span in another language).
-/// Its value is a BCP-47 language tag (a `Str`, e.g. `fr` or `de-DE`). Round-trips
-/// through the `.odt` automatic-text-style `fo:language`/`fo:country` and the `.docx`
-/// `w:rPr`→`w:lang` markup. Mirrors the other valued run marks (`color`/`fontFamily`/
-/// `fontSize`). Supports per-span spell-check locale and screen-reader language.
+/// The inline mark naming a per-run language override (a `Str` BCP-47 tag, e.g. `fr`/`de-DE`).
+/// Round-trips through `.odt` `fo:language`/`fo:country` and `.docx` `w:rPr`→`w:lang`; mirrors the other valued run marks.
 pub const MARK_LANG: &str = "lang"; // Str — a per-run BCP-47 language override
 
-// Document properties / metadata. A `props` sub-map under `meta` holding the
-// well-known document-level fields (title/author/…) as plain strings. Isolated
-// from other `meta` keys (page margins, stylesheet) and created lazily so
-// documents authored before it existed still open. These keys are the shared
-// contract between the qdoc model and the `dc:`/`cp:`/`dcterms:` metadata fields
-// the `.odt` (`meta.xml`) and `.docx` (`docProps/*.xml`) codecs map onto.
+// Durable authorship: the `author` mark names who wrote a run of body text (a `Str` display
+// name), following the characters through edits/splits/merges like `lang`/`comment` do. Distinct
+// from `CHANGE_AUTHOR` (a tracked-change proposal's author); absent means unattributed.
+pub const MARK_AUTHOR: &str = "author"; // Str — the display name of whoever wrote the run
+
+// Document properties: a `props` sub-map under `meta` holding well-known fields (title/author/…)
+// as plain strings, created lazily. Shared contract with `.odt` `meta.xml` / `.docx` `docProps/*.xml`.
 pub const KEY_PROPS: &str = "props"; // Map<prop_name, Str>  (under meta)
 pub const PROP_TITLE: &str = "title"; // Str — dc:title
 pub const PROP_AUTHOR: &str = "author"; // Str — dc:creator
@@ -150,63 +122,44 @@ pub const PROP_MODIFIED: &str = "modified"; // Str — dc:date / dcterms:modifie
 pub const PROP_GENERATOR: &str = "generator"; // Str — meta:generator / app.xml Application
 
 /// The canonical well-known document-property names, in a stable order.
-pub const DOC_PROP_KEYS: [&str; 7] =
-    [PROP_TITLE, PROP_AUTHOR, PROP_SUBJECT, PROP_KEYWORDS, PROP_CREATED, PROP_MODIFIED, PROP_GENERATOR];
+pub const DOC_PROP_KEYS: [&str; 7] = [
+    PROP_TITLE,
+    PROP_AUTHOR,
+    PROP_SUBJECT,
+    PROP_KEYWORDS,
+    PROP_CREATED,
+    PROP_MODIFIED,
+    PROP_GENERATOR,
+];
 
-// Bookmarks (named anchors) + cross-references (internal links). A **bookmark** is a
-// named anchor over a body text range (or a point), modeled as an inline `bookmark`
-// mark whose value is the bookmark name, covering the range `[start, end)`. Like
-// `comment`, it spans real text rather than a placeholder character (a point bookmark
-// is widened to one character on import so the mark has somewhere to live; an
-// end-of-block point bookmark sits over the last character). The mark merges with
-// concurrent text edits and round-trips through the codecs (`text:bookmark-start`/
-// `text:bookmark-end` — or `text:bookmark` for a point — in `.odt`; `w:bookmarkStart
-// w:name`/`w:bookmarkEnd` in `.docx`). The mark is the source of truth; the snapshot
-// exposes a derived `bookmarks` registry (name → range) for convenience.
-//
-// A **cross-reference** is an *internal* link: a run pointing at a bookmark or a
-// heading. It reuses the external-hyperlink `link` mark, with the value taking the
-// fragment form `#<target>` (a leading `#` distinguishes an internal reference from an
-// external URL). The target is a bookmark name or a heading's derived id (see
-// `HEADING_REF_PREFIX`). Cross-refs round-trip through `text:a xlink:href="#name"` in
-// `.odt` and a `w:hyperlink w:anchor="name"` in `.docx`.
+// Bookmarks (named anchors) + cross-references (internal links). A bookmark is a `bookmark` mark
+// valued with its name over `[start, end)` (a point bookmark widens to one character on import);
+// round-trips through `.odt` `text:bookmark-*` / `.docx` `w:bookmarkStart`/`-End`. A cross-reference
+// reuses the external-hyperlink `link` mark with a `#<target>` value (leading `#` marks it internal);
+// target is a bookmark name or a heading's derived id. The mark is the source of truth; the snapshot exposes a derived `bookmarks` registry.
 pub const MARK_BOOKMARK: &str = "bookmark"; // Str — the bookmark name
-/// The inline `link` mark (external hyperlinks *and* internal cross-references). A
-/// value starting with `#` is an internal cross-reference; anything else is an
-/// external URL. Shared with the `.md`/`.html` codecs (which call it `link`).
+/// The inline `link` mark (external hyperlinks *and* internal cross-references): a value starting with `#` is internal, anything else an external URL. Shared with the `.md`/`.html` codecs.
 pub const MARK_LINK: &str = "link"; // Str — an href (external URL) or `#target` (internal ref)
 /// The leading character of an internal cross-reference `link` value (`#bookmarkName`).
 pub const CROSS_REF_PREFIX: char = '#';
-/// The prefix of a heading's auto/derived reference id (`_heading_<block_id>`), so a
-/// cross-reference can target a heading that carries no explicit bookmark. The block id
-/// is appended verbatim. Distinct from a user bookmark name (which never starts with
-/// this prefix in practice).
+/// The prefix of a heading's auto/derived reference id (`_heading_<block_id>`), letting a cross-reference target a heading with no explicit bookmark; never used as a user bookmark name.
 pub const HEADING_REF_PREFIX: &str = "_heading_";
 
-// Inline field markers. A "field" is an inline placeholder whose rendered text is
-// computed at layout time (e.g. the current page number). It is modeled as a
-// single placeholder character in the block text covered by a `field` mark whose
-// value names the field kind. This rides the existing inline-mark machinery, so a
-// field merges with concurrent text edits and round-trips through the codecs.
+// Inline field markers: a placeholder whose rendered text is computed at layout time (e.g. page
+// number), modeled as one placeholder character covered by a `field` mark naming the field kind.
 pub const MARK_FIELD: &str = "field"; // Str — the field kind (see FIELD_PAGE_NUMBER)
 pub const FIELD_PAGE_NUMBER: &str = "page-number"; // a `field` mark value
-/// The single placeholder character a field occupies in block text (Unicode
-/// OBJECT REPLACEMENT CHARACTER, U+FFFC). The `field` mark covers exactly this
-/// character; renderers substitute the computed value (e.g. the page number).
+/// The single placeholder character a field occupies (U+FFFC OBJECT REPLACEMENT CHARACTER); the `field` mark covers exactly this character and renderers substitute the computed value.
 pub const FIELD_PLACEHOLDER: char = '\u{FFFC}';
 
-// Block fields
 pub const BLOCK_ORDER: &str = "order"; // Bytes (fractional key)
 pub const BLOCK_KIND: &str = "kind"; // Str ("paragraph"|"heading"|"list_item"|"table"|"cell"|"image"|"fidelity")
 pub const BLOCK_TEXT: &str = "text"; // Text (present for text blocks)
 pub const BLOCK_ATTRS: &str = "attrs"; // Map (style_id, level, ...)
 pub const BLOCK_CHILDREN: &str = "children"; // Map<block_id, block> (containers)
 
-// Style fields — each style under `styles.<id>` is a sub-map of these scalar
-// properties (CRDT-native, so two replicas editing different properties of the
-// same style field-level-merge). These key names are the shared contract between
-// the qdoc styles container and the editor's `StyleProps`, and they map onto ODF
-// `style:style` named-style definitions on export/import.
+// Style fields: each style under `styles.<id>` is a sub-map of these scalar properties
+// (field-level mergeable). Shared contract with the editor's `StyleProps`; maps onto ODF `style:style`.
 pub const STYLE_NAME: &str = "name"; // Str (display name, e.g. "Heading 1")
 pub const STYLE_FONT: &str = "font"; // Str ("sans"|"serif"|"mono")
 pub const STYLE_SIZE: &str = "size"; // F64 (pt)

@@ -1,73 +1,54 @@
 //! [`Dropdown`] — a reusable, CRDT-backed single-select control.
 //!
-//! Closed it reads like a button: the current selection plus a chevron.
-//! Open it reveals a scrollable list of options that composites *on top
-//! of* following content via the App's top-layer [`Widget::draw_overlay`]
-//! pass — it is a real overlay, not an inline expander that shoves
-//! siblings down.
+//! Closed it reads like a button: the current selection plus a chevron. Open
+//! it reveals a scrollable list that composites *on top of* following content
+//! via the App's top-layer [`Widget::draw_overlay`] pass — a real overlay,
+//! not an inline expander that shoves siblings down.
 //!
-//! ## Selection model (toolkit convention)
+//! Like [`crate::widget::TextInput`], the chosen value lives in the CRDT, not
+//! on the widget: the constructor takes a `value_path`, and selection splices
+//! the chosen string into the Automerge `Text` object there (creating it if
+//! absent) so a host reading that path sees the change with no extra wiring.
+//! `sync` mirrors it back; a scalar string at the path is also accepted.
 //!
-//! Like [`crate::widget::TextInput`], the chosen value lives in the CRDT,
-//! not on the widget. The constructor takes a `value_path`; on selection
-//! the widget splices the chosen string into the Automerge `Text` object
-//! at that path (creating it if absent), so a host that reads the path —
-//! e.g. the installer reading `installer.timezone` — sees the change with
-//! no extra wiring. `sync` pulls the current value back out so the closed
-//! control always mirrors the document. A scalar string at the path is
-//! also accepted on read for flexibility.
-//!
-//! ## Input
-//!
-//! * **Mouse** — click the control to open; click an item to select +
-//!   close; click outside to dismiss; wheel scrolls the open list.
-//! * **Keyboard** (while focused) — Enter / Space / Down open when
-//!   closed; Up / Down move the highlight; Enter / Space select + close;
-//!   Esc dismisses without changing; printable characters drive an
-//!   incremental, case-insensitive substring **filter** (Backspace edits
-//!   it). The filter makes hundreds-of-entries lists (time zones,
-//!   keyboard layouts) usable without endless scrolling.
+//! Keyboard (while focused): Enter/Space/Down open; Up/Down move the
+//! highlight; Enter selects + closes; Esc dismisses; printable characters
+//! drive an incremental, case-insensitive substring filter (Backspace edits
+//! it) so hundred-entry lists stay usable without endless scrolling.
 //!
 //! While open the widget reports [`Widget::wants_pointer_capture`] so its
-//! container routes *all* events to it exclusively — that is how the
-//! out-of-layout list becomes hit-testable and how click-outside
-//! dismissal works.
+//! container routes all events to it exclusively — how the out-of-layout
+//! list becomes hit-testable and click-outside dismissal works.
 
 use std::collections::HashMap;
 
+use crate::widget::TaffyTreeExt;
 use automerge::{
-    transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value,
+    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
-use vello::Scene;
-use winit::event::{
-    ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent,
-};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
 /// Height of the closed control (matches `TextInput` / `SegChoice`).
 const CONTROL_HEIGHT: f64 = 40.0;
-/// Per-item row height in the open list.
 const ITEM_HEIGHT: f64 = 32.0;
-/// Maximum height of the open list before it scrolls.
 const MAX_LIST_HEIGHT: f64 = 240.0;
-/// Vertical gap between the control and the open list.
 const LIST_GAP: f64 = 4.0;
-/// Horizontal text padding inside the control / rows.
 const PAD_X: f64 = 10.0;
-/// Reserved width on the right of the control for the chevron.
 const CHEVRON_W: f64 = 30.0;
-/// Label font size.
 const FONT: f32 = 15.0;
-/// Pixels scrolled per wheel notch in the open list.
 const LINE_PX: f32 = 60.0;
 
 pub struct Dropdown {
@@ -83,12 +64,13 @@ pub struct Dropdown {
     highlight: usize,
     /// Incremental substring filter; empty shows every option.
     filter: String,
-    /// Vertical scroll offset (px) of the open list.
+    filter_selection: Selection,
+    filter_composition: QueryComposition,
     scroll: f32,
 
     /// One-shot: align `highlight` to the selected option on the next
-    /// `sync`. Set by the `open()` builder (used for headless shots),
-    /// where `selected` isn't known until `sync` reads the document.
+    /// `sync`. Set by the `open()` builder, where `selected` isn't known
+    /// until `sync` reads the document.
     align_highlight_on_sync: bool,
 
     rect: Rect,
@@ -96,9 +78,8 @@ pub struct Dropdown {
     is_hovered: bool,
     last_cursor: Point,
 
-    /// When `false` the dropdown is disabled: skipped by focus, rejects
-    /// input (won't open, no selection, no hover feedback) and renders
-    /// dimmed. Default `true`.
+    /// When `false`: skipped by focus, rejects input, renders dimmed.
+    /// Default `true`.
     enabled: bool,
 }
 
@@ -115,6 +96,8 @@ impl Dropdown {
             open: false,
             highlight: 0,
             filter: String::new(),
+            filter_selection: Selection::collapsed(0),
+            filter_composition: QueryComposition::new(),
             scroll: 0.0,
             align_highlight_on_sync: false,
             rect: Rect::ZERO,
@@ -137,8 +120,7 @@ impl Dropdown {
         self
     }
 
-    /// Set the enabled state at build time. A disabled dropdown is skipped
-    /// by focus, won't open, rejects input and renders dimmed. Default `true`.
+    /// Set the enabled state at build time; see the `enabled` field.
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -164,11 +146,7 @@ impl Dropdown {
     /// Conditionally start opened — convenience for callers that decide
     /// at build time (e.g. a shot seed).
     pub fn open_if(self, cond: bool) -> Self {
-        if cond {
-            self.open()
-        } else {
-            self
-        }
+        if cond { self.open() } else { self }
     }
 
     pub fn is_open(&self) -> bool {
@@ -179,11 +157,9 @@ impl Dropdown {
     }
 
     /// Place the dropdown at an absolute rect without going through taffy —
-    /// the counterpart to [`TextInput::apply_layout_external`] for an app
-    /// that hand-positions a shared control over its own painted chrome. The
-    /// open list still paints in the overlay pass, so only the closed
-    /// control's box is caller-driven. Focus / a11y / CRDT-bound selection
-    /// are unaffected.
+    /// the counterpart to [`TextInput::apply_layout_external`]. The open
+    /// list still paints in the overlay pass, so only the closed control's
+    /// box is caller-driven; focus / a11y / CRDT-bound selection are unaffected.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
     }
@@ -271,6 +247,8 @@ impl Dropdown {
     fn do_open(&mut self) {
         self.open = true;
         self.filter.clear();
+        self.filter_selection = Selection::collapsed(0);
+        self.filter_composition.clear();
         let filtered = self.filtered();
         self.highlight = self.selected_pos(&filtered);
         self.scroll = 0.0;
@@ -280,6 +258,8 @@ impl Dropdown {
     fn close(&mut self) {
         self.open = false;
         self.filter.clear();
+        self.filter_selection = Selection::collapsed(0);
+        self.filter_composition.clear();
         self.scroll = 0.0;
     }
 
@@ -288,7 +268,9 @@ impl Dropdown {
     fn commit_value(&mut self, value: &str, state: &mut AutoCommit, root: &ObjId) {
         let obj = match state.get(root, self.value_path.as_str()) {
             Ok(Some((Value::Object(ObjType::Text), obj))) => Some(obj),
-            _ => state.put_object(root, self.value_path.as_str(), ObjType::Text).ok(),
+            _ => state
+                .put_object(root, self.value_path.as_str(), ObjType::Text)
+                .ok(),
         };
         if let Some(obj) = obj {
             crate::doc::splice_text_diffed(state, &obj, value);
@@ -329,30 +311,27 @@ impl Widget for Dropdown {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The open list is intentionally NOT a taffy child: it paints in
-        // the overlay pass so it doesn't reserve layout space (and the
-        // widget-tree-mirrors-taffy invariant holds whether open or not).
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(CONTROL_HEIGHT as f32),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        // The open list is intentionally NOT a taffy child: it paints in the
+        // overlay pass, so it doesn't reserve layout space.
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(CONTROL_HEIGHT as f32),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -364,13 +343,18 @@ impl Widget for Dropdown {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // --- Closed control (always painted, in the normal pass) ---
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         // Disabled widgets paint their (forced-idle) look under a reduced
         // group opacity so they read as non-interactive.
         let disabled = !self.enabled;
         if disabled {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &shape);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &shape,
+            );
         }
         let bg = if self.open || self.is_focused {
             theme.bg_active
@@ -385,28 +369,49 @@ impl Widget for Dropdown {
         };
         scene.stroke(&Stroke::new(bw), transform, bc, None, &shape);
 
-        // Label: the selected value, or a dimmed placeholder.
-        let (label, color) = if self.selected.is_empty() {
-            (self.placeholder.as_str(), theme.text_dim)
-        } else {
-            (self.selected.as_str(), theme.text_primary)
-        };
-        if !label.is_empty() {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-            let (_, th) = text_renderer.measure(label, FONT, None);
-            let ty = self.rect.y0 + (self.rect.height() - th as f64) / 2.0;
-            text_renderer.draw_text(
+        if self.open {
+            self.filter_composition.draw(
                 scene,
-                label,
-                FONT,
-                color,
-                transform * Affine::translate((self.rect.x0 + PAD_X, ty)),
-                Some((self.rect.width() - PAD_X - CHEVRON_W) as f32),
+                transform,
+                text_renderer,
+                &self.filter,
+                &self.filter_selection,
+                "Type to filter…",
+                Rect::new(
+                    self.rect.x0 + PAD_X,
+                    self.rect.y0,
+                    self.rect.x1 - CHEVRON_W,
+                    self.rect.y1,
+                ),
+                &TextStyle::new(FONT),
+                theme.text_primary,
+                theme.text_dim,
+                theme.accent_primary.with_alpha_factor(0.3),
+                theme.accent_primary,
+                self.is_focused,
             );
-            scene.pop_layer();
+        } else {
+            let (label, color) = if self.selected.is_empty() {
+                (self.placeholder.as_str(), theme.text_dim)
+            } else {
+                (self.selected.as_str(), theme.text_primary)
+            };
+            if !label.is_empty() {
+                scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
+                let (_, th) = text_renderer.measure(label, FONT, None);
+                let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
+                text_renderer.draw_text(
+                    scene,
+                    label,
+                    FONT,
+                    color,
+                    transform * Affine::translate((self.rect.x0 + PAD_X, ty)),
+                    Some((self.rect.width() - PAD_X - CHEVRON_W) as f32),
+                );
+                scene.pop_layer();
+            }
         }
 
-        // Chevron (down when closed, up when open).
         let cx = self.rect.x1 - 18.0;
         let cy = self.rect.center().y;
         let mut chev = BezPath::new();
@@ -441,9 +446,8 @@ impl Widget for Dropdown {
         }
         let filtered = self.filtered();
         let list = self.list_rect(filtered.len());
-        let shape = RoundedRect::from_rect(list, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(list, f64::from(theme.tokens.radii.md));
 
-        // Surface + border.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -463,7 +467,7 @@ impl Widget for Dropdown {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
 
         if filtered.is_empty() {
-            let ty = list.y0 + (ITEM_HEIGHT - FONT as f64) / 2.0;
+            let ty = list.y0 + (ITEM_HEIGHT - f64::from(FONT)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -474,7 +478,7 @@ impl Widget for Dropdown {
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = list.y0 + (vi as f64 * ITEM_HEIGHT) - self.scroll as f64;
+                let row_top = list.y0 + (vi as f64 * ITEM_HEIGHT) - f64::from(self.scroll);
                 let row_bottom = row_top + ITEM_HEIGHT;
                 // Cull rows scrolled out of the box (hundreds of zones).
                 if row_bottom < list.y0 || row_top > list.y1 {
@@ -494,11 +498,14 @@ impl Widget for Dropdown {
                     );
                 }
                 let color = if vi == self.highlight {
-                    vello::peniko::Color::WHITE
+                    theme
+                        .tokens
+                        .colors
+                        .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
                 } else {
                     theme.text_primary
                 };
-                let ty = row_top + (ITEM_HEIGHT - FONT as f64) / 2.0;
+                let ty = row_top + (ITEM_HEIGHT - f64::from(FONT)) / 2.0;
                 text_renderer.draw_text(
                     scene,
                     &self.options[opt_idx],
@@ -516,7 +523,7 @@ impl Widget for Dropdown {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &Modifiers,
+        modifiers: &Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
@@ -525,7 +532,27 @@ impl Widget for Dropdown {
         _taffy: &TaffyTree<()>,
     ) {
         // Disabled: reject all input — won't open, no selection, no hover.
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
+        if self.open
+            && self.is_focused
+            && let WindowEvent::Ime(_) = event
+        {
+            let change = self.filter_composition.handle_event(
+                event,
+                &mut self.filter,
+                &mut self.filter_selection,
+                false,
+                false,
+            );
+            if change == QueryEventChange::Edited {
+                self.highlight = 0;
+                self.scroll = 0.0;
+            }
+            *handled = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -540,8 +567,8 @@ impl Widget for Dropdown {
                     let filtered = self.filtered();
                     let list = self.list_rect(filtered.len());
                     if list.contains(pos) {
-                        let vi = ((pos.y - list.y0 + self.scroll as f64) / ITEM_HEIGHT)
-                            .floor() as isize;
+                        let vi = ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor()
+                            as isize;
                         if vi >= 0 && (vi as usize) < filtered.len() {
                             let vi = vi as usize;
                             if vi != self.highlight {
@@ -562,8 +589,8 @@ impl Widget for Dropdown {
                     let filtered = self.filtered();
                     let list = self.list_rect(filtered.len());
                     if list.contains(pos) {
-                        let vi = ((pos.y - list.y0 + self.scroll as f64) / ITEM_HEIGHT)
-                            .floor() as isize;
+                        let vi = ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor()
+                            as isize;
                         if vi >= 0 && (vi as usize) < filtered.len() {
                             self.highlight = vi as usize;
                             self.select_highlighted(state, root);
@@ -597,13 +624,16 @@ impl Widget for Dropdown {
                 event:
                     KeyEvent {
                         logical_key,
-                        text,
+                        text: _,
                         state: ElementState::Pressed,
                         ..
                     },
                 ..
             } if self.is_focused => {
                 if self.open {
+                    let mods = modifiers.state();
+                    let shift = mods.shift_key();
+                    let ctrl = mods.control_key() || mods.super_key();
                     match logical_key {
                         Key::Named(NamedKey::ArrowDown) => {
                             let n = self.filtered().len();
@@ -619,7 +649,7 @@ impl Widget for Dropdown {
                             self.ensure_visible(self.highlight, n);
                             *handled = true;
                         }
-                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                        Key::Named(NamedKey::Enter) => {
                             self.select_highlighted(state, root);
                             *handled = true;
                         }
@@ -627,34 +657,31 @@ impl Widget for Dropdown {
                             self.close();
                             *handled = true;
                         }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.filter.pop();
-                            self.highlight = 0;
-                            self.scroll = 0.0;
-                            *handled = true;
-                        }
                         _ => {
-                            if let Some(t) = text {
-                                if !t.as_str().chars().all(|c| c.is_control()) {
-                                    self.filter.push_str(t.as_str());
-                                    self.highlight = 0;
-                                    self.scroll = 0.0;
-                                    *handled = true;
-                                }
+                            let change = self.filter_composition.handle_event(
+                                event,
+                                &mut self.filter,
+                                &mut self.filter_selection,
+                                shift,
+                                ctrl,
+                            );
+                            if change == QueryEventChange::Edited {
+                                self.highlight = 0;
+                                self.scroll = 0.0;
+                            }
+                            if change != QueryEventChange::Ignored {
+                                *handled = true;
                             }
                         }
                     }
                 } else {
                     // Closed: Enter / Space / Down (or Up) open the list.
-                    match logical_key {
-                        Key::Named(NamedKey::Enter)
-                        | Key::Named(NamedKey::Space)
-                        | Key::Named(NamedKey::ArrowDown)
-                        | Key::Named(NamedKey::ArrowUp) => {
-                            self.do_open();
-                            *handled = true;
-                        }
-                        _ => {}
+                    if let Key::Named(
+                        NamedKey::Enter | NamedKey::Space | NamedKey::ArrowDown | NamedKey::ArrowUp,
+                    ) = logical_key
+                    {
+                        self.do_open();
+                        *handled = true;
                     }
                 }
             }
@@ -662,7 +689,7 @@ impl Widget for Dropdown {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Dropdown"
     }
 
@@ -691,17 +718,19 @@ impl Widget for Dropdown {
     fn is_focused(&self) -> bool {
         self.is_focused
     }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.open
+            .then(|| self.filter_composition.ime_cursor_rect())
+            .flatten()
+    }
     fn is_enabled(&self) -> bool {
         self.enabled
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // ComboBox: the accessible name + value is the current selection;
-        // when nothing is chosen yet we fall back to the placeholder so an
-        // AT still announces what the control is for. `selected` /
-        // `placeholder` are runtime strings (host-provided option text), not
-        // FTL keys, so no `i18n!` wrap. `expanded` mirrors the `open` field.
+        // Falls back to the placeholder when nothing is chosen. `selected`/
+        // `placeholder` are runtime strings, not FTL keys, so no `i18n!` wrap.
         let name = if !self.selected.is_empty() {
             Some(self.selected.clone())
         } else if !self.placeholder.is_empty() {
@@ -709,7 +738,11 @@ impl Widget for Dropdown {
         } else {
             None
         };
-        let value = (!self.selected.is_empty()).then(|| self.selected.clone());
+        let value = if self.open && !self.filter.is_empty() {
+            Some(self.filter.clone())
+        } else {
+            (!self.selected.is_empty()).then(|| self.selected.clone())
+        };
         let mut node = AccessNode::new(Role::ComboBox)
             .with_optional_name(name)
             .with_optional_value(value)
@@ -727,8 +760,7 @@ impl Widget for Dropdown {
         Some(node)
     }
 
-    /// While open the dropdown grabs every event so its out-of-layout
-    /// list is hit-testable and click-outside dismissal works.
+    /// While open, grabs every event — see module docs.
     fn wants_pointer_capture(&self) -> bool {
         self.open
     }
@@ -756,14 +788,12 @@ mod tests {
         (doc, root)
     }
 
-    /// Synthesise a `Pressed` `KeyboardInput` (mirrors the zero-init
-    /// workaround used across the ui/shell test suites — winit keeps
-    /// `KeyEvent`'s extra field `pub(crate)`).
+    /// Synthesise a `Pressed` `KeyboardInput` (winit keeps `KeyEvent`'s
+    /// extra field `pub(crate)`, so a struct literal isn't possible).
     fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -778,7 +808,7 @@ mod tests {
     /// Drive a key through a focused dropdown with a throwaway taffy node.
     fn feed_key(dd: &mut Dropdown, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         dd.handle_event(
@@ -810,7 +840,12 @@ mod tests {
         let (mut doc, root) = doc_with_tz("UTC");
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
-        assert!(feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root));
+        assert!(feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root
+        ));
         assert!(dd.is_open());
         // Highlight lands on the currently-selected option.
         assert_eq!(dd.highlight_index(), 0);
@@ -823,10 +858,25 @@ mod tests {
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
         dd.do_open();
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.highlight_index(), 2);
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowUp), None), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowUp), None),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.highlight_index(), 1);
     }
 
@@ -838,13 +888,31 @@ mod tests {
         dd.set_focus(true);
         dd.do_open();
         // Move to "America/New_York" (index 2) and select it.
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
-        assert!(feed_key(&mut dd, &key(Key::Named(NamedKey::Enter), None), &mut doc, &root));
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
+        assert!(feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Enter), None),
+            &mut doc,
+            &root
+        ));
         assert!(!dd.is_open(), "selecting closes the list");
         assert_eq!(dd.selected(), "America/New_York");
         // The value landed in the CRDT Text object the host reads.
-        assert_eq!(Dropdown::read_value(&doc, &root, "tz").as_deref(), Some("America/New_York"));
+        assert_eq!(
+            Dropdown::read_value(&doc, &root, "tz").as_deref(),
+            Some("America/New_York")
+        );
     }
 
     #[test]
@@ -854,11 +922,24 @@ mod tests {
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
         dd.do_open();
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
-        assert!(feed_key(&mut dd, &key(Key::Named(NamedKey::Escape), None), &mut doc, &root));
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
+        assert!(feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Escape), None),
+            &mut doc,
+            &root
+        ));
         assert!(!dd.is_open());
         assert_eq!(dd.selected(), "UTC", "Esc must not change the value");
-        assert_eq!(Dropdown::read_value(&doc, &root, "tz").as_deref(), Some("UTC"));
+        assert_eq!(
+            Dropdown::read_value(&doc, &root, "tz").as_deref(),
+            Some("UTC")
+        );
     }
 
     #[test]
@@ -870,14 +951,54 @@ mod tests {
         dd.do_open();
         assert_eq!(dd.visible_count(), 4);
         // "ame" matches only "America/New_York".
-        feed_key(&mut dd, &key(Key::Character("a".into()), Some("a")), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Character("m".into()), Some("m")), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Character("e".into()), Some("e")), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Character("a".into()), Some("a")),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Character("m".into()), Some("m")),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Character("e".into()), Some("e")),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.filter_query(), "ame");
         assert_eq!(dd.visible_count(), 1);
         // Enter selects the sole filtered match.
-        feed_key(&mut dd, &key(Key::Named(NamedKey::Enter), None), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Enter), None),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.selected(), "America/New_York");
+    }
+
+    #[test]
+    fn space_is_part_of_an_open_combobox_query() {
+        let mut dd = Dropdown::new(vec!["New York".into(), "New Delhi".into()], "city");
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        dd.set_focus(true);
+        dd.do_open();
+        for (key_value, text) in [
+            (Key::Character("N".into()), Some("N")),
+            (Key::Character("e".into()), Some("e")),
+            (Key::Character("w".into()), Some("w")),
+            (Key::Named(NamedKey::Space), None),
+            (Key::Character("Y".into()), Some("Y")),
+        ] {
+            feed_key(&mut dd, &key(key_value, text), &mut doc, &root);
+        }
+        assert_eq!(dd.filter_query(), "New Y");
+        assert_eq!(dd.visible_count(), 1);
     }
 
     #[test]
@@ -887,13 +1008,128 @@ mod tests {
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
         dd.do_open();
-        feed_key(&mut dd, &key(Key::Character("a".into()), Some("a")), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Character("z".into()), Some("z")), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Character("a".into()), Some("a")),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Character("z".into()), Some("z")),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.visible_count(), 0); // "az" matches nothing
-        feed_key(&mut dd, &key(Key::Named(NamedKey::Backspace), None), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Backspace), None),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.filter_query(), "a");
         // "a" matches Amsterdam, America, Asia.
         assert_eq!(dd.visible_count(), 3);
+    }
+
+    #[test]
+    fn backspace_deletes_one_extended_grapheme_from_the_filter() {
+        let mut dd = Dropdown::new(opts(), "tz");
+        let (mut doc, root) = doc_with_tz("UTC");
+        dd.sync(&mut doc, &root);
+        dd.set_focus(true);
+        dd.do_open();
+        let cluster = "👩🏽‍💻";
+        feed_key(
+            &mut dd,
+            &key(Key::Character(cluster.into()), Some(cluster)),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(dd.filter_query(), cluster);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Backspace), None),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(dd.filter_query(), "");
+        assert_eq!(dd.filter_selection, Selection::collapsed(0));
+    }
+
+    #[test]
+    fn typing_replaces_the_selected_filter_range() {
+        let mut dd = Dropdown::new(opts(), "tz");
+        let (mut doc, root) = doc_with_tz("UTC");
+        dd.sync(&mut doc, &root);
+        dd.set_focus(true);
+        dd.do_open();
+        dd.filter = "Europe".into();
+        dd.filter_selection = Selection {
+            anchor: 0,
+            cursor: dd.filter.len(),
+        };
+        feed_key(
+            &mut dd,
+            &key(Key::Character("亜".into()), Some("亜")),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(dd.filter_query(), "亜");
+        assert_eq!(dd.filter_selection, Selection::collapsed("亜".len()));
+    }
+
+    #[test]
+    fn ime_preedit_is_visible_but_filters_only_after_commit() {
+        let mut dd = Dropdown::new(vec!["東京".into(), "London".into()], "city");
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        dd.apply_layout_external(Rect::new(10.0, 10.0, 260.0, 50.0));
+        dd.set_focus(true);
+        dd.do_open();
+
+        assert!(feed_key(
+            &mut dd,
+            &WindowEvent::Ime(winit::event::Ime::Preedit(
+                "東京".into(),
+                Some(("東".len(), "東".len())),
+            )),
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(dd.filter_query(), "");
+        assert_eq!(dd.visible_count(), 2);
+        assert_eq!(
+            Widget::accessibility(&dd).unwrap().value,
+            None,
+            "preedit must stay out of the accessibility value"
+        );
+
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        Widget::draw(
+            &mut dd,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        let candidate = Widget::ime_cursor_rect(&dd).expect("open combobox publishes its caret");
+        assert!(dd.get_rect().contains(candidate.center()));
+
+        assert!(feed_key(
+            &mut dd,
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(dd.filter_query(), "東京");
+        assert_eq!(dd.visible_count(), 1);
+        assert_eq!(
+            Widget::accessibility(&dd).unwrap().value.as_deref(),
+            Some("東京")
+        );
     }
 
     #[test]
@@ -918,8 +1154,7 @@ mod tests {
 
     #[test]
     fn commit_creates_text_object_when_absent() {
-        // No `tz` key seeded: commit must create the Text object so the
-        // host's Text-reading path keeps working.
+        // No `tz` key seeded: commit must create the Text object.
         let mut dd = Dropdown::new(opts(), "tz");
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -932,10 +1167,9 @@ mod tests {
 
     #[test]
     fn repeated_selection_splices_the_diff_not_the_whole_value() {
-        // Long option labels (paths, timezone names, font families) are common.
-        // Committing one by deleting the old value and reinserting the new one
+        // Committing by deleting the old value and reinserting the new one
         // leaves a tombstone per character per selection, so a settings pane
-        // that is toggled back and forth bloats its document without bound.
+        // toggled back and forth bloats its document without bound.
         let long: Vec<String> = (0..4)
             .map(|i| format!("Europe/Amsterdam/very/long/option/label/number/{i}"))
             .collect();
@@ -974,7 +1208,10 @@ mod tests {
             dd.commit_value("Asia/Tokyo", &mut doc, &root);
         }
 
-        assert_eq!(Dropdown::read_value(&doc, &root, "tz").as_deref(), Some("Asia/Tokyo"));
+        assert_eq!(
+            Dropdown::read_value(&doc, &root, "tz").as_deref(),
+            Some("Asia/Tokyo")
+        );
         assert_eq!(
             doc.save().len(),
             before,
@@ -988,14 +1225,21 @@ mod tests {
         let (mut doc, root) = doc_with_tz("Asia/Tokyo");
         dd.sync(&mut doc, &root);
         assert!(dd.is_open());
-        assert_eq!(dd.highlight_index(), 3, "highlight tracks the selected option");
+        assert_eq!(
+            dd.highlight_index(),
+            3,
+            "highlight tracks the selected option"
+        );
     }
 
     #[test]
     fn with_enabled_false_is_reported_by_is_enabled() {
         let dd = Dropdown::new(opts(), "tz").with_enabled(false);
         assert!(!Widget::is_enabled(&dd));
-        assert!(Widget::is_enabled(&Dropdown::new(opts(), "tz")), "default is enabled");
+        assert!(
+            Widget::is_enabled(&Dropdown::new(opts(), "tz")),
+            "default is enabled"
+        );
     }
 
     #[test]
@@ -1004,10 +1248,19 @@ mod tests {
         let (mut doc, root) = doc_with_tz("UTC");
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
-        let handled = feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
+        let handled = feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
         assert!(!dd.is_open(), "disabled dropdown must not open");
         assert!(!handled, "disabled dropdown must not swallow input");
-        assert_eq!(dd.selected(), "UTC", "disabled dropdown must not change the value");
+        assert_eq!(
+            dd.selected(),
+            "UTC",
+            "disabled dropdown must not change the value"
+        );
     }
 
     #[test]
@@ -1020,7 +1273,11 @@ mod tests {
         assert_eq!(node.role, Role::ComboBox);
         assert_eq!(node.name.as_deref(), Some("Asia/Tokyo"));
         assert_eq!(node.value.as_deref(), Some("Asia/Tokyo"));
-        assert_eq!(node.state.expanded, Some(false), "closed dropdown is collapsed");
+        assert_eq!(
+            node.state.expanded,
+            Some(false),
+            "closed dropdown is collapsed"
+        );
         assert!(node.state.focusable);
         assert!(!node.state.disabled);
     }
@@ -1031,7 +1288,11 @@ mod tests {
         let dd = Dropdown::new(opts(), "tz").with_placeholder("Pick a zone");
         let node = Widget::accessibility(&dd).unwrap();
         assert_eq!(node.role, Role::ComboBox);
-        assert_eq!(node.name.as_deref(), Some("Pick a zone"), "placeholder is the name when unset");
+        assert_eq!(
+            node.name.as_deref(),
+            Some("Pick a zone"),
+            "placeholder is the name when unset"
+        );
         assert_eq!(node.value, None, "no value until something is selected");
     }
 

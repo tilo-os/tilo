@@ -17,8 +17,8 @@ use ui::{ActionHost, ImageStore};
 
 use crate::account::AccountStore;
 use crate::actions::{
-    move_action, save_draft_action, set_read_action, set_starred_action, MailAction,
-    MAIL_ACTION_TYPE,
+    MAIL_ACTION_TYPE, MailAction, move_action, save_draft_action, set_read_action,
+    set_starred_action,
 };
 use crate::doc::MailDoc;
 use crate::engine::EngineRequest;
@@ -48,8 +48,20 @@ impl CtxAction {
             CtxAction::Reply => "Reply".into(),
             CtxAction::ReplyAll => "Reply all".into(),
             CtxAction::Forward => "Forward".into(),
-            CtxAction::ToggleRead => if read { "Mark unread".into() } else { "Mark read".into() },
-            CtxAction::ToggleStar => if starred { "Remove star".into() } else { "Star".into() },
+            CtxAction::ToggleRead => {
+                if read {
+                    "Mark unread".into()
+                } else {
+                    "Mark read".into()
+                }
+            }
+            CtxAction::ToggleStar => {
+                if starred {
+                    "Remove star".into()
+                } else {
+                    "Star".into()
+                }
+            }
             CtxAction::Archive => "Archive".into(),
             CtxAction::Delete => "Delete".into(),
             CtxAction::MoveToInbox => "Move to Inbox".into(),
@@ -225,16 +237,21 @@ impl MailState {
     /// Rows to show in the list: `(message_id, thread_len)`. Search results are
     /// flat (one row per hit); otherwise one row per thread (its newest msg).
     pub fn list_rows(&self) -> Vec<(MessageId, usize)> {
-        if !self.search.trim().is_empty() {
+        if self.search.trim().is_empty() {
+            self.current_threads()
+                .into_iter()
+                .filter_map(|t| {
+                    t.message_ids
+                        .last()
+                        .copied()
+                        .map(|id| (id, t.message_ids.len()))
+                })
+                .collect()
+        } else {
             self.mailbox
                 .search(&self.search, None)
                 .into_iter()
                 .map(|m| (m.id, 1))
-                .collect()
-        } else {
-            self.current_threads()
-                .into_iter()
-                .filter_map(|t| t.message_ids.last().copied().map(|id| (id, t.message_ids.len())))
                 .collect()
         }
     }
@@ -263,7 +280,7 @@ impl MailState {
     }
 
     pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
-        let was_unread = self.mailbox.get(id).map(|m| !m.read).unwrap_or(false);
+        let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
         self.selected = Some(id);
         self.mailbox.mark_read(id, true);
         self.persist_flags(doc, id);
@@ -281,7 +298,9 @@ impl MailState {
     /// after the local flag mutation so the pushed message carries the new
     /// state (and its current, source folder for the `SELECT`).
     fn sync_flag_to_server(&mut self, id: MessageId) {
-        let Some(msg) = self.mailbox.get(id).cloned() else { return };
+        let Some(msg) = self.mailbox.get(id).cloned() else {
+            return;
+        };
         let account = self.accounts.active_config();
         if account.email.is_empty() {
             return;
@@ -351,7 +370,10 @@ impl MailState {
     }
 
     pub fn context_items_for(&self, id: MessageId) -> Vec<CtxAction> {
-        let in_inbox = self.mailbox.get(id).map(|m| m.folder == Folder::Inbox).unwrap_or(true);
+        let in_inbox = self
+            .mailbox
+            .get(id)
+            .is_none_or(|m| m.folder == Folder::Inbox);
         let mut items = vec![
             CtxAction::Reply,
             CtxAction::ReplyAll,
@@ -416,7 +438,7 @@ impl MailState {
             CtxAction::ReplyAll => self.push_intent(Intent::ReplyAll(id)),
             CtxAction::Forward => self.push_intent(Intent::Forward(id)),
             CtxAction::ToggleRead => {
-                let now = self.mailbox.get(id).map(|m| m.read).unwrap_or(false);
+                let now = self.mailbox.get(id).is_some_and(|m| m.read);
                 self.set_read(doc, id, !now);
             }
             CtxAction::ToggleStar => {
@@ -477,8 +499,14 @@ impl MailState {
             .and_then(|sel| {
                 rows.iter().position(|(id, _)| {
                     *id == sel
-                        || self.mailbox.get(sel).map(|m| m.thread_subject())
-                            == self.mailbox.get(*id).map(|x| x.thread_subject())
+                        || self
+                            .mailbox
+                            .get(sel)
+                            .map(super::model::Message::thread_subject)
+                            == self
+                                .mailbox
+                                .get(*id)
+                                .map(super::model::Message::thread_subject)
                 })
             })
             .unwrap_or(0) as i32;
@@ -486,7 +514,7 @@ impl MailState {
         let id = rows[next].0;
         // Browsing the list with the arrows updates the reader but does not
         // push the narrow detail (that's a tap).
-        let was_unread = self.mailbox.get(id).map(|m| !m.read).unwrap_or(false);
+        let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
         self.selected = Some(id);
         self.mailbox.mark_read(id, true);
         self.persist_flags(doc, id);
@@ -502,8 +530,7 @@ impl MailState {
 pub fn now_minutes() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.as_secs() / 60) as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| (d.as_secs() / 60) as i64)
 }
 
 #[cfg(test)]
@@ -527,7 +554,9 @@ mod tests {
         st.apply_message_action(&mut doc, id, CtxAction::ToggleStar);
         let intents = st.take_intents();
         assert!(
-            intents.iter().any(|i| matches!(i, Intent::Engine(EngineRequest::StoreFlag { .. }))),
+            intents
+                .iter()
+                .any(|i| matches!(i, Intent::Engine(EngineRequest::StoreFlag { .. }))),
             "starring must post a StoreFlag to the engine (UID STORE in the live build)"
         );
     }
@@ -542,7 +571,10 @@ mod tests {
         assert!(
             intents.iter().any(|i| matches!(
                 i,
-                Intent::Engine(EngineRequest::Move { to: Folder::Archive, .. })
+                Intent::Engine(EngineRequest::Move {
+                    to: Folder::Archive,
+                    ..
+                })
             )),
             "archiving must post a Move to Archive to the engine (UID MOVE in live)"
         );
@@ -557,7 +589,10 @@ mod tests {
         let intents = st.take_intents();
         assert!(intents.iter().any(|i| matches!(
             i,
-            Intent::Engine(EngineRequest::Move { to: Folder::Junk, .. })
+            Intent::Engine(EngineRequest::Move {
+                to: Folder::Junk,
+                ..
+            })
         )));
     }
 
@@ -569,7 +604,9 @@ mod tests {
         st.apply_message_action(&mut doc, id, CtxAction::ReplyAll);
         let intents = st.take_intents();
         assert!(
-            intents.iter().any(|i| matches!(i, Intent::ReplyAll(mid) if *mid == id)),
+            intents
+                .iter()
+                .any(|i| matches!(i, Intent::ReplyAll(mid) if *mid == id)),
             "Reply-all must raise ReplyAll, not the plain Reply intent"
         );
         assert!(!intents.iter().any(|i| matches!(i, Intent::Reply(_))));

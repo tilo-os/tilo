@@ -179,24 +179,24 @@ impl Category {
     /// Nerd Font glyph rendered before the label in the sidebar.
     pub fn glyph(self) -> &'static str {
         match self {
-            Category::Network => "\u{f0928}",          // wifi-strength-4 (clean, full signal arcs)
-            Category::Bluetooth => "\u{f00af}",        // bluetooth
-            Category::Sound => "\u{f057e}",            // volume-high
-            Category::Displays => "\u{f0379}",         // monitor
-            Category::MouseKeyboard => "\u{f037d}",    // mouse
+            Category::Network => "\u{f0928}", // wifi-strength-4 (clean, full signal arcs)
+            Category::Bluetooth => "\u{f00af}", // bluetooth
+            Category::Sound => "\u{f057e}",   // volume-high
+            Category::Displays => "\u{f0379}", // monitor
+            Category::MouseKeyboard => "\u{f037d}", // mouse
             Category::KeyboardShortcuts => "\u{f030c}", // keyboard
-            Category::TimeDate => "\u{f0954}",         // clock
-            Category::Users => "\u{f0849}",            // account-group
-            Category::Printers => "\u{f042a}",         // printer
-            Category::Power => "\u{f0079}",            // md-battery
-            Category::Appearance => "\u{f03d8}",       // md-palette
-            Category::Accessibility => "\u{f02e6}",    // md-human (universal access)
-            Category::Notifications => "\u{f009a}",     // md-bell
+            Category::TimeDate => "\u{f0954}", // clock
+            Category::Users => "\u{f0849}",   // account-group
+            Category::Printers => "\u{f042a}", // printer
+            Category::Power => "\u{f0079}",   // md-battery
+            Category::Appearance => "\u{f03d8}", // md-palette
+            Category::Accessibility => "\u{f02e6}", // md-human (universal access)
+            Category::Notifications => "\u{f009a}", // md-bell
             Category::ExternalAccounts => "\u{f015f}", // md-cloud
-            Category::RegionFormats => "\u{f01e7}",    // md-earth
-            Category::Permissions => "\u{f088f}",      // md-shield-account
-            Category::Updates => "\u{f06b0}",          // md-update
-            Category::About => "\u{f02fd}",            // information
+            Category::RegionFormats => "\u{f01e7}", // md-earth
+            Category::Permissions => "\u{f088f}", // md-shield-account
+            Category::Updates => "\u{f06b0}", // md-update
+            Category::About => "\u{f02fd}",   // information
         }
     }
 
@@ -207,24 +207,189 @@ impl Category {
     /// none of those words is the category's own name.
     pub fn keywords(self) -> &'static [&'static str] {
         match self {
-            Category::Network => &["wifi", "wi-fi", "wired", "ethernet", "vpn", "wireguard", "proxy", "internet", "connection"],
-            Category::Bluetooth => &["pair", "pairing", "device", "headphones", "keyboard", "mouse", "wireless"],
-            Category::Sound => &["audio", "volume", "mute", "microphone", "mic", "speaker", "output", "input", "device", "system sounds"],
-            Category::Displays => &["monitor", "screen", "resolution", "scale", "brightness", "night light", "blue light", "arrangement", "external"],
-            Category::MouseKeyboard => &["pointer", "trackpad", "touchpad", "scroll", "natural scrolling", "tap to click", "key repeat", "layout", "cursor"],
-            Category::TimeDate => &["clock", "timezone", "time zone", "ntp", "24-hour", "automatic time", "calendar"],
-            Category::Users => &["accounts", "people", "administrator", "admin", "login", "roles"],
+            Category::Network => &[
+                "wifi",
+                "wi-fi",
+                "wired",
+                "ethernet",
+                "vpn",
+                "wireguard",
+                "proxy",
+                "internet",
+                "connection",
+            ],
+            Category::Bluetooth => &[
+                "pair",
+                "pairing",
+                "device",
+                "headphones",
+                "keyboard",
+                "mouse",
+                "wireless",
+            ],
+            Category::Sound => &[
+                "audio",
+                "volume",
+                "mute",
+                "microphone",
+                "mic",
+                "speaker",
+                "output",
+                "input",
+                "device",
+                "system sounds",
+            ],
+            Category::Displays => &[
+                "monitor",
+                "screen",
+                "resolution",
+                "scale",
+                "brightness",
+                "night light",
+                "blue light",
+                "arrangement",
+                "external",
+            ],
+            Category::MouseKeyboard => &[
+                "pointer",
+                "trackpad",
+                "touchpad",
+                "scroll",
+                "natural scrolling",
+                "tap to click",
+                "key repeat",
+                "layout",
+                "cursor",
+            ],
+            Category::TimeDate => &[
+                "clock",
+                "timezone",
+                "time zone",
+                "ntp",
+                "24-hour",
+                "automatic time",
+                "calendar",
+            ],
+            Category::Users => &[
+                "accounts",
+                "people",
+                "administrator",
+                "admin",
+                "login",
+                "roles",
+            ],
             Category::Printers => &["cups", "print", "queue", "job", "paper", "scanner"],
-            Category::Appearance => &["theme", "dark mode", "light mode", "contrast", "high contrast", "reduce motion", "text size", "font", "wallpaper", "color"],
-            Category::Accessibility => &["a11y", "accessibility", "universal access", "screen reader", "orca", "on-screen keyboard", "osk", "cursor size", "large cursor", "pointer size", "sticky keys", "slow keys", "visual alerts", "high contrast", "reduce motion", "text size", "zoom"],
-            Category::Notifications => &["notification", "notify", "banner", "alert", "do not disturb", "dnd", "focus", "quiet", "sounds", "lock screen", "previews", "badge"],
-            Category::ExternalAccounts => &["email", "mail", "imap", "smtp", "calendar", "caldav", "webdav", "nextcloud", "sync", "cloud"],
-            Category::RegionFormats => &["locale", "language", "currency", "date format", "time format", "units", "measurement", "metric", "imperial"],
-            Category::Permissions => &["roles", "access", "sandbox", "grants", "file access", "collaboration", "security"],
-            Category::Updates => &["software", "upgrade", "channel", "stable", "nightly", "version", "bootc", "release"],
-            Category::Power => &["battery", "charge", "energy", "power profile", "performance", "power saver", "suspend", "sleep", "screen blank"],
-            Category::KeyboardShortcuts => &["shortcuts", "hotkeys", "keybindings", "keys", "combinations", "accelerators", "workspace"],
-            Category::About => &["device", "identity", "os", "kernel", "hostname", "system", "version", "fingerprint"],
+            Category::Appearance => &[
+                "theme",
+                "dark mode",
+                "light mode",
+                "contrast",
+                "high contrast",
+                "reduce motion",
+                "text size",
+                "font",
+                "wallpaper",
+                "color",
+            ],
+            Category::Accessibility => &[
+                "a11y",
+                "accessibility",
+                "universal access",
+                "screen reader",
+                "orca",
+                "on-screen keyboard",
+                "osk",
+                "cursor size",
+                "large cursor",
+                "pointer size",
+                "sticky keys",
+                "slow keys",
+                "visual alerts",
+                "high contrast",
+                "reduce motion",
+                "text size",
+                "zoom",
+            ],
+            Category::Notifications => &[
+                "notification",
+                "notify",
+                "banner",
+                "alert",
+                "do not disturb",
+                "dnd",
+                "focus",
+                "quiet",
+                "sounds",
+                "lock screen",
+                "previews",
+                "badge",
+            ],
+            Category::ExternalAccounts => &[
+                "email",
+                "mail",
+                "imap",
+                "smtp",
+                "calendar",
+                "caldav",
+                "webdav",
+                "nextcloud",
+                "sync",
+                "cloud",
+            ],
+            Category::RegionFormats => &[
+                "locale",
+                "language",
+                "currency",
+                "date format",
+                "time format",
+                "units",
+                "measurement",
+                "metric",
+                "imperial",
+            ],
+            Category::Permissions => &[
+                "roles",
+                "access",
+                "sandbox",
+                "grants",
+                "file access",
+                "collaboration",
+                "security",
+            ],
+            Category::Updates => &[
+                "software", "upgrade", "channel", "stable", "nightly", "version", "bootc",
+                "release",
+            ],
+            Category::Power => &[
+                "battery",
+                "charge",
+                "energy",
+                "power profile",
+                "performance",
+                "power saver",
+                "suspend",
+                "sleep",
+                "screen blank",
+            ],
+            Category::KeyboardShortcuts => &[
+                "shortcuts",
+                "hotkeys",
+                "keybindings",
+                "keys",
+                "combinations",
+                "accelerators",
+                "workspace",
+            ],
+            Category::About => &[
+                "device",
+                "identity",
+                "os",
+                "kernel",
+                "hostname",
+                "system",
+                "version",
+                "fingerprint",
+            ],
         }
     }
 
@@ -242,7 +407,9 @@ impl Category {
         {
             return true;
         }
-        self.keywords().iter().any(|k| k.contains(&q) || q.contains(*k))
+        self.keywords()
+            .iter()
+            .any(|k| k.contains(&q) || q.contains(*k))
     }
 
     /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
@@ -278,7 +445,7 @@ mod tests {
     fn all_categories_are_unique() {
         let mut seen = std::collections::HashSet::new();
         for c in Category::ALL {
-            assert!(seen.insert(*c), "duplicate category {:?}", c);
+            assert!(seen.insert(*c), "duplicate category {c:?}");
         }
         assert_eq!(seen.len(), Category::ALL.len());
     }
@@ -338,12 +505,24 @@ mod tests {
         // Subtitle substring ("Pair and manage Bluetooth devices").
         assert!(Category::Bluetooth.matches("pair"));
         // Keyword-only terms land on the owning pane.
-        assert!(Category::Displays.matches("night light"), "night light → Displays");
+        assert!(
+            Category::Displays.matches("night light"),
+            "night light → Displays"
+        );
         assert!(Category::Network.matches("vpn"), "vpn → Network");
         assert!(Category::Power.matches("battery"), "battery → Power");
-        assert!(Category::Appearance.matches("dark mode"), "dark mode → Appearance");
-        assert!(Category::ExternalAccounts.matches("imap"), "imap → External Accounts");
-        assert!(Category::KeyboardShortcuts.matches("hotkeys"), "hotkeys → Keyboard Shortcuts");
+        assert!(
+            Category::Appearance.matches("dark mode"),
+            "dark mode → Appearance"
+        );
+        assert!(
+            Category::ExternalAccounts.matches("imap"),
+            "imap → External Accounts"
+        );
+        assert!(
+            Category::KeyboardShortcuts.matches("hotkeys"),
+            "hotkeys → Keyboard Shortcuts"
+        );
     }
 
     #[test]

@@ -8,29 +8,66 @@ pub enum PathSegment {
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PresenceKey {
-    Widget { path: Vec<PathSegment> },
-    Tab { id: String },
-    Workspace { id: String },
-    App { app: crate::permissions::AppKind, sub: String },
+    Widget {
+        path: Vec<PathSegment>,
+    },
+    Tab {
+        id: String,
+    },
+    Workspace {
+        id: String,
+    },
+    App {
+        app: crate::permissions::AppKind,
+        sub: String,
+    },
     /// A participant's broadcast [`ViewSubset`](crate::view::ViewSubset),
-    /// carried as its postcard encoding.
-    ///
-    /// The View — where a participant is looking (scroll / open resource /
-    /// viewport / view mode) — has no `PresencePayload` variant of its own,
-    /// so it rides the existing presence frame inside the routing key
-    /// instead: the sender pairs this key with a benign payload and the
-    /// receiver recognises the variant and stores the decoded subset per
-    /// peer (see [`PresenceCtx::set_peer_view`](crate::PresenceCtx::set_peer_view))
-    /// rather than treating it as a scope. Bytes rather than a live struct
-    /// because the key must stay `Hash + Eq`, which `f64` viewport fields
-    /// are not.
-    View { data: Vec<u8> },
+    /// carried as its postcard encoding. `PresencePayload` has no View
+    /// variant of its own, so it rides the existing presence frame inside
+    /// the routing key instead. Bytes rather than a live struct because the
+    /// key must stay `Hash + Eq`, which `f64` viewport fields are not.
+    View {
+        data: Vec<u8>,
+    },
+    /// A pointer position, together with the coordinate space it was measured
+    /// in. Every other variant is a scope; the scope of a pointer is the space
+    /// its numbers mean something in. See [`PointerSpace`].
+    Pointer {
+        space: PointerSpace,
+    },
+}
+
+/// The coordinate space a pointer position is measured in.
+///
+/// A pointer is a pair of numbers that mean nothing on their own: the same
+/// `(230, 34)` is a place on the desktop, in a file manager, and in a word
+/// processor. The space travels with the position because it's what decides
+/// who may place it — and who may not: a presence frame reaches every app in
+/// a room, so without this each read the position as its own and one person
+/// was drawn once per open window. With the space carried, at most one
+/// receiver can answer "that is my space".
+///
+/// **Variant order is a wire contract.** Cap'n Proto carries the postcard key
+/// bytes opaquely and peer replication forwards the same bytes, so reordering
+/// silently misreads every pointer scope rather than failing to build.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum PointerSpace {
+    /// Compositor scene coordinates on `room`'s desktop — the only space
+    /// that spans more than one window, so the only one a pointer can be
+    /// followed across the strip and window gaps in, and therefore the
+    /// only space a *person's* pointer is ever in.
+    Desktop { room: String },
+    /// Content coordinates inside the surface `surface` names — the app id
+    /// that surface announces ([`crate::local_surface_id`]). Named by the
+    /// app rather than the window instance: two windows of one app on one
+    /// document are comparable content, but a file manager and a word
+    /// processor are not, even when the broker hands both the same frame.
+    Surface { surface: String },
 }
 
 impl PresenceKey {
     /// Wrap a [`ViewSubset`](crate::view::ViewSubset) as a presence key for
-    /// broadcast. Encode failure (unreachable for these owned, self-
-    /// describing fields) yields empty bytes, which [`Self::as_view`]
+    /// broadcast. Encode failure yields empty bytes, which [`Self::as_view`]
     /// decodes back to `None` — a dropped frame, never a panic.
     pub fn view(subset: &crate::view::ViewSubset) -> Self {
         PresenceKey::View {
@@ -48,44 +85,84 @@ impl PresenceKey {
         }
     }
 
-    /// The scope this process should publish its presence under: the room
-    /// it collaborates in, or `None` when it has no room.
+    /// The scope this process should publish its presence under — the room
+    /// it collaborates in, or `None` when it has no room. Read from
+    /// [`local_cluster_id`](crate::collaboration::local_cluster_id), the
+    /// same value the routing address is built from, so the two cannot drift apart.
     ///
-    /// "Who else is here" is a fact about the room — the broker widens
-    /// every presence frame to cluster scope for exactly that reason, so
-    /// that someone editing a document and someone browsing files in one
-    /// workspace see each other. The scope therefore has to *be* the room,
-    /// and it is read from
-    /// [`local_cluster_id`](crate::collaboration::local_cluster_id) — the
-    /// same value the routing address is built from, so the two cannot
-    /// drift apart.
-    ///
-    /// `None` when the room is the nil uuid, which is what "no workspace
-    /// in the environment" looks like. That value addresses nobody
-    /// (`CrdtRoute::is_addressable` rejects it, on the grounds that an
-    /// unminted room would otherwise make every workspace on every machine
-    /// one shared room), so publishing under it would be announcing into a
-    /// room no one can be in. Fail closed and stay quiet.
+    /// `None` when the room is the nil uuid: that value addresses nobody
+    /// (`CrdtRoute::is_addressable` rejects it — an unminted room would
+    /// otherwise make every unconfigured machine share one room). Fail closed.
     pub fn for_local_workspace() -> Option<Self> {
         let cluster = crate::collaboration::local_cluster_id();
         if cluster.is_nil() {
             return None;
         }
-        Some(PresenceKey::Workspace { id: cluster.to_string() })
+        Some(PresenceKey::Workspace {
+            id: cluster.to_string(),
+        })
     }
 
-    /// The canonical `PresenceKey` used to attribute a pointer
-    /// (cursor) publish that carries no explicit scope. Used by the
-    /// capnp `publishCursor(x, y)` path which does not accept a key —
-    /// the broker synthesises this well-known routing tag so peers
-    /// can filter on it.
-    ///
-    /// Chosen as `Widget { path: [] }` because:
-    /// - The empty widget path is unambiguously the "app root"
-    ///   scope; no live widget can occupy it (every real path has at
-    ///   least one segment).
-    /// - The postcard encoding is stable (variant 0 + length-0 vec)
-    ///   and does not depend on any string tag that could drift.
+    /// The key a pointer measured on `room`'s desktop is published under.
+    pub fn desktop_pointer(room: impl Into<String>) -> Self {
+        PresenceKey::Pointer {
+            space: PointerSpace::Desktop { room: room.into() },
+        }
+    }
+
+    /// The key a pointer measured inside `surface`'s content is published
+    /// under.
+    pub fn surface_pointer(surface: impl Into<String>) -> Self {
+        PresenceKey::Pointer {
+            space: PointerSpace::Surface {
+                surface: surface.into(),
+            },
+        }
+    }
+
+    /// [`Self::surface_pointer`] for this process's own surface. The
+    /// coordinates a winit `CursorMoved` carries are surface-local, so this
+    /// is the only honest thing an app can say about them.
+    pub fn local_surface_pointer() -> Self {
+        Self::surface_pointer(crate::local_surface_id())
+    }
+
+    /// The coordinate space a pointer arriving under this key is measured
+    /// in, or `None` for a key that is not a pointer scope at all. Two
+    /// older spellings still mean "desktop": [`PresenceKey::Workspace`],
+    /// the session's own desktop pointer republished per room, and
+    /// [`Self::pointer_default`], the tag the keyless capnp `publishCursor`
+    /// path was re-keyed to.
+    pub fn pointer_space(&self) -> Option<PointerSpace> {
+        match self {
+            PresenceKey::Pointer { space } => Some(space.clone()),
+            PresenceKey::Workspace { id } => Some(PointerSpace::Desktop { room: id.clone() }),
+            PresenceKey::Widget { path } if path.is_empty() => Some(PointerSpace::Desktop {
+                room: String::new(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether a pointer arriving under this key is a position on the
+    /// *desktop* — one the compositor overlay places, above every window —
+    /// rather than inside one window's content. Reading the legacy keyless
+    /// tag as an ordinary widget scope is what drew one person once per
+    /// window: the broker hands every inbound frame to every app in the
+    /// room, so each window claimed the pointer as its own. Deliberately
+    /// about the *scope*, not the transport: a pointer with no key at all
+    /// never comes through here and stays the window's to paint.
+    pub fn scopes_a_desktop_pointer(&self) -> bool {
+        matches!(self.pointer_space(), Some(PointerSpace::Desktop { .. }))
+    }
+
+    /// The canonical `PresenceKey` used to attribute a pointer publish that
+    /// carries no explicit scope — the broker synthesises this well-known
+    /// routing tag for the capnp `publishCursor(x, y)` path, which accepts
+    /// no key of its own. Chosen as `Widget { path: [] }`: the empty widget
+    /// path is unambiguously the "app root" scope (no live widget can
+    /// occupy it), and its postcard encoding is stable and doesn't depend
+    /// on a string tag that could drift.
     pub fn pointer_default() -> Self {
         PresenceKey::Widget { path: Vec::new() }
     }
@@ -119,25 +196,28 @@ mod view_key_tests {
         let subset = ViewSubset {
             scroll: vec![12.0, 34.0],
             open_resource: Some("file:/notes.md".into()),
-            viewport: ViewRect { x: 0.0, y: 0.0, width: 800.0, height: 600.0 },
+            viewport: ViewRect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
             view_mode: Some("list".into()),
         };
         let key = PresenceKey::view(&subset);
         assert!(matches!(key, PresenceKey::View { .. }));
         assert_eq!(
-            key.as_view().expect("a View key decodes back to its subset"),
+            key.as_view()
+                .expect("a View key decodes back to its subset"),
             subset
         );
     }
 
     /// The presence scope is the room, and it is the *same* room the
-    /// collaboration address uses. Deriving the two separately is how a
-    /// window ends up announcing itself into one room while addressing its
-    /// documents to another, with nothing to report the disagreement.
-    ///
-    /// It is also what makes a collaborator's cursor follow them from the
-    /// editor into the file manager: neither app names itself, so both
-    /// publish under one scope.
+    /// collaboration address uses — deriving the two separately is how a
+    /// window ends up announcing into one room while addressing documents to
+    /// another. It's also what makes a collaborator's cursor follow them from
+    /// the editor into the file manager: neither app names itself.
     #[test]
     #[serial_test::serial]
     fn the_presence_scope_is_the_room_the_documents_go_to() {
@@ -149,7 +229,9 @@ mod view_key_tests {
         }
         assert_eq!(
             PresenceKey::for_local_workspace(),
-            Some(PresenceKey::Workspace { id: room.to_string() })
+            Some(PresenceKey::Workspace {
+                id: room.to_string()
+            })
         );
         assert_eq!(
             crate::collaboration::local_cluster_id().to_string(),
@@ -159,10 +241,7 @@ mod view_key_tests {
         unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
     }
 
-    /// No workspace in the environment means no room, and the nil uuid
-    /// addresses nobody — the broker rejects it so that an unminted room
-    /// does not become one shared room for every workspace on the machine.
-    /// Publishing under it would announce into a room no one can be in.
+    /// The nil uuid addresses nobody, so no workspace means no scope.
     #[test]
     #[serial_test::serial]
     fn no_workspace_means_no_scope() {
@@ -190,12 +269,99 @@ mod view_key_tests {
         unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
     }
 
+    /// The ordinals in the postcard key wire contract are written
+    /// against, pinned as bytes.
+    ///
+    /// Postcard tags variants by ordinal, so inserting `Pointer` anywhere but
+    /// last, or swapping `Desktop` and `Surface`, decodes on the bridge side as
+    /// a different variant or not at all — and a pointer publish that silently
+    /// stops arriving looks exactly like a peer who is not moving. The two
+    /// enums are separate declarations in separate crates and neither mentions
+    /// the other, so this is the only guard.
+    #[test]
+    fn the_pointer_key_ordinals_are_the_ones_the_bridge_mirrors() {
+        assert_eq!(
+            postcard::to_stdvec(&PresenceKey::desktop_pointer("r")).unwrap(),
+            vec![5u8, 0, 1, b'r'],
+            "PresenceKey::Pointer must stay variant 5 and PointerSpace::Desktop variant 0",
+        );
+        assert_eq!(
+            postcard::to_stdvec(&PresenceKey::surface_pointer("s")).unwrap(),
+            vec![5u8, 1, 1, b's'],
+            "PointerSpace::Surface must stay variant 1",
+        );
+    }
+
+    /// The space is what a pointer key is *for*, and it has to survive the
+    /// encoding the wire uses — the whole failure was a space that existed at
+    /// one end and not the other.
+    #[test]
+    fn a_pointer_key_carries_its_space_across_the_wire_encoding() {
+        for key in [
+            PresenceKey::desktop_pointer("room-7"),
+            PresenceKey::surface_pointer("dev.qos.word-processor"),
+        ] {
+            let bytes = postcard::to_stdvec(&key).expect("a pointer key encodes");
+            let back: PresenceKey =
+                postcard::from_bytes(&bytes).expect("and decodes to the same key");
+            assert_eq!(back, key, "the space must survive the round trip");
+            assert!(
+                back.pointer_space().is_some(),
+                "a pointer key with no readable space is the bug this variant exists to stop",
+            );
+        }
+    }
+
+    /// Two surfaces are two spaces. A file manager cannot answer for a
+    /// position measured in a word processor, and this is where that is
+    /// decided — before anything has been drawn, from the key alone.
+    #[test]
+    fn two_surfaces_are_two_spaces() {
+        let wp = PresenceKey::surface_pointer("dev.qos.word-processor");
+        let fm = PresenceKey::surface_pointer("dev.qos.files");
+        assert_ne!(wp.pointer_space(), fm.pointer_space());
+        assert!(!wp.scopes_a_desktop_pointer());
+        assert!(!fm.scopes_a_desktop_pointer());
+    }
+
+    /// The two older spellings of the desktop still mean it: a session's
+    /// room-scoped republish, and the tag the keyless capnp cursor path was
+    /// re-keyed to.
+    #[test]
+    fn every_spelling_of_the_desktop_reads_as_the_desktop() {
+        assert!(PresenceKey::desktop_pointer("r").scopes_a_desktop_pointer());
+        assert!(PresenceKey::Workspace { id: "r".into() }.scopes_a_desktop_pointer());
+        assert!(PresenceKey::pointer_default().scopes_a_desktop_pointer());
+        // A position inside a document is not a position on a screen.
+        assert!(
+            !PresenceKey::Widget {
+                path: vec![PathSegment::Index(0)]
+            }
+            .scopes_a_desktop_pointer()
+        );
+        assert_eq!(
+            PresenceKey::Tab { id: "t".into() }.pointer_space(),
+            None,
+            "a tab is an object, not a coordinate space",
+        );
+    }
+
     #[test]
     fn as_view_is_none_for_other_key_variants() {
         assert!(PresenceKey::Tab { id: "t".into() }.as_view().is_none());
-        assert!(PresenceKey::Workspace { id: "w".into() }.as_view().is_none());
+        assert!(
+            PresenceKey::Workspace { id: "w".into() }
+                .as_view()
+                .is_none()
+        );
         assert!(PresenceKey::pointer_default().as_view().is_none());
         // Garbage bytes in a View key decode to None rather than panicking.
-        assert!(PresenceKey::View { data: vec![0xff, 0x00, 0x13] }.as_view().is_none());
+        assert!(
+            PresenceKey::View {
+                data: vec![0xff, 0x00, 0x13]
+            }
+            .as_view()
+            .is_none()
+        );
     }
 }

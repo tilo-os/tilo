@@ -8,6 +8,10 @@ name: Snapshot frozen RPM repo
 on:
   workflow_dispatch:
 
+concurrency:
+  group: snapshot-rpms-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   snapshot:
     runs-on: runner
@@ -94,3 +98,34 @@ jobs:
             echo "RPMS_REF=$ref"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit the frozen snapshot pin to the dispatched branch
+        env:
+          RPMS_DIGEST: ${{ steps.rpms.outputs.digest }}
+        run: |
+          ref="code.podesta.ai/qos/rpms@${RPMS_DIGEST}"
+          printf '%s\n' \
+            '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
+            '# Updated by the snapshot-rpms workflow when the package set changes.' \
+            "RPMS_REF=$ref" > os/rpms-snapshot.env
+          if git diff --quiet -- os/rpms-snapshot.env; then
+            echo "Snapshot pin is already current"
+            exit 0
+          fi
+          git config user.name "qOS CI"
+          git config user.email "ci@qos.invalid"
+          git add os/rpms-snapshot.env
+          git commit -m "os: refresh frozen RPM snapshot"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Dispatch the full image build and boot test
+        env:
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/build-image.yml/dispatches" \
+            --data "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"with_browser\":\"0\"}}"

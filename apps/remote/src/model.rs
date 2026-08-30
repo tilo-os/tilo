@@ -277,7 +277,10 @@ impl ConnectionDraft {
         let port = if self.kind == ConnectionKind::Qos {
             0
         } else {
-            self.port.trim().parse::<u16>().unwrap_or(self.kind.default_port())
+            self.port
+                .trim()
+                .parse::<u16>()
+                .unwrap_or(self.kind.default_port())
         };
         Connection {
             id,
@@ -442,7 +445,7 @@ mod tests {
         let mut b = sample("zeta", ConnectionKind::Vnc);
         b.favorite = true;
         w.upsert(a.clone());
-        w.upsert(b.clone());
+        w.upsert(b);
         a.favorite = false;
         let order: Vec<_> = w.filtered("").iter().map(|c| c.name.clone()).collect();
         assert_eq!(order, vec!["zeta", "alpha"]);
@@ -475,7 +478,7 @@ mod tests {
         d.kind = ConnectionKind::Qos;
         d.name = "node".into();
         d.host = "studio".into();
-        d.port = "".into();
+        d.port = String::new();
         assert!(d.problems().is_empty());
         let built = d.build(Uuid::new_v4());
         assert_eq!(built.port, 0);

@@ -30,7 +30,10 @@ pub enum Block {
     Caption(String),
     Quote(String),
     /// A reserved figure box of `height` points with a caption beneath.
-    Figure { height: f64, label: String },
+    Figure {
+        height: f64,
+        label: String,
+    },
     Divider,
     Spacer(f64),
 }
@@ -98,10 +101,16 @@ impl Document {
     pub fn from_text_pages(title: &str, author: &str, page_texts: &[String]) -> Self {
         let mut pages = Vec::with_capacity(page_texts.len());
         for (i, raw) in page_texts.iter().enumerate() {
-            pages.push(Page { number: i + 1, blocks: blocks_from_text(raw) });
+            pages.push(Page {
+                number: i + 1,
+                blocks: blocks_from_text(raw),
+            });
         }
         if pages.is_empty() {
-            pages.push(Page { number: 1, blocks: vec![Block::Body(String::new())] });
+            pages.push(Page {
+                number: 1,
+                blocks: vec![Block::Body(String::new())],
+            });
         }
         Document {
             title: title.to_string(),
@@ -119,7 +128,12 @@ impl Document {
     /// text model.
     pub fn blank_pages(title: &str, author: &str, count: usize, page_w: f64, page_h: f64) -> Self {
         let count = count.max(1);
-        let pages = (1..=count).map(|n| Page { number: n, blocks: Vec::new() }).collect();
+        let pages = (1..=count)
+            .map(|n| Page {
+                number: n,
+                blocks: Vec::new(),
+            })
+            .collect();
         Document {
             title: title.to_string(),
             author: author.to_string(),
@@ -196,7 +210,13 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 5] = [Tool::Select, Tool::Highlight, Tool::Ink, Tool::Note, Tool::Sign];
+    pub const ALL: [Tool; 5] = [
+        Tool::Select,
+        Tool::Highlight,
+        Tool::Ink,
+        Tool::Note,
+        Tool::Sign,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -234,8 +254,13 @@ pub enum Swatch {
 }
 
 impl Swatch {
-    pub const ALL: [Swatch; 5] =
-        [Swatch::Yellow, Swatch::Green, Swatch::Pink, Swatch::Blue, Swatch::Purple];
+    pub const ALL: [Swatch; 5] = [
+        Swatch::Yellow,
+        Swatch::Green,
+        Swatch::Pink,
+        Swatch::Blue,
+        Swatch::Purple,
+    ];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -294,7 +319,12 @@ impl PtRect {
     pub fn from_corners(ax: f64, ay: f64, bx: f64, by: f64) -> Self {
         let x = ax.min(bx);
         let y = ay.min(by);
-        Self { x, y, w: (ax - bx).abs(), h: (ay - by).abs() }
+        Self {
+            x,
+            y,
+            w: (ax - bx).abs(),
+            h: (ay - by).abs(),
+        }
     }
 
     pub fn contains(&self, x: f64, y: f64) -> bool {
@@ -461,8 +491,7 @@ pub struct SearchOptions {
 fn is_word_byte(bytes: &[u8], idx: usize) -> bool {
     bytes
         .get(idx)
-        .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
-        .unwrap_or(false)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
 }
 
 /// Substring search across all renderable text, honouring the find-bar
@@ -474,22 +503,39 @@ pub fn search(doc: &Document, query: &str, opts: SearchOptions) -> Vec<Match> {
     if trimmed.is_empty() {
         return out;
     }
-    let needle = if opts.case_sensitive { trimmed.to_string() } else { trimmed.to_lowercase() };
+    let needle = if opts.case_sensitive {
+        trimmed.to_string()
+    } else {
+        trimmed.to_lowercase()
+    };
     for page in &doc.pages {
         for (bi, block) in page.blocks.iter().enumerate() {
-            let Some(text) = block.search_text() else { continue };
-            let hay = if opts.case_sensitive { text.to_string() } else { text.to_lowercase() };
+            let Some(text) = block.search_text() else {
+                continue;
+            };
+            let hay = if opts.case_sensitive {
+                text.to_string()
+            } else {
+                text.to_lowercase()
+            };
             let hay_bytes = hay.as_bytes();
             let mut from = 0usize;
             while from <= hay.len() {
-                let Some(rel) = hay[from..].find(&needle) else { break };
+                let Some(rel) = hay[from..].find(&needle) else {
+                    break;
+                };
                 let start = from + rel;
                 let end = start + needle.len();
                 let boundary_ok = !opts.whole_word
                     || (!is_word_byte(hay_bytes, start.wrapping_sub(1))
                         && !is_word_byte(hay_bytes, end));
                 if boundary_ok {
-                    out.push(Match { page: page.number, block: bi, start, len: needle.len() });
+                    out.push(Match {
+                        page: page.number,
+                        block: bi,
+                        start,
+                        len: needle.len(),
+                    });
                 }
                 from = start + needle.len().max(1);
             }
@@ -562,7 +608,7 @@ cluster with a remote peer never widens the host's exposure beyond that cluster.
                 Block::H2("1.2  Remote input injection".to_string()),
                 b("Collaboration streams Wayland buffers to invited peers and injects \
 their pointer and keyboard events back into the originating cluster. Coordination \
-runs over a libp2p gossip mesh discovered through multicast DNS on the local \
+runs over an Iroh gossip mesh reached through authenticated invite addresses \
 segment and through relays elsewhere."),
             ],
         },
@@ -670,20 +716,76 @@ selected automatically if the new one fails its health check."),
     ];
 
     let outline = vec![
-        OutlineItem { title: "Abstract".into(), page: 1, level: 0 },
-        OutlineItem { title: "1  The Compositor".into(), page: 2, level: 0 },
-        OutlineItem { title: "1.1  Per-cluster sandboxing".into(), page: 2, level: 1 },
-        OutlineItem { title: "1.2  Remote input injection".into(), page: 2, level: 1 },
-        OutlineItem { title: "2  The Filesystem".into(), page: 3, level: 0 },
-        OutlineItem { title: "2.1  Projection vs. hydration".into(), page: 3, level: 1 },
-        OutlineItem { title: "2.2  Conflict handling".into(), page: 3, level: 1 },
-        OutlineItem { title: "3  The UI Toolkit".into(), page: 4, level: 0 },
-        OutlineItem { title: "3.1  State in the document".into(), page: 4, level: 1 },
-        OutlineItem { title: "3.2  Theming".into(), page: 4, level: 1 },
-        OutlineItem { title: "4  Security Model".into(), page: 5, level: 0 },
-        OutlineItem { title: "4.1  Capability grants".into(), page: 5, level: 1 },
-        OutlineItem { title: "4.2  Signing".into(), page: 5, level: 1 },
-        OutlineItem { title: "Appendix A  Image Layout".into(), page: 6, level: 0 },
+        OutlineItem {
+            title: "Abstract".into(),
+            page: 1,
+            level: 0,
+        },
+        OutlineItem {
+            title: "1  The Compositor".into(),
+            page: 2,
+            level: 0,
+        },
+        OutlineItem {
+            title: "1.1  Per-cluster sandboxing".into(),
+            page: 2,
+            level: 1,
+        },
+        OutlineItem {
+            title: "1.2  Remote input injection".into(),
+            page: 2,
+            level: 1,
+        },
+        OutlineItem {
+            title: "2  The Filesystem".into(),
+            page: 3,
+            level: 0,
+        },
+        OutlineItem {
+            title: "2.1  Projection vs. hydration".into(),
+            page: 3,
+            level: 1,
+        },
+        OutlineItem {
+            title: "2.2  Conflict handling".into(),
+            page: 3,
+            level: 1,
+        },
+        OutlineItem {
+            title: "3  The UI Toolkit".into(),
+            page: 4,
+            level: 0,
+        },
+        OutlineItem {
+            title: "3.1  State in the document".into(),
+            page: 4,
+            level: 1,
+        },
+        OutlineItem {
+            title: "3.2  Theming".into(),
+            page: 4,
+            level: 1,
+        },
+        OutlineItem {
+            title: "4  Security Model".into(),
+            page: 5,
+            level: 0,
+        },
+        OutlineItem {
+            title: "4.1  Capability grants".into(),
+            page: 5,
+            level: 1,
+        },
+        OutlineItem {
+            title: "4.2  Signing".into(),
+            page: 5,
+            level: 1,
+        },
+        OutlineItem {
+            title: "Appendix A  Image Layout".into(),
+            page: 6,
+            level: 0,
+        },
     ];
 
     Document {
@@ -710,7 +812,11 @@ mod tests {
         assert!(!d.outline.is_empty());
         // Every outline entry points at a real page.
         for item in &d.outline {
-            assert!(d.page(item.page).is_some(), "outline -> missing page {}", item.page);
+            assert!(
+                d.page(item.page).is_some(),
+                "outline -> missing page {}",
+                item.page
+            );
         }
     }
 
@@ -743,10 +849,13 @@ mod tests {
             title: "t".into(),
             author: "a".into(),
             subject: "s".into(),
-            pages: vec![Page { number: 1, blocks: vec![Block::Body("aaaa".into())] }],
+            pages: vec![Page {
+                number: 1,
+                blocks: vec![Block::Body("aaaa".into())],
+            }],
             outline: vec![],
-        page_w: PAGE_W,
-        page_h: PAGE_H,
+            page_w: PAGE_W,
+            page_h: PAGE_H,
         };
         let hits = search(&d, "aa", SearchOptions::default());
         // "aaaa" -> matches at 0 and 2 (non-overlapping stepping).
@@ -766,13 +875,35 @@ mod tests {
                 blocks: vec![Block::Body("The qOS shell. the OS.".into())],
             }],
             outline: vec![],
-        page_w: PAGE_W,
-        page_h: PAGE_H,
+            page_w: PAGE_W,
+            page_h: PAGE_H,
         };
-        let insensitive = search(&d, "the", SearchOptions { case_sensitive: false, ..Default::default() });
-        assert_eq!(insensitive.len(), 2, "case-insensitive matches both 'The' and 'the'");
-        let sensitive = search(&d, "the", SearchOptions { case_sensitive: true, ..Default::default() });
-        assert_eq!(sensitive.len(), 1, "case-sensitive matches only lowercase 'the'");
+        let insensitive = search(
+            &d,
+            "the",
+            SearchOptions {
+                case_sensitive: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            insensitive.len(),
+            2,
+            "case-insensitive matches both 'The' and 'the'"
+        );
+        let sensitive = search(
+            &d,
+            "the",
+            SearchOptions {
+                case_sensitive: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            sensitive.len(),
+            1,
+            "case-sensitive matches only lowercase 'the'"
+        );
         assert_eq!(sensitive[0].start, 15);
     }
 
@@ -787,13 +918,24 @@ mod tests {
                 blocks: vec![Block::Body("ink is thinking and ink.".into())],
             }],
             outline: vec![],
-        page_w: PAGE_W,
-        page_h: PAGE_H,
+            page_w: PAGE_W,
+            page_h: PAGE_H,
         };
         let any = search(&d, "ink", SearchOptions::default());
         assert_eq!(any.len(), 3, "substring search finds 'ink' three times");
-        let words = search(&d, "ink", SearchOptions { whole_word: true, ..Default::default() });
-        assert_eq!(words.len(), 2, "whole-word skips the 'ink' inside 'thinking'");
+        let words = search(
+            &d,
+            "ink",
+            SearchOptions {
+                whole_word: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            words.len(),
+            2,
+            "whole-word skips the 'ink' inside 'thinking'"
+        );
     }
 
     #[test]

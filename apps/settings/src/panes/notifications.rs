@@ -18,19 +18,19 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ChangeHash, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc, Value, transaction::Transactable};
 use qos_actions::EncodedAction;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::actions::{set_bool_action, SettingsAction, SETTINGS_ACTION_TYPE};
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action};
 use crate::prefs::{NotificationPrefs, SystemPrefs};
-use crate::widgets::{card, caption, rows, setting_row_described, status_pill, El};
+use crate::widgets::{El, caption, card, rows, setting_row_described, status_pill};
 
 pub const DND_KEY: &str = "notifications.do_not_disturb";
 pub const BANNERS_KEY: &str = "notifications.show_banners";
@@ -285,7 +285,8 @@ impl Widget for NotificationsPane {
         let (v, c) = self.reconcile_bool(state, root, SOUNDS_KEY, self.prefs.play_sounds);
         self.prefs.play_sounds = v;
         changed |= c;
-        let (v, c) = self.reconcile_bool(state, root, LOCK_SCREEN_KEY, self.prefs.show_on_lock_screen);
+        let (v, c) =
+            self.reconcile_bool(state, root, LOCK_SCREEN_KEY, self.prefs.show_on_lock_screen);
         self.prefs.show_on_lock_screen = v;
         changed |= c;
 
@@ -317,24 +318,23 @@ impl Widget for NotificationsPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -363,15 +363,21 @@ impl Widget for NotificationsPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -391,7 +397,7 @@ impl Widget for NotificationsPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NotificationsPane"
     }
 
@@ -423,9 +429,18 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert_eq!(NotificationsPane::read_bool(&doc, &root, DND_KEY), Some(true));
-        assert_eq!(NotificationsPane::read_bool(&doc, &root, BANNERS_KEY), Some(false));
-        assert_eq!(NotificationsPane::read_bool(&doc, &root, LOCK_SCREEN_KEY), Some(true));
+        assert_eq!(
+            NotificationsPane::read_bool(&doc, &root, DND_KEY),
+            Some(true)
+        );
+        assert_eq!(
+            NotificationsPane::read_bool(&doc, &root, BANNERS_KEY),
+            Some(false)
+        );
+        assert_eq!(
+            NotificationsPane::read_bool(&doc, &root, LOCK_SCREEN_KEY),
+            Some(true)
+        );
     }
 
     #[test]
@@ -441,7 +456,10 @@ mod tests {
         pane.sync(&mut doc, &root);
         assert!(pane.prefs().do_not_disturb, "the pane adopted the toggle");
         // And it persisted to the shared store (loaded back through the store).
-        assert!(SystemPrefs::load().notifications.do_not_disturb, "persisted");
+        assert!(
+            SystemPrefs::load().notifications.do_not_disturb,
+            "persisted"
+        );
     }
 
     /// Single source of truth: an on-screen toggle flip dispatches the exact
@@ -454,7 +472,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root); // seeds both keys; nothing to dispatch
-        assert!(pane.last_dispatched().is_none(), "seeding dispatches no action");
+        assert!(
+            pane.last_dispatched().is_none(),
+            "seeding dispatches no action"
+        );
 
         // The palette's DND flip spec, read at the pre-flip state (DND off).
         let app = crate::SettingsApp::new();
@@ -472,16 +493,32 @@ mod tests {
 
         // Simulate the Toggle writing its scratch key on a flip, then sync.
         let scratch = NotificationsPane::scratch_key(DND_KEY);
-        let _ = doc.put(&root, scratch.as_str(), automerge::ScalarValue::Boolean(true));
+        let _ = doc.put(
+            &root,
+            scratch.as_str(),
+            automerge::ScalarValue::Boolean(true),
+        );
         pane.sync(&mut doc, &root);
 
-        let dispatched = pane.last_dispatched().expect("the flip dispatched an action").clone();
+        let dispatched = pane
+            .last_dispatched()
+            .expect("the flip dispatched an action")
+            .clone();
         let from_builder = crate::actions::encode(&crate::actions::set_bool_action(DND_KEY, true));
-        assert_eq!(dispatched, from_builder, "on-screen flip == the shared builder");
-        assert_eq!(dispatched, from_spec, "on-screen flip == the palette ActionSpec");
+        assert_eq!(
+            dispatched, from_builder,
+            "on-screen flip == the shared builder"
+        );
+        assert_eq!(
+            dispatched, from_spec,
+            "on-screen flip == the palette ActionSpec"
+        );
 
         // The action landed on the canonical key and the pane adopted + persisted it.
-        assert_eq!(NotificationsPane::read_bool(&doc, &root, DND_KEY), Some(true));
+        assert_eq!(
+            NotificationsPane::read_bool(&doc, &root, DND_KEY),
+            Some(true)
+        );
         assert!(pane.prefs().do_not_disturb);
     }
 
@@ -498,7 +535,11 @@ mod tests {
 
         // Flip the toggle's scratch key, then sync → the pane dispatches.
         let scratch = NotificationsPane::scratch_key(DND_KEY);
-        let _ = state.doc.put(&state.root, scratch.as_str(), automerge::ScalarValue::Boolean(true));
+        let _ = state.doc.put(
+            &state.root,
+            scratch.as_str(),
+            automerge::ScalarValue::Boolean(true),
+        );
         pane.sync(&mut state.doc, &state.root);
 
         // The host's own recorder drains the pane's captured bracket and records
@@ -522,13 +563,18 @@ mod tests {
             "the action set DND on"
         );
         assert!(pane.prefs().do_not_disturb);
-        let entry = state.peek_last_undo().expect("exactly one undo boundary recorded");
+        let entry = state
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
         assert_eq!(
             entry.author.as_ref(),
             Some(&local_author),
             "attributed to the local user, so their Ctrl+Z can reach it"
         );
-        assert!(pane.take_committed_action().is_none(), "the bracket is rising-edge");
+        assert!(
+            pane.take_committed_action().is_none(),
+            "the bracket is rising-edge"
+        );
 
         // Ctrl+Z reverts precisely the setting.
         state
@@ -548,7 +594,10 @@ mod tests {
             Some(false),
             "the toggle's scratch mirrors the reverted value"
         );
-        assert!(pane.take_committed_action().is_none(), "mirroring the revert dispatches nothing");
+        assert!(
+            pane.take_committed_action().is_none(),
+            "mirroring the revert dispatches nothing"
+        );
     }
 
     #[test]

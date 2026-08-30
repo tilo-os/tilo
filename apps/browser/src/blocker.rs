@@ -1,7 +1,7 @@
 //! Built-in ad blocking. Two complementary mechanisms:
 //!
 //! 1. **Content filter** — fetch Brave/EasyList-syntax filter lists,
-//!    cache them on disk, compile them to WebKit content-blocker JSON via
+//!    cache them on disk, compile them to `WebKit` content-blocker JSON via
 //!    [`ui::webview::adblock`], and hand the result to the engine
 //!    ([`spawn_filter_loader`]). Blocking then runs natively inside the
 //!    engine's network process — no per-request work in the app. This
@@ -9,9 +9,9 @@
 //!    ordinary sites.
 //!
 //! 2. **User scripts** — [`user_scripts`] returns JavaScript injected at
-//!    document-start into every frame. WebKit content filters are purely
+//!    document-start into every frame. `WebKit` content filters are purely
 //!    *declarative* (block + hide only); they cannot run scriptlets. Sites
-//!    that serve their ads same-origin and need JS to defeat — YouTube
+//!    that serve their ads same-origin and need JS to defeat — `YouTube`
 //!    being the canonical case — are handled here instead. `user_scripts`
 //!    is consumed separately by the app: the orchestrator sends each
 //!    string to the engine as a document-start, all-frames user script.
@@ -28,21 +28,21 @@ use ui::webview::{SharedEngine, WebViewCommand};
 /// Filter lists to fetch, as `(cache file name, URL)`.
 ///
 /// The canonical uBlock-Origin-default blocking set, restricted to lists
-/// whose rules survive adblock-rust's conversion to WebKit's *declarative*
+/// whose rules survive adblock-rust's conversion to `WebKit`'s *declarative*
 /// content-blocker format cleanly:
 ///
-/// - **EasyList** / **EasyPrivacy** — the network + tracker backbone.
-/// - **EasyList Cookie List** — cookie/consent banner annoyances.
+/// - **`EasyList`** / **`EasyPrivacy`** — the network + tracker backbone.
+/// - **`EasyList` Cookie List** — cookie/consent banner annoyances.
 /// - **uBlock Origin** `filters`, `privacy`, `badware`, `resource-abuse` —
 ///   uBO's own maintained supplements.
 ///
-/// Deliberately excluded: uBO **quick-fixes** and **AdGuard Base**. Both
-/// lean on rule types WebKit content blocking cannot express — `$replace`
+/// Deliberately excluded: uBO **quick-fixes** and **`AdGuard` Base**. Both
+/// lean on rule types `WebKit` content blocking cannot express — `$replace`
 /// (response-body rewriting), `$redirect`, and raw-regex `$frame` filters
 /// spanning a huge URL range. adblock-rust's lossy conversion turns some
 /// of those into over-broad `block` rules that catch a page's *own*
 /// first-party document/scripts during load, blanking it. They also churn
-/// daily, so a fresh compile can regress unpredictably. EasyList + uBO
+/// daily, so a fresh compile can regress unpredictably. `EasyList` + uBO
 /// already cover the same targets through WebKit-safe rules.
 const LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
@@ -78,10 +78,11 @@ const LISTS: &[(&str, &str)] = &[
 /// described above; `apps/browser/examples/adblock_blank_repro.rs`
 /// reproduces it. Named here so the invariant is testable rather than
 /// only stated in prose.
+#[cfg(test)]
 const EXCLUDED_LISTS: &[&str] = &["ublock-quick-fixes.txt", "adguard-base.txt"];
 
 /// Re-download a cached list after this age.
-const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+const CACHE_MAX_AGE: Duration = Duration::from_hours(168);
 
 /// Load + compile the filter lists in the background and install the
 /// compiled content filter into `engine` when ready.
@@ -124,7 +125,7 @@ pub fn spawn_filter_loader(engine: SharedEngine) {
 /// function is a pure catalogue with no engine dependency, which keeps it
 /// trivially unit-testable.
 ///
-/// The YouTube ad-skip script is the priority: YouTube stitches video ads
+/// The `YouTube` ad-skip script is the priority: `YouTube` stitches video ads
 /// into the same origin as the player, so no network rule can drop them —
 /// only page-side JS can mute, fast-forward, and click past them.
 pub fn user_scripts() -> Vec<String> {
@@ -134,9 +135,9 @@ pub fn user_scripts() -> Vec<String> {
     ]
 }
 
-/// Robust YouTube video-ad skipper.
+/// Robust `YouTube` video-ad skipper.
 ///
-/// Detection + skip strategy (kept resilient to YouTube's frequent markup
+/// Detection + skip strategy (kept resilient to `YouTube`'s frequent markup
 /// churn by matching on several class/selector variants and re-running on
 /// every DOM mutation plus a short interval, so it survives SPA
 /// navigation between videos without a full reload):
@@ -155,7 +156,7 @@ pub fn user_scripts() -> Vec<String> {
 ///   filter can't target on this same-origin markup, and click the
 ///   overlay close button.
 fn youtube_ad_skip_script() -> &'static str {
-    r#"(function () {
+    r"(function () {
   'use strict';
   var host = location.hostname;
   if (!/(^|\.)youtube(-nocookie)?\.com$/.test(host) &&
@@ -241,14 +242,14 @@ fn youtube_ad_skip_script() -> &'static str {
   // Interval backstop for SPA navigations that don't mutate <body>.
   setInterval(skip, 500);
 })();
-"#
+"
 }
 
 /// Generic cosmetic belt-and-suspenders: hide the most common ad-slot
 /// containers at document-start, before the content filter's CSS lands.
 ///
 /// Conservative on purpose — it only matches attribute/id shapes that are
-/// unambiguously ad slots (AdSense, Google Publisher Tag, generic
+/// unambiguously ad slots (`AdSense`, Google Publisher Tag, generic
 /// `data-ad-*` slots), never generic layout, so it can't hide real
 /// content. Injecting the rule from JS lets it apply inside frames the
 /// declarative filter may reach later.
@@ -278,24 +279,22 @@ fn cache_dir() -> Option<PathBuf> {
 fn load_list(name: &str, url: &str) -> Option<String> {
     let path = cache_dir().map(|d| d.join(name));
 
-    if let Some(p) = &path {
-        if let Ok(meta) = std::fs::metadata(p) {
-            let fresh = meta
-                .modified()
-                .ok()
-                .and_then(|m| m.elapsed().ok())
-                .is_some_and(|age| age < CACHE_MAX_AGE);
-            if fresh {
-                if let Ok(text) = std::fs::read_to_string(p) {
-                    return Some(text);
-                }
-            }
+    if let Some(p) = &path
+        && let Ok(meta) = std::fs::metadata(p)
+    {
+        let fresh = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age < CACHE_MAX_AGE);
+        if fresh && let Ok(text) = std::fs::read_to_string(p) {
+            return Some(text);
         }
     }
 
     match reqwest::blocking::get(url)
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.text())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
     {
         Ok(text) => {
             if let Some(p) = &path {
@@ -337,7 +336,7 @@ fn source_version(texts: &[String]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for t in texts {
         for &b in t.as_bytes() {
-            h ^= b as u64;
+            h ^= u64::from(b);
             h = h.wrapping_mul(0x0000_0100_0000_01b3);
         }
     }

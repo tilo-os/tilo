@@ -1,54 +1,16 @@
-//! Which records a room holds, and which records exist at all.
+//! Which records a room holds, and which records exist at all — the two
+//! facts search needs to move a record into a room in one gesture.
 //!
-//! # Why the shell needs this
+//! A room holds **references, not copies**: bringing a record in adds its
+//! id and moves no bytes, so an edit through either room edits the one
+//! document. Copying is the separately-named [`ui::record::room::duplicate`].
 //!
-//! A room starts empty (`plan/rooms.md`). That is only workable if moving
-//! one of your own records into a room is a single gesture, and the gesture
-//! the design picks is **search**: type the book's name, see it listed with
-//! the room it lives in, press Enter, and it is here. Two facts have to be
-//! available to answer that, and neither of them lived anywhere before:
+//! The corpus has two halves: **held** is the rooms' own index documents;
+//! **observed** is what apps have written, found by a background scan
+//! shared by every surface so a keystroke never touches disk.
 //!
-//! - **Which records exist**, so search has something to match against.
-//! - **Which rooms hold which**, so a row can say where a record lives and
-//!   so bringing it here can be *adding a reference* rather than a copy.
-//!
-//! # A room holds references, not copies
-//!
-//! Bringing a record into a room adds its id to that room's index and moves
-//! no bytes: the record *is* one document, identified by its record id, and
-//! an edit made through either room is an edit to that one document. Copying
-//! is the separately-named verb ([`ui::record::room::duplicate`]) and stays
-//! separate — two copies of a book diverge, and no amount of merging makes
-//! them one book again.
-//!
-//! The index itself is [`ui::record::room`]: this module owns *where* a
-//! room's index lives and *how it is found*, not what an index is.
-//!
-//! # The two halves of the corpus
-//!
-//! **Held** — the rooms' own indexes, one Automerge document per room under
-//! this compositor's state directory. These are the references the user
-//! made, and they are durable.
-//!
-//! **Observed** — the records apps have actually written. An app keeps one
-//! document per record ([`ui::record::RecordSet`]), each stamped with its
-//! identity, its type and the room it was minted in, so the store on disk is
-//! already the answer to "which records exist"; this module reads it rather
-//! than asking every app. The scan runs **once per process on a background
-//! thread** and its result is shared by every surface that wants it — a
-//! keystroke must never reach the filesystem, which is the constraint the
-//! whole palette is built around.
-//!
-//! # The gap this leaves, stated plainly
-//!
-//! An app's own room index is its package-level document, and package state
-//! is not partitioned per room on disk today: `~/.local/share/<package>/`
-//! is one directory whichever room the app was launched into. So the
-//! per-room index here is the compositor's, and it is genuinely per room;
-//! what is *not* yet true is that an app launched into a room reads it. The
-//! record's own `home` — which the app does stamp — is what carries the
-//! room across that gap in the meantime, and it is why a record is
-//! attributed to its home room even when no index references it.
+//! Known gap: package state isn't partitioned per room on disk, so a
+//! record is attributed to its `home` even when no room's index references it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -59,19 +21,14 @@ use ui::record::{RecordCheckout, RecordId, RecordKind, room};
 
 use crate::shell::state::RoomId;
 
-/// Package id the compositor stores its own room indexes under. Not an
-/// installed package — it is the same directory shape so the same store,
-/// with its atomic writes and its single-writer lock, can be reused.
+/// Package id the compositor stores its own room indexes under — not an
+/// installed package, just the same directory shape so the same store
+/// (atomic writes, single-writer lock) can be reused.
 pub const SHELL_PACKAGE_ID: &str = "dev.qos.shell";
 
-/// Ceiling on a record document the scan will read.
-///
-/// A record's document holds the record's *content*, so it can be a whole
-/// word-processor file. The scan only wants three fields out of the header,
-/// but automerge has no way to read a document in part, so a document past
-/// this size is skipped rather than paged into the compositor. Skipping
-/// costs that record its search row; loading it could cost the session its
-/// memory, and the second failure is much worse than the first.
+/// Ceiling on a record document the scan will read. Automerge can't read
+/// a document in part, so anything larger is skipped — losing a search
+/// row is cheaper than losing the session to memory.
 const MAX_RECORD_DOC_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One record the compositor knows about, and where it lives.
@@ -79,9 +36,8 @@ const MAX_RECORD_DOC_BYTES: u64 = 16 * 1024 * 1024;
 pub struct KnownRecord {
     pub id: RecordId,
     pub kind: RecordKind,
-    /// The room the record was minted in, as its own document records it.
-    /// `None` for a record whose document names no home, and for one the
-    /// compositor only knows about because a room references it.
+    /// The room the record was minted in. `None` when its own document
+    /// names no home, or when only a reference is known about it.
     pub home: Option<RoomId>,
     /// Rooms whose index references this record. Sorted.
     pub held_by: Vec<RoomId>,
@@ -91,33 +47,24 @@ pub struct KnownRecord {
 }
 
 impl KnownRecord {
-    /// Every room this record is reachable from: the one it was minted in
-    /// plus every room that has referenced it.
+    /// Every room this record is reachable from: minted-in plus referenced-by.
     pub fn rooms(&self) -> Vec<RoomId> {
         let mut out: Vec<RoomId> = self.held_by.clone();
-        if let Some(home) = self.home {
-            if !out.contains(&home) {
-                out.push(home);
-            }
+        if let Some(home) = self.home
+            && !out.contains(&home)
+        {
+            out.push(home);
         }
         out.sort();
         out
     }
 
-    /// Is this record in `room` — because it was minted there or because
-    /// that room references it?
+    /// Is this record in `room` — minted there, or referenced by it?
     pub fn is_in(&self, room: RoomId) -> bool {
         self.home == Some(room) || self.held_by.contains(&room)
     }
 
-    /// What to call this record in a list.
-    ///
-    /// A file record is named by its file, which is the whole point of a
-    /// path being an identity. A derived record is named by its role and
-    /// its target ("annotations of book.pdf") because that is the only
-    /// thing about it a person would recognise. A minted record with no
-    /// natural name falls back to its type — honest, and still the thing
-    /// the user would type.
+    /// What to call this record in a list, e.g. "annotations of book.pdf".
     pub fn title(&self) -> String {
         record_title(&self.id, &self.kind)
     }
@@ -135,29 +82,20 @@ pub struct ObservedRecord {
 /// One room's index document plus its writer.
 struct Held {
     doc: AutoCommit,
-    /// `None` for an in-memory index and for a room whose store could not
-    /// be opened — reported once, then the room runs without durability
-    /// rather than the compositor refusing to reference anything.
+    /// `None` for in-memory, or a room whose store couldn't be opened —
+    /// runs without durability rather than refusing to reference anything.
     autosave: Option<app_state::Autosave>,
 }
 
 #[derive(Default)]
 struct ScanState {
     records: Vec<ObservedRecord>,
-    /// Whether the walk has finished. A query before it does gets whatever
-    /// is known so far rather than blocking a keystroke on the disk.
+    /// A query before the walk finishes gets whatever is known so far
+    /// rather than blocking a keystroke on the disk.
     done: bool,
 }
 
-/// What [`RoomRecords::known`] last computed, and what it was computed
-/// from.
-///
-/// Reading a room's index means walking an Automerge map and fetching
-/// every entry, which is far too much to do between two keystrokes: at
-/// 300 records it measured 19 ms, against a whole-palette budget of a few.
-/// The corpus only changes when something is referenced or when the scan
-/// lands, so the answer is cached and the cache is keyed on exactly those
-/// two things.
+/// What [`RoomRecords::known`] last computed, and what from.
 struct KnownCache {
     /// `(index generation, scanned record count, scan finished)`.
     key: (u64, usize, bool),
@@ -167,53 +105,29 @@ struct KnownCache {
 /// The rooms' record indexes, and the records that exist.
 pub struct RoomRecords {
     held: BTreeMap<RoomId, Held>,
-    /// Shared with the background scan. `None` for an in-memory instance,
-    /// which never reads the disk.
+    /// Shared with the background scan. `None` for an in-memory instance.
     scan: Option<Arc<Mutex<ScanState>>>,
-    /// Records seeded directly rather than scanned — how a test supplies a
-    /// corpus, and how a caller that already knows about a record (it just
-    /// opened one) can say so without waiting for the next walk.
+    /// Records seeded directly rather than scanned.
     seeded: Vec<ObservedRecord>,
     persistent: bool,
-    /// The type each record was last labelled with, in call order.
-    ///
-    /// A type belongs to the **record**, not to a room's reference to it —
-    /// `plan/rooms.md`: every record has "a type from the app's resource
-    /// model, a stable identity, and a home room". Deriving it by merging
-    /// the room indexes instead made the answer depend on `BTreeMap<RoomId>`
-    /// order, and a `RoomId` is a random v4 uuid — so when two rooms
-    /// referenced one record under different types, which label won changed
-    /// from run to run. Keeping it here makes the answer the last label
-    /// written, which is deterministic and is what re-referencing means.
-    ///
-    /// A record observed on disk overrides this: that kind was written by
-    /// the app into the record's own document, which is the record itself
-    /// speaking rather than a room describing it.
+    /// The type each record was last labelled with. Belongs to the
+    /// record, not a room's reference: `RoomId` is a random uuid, so
+    /// `BTreeMap` order would non-deterministically pick a winner across
+    /// rooms. Last-write-wins instead; an observed on-disk kind overrides
+    /// it since that's the record speaking.
     labelled: BTreeMap<RecordId, RecordKind>,
-    /// Bumped by **every** mutation that could change what [`Self::known`]
-    /// answers. Incremented in one place ([`Self::changed`]) which every
-    /// mutating method calls, rather than at each call site: a counter
-    /// that misses one path produces a cache that is silently stale, and
-    /// a wrong search result is worse than a slow one because nothing
-    /// tells the user it is wrong.
+    /// Bumped by every mutation that could change [`Self::known`]'s
+    /// answer, in one place ([`Self::changed`]).
     generation: u64,
-    /// The [`Self::generation`] this index was last mirrored into the
-    /// workspace tree at, so [`Self::replicate_with`] can do nothing on
-    /// the frames where nothing moved.
-    ///
-    /// `None` until the first exchange, which is what makes a session
-    /// publish what it already held rather than only what it adds after
-    /// start-up.
+    /// The [`Self::generation`] last mirrored into the workspace tree, so
+    /// [`Self::replicate_with`] can no-op when nothing moved.
     replicated_generation: Option<u64>,
     known: std::cell::RefCell<Option<KnownCache>>,
 }
 
 impl RoomRecords {
-    /// An index that never touches the disk. This is what everything is
-    /// built with — a session becomes durable by being *told* to
-    /// ([`Self::attach_store`]), which is what keeps a test, a `--shots`
-    /// run and a headless harness from writing into the user's own state
-    /// merely by constructing a compositor.
+    /// An index that never touches the disk. Durability is opt-in via
+    /// [`Self::attach_store`].
     pub fn in_memory() -> Self {
         Self {
             held: BTreeMap::new(),
@@ -232,14 +146,9 @@ impl RoomRecords {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Make this index durable, and start looking for the records apps
-    /// have written.
-    ///
-    /// Called once by the compositor's entry point, beside where the rest
-    /// of the session's state is loaded. Reads every room index this
-    /// compositor has written before; writes nothing — a room gains a file
-    /// the first time something is referenced into it, so a session that
-    /// brings nothing anywhere leaves nothing behind.
+    /// Make this index durable and start looking for the records apps
+    /// have written. Writes nothing — a room gains a file only when
+    /// something is referenced into it.
     pub fn attach_store(&mut self) {
         if self.persistent {
             return;
@@ -247,9 +156,6 @@ impl RoomRecords {
         self.persistent = true;
         self.scan = Some(shared_scan());
         self.changed();
-        // References made before the store was attached become durable
-        // too, content and all — dropping them would make the moment of
-        // attachment a silent data loss.
         let rooms: Vec<RoomId> = self.held.keys().copied().collect();
         for room in rooms {
             let Some(slot) = self.held.get_mut(&room) else {
@@ -264,50 +170,34 @@ impl RoomRecords {
         self.load_indexes();
     }
 
-    /// Add records to the known corpus without a scan. Used by tests, and
-    /// by any surface that learns of a record first-hand.
+    /// Add records to the known corpus without a scan.
     pub fn seed_observed(&mut self, records: impl IntoIterator<Item = ObservedRecord>) {
         self.seeded.extend(records);
         self.changed();
     }
 
-    /// Bring a record into `room`.
-    ///
-    /// Adds a reference — the room gains the record's id, and the record's
-    /// document is untouched. Returns whether this added something, so a
-    /// caller can tell "brought here" from "was already here" without
-    /// asking twice.
+    /// Bring a record into `room` by reference: the room gains the id, the
+    /// document is untouched. Returns whether this added something.
     pub fn reference(&mut self, room: RoomId, id: &RecordId, kind: &RecordKind) -> bool {
         let slot = self.index_mut(room);
         let added = room::reference(&mut slot.doc, id, kind);
-        if added {
-            if let Some(saver) = slot.autosave.as_mut() {
-                saver.request(&mut slot.doc);
-            }
+        if added && let Some(saver) = slot.autosave.as_mut() {
+            saver.request(&mut slot.doc);
         }
-        // Unconditionally, not only when `added`: re-referencing an
-        // existing record refreshes its type, which is part of the answer.
         self.labelled.insert(id.clone(), kind.clone());
         self.changed();
         added
     }
 
-    /// Drop a room's reference to a record. The record itself is untouched:
-    /// it may be referenced by other rooms, and it is the same document in
-    /// each.
-    ///
-    /// Removal stops future changes flowing to this room's members. It
-    /// cannot un-share bytes a peer already synced, and nothing here should
-    /// imply otherwise.
+    /// Drop a room's reference to a record. Stops future changes flowing
+    /// to the room's members but cannot un-share bytes a peer already synced.
     pub fn unreference(&mut self, room: RoomId, id: &RecordId) -> bool {
         let Some(slot) = self.held.get_mut(&room) else {
             return false;
         };
         let dropped = room::unreference(&mut slot.doc, id);
-        if dropped {
-            if let Some(saver) = slot.autosave.as_mut() {
-                saver.request(&mut slot.doc);
-            }
+        if dropped && let Some(saver) = slot.autosave.as_mut() {
+            saver.request(&mut slot.doc);
         }
         self.changed();
         dropped
@@ -317,8 +207,7 @@ impl RoomRecords {
     pub fn holds(&self, room: RoomId, id: &RecordId) -> bool {
         self.held
             .get(&room)
-            .map(|h| room::holds(&h.doc, id))
-            .unwrap_or(false)
+            .is_some_and(|h| room::holds(&h.doc, id))
     }
 
     /// Every record `room`'s index references.
@@ -330,20 +219,11 @@ impl RoomRecords {
     }
 
     /// Every record this compositor knows about, merged from the rooms'
-    /// indexes and from the records apps have written, sorted by id so the
-    /// answer does not depend on map iteration order.
+    /// indexes and the records apps have written, sorted by id.
     ///
-    /// **This runs on every keystroke**, so it does no disk access and —
-    /// after the first call — no CRDT reads either: reading a room's index
-    /// walks an Automerge map and fetches every entry, which measured
-    /// 19 ms over 300 records. That is longer than a frame, so every
-    /// keystroke would drop one and the palette would visibly stutter as
-    /// you type. The merged answer is therefore computed once and reused
-    /// until something changes it.
-    ///
-    /// Freshness comes from [`Self::changed`], which every mutating method
-    /// calls, plus the scan's own progress — the two things that can move
-    /// the answer.
+    /// **Runs on every keystroke**, so after the first call it does no
+    /// CRDT reads: walking a room's index measured 19ms over 300 records.
+    /// Cached, keyed on generation plus scan progress.
     pub fn known(&self) -> std::rc::Rc<Vec<KnownRecord>> {
         let scan_key = self
             .scan
@@ -351,10 +231,10 @@ impl RoomRecords {
             .and_then(|s| s.lock().ok().map(|st| (st.records.len(), st.done)))
             .unwrap_or((0, true));
         let key = (self.generation, scan_key.0, scan_key.1);
-        if let Some(cached) = self.known.borrow().as_ref() {
-            if cached.key == key {
-                return std::rc::Rc::clone(&cached.records);
-            }
+        if let Some(cached) = self.known.borrow().as_ref()
+            && cached.key == key
+        {
+            return std::rc::Rc::clone(&cached.records);
         }
         let records = std::rc::Rc::new(self.compute_known());
         *self.known.borrow_mut() = Some(KnownCache {
@@ -385,19 +265,15 @@ impl RoomRecords {
                 entry.kind = o.kind.clone();
             }
         };
-        if let Some(scan) = self.scan.as_ref() {
-            if let Ok(state) = scan.lock() {
-                state.records.iter().for_each(&mut observe);
-            }
+        if let Some(scan) = self.scan.as_ref()
+            && let Ok(state) = scan.lock()
+        {
+            state.records.iter().for_each(&mut observe);
         }
         self.seeded.iter().for_each(&mut observe);
 
         for (room, held) in &self.held {
             for checkout in room::references(&held.doc) {
-                // Deliberately empty: a room says *that* it holds a record,
-                // not what the record is. The type is filled in below from
-                // the record's own word, or from the last label a reference
-                // supplied — never from whichever room sorted first.
                 let entry = by_id
                     .entry(checkout.id.clone())
                     .or_insert_with(|| KnownRecord {
@@ -412,12 +288,7 @@ impl RoomRecords {
                 }
             }
         }
-        // The room pass above contributes *which rooms hold what*, never
-        // the type: a room describing a record cannot rename it, and
-        // picking a winner by room order was the coin flip this replaces.
-        // An observed kind — the app's own word, from the record's document
-        // — stands; otherwise the last label a reference supplied.
-        for (id, r) in by_id.iter_mut() {
+        for (id, r) in &mut by_id {
             if r.kind.as_str().is_empty()
                 && let Some(k) = self.labelled.get(id)
             {
@@ -428,13 +299,11 @@ impl RoomRecords {
         by_id.into_values().collect()
     }
 
-    /// Whether the background scan has finished. Surfaces that want to say
-    /// "still looking" read this; nothing waits on it.
+    /// Whether the background scan has finished; nothing waits on it.
     pub fn scan_complete(&self) -> bool {
         self.scan
             .as_ref()
-            .map(|s| s.lock().map(|st| st.done).unwrap_or(false))
-            .unwrap_or(true)
+            .is_none_or(|s| s.lock().is_ok_and(|st| st.done))
     }
 
     /// Write out every pending index and wait for it to land.
@@ -448,35 +317,14 @@ impl RoomRecords {
     }
 
     /// Exchange this machine's room indexes with the peer-replication
-    /// path: publish what each room holds, and fold in what peers have
-    /// brought.
+    /// path, returning whether anything arrived from a peer.
     ///
-    /// # Why the shell does this rather than the tree
-    ///
-    /// A room's index is an Automerge document behind an `Rc<RefCell<_>>`
-    /// on the overlay host; the replication path holds the workspace tree
-    /// across an `Arc<RwLock<_>>` on a `Send` boundary. Neither can hold
-    /// the other. So the tree carries a plain-data *mirror* of the index
-    /// ([`crate::shell::state::WorkspaceTree::room_records_held`]) and
-    /// this is the one place the two are reconciled — called from the
-    /// compositor's frame pump, which already holds both.
-    ///
-    /// # What crosses, and what does not
-    ///
-    /// References. A room learns which records it holds; it learns
-    /// nothing about who has one open or where. Which window a document
-    /// was opened into, which tab is in front, where anyone has scrolled
-    /// — none of that is here, because none of it is a fact about the
-    /// room. That is the whole reason the room's *index* is the unit
-    /// rather than the host's window layout: two people in one room see
-    /// the same records and keep their own desks.
-    ///
-    /// Returns whether anything arrived from a peer, so the caller can
-    /// tell a frame that changed the corpus from one that did not.
+    /// The shell does this rather than the tree: a room's index sits
+    /// behind `Rc<RefCell<_>>` on the overlay host while replication
+    /// holds the tree across `Arc<RwLock<_>>` on a `Send` boundary —
+    /// neither can hold the other, so the frame pump reconciles them
+    /// here. Only references cross, never who has a record open.
     pub fn replicate_with(&mut self, tree: &mut crate::shell::state::WorkspaceTree) -> bool {
-        // Publish. Reading a room's index walks an Automerge map, which
-        // is far too expensive to do every frame (see `known`), so it is
-        // done only when a mutation has actually moved the answer.
         if self.replicated_generation != Some(self.generation) {
             self.replicated_generation = Some(self.generation);
             let rooms: Vec<RoomId> = self.held.keys().copied().collect();
@@ -490,9 +338,6 @@ impl RoomRecords {
             }
         }
 
-        // Fold in arrivals. `reference` is idempotent, so a record a peer
-        // re-announces is not an edit here; what it does do is refresh the
-        // record's type, which is what re-referencing means.
         let inbound = tree.take_inbound_room_records();
         if inbound.is_empty() {
             return false;
@@ -509,12 +354,8 @@ impl RoomRecords {
             };
             self.reference(room, &record, &RecordKind::new(kind));
         }
-        // The publish above ran against the pre-merge generation, so what
-        // just arrived would not be re-published until the next local
-        // change. Re-arm it instead: a guest that learned of a record is
-        // a legitimate source of that reference for the next peer, which
-        // is what lets a room converge when its members are not all
-        // connected to each other at once.
+        // Re-arm so a guest that just learned of a record can source it
+        // to the next peer, letting a room converge when not all connected.
         self.replicated_generation = None;
         true
     }
@@ -533,9 +374,7 @@ impl RoomRecords {
         })
     }
 
-    /// Load every room index already on disk. Rooms already live in
-    /// memory are left alone — [`Self::index_mut`] opened their store when
-    /// the store was attached, which merged the same bytes in.
+    /// Load every room index already on disk.
     fn load_indexes(&mut self) {
         let dir = rooms_dir();
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -597,11 +436,8 @@ fn rooms_dir() -> PathBuf {
     cli::standalone_state_dir(SHELL_PACKAGE_ID).join(app_state::ROOMS_DIR)
 }
 
-/// The process-wide record scan, started on first use.
-///
-/// One walk per process, whoever asks: the compositor builds a palette host
-/// per session but tests build many, and a scan per host would read every
-/// app's store that many times.
+/// The process-wide record scan, started on first use — one walk per
+/// process rather than one per palette host (tests build many).
 fn shared_scan() -> Arc<Mutex<ScanState>> {
     static SCAN: OnceLock<Arc<Mutex<ScanState>>> = OnceLock::new();
     SCAN.get_or_init(|| {
@@ -623,20 +459,10 @@ fn shared_scan() -> Arc<Mutex<ScanState>> {
     .clone()
 }
 
-/// Walk every room's packages and read each record's identity.
-///
-/// The compositor is the one component that reads across rooms, and it has
-/// to: "bring your own is a search result" (`plan/rooms.md`) means Super+K
-/// shows records from the user's other rooms, labelled with where they live.
-/// An app cannot do this — its sandbox contains exactly one room's directory
-/// — which is the point.
-///
-/// Deliberately shallow:
-/// `<data home>/qos-rooms/<room>/<package>/.local/share/<package>/records/<key>/state.automerge`
-/// and nothing else, so the walk is bounded by the number of records rather
-/// than by the size of the user's home. The middle segment is the sandbox's
-/// `XDG_DATA_HOME`, which is where `cli::standalone_state_dir` resolves for
-/// an app running under the launcher.
+/// Walk every room's packages and read each record's identity. The
+/// compositor is the only component that reads across rooms (Super+K
+/// shows records from other rooms, which a sandboxed app cannot see).
+/// Deliberately shallow, bounded by record count, not home size.
 fn scan_record_stores(root: &Path) -> Vec<ObservedRecord> {
     let mut out = Vec::new();
     let Ok(rooms) = std::fs::read_dir(root.join(launcher::appdir::ROOMS_DIR)) else {
@@ -653,8 +479,6 @@ fn scan_record_stores(root: &Path) -> Vec<ObservedRecord> {
             if package_id == SHELL_PACKAGE_ID {
                 continue;
             }
-            // Inside the sandbox this is `$XDG_DATA_HOME/<package>`; from
-            // out here it is that path spelled against the host.
             let records = package
                 .path()
                 .join(&*SANDBOX_DATA_SUBDIR)
@@ -687,20 +511,14 @@ fn scan_record_stores(root: &Path) -> Vec<ObservedRecord> {
     out
 }
 
-/// The path `XDG_DATA_HOME` takes inside an app's directory. Derived from
-/// the launcher's own announcement rather than written out again here, so
-/// the walk cannot drift from where apps actually write.
+/// The path `XDG_DATA_HOME` takes inside an app's directory, derived from
+/// the launcher's own announcement so the walk cannot drift from it.
 static SANDBOX_DATA_SUBDIR: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
     let root = Path::new(launcher::appdir::SANDBOX_APP_DIR);
     launcher::appdir::sandbox_env()
         .into_iter()
         .find(|(k, _)| k == "XDG_DATA_HOME")
-        .and_then(|(_, v)| {
-            Path::new(&v)
-                .strip_prefix(root)
-                .ok()
-                .map(Path::to_path_buf)
-        })
+        .and_then(|(_, v)| Path::new(&v).strip_prefix(root).ok().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from(".local/share"))
 });
 
@@ -710,8 +528,6 @@ fn read_record_header(path: &Path, package_id: &str) -> Option<ObservedRecord> {
     if bytes.is_empty() {
         return None;
     }
-    // A trailing partially-written change chunk is dropped rather than
-    // failing the read — the same policy the store itself loads under.
     let doc = AutoCommit::load_with_options(
         &bytes,
         LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
@@ -732,13 +548,14 @@ pub fn record_title(id: &RecordId, kind: &RecordKind) -> String {
     if let Some(path) = id.file_path() {
         return leaf_of(&path);
     }
-    if let Some(rest) = id.as_str().strip_prefix("derived:") {
-        if let Some((role, target)) = rest.split_once('@') {
-            let target_name = RecordId::parse(target)
-                .map(|t| record_title(&t, &RecordKind::new("")))
-                .unwrap_or_else(|| target.to_string());
-            return format!("{role} of {target_name}");
-        }
+    if let Some(rest) = id.as_str().strip_prefix("derived:")
+        && let Some((role, target)) = rest.split_once('@')
+    {
+        let target_name = RecordId::parse(target).map_or_else(
+            || target.to_string(),
+            |t| record_title(&t, &RecordKind::new("")),
+        );
+        return format!("{role} of {target_name}");
     }
     if !kind.as_str().is_empty() {
         return kind.as_str().to_string();
@@ -747,17 +564,14 @@ pub fn record_title(id: &RecordId, kind: &RecordKind) -> String {
 }
 
 fn leaf_of(path: &Path) -> String {
-    path.file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |s| s.to_string_lossy().to_string(),
+    )
 }
 
-/// Human name for the room a record lives in, resolved against the live
-/// workspace tree.
-///
-/// A room the tree does not know about is named as an unknown room rather
-/// than by its uuid: a raw uuid in a palette row tells the reader nothing
-/// and looks like a bug.
+/// Human name for the room a record lives in — a raw uuid in a palette row
+/// tells the reader nothing and looks like a bug.
 pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Option<String> {
     tree.workspaces
         .iter()
@@ -765,8 +579,7 @@ pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Op
         .map(|w| w.name.clone())
 }
 
-/// Rooms in the tree, most-recently-active first is not knowable here, so:
-/// tree order. Used to pick which of several rooms a record's row names.
+/// Rooms in tree order (most-recently-active isn't knowable here).
 pub fn known_rooms(tree: &crate::shell::state::WorkspaceTree) -> BTreeSet<RoomId> {
     tree.workspaces.iter().map(|w| w.room).collect()
 }
@@ -788,16 +601,17 @@ mod tests {
         let kind = RecordKind::new("book");
 
         assert!(rr.reference(a, &id, &kind), "first reference adds");
-        assert!(!rr.reference(a, &id, &kind), "referencing twice adds nothing");
+        assert!(
+            !rr.reference(a, &id, &kind),
+            "referencing twice adds nothing"
+        );
         assert!(rr.holds(a, &id));
         assert!(!rr.holds(b, &id));
 
-        // The same id in a second room: one record, two references.
         assert!(rr.reference(b, &id, &kind));
         assert!(rr.holds(a, &id) && rr.holds(b, &id));
         assert_eq!(rr.records_in(a), rr.records_in(b));
 
-        // Dropping one room's reference leaves the other alone.
         assert!(rr.unreference(a, &id));
         assert!(!rr.holds(a, &id));
         assert!(rr.holds(b, &id), "the record is still in the other room");
@@ -838,15 +652,12 @@ mod tests {
             "annotations of dune.epub"
         );
         let minted = RecordId::minted();
-        assert_eq!(record_title(&minted, &RecordKind::new("playlist")), "playlist");
+        assert_eq!(
+            record_title(&minted, &RecordKind::new("playlist")),
+            "playlist"
+        );
     }
 
-    /// The cached corpus must never survive a change to what it answers.
-    ///
-    /// A stale search result is worse than a slow one: nothing on screen
-    /// says it is wrong. So every mutation is exercised here — reference,
-    /// re-reference into a second room, unreference, seed — and each one
-    /// has to be visible in the very next `known()`.
     #[test]
     fn every_change_is_visible_in_the_next_answer() {
         let mut rr = RoomRecords::in_memory();
@@ -872,10 +683,6 @@ mod tests {
             "the second room is visible immediately"
         );
 
-        // A record re-referenced with a different type: same entry, and
-        // the change still has to land — this is the path that returns
-        // `false` from `reference`, and keying the cache on that return
-        // value would have missed it.
         rr.reference(b, &id, &RecordKind::new("field-guide"));
         assert_eq!(rr.known()[0].kind.as_str(), "field-guide");
 
@@ -892,11 +699,13 @@ mod tests {
             home: Some(a),
             package_id: "dev.qos.word-processor".into(),
         }]);
-        assert_eq!(rr.known().len(), 2, "a seeded record is visible immediately");
+        assert_eq!(
+            rr.known().len(),
+            2,
+            "a seeded record is visible immediately"
+        );
     }
 
-    /// The corpus is shared rather than rebuilt when nothing changed —
-    /// which is what keeps a keystroke off the CRDT.
     #[test]
     fn an_unchanged_index_hands_back_the_same_corpus() {
         let mut rr = RoomRecords::in_memory();

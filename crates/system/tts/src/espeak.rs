@@ -115,9 +115,7 @@ impl EspeakSpeaker {
             // sentence-final pause makes that ragged tail land on generated
             // silence instead of on a real phoneme. Only added when the text
             // doesn't already end in terminal punctuation.
-            let needs_pause = !text
-                .trim_end()
-                .ends_with(['.', '!', '?', ',', ';', ':']);
+            let needs_pause = !text.trim_end().ends_with(['.', '!', '?', ',', ';', ':']);
             if needs_pause {
                 let _ = stdin.write_all(b" .");
             }

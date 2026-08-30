@@ -1,73 +1,26 @@
 //! The signed registry index — the wire format a qOS registry serves.
 //!
-//! A registry maps a reverse-DNS **app-id** (`dev.qos.editor`) to the
-//! set of published versions. Each version names the qpkg by its
-//! content hash (blake3 — the same 32 bytes iroh-blobs keys the blob
-//! by) plus the metadata a client needs to pick the right build for
-//! its host **before** downloading a byte: target arch, ISA feature
-//! level, and the runtime ABI the build binds to.
+//! Maps a reverse-DNS **app-id** to published versions, each naming its
+//! qpkg by content hash (blake3, same as iroh-blobs) plus the metadata
+//! a client needs to pick a build before downloading: target arch, ISA
+//! level, and runtime ABI.
 //!
-//! The index is a single JSON document served as static/generated
-//! content over HTTPS (so it is trivially self-hostable). Two
-//! independent signatures protect it:
-//!
-//! 1. **Index signature** — the registry operator's Ed25519 key signs a
-//!    canonical byte encoding of the whole document. A client trusts a
-//!    registry by pinning that key in `registries.toml`. This is what
-//!    makes it a *signed* registry index: a MITM (or a compromised
-//!    static host) cannot add, drop, or rewrite entries.
-//! 2. **Per-entry publisher signature** — the app publisher's Ed25519
-//!    key signs the binding `(app-id, version, qpkg-hash, package-id,
-//!    arch, isa, runtime, size)`. This ties the advertised metadata to
-//!    the publisher, so a registry cannot honestly re-label one
-//!    publisher's bytes as a different app/version/arch. The bytes
-//!    themselves are additionally verified after download via
-//!    [`pkg::verify`] (which checks the publisher signature embedded in
-//!    the qpkg's signed-root).
-//!
-//! ## Wire shape (JSON)
-//!
-//! ```json
-//! {
-//!   "format": 1,
-//!   "registry_id": "dev.qos.central",
-//!   "generated_unix": 1751000000,
-//!   "signer_identity": "ed25519:<hex32>",
-//!   "signature": "<hex64>",
-//!   "packages": [
-//!     {
-//!       "app_id": "dev.qos.editor",
-//!       "version": "0.1.0",
-//!       "package_id": "qpkg:<hex32>",
-//!       "qpkg_hash": "<hex32>",
-//!       "size_bytes": 40960,
-//!       "arch": "x86_64",
-//!       "isa": "x86_64-v3",
-//!       "runtime": "qos-runtime/1.2.0",
-//!       "publisher_identity": "ed25519:<hex32>",
-//!       "publisher_signature": "<hex64>",
-//!       "ticket": "blob<base32>"
-//!     }
-//!   ]
-//! }
-//! ```
-//!
-//! Signatures cover a hand-rolled canonical byte encoding (not the
-//! JSON text), so re-serialising the document with different
-//! whitespace or key order does not break verification — the same
-//! approach `pkg`'s signed-root and collection blobs take.
+//! Two independent signatures protect the JSON document served over
+//! HTTPS: the **index signature** (registry operator's Ed25519 key
+//! over the whole document — pinned in `registries.toml`, so a MITM or
+//! compromised host can't add/drop/rewrite entries) and the **per-entry
+//! publisher signature** (binds `(app-id, version, qpkg-hash,
+//! package-id, arch, isa, runtime, size)` so the advertised metadata
+//! can't be relabelled by the registry).
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use pkg::PackageId;
-use pkg::manifest::{
-    AArch64Level, Arch, IsaLevel, X86_64Level,
-};
+use pkg::manifest::{AArch64Level, Arch, IsaLevel, X86_64Level};
 use pkg::pack::SigningIdentity;
 
-/// Version of the index wire format. Bumped when the canonical
-/// signing bytes change shape.
+/// Version of the index wire format; bumped when the canonical signing bytes change shape.
 pub const INDEX_FORMAT: u32 = 1;
 
 const INDEX_MAGIC: &[u8; 12] = b"QOSIDX-DOC\0\0";
@@ -134,9 +87,8 @@ pub fn arch_wire(arch: Arch) -> &'static str {
     }
 }
 
-/// Reconstruct an [`IsaLevel`] from an arch + its `wire_label`. The
-/// inverse of [`IsaLevel::wire_label`]; used when reading an entry
-/// back from the JSON index.
+/// Reconstruct an [`IsaLevel`] from an arch + `wire_label` — the
+/// inverse of [`IsaLevel::wire_label`], used reading an entry back from JSON.
 pub fn parse_isa(arch: Arch, label: &str) -> Option<IsaLevel> {
     match arch {
         Arch::X86_64 => [
@@ -176,8 +128,8 @@ impl RuntimeRef {
         if name.is_empty() {
             return Err(IndexError::BadRuntimeRef(s.to_string()));
         }
-        let version = semver::Version::parse(ver)
-            .map_err(|e| IndexError::BadSemver(s.to_string(), e))?;
+        let version =
+            semver::Version::parse(ver).map_err(|e| IndexError::BadSemver(s.to_string(), e))?;
         Ok(Self {
             name: name.to_string(),
             version,
@@ -189,9 +141,8 @@ impl RuntimeRef {
         format!("{}/{}", self.name, self.version)
     }
 
-    /// Whether `available` can host a build that requires `self`:
-    /// same runtime name, same major, and `available >= self`
-    /// (semver-compatible upgrade).
+    /// Whether `available` can host a build requiring `self`: same
+    /// runtime name, same major, and `available >= self`.
     pub fn satisfied_by(&self, available: &RuntimeRef) -> bool {
         self.name == available.name
             && available.version.major == self.version.major
@@ -199,8 +150,7 @@ impl RuntimeRef {
     }
 }
 
-/// What the local host can run: its arch, the ISA feature level its
-/// CPU actually supports, and which runtime ABIs are installed.
+/// What the local host can run: arch, actual CPU ISA level, and installed runtime ABIs.
 #[derive(Clone, Debug)]
 pub struct HostProfile {
     pub arch: Arch,
@@ -209,26 +159,24 @@ pub struct HostProfile {
 }
 
 impl HostProfile {
-    /// Detect the current host's arch + ISA feature level at runtime.
-    /// `runtimes` starts empty — the caller populates it from the set
-    /// of installed runtime bundles.
+    /// Detect the current host's arch + ISA level; `runtimes` starts
+    /// empty (caller populates from installed bundles).
     pub fn detect() -> Self {
         #[cfg(target_arch = "x86_64")]
         {
-            let level = if is_x86_feature_detected!("avx512f")
-                && is_x86_feature_detected!("avx512bw")
-            {
-                X86_64Level::V4
-            } else if is_x86_feature_detected!("avx2")
-                && is_x86_feature_detected!("bmi2")
-                && is_x86_feature_detected!("fma")
-            {
-                X86_64Level::V3
-            } else if is_x86_feature_detected!("sse4.2") && is_x86_feature_detected!("popcnt") {
-                X86_64Level::V2
-            } else {
-                X86_64Level::Baseline
-            };
+            let level =
+                if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+                    X86_64Level::V4
+                } else if is_x86_feature_detected!("avx2")
+                    && is_x86_feature_detected!("bmi2")
+                    && is_x86_feature_detected!("fma")
+                {
+                    X86_64Level::V3
+                } else if is_x86_feature_detected!("sse4.2") && is_x86_feature_detected!("popcnt") {
+                    X86_64Level::V2
+                } else {
+                    X86_64Level::Baseline
+                };
             return Self {
                 arch: Arch::X86_64,
                 isa: IsaLevel::X86_64(level),
@@ -260,8 +208,7 @@ impl HostProfile {
         }
     }
 
-    /// Register an installed runtime ABI so runtime-gated entries
-    /// become selectable.
+    /// Register an installed runtime ABI so runtime-gated entries become selectable.
     pub fn with_runtime(mut self, r: RuntimeRef) -> Self {
         self.runtimes.push(r);
         self
@@ -277,26 +224,22 @@ pub struct IndexEntry {
     pub version: String,
     /// `qpkg:<hex>` — blake3 of the signed-root (package identity).
     pub package_id: String,
-    /// blake3 hex of the whole `.qpkg` tar. This IS the iroh-blobs
-    /// content hash used to fetch and to verify-on-arrival.
+    /// blake3 hex of the whole .qpkg tar — the iroh-blobs content hash used to fetch and verify-on-arrival.
     pub qpkg_hash: String,
     /// Size of the `.qpkg` in bytes (advisory; UI + quota).
     pub size_bytes: u64,
     /// Target architecture.
     pub arch: Arch,
-    /// Minimum ISA feature level (`IsaLevel::wire_label`), e.g.
-    /// `x86_64-v3`.
+    /// Minimum ISA feature level (`IsaLevel::wire_label`), e.g. `x86_64-v3`.
     pub isa: String,
-    /// `<runtime>/<semver>` this build binds to; `None` for a
-    /// `kind = "runtime"` package or a fully-static app.
+    /// `<runtime>/<semver>` this build binds to; `None` for a `kind = "runtime"` package or fully-static app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
     /// Publisher's Ed25519 identity, `ed25519:<hex>`.
     pub publisher_identity: String,
     /// Publisher's Ed25519 signature over [`Self::signing_bytes`].
     pub publisher_signature: String,
-    /// iroh `BlobTicket` (base32) naming the node + hash to fetch the
-    /// qpkg from. The hash inside MUST equal `qpkg_hash`.
+    /// iroh `BlobTicket` (base32) naming the node + hash to fetch from; the hash inside MUST equal `qpkg_hash`.
     pub ticket: String,
 }
 
@@ -311,9 +254,9 @@ impl IndexEntry {
 
     /// Parse the `package_id`.
     pub fn parse_package_id(&self) -> Result<PackageId, IndexError> {
-        self.package_id
-            .parse()
-            .map_err(|e| IndexError::BadIdentity(format!("package_id {:?}: {e:?}", self.package_id)))
+        self.package_id.parse().map_err(|e| {
+            IndexError::BadIdentity(format!("package_id {:?}: {e:?}", self.package_id))
+        })
     }
 
     /// The parsed publisher key bytes.
@@ -321,8 +264,7 @@ impl IndexEntry {
         parse_ed25519(&self.publisher_identity)
     }
 
-    /// Parsed ISA level, or `None` if arch/label don't match a known
-    /// level.
+    /// Parsed ISA level, or `None` if arch/label don't match a known level.
     pub fn isa_level(&self) -> Option<IsaLevel> {
         parse_isa(self.arch, &self.isa)
     }
@@ -344,8 +286,7 @@ impl IndexEntry {
         Ok(out)
     }
 
-    /// Fill `publisher_identity` + `publisher_signature` by signing
-    /// [`Self::signing_bytes`] with `identity`.
+    /// Fill `publisher_identity`+`publisher_signature` by signing [`Self::signing_bytes`] with `identity`.
     pub fn sign(&mut self, identity: &SigningIdentity) -> Result<(), IndexError> {
         self.publisher_identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
         let preimage = self.signing_bytes()?;
@@ -361,12 +302,11 @@ impl IndexEntry {
         let key = self.publisher_key()?;
         let vk = VerifyingKey::from_bytes(&key).map_err(|_| IndexError::InvalidKey)?;
         let sig = Signature::from_bytes(&parse_sig(&self.publisher_signature)?);
-        vk.verify(&self.signing_bytes()?, &sig).map_err(|_| {
-            IndexError::EntrySignatureMismatch {
+        vk.verify(&self.signing_bytes()?, &sig)
+            .map_err(|_| IndexError::EntrySignatureMismatch {
                 app_id: self.app_id.clone(),
                 version: self.version.clone(),
-            }
-        })
+            })
     }
 
     fn semver(&self) -> Result<semver::Version, IndexError> {
@@ -374,9 +314,8 @@ impl IndexEntry {
             .map_err(|e| IndexError::BadSemver(self.version.clone(), e))
     }
 
-    /// Whether this build can run on `host`: arch matches, the host's
-    /// ISA rank meets the build's floor, and the runtime (if any) is
-    /// available.
+    /// Whether this build can run on `host`: arch matches, host ISA rank
+    /// meets the floor, and the runtime (if any) is available.
     pub fn runs_on(&self, host: &HostProfile) -> bool {
         if self.arch != host.arch {
             return false;
@@ -406,8 +345,7 @@ pub struct RegistryIndex {
     pub format: u32,
     pub registry_id: String,
     pub generated_unix: u64,
-    /// Registry operator's Ed25519 identity `ed25519:<hex>`. Empty
-    /// until [`Self::sign`] runs.
+    /// Registry operator's Ed25519 identity `ed25519:<hex>`; empty until [`Self::sign`] runs.
     #[serde(default)]
     pub signer_identity: String,
     /// Signature over [`Self::signing_bytes`]. Empty until signed.
@@ -440,8 +378,8 @@ impl RegistryIndex {
         serde_json::to_vec_pretty(self)
     }
 
-    /// Insert-or-replace an entry keyed by `(app_id, version, arch,
-    /// isa)` and refresh `generated_unix`. Re-sign afterwards.
+    /// Insert-or-replace an entry keyed by (`app_id`, version, arch, isa)
+    /// and refresh `generated_unix`; re-sign afterwards.
     pub fn upsert(&mut self, entry: IndexEntry) {
         self.packages.retain(|e| {
             !(e.app_id == entry.app_id
@@ -453,8 +391,7 @@ impl RegistryIndex {
         self.generated_unix = now_unix();
     }
 
-    /// Canonical bytes the registry operator signs — the whole
-    /// document minus the signature itself.
+    /// Canonical bytes the registry operator signs — the whole document minus the signature itself.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, IndexError> {
         let mut out = Vec::new();
         out.extend_from_slice(INDEX_MAGIC);
@@ -462,9 +399,8 @@ impl RegistryIndex {
         put_str(&mut out, &self.registry_id);
         out.extend_from_slice(&self.generated_unix.to_le_bytes());
         out.extend_from_slice(&(self.packages.len() as u32).to_le_bytes());
-        // Entries in a deterministic order so the signature is stable
-        // regardless of push order. Order by the fields that make an
-        // entry unique in the index.
+        // Entries in a deterministic order (by the fields that make one
+        // unique) so the signature is stable regardless of push order.
         let mut idx: Vec<&IndexEntry> = self.packages.iter().collect();
         idx.sort_by(|a, b| {
             (&a.app_id, &a.version, arch_wire(a.arch), &a.isa).cmp(&(
@@ -495,15 +431,16 @@ impl RegistryIndex {
     }
 
     /// Verify the index signature against `expected_key` (the pinned
-    /// registry operator key from `registries.toml`). Fail-closed:
-    /// unsigned or mismatched → `Err`.
+    /// registry operator key). Fail-closed: unsigned or mismatched → `Err`.
     pub fn verify_signature(&self, expected_key: &[u8; 32]) -> Result<(), IndexError> {
         if self.signature.is_empty() || self.signer_identity.is_empty() {
             return Err(IndexError::Unsigned);
         }
         let embedded = parse_ed25519(&self.signer_identity)?;
         if &embedded != expected_key {
-            return Err(IndexError::IndexSignatureMismatch(self.signer_identity.clone()));
+            return Err(IndexError::IndexSignatureMismatch(
+                self.signer_identity.clone(),
+            ));
         }
         let vk = VerifyingKey::from_bytes(expected_key).map_err(|_| IndexError::InvalidKey)?;
         let sig = Signature::from_bytes(&parse_sig(&self.signature)?);
@@ -511,17 +448,15 @@ impl RegistryIndex {
             .map_err(|_| IndexError::IndexSignatureMismatch(self.signer_identity.clone()))
     }
 
-    /// The embedded signer key (self-reported; use only after
-    /// [`Self::verify_signature`] for trust decisions).
+    /// The embedded signer key (self-reported; use only after [`Self::verify_signature`] for trust decisions).
     pub fn signer_key(&self) -> Result<[u8; 32], IndexError> {
         parse_ed25519(&self.signer_identity)
     }
 
-    /// Pick the best entry for `app_id` on `host`: highest semver
-    /// among versions matching `req` (or all versions when `req` is
-    /// `None`), tie-broken by the most-optimised ISA the host can run.
-    /// Each candidate's publisher signature is verified; entries that
-    /// fail verification are skipped (fail-closed).
+    /// Pick the best entry for `app_id` on `host`: highest semver matching
+    /// `req` (or all versions), tie-broken by the most-optimised ISA the
+    /// host can run. Each candidate's publisher signature is verified;
+    /// entries that fail are skipped (fail-closed).
     pub fn resolve_best(
         &self,
         app_id: &str,
@@ -537,10 +472,10 @@ impl RegistryIndex {
                 continue;
             }
             let Ok(ver) = e.semver() else { continue };
-            if let Some(req) = req {
-                if !req.matches(&ver) {
-                    continue;
-                }
+            if let Some(req) = req
+                && !req.matches(&ver)
+            {
+                continue;
             }
             if e.verify_publisher().is_err() {
                 continue;
@@ -550,8 +485,8 @@ impl RegistryIndex {
                 Some((cur, cur_ver)) => {
                     ver > *cur_ver
                         || (ver == *cur_ver
-                            && e.isa_level().map(|l| l.rank()).unwrap_or(0)
-                                > cur.isa_level().map(|l| l.rank()).unwrap_or(0))
+                            && e.isa_level().map_or(0, pkg::manifest::IsaLevel::rank)
+                                > cur.isa_level().map_or(0, pkg::manifest::IsaLevel::rank))
                 }
             };
             if better {
@@ -565,8 +500,7 @@ impl RegistryIndex {
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]
@@ -668,7 +602,9 @@ mod tests {
         }
         let host = x86_host(X86_64Level::Baseline);
         let req = semver::VersionReq::parse("^1").unwrap();
-        let best = idx.resolve_best("dev.qos.editor", Some(&req), &host).unwrap();
+        let best = idx
+            .resolve_best("dev.qos.editor", Some(&req), &host)
+            .unwrap();
         assert_eq!(best.version, "1.2.0");
     }
 

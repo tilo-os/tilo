@@ -1,4 +1,4 @@
-//! Black-box latency + throughput benchmark for the WPE WebKit engine
+//! Black-box latency + throughput benchmark for the WPE `WebKit` engine
 //! behind `ui::webview` (feature `webview-wpe`).
 //!
 //! Treats the engine purely through the [`ui::webview::WebViewEngine`]
@@ -19,17 +19,17 @@
 //! ```sh
 //! export PKG_CONFIG_PATH=$HOME/.cache/qos-wpe/prefix/lib64/pkgconfig \
 //!        LD_LIBRARY_PATH=$HOME/.cache/qos-wpe/prefix/lib64
-//! cargo run -p ui --features webview-wpe --example wpe_latency_bench [URL]
+//! cargo run -p ui --features webview-wpe --example ui-wpe -- wpe_latency_bench [URL]
 //! ```
 
 #[cfg(not(feature = "webview-wpe"))]
-fn main() {
+pub fn run(_args: &[String]) {
     eprintln!("wpe_latency_bench: build with --features webview-wpe");
 }
 
 #[cfg(feature = "webview-wpe")]
-fn main() {
-    bench::run();
+pub fn run(args: &[String]) {
+    bench::run(args);
 }
 
 #[cfg(feature = "webview-wpe")]
@@ -72,10 +72,13 @@ mod bench {
     /// the `WebView` widget itself uses — a changed pointer is a new
     /// engine publish.
     fn frame_key(slot: &FrameSlot) -> Option<(usize, u32, u32)> {
-        slot.lock()
-            .unwrap()
-            .as_ref()
-            .map(|f| (Arc::as_ptr(&f.rgba) as *const u8 as usize, f.width, f.height))
+        slot.lock().unwrap().as_ref().map(|f| {
+            (
+                Arc::as_ptr(&f.rgba) as *const u8 as usize,
+                f.width,
+                f.height,
+            )
+        })
     }
 
     /// True once the slot holds a frame with any non-transparent pixel —
@@ -107,13 +110,13 @@ mod bench {
         sorted[rank.clamp(1, n) - 1]
     }
 
-    pub fn run() {
+    pub fn run(args: &[String]) {
         // WebKit's bubblewrap sandbox can't nest inside the dev
         // container; on qOS the workspace sandbox is the outer boundary
         // anyway. Must be set before the engine boots.
         unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
 
-        let url = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_URL.into());
+        let url = args.first().cloned().unwrap_or_else(|| DEFAULT_URL.into());
 
         let boot_start = Instant::now();
         let engine = match WpeEngine::new() {
@@ -261,7 +264,10 @@ mod bench {
         println!("engine boot:        {:.2} s", boot_time.as_secs_f64());
         println!("load+first paint:   {:.2} s", load_time.as_secs_f64());
         println!("frame dims seen:    {dims}");
-        println!("-- throughput: {:.1} s continuous scroll @ ~60 Hz input --", window_secs);
+        println!(
+            "-- throughput: {:.1} s continuous scroll @ ~60 Hz input --",
+            window_secs
+        );
         println!("frames observed:    {frames}");
         println!("throughput:         {fps:.1} fps");
         println!(

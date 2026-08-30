@@ -5,11 +5,16 @@
 //! mutations of the canonical document. Rendering + the `ui::Widget` impl live
 //! in `widget.rs`; click-to-caret needs layout and is wired there.
 
+use crate::num;
 use crate::styles::{StyleProps, StyleSheet};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use qdoc::model::Region;
 use qdoc::{Containers, DocMut, IdGen};
+
+/// One block's `(block_id, start, end)` character range, as returned by the
+/// selection/format-span readers below.
+pub type BlockSpans = Vec<(String, usize, usize)>;
 
 /// Caret position: a block id plus a character offset within that block's text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -80,7 +85,10 @@ pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
     let mut v: Vec<f64> = raw
         .split(',')
         .filter_map(|s| s.trim().parse::<f64>().ok())
-        .filter(|p| *p >= 0.0)
+        // `parse` accepts "nan"/"inf" as valid floats; a non-finite stop would
+        // draw off-screen forever and corrupt ruler-position math, so reject it
+        // like any other malformed entry.
+        .filter(|p| p.is_finite() && *p >= 0.0)
         .collect();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
@@ -91,7 +99,7 @@ pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
 /// then a dotted leader and the page number when known. Levels deeper than 1 are
 /// indented by two spaces each. An entry with no page just shows the text.
 fn toc_line(e: &TocEntry) -> String {
-    let indent = "  ".repeat((e.level.max(1) - 1) as usize);
+    let indent = "  ".repeat(num::usize_of_i64(e.level.max(1) - 1));
     let title = e.text.trim();
     match e.page {
         Some(p) => format!("{indent}{title} .......... {p}"),
@@ -208,26 +216,36 @@ impl WordProcessor {
         if blocks.is_empty() {
             // Body always has a block (bind seeds one); header/footer may be empty.
             let new = if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
+                let mut dm = DocMut {
+                    doc: state,
+                    c: &containers,
+                    ids,
+                };
                 Some(dm.insert_block_in(self.region, None, "paragraph"))
             } else {
                 None
             };
             if let Some(id) = new {
-                self.caret = Caret { block: id.clone(), offset: 0 };
+                self.caret = Caret {
+                    block: id.clone(),
+                    offset: 0,
+                };
                 self.selection_anchor = None;
                 return id;
             }
             return String::new();
         }
-        if !blocks.contains(&self.caret.block) {
-            self.caret = Caret { block: blocks[0].clone(), offset: 0 };
-            self.selection_anchor = None;
-        } else {
+        if blocks.contains(&self.caret.block) {
             let len = self.region_block_len(state, &self.caret.block);
             if self.caret.offset > len {
                 self.caret.offset = len;
             }
+        } else {
+            self.caret = Caret {
+                block: blocks[0].clone(),
+                offset: 0,
+            };
+            self.selection_anchor = None;
         }
         self.caret.block.clone()
     }
@@ -246,7 +264,9 @@ impl WordProcessor {
     }
 
     pub fn has_selection(&self) -> bool {
-        self.selection_anchor.as_ref().map(|a| a != &self.caret).unwrap_or(false)
+        self.selection_anchor
+            .as_ref()
+            .is_some_and(|a| a != &self.caret)
     }
 
     /// Selection endpoints in document order, if non-empty.
@@ -334,7 +354,12 @@ impl WordProcessor {
                 .iter()
                 .filter_map(|m| {
                     let (ms, me) = (m.start.max(s), m.end.min(e));
-                    (ms < me).then(|| qdoc::document::MarkSpan { start: ms - s, end: me - s, name: m.name.clone(), value: m.value.clone() })
+                    (ms < me).then(|| qdoc::document::MarkSpan {
+                        start: ms - s,
+                        end: me - s,
+                        name: m.name.clone(),
+                        value: m.value.clone(),
+                    })
                 })
                 .collect();
             let int = |k: &str| match b.attrs.get(k) {
@@ -349,35 +374,52 @@ impl WordProcessor {
                 Some(qdoc::AttrVal::Str(v)) => Some(v.clone()),
                 _ => None,
             };
-            blocks.push(ClipBlock { kind: b.kind.clone(), text, marks, level: int("level"), ordered: bool_("ordered"), align: str_("align") });
+            blocks.push(ClipBlock {
+                kind: b.kind.clone(),
+                text,
+                marks,
+                level: int("level"),
+                ordered: bool_("ordered"),
+                align: str_("align"),
+            });
         }
         (plain.join("\n"), blocks)
     }
 
-    /// Insert a rich fragment at the caret (replacing the selection), preserving
     /// Replace the character range `[char_start, char_end)` of `block_id` with
     /// `text` (used by Find & Replace).
-    pub fn splice_block(&mut self, state: &mut AutoCommit, block_id: &str, char_start: usize, char_end: usize, text: &str) {
+    pub fn splice_block(
+        &mut self,
+        state: &mut AutoCommit,
+        block_id: &str,
+        char_start: usize,
+        char_end: usize,
+        text: &str,
+    ) {
         let Some(containers) = self.containers.clone() else {
             return;
         };
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
-            dm.splice_text(block_id, char_start, char_end.saturating_sub(char_start) as isize, text);
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
+            dm.splice_text(
+                block_id,
+                char_start,
+                num::isize_of_usize(char_end.saturating_sub(char_start)),
+                text,
+            );
         }
     }
 
-    /// Replace the **entire body** of the document with the content of `markdown`,
-    /// in place, on the live document (CRDT-friendly: existing block ids are
-    /// deleted and the imported content is appended as new blocks, so undo/redo
-    /// and incremental sync see one coherent action). Used by the
-    /// "New from template" picker (re-import a template's Markdown over the open
-    /// document) without throwing away the host `ui::State` (and thus its undo
-    /// history / collaboration session).
-    ///
-    /// The caret is moved to the first imported block. Returns `false` if the
-    /// document isn't bound yet, or if the Markdown fails to import (in which case
-    /// the document is left untouched — the body clear and the import share one
+    /// Replace the **entire body** with `markdown`, in place, on the live document:
+    /// existing block ids are deleted and imported content appended as new blocks,
+    /// so undo/redo and sync see one coherent action. Used by "New from template"
+    /// (re-import over the open document) without discarding the host `ui::State`'s
+    /// undo history / collaboration session. Caret moves to the first imported
+    /// block; returns `false` (document untouched) if unbound or import fails.
     /// uncommitted transaction window, so the host can still undo cleanly).
     pub fn replace_with_markdown(&mut self, state: &mut AutoCommit, markdown: &[u8]) -> bool {
         use qdoc::FormatProvider;
@@ -389,7 +431,11 @@ impl WordProcessor {
         let Some(ids) = self.ids.as_mut() else {
             return false;
         };
-        let mut dm = DocMut { doc: state, c: &containers, ids };
+        let mut dm = DocMut {
+            doc: state,
+            c: &containers,
+            ids,
+        };
         // Import the template into a clearly-empty body: drop every existing
         // block first, then import (the codec appends fresh blocks). If the import
         // fails we've only removed blocks within the still-open transaction, which
@@ -404,20 +450,22 @@ impl WordProcessor {
         // Re-seat the caret on the first newly-imported block (the body is fresh).
         let blocks = qdoc::model::blocks_in_order(state, &containers);
         match blocks.first() {
-            Some(first) => self.caret = Caret { block: first.clone(), offset: 0 },
+            Some(first) => {
+                self.caret = Caret {
+                    block: first.clone(),
+                    offset: 0,
+                }
+            }
             None => self.caret = Caret::default(),
         }
         self.clear_anchor();
         true
     }
 
-    /// Replace the whole body with `bytes` decoded as `format` (`.docx`/`.odt`/
-    /// `.md`/`.html`/`.rtf`), the in-place **Open** path. Mirrors
-    /// [`Self::replace_with_markdown`] but routes through the format-aware codec
-    /// so any supported document type can be opened into the running editor.
-    /// Returns whether the document was replaced (a decode failure leaves the
-    /// removed blocks in the still-open transaction for the host's undo to
-    /// revert, and reports `false`).
+    /// Replace the whole body with `bytes` decoded as `format` — the in-place
+    /// **Open** path, mirroring [`Self::replace_with_markdown`] but through the
+    /// format-aware codec. Returns whether it replaced (a decode failure leaves
+    /// removed blocks in the still-open transaction for the host's undo to revert).
     pub fn replace_with_format(
         &mut self,
         state: &mut AutoCommit,
@@ -431,7 +479,11 @@ impl WordProcessor {
         let Some(ids) = self.ids.as_mut() else {
             return false;
         };
-        let mut dm = DocMut { doc: state, c: &containers, ids };
+        let mut dm = DocMut {
+            doc: state,
+            c: &containers,
+            ids,
+        };
         for id in &existing {
             dm.remove_block(id);
         }
@@ -440,7 +492,12 @@ impl WordProcessor {
         }
         let blocks = qdoc::model::blocks_in_order(state, &containers);
         match blocks.first() {
-            Some(first) => self.caret = Caret { block: first.clone(), offset: 0 },
+            Some(first) => {
+                self.caret = Caret {
+                    block: first.clone(),
+                    offset: 0,
+                }
+            }
             None => self.caret = Caret::default(),
         }
         self.clear_anchor();
@@ -459,7 +516,9 @@ impl WordProcessor {
         let ids = qdoc::model::style_ids(state, c);
         if ids.is_empty() {
             // Legacy fallback: a doc saved with the old meta-JSON stylesheet.
-            if let Some(sheet) = qdoc::model::meta_str(state, c, "stylesheet").and_then(|j| StyleSheet::from_json(&j)) {
+            if let Some(sheet) = qdoc::model::meta_str(state, c, "stylesheet")
+                .and_then(|j| StyleSheet::from_json(&j))
+            {
                 return sheet;
             }
             return StyleSheet::default();
@@ -470,7 +529,10 @@ impl WordProcessor {
         // imported, user-defined, or edited built-ins — overlay them.
         let mut sheet = StyleSheet::default();
         for id in ids {
-            sheet.styles.insert(id.clone(), StyleProps::from_attrs(&qdoc::model::style_props(state, c, &id)));
+            sheet.styles.insert(
+                id.clone(),
+                StyleProps::from_attrs(&qdoc::model::style_props(state, c, &id)),
+            );
         }
         sheet
     }
@@ -485,7 +547,11 @@ impl WordProcessor {
         };
         let existing = qdoc::model::style_ids(state, &containers);
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for (id, props) in &sheet.styles {
                 dm.set_style(id, &props.to_attrs());
             }
@@ -537,7 +603,11 @@ impl WordProcessor {
             return;
         };
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.set_meta_str("page_margin_top", &margins[0].to_string());
             dm.set_meta_str("page_margin_right", &margins[1].to_string());
             dm.set_meta_str("page_margin_bottom", &margins[2].to_string());
@@ -556,9 +626,17 @@ impl WordProcessor {
             .into_iter()
             .map(|(id, _, _)| id)
             .collect::<Vec<_>>();
-        let targets = if targets.is_empty() { vec![self.caret.block.clone()] } else { targets };
+        let targets = if targets.is_empty() {
+            vec![self.caret.block.clone()]
+        } else {
+            targets
+        };
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for id in targets {
                 dm.set_attr(&id, "style", style_id);
             }
@@ -577,7 +655,10 @@ impl WordProcessor {
         let Some(containers) = self.containers.clone() else {
             return false;
         };
-        if !qdoc::model::style_ids(state, &containers).iter().any(|s| s == style_id) {
+        if !qdoc::model::style_ids(state, &containers)
+            .iter()
+            .any(|s| s == style_id)
+        {
             return false;
         }
         // Blocks that explicitly reference the doomed style must lose the ref so
@@ -585,11 +666,17 @@ impl WordProcessor {
         let orphans: Vec<String> = qdoc::model::materialize(state, &containers)
             .blocks
             .iter()
-            .filter(|b| matches!(b.attrs.get("style"), Some(qdoc::AttrVal::Str(s)) if s == style_id))
+            .filter(
+                |b| matches!(b.attrs.get("style"), Some(qdoc::AttrVal::Str(s)) if s == style_id),
+            )
             .map(|b| b.id.clone())
             .collect();
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for id in &orphans {
                 dm.set_attr(id, "style", "");
             }
@@ -627,14 +714,24 @@ impl WordProcessor {
     /// Set the explicit display size (px) of an `image` block, recording `width`
     /// and `height` attrs the renderer/exporter honour. Values are floored to a
     /// sane minimum so an image can never be scaled to nothing.
-    pub fn set_image_size(&mut self, state: &mut AutoCommit, block_id: &str, width: f64, height: f64) {
+    pub fn set_image_size(
+        &mut self,
+        state: &mut AutoCommit,
+        block_id: &str,
+        width: f64,
+        height: f64,
+    ) {
         let Some(containers) = self.containers.clone() else {
             return;
         };
-        let w = width.round().clamp(16.0, 4000.0) as i64;
-        let h = height.round().clamp(16.0, 4000.0) as i64;
+        let w = num::i64_of_f64(width.round().clamp(16.0, 4000.0));
+        let h = num::i64_of_f64(height.round().clamp(16.0, 4000.0));
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.set_attr(block_id, "width", w);
             dm.set_attr(block_id, "height", h);
         }
@@ -652,11 +749,14 @@ impl WordProcessor {
             .blocks
             .iter()
             .find(|b| b.id == block_id)
-            .map(|b| matches!(b.attrs.get(key), Some(qdoc::AttrVal::Bool(true))))
-            .unwrap_or(false);
+            .is_some_and(|b| matches!(b.attrs.get(key), Some(qdoc::AttrVal::Bool(true))));
         let next = !cur;
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.set_attr(block_id, key, next);
         }
         next
@@ -666,15 +766,19 @@ impl WordProcessor {
     /// attrs are set. Lets the panel seed its resize field from the live doc.
     pub fn image_size(&self, state: &AutoCommit, block_id: &str) -> Option<(f64, f64)> {
         let c = self.containers.as_ref()?;
-        let b = qdoc::model::materialize(state, c).blocks.into_iter().find(|b| b.id == block_id)?;
+        let b = qdoc::model::materialize(state, c)
+            .blocks
+            .into_iter()
+            .find(|b| b.id == block_id)?;
         let num = |k: &str| match b.attrs.get(k) {
-            Some(qdoc::AttrVal::Int(n)) if *n > 0 => Some(*n as f64),
+            Some(qdoc::AttrVal::Int(n)) if *n > 0 => Some(num::f64_of_i64(*n)),
             Some(qdoc::AttrVal::Float(f)) if *f > 0.0 => Some(*f),
             _ => None,
         };
         Some((num("width")?, num("height")?))
     }
 
+    /// Insert a rich fragment at the caret (replacing the selection), preserving
     /// marks + paragraph styles.
     pub fn insert_rich(&mut self, state: &mut AutoCommit, blocks: &[ClipBlock]) {
         self.delete_selection(state);
@@ -694,14 +798,24 @@ impl WordProcessor {
             // table cell into something else.
             let adopt_style = (i > 0 || was_empty) && blk.kind != "cell" && blk.kind != "fidelity";
             if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
+                let mut dm = DocMut {
+                    doc: state,
+                    c: &containers,
+                    ids,
+                };
                 dm.splice_text(&block_id, base, 0, &blk.text);
                 for m in &blk.marks {
                     let (s, e) = (base + m.start, base + m.end);
                     match &m.value {
-                        qdoc::document::MarkValue::Bool(v) => dm.add_mark(&block_id, s, e, &m.name, *v),
-                        qdoc::document::MarkValue::Int(n) => dm.add_mark(&block_id, s, e, &m.name, *n),
-                        qdoc::document::MarkValue::Str(st) => dm.add_mark(&block_id, s, e, &m.name, st.as_str()),
+                        qdoc::document::MarkValue::Bool(v) => {
+                            dm.add_mark(&block_id, s, e, &m.name, *v);
+                        }
+                        qdoc::document::MarkValue::Int(n) => {
+                            dm.add_mark(&block_id, s, e, &m.name, *n);
+                        }
+                        qdoc::document::MarkValue::Str(st) => {
+                            dm.add_mark(&block_id, s, e, &m.name, st.as_str());
+                        }
                     }
                 }
                 if adopt_style {
@@ -738,12 +852,22 @@ impl WordProcessor {
         let containers = self.containers.clone().unwrap();
         if start.block == end.block {
             if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
-                dm.splice_text(&start.block, start.offset, (end.offset - start.offset) as isize, "");
+                let mut dm = DocMut {
+                    doc: state,
+                    c: &containers,
+                    ids,
+                };
+                dm.splice_text(
+                    &start.block,
+                    start.offset,
+                    num::isize_of_usize(end.offset - start.offset),
+                    "",
+                );
             }
         } else {
             // Keep start[..start.offset] + end[end.offset..], drop the rest.
-            let end_text = qdoc::model::block_text(state, &containers, &end.block).unwrap_or_default();
+            let end_text =
+                qdoc::model::block_text(state, &containers, &end.block).unwrap_or_default();
             let tail: String = end_text.chars().skip(end.offset).collect();
             let start_len = self.block_len(state, &start.block);
             let blocks = self.ordered_blocks(state);
@@ -751,9 +875,18 @@ impl WordProcessor {
             let ei = blocks.iter().position(|b| b == &end.block).unwrap();
             let to_remove: Vec<String> = blocks[si + 1..=ei].to_vec();
             if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
+                let mut dm = DocMut {
+                    doc: state,
+                    c: &containers,
+                    ids,
+                };
                 if start.offset < start_len {
-                    dm.splice_text(&start.block, start.offset, (start_len - start.offset) as isize, "");
+                    dm.splice_text(
+                        &start.block,
+                        start.offset,
+                        num::isize_of_usize(start_len - start.offset),
+                        "",
+                    );
                 }
                 if !tail.is_empty() {
                     dm.splice_text(&start.block, start.offset, 0, &tail);
@@ -771,7 +904,13 @@ impl WordProcessor {
     /// Set paragraph style on every selected block (or the caret block). Table
     /// cells are skipped — turning a cell into a heading/list would break the
     /// table (alignment and font still apply to cells via their own methods).
-    pub fn set_paragraph_style(&mut self, state: &mut AutoCommit, kind: &str, level: Option<i64>, ordered: Option<bool>) {
+    pub fn set_paragraph_style(
+        &mut self,
+        state: &mut AutoCommit,
+        kind: &str,
+        level: Option<i64>,
+        ordered: Option<bool>,
+    ) {
         let Some(containers) = self.containers.clone() else {
             return;
         };
@@ -779,10 +918,19 @@ impl WordProcessor {
         let targets: Vec<String> = self
             .selected_block_ids(state)
             .into_iter()
-            .filter(|id| snap.blocks.iter().find(|b| &b.id == id).map(|b| b.kind != "cell").unwrap_or(true))
+            .filter(|id| {
+                snap.blocks
+                    .iter()
+                    .find(|b| &b.id == id)
+                    .is_none_or(|b| b.kind != "cell")
+            })
             .collect();
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for block in &targets {
                 dm.set_kind(block, kind);
                 if let Some(l) = level {
@@ -802,7 +950,11 @@ impl WordProcessor {
         };
         let targets = self.selected_block_ids(state);
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for block in &targets {
                 dm.set_attr(block, "align", align);
             }
@@ -819,8 +971,12 @@ impl WordProcessor {
         snap.blocks
             .iter()
             .find(|b| b.id == self.caret.block)
-            .map(|b| matches!(b.attrs.get("page_break_before"), Some(qdoc::AttrVal::Bool(true))))
-            .unwrap_or(false)
+            .is_some_and(|b| {
+                matches!(
+                    b.attrs.get("page_break_before"),
+                    Some(qdoc::AttrVal::Bool(true))
+                )
+            })
     }
 
     /// Set the `page_break_before` attr on the caret's block (forcing pagination
@@ -835,7 +991,11 @@ impl WordProcessor {
             return;
         }
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.set_attr(&block, "page_break_before", on);
         }
     }
@@ -860,8 +1020,8 @@ impl WordProcessor {
         self.set_page_break_before(state, true);
     }
 
-    /// Set a block-level attribute (e.g. font) on every selected block.
     /// Char ranges to apply an inline font mark to: the selection, or — with no
+    /// selection — the whole caret block.
     /// selection — the whole caret block.
     fn font_ranges(&self, state: &AutoCommit) -> Vec<(String, usize, usize)> {
         if self.has_selection() {
@@ -879,7 +1039,12 @@ impl WordProcessor {
     /// then re-adds it at `value`, so changing e.g. a run's size/colour/font
     /// overwrites rather than stacking. Used for the valued character formats
     /// (`color`, `font`, `size`).
-    pub fn set_mark_value(&mut self, state: &mut AutoCommit, name: &str, value: qdoc::document::MarkValue) {
+    pub fn set_mark_value(
+        &mut self,
+        state: &mut AutoCommit,
+        name: &str,
+        value: qdoc::document::MarkValue,
+    ) {
         let ranges = self.font_ranges(state);
         if self.containers.is_none() {
             return;
@@ -901,13 +1066,21 @@ impl WordProcessor {
     /// Set the font family (`sans` | `serif` | `mono`) over the selection
     /// (per-run), or the caret block. Stored as a `font` Str run mark.
     pub fn set_font_family(&mut self, state: &mut AutoCommit, family: &str) {
-        self.set_mark_value(state, "font", qdoc::document::MarkValue::Str(family.to_string()));
+        self.set_mark_value(
+            state,
+            "font",
+            qdoc::document::MarkValue::Str(family.to_string()),
+        );
     }
 
     /// Set the text colour (`#rrggbb`) over the selection (per-run), or the caret
     /// block. Stored as a `color` Str run mark.
     pub fn set_text_color(&mut self, state: &mut AutoCommit, hex: &str) {
-        self.set_mark_value(state, "color", qdoc::document::MarkValue::Str(hex.to_string()));
+        self.set_mark_value(
+            state,
+            "color",
+            qdoc::document::MarkValue::Str(hex.to_string()),
+        );
     }
 
     /// Remove a named run mark over the selection (per-run), or the caret block —
@@ -942,7 +1115,14 @@ impl WordProcessor {
             if all_marked {
                 self.region_remove_mark(state, b, *s, *e, name);
             } else {
-                self.region_add_mark(state, b, *s, *e, name, qdoc::document::MarkValue::Bool(true));
+                self.region_add_mark(
+                    state,
+                    b,
+                    *s,
+                    *e,
+                    name,
+                    qdoc::document::MarkValue::Bool(true),
+                );
             }
         }
     }
@@ -951,7 +1131,11 @@ impl WordProcessor {
     /// (per-run), or the caret block. Stored as a `highlight` Str run mark; the
     /// widget maps it to a `RichSpan.background` band behind the glyphs.
     pub fn set_highlight(&mut self, state: &mut AutoCommit, hex: &str) {
-        self.set_mark_value(state, "highlight", qdoc::document::MarkValue::Str(hex.to_string()));
+        self.set_mark_value(
+            state,
+            "highlight",
+            qdoc::document::MarkValue::Str(hex.to_string()),
+        );
     }
 
     // ---- tracked changes / comments review --------------------------------
@@ -965,7 +1149,11 @@ impl WordProcessor {
             return;
         };
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.accept_change(change_id);
         }
     }
@@ -979,7 +1167,11 @@ impl WordProcessor {
             return;
         };
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.reject_change(change_id);
         }
     }
@@ -994,7 +1186,11 @@ impl WordProcessor {
         let mut ids_in_order = self.changes_in_doc_order(state);
         ids_in_order.reverse();
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for cid in &ids_in_order {
                 dm.accept_change(cid);
             }
@@ -1010,7 +1206,11 @@ impl WordProcessor {
         let mut ids_in_order = self.changes_in_doc_order(state);
         ids_in_order.reverse();
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for cid in &ids_in_order {
                 dm.reject_change(cid);
             }
@@ -1025,12 +1225,16 @@ impl WordProcessor {
             return Vec::new();
         };
         let block_order = self.ordered_blocks(state);
-        let pos = |bid: &str| block_order.iter().position(|b| b == bid).unwrap_or(usize::MAX);
+        let pos = |bid: &str| {
+            block_order
+                .iter()
+                .position(|b| b == bid)
+                .unwrap_or(usize::MAX)
+        };
         let mut ids = qdoc::model::change_ids(state, c);
         ids.sort_by_key(|id| {
             qdoc::model::change_range(state, c, id)
-                .map(|(b, s, _)| (pos(&b), s))
-                .unwrap_or((usize::MAX, usize::MAX))
+                .map_or((usize::MAX, usize::MAX), |(b, s, _)| (pos(&b), s))
         });
         ids
     }
@@ -1048,12 +1252,16 @@ impl WordProcessor {
         let range = qdoc::model::comment_range(state, &containers, comment_id);
         let comments_obj = containers.comments.clone();
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             // 1. Clear the anchoring mark over its range so the highlight clears.
-            if let Some((b, s, e)) = &range {
-                if e > s {
-                    dm.remove_mark(b, *s, *e, qdoc::schema::MARK_COMMENT);
-                }
+            if let Some((b, s, e)) = &range
+                && e > s
+            {
+                dm.remove_mark(b, *s, *e, qdoc::schema::MARK_COMMENT);
             }
             // 2. Drop the comment entry from the comments container. `dm.doc` is
             //    the host `AutoCommit`; the container id comes from `Containers`.
@@ -1064,7 +1272,12 @@ impl WordProcessor {
     }
 
     /// Whether a named boolean run mark covers the whole of `ranges`.
-    fn mark_over_ranges(&self, state: &AutoCommit, ranges: &[(String, usize, usize)], name: &str) -> bool {
+    fn mark_over_ranges(
+        &self,
+        state: &AutoCommit,
+        ranges: &[(String, usize, usize)],
+        name: &str,
+    ) -> bool {
         let Some(containers) = self.containers.as_ref() else {
             return false;
         };
@@ -1109,8 +1322,7 @@ impl WordProcessor {
                 snap.blocks
                     .iter()
                     .find(|b| &b.id == id)
-                    .map(|b| b.kind != "cell")
-                    .unwrap_or(true)
+                    .is_none_or(|b| b.kind != "cell")
             })
             .collect()
     }
@@ -1118,7 +1330,7 @@ impl WordProcessor {
     /// The character ranges a valued/exclusive inline mark covers: the selection
     /// per-run, or — with no selection — the whole caret block. Empty runs are
     /// kept for the caller to skip.
-    pub fn format_spans(&self, state: &AutoCommit) -> Vec<(String, usize, usize)> {
+    pub fn format_spans(&self, state: &AutoCommit) -> BlockSpans {
         self.font_ranges(state)
     }
 
@@ -1126,11 +1338,7 @@ impl WordProcessor {
     /// whether the mark is already active over them (so the caller removes
     /// rather than adds). Returns `None` when there is no active selection — a
     /// toggle mark with no selection is a no-op, matching the live editor.
-    pub fn plan_toggle_mark(
-        &self,
-        state: &AutoCommit,
-        name: &str,
-    ) -> Option<(Vec<(String, usize, usize)>, bool)> {
+    pub fn plan_toggle_mark(&self, state: &AutoCommit, name: &str) -> Option<(BlockSpans, bool)> {
         let sel = self.selection_blocks(state);
         if self.containers.is_none() || sel.iter().all(|(_, s, e)| s >= e) {
             return None;
@@ -1165,7 +1373,11 @@ impl WordProcessor {
             return;
         };
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for (b, s, e) in &ranges {
                 if s >= e {
                     continue;
@@ -1203,7 +1415,11 @@ impl WordProcessor {
         };
         let targets = self.selected_block_ids(state);
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for block in &targets {
                 dm.set_attr(block, "line_spacing", mult);
             }
@@ -1220,26 +1436,23 @@ impl WordProcessor {
         snap.blocks
             .iter()
             .find(|b| b.id == self.caret.block)
-            .map(|b| match b.attrs.get("line_spacing") {
-                Some(qdoc::AttrVal::Float(f)) => *f,
-                Some(qdoc::AttrVal::Int(n)) => *n as f64,
+            .map_or(1.0, |b| match b.attrs.get("line_spacing") {
+                // A non-finite or non-positive value (a malformed import, or a
+                // remote peer's action) is not a usable multiplier — fall back
+                // like an unset attr rather than propagating it.
+                Some(qdoc::AttrVal::Float(f)) if f.is_finite() && *f > 0.0 => *f,
+                Some(qdoc::AttrVal::Int(n)) if *n > 0 => num::f64_of_i64(*n),
                 _ => 1.0,
             })
-            .unwrap_or(1.0)
     }
 
     // ---- ruler: per-block indents + tab stops --------------------------------
-    //
-    // The horizontal ruler edits three per-paragraph measures, stored as block
-    // attrs (so they merge field-by-field and survive save/reload):
-    //   * `indent`            — left / hanging indent in px (added on top of the
-    //                           block style's indent; drives `text_x`/`wrap_w`).
-    //   * `first_line_indent` — extra indent applied to the paragraph's first line
-    //                           only (recorded + reflected by the ruler marker;
-    //                           first-line-only rendering is a v1 layout limitation).
-    //   * `tab_stops`         — a comma-separated list of px positions (measured
-    //                           from the left text margin). qdoc's attr map only
-    //                           stores scalars, so the list is encoded as one `Str`.
+    // The horizontal ruler edits three per-paragraph block attrs (so they merge
+    // field-by-field and survive save/reload): `indent` (left/hanging indent px,
+    // added on top of the style's indent), `first_line_indent` (extra indent on
+    // the paragraph's first line only — a v1 layout limitation), and `tab_stops`
+    // (a comma-separated px-position list, since qdoc's attr map stores only
+    // scalars).
 
     /// Read a numeric attr (`Float`/`Int`) off an arbitrary block by id, `0.0`
     /// when absent. Shared by the indent getters below.
@@ -1251,12 +1464,11 @@ impl WordProcessor {
         snap.blocks
             .iter()
             .find(|b| b.id == block)
-            .map(|b| match b.attrs.get(key) {
+            .map_or(0.0, |b| match b.attrs.get(key) {
                 Some(qdoc::AttrVal::Float(f)) => *f,
-                Some(qdoc::AttrVal::Int(n)) => *n as f64,
+                Some(qdoc::AttrVal::Int(n)) => num::f64_of_i64(*n),
                 _ => 0.0,
             })
-            .unwrap_or(0.0)
     }
 
     /// The left / hanging indent (px) of an arbitrary block — the `indent` attr,
@@ -1278,7 +1490,11 @@ impl WordProcessor {
         };
         let v = px.max(0.0);
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.set_attr(block, "indent", v);
         }
     }
@@ -1290,7 +1506,11 @@ impl WordProcessor {
             return;
         };
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.set_attr(block, "first_line_indent", px);
         }
     }
@@ -1328,9 +1548,17 @@ impl WordProcessor {
         let mut v: Vec<f64> = stops.iter().copied().filter(|p| *p >= 0.0).collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
-        let encoded = v.iter().map(|p| format!("{p:.1}")).collect::<Vec<_>>().join(",");
+        let encoded = v
+            .iter()
+            .map(|p| format!("{p:.1}"))
+            .collect::<Vec<_>>()
+            .join(",");
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.set_attr(block, "tab_stops", encoded.as_str());
         }
     }
@@ -1374,14 +1602,18 @@ impl WordProcessor {
         let mut first_cell: Option<String> = None;
         if let Some(ids) = self.ids.as_mut() {
             let table_id = ids.mint(); // a unique id shared by every cell
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             let mut prev = Some(after);
             for r in 0..rows {
                 for col in 0..cols {
                     let id = dm.insert_block(prev.as_deref(), "cell");
                     dm.set_attr(&id, "table", table_id.as_str());
-                    dm.set_attr(&id, "row", r as i64);
-                    dm.set_attr(&id, "col", col as i64);
+                    dm.set_attr(&id, "row", num::i64_of_usize(r));
+                    dm.set_attr(&id, "col", num::i64_of_usize(col));
                     if first_cell.is_none() {
                         first_cell = Some(id.clone());
                     }
@@ -1390,22 +1622,22 @@ impl WordProcessor {
             }
         }
         if let Some(fc) = first_cell {
-            self.caret = Caret { block: fc, offset: 0 };
+            self.caret = Caret {
+                block: fc,
+                offset: 0,
+            };
             self.selection_anchor = None;
         }
     }
 
-    /// Insert an image block carrying `bytes` at the caret. The bytes are stored
-    /// in the content-addressed blob store and the new `image` block references
-    /// them via its `blob` attr — mirroring how the codecs build image blocks
-    /// (see `qdoc::codecs::odt`). If the caret sits mid-text, the current block is
-    /// split so the image lands *between* the text before and after the caret;
-    /// otherwise it is inserted after the caret block. The caret moves to a fresh
-    /// empty paragraph just after the image so typing continues below it.
+    /// Insert an image block carrying `bytes` at the caret; bytes go in the
+    /// content-addressed blob store, referenced via the block's `blob` attr
+    /// (mirroring `qdoc::codecs::odt`). Mid-text, the block splits so the image
+    /// lands between the text before/after the caret; else it inserts after the
+    /// caret block. The caret lands in a fresh empty paragraph just after the image.
     ///
-    /// When the bytes decode as an image, the intrinsic pixel `width`/`height` are
-    /// recorded as attrs (matching the ODF import path); undecodable bytes still
-    /// produce a valid `image` block (the renderer/exporter draw a placeholder).
+    /// Decodable bytes record intrinsic pixel `width`/`height` as attrs (matching
+    /// ODF import); undecodable bytes still produce a valid block (a placeholder).
     pub fn insert_image_bytes(&mut self, state: &mut AutoCommit, bytes: &[u8]) {
         self.delete_selection(state);
         let Some(containers) = self.containers.clone() else {
@@ -1413,7 +1645,9 @@ impl WordProcessor {
         };
         // Decode intrinsic dimensions up front (no doc borrow held), so the image
         // block can carry width/height attrs like the ODF importer does.
-        let intrinsic = ui::widget::Image::from_encoded(bytes).ok().map(|im| im.intrinsic_size());
+        let intrinsic = ui::widget::Image::from_encoded(bytes)
+            .ok()
+            .map(|im| im.intrinsic_size());
 
         let block = self.caret.block.clone();
         let offset = self.caret.offset;
@@ -1425,17 +1659,21 @@ impl WordProcessor {
 
         if let Some(ids) = self.ids.as_mut() {
             let hash = {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
+                let mut dm = DocMut {
+                    doc: state,
+                    c: &containers,
+                    ids,
+                };
                 let hash = dm.put_blob(bytes);
                 // Trim the caret block down to the head before the caret.
                 if offset < char_count {
-                    dm.splice_text(&block, offset, (char_count - offset) as isize, "");
+                    dm.splice_text(&block, offset, num::isize_of_usize(char_count - offset), "");
                 }
                 let img = dm.insert_block(Some(&block), "image");
                 dm.set_attr(&img, "blob", hash.as_str());
                 if let Some((w, h)) = intrinsic {
-                    dm.set_attr(&img, "width", w as i64);
-                    dm.set_attr(&img, "height", h as i64);
+                    dm.set_attr(&img, "width", i64::from(w));
+                    dm.set_attr(&img, "height", i64::from(h));
                 }
                 // A paragraph after the image carries the split-off tail and hosts
                 // the caret so editing continues beneath the image.
@@ -1443,7 +1681,10 @@ impl WordProcessor {
                 if !tail.is_empty() {
                     dm.splice_text(&after, 0, 0, &tail);
                 }
-                self.caret = Caret { block: after, offset: 0 };
+                self.caret = Caret {
+                    block: after,
+                    offset: 0,
+                };
                 hash
             };
             let _ = hash;
@@ -1452,7 +1693,7 @@ impl WordProcessor {
     }
 
     /// `(table id, Vec<(cell_id, row, col)>)` for the table the caret is in.
-    fn caret_table(&self, state: &AutoCommit) -> Option<(String, Vec<(String, usize, usize)>)> {
+    fn caret_table(&self, state: &AutoCommit) -> Option<(String, BlockSpans)> {
         let containers = self.containers.as_ref()?;
         let snap = qdoc::model::materialize(state, containers);
         let cur = snap.blocks.iter().find(|b| b.id == self.caret.block)?;
@@ -1461,20 +1702,26 @@ impl WordProcessor {
             _ => return None,
         };
         let int = |b: &qdoc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
-            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => *n as usize,
+            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
             _ => 0,
         };
         let cells = snap
             .blocks
             .iter()
-            .filter(|b| b.kind == "cell" && matches!(b.attrs.get("table"), Some(qdoc::AttrVal::Str(s)) if s == &tid))
+            .filter(|b| {
+                b.kind == "cell"
+                    && matches!(b.attrs.get("table"), Some(qdoc::AttrVal::Str(s)) if s == &tid)
+            })
             .map(|b| (b.id.clone(), int(b, "row"), int(b, "col")))
             .collect();
         Some((tid, cells))
     }
 
     fn caret_rc(&self, cells: &[(String, usize, usize)]) -> (usize, usize) {
-        cells.iter().find(|(id, _, _)| id == &self.caret.block).map(|(_, r, c)| (*r, *c)).unwrap_or((0, 0))
+        cells
+            .iter()
+            .find(|(id, _, _)| id == &self.caret.block)
+            .map_or((0, 0), |(_, r, c)| (*r, *c))
     }
 
     /// Add a row below the caret's row (toolbar `+Row`).
@@ -1511,8 +1758,17 @@ impl WordProcessor {
         // just before the table so the cells slot in immediately ahead of it.
         let anchor = if new_row == 0 {
             let order = self.ordered_blocks(state);
-            let first_idx = cells.iter().filter_map(|(id, _, _)| order.iter().position(|b| b == id)).min();
-            first_idx.and_then(|i| if i > 0 { Some(order[i - 1].clone()) } else { None })
+            let first_idx = cells
+                .iter()
+                .filter_map(|(id, _, _)| order.iter().position(|b| b == id))
+                .min();
+            first_idx.and_then(|i| {
+                if i > 0 {
+                    Some(order[i - 1].clone())
+                } else {
+                    None
+                }
+            })
         } else {
             cells
                 .iter()
@@ -1520,20 +1776,28 @@ impl WordProcessor {
                 .max_by_key(|(_, _, c)| *c)
                 .map(|(id, _, _)| id.clone())
         };
-        let to_bump: Vec<(String, usize)> = cells.iter().filter(|(_, r, _)| *r >= new_row).map(|(id, r, _)| (id.clone(), *r)).collect();
+        let to_bump: Vec<(String, usize)> = cells
+            .iter()
+            .filter(|(_, r, _)| *r >= new_row)
+            .map(|(id, r, _)| (id.clone(), *r))
+            .collect();
         let containers = self.containers.clone().unwrap();
         let mut first_new = None;
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for (id, r) in &to_bump {
-                dm.set_attr(id, "row", (*r + 1) as i64);
+                dm.set_attr(id, "row", num::i64_of_usize(*r + 1));
             }
             let mut prev = anchor;
             for col in 0..ncols {
                 let id = dm.insert_block(prev.as_deref(), "cell");
                 dm.set_attr(&id, "table", tid.as_str());
-                dm.set_attr(&id, "row", new_row as i64);
-                dm.set_attr(&id, "col", col as i64);
+                dm.set_attr(&id, "row", num::i64_of_usize(new_row));
+                dm.set_attr(&id, "col", num::i64_of_usize(col));
                 if first_new.is_none() {
                     first_new = Some(id.clone());
                 }
@@ -1541,7 +1805,10 @@ impl WordProcessor {
             }
         }
         if let Some(fc) = first_new {
-            self.caret = Caret { block: fc, offset: 0 };
+            self.caret = Caret {
+                block: fc,
+                offset: 0,
+            };
             self.selection_anchor = None;
         }
     }
@@ -1573,7 +1840,11 @@ impl WordProcessor {
         let (cur_row, cur_col) = self.caret_rc(&cells);
         let nrows = cells.iter().map(|(_, r, _)| *r).max().unwrap_or(0) + 1;
         let new_col = if right { cur_col + 1 } else { cur_col };
-        let to_bump: Vec<(String, usize)> = cells.iter().filter(|(_, _, c)| *c >= new_col).map(|(id, _, c)| (id.clone(), *c)).collect();
+        let to_bump: Vec<(String, usize)> = cells
+            .iter()
+            .filter(|(_, _, c)| *c >= new_col)
+            .map(|(id, _, c)| (id.clone(), *c))
+            .collect();
         // Precompute each row's insertion anchor (the block the new cell goes
         // after) *before* borrowing the doc mutably. For `new_col > 0` the anchor
         // is the original cell at `new_col - 1` in that row; for `new_col == 0`
@@ -1584,35 +1855,58 @@ impl WordProcessor {
             .map(|r| {
                 if new_col == 0 {
                     if r == 0 {
-                        let first_idx = cells.iter().filter_map(|(id, _, _)| order.iter().position(|b| b == id)).min();
-                        first_idx.and_then(|i| if i > 0 { Some(order[i - 1].clone()) } else { None })
+                        let first_idx = cells
+                            .iter()
+                            .filter_map(|(id, _, _)| order.iter().position(|b| b == id))
+                            .min();
+                        first_idx.and_then(|i| {
+                            if i > 0 {
+                                Some(order[i - 1].clone())
+                            } else {
+                                None
+                            }
+                        })
                     } else {
-                        cells.iter().filter(|(_, rr, _)| *rr == r - 1).max_by_key(|(_, _, cc)| *cc).map(|(id, _, _)| id.clone())
+                        cells
+                            .iter()
+                            .filter(|(_, rr, _)| *rr == r - 1)
+                            .max_by_key(|(_, _, cc)| *cc)
+                            .map(|(id, _, _)| id.clone())
                     }
                 } else {
-                    cells.iter().find(|(_, rr, cc)| *rr == r && *cc == new_col - 1).map(|(id, _, _)| id.clone())
+                    cells
+                        .iter()
+                        .find(|(_, rr, cc)| *rr == r && *cc == new_col - 1)
+                        .map(|(id, _, _)| id.clone())
                 }
             })
             .collect();
         let containers = self.containers.clone().unwrap();
         let mut caret_new = None;
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for (id, c) in &to_bump {
-                dm.set_attr(id, "col", (*c + 1) as i64);
+                dm.set_attr(id, "col", num::i64_of_usize(*c + 1));
             }
-            for r in 0..nrows {
-                let id = dm.insert_block(anchors[r].as_deref(), "cell");
+            for (r, anchor) in anchors.iter().enumerate() {
+                let id = dm.insert_block(anchor.as_deref(), "cell");
                 dm.set_attr(&id, "table", tid.as_str());
-                dm.set_attr(&id, "row", r as i64);
-                dm.set_attr(&id, "col", new_col as i64);
+                dm.set_attr(&id, "row", num::i64_of_usize(r));
+                dm.set_attr(&id, "col", num::i64_of_usize(new_col));
                 if r == cur_row {
                     caret_new = Some(id.clone());
                 }
             }
         }
         if let Some(fc) = caret_new {
-            self.caret = Caret { block: fc, offset: 0 };
+            self.caret = Caret {
+                block: fc,
+                offset: 0,
+            };
             self.selection_anchor = None;
         }
     }
@@ -1633,15 +1927,21 @@ impl WordProcessor {
             return false;
         };
         // Cells in row-major order (row, then col) — the navigation order.
-        let mut ordered: Vec<(String, usize, usize)> = cells.clone();
+        let mut ordered: Vec<(String, usize, usize)> = cells;
         ordered.sort_by_key(|(_, r, c)| (*r, *c));
-        let Some(pos) = ordered.iter().position(|(id, _, _)| id == &self.caret.block) else {
+        let Some(pos) = ordered
+            .iter()
+            .position(|(id, _, _)| id == &self.caret.block)
+        else {
             return false;
         };
         if forward {
             if pos + 1 < ordered.len() {
                 let next = ordered[pos + 1].0.clone();
-                self.caret = Caret { block: next, offset: 0 };
+                self.caret = Caret {
+                    block: next,
+                    offset: 0,
+                };
                 self.selection_anchor = None;
             } else {
                 // Last cell: grow the table by a row and land in its first cell.
@@ -1651,7 +1951,10 @@ impl WordProcessor {
             let prev = ordered[pos - 1].0.clone();
             // Land at the end of the previous cell's text (natural Shift-Tab feel).
             let off = self.block_len(state, &prev);
-            self.caret = Caret { block: prev, offset: off };
+            self.caret = Caret {
+                block: prev,
+                offset: off,
+            };
             self.selection_anchor = None;
         }
         true
@@ -1666,14 +1969,19 @@ impl WordProcessor {
             return false;
         };
         let (cur_row, cur_col) = self.caret_rc(&cells);
-        let target_row = if down { cur_row + 1 } else { cur_row.checked_sub(1).unwrap_or(usize::MAX) };
+        let target_row = if down {
+            cur_row + 1
+        } else {
+            cur_row.checked_sub(1).unwrap_or(usize::MAX)
+        };
         if target_row == usize::MAX {
             return false;
         }
         // Prefer the cell directly above/below; if that column is absent in the
         // target row (ragged tables shouldn't happen, but be safe), pick the
         // nearest column there.
-        let in_row: Vec<&(String, usize, usize)> = cells.iter().filter(|(_, r, _)| *r == target_row).collect();
+        let in_row: Vec<&(String, usize, usize)> =
+            cells.iter().filter(|(_, r, _)| *r == target_row).collect();
         if in_row.is_empty() {
             return false;
         }
@@ -1683,7 +1991,10 @@ impl WordProcessor {
             .map(|(id, _, _)| id.clone());
         if let Some(id) = pick {
             let off = self.caret.offset.min(self.block_len(state, &id));
-            self.caret = Caret { block: id, offset: off };
+            self.caret = Caret {
+                block: id,
+                offset: off,
+            };
             self.selection_anchor = None;
             return true;
         }
@@ -1701,22 +2012,44 @@ impl WordProcessor {
             return;
         }
         let (cur_row, cur_col) = self.caret_rc(&cells);
-        let to_remove: Vec<String> = cells.iter().filter(|(_, r, _)| *r == cur_row).map(|(id, _, _)| id.clone()).collect();
-        let to_shift: Vec<(String, usize)> = cells.iter().filter(|(_, r, _)| *r > cur_row).map(|(id, r, _)| (id.clone(), *r)).collect();
-        let target_row = if cur_row + 1 < nrows { cur_row + 1 } else { cur_row - 1 };
-        let new_caret = cells.iter().find(|(_, r, c)| *r == target_row && *c == cur_col).map(|(id, _, _)| id.clone());
+        let to_remove: Vec<String> = cells
+            .iter()
+            .filter(|(_, r, _)| *r == cur_row)
+            .map(|(id, _, _)| id.clone())
+            .collect();
+        let to_shift: Vec<(String, usize)> = cells
+            .iter()
+            .filter(|(_, r, _)| *r > cur_row)
+            .map(|(id, r, _)| (id.clone(), *r))
+            .collect();
+        let target_row = if cur_row + 1 < nrows {
+            cur_row + 1
+        } else {
+            cur_row - 1
+        };
+        let new_caret = cells
+            .iter()
+            .find(|(_, r, c)| *r == target_row && *c == cur_col)
+            .map(|(id, _, _)| id.clone());
         let containers = self.containers.clone().unwrap();
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for id in &to_remove {
                 dm.remove_block(id);
             }
             for (id, r) in &to_shift {
-                dm.set_attr(id, "row", (*r - 1) as i64);
+                dm.set_attr(id, "row", num::i64_of_usize(*r - 1));
             }
         }
         if let Some(nc) = new_caret {
-            self.caret = Caret { block: nc, offset: 0 };
+            self.caret = Caret {
+                block: nc,
+                offset: 0,
+            };
             self.selection_anchor = None;
         }
     }
@@ -1732,22 +2065,44 @@ impl WordProcessor {
             return;
         }
         let (cur_row, cur_col) = self.caret_rc(&cells);
-        let to_remove: Vec<String> = cells.iter().filter(|(_, _, c)| *c == cur_col).map(|(id, _, _)| id.clone()).collect();
-        let to_shift: Vec<(String, usize)> = cells.iter().filter(|(_, _, c)| *c > cur_col).map(|(id, _, c)| (id.clone(), *c)).collect();
-        let target_col = if cur_col + 1 < ncols { cur_col + 1 } else { cur_col - 1 };
-        let new_caret = cells.iter().find(|(_, r, c)| *r == cur_row && *c == target_col).map(|(id, _, _)| id.clone());
+        let to_remove: Vec<String> = cells
+            .iter()
+            .filter(|(_, _, c)| *c == cur_col)
+            .map(|(id, _, _)| id.clone())
+            .collect();
+        let to_shift: Vec<(String, usize)> = cells
+            .iter()
+            .filter(|(_, _, c)| *c > cur_col)
+            .map(|(id, _, c)| (id.clone(), *c))
+            .collect();
+        let target_col = if cur_col + 1 < ncols {
+            cur_col + 1
+        } else {
+            cur_col - 1
+        };
+        let new_caret = cells
+            .iter()
+            .find(|(_, r, c)| *r == cur_row && *c == target_col)
+            .map(|(id, _, _)| id.clone());
         let containers = self.containers.clone().unwrap();
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for id in &to_remove {
                 dm.remove_block(id);
             }
             for (id, c) in &to_shift {
-                dm.set_attr(id, "col", (*c - 1) as i64);
+                dm.set_attr(id, "col", num::i64_of_usize(*c - 1));
             }
         }
         if let Some(nc) = new_caret {
-            self.caret = Caret { block: nc, offset: 0 };
+            self.caret = Caret {
+                block: nc,
+                offset: 0,
+            };
             self.selection_anchor = None;
         }
     }
@@ -1758,12 +2113,25 @@ impl WordProcessor {
             return;
         };
         let order = self.ordered_blocks(state);
-        let first_idx = cells.iter().filter_map(|(id, _, _)| order.iter().position(|b| b == id)).min();
-        let before = first_idx.and_then(|i| if i > 0 { Some(order[i - 1].clone()) } else { None });
+        let first_idx = cells
+            .iter()
+            .filter_map(|(id, _, _)| order.iter().position(|b| b == id))
+            .min();
+        let before = first_idx.and_then(|i| {
+            if i > 0 {
+                Some(order[i - 1].clone())
+            } else {
+                None
+            }
+        });
         let cell_ids: Vec<String> = cells.iter().map(|(id, _, _)| id.clone()).collect();
         let containers = self.containers.clone().unwrap();
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             for id in &cell_ids {
                 dm.remove_block(id);
             }
@@ -1772,13 +2140,23 @@ impl WordProcessor {
         match before.or_else(|| remaining.first().cloned()) {
             Some(t) => {
                 let off = self.block_len(state, &t);
-                self.caret = Caret { block: t, offset: off };
+                self.caret = Caret {
+                    block: t,
+                    offset: off,
+                };
             }
             None => {
                 if let Some(ids) = self.ids.as_mut() {
-                    let mut dm = DocMut { doc: state, c: &containers, ids };
+                    let mut dm = DocMut {
+                        doc: state,
+                        c: &containers,
+                        ids,
+                    };
                     let id = dm.insert_block(None, "paragraph");
-                    self.caret = Caret { block: id, offset: 0 };
+                    self.caret = Caret {
+                        block: id,
+                        offset: 0,
+                    };
                 }
             }
         }
@@ -1804,7 +2182,8 @@ impl WordProcessor {
     /// absent), guarantee at least one block, and keep the caret on a real block.
     pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.containers.is_none() {
-            let c = qdoc::model::open(state, root).unwrap_or_else(|_| qdoc::model::init(state, root));
+            let c =
+                qdoc::model::open(state, root).unwrap_or_else(|_| qdoc::model::init(state, root));
             // Seed past existing block ids so editing a loaded/imported document
             // never re-mints (and overwrites) an existing block.
             self.ids = Some(qdoc::model::seeded_id_gen(state, &c));
@@ -1814,35 +2193,58 @@ impl WordProcessor {
             self.seed_styles(state);
         }
         let containers = self.containers.clone().unwrap();
-        let blocks = qdoc::model::blocks_in_order(state, &containers);
+        // A document always has somewhere to write: an empty body gets its
+        // first paragraph here. Header and footer stay empty until something
+        // asks for them.
+        if qdoc::model::blocks_in_order(state, &containers).is_empty()
+            && let Some(ids) = self.ids.as_mut()
+        {
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
+            dm.insert_block(None, "paragraph");
+        }
+        // The caret's block has to exist in the *active region's* blocks, not
+        // the body's — otherwise a caret seated in a header or footer reads as
+        // stray on every body-only check and gets dragged back to the body.
+        let mut blocks = self.region_blocks_in_order(state);
         if blocks.is_empty() {
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
-                let id = dm.insert_block(None, "paragraph");
-                self.caret = Caret { block: id, offset: 0 };
-            }
-        } else if !blocks.contains(&self.caret.block) {
-            self.caret = Caret { block: blocks[0].clone(), offset: 0 };
-        } else {
+            // The running head being edited has lost its last block, so there
+            // is nothing there to type into and the body is the context again.
+            self.region = Region::Body;
+            blocks = self.region_blocks_in_order(state);
+        }
+        if blocks.contains(&self.caret.block) {
             // clamp offset to the (possibly remotely-shrunk) block length
             let len = self.block_len(state, &self.caret.block);
             if self.caret.offset > len {
                 self.caret.offset = len;
             }
+        } else if let Some(first) = blocks.first().cloned() {
+            // Nothing seated yet, or the block the caret was on is gone. The
+            // first position of this region is where to be, and an anchor
+            // into a vanished block must not survive it.
+            self.caret = Caret {
+                block: first,
+                offset: 0,
+            };
+            self.selection_anchor = None;
         }
     }
 
     // ---- region-aware primitives -------------------------------------------
-    //
     // The caret/edit machinery below addresses whichever region is active
-    // (`self.region`). These helpers dispatch each read/write to the body ops or
-    // the region-aware (`*_in`) qdoc ops accordingly, so the edit operations
-    // (`insert_str`, `enter`, `backspace`, motion, marks…) are written once and
-    // work in the body, header, and footer alike.
+    // (`self.region`), dispatching each op to the body or region-aware (`*_in`)
+    // qdoc ops, so `insert_str`/`enter`/`backspace`/motion/marks are written once
+    // and work in body, header, and footer alike.
 
     /// Block ids of the **active region**, in order.
     fn region_blocks_in_order(&self, state: &AutoCommit) -> Vec<String> {
-        let Some(c) = self.containers.as_ref() else { return vec![] };
+        let Some(c) = self.containers.as_ref() else {
+            return vec![];
+        };
         qdoc::model::region_blocks_in_order(state, c, self.region)
     }
 
@@ -1861,29 +2263,40 @@ impl WordProcessor {
     }
 
     fn region_block_len(&self, state: &AutoCommit, block: &str) -> usize {
-        self.region_block_text(state, block).map(|t| t.chars().count()).unwrap_or(0)
+        self.region_block_text(state, block)
+            .map_or(0, |t| t.chars().count())
     }
 
     /// Whether a boolean mark covers `[start,end)` of a block in the active region.
-    fn region_has_mark_over(&self, state: &AutoCommit, block: &str, start: usize, end: usize, name: &str) -> bool {
-        let Some(c) = self.containers.as_ref() else { return false };
+    fn region_has_mark_over(
+        &self,
+        state: &AutoCommit,
+        block: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+    ) -> bool {
+        let Some(c) = self.containers.as_ref() else {
+            return false;
+        };
         match self.region {
             Region::Body => qdoc::model::has_mark_over(state, c, block, start, end, name),
             r => qdoc::model::materialize_region(state, c, r)
                 .into_iter()
                 .find(|b| b.id == block)
-                .map(|b| b.marks.iter().any(|m| m.name == name && m.start <= start && m.end >= end))
-                .unwrap_or(false),
+                .is_some_and(|b| {
+                    b.marks
+                        .iter()
+                        .any(|m| m.name == name && m.start <= start && m.end >= end)
+                }),
         }
     }
 
     // ---- region-aware writes (dispatch body vs. header/footer) -------------
-    //
-    // `splice` / `insert_block` / `set_attr` / `add_mark` have region-aware qdoc
-    // ops (`*_in`); `remove_block` / `set_kind` / `remove_mark` do NOT yet, so for
-    // header/footer they are implemented here over raw automerge against the live
-    // region container (resolved fresh from the document root each call, never a
-    // possibly-stale cached id). See the "missing qdoc ops" note in the report.
+    // `splice`/`insert_block`/`set_attr`/`add_mark` have region-aware `*_in` qdoc
+    // ops; `remove_block`/`set_kind`/`remove_mark` do not yet, so for header/footer
+    // those are implemented here over raw automerge against the live region
+    // container (resolved fresh each call, never a stale cached id).
 
     /// Resolve the active region's live block container object.
     fn region_container_obj(&self, doc: &AutoCommit) -> Option<ObjId> {
@@ -1895,11 +2308,24 @@ impl WordProcessor {
         }
     }
 
-    fn region_splice(&mut self, state: &mut AutoCommit, block: &str, idx: usize, del: isize, ins: &str) {
-        let Some(containers) = self.containers.clone() else { return };
+    fn region_splice(
+        &mut self,
+        state: &mut AutoCommit,
+        block: &str,
+        idx: usize,
+        del: isize,
+        ins: &str,
+    ) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
         let region = self.region;
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             match region {
                 Region::Body => dm.splice_text(block, idx, del, ins),
                 r => dm.splice_text_in(r, block, idx, del, ins),
@@ -1907,22 +2333,43 @@ impl WordProcessor {
         }
     }
 
-    fn region_insert_block(&mut self, state: &mut AutoCommit, after: Option<&str>, kind: &str) -> Option<String> {
-        let Some(containers) = self.containers.clone() else { return None };
+    fn region_insert_block(
+        &mut self,
+        state: &mut AutoCommit,
+        after: Option<&str>,
+        kind: &str,
+    ) -> Option<String> {
+        let containers = self.containers.clone()?;
         let region = self.region;
         let ids = self.ids.as_mut()?;
-        let mut dm = DocMut { doc: state, c: &containers, ids };
+        let mut dm = DocMut {
+            doc: state,
+            c: &containers,
+            ids,
+        };
         Some(match region {
             Region::Body => dm.insert_block(after, kind),
             r => dm.insert_block_in(r, after, kind),
         })
     }
 
-    fn region_set_attr(&mut self, state: &mut AutoCommit, block: &str, key: &str, value: impl Into<automerge::ScalarValue>) {
-        let Some(containers) = self.containers.clone() else { return };
+    fn region_set_attr(
+        &mut self,
+        state: &mut AutoCommit,
+        block: &str,
+        key: &str,
+        value: impl Into<automerge::ScalarValue>,
+    ) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
         let region = self.region;
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             match region {
                 Region::Body => dm.set_attr(block, key, value),
                 r => dm.set_attr_in(r, block, key, value),
@@ -1933,28 +2380,40 @@ impl WordProcessor {
     fn region_set_kind(&mut self, state: &mut AutoCommit, block: &str, kind: &str) {
         let region = self.region;
         if region == Region::Body {
-            let Some(containers) = self.containers.clone() else { return };
+            let Some(containers) = self.containers.clone() else {
+                return;
+            };
             if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
+                let mut dm = DocMut {
+                    doc: state,
+                    c: &containers,
+                    ids,
+                };
                 dm.set_kind(block, kind);
             }
             return;
         }
         // Header/Footer: no `set_kind_in` exists yet — write the block `kind`
         // scalar directly on the region block object.
-        if let Some(container) = self.region_container_obj(state) {
-            if let Some(obj) = region_block_obj(state, &container, block) {
-                let _ = state.put(&obj, qdoc::schema::BLOCK_KIND, kind);
-            }
+        if let Some(container) = self.region_container_obj(state)
+            && let Some(obj) = region_block_obj(state, &container, block)
+        {
+            let _ = state.put(&obj, qdoc::schema::BLOCK_KIND, kind);
         }
     }
 
     fn region_remove_block(&mut self, state: &mut AutoCommit, block: &str) {
         let region = self.region;
         if region == Region::Body {
-            let Some(containers) = self.containers.clone() else { return };
+            let Some(containers) = self.containers.clone() else {
+                return;
+            };
             if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
+                let mut dm = DocMut {
+                    doc: state,
+                    c: &containers,
+                    ids,
+                };
                 dm.remove_block(block);
             }
             return;
@@ -1966,32 +2425,67 @@ impl WordProcessor {
         }
     }
 
-    fn region_add_mark(&mut self, state: &mut AutoCommit, block: &str, start: usize, end: usize, name: &str, value: qdoc::document::MarkValue) {
-        let Some(containers) = self.containers.clone() else { return };
+    fn region_add_mark(
+        &mut self,
+        state: &mut AutoCommit,
+        block: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+        value: qdoc::document::MarkValue,
+    ) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
         let region = self.region;
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             match region {
                 Region::Body => match value {
                     qdoc::document::MarkValue::Bool(v) => dm.add_mark(block, start, end, name, v),
                     qdoc::document::MarkValue::Int(n) => dm.add_mark(block, start, end, name, n),
-                    qdoc::document::MarkValue::Str(s) => dm.add_mark(block, start, end, name, s.as_str()),
+                    qdoc::document::MarkValue::Str(s) => {
+                        dm.add_mark(block, start, end, name, s.as_str());
+                    }
                 },
                 r => match value {
-                    qdoc::document::MarkValue::Bool(v) => dm.add_mark_in(r, block, start, end, name, v),
-                    qdoc::document::MarkValue::Int(n) => dm.add_mark_in(r, block, start, end, name, n),
-                    qdoc::document::MarkValue::Str(s) => dm.add_mark_in(r, block, start, end, name, s.as_str()),
+                    qdoc::document::MarkValue::Bool(v) => {
+                        dm.add_mark_in(r, block, start, end, name, v);
+                    }
+                    qdoc::document::MarkValue::Int(n) => {
+                        dm.add_mark_in(r, block, start, end, name, n);
+                    }
+                    qdoc::document::MarkValue::Str(s) => {
+                        dm.add_mark_in(r, block, start, end, name, s.as_str());
+                    }
                 },
             }
         }
     }
 
-    fn region_remove_mark(&mut self, state: &mut AutoCommit, block: &str, start: usize, end: usize, name: &str) {
+    fn region_remove_mark(
+        &mut self,
+        state: &mut AutoCommit,
+        block: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+    ) {
         let region = self.region;
         if region == Region::Body {
-            let Some(containers) = self.containers.clone() else { return };
+            let Some(containers) = self.containers.clone() else {
+                return;
+            };
             if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
+                let mut dm = DocMut {
+                    doc: state,
+                    c: &containers,
+                    ids,
+                };
                 dm.remove_mark(block, start, end, name);
             }
             return;
@@ -1999,14 +2493,12 @@ impl WordProcessor {
         // Header/Footer: no `remove_mark_in` exists yet — clear the mark over the
         // range directly on the region block's Text object (mirrors the body
         // `DocMut::remove_mark`, which uses `unmark(.., ExpandMark::After)`).
-        if let Some(container) = self.region_container_obj(state) {
-            if let Some(obj) = region_block_obj(state, &container, block) {
-                if let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
-                    state.get(&obj, qdoc::schema::BLOCK_TEXT)
-                {
-                    let _ = state.unmark(&tid, name, start, end, automerge::marks::ExpandMark::After);
-                }
-            }
+        if let Some(container) = self.region_container_obj(state)
+            && let Some(obj) = region_block_obj(state, &container, block)
+            && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
+                state.get(&obj, qdoc::schema::BLOCK_TEXT)
+        {
+            let _ = state.unmark(&tid, name, start, end, automerge::marks::ExpandMark::After);
         }
     }
 
@@ -2014,12 +2506,18 @@ impl WordProcessor {
     /// body too (renders as a `field` mark; the body renderer substitutes it).
     pub fn insert_page_number(&mut self, state: &mut AutoCommit) {
         self.delete_selection(state);
-        let Some(containers) = self.containers.clone() else { return };
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
         let block = self.caret.block.clone();
         let idx = self.caret.offset;
         let region = self.region;
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             dm.insert_page_number_field(region, &block, idx);
         }
         // The placeholder occupies one character.
@@ -2035,7 +2533,8 @@ impl WordProcessor {
 
     /// Text of the block the caret is in (in the active region).
     pub fn current_text(&self, state: &AutoCommit) -> String {
-        self.region_block_text(state, &self.caret.block).unwrap_or_default()
+        self.region_block_text(state, &self.caret.block)
+            .unwrap_or_default()
     }
 
     /// Ordered block texts (empty blocks render as empty strings).
@@ -2072,23 +2571,23 @@ impl WordProcessor {
                     Some(qdoc::AttrVal::Int(n)) if *n >= 1 => *n,
                     _ => 1,
                 };
-                Heading { id: b.id.clone(), level, text: b.text.clone() }
+                Heading {
+                    id: b.id.clone(),
+                    level,
+                    text: b.text.clone(),
+                }
             })
             .collect()
     }
 
-    /// Replace any previously generated table of contents with a fresh one built
-    /// from `entries` (each `(level, text, page)`), inserted as `toc`-marked
-    /// `paragraph` blocks at the very top of the document — one block per entry.
-    ///
-    /// Re-running first removes the old TOC blocks (found by their `toc` attr), so
-    /// regenerating never duplicates the table. Each line is indented by its
-    /// heading level and ends with the page number (when known) after a dot
-    /// leader, e.g. `  Background .......... 3`. The caret is left untouched unless
-    /// it pointed at a removed TOC block, in which case it falls back to the first
-    /// surviving block.
-    ///
-    /// Returns the ids of the inserted TOC blocks (top-to-bottom).
+    /// Replace any previously generated TOC with a fresh one from `entries`
+    /// (each `(level, text, page)`), inserted as `toc`-marked paragraph blocks at
+    /// the document top — one per entry. Re-running first removes the old TOC
+    /// blocks (by their `toc` attr), so regenerating never duplicates. Each line
+    /// is indented by heading level with a dot-leader page number, e.g.
+    /// `  Background .......... 3`. Caret stays put unless it pointed at a
+    /// removed TOC block, then falls back to the first surviving block. Returns
+    /// the inserted TOC block ids (top-to-bottom).
     pub fn generate_toc(&mut self, state: &mut AutoCommit, entries: &[TocEntry]) -> Vec<String> {
         let Some(containers) = self.containers.clone() else {
             return vec![];
@@ -2096,13 +2595,21 @@ impl WordProcessor {
         // Collect the existing TOC block ids (document order) before mutating.
         let old: Vec<String> = {
             let snap = qdoc::model::materialize(state, &containers);
-            snap.blocks.iter().filter(|b| block_is_toc(b)).map(|b| b.id.clone()).collect()
+            snap.blocks
+                .iter()
+                .filter(|b| block_is_toc(b))
+                .map(|b| b.id.clone())
+                .collect()
         };
         let caret_in_old = old.contains(&self.caret.block);
 
         let mut inserted = Vec::with_capacity(entries.len());
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
             // Drop the previous TOC first so the new one starts at a clean top.
             for id in &old {
                 dm.remove_block(id);
@@ -2128,7 +2635,10 @@ impl WordProcessor {
         if caret_in_old {
             let order = self.ordered_blocks(state);
             if let Some(first) = order.first() {
-                self.caret = Caret { block: first.clone(), offset: 0 };
+                self.caret = Caret {
+                    block: first.clone(),
+                    offset: 0,
+                };
             }
         }
         self.selection_anchor = None;
@@ -2145,8 +2655,9 @@ impl WordProcessor {
             r => qdoc::model::materialize_region(state, c, r),
         };
         let b = views.iter().find(|b| b.id == block);
-        let kind = b.map(|b| b.kind.clone()).unwrap_or_else(|| "paragraph".into());
-        let ordered = b.map(|b| matches!(b.attrs.get("ordered"), Some(qdoc::AttrVal::Bool(true)))).unwrap_or(false);
+        let kind = b.map_or_else(|| "paragraph".into(), |b| b.kind.clone());
+        let ordered =
+            b.is_some_and(|b| matches!(b.attrs.get("ordered"), Some(qdoc::AttrVal::Bool(true))));
         let level = b.and_then(|b| match b.attrs.get("level") {
             Some(qdoc::AttrVal::Int(n)) => Some(*n),
             _ => None,
@@ -2175,9 +2686,13 @@ impl WordProcessor {
             "###" => ("heading", Some(3), None),
             _ => return false,
         };
-        let plen = prefix.chars().count() as isize;
+        let plen = num::isize_of_usize(prefix.chars().count());
         if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &c, ids };
+            let mut dm = DocMut {
+                doc: state,
+                c: &c,
+                ids,
+            };
             dm.splice_text(&block, 0, plen, "");
             dm.set_kind(&block, kind);
             if let Some(l) = level {
@@ -2220,10 +2735,16 @@ impl WordProcessor {
             return;
         };
         let last_len = self.block_len(state, &last);
-        self.caret = Caret { block: first, offset: 0 };
+        self.caret = Caret {
+            block: first,
+            offset: 0,
+        };
         self.clear_anchor();
         self.set_anchor();
-        self.caret = Caret { block: last, offset: last_len };
+        self.caret = Caret {
+            block: last,
+            offset: last_len,
+        };
     }
 
     // ---- edit operations ---------------------------------------------------
@@ -2263,9 +2784,19 @@ impl WordProcessor {
             return;
         }
 
-        let new_kind = if kind == "list_item" { "list_item" } else { "paragraph" };
+        let new_kind = if kind == "list_item" {
+            "list_item"
+        } else {
+            "paragraph"
+        };
         if offset < char_count {
-            self.region_splice(state, &block, offset, (char_count - offset) as isize, "");
+            self.region_splice(
+                state,
+                &block,
+                offset,
+                num::isize_of_usize(char_count - offset),
+                "",
+            );
         }
         let Some(id) = self.region_insert_block(state, Some(&block), new_kind) else {
             return;
@@ -2276,7 +2807,10 @@ impl WordProcessor {
         if !tail.is_empty() {
             self.region_splice(state, &id, 0, 0, &tail);
         }
-        self.caret = Caret { block: id, offset: 0 };
+        self.caret = Caret {
+            block: id,
+            offset: 0,
+        };
     }
 
     /// Delete the character before the caret; at offset 0 merge into the
@@ -2318,7 +2852,10 @@ impl WordProcessor {
             self.region_splice(state, &prev, prev_len, 0, &cur_text);
         }
         self.region_remove_block(state, &block);
-        self.caret = Caret { block: prev, offset: prev_len };
+        self.caret = Caret {
+            block: prev,
+            offset: prev_len,
+        };
     }
 
     /// Delete the character after the caret; at end-of-block merge the next
@@ -2363,12 +2900,15 @@ impl WordProcessor {
             return;
         }
         let blocks = self.ordered_blocks(state);
-        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block) {
-            if pos > 0 {
-                let prev = blocks[pos - 1].clone();
-                let len = self.block_len(state, &prev);
-                self.caret = Caret { block: prev, offset: len };
-            }
+        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block)
+            && pos > 0
+        {
+            let prev = blocks[pos - 1].clone();
+            let len = self.block_len(state, &prev);
+            self.caret = Caret {
+                block: prev,
+                offset: len,
+            };
         }
     }
 
@@ -2379,10 +2919,13 @@ impl WordProcessor {
             return;
         }
         let blocks = self.ordered_blocks(state);
-        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block) {
-            if pos + 1 < blocks.len() {
-                self.caret = Caret { block: blocks[pos + 1].clone(), offset: 0 };
-            }
+        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block)
+            && pos + 1 < blocks.len()
+        {
+            self.caret = Caret {
+                block: blocks[pos + 1].clone(),
+                offset: 0,
+            };
         }
     }
 
@@ -2409,7 +2952,9 @@ impl WordProcessor {
             return;
         }
         if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block) {
-            let new = (pos as i32 + delta).clamp(0, blocks.len() as i32 - 1) as usize;
+            let new = num::usize_of_i32(
+                (num::i32_of_usize(pos) + delta).clamp(0, num::i32_of_usize(blocks.len()) - 1),
+            );
             self.move_to_block(state, new);
         }
     }
@@ -2429,10 +2974,9 @@ impl WordProcessor {
         self.caret = Caret { block, offset };
     }
 
-    /// The active selection as `((block, start), (block, end))` **when it is a
-    /// single-block selection** (the v1 case the header/footer band renders). The
-    /// endpoints are ordered. Returns `None` for no selection or a multi-block one
-    /// (the band is one short paragraph in practice). Used by the widget to paint
+    /// The active selection as `((block, start), (block, end))`, ordered, **only**
+    /// when it is a single-block selection (the header/footer band's v1 case) —
+    /// `None` for no selection or a multi-block one. Used by the widget to paint
     /// the band selection without depending on layout.
     pub fn band_selection_range(&self) -> Option<((String, usize), (String, usize))> {
         let anchor = self.selection_anchor.as_ref()?;
@@ -2444,7 +2988,10 @@ impl WordProcessor {
         } else {
             (self.caret.offset, anchor.offset)
         };
-        Some(((self.caret.block.clone(), lo), (self.caret.block.clone(), hi)))
+        Some((
+            (self.caret.block.clone(), lo),
+            (self.caret.block.clone(), hi),
+        ))
     }
 }
 
@@ -2463,7 +3010,7 @@ mod tests {
     #[test]
     fn bind_creates_initial_paragraph_and_caret() {
         let (wp, state) = bound();
-        assert_eq!(wp.block_texts(&state), vec!["".to_string()]);
+        assert_eq!(wp.block_texts(&state), vec![String::new()]);
         assert_eq!(wp.caret.offset, 0);
         assert!(!wp.caret.block.is_empty());
     }
@@ -2474,12 +3021,18 @@ mod tests {
         let c = wp.containers.as_ref().unwrap();
         let ids = qdoc::model::style_ids(&state, c);
         for k in ["body", "heading1", "heading2", "heading3", "list", "quote"] {
-            assert!(ids.contains(&k.to_string()), "built-in style {k} seeded into container: {ids:?}");
+            assert!(
+                ids.contains(&k.to_string()),
+                "built-in style {k} seeded into container: {ids:?}"
+            );
         }
         // And `stylesheet()` reads them back faithfully (incl. fractional size).
         let sheet = wp.stylesheet(&state);
         assert_eq!(sheet.get("body").name, "Body");
-        assert!((sheet.get("body").size - 16.5).abs() < 1e-6, "fractional size survived the container");
+        assert!(
+            (sheet.get("body").size - 16.5).abs() < 1e-6,
+            "fractional size survived the container"
+        );
         assert!(sheet.get("quote").italic, "quote stays italic");
     }
 
@@ -2488,7 +3041,15 @@ mod tests {
         let (mut wp, mut state) = bound();
         let mut sheet = wp.stylesheet(&state);
         sheet.styles.get_mut("body").unwrap().size = 42.0;
-        sheet.styles.insert("custom".into(), StyleProps { name: "Custom".into(), font: "serif".into(), size: 19.0, ..Default::default() });
+        sheet.styles.insert(
+            "custom".into(),
+            StyleProps {
+                name: "Custom".into(),
+                font: "serif".into(),
+                size: 19.0,
+                ..Default::default()
+            },
+        );
         wp.set_stylesheet(&mut state, &sheet);
 
         // Read back via the container (a fresh read path, not the in-memory sheet).
@@ -2508,17 +3069,30 @@ mod tests {
         let mut legacy = StyleSheet::default();
         legacy.styles.get_mut("body").unwrap().size = 99.0;
         {
-            let mut dm = DocMut { doc: &mut state, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut state,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.set_meta_str("stylesheet", &legacy.to_json());
         }
-        assert!(qdoc::model::style_ids(&state, &c).is_empty(), "container starts empty (old doc)");
+        assert!(
+            qdoc::model::style_ids(&state, &c).is_empty(),
+            "container starts empty (old doc)"
+        );
 
         // Binding the editor migrates the legacy JSON into the container.
         let mut wp = WordProcessor::new();
         wp.bind(&mut state, &ROOT);
         let migrated = qdoc::model::style_ids(&state, wp.containers.as_ref().unwrap());
-        assert!(migrated.contains(&"body".to_string()), "legacy styles migrated into container: {migrated:?}");
-        assert!((wp.stylesheet(&state).get("body").size - 99.0).abs() < 1e-6, "custom legacy value survived migration");
+        assert!(
+            migrated.contains(&"body".to_string()),
+            "legacy styles migrated into container: {migrated:?}"
+        );
+        assert!(
+            (wp.stylesheet(&state).get("body").size - 99.0).abs() < 1e-6,
+            "custom legacy value survived migration"
+        );
     }
 
     #[test]
@@ -2539,7 +3113,10 @@ mod tests {
         }
         assert_eq!(wp.caret.offset, 5);
         wp.enter(&mut state);
-        assert_eq!(wp.block_texts(&state), vec!["hello".to_string(), "world".to_string()]);
+        assert_eq!(
+            wp.block_texts(&state),
+            vec!["hello".to_string(), "world".to_string()]
+        );
         assert_eq!(wp.caret.offset, 0);
         assert_eq!(wp.current_text(&state), "world");
     }
@@ -2550,7 +3127,10 @@ mod tests {
         wp.insert_str(&mut state, "ab");
         wp.enter(&mut state);
         wp.insert_str(&mut state, "cd");
-        assert_eq!(wp.block_texts(&state), vec!["ab".to_string(), "cd".to_string()]);
+        assert_eq!(
+            wp.block_texts(&state),
+            vec!["ab".to_string(), "cd".to_string()]
+        );
 
         // delete 'd'
         wp.backspace(&mut state);
@@ -2603,7 +3183,13 @@ mod tests {
         wp.caret.offset = 0;
         wp.set_anchor();
         wp.caret.offset = 5;
-        assert_eq!(wp.selection_blocks(&state).into_iter().map(|(_, s, e)| (s, e)).collect::<Vec<_>>(), vec![(0, 5)]);
+        assert_eq!(
+            wp.selection_blocks(&state)
+                .into_iter()
+                .map(|(_, s, e)| (s, e))
+                .collect::<Vec<_>>(),
+            vec![(0, 5)]
+        );
         // typing replaces the selection
         wp.insert_str(&mut state, "HI");
         assert_eq!(wp.current_text(&state), "HI world");
@@ -2626,7 +3212,12 @@ mod tests {
         let c = wp.containers.as_ref().unwrap();
         let snap = qdoc::model::materialize(&state, c);
         let blk = &snap.blocks[0];
-        let mark = |name: &str| blk.marks.iter().find(|m| m.name == name && m.start == 0 && m.end == 5).map(|m| m.value.clone());
+        let mark = |name: &str| {
+            blk.marks
+                .iter()
+                .find(|m| m.name == name && m.start == 0 && m.end == 5)
+                .map(|m| m.value.clone())
+        };
         match mark("color") {
             Some(MarkValue::Str(s)) => assert_eq!(s, "#ff0000"),
             _ => panic!("color mark missing over selection"),
@@ -2653,7 +3244,12 @@ mod tests {
         let c = wp.containers.as_ref().unwrap();
         let snap = qdoc::model::materialize(&state, c);
         let blk = &snap.blocks[0];
-        match blk.marks.iter().find(|m| m.name == "highlight" && m.start == 0 && m.end == 5).map(|m| m.value.clone()) {
+        match blk
+            .marks
+            .iter()
+            .find(|m| m.name == "highlight" && m.start == 0 && m.end == 5)
+            .map(|m| m.value.clone())
+        {
             Some(MarkValue::Str(s)) => assert_eq!(s, "#fff35c"),
             _ => panic!("highlight mark missing over selection"),
         }
@@ -2679,38 +3275,61 @@ mod tests {
         wp.caret.offset = 2;
         wp.toggle_super(&mut state);
         let c = wp.containers.clone().unwrap();
-        assert!(qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"), "super applied");
-        assert!(!qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"), "no sub yet");
+        assert!(
+            qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"),
+            "super applied"
+        );
+        assert!(
+            !qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
+            "no sub yet"
+        );
 
         // Re-select and toggle sub: it must clear super (mutual exclusion).
         wp.caret.offset = 1;
         wp.set_anchor();
         wp.caret.offset = 2;
         wp.toggle_sub(&mut state);
-        assert!(qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"), "sub applied");
-        assert!(!qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"), "super cleared");
+        assert!(
+            qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
+            "sub applied"
+        );
+        assert!(
+            !qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"),
+            "super cleared"
+        );
 
         // Toggling sub again removes it (off).
         wp.caret.offset = 1;
         wp.set_anchor();
         wp.caret.offset = 2;
         wp.toggle_sub(&mut state);
-        assert!(!qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"), "sub toggled off");
+        assert!(
+            !qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
+            "sub toggled off"
+        );
     }
 
     #[test]
     fn line_spacing_writes_block_attr_and_reads_back() {
         let (mut wp, mut state) = bound();
         wp.insert_str(&mut state, "a paragraph");
-        assert!((wp.caret_line_spacing(&state) - 1.0).abs() < 1e-9, "default 1.0 when unset");
+        assert!(
+            (wp.caret_line_spacing(&state) - 1.0).abs() < 1e-9,
+            "default 1.0 when unset"
+        );
         wp.set_line_spacing(&mut state, 2.0);
         let c = wp.containers.as_ref().unwrap();
         let snap = qdoc::model::materialize(&state, c);
         match snap.blocks[0].attrs.get("line_spacing") {
-            Some(qdoc::AttrVal::Float(f)) => assert!((f - 2.0).abs() < 1e-9, "line_spacing=2.0 stored"),
+            Some(qdoc::AttrVal::Float(f)) => {
+                assert!((f - 2.0).abs() < 1e-9, "line_spacing=2.0 stored");
+            }
             other => panic!("expected line_spacing Float attr, got {other:?}"),
         }
-        assert!((wp.caret_line_spacing(&state) - 2.0).abs() < 1e-9, "caret reads 2.0 back");
+        assert!(
+            (wp.caret_line_spacing(&state) - 2.0).abs() < 1e-9,
+            "caret reads 2.0 back"
+        );
     }
 
     #[test]
@@ -2725,9 +3344,15 @@ mod tests {
         assert_eq!(blocks.len(), 3);
 
         // Select from "rst" of block 0 through "thi" of block 2.
-        wp.set_caret(Caret { block: blocks[0].clone(), offset: 2 });
+        wp.set_caret(Caret {
+            block: blocks[0].clone(),
+            offset: 2,
+        });
         wp.set_anchor();
-        wp.set_caret(Caret { block: blocks[2].clone(), offset: 3 });
+        wp.set_caret(Caret {
+            block: blocks[2].clone(),
+            offset: 3,
+        });
 
         // Selected text spans three blocks, joined by newlines.
         assert_eq!(wp.selection_text(&state), "rst\nsecond\nthi");
@@ -2742,7 +3367,10 @@ mod tests {
     fn insert_multiline_splits_into_paragraphs() {
         let (mut wp, mut state) = bound();
         wp.insert_multiline(&mut state, "alpha\nbeta\ngamma");
-        assert_eq!(wp.block_texts(&state), vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
+        assert_eq!(
+            wp.block_texts(&state),
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
     }
 
     #[test]
@@ -2770,7 +3398,10 @@ mod tests {
         // No false positive in the middle of text.
         let (mut wp2, mut s2) = bound();
         wp2.insert_str(&mut s2, "a-");
-        assert!(!wp2.autoformat_on_space(&mut s2), "mid-line dash not autoformatted");
+        assert!(
+            !wp2.autoformat_on_space(&mut s2),
+            "mid-line dash not autoformatted"
+        );
     }
 
     #[test]
@@ -2781,18 +3412,30 @@ mod tests {
         wp.insert_str(&mut state, "first");
         wp.enter(&mut state);
         let b = wp.caret.block.clone();
-        assert_eq!(wp.block_meta(&state, &b).0, "list_item", "Enter continues the list");
+        assert_eq!(
+            wp.block_meta(&state, &b).0,
+            "list_item",
+            "Enter continues the list"
+        );
         wp.enter(&mut state); // empty item → exit
         let b = wp.caret.block.clone();
-        assert_eq!(wp.block_meta(&state, &b).0, "paragraph", "Enter on empty item exits the list");
+        assert_eq!(
+            wp.block_meta(&state, &b).0,
+            "paragraph",
+            "Enter on empty item exits the list"
+        );
     }
 
     fn align_of(wp: &WordProcessor, state: &AutoCommit, id: &str) -> Option<String> {
         let c = wp.containers.as_ref().unwrap();
-        qdoc::model::materialize(state, c).blocks.iter().find(|b| b.id == id).and_then(|b| match b.attrs.get("align") {
-            Some(qdoc::AttrVal::Str(s)) => Some(s.clone()),
-            _ => None,
-        })
+        qdoc::model::materialize(state, c)
+            .blocks
+            .iter()
+            .find(|b| b.id == id)
+            .and_then(|b| match b.attrs.get("align") {
+                Some(qdoc::AttrVal::Str(s)) => Some(s.clone()),
+                _ => None,
+            })
     }
 
     #[test]
@@ -2805,12 +3448,22 @@ mod tests {
         wp.insert_str(&mut state, "three");
         let blocks = wp.ordered_blocks(&state);
         assert_eq!(blocks.len(), 3);
-        wp.set_caret(Caret { block: blocks[0].clone(), offset: 0 });
+        wp.set_caret(Caret {
+            block: blocks[0].clone(),
+            offset: 0,
+        });
         wp.set_anchor();
-        wp.set_caret(Caret { block: blocks[2].clone(), offset: 5 });
+        wp.set_caret(Caret {
+            block: blocks[2].clone(),
+            offset: 5,
+        });
         wp.set_align(&mut state, "center");
         for b in &blocks {
-            assert_eq!(align_of(&wp, &state, b).as_deref(), Some("center"), "paragraph {b} centered");
+            assert_eq!(
+                align_of(&wp, &state, b).as_deref(),
+                Some("center"),
+                "paragraph {b} centered"
+            );
         }
     }
 
@@ -2819,14 +3472,29 @@ mod tests {
         let (mut wp, mut state) = bound();
         wp.insert_table(&mut state, 2, 2);
         let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
-        let cells: Vec<String> = snap.blocks.iter().filter(|b| b.kind == "cell").map(|b| b.id.clone()).collect();
+        let cells: Vec<String> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "cell")
+            .map(|b| b.id.clone())
+            .collect();
         assert_eq!(cells.len(), 4);
-        wp.set_caret(Caret { block: cells[0].clone(), offset: 0 });
+        wp.set_caret(Caret {
+            block: cells[0].clone(),
+            offset: 0,
+        });
         wp.set_anchor();
-        wp.set_caret(Caret { block: cells[3].clone(), offset: 0 });
+        wp.set_caret(Caret {
+            block: cells[3].clone(),
+            offset: 0,
+        });
         wp.set_align(&mut state, "center");
         for c in &cells {
-            assert_eq!(align_of(&wp, &state, c).as_deref(), Some("center"), "cell {c} centered");
+            assert_eq!(
+                align_of(&wp, &state, c).as_deref(),
+                Some("center"),
+                "cell {c} centered"
+            );
         }
     }
 
@@ -2848,7 +3516,12 @@ mod tests {
         let (plain, blocks) = wp.copy_fragment(&state);
         assert_eq!(plain, "hello");
         assert_eq!(blocks.len(), 1);
-        assert!(blocks[0].marks.iter().any(|m| m.name == "strong" && m.start == 0 && m.end == 5));
+        assert!(
+            blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 0 && m.end == 5)
+        );
 
         // paste rich at the end → the pasted run keeps its bold
         wp.clear_anchor();
@@ -2857,7 +3530,10 @@ mod tests {
         let c = wp.containers.clone().unwrap();
         let block = wp.caret.block.clone();
         assert_eq!(wp.current_text(&state), "hello worldhello");
-        assert!(qdoc::model::has_mark_over(&state, &c, &block, 11, 16, "strong"), "pasted bold preserved");
+        assert!(
+            qdoc::model::has_mark_over(&state, &c, &block, 11, 16, "strong"),
+            "pasted bold preserved"
+        );
     }
 
     #[test]
@@ -2880,7 +3556,11 @@ mod tests {
         wp.move_home();
         wp.backspace(&mut state);
         let b = wp.caret.block.clone();
-        assert_eq!(wp.block_meta(&state, &b).0, "paragraph", "backspace at list start un-lists");
+        assert_eq!(
+            wp.block_meta(&state, &b).0,
+            "paragraph",
+            "backspace at list start un-lists"
+        );
         assert_eq!(wp.current_text(&state), "item", "text preserved");
     }
 
@@ -2889,7 +3569,11 @@ mod tests {
         let (mut wp, mut state) = bound();
         wp.insert_table(&mut state, 2, 2);
         let count = |wp: &WordProcessor, st: &AutoCommit| {
-            qdoc::model::materialize(st, wp.containers.as_ref().unwrap()).blocks.iter().filter(|b| b.kind == "cell").count()
+            qdoc::model::materialize(st, wp.containers.as_ref().unwrap())
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "cell")
+                .count()
         };
         assert_eq!(count(&wp, &state), 4);
         wp.table_add_row(&mut state);
@@ -2917,12 +3601,20 @@ mod tests {
             Some(qdoc::AttrVal::Str(s)) => s.clone(),
             other => panic!("cell missing table attr: {other:?}"),
         };
-        assert!(cells.iter().all(|c| c.attrs.get("table") == Some(&qdoc::AttrVal::Str(tid.clone()))));
+        assert!(
+            cells
+                .iter()
+                .all(|c| c.attrs.get("table") == Some(&qdoc::AttrVal::Str(tid.clone())))
+        );
         // caret landed in the first cell; typing edits it
         assert!(cells.iter().any(|c| c.id == wp.caret.block));
         wp.insert_str(&mut state, "A1");
         let snap2 = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
-        let first = snap2.blocks.iter().find(|b| b.id == wp.caret.block).unwrap();
+        let first = snap2
+            .blocks
+            .iter()
+            .find(|b| b.id == wp.caret.block)
+            .unwrap();
         assert_eq!(first.text, "A1");
     }
 
@@ -2937,9 +3629,15 @@ mod tests {
         let block = wp.caret.block.clone();
 
         wp.toggle_mark(&mut state, "strong");
-        assert!(qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"), "mark applied");
+        assert!(
+            qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"),
+            "mark applied"
+        );
         wp.toggle_mark(&mut state, "strong");
-        assert!(!qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"), "mark toggled off");
+        assert!(
+            !qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"),
+            "mark toggled off"
+        );
     }
 
     #[test]
@@ -2951,16 +3649,23 @@ mod tests {
         let c = wp.containers.clone().unwrap();
         let snap = qdoc::model::materialize(&state, &c);
         assert_eq!(snap.blocks[0].kind, "heading");
-        assert_eq!(snap.blocks[0].attrs.get("level"), Some(&qdoc::AttrVal::Int(2)));
-        assert_eq!(snap.blocks[0].attrs.get("align"), Some(&qdoc::AttrVal::Str("center".into())));
+        assert_eq!(
+            snap.blocks[0].attrs.get("level"),
+            Some(&qdoc::AttrVal::Int(2))
+        );
+        assert_eq!(
+            snap.blocks[0].attrs.get("align"),
+            Some(&qdoc::AttrVal::Str("center".into()))
+        );
     }
 
     /// A minimal 2×3 RGB PNG (red pixels) — small enough to embed yet a real,
     /// decodable image so intrinsic-size attrs can be asserted.
     const TINY_PNG: &[u8] = &[
-        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0,
-        0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 159, 1,
-        140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
+        0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+        159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
+        66, 96, 130,
     ];
 
     #[test]
@@ -2971,14 +3676,22 @@ mod tests {
 
         let c = wp.containers.clone().unwrap();
         let snap = qdoc::model::materialize(&state, &c);
-        let img = snap.blocks.iter().find(|b| b.kind == "image").expect("an image block was inserted");
+        let img = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "image")
+            .expect("an image block was inserted");
 
         // The blob attr references a blob whose bytes round-trip exactly.
         let hash = match img.attrs.get("blob") {
             Some(qdoc::AttrVal::Str(s)) => s.clone(),
             other => panic!("image block missing blob attr: {other:?}"),
         };
-        assert_eq!(snap.blobs.get(&hash).map(|b| b.as_slice()), Some(TINY_PNG), "blob bytes round-trip");
+        assert_eq!(
+            snap.blobs.get(&hash).map(std::vec::Vec::as_slice),
+            Some(TINY_PNG),
+            "blob bytes round-trip"
+        );
 
         // Intrinsic pixel dimensions were recorded (mirrors the ODF import path).
         assert_eq!(img.attrs.get("width"), Some(&qdoc::AttrVal::Int(2)));
@@ -3004,8 +3717,15 @@ mod tests {
         wp.insert_image_bytes(&mut state, TINY_PNG);
         let texts = wp.block_texts(&state);
         // head paragraph, image (empty text), tail paragraph
-        assert_eq!(texts, vec!["hello".to_string(), String::new(), "world".to_string()]);
-        assert_eq!(wp.current_text(&state), "world", "caret follows the tail below the image");
+        assert_eq!(
+            texts,
+            vec!["hello".to_string(), String::new(), "world".to_string()]
+        );
+        assert_eq!(
+            wp.current_text(&state),
+            "world",
+            "caret follows the tail below the image"
+        );
     }
 
     // ---- table editing -----------------------------------------------------
@@ -3017,21 +3737,31 @@ mod tests {
         let c = wp.containers.as_ref().unwrap();
         let snap = qdoc::model::materialize(state, c);
         let int = |b: &qdoc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
-            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => *n as usize,
+            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
             _ => 0,
         };
-        let mut g: Vec<(usize, usize)> =
-            snap.blocks.iter().filter(|b| b.kind == "cell").map(|b| (int(b, "row"), int(b, "col"))).collect();
-        g.sort();
+        let mut g: Vec<(usize, usize)> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "cell")
+            .map(|b| (int(b, "row"), int(b, "col")))
+            .collect();
+        g.sort_unstable();
         g
     }
 
     /// Assert a grid is a full `rows × cols` rectangle (every coordinate present
     /// exactly once) — the table-rectangularity invariant.
     fn assert_rectangular(grid: &[(usize, usize)], rows: usize, cols: usize) {
-        let mut expected: Vec<(usize, usize)> = (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).collect();
-        expected.sort();
-        assert_eq!(grid, expected.as_slice(), "table is a full {rows}×{cols} rectangle");
+        let mut expected: Vec<(usize, usize)> = (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| (r, c)))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(
+            grid,
+            expected.as_slice(),
+            "table is a full {rows}×{cols} rectangle"
+        );
     }
 
     #[test]
@@ -3056,8 +3786,16 @@ mod tests {
         wp.insert_table(&mut state, 2, 2);
         // Move caret to row 1.
         let (_, cells) = wp.caret_table(&state).unwrap();
-        let r1c0 = cells.iter().find(|(_, r, c)| *r == 1 && *c == 0).unwrap().0.clone();
-        wp.set_caret(Caret { block: r1c0, offset: 0 });
+        let r1c0 = cells
+            .iter()
+            .find(|(_, r, c)| *r == 1 && *c == 0)
+            .unwrap()
+            .0
+            .clone();
+        wp.set_caret(Caret {
+            block: r1c0,
+            offset: 0,
+        });
         wp.insert_row_above(&mut state);
         assert_rectangular(&table_grid(&wp, &state), 3, 2);
         let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
@@ -3082,8 +3820,16 @@ mod tests {
         wp.insert_table(&mut state, 2, 2);
         // Move to col 1 so left/right are unambiguous.
         let (_, cells) = wp.caret_table(&state).unwrap();
-        let r0c1 = cells.iter().find(|(_, r, c)| *r == 0 && *c == 1).unwrap().0.clone();
-        wp.set_caret(Caret { block: r0c1, offset: 0 });
+        let r0c1 = cells
+            .iter()
+            .find(|(_, r, c)| *r == 0 && *c == 1)
+            .unwrap()
+            .0
+            .clone();
+        wp.set_caret(Caret {
+            block: r0c1,
+            offset: 0,
+        });
         wp.insert_col_left(&mut state);
         assert_rectangular(&table_grid(&wp, &state), 2, 3);
         wp.insert_col_right(&mut state);
@@ -3096,14 +3842,21 @@ mod tests {
         wp.insert_table(&mut state, 2, 2); // caret in (0,0)
         // Tab forward through every cell: (0,0)->(0,1)->(1,0)->(1,1).
         for expect in [(0, 1), (1, 0), (1, 1)] {
-            assert!(wp.tab_cell(&mut state, true), "tab handled inside the table");
+            assert!(
+                wp.tab_cell(&mut state, true),
+                "tab handled inside the table"
+            );
             assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), expect);
         }
         // One more Tab from the last cell appends a row and lands in (2,0).
         assert!(wp.tab_cell(&mut state, true));
         let grid = table_grid(&wp, &state);
         assert_rectangular(&grid, 3, 2);
-        assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (2, 0), "caret in first cell of the appended row");
+        assert_eq!(
+            wp.caret_rc(&wp.caret_table(&state).unwrap().1),
+            (2, 0),
+            "caret in first cell of the appended row"
+        );
     }
 
     #[test]
@@ -3112,10 +3865,22 @@ mod tests {
         wp.insert_table(&mut state, 2, 2);
         // Jump to the last cell, then Shift-Tab back one.
         let (_, cells) = wp.caret_table(&state).unwrap();
-        let last = cells.iter().find(|(_, r, c)| *r == 1 && *c == 1).unwrap().0.clone();
-        wp.set_caret(Caret { block: last, offset: 0 });
+        let last = cells
+            .iter()
+            .find(|(_, r, c)| *r == 1 && *c == 1)
+            .unwrap()
+            .0
+            .clone();
+        wp.set_caret(Caret {
+            block: last,
+            offset: 0,
+        });
         assert!(wp.tab_cell(&mut state, false));
-        assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (1, 0), "shift-tab moved to the previous cell");
+        assert_eq!(
+            wp.caret_rc(&wp.caret_table(&state).unwrap().1),
+            (1, 0),
+            "shift-tab moved to the previous cell"
+        );
     }
 
     #[test]
@@ -3127,7 +3892,10 @@ mod tests {
         assert!(wp.cell_vertical(&state, false), "up moved back");
         assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (0, 0));
         // Up from the top row has no cell above → not handled here.
-        assert!(!wp.cell_vertical(&state, false), "no cell above the top row");
+        assert!(
+            !wp.cell_vertical(&state, false),
+            "no cell above the top row"
+        );
     }
 
     #[test]
@@ -3137,7 +3905,10 @@ mod tests {
         wp.table_del_row(&mut state);
         let c = wp.containers.as_ref().unwrap();
         let snap = qdoc::model::materialize(&state, c);
-        assert!(snap.blocks.iter().all(|b| b.kind != "cell"), "deleting the last row removed the whole table");
+        assert!(
+            snap.blocks.iter().all(|b| b.kind != "cell"),
+            "deleting the last row removed the whole table"
+        );
         assert!(!wp.caret_in_cell(&state), "caret is no longer in a cell");
     }
 
@@ -3167,14 +3938,30 @@ mod tests {
         let (wp, state) = doc_with_headings();
         let h = wp.headings(&state);
         assert_eq!(h.len(), 3, "one outline entry per heading block");
-        assert_eq!(h.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), vec!["Introduction", "Background", "Conclusion"], "headings in document order");
-        assert_eq!(h.iter().map(|e| e.level).collect::<Vec<_>>(), vec![1, 2, 1], "levels preserved per heading");
+        assert_eq!(
+            h.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
+            vec!["Introduction", "Background", "Conclusion"],
+            "headings in document order"
+        );
+        assert_eq!(
+            h.iter().map(|e| e.level).collect::<Vec<_>>(),
+            vec![1, 2, 1],
+            "levels preserved per heading"
+        );
     }
 
     #[test]
     fn generate_toc_inserts_one_block_per_heading_at_top() {
         let (mut wp, mut state) = doc_with_headings();
-        let entries: Vec<TocEntry> = wp.headings(&state).iter().map(|h| TocEntry { level: h.level, text: h.text.clone(), page: Some(1) }).collect();
+        let entries: Vec<TocEntry> = wp
+            .headings(&state)
+            .iter()
+            .map(|h| TocEntry {
+                level: h.level,
+                text: h.text.clone(),
+                page: Some(1),
+            })
+            .collect();
         let inserted = wp.generate_toc(&mut state, &entries);
         assert_eq!(inserted.len(), 3, "one TOC block per heading");
 
@@ -3183,46 +3970,88 @@ mod tests {
         let toc: Vec<_> = snap.blocks.iter().filter(|b| block_is_toc(b)).collect();
         assert_eq!(toc.len(), 3, "exactly three toc-marked blocks exist");
         // They sit at the very top of the document, in heading order.
-        assert_eq!(&snap.blocks[0].id, &inserted[0], "TOC begins at the document top");
+        assert_eq!(
+            &snap.blocks[0].id, &inserted[0],
+            "TOC begins at the document top"
+        );
         assert!(snap.blocks[0].text.contains("Introduction"));
         assert!(snap.blocks[1].text.contains("Background"));
         assert!(snap.blocks[2].text.contains("Conclusion"));
         // The page number appears on each line.
-        assert!(snap.blocks[0].text.trim_end().ends_with('1'), "line carries the page number");
+        assert!(
+            snap.blocks[0].text.trim_end().ends_with('1'),
+            "line carries the page number"
+        );
     }
 
     #[test]
     fn regenerating_toc_replaces_without_duplicating() {
         let (mut wp, mut state) = doc_with_headings();
-        let entries: Vec<TocEntry> = wp.headings(&state).iter().map(|h| TocEntry { level: h.level, text: h.text.clone(), page: Some(2) }).collect();
+        let entries: Vec<TocEntry> = wp
+            .headings(&state)
+            .iter()
+            .map(|h| TocEntry {
+                level: h.level,
+                text: h.text.clone(),
+                page: Some(2),
+            })
+            .collect();
         wp.generate_toc(&mut state, &entries);
         // Regenerate from the (now TOC-prefixed) document: headings() excludes the
         // TOC's own lines, so the entry set is unchanged.
-        let entries2: Vec<TocEntry> = wp.headings(&state).iter().map(|h| TocEntry { level: h.level, text: h.text.clone(), page: Some(2) }).collect();
-        assert_eq!(entries2.len(), 3, "TOC lines are not mistaken for headings on regen");
+        let entries2: Vec<TocEntry> = wp
+            .headings(&state)
+            .iter()
+            .map(|h| TocEntry {
+                level: h.level,
+                text: h.text.clone(),
+                page: Some(2),
+            })
+            .collect();
+        assert_eq!(
+            entries2.len(),
+            3,
+            "TOC lines are not mistaken for headings on regen"
+        );
         wp.generate_toc(&mut state, &entries2);
 
         let c = wp.containers.clone().unwrap();
         let snap = qdoc::model::materialize(&state, &c);
         let toc_count = snap.blocks.iter().filter(|b| block_is_toc(b)).count();
-        assert_eq!(toc_count, 3, "regenerating replaces the old TOC (no duplicate)");
+        assert_eq!(
+            toc_count, 3,
+            "regenerating replaces the old TOC (no duplicate)"
+        );
         let heading_count = snap.blocks.iter().filter(|b| b.kind == "heading").count();
-        assert_eq!(heading_count, 3, "headings are untouched by TOC regeneration");
+        assert_eq!(
+            heading_count, 3,
+            "headings are untouched by TOC regeneration"
+        );
     }
 
     // ---- editable headers / footers (edit-context routing) -----------------
 
     fn header_texts(wp: &WordProcessor, state: &AutoCommit) -> Vec<String> {
         let c = wp.containers.as_ref().unwrap();
-        qdoc::model::materialize_region(state, c, Region::Header).into_iter().map(|b| b.text).collect()
+        qdoc::model::materialize_region(state, c, Region::Header)
+            .into_iter()
+            .map(|b| b.text)
+            .collect()
     }
     fn footer_texts(wp: &WordProcessor, state: &AutoCommit) -> Vec<String> {
         let c = wp.containers.as_ref().unwrap();
-        qdoc::model::materialize_region(state, c, Region::Footer).into_iter().map(|b| b.text).collect()
+        qdoc::model::materialize_region(state, c, Region::Footer)
+            .into_iter()
+            .map(|b| b.text)
+            .collect()
     }
     fn body_texts(wp: &WordProcessor, state: &AutoCommit) -> Vec<String> {
         let c = wp.containers.as_ref().unwrap();
-        qdoc::model::materialize(state, c).blocks.into_iter().map(|b| b.text).collect()
+        qdoc::model::materialize(state, c)
+            .blocks
+            .into_iter()
+            .map(|b| b.text)
+            .collect()
     }
 
     #[test]
@@ -3268,9 +4097,12 @@ mod tests {
         wp.insert_str(&mut state, "ab");
         wp.enter(&mut state);
         wp.insert_str(&mut state, "cd");
-        assert_eq!(footer_texts(&wp, &state), vec!["ab".to_string(), "cd".to_string()]);
+        assert_eq!(
+            footer_texts(&wp, &state),
+            vec!["ab".to_string(), "cd".to_string()]
+        );
         // Body never gained a block beyond its seeded empty paragraph.
-        assert_eq!(body_texts(&wp, &state), vec!["".to_string()]);
+        assert_eq!(body_texts(&wp, &state), vec![String::new()]);
     }
 
     #[test]
@@ -3280,14 +4112,23 @@ mod tests {
         wp.insert_str(&mut state, "ab");
         wp.enter(&mut state);
         wp.insert_str(&mut state, "cd");
-        assert_eq!(header_texts(&wp, &state), vec!["ab".to_string(), "cd".to_string()]);
+        assert_eq!(
+            header_texts(&wp, &state),
+            vec!["ab".to_string(), "cd".to_string()]
+        );
         // Delete 'd', 'c', then merge into the previous header block.
         wp.backspace(&mut state);
         wp.backspace(&mut state);
-        assert_eq!(header_texts(&wp, &state), vec!["ab".to_string(), "".to_string()]);
+        assert_eq!(
+            header_texts(&wp, &state),
+            vec!["ab".to_string(), String::new()]
+        );
         wp.backspace(&mut state);
         assert_eq!(header_texts(&wp, &state), vec!["ab".to_string()]);
-        assert_eq!(wp.caret.offset, 2, "caret lands at the merge point in the header");
+        assert_eq!(
+            wp.caret.offset, 2,
+            "caret lands at the merge point in the header"
+        );
     }
 
     #[test]
@@ -3303,14 +4144,23 @@ mod tests {
         let hv = qdoc::model::materialize_region(&state, c, Region::Header);
         let marks = &hv[0].marks;
         assert!(
-            marks.iter().any(|m| m.name == "strong" && m.start == 0 && m.end >= 5),
+            marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 0 && m.end >= 5),
             "bold mark applied to the header run: {marks:?}"
         );
         // Toggling again clears it (uses the region-aware unmark path).
         wp.select_all(&state);
         wp.toggle_mark(&mut state, "strong");
-        let hv2 = qdoc::model::materialize_region(&state, wp.containers.as_ref().unwrap(), Region::Header);
-        assert!(!hv2[0].marks.iter().any(|m| m.name == "strong"), "bold mark cleared in the header");
+        let hv2 = qdoc::model::materialize_region(
+            &state,
+            wp.containers.as_ref().unwrap(),
+            Region::Header,
+        );
+        assert!(
+            !hv2[0].marks.iter().any(|m| m.name == "strong"),
+            "bold mark cleared in the header"
+        );
     }
 
     #[test]
@@ -3322,9 +4172,16 @@ mod tests {
 
         let c = wp.containers.as_ref().unwrap();
         let fv = qdoc::model::materialize_region(&state, c, Region::Footer);
-        assert!(fv[0].text.starts_with("Page "), "footer keeps its literal text: {:?}", fv[0].text);
         assert!(
-            fv[0].marks.iter().any(|m| m.name == qdoc::schema::MARK_FIELD),
+            fv[0].text.starts_with("Page "),
+            "footer keeps its literal text: {:?}",
+            fv[0].text
+        );
+        assert!(
+            fv[0]
+                .marks
+                .iter()
+                .any(|m| m.name == qdoc::schema::MARK_FIELD),
             "a page-number field mark is present in the footer: {:?}",
             fv[0].marks
         );
@@ -3340,7 +4197,10 @@ mod tests {
             wp.move_left(&state);
         }
         wp.enter(&mut state);
-        assert_eq!(wp.block_texts(&state), vec!["hello".to_string(), "world".to_string()]);
+        assert_eq!(
+            wp.block_texts(&state),
+            vec!["hello".to_string(), "world".to_string()]
+        );
         // No header/footer were created by body editing.
         assert!(header_texts(&wp, &state).is_empty());
         assert!(footer_texts(&wp, &state).is_empty());

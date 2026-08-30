@@ -147,14 +147,24 @@ pub fn resolve(path: &str) -> MediaSource {
     //    path. Use it directly — never re-root it under the workspace.
     let raw = Path::new(path);
     if raw.is_absolute() {
-        let hydration = if raw.exists() { Hydration::Local } else { Hydration::Projected };
-        return MediaSource { abs_path: raw.to_path_buf(), hydration };
+        let hydration = if raw.exists() {
+            Hydration::Local
+        } else {
+            Hydration::Projected
+        };
+        return MediaSource {
+            abs_path: raw.to_path_buf(),
+            hydration,
+        };
     }
     // 1. Bundled / dev override.
     if let Some(dir) = std::env::var_os("QOS_VE_MEDIA_DIR") {
         let candidate = Path::new(&dir).join(path);
         if candidate.exists() {
-            return MediaSource { abs_path: candidate, hydration: Hydration::Local };
+            return MediaSource {
+                abs_path: candidate,
+                hydration: Hydration::Local,
+            };
         }
     }
     // 2/3. The mount first, then the project's own directory, then the
@@ -172,10 +182,16 @@ pub fn resolve(path: &str) -> MediaSource {
         .map(|base| base.join(path))
         .find(|c| c.exists());
     if let Some(abs_path) = found {
-        return MediaSource { abs_path, hydration: Hydration::Local };
+        return MediaSource {
+            abs_path,
+            hydration: Hydration::Local,
+        };
     }
     // 4. Nothing has it. Report the canonical location, projected.
-    MediaSource { abs_path: mounted, hydration: Hydration::Projected }
+    MediaSource {
+        abs_path: mounted,
+        hydration: Hydration::Projected,
+    }
 }
 
 /// Turn a resolved absolute path into the shared [`media::Source`] the decode
@@ -229,7 +245,9 @@ mod tests {
     #[serial_test::serial(video_editor_media_env)]
     fn resolve_reports_projected_or_local_via_the_seam() {
         // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::remove_var("QOS_VE_MEDIA_DIR"); }
+        unsafe {
+            std::env::remove_var("QOS_VE_MEDIA_DIR");
+        }
         // 1. A path that cannot exist on this host resolves as Projected —
         //    the reference is valid, the bytes simply are not hydrated.
         let src = resolve("media/definitely-not-here-42.mov");
@@ -243,12 +261,16 @@ mod tests {
         let name = format!("qos-ve-seam-{}.bin", std::process::id());
         let f = dir.join(&name);
         std::fs::write(&f, b"x").unwrap();
-        unsafe { std::env::set_var("QOS_VE_MEDIA_DIR", &dir); }
+        unsafe {
+            std::env::set_var("QOS_VE_MEDIA_DIR", &dir);
+        }
         let local = resolve(&name);
         assert_eq!(local.hydration, Hydration::Local);
         assert!(local.is_decodable());
         assert_eq!(local.abs_path, f);
-        unsafe { std::env::remove_var("QOS_VE_MEDIA_DIR"); }
+        unsafe {
+            std::env::remove_var("QOS_VE_MEDIA_DIR");
+        }
         std::fs::remove_file(&f).ok();
     }
 
@@ -321,9 +343,15 @@ mod tests {
         // Safety: single-threaded test mutation of process env.
         unsafe { std::env::set_var("QOS_WORKSPACE_ROOT", &root) };
         let ws = engine_source(&root.join("media/a.mp4"));
-        assert!(matches!(ws, ::media::Source::Workspace(_)), "under the mount → Workspace");
+        assert!(
+            matches!(ws, ::media::Source::Workspace(_)),
+            "under the mount → Workspace"
+        );
         let local = engine_source(Path::new("/home/u/b.mp4"));
-        assert!(matches!(local, ::media::Source::LocalFile(_)), "outside the mount → LocalFile");
+        assert!(
+            matches!(local, ::media::Source::LocalFile(_)),
+            "outside the mount → LocalFile"
+        );
         unsafe { std::env::remove_var("QOS_WORKSPACE_ROOT") };
     }
 
@@ -332,7 +360,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("qos-ve-store-{}", std::process::id()));
         // Safety: single-threaded test mutation of process env.
         unsafe { std::env::set_var("QOS_WORKSPACE_ROOT", &root) };
-        assert_eq!(stored_path_for_import(&root.join("media/Clip.mp4")), "media/Clip.mp4");
+        assert_eq!(
+            stored_path_for_import(&root.join("media/Clip.mp4")),
+            "media/Clip.mp4"
+        );
         assert_eq!(
             stored_path_for_import(Path::new("/home/u/Holiday.mov")),
             "/home/u/Holiday.mov"

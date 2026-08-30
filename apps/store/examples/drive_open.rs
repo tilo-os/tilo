@@ -9,9 +9,9 @@
 //!   * clicking **Mark installed** pins it.
 //!
 //! Env:
-//!   QOS_STORE_ITEM_ID   reverse-DNS package id (default dev.qos.hello)
-//!   QOS_STORE_ITEM_URL   http(s) URL of the .qpkg (required for `open`)
-//!   QOS_STORE_ITEM_NAME  display name (default derived from id)
+//!   `QOS_STORE_ITEM_ID`   reverse-DNS package id (default dev.qos.hello)
+//!   `QOS_STORE_ITEM_URL`   http(s) URL of the .qpkg (required for `open`)
+//!   `QOS_STORE_ITEM_NAME`  display name (default derived from id)
 //! Arg 1: `open` | `mark-installed`
 //!
 //! Exit code 0 = the driven action's outcome was ok.
@@ -19,8 +19,8 @@
 use automerge::transaction::Transactable;
 use ui::widget::Widget;
 
-use store::model::{ActionKind, InstalledState, StoreItem, StoreItemVersion, StoreSource};
 use store::StoreApp;
+use store::model::{ActionKind, InstalledState, StoreItem, StoreItemVersion, StoreSource};
 
 fn main() {
     let action = std::env::args().nth(1).unwrap_or_else(|| "open".into());
@@ -46,7 +46,10 @@ fn main() {
         icon_url: None,
         homepage_url: None,
         source_url: None,
-        source: StoreSource::Qos { registry_name: "local test registry".into() },
+        install_ref_path: None,
+        source: StoreSource::Qos {
+            registry_name: "local test registry".into(),
+        },
         versions: vec![StoreItemVersion {
             version: "0.1.0".into(),
             released_at_unix: 0,
@@ -89,9 +92,17 @@ fn main() {
     };
     assert_eq!(pid, id, "pending action targets the clicked item");
     if action == "open" {
-        assert_eq!(pact, ActionKind::Open, "primary click resolved to Open (not Install)");
+        assert_eq!(
+            pact,
+            ActionKind::Open,
+            "primary click resolved to Open (not Install)"
+        );
     } else {
-        assert_eq!(pact, ActionKind::MarkInstalled, "pin click resolved to MarkInstalled");
+        assert_eq!(
+            pact,
+            ActionKind::MarkInstalled,
+            "pin click resolved to MarkInstalled"
+        );
     }
 
     // Execute the action for real (download → qos-install install →
@@ -99,7 +110,10 @@ fn main() {
     let staging = std::env::temp_dir().join("qos-store-drive-staged");
     let _ = std::fs::create_dir_all(&staging);
     let outcome = store::actions::execute(&item, pact, &staging);
-    println!("execute outcome: ok={} status={:?}", outcome.ok, outcome.status_line);
+    println!(
+        "execute outcome: ok={} status={:?}",
+        outcome.ok, outcome.status_line
+    );
     if outcome.ok {
         std::process::exit(0);
     } else {

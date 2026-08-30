@@ -1,9 +1,9 @@
-//! SQLite execution engine: opens a handle, seeds the bundled sample
+//! `SQLite` execution engine: opens a handle, seeds the bundled sample
 //! database, introspects the schema (tables, columns, keys, indexes) and
 //! runs arbitrary SQL returning a [`QueryResult`].
 //!
-//! The three engines — local SQLite plus the real network PostgreSQL and
-//! MySQL drivers — are unified behind [`LiveEngine`]. All of them block, so
+//! The three engines — local `SQLite` plus the real network `PostgreSQL` and
+//! `MySQL` drivers — are unified behind [`LiveEngine`]. All of them block, so
 //! they are owned by the background [`crate::worker`] thread rather than the
 //! UI thread: [`open_engine`] opens whichever engine a profile targets, and a
 //! refused socket or a bad password surfaces as the driver's own error string,
@@ -11,8 +11,8 @@
 
 use std::time::Instant;
 
-use rusqlite::types::ValueRef;
 use rusqlite::Connection;
+use rusqlite::types::ValueRef;
 
 use crate::model::{
     Cell, ColumnInfo, ConnectionProfile, DatabaseSchema, Engine, ForeignKey, IndexInfo,
@@ -20,7 +20,7 @@ use crate::model::{
 };
 use crate::sample;
 
-/// A live SQLite handle. Owns the connection for the lifetime of the
+/// A live `SQLite` handle. Owns the connection for the lifetime of the
 /// session; all introspection + query execution goes through it.
 pub struct SqliteEngine {
     conn: Connection,
@@ -36,13 +36,13 @@ impl SqliteEngine {
         Ok(Self { conn })
     }
 
-    /// Open an on-disk SQLite file (read-write).
+    /// Open an on-disk `SQLite` file (read-write).
     pub fn open_file(path: &str) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
         Ok(Self { conn })
     }
 
-    /// Introspect the full schema. SQLite has a single implicit namespace,
+    /// Introspect the full schema. `SQLite` has a single implicit namespace,
     /// which we surface as a "main" schema so the tree shape matches the
     /// multi-schema engines.
     pub fn introspect(&self) -> Result<DatabaseSchema, String> {
@@ -121,7 +121,10 @@ impl SqliteEngine {
     }
 
     fn table_foreign_keys(&self, table: &str) -> Result<Vec<ForeignKey>, String> {
-        let sql = format!("PRAGMA foreign_key_list(\"{}\")", table.replace('"', "\"\""));
+        let sql = format!(
+            "PRAGMA foreign_key_list(\"{}\")",
+            table.replace('"', "\"\"")
+        );
         let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
         let fks = stmt
             .query_map([], |r| {
@@ -195,10 +198,7 @@ impl SqliteEngine {
 
         if col_count == 0 {
             // DML/DDL — execute and report affected rows.
-            let affected = self
-                .conn
-                .execute(trimmed, [])
-                .map_err(|e| e.to_string())?;
+            let affected = self.conn.execute(trimmed, []).map_err(|e| e.to_string())?;
             return Ok(QueryResult {
                 columns: Vec::new(),
                 rows: Vec::new(),
@@ -244,7 +244,7 @@ fn value_ref_to_cell(v: ValueRef<'_>) -> Cell {
 }
 
 /// A live connection to any supported engine. The session holds one of these
-/// and dispatches introspection + query execution uniformly, so SQLite (local,
+/// and dispatches introspection + query execution uniformly, so `SQLite` (local,
 /// bundled) and the real network engines share one code path.
 pub enum LiveEngine {
     Sqlite(SqliteEngine),
@@ -273,7 +273,7 @@ impl LiveEngine {
 
     /// Read one page of a table's rows. The identifier is quoted the way the
     /// backing engine expects — double quotes for SQLite/PostgreSQL, backticks
-    /// for MySQL — so a table named like a keyword (or a MySQL table at all)
+    /// for `MySQL` — so a table named like a keyword (or a `MySQL` table at all)
     /// browses correctly rather than erroring on the wrong quote style.
     pub fn browse_table(
         &mut self,
@@ -300,8 +300,8 @@ impl LiveEngine {
 }
 
 /// Open the live engine a profile targets. Every engine connects for real:
-/// the bundled sample or an on-disk file for SQLite, a real TCP socket for
-/// PostgreSQL and MySQL. This is the single seam the [`crate::worker`] thread
+/// the bundled sample or an on-disk file for `SQLite`, a real TCP socket for
+/// `PostgreSQL` and `MySQL`. This is the single seam the [`crate::worker`] thread
 /// calls; it never runs on the UI thread because each variant blocks.
 pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
     if profile.is_sample {
@@ -312,7 +312,9 @@ pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
             Err("SQLite connection has no file path".to_string())
         }
         Engine::Sqlite => SqliteEngine::open_file(&profile.file_path).map(LiveEngine::Sqlite),
-        Engine::Postgres => crate::engine_pg::PostgresEngine::connect(profile).map(LiveEngine::Postgres),
+        Engine::Postgres => {
+            crate::engine_pg::PostgresEngine::connect(profile).map(LiveEngine::Postgres)
+        }
         Engine::MySql => crate::engine_mysql::MySqlEngine::connect(profile).map(LiveEngine::MySql),
     }
 }
@@ -335,7 +337,9 @@ mod tests {
     #[test]
     fn select_returns_rows_with_columns() {
         let eng = SqliteEngine::open_sample().unwrap();
-        let r = eng.run("SELECT name FROM artists ORDER BY name LIMIT 3").unwrap();
+        let r = eng
+            .run("SELECT name FROM artists ORDER BY name LIMIT 3")
+            .unwrap();
         assert!(r.is_select);
         assert_eq!(r.columns, vec!["name".to_string()]);
         assert_eq!(r.rows.len(), 3);

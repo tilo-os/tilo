@@ -10,14 +10,14 @@
 //! Backends:
 //!  * [`test_engine::TestEngine`] — deterministic, dependency-free engine
 //!    used by unit tests and `--shots` headless renders.
-//!  * WPE WebKit — the qOS system engine, rendering real pages offscreen.
+//!  * WPE `WebKit` — the qOS system engine, rendering real pages offscreen.
 //!
 //! Coordinates in commands are **physical pixels relative to the web
 //! view's top-left corner** — the widget does the logical→physical
 //! translation so engines never see toolkit layout space.
 
-pub mod test_engine;
 pub mod profile;
+pub mod test_engine;
 
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;
@@ -41,7 +41,6 @@ pub struct Frame {
 /// overwrite the slot on every paint; the widget reads it on every draw.
 pub type FrameSlot = Arc<Mutex<Option<Frame>>>;
 
-/// Mouse buttons forwarded into the page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
@@ -49,17 +48,16 @@ pub enum MouseButton {
     Right,
 }
 
-/// Keyboard input in a winit-independent form.
+/// Winit-independent so engines don't take a winit dependency.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyInput {
-    /// Printable text produced by the key (usually one grapheme).
+    /// Usually one grapheme.
     Character(String),
     Named(NamedKey),
 }
 
-/// Modifier keys held while a key event fires. Forwarded into the page so
-/// editing shortcuts (Ctrl+Backspace to delete a word, Ctrl+A to select
-/// all, Shift+Arrow to extend a selection, …) reach the web content.
+/// Forwarded into the page so editing shortcuts (Ctrl+Backspace,
+/// Shift+Arrow, …) reach the web content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct KeyModifiers {
     pub ctrl: bool,
@@ -68,7 +66,6 @@ pub struct KeyModifiers {
     pub meta: bool,
 }
 
-/// Non-printable keys the page can react to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedKey {
     Enter,
@@ -86,7 +83,6 @@ pub enum NamedKey {
     PageDown,
 }
 
-/// Commands from the widget / host app into the engine.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// Load the given (already normalised) URL.
@@ -125,37 +121,33 @@ pub enum WebViewCommand {
     },
     /// Keyboard focus entered / left the page surface.
     SetFocused(bool),
-    /// Compiled WebKit content-blocker JSON (`None` clears the filter).
+    /// Compiled `WebKit` content-blocker JSON (`None` clears the filter).
     /// Backends without native content filtering ignore this.
     SetContentFilter(Option<Arc<String>>),
-    /// Several compiled content-blocker JSON blobs, installed as separate
-    /// filters (replacing any previously set). Used because the full
-    /// filter-list rule set exceeds WebKit's per-filter cap and must be
-    /// split. An empty `chunks` clears all filters.
+    /// Several compiled content-blocker JSON blobs, split because the full
+    /// filter-list rule set exceeds `WebKit`'s per-filter cap. An empty
+    /// `chunks` clears all filters.
     ///
-    /// `version` is a stable hash of the *source* filter lists: the engine
+    /// `version` hashes the *source* filter lists (not the compiled JSON,
+    /// since compiler rule ordering isn't stable across runs); the engine
     /// caches each compiled filter under `version`+index so an unchanged
-    /// rule set is loaded back from disk instead of recompiled (WebKit's
-    /// compile of ~280k rules costs several seconds). It must key on the
-    /// source, not the compiled JSON, because the compiler's rule ordering
-    /// is not stable across runs.
+    /// rule set loads from disk instead of recompiling (~280k rules costs
+    /// several seconds).
     SetContentFilters {
         version: u64,
         chunks: Arc<Vec<Arc<String>>>,
     },
-    /// Inject JavaScript user scripts (replacing any previously set) —
-    /// scriptlet-style blocking the declarative content filter can't
-    /// express, e.g. skipping YouTube video ads. Run at document-start in
-    /// all frames.
+    /// Scriptlet-style blocking the declarative content filter can't
+    /// express (e.g. skipping `YouTube` video ads). Run at document-start
+    /// in all frames.
     SetUserScripts(Arc<Vec<String>>),
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
 }
 
-/// Navigation / UI state changes from the engine to the host app. The
-/// app folds these into its own state (address bar text, title, progress
-/// indicator) during `sync`.
+/// Navigation / UI state changes from the engine to the host app, folded
+/// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
     UriChanged(String),
@@ -202,21 +194,18 @@ pub trait WebViewEngine: Send + Sync {
     /// Enqueue a command. Must never block on engine work.
     fn send(&self, cmd: WebViewCommand);
 
-    /// The mailbox this engine paints into.
     fn frames(&self) -> FrameSlot;
 
     /// Take all pending events, oldest first.
     fn drain_events(&self) -> Vec<WebViewEvent>;
 
-    /// Install a host wake callback, invoked (from any thread) whenever a
-    /// new frame or event is ready — typically wired to the winit event
-    /// loop proxy so idle apps repaint on engine activity. Synchronous
-    /// engines (the test engine) don't need one; the default drops it.
+    /// Invoked (from any thread) whenever a new frame or event is ready —
+    /// typically wired to the winit event loop proxy so idle apps repaint
+    /// on engine activity. Synchronous engines don't need one.
     fn set_waker(&self, _waker: Box<dyn Fn() + Send + Sync>) {}
 
-    /// Take the latest GPU frame exported as a DMA-BUF (the zero-copy
-    /// path), if one is pending. Default: none — SHM and test engines
-    /// deliver pixels through [`frames`](Self::frames) instead.
+    /// The zero-copy path, if a GPU frame is pending. Default: none — SHM
+    /// and test engines deliver pixels through [`frames`](Self::frames).
     fn take_dmabuf(&self) -> Option<DmabufFrame> {
         None
     }
@@ -238,15 +227,12 @@ pub fn normalise_url(input: &str) -> String {
     {
         return trimmed.to_string();
     }
-    let looks_like_host = !trimmed.contains(' ')
-        && (trimmed.contains('.') || trimmed.starts_with("localhost"));
+    let looks_like_host =
+        !trimmed.contains(' ') && (trimmed.contains('.') || trimmed.starts_with("localhost"));
     if looks_like_host {
         format!("https://{trimmed}")
     } else {
-        format!(
-            "https://duckduckgo.com/?q={}",
-            urlencode(trimmed)
-        )
+        format!("https://duckduckgo.com/?q={}", urlencode(trimmed))
     }
 }
 
@@ -257,7 +243,7 @@ fn urlencode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
@@ -272,7 +258,10 @@ mod tests {
 
     #[test]
     fn normalise_passes_through_schemes() {
-        assert_eq!(normalise_url("https://example.org/a"), "https://example.org/a");
+        assert_eq!(
+            normalise_url("https://example.org/a"),
+            "https://example.org/a"
+        );
         assert_eq!(normalise_url("http://example.org"), "http://example.org");
         assert_eq!(normalise_url("about:blank"), "about:blank");
     }

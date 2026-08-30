@@ -2,7 +2,7 @@
 //!
 //! Two real, testable concerns live here:
 //!
-//! 1. Parsing a WireGuard `.conf` or OpenVPN `.ovpn` file into a
+//! 1. Parsing a `WireGuard` `.conf` or `OpenVPN` `.ovpn` file into a
 //!    [`Connection`] (used by the import flow).
 //! 2. Building the exact argv we would hand to `wg-quick` / `nmcli` /
 //!    `openvpn` to bring a tunnel up or down. The argv is shown to the
@@ -36,7 +36,7 @@ pub fn kind_from_filename(name: &str) -> Option<ConnKind> {
     }
 }
 
-/// Parse a WireGuard `[Interface]` / `[Peer]` ini-style config.
+/// Parse a `WireGuard` `[Interface]` / `[Peer]` ini-style config.
 fn parse_wireguard(name: &str, text: &str) -> Connection {
     let mut conn = Connection::new(name, ConnKind::WireGuard);
     let mut section = "";
@@ -53,7 +53,9 @@ fn parse_wireguard(name: &str, text: &str) -> Connection {
             };
             continue;
         }
-        let Some((key, value)) = split_kv(line) else { continue };
+        let Some((key, value)) = split_kv(line) else {
+            continue;
+        };
         match (section, key.as_str()) {
             ("interface", "Address") => conn.address = value,
             ("interface", "DNS") => conn.dns = value,
@@ -66,7 +68,7 @@ fn parse_wireguard(name: &str, text: &str) -> Connection {
     conn
 }
 
-/// Parse an OpenVPN `.ovpn` directive file.
+/// Parse an `OpenVPN` `.ovpn` directive file.
 fn parse_openvpn(name: &str, text: &str) -> Connection {
     let mut conn = Connection::new(name, ConnKind::OpenVpn);
     let mut routes: Vec<String> = Vec::new();
@@ -77,7 +79,9 @@ fn parse_openvpn(name: &str, text: &str) -> Connection {
             continue;
         }
         let mut parts = line.split_whitespace();
-        let Some(directive) = parts.next() else { continue };
+        let Some(directive) = parts.next() else {
+            continue;
+        };
         let rest: Vec<&str> = parts.collect();
         match directive {
             "remote" => {
@@ -100,13 +104,13 @@ fn parse_openvpn(name: &str, text: &str) -> Connection {
             }
             "dhcp-option" => {
                 // dhcp-option DNS <ip>
-                if rest.first().map(|s| s.eq_ignore_ascii_case("DNS")).unwrap_or(false) {
-                    if let Some(ip) = rest.get(1) {
-                        if conn.dns.is_empty() {
-                            conn.dns = ip.to_string();
-                        } else {
-                            conn.dns = format!("{}, {}", conn.dns, ip);
-                        }
+                if rest.first().is_some_and(|s| s.eq_ignore_ascii_case("DNS"))
+                    && let Some(ip) = rest.get(1)
+                {
+                    if conn.dns.is_empty() {
+                        conn.dns = ip.to_string();
+                    } else {
+                        conn.dns = format!("{}, {}", conn.dns, ip);
                     }
                 }
             }
@@ -131,9 +135,7 @@ fn parse_openvpn(name: &str, text: &str) -> Connection {
 
 fn strip_comment(line: &str) -> &str {
     // WireGuard uses '#', OpenVPN uses '#' and ';'.
-    let cut = line
-        .find(|c| c == '#' || c == ';')
-        .unwrap_or(line.len());
+    let cut = line.find(['#', ';']).unwrap_or(line.len());
     &line[..cut]
 }
 
@@ -168,15 +170,15 @@ impl CommandPlan {
 }
 
 /// Which backend tool a connection drives. The live app prefers
-/// NetworkManager (`nmcli`) when present for a unified, polkit-gated
+/// `NetworkManager` (`nmcli`) when present for a unified, polkit-gated
 /// path, and falls back to the protocol-native tools otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
-    /// `wg-quick up/down <name>` (WireGuard native).
+    /// `wg-quick up/down <name>` (`WireGuard` native).
     WgQuick,
-    /// `openvpn --config <path>` (OpenVPN native).
+    /// `openvpn --config <path>` (`OpenVPN` native).
     OpenVpnCli,
-    /// `nmcli connection up/down <name>` (NetworkManager).
+    /// `nmcli connection up/down <name>` (`NetworkManager`).
     NetworkManager,
 }
 
@@ -194,8 +196,7 @@ pub fn connect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
         Backend::WgQuick => {
             let target = conn
                 .config_path()
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| iface_name(conn));
+                .map_or_else(|| iface_name(conn), std::string::ToString::to_string);
             CommandPlan {
                 program: "wg-quick".into(),
                 args: vec!["up".into(), target],
@@ -203,10 +204,10 @@ pub fn connect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
             }
         }
         Backend::OpenVpnCli => {
-            let cfg = conn
-                .config_path()
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| format!("/etc/openvpn/{}.ovpn", conn.name));
+            let cfg = conn.config_path().map_or_else(
+                || format!("/etc/openvpn/{}.ovpn", conn.name),
+                std::string::ToString::to_string,
+            );
             CommandPlan {
                 program: "openvpn".into(),
                 args: vec!["--config".into(), cfg, "--daemon".into()],
@@ -227,8 +228,7 @@ pub fn disconnect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
         Backend::WgQuick => {
             let target = conn
                 .config_path()
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| iface_name(conn));
+                .map_or_else(|| iface_name(conn), std::string::ToString::to_string);
             CommandPlan {
                 program: "wg-quick".into(),
                 args: vec!["down".into(), target],
@@ -238,10 +238,10 @@ pub fn disconnect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
         Backend::OpenVpnCli => {
             // Match the specific config path (or the tunnel name) so we only
             // kill *this* tunnel's daemon, never every openvpn on the box.
-            let needle = conn
-                .config_path()
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| format!("{}.ovpn", conn.name));
+            let needle = conn.config_path().map_or_else(
+                || format!("{}.ovpn", conn.name),
+                std::string::ToString::to_string,
+            );
             CommandPlan {
                 program: "pkill".into(),
                 args: vec!["-f".into(), needle],
@@ -261,12 +261,12 @@ pub fn disconnect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
 /// kept in lockstep; otherwise the tunnel name is sanitised into a valid,
 /// `IFNAMSIZ`-bounded name.
 pub fn iface_name(conn: &Connection) -> String {
-    if let Some(p) = conn.config_path() {
-        if let Some(stem) = std::path::Path::new(p).file_stem().and_then(|s| s.to_str()) {
-            let s = sanitize_iface(stem);
-            if !s.is_empty() {
-                return s;
-            }
+    if let Some(p) = conn.config_path()
+        && let Some(stem) = std::path::Path::new(p).file_stem().and_then(|s| s.to_str())
+    {
+        let s = sanitize_iface(stem);
+        if !s.is_empty() {
+            return s;
         }
     }
     let s = sanitize_iface(&conn.name);
@@ -311,7 +311,7 @@ pub fn data_dir() -> PathBuf {
 
 /// Persist an imported raw config so the real bring-up can reference it. The
 /// filename basename becomes the `wg-quick` interface name; the file is written
-/// `0600` because WireGuard refuses a world-readable config that holds a
+/// `0600` because `WireGuard` refuses a world-readable config that holds a
 /// private key. Returns the absolute path written.
 pub fn persist_config(iface: &str, kind: ConnKind, raw: &str) -> std::io::Result<PathBuf> {
     let dir = data_dir();
@@ -456,9 +456,15 @@ dhcp-option DNS 172.20.4.1
         assert_eq!(iface_name(&c), "home");
         let up = connect_plan(&c, Backend::WgQuick);
         assert_eq!(up.program, "wg-quick");
-        assert_eq!(up.args, vec!["up", "/home/u/.local/share/qos-vpn/home.conf"]);
+        assert_eq!(
+            up.args,
+            vec!["up", "/home/u/.local/share/qos-vpn/home.conf"]
+        );
         let down = disconnect_plan(&c, Backend::WgQuick);
-        assert_eq!(down.args, vec!["down", "/home/u/.local/share/qos-vpn/home.conf"]);
+        assert_eq!(
+            down.args,
+            vec!["down", "/home/u/.local/share/qos-vpn/home.conf"]
+        );
     }
 
     #[test]
@@ -469,24 +475,37 @@ dhcp-option DNS 172.20.4.1
         assert_eq!(up.program, "openvpn");
         assert_eq!(
             up.args,
-            vec!["--config", "/home/u/.local/share/qos-vpn/work.ovpn", "--daemon"]
+            vec![
+                "--config",
+                "/home/u/.local/share/qos-vpn/work.ovpn",
+                "--daemon"
+            ]
         );
         // Teardown targets *this* tunnel's config, not every openvpn process.
         let down = disconnect_plan(&c, Backend::OpenVpnCli);
         assert_eq!(down.program, "pkill");
-        assert_eq!(down.args, vec!["-f", "/home/u/.local/share/qos-vpn/work.ovpn"]);
+        assert_eq!(
+            down.args,
+            vec!["-f", "/home/u/.local/share/qos-vpn/work.ovpn"]
+        );
     }
 
     #[test]
     fn iface_name_is_sanitised_and_bounded() {
         let mut c = Connection::new("My Work VPN (São Paulo)!!", ConnKind::WireGuard);
         let n = iface_name(&c);
-        assert!(crate::net::is_valid_iface(&n), "derived name {n:?} must be a valid iface");
+        assert!(
+            crate::net::is_valid_iface(&n),
+            "derived name {n:?} must be a valid iface"
+        );
         assert!(n.len() <= 15);
         // An empty name still yields a valid, unique-ish interface.
         c.name = "   ".into();
         let n2 = iface_name(&c);
-        assert!(crate::net::is_valid_iface(&n2), "fallback {n2:?} must be valid");
+        assert!(
+            crate::net::is_valid_iface(&n2),
+            "fallback {n2:?} must be valid"
+        );
     }
 
     #[test]

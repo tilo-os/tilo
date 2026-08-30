@@ -150,16 +150,25 @@ pub struct DiffKey {
 impl DiffKey {
     /// The staged (HEAD → index) diff for `path`.
     pub fn staged(path: impl Into<String>) -> Self {
-        Self { staged: true, path: path.into() }
+        Self {
+            staged: true,
+            path: path.into(),
+        }
     }
     /// The worktree (index → working tree) diff for `path`; also used for
     /// untracked files (which have no index side).
     pub fn worktree(path: impl Into<String>) -> Self {
-        Self { staged: false, path: path.into() }
+        Self {
+            staged: false,
+            path: path.into(),
+        }
     }
     /// The key for a file selected in `area`.
     pub fn for_area(area: ChangeArea, path: impl Into<String>) -> Self {
-        Self { staged: area == ChangeArea::Staged, path: path.into() }
+        Self {
+            staged: area == ChangeArea::Staged,
+            path: path.into(),
+        }
     }
 }
 

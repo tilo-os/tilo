@@ -31,9 +31,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{
-    AnnoKind, Annotation, Comment, PtRect, Reply, Signature, Swatch,
-};
+use crate::model::{AnnoKind, Annotation, Comment, PtRect, Reply, Signature, Swatch};
 
 pub struct PdfDoc;
 
@@ -127,7 +125,7 @@ impl PdfDoc {
     fn points_to_str(points: &[(f64, f64)]) -> String {
         points
             .iter()
-            .map(|(x, y)| format!("{:.2},{:.2}", x, y))
+            .map(|(x, y)| format!("{x:.2},{y:.2}"))
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -203,17 +201,23 @@ impl PdfDoc {
                     y: Self::get_f64(doc, &m, "y").unwrap_or(0.0),
                 },
             };
-            out.push(Annotation { id, page, kind, color, author });
+            out.push(Annotation {
+                id,
+                page,
+                kind,
+                color,
+                author,
+            });
         }
         out
     }
 
     fn index_of(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
         for i in 0..doc.length(list) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(list, i) {
-                if Self::get_str(doc, &m, "id").as_deref() == Some(id) {
-                    return Some(i);
-                }
+            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(list, i)
+                && Self::get_str(doc, &m, "id").as_deref() == Some(id)
+            {
+                return Some(i);
             }
         }
         None
@@ -221,10 +225,10 @@ impl PdfDoc {
 
     pub fn set_annotation_color(doc: &mut AutoCommit, id: &str, color: Swatch) {
         let list = Self::list(doc, "annotations");
-        if let Some(i) = Self::index_of(doc, &list, id) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                let _ = doc.put(&m, "color", color.key());
-            }
+        if let Some(i) = Self::index_of(doc, &list, id)
+            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+        {
+            let _ = doc.put(&m, "color", color.key());
         }
     }
 
@@ -234,13 +238,12 @@ impl PdfDoc {
     /// ink (its geometry is the polyline, not a single anchor).
     pub fn set_annotation_position(doc: &mut AutoCommit, id: &str, x: f64, y: f64) {
         let list = Self::list(doc, "annotations");
-        if let Some(i) = Self::index_of(doc, &list, id) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                if Self::get_str(doc, &m, "kind").as_deref() != Some("ink") {
-                    let _ = doc.put(&m, "x", x);
-                    let _ = doc.put(&m, "y", y);
-                }
-            }
+        if let Some(i) = Self::index_of(doc, &list, id)
+            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+            && Self::get_str(doc, &m, "kind").as_deref() != Some("ink")
+        {
+            let _ = doc.put(&m, "x", x);
+            let _ = doc.put(&m, "y", y);
         }
     }
 
@@ -340,10 +343,10 @@ impl PdfDoc {
 
     pub fn set_comment_resolved(doc: &mut AutoCommit, id: &str, resolved: bool) {
         let list = Self::list(doc, "comments");
-        if let Some(i) = Self::index_of(doc, &list, id) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                let _ = doc.put(&m, "resolved", resolved);
-            }
+        if let Some(i) = Self::index_of(doc, &list, id)
+            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+        {
+            let _ = doc.put(&m, "resolved", resolved);
         }
     }
 
@@ -351,10 +354,10 @@ impl PdfDoc {
     /// types into a note or comment thread.
     pub fn set_comment_body(doc: &mut AutoCommit, id: &str, body: &str) {
         let list = Self::list(doc, "comments");
-        if let Some(i) = Self::index_of(doc, &list, id) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                let _ = doc.put(&m, "body", body);
-            }
+        if let Some(i) = Self::index_of(doc, &list, id)
+            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+        {
+            let _ = doc.put(&m, "body", body);
         }
     }
 
@@ -367,21 +370,21 @@ impl PdfDoc {
 
     pub fn add_reply(doc: &mut AutoCommit, comment_id: &str, reply: &Reply) {
         let list = Self::list(doc, "comments");
-        if let Some(i) = Self::index_of(doc, &list, comment_id) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                let replies = match doc.get(&m, "replies") {
-                    Ok(Some((Value::Object(ObjType::List), rl))) => rl,
-                    _ => doc
-                        .put_object(&m, "replies", ObjType::List)
-                        .expect("put replies list never fails"),
-                };
-                let idx = doc.length(&replies);
-                let rm = doc
-                    .insert_object(&replies, idx, ObjType::Map)
-                    .expect("insert reply map never fails");
-                let _ = doc.put(&rm, "author", reply.author.as_str());
-                let _ = doc.put(&rm, "body", reply.body.as_str());
-            }
+        if let Some(i) = Self::index_of(doc, &list, comment_id)
+            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+        {
+            let replies = match doc.get(&m, "replies") {
+                Ok(Some((Value::Object(ObjType::List), rl))) => rl,
+                _ => doc
+                    .put_object(&m, "replies", ObjType::List)
+                    .expect("put replies list never fails"),
+            };
+            let idx = doc.length(&replies);
+            let rm = doc
+                .insert_object(&replies, idx, ObjType::Map)
+                .expect("insert reply map never fails");
+            let _ = doc.put(&rm, "author", reply.author.as_str());
+            let _ = doc.put(&rm, "body", reply.body.as_str());
         }
     }
 
@@ -391,7 +394,11 @@ impl PdfDoc {
     /// are `x,y` pairs joined by spaces (reusing [`Self::points_to_str`]),
     /// strokes joined by `;`.
     fn strokes_to_str(strokes: &[Vec<(f64, f64)>]) -> String {
-        strokes.iter().map(|s| Self::points_to_str(s)).collect::<Vec<_>>().join(";")
+        strokes
+            .iter()
+            .map(|s| Self::points_to_str(s))
+            .collect::<Vec<_>>()
+            .join(";")
     }
 
     fn strokes_from_str(s: &str) -> Vec<Vec<(f64, f64)>> {
@@ -479,7 +486,9 @@ mod tests {
         Annotation {
             id: Annotation::new_id(),
             page,
-            kind: AnnoKind::Highlight { rect: PtRect::new(10.0, 20.0, 100.0, 14.0) },
+            kind: AnnoKind::Highlight {
+                rect: PtRect::new(10.0, 20.0, 100.0, 14.0),
+            },
             color: Swatch::Yellow,
             author: "Alice".into(),
         }
@@ -508,7 +517,9 @@ mod tests {
         let a = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Ink { points: vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)] },
+            kind: AnnoKind::Ink {
+                points: vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)],
+            },
             color: Swatch::Blue,
             author: "Bob".into(),
         };
@@ -565,7 +576,9 @@ mod tests {
         let a = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Ink { points: vec![(1.0, 2.0), (3.0, 4.0)] },
+            kind: AnnoKind::Ink {
+                points: vec![(1.0, 2.0), (3.0, 4.0)],
+            },
             color: Swatch::Blue,
             author: "Bob".into(),
         };
@@ -589,7 +602,10 @@ mod tests {
             body: "Is this still accurate?".into(),
             created: 5,
             resolved: false,
-            replies: vec![Reply { author: "Bob".into(), body: "Yes, verified.".into() }],
+            replies: vec![Reply {
+                author: "Bob".into(),
+                body: "Yes, verified.".into(),
+            }],
         };
         let cid = c.id.clone();
         PdfDoc::add_comment(&mut doc, &c);
@@ -599,7 +615,14 @@ mod tests {
         assert_eq!(got[0].replies.len(), 1);
         assert_eq!(got[0].replies[0].author, "Bob");
 
-        PdfDoc::add_reply(&mut doc, &cid, &Reply { author: "Carol".into(), body: "Agreed.".into() });
+        PdfDoc::add_reply(
+            &mut doc,
+            &cid,
+            &Reply {
+                author: "Carol".into(),
+                body: "Agreed.".into(),
+            },
+        );
         PdfDoc::set_comment_resolved(&mut doc, &cid, true);
         PdfDoc::set_comment_body(&mut doc, &cid, "Edited: confirmed accurate.");
         let got = PdfDoc::list_comments(&doc);
@@ -663,7 +686,7 @@ mod tests {
             rect: PtRect::new(100.0, 100.0, 200.0, 70.0),
             signer: "Grace".into(),
             date: "2026-08-17".into(),
-            ink: crate::model::SignatureInk::Drawn { strokes: strokes.clone() },
+            ink: crate::model::SignatureInk::Drawn { strokes },
         };
         PdfDoc::add_signature(&mut doc, &s);
         let got = PdfDoc::list_signatures(&doc);
@@ -716,7 +739,11 @@ mod tests {
         PdfDoc::delete_annotation(&mut doc, &aid);
         assert!(PdfDoc::list_annotations(&doc).is_empty());
         let left = PdfDoc::list_comments(&doc);
-        assert_eq!(left.len(), 1, "anchored comment should be deleted with its annotation");
+        assert_eq!(
+            left.len(),
+            1,
+            "anchored comment should be deleted with its annotation"
+        );
         assert_eq!(left[0].body, "free");
     }
 

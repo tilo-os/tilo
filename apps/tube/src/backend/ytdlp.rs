@@ -33,7 +33,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::backend::{
-    yt_thumb_url, BackendError, BackendOutcome, BackendResult, PlaybackSource, YtBackend,
+    BackendError, BackendOutcome, BackendResult, PlaybackSource, YtBackend, yt_thumb_url,
 };
 use crate::model::{Channel, Video};
 
@@ -213,7 +213,10 @@ fn video_from_json(v: &Value, category: &str) -> Video {
         dearrow_thumb: false,
         sponsor: Vec::new(),
         comments: Vec::new(),
-        live: v.get("is_live").and_then(|b| b.as_bool()).unwrap_or(false),
+        live: v
+            .get("is_live")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -227,16 +230,12 @@ fn channel_from_json(v: &Value) -> Channel {
         name: str_field_any(v, &["channel", "uploader", "title"]),
         handle: {
             let h = str_field_any(v, &["uploader_id", "channel_id"]);
-            if h.is_empty() {
-                id.clone()
-            } else {
-                h
-            }
+            if h.is_empty() { id.clone() } else { h }
         },
         subscribers: u64_field(v, "channel_follower_count"),
         verified: v
             .get("channel_is_verified")
-            .and_then(|b| b.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
         description: str_field(v, "description"),
         seed: id,
@@ -257,8 +256,12 @@ fn pick_channel_images(v: &Value) -> (String, String) {
     let url_of = |t: &Value| str_field(t, "url");
     let dims = |t: &Value| {
         (
-            t.get("width").and_then(|w| w.as_u64()).unwrap_or(0),
-            t.get("height").and_then(|h| h.as_u64()).unwrap_or(0),
+            t.get("width")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            t.get("height")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
         )
     };
 
@@ -310,10 +313,19 @@ fn best_thumbnail(v: &Value, id: &str) -> String {
             arr.iter()
                 .filter(|t| !str_field(t, "url").is_empty())
                 .max_by_key(|t| {
-                    let w = t.get("width").and_then(|w| w.as_u64()).unwrap_or(0);
-                    let h = t.get("height").and_then(|h| h.as_u64()).unwrap_or(0);
+                    let w = t
+                        .get("width")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    let h = t
+                        .get("height")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
                     // Prefer a real preference index when present, else area.
-                    w * h + t.get("preference").and_then(|p| p.as_u64()).unwrap_or(0)
+                    w * h
+                        + t.get("preference")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0)
                 })
                 .map(|t| str_field(t, "url"))
         })
@@ -336,7 +348,11 @@ fn playback_source_from_print(v: &Value) -> Option<PlaybackSource> {
     let acodec = str_field(v, "acodec");
     let quality = {
         let note = str_field(v, "format_note");
-        if note.is_empty() { str_field(v, "resolution") } else { note }
+        if note.is_empty() {
+            str_field(v, "resolution")
+        } else {
+            note
+        }
     };
     Some(PlaybackSource {
         url,
@@ -352,7 +368,10 @@ fn playback_source_from_print(v: &Value) -> Option<PlaybackSource> {
 // --- small JSON accessors ---------------------------------------------------
 
 fn str_field(v: &Value, key: &str) -> String {
-    v.get(key).and_then(|s| s.as_str()).unwrap_or("").to_string()
+    v.get(key)
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn str_field_any(v: &Value, keys: &[&str]) -> String {
@@ -366,11 +385,13 @@ fn str_field_any(v: &Value, keys: &[&str]) -> String {
 }
 
 fn u64_field(v: &Value, key: &str) -> u64 {
-    v.get(key).and_then(|n| n.as_u64()).unwrap_or(0)
+    v.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0)
 }
 
 fn f64_field(v: &Value, key: &str) -> f64 {
-    v.get(key).and_then(|n| n.as_f64()).unwrap_or(0.0)
+    v.get(key)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0)
 }
 
 /// Days since the civil epoch (1970-01-01) for a proleptic-Gregorian date.
@@ -378,7 +399,7 @@ fn f64_field(v: &Value, key: &str) -> f64 {
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64; // [0, 399]
+    let yoe = y - era * 400; // [0, 399]
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     era * 146097 + doe - 719468
@@ -388,8 +409,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 fn today_days() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.as_secs() / 86_400) as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| (d.as_secs() / 86_400) as i64)
 }
 
 const MONTHS: [&str; 12] = [
@@ -427,10 +447,19 @@ fn age_label(age: i64, absolute: &str) -> String {
         1 => "1 day ago".to_string(),
         2..=6 => format!("{age} days ago"),
         7..=13 => "1 week ago".to_string(),
-        14..=59 => format!("{} weeks ago", age / 7),
-        60..=364 => {
+        // Weeks stop at 29, not 59: a month is the unit a person reaches
+        // for once there is a whole one to name, and "8 weeks ago" is not
+        // how anyone says "2 months ago". The `.max(1)` below is the tell
+        // that this boundary was always meant to sit at 30 — at 60 it can
+        // never fire, since 60/30 is already 2.
+        14..=29 => format!("{} weeks ago", age / 7),
+        30..=364 => {
             let months = (age / 30).max(1);
-            if months == 1 { "1 month ago".to_string() } else { format!("{months} months ago") }
+            if months == 1 {
+                "1 month ago".to_string()
+            } else {
+                format!("{months} months ago")
+            }
         }
         _ => absolute.to_string(),
     }
@@ -556,7 +585,10 @@ impl YtBackend for YtDlpBackend {
             }
             u.channel_seed = channel.id.clone();
         }
-        Ok(BackendResult::Channel { channel: Box::new(channel), uploads })
+        Ok(BackendResult::Channel {
+            channel: Box::new(channel),
+            uploads,
+        })
     }
 
     fn related(&self, _id: &str) -> BackendOutcome {
@@ -565,7 +597,10 @@ impl YtBackend for YtDlpBackend {
         Ok(BackendResult::Videos(Vec::new()))
     }
 
-    fn playlist(&self, id: &str) -> Result<(crate::model::Playlist, Vec<crate::model::Video>), BackendError> {
+    fn playlist(
+        &self,
+        id: &str,
+    ) -> Result<(crate::model::Playlist, Vec<crate::model::Video>), BackendError> {
         // yt-dlp extracts playlists reliably (unlike the current rustypipe
         // playlist parser). Flat-list the entries so it stays fast.
         let url = if id.starts_with("http") {
@@ -575,18 +610,28 @@ impl YtBackend for YtDlpBackend {
         };
         let end = format!("{LIST_LIMIT}");
         let v = self.run_json(
-            &["-J", "--flat-playlist", "--no-warnings", "--playlist-end", &end, &url],
-            Duration::from_secs(60),
+            &[
+                "-J",
+                "--flat-playlist",
+                "--no-warnings",
+                "--playlist-end",
+                &end,
+                &url,
+            ],
+            Duration::from_mins(1),
         )?;
         let videos = videos_from_entries(&v, "Playlist");
         let pl_id = {
             let got = str_field_any(&v, &["id"]);
             if got.is_empty() { id.to_string() } else { got }
         };
-        let thumbnail_url = videos.first().map(|x| x.thumbnail_url.clone()).unwrap_or_default();
+        let thumbnail_url = videos
+            .first()
+            .map(|x| x.thumbnail_url.clone())
+            .unwrap_or_default();
         let video_count = v
             .get("playlist_count")
-            .and_then(|c| c.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(videos.len() as u64);
         let playlist = crate::model::Playlist {
             id: pl_id.clone(),
@@ -625,7 +670,17 @@ impl YtBackend for YtDlpBackend {
         const SELECTOR: &str = "best[protocol^=https][vcodec!=none][acodec!=none]/best[ext=mp4][protocol^=https]/best[protocol^=https]/best";
         let v = self.run_print(
             Some(SELECTOR),
-            &["url", "width", "height", "fps", "format_note", "resolution", "ext", "vcodec", "acodec"],
+            &[
+                "url",
+                "width",
+                "height",
+                "fps",
+                "format_note",
+                "resolution",
+                "ext",
+                "vcodec",
+                "acodec",
+            ],
             &url,
             Duration::from_secs(45),
         )?;
@@ -667,7 +722,10 @@ mod tests {
         assert_eq!(v.duration, 465);
         assert_eq!(v.views, 10_815_517);
         // Largest thumbnail is chosen.
-        assert_eq!(v.thumbnail_url, "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg");
+        assert_eq!(
+            v.thumbnail_url,
+            "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg"
+        );
     }
 
     /// A video with no thumbnails still gets a usable image: the canonical
@@ -676,7 +734,10 @@ mod tests {
     fn falls_back_to_hqdefault_thumbnail() {
         let entry = serde_json::json!({ "id": "abc123", "title": "T" });
         let v = video_from_json(&entry, "Search");
-        assert_eq!(v.thumbnail_url, "https://i.ytimg.com/vi/abc123/hqdefault.jpg");
+        assert_eq!(
+            v.thumbnail_url,
+            "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
+        );
     }
 
     /// The channel object's avatar + banner are lifted from `thumbnails` by

@@ -1,36 +1,25 @@
 //! In-app actions, and the permission check that gates them.
 //!
-//! Apps export **resources** (a note, an ebook, an annotation; a file is
-//! a resource too) and **actions** on them (create an annotation, turn a
-//! page, seek a video). Resources nest.
+//! Apps export **resources** (a note, an ebook, a file) and **actions** on
+//! them (create an annotation, turn a page, seek a video). The rule this
+//! layer exists to enforce: **showing** a resource needs no permission,
+//! **taking an action** on one does — so there is deliberately no "render
+//! check" here. The affordance disappears for a peer without the verb, not
+//! the content.
 //!
-//! The rule the whole layer exists to enforce:
-//!
-//! > **Showing** a resource is non-destructive and needs no permission.
-//! > **Taking an action** on one requires permission.
-//!
-//! So there is deliberately no "render check" here. A peer who can see a
-//! document is not thereby authorised to change it, and a peer who
-//! cannot change it is still shown it — the affordance is what
-//! disappears, not the content.
-//!
-//! Separately from permission there is **confirmation**: an
-//! OS-provided "this is destructive, are you sure?" step for actions
-//! that declare themselves destructive. Confirmation is not a grant. A
-//! user confirming a delete has not been given any authority they did
-//! not already hold, and an action that is *denied* is never confirmed —
-//! [`ActionOutcome`] keeps the two strictly ordered.
+//! Separately, **confirmation** is an OS-drawn "are you sure?" step for
+//! actions that declare themselves destructive. It is not a grant: a user
+//! confirming a delete gains no authority they didn't already hold, and a
+//! *denied* action is never confirmed — [`ActionOutcome`] keeps the two
+//! strictly ordered.
 
 use std::collections::HashMap;
 
 use crate::shell::state::{Actor, CapDecision, ResourceRef, Verb, Workspace};
 
-/// One action an app exports.
-///
-/// Declaring an action is how an app tells the OS what verb the action
-/// needs and whether performing it destroys something. An app cannot
-/// grant itself authority by declaring — the declaration only names the
-/// verb the *capability model* will then be asked about.
+/// One action an app exports: what verb it needs and whether performing
+/// it destroys something. Declaring an action names the verb the
+/// *capability model* will be asked about — it grants no authority itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionDecl {
     /// The app exporting the action, by stable app id.
@@ -39,9 +28,8 @@ pub struct ActionDecl {
     pub action: String,
     /// The verb invoking it requires.
     pub verb: Verb,
-    /// Whether performing it destroys something, and so warrants an
-    /// OS-drawn confirmation step. Advisory to the *permission* answer
-    /// and load-bearing for the confirmation one.
+    /// Whether it warrants an OS-drawn confirmation step. Advisory to the
+    /// permission answer, load-bearing for the confirmation one.
     pub destructive: bool,
 }
 
@@ -57,17 +45,16 @@ impl ActionDecl {
     }
 
     /// Mark the action destructive, so invoking it is confirmed.
+    #[must_use]
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
         self
     }
 }
 
-/// What an app has declared it can do.
-///
-/// Fail-closed by construction: an action that is not in the registry
-/// cannot be invoked at all, so an app cannot smuggle an operation past
-/// the check by simply not declaring it.
+/// What an app has declared it can do. Fail-closed by construction: an
+/// action not in the registry cannot be invoked, so an app cannot smuggle
+/// one past the check by simply not declaring it.
 #[derive(Clone, Debug, Default)]
 pub struct ActionRegistry {
     decls: HashMap<(String, String), ActionDecl>,
@@ -84,9 +71,8 @@ impl ActionRegistry {
             .insert((decl.app.clone(), decl.action.clone()), decl);
     }
 
-    /// Forget everything `app` declared — called when it exits, so a
-    /// dead app's actions cannot be invoked by a peer whose message was
-    /// in flight.
+    /// Forget everything `app` declared — called on exit, so a dead app's
+    /// actions can't be invoked by a peer whose message was in flight.
     pub fn forget_app(&mut self, app: &str) {
         self.decls.retain(|(a, _), _| a != app);
     }
@@ -110,13 +96,9 @@ pub enum DenyReason {
     Capability(CapDecision),
 }
 
-/// The answer to "may this actor invoke this action?".
-///
-/// `NeedsConfirmation` is *permitted* — it means the capability check
-/// passed and the OS should draw its destructive-action confirmation
-/// before proceeding. It is deliberately a separate variant from
-/// [`ActionOutcome::Allow`] so a caller cannot treat "the user must
-/// confirm" as "the user has granted something".
+/// `NeedsConfirmation` is *permitted*: the capability check passed, and the
+/// OS should draw its confirmation step. Kept separate from
+/// [`ActionOutcome::Allow`] so callers can't treat "must confirm" as granted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionOutcome {
     /// Proceed.
@@ -128,24 +110,17 @@ pub enum ActionOutcome {
 }
 
 impl ActionOutcome {
-    /// Did the permission check pass? True for both `Allow` and
-    /// `NeedsConfirmation`.
+    /// Did the check pass? True for both `Allow` and `NeedsConfirmation`.
     pub fn is_permitted(self) -> bool {
         !matches!(self, ActionOutcome::Denied(_))
     }
 }
 
-/// May `actor` invoke `app`'s `action` on `resource` in this room?
-///
-/// The single entry point for in-app action permission. Fail-closed at
-/// every step: an undeclared action is refused, and a declared one is
-/// refused unless the capability model positively permits the verb it
-/// declared.
-///
-/// The resource matters as much as the action. An actor granted
-/// `Write` on one document may invoke a write-class action on *that*
-/// document and not on its neighbour, because `resource` is what the
-/// capability's scope is matched against.
+/// The single entry point for in-app action permission. Fail-closed: an
+/// undeclared action is refused, and a declared one unless the capability
+/// model positively permits the verb. `resource` is what the capability's
+/// scope is matched against, so `Write` on one document doesn't reach
+/// its neighbour.
 pub fn check_action(
     workspace: &Workspace,
     registry: &ActionRegistry,
@@ -164,12 +139,9 @@ pub fn check_action(
     }
 }
 
-/// The actions `actor` may actually invoke on `resource`.
-///
-/// This is what chrome should paint from. A peer who lacks the verb is
-/// not offered the affordance at all — no greyed-out button that
-/// reports failure on click, and no modal interrupting their edit.
-/// Asking for more is a *request* to the owner, handled out of band.
+/// What chrome should paint from: a peer who lacks the verb is not offered
+/// the affordance at all. Asking for more is a *request* to the owner,
+/// handled out of band.
 pub fn permitted_actions<'r>(
     workspace: &Workspace,
     registry: &'r ActionRegistry,
@@ -291,8 +263,7 @@ mod tests {
             "a destructive action an actor IS permitted still gets a confirmation step"
         );
 
-        // Confirmation is not a grant: a peer without Write gets denial,
-        // never a confirmation prompt they could click through.
+        // Confirmation is not a grant: no Write means denial, not a prompt.
         let mut ws2 = room();
         ws2.grant_capability(CapOverride::membership(
             Subject::person("carol"),
@@ -318,8 +289,7 @@ mod tests {
     #[test]
     fn an_action_capability_is_scoped_to_its_resource() {
         let mut ws = room();
-        // Bob is admitted read-only, then given write on exactly one
-        // app's annotate action.
+        // Read-only admission, then write on exactly one action.
         ws.grant_capability(CapOverride::membership(
             Subject::person("bob"),
             ws.id.raw().to_string(),
@@ -472,10 +442,7 @@ mod tests {
 
     #[test]
     fn the_subject_of_a_share_is_never_a_room_member() {
-        // Guards the hard UI constraint at the action layer too: a
-        // person given one resource can act on it without ever becoming
-        // a member of the room.
-        let mut ws = room();
+        let mut ws = room(); // a shared resource, never room membership
         ws.grant_capability(CapOverride::grant(
             Subject::person("dave"),
             Scope::Action {

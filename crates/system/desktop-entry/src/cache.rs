@@ -47,7 +47,9 @@ fn cell() -> &'static Mutex<Option<Cached>> {
 pub fn cached_scan() -> Scan {
     let dirs = crate::scan::application_dirs();
     let desktop = vec![crate::scan::CURRENT_DESKTOP.to_string()];
-    let mut guard = cell().lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if let Some(cached) = guard.as_mut() {
         if cached.at.elapsed() < SCAN_TTL {
@@ -76,7 +78,9 @@ pub fn cached_scan() -> Scan {
 /// changed — a Flatpak install finishing, say — and by tests, which
 /// share this process-wide state.
 pub fn invalidate() {
-    *cell().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 fn fingerprint(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {

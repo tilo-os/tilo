@@ -188,7 +188,7 @@ impl WaylandServer {
                 let serial = self.next_serial();
                 let surface = surface_id.and_then(|id| self.find_surface_by_id(id));
                 if let Some(s) = surface {
-                    let mut actual_buf_size = (surface_width as f64, surface_height as f64);
+                    let mut actual_buf_size = (f64::from(surface_width), f64::from(surface_height));
                     with_states(&s, |states| {
                         let mut attrs = states.cached_state.get::<SurfaceAttributes>();
                         if let Some(smithay::wayland::compositor::BufferAssignment::NewBuffer(
@@ -198,13 +198,14 @@ impl WaylandServer {
                             let _ = smithay::wayland::shm::with_buffer_contents(
                                 buffer,
                                 |_, _, data| {
-                                    actual_buf_size = (data.width as f64, data.height as f64);
+                                    actual_buf_size =
+                                        (f64::from(data.width), f64::from(data.height));
                                 },
                             );
                         }
                     });
-                    let scale_x = actual_buf_size.0 / surface_width as f64;
-                    let scale_y = actual_buf_size.1 / surface_height as f64;
+                    let scale_x = actual_buf_size.0 / f64::from(surface_width);
+                    let scale_y = actual_buf_size.1 / f64::from(surface_height);
                     self.pointer_location = (x * scale_x, y * scale_y).into();
                     pointer.motion(
                         self,
@@ -237,14 +238,13 @@ impl WaylandServer {
             } => {
                 let pointer = self.seat.get_pointer().unwrap();
                 let serial = self.next_serial();
-                if let Some(id) = surface_id {
-                    if state == smithay::backend::input::ButtonState::Pressed {
-                        if let Some(surface) = self.find_surface_by_id(id) {
-                            let keyboard = self.seat.get_keyboard().unwrap();
-                            keyboard.set_focus(self, Some(surface.clone()), serial);
-                            self.activate_window_by_surface(&surface);
-                        }
-                    }
+                if let Some(id) = surface_id
+                    && state == smithay::backend::input::ButtonState::Pressed
+                    && let Some(surface) = self.find_surface_by_id(id)
+                {
+                    let keyboard = self.seat.get_keyboard().unwrap();
+                    keyboard.set_focus(self, Some(surface.clone()), serial);
+                    self.activate_window_by_surface(&surface);
                 }
                 pointer.button(
                     self,
@@ -269,19 +269,17 @@ impl WaylandServer {
                 width,
                 height,
             } => {
-                if let Some(surface) = self.find_surface_by_id(surface_id) {
-                    if let Some(window) = self
+                if let Some(surface) = self.find_surface_by_id(surface_id)
+                    && let Some(window) = self
                         .space
                         .elements()
                         .find(|w| w.wl_surface().as_deref() == Some(&surface))
-                    {
-                        if let Some(toplevel) = window.toplevel() {
-                            toplevel.with_pending_state(|state| {
-                                state.size = Some((width as i32, height as i32).into());
-                            });
-                            toplevel.send_configure();
-                        }
-                    }
+                    && let Some(toplevel) = window.toplevel()
+                {
+                    toplevel.with_pending_state(|state| {
+                        state.size = Some((width as i32, height as i32).into());
+                    });
+                    toplevel.send_configure();
                 }
             }
         }
@@ -289,10 +287,10 @@ impl WaylandServer {
 
     fn find_surface_by_id(&self, target_id: u32) -> Option<WlSurface> {
         for window in self.space.elements() {
-            if let Some(surface) = window.wl_surface() {
-                if surface.id().protocol_id() == target_id {
-                    return Some(surface.clone().into_owned());
-                }
+            if let Some(surface) = window.wl_surface()
+                && surface.id().protocol_id() == target_id
+            {
+                return Some(surface.clone().into_owned());
             }
         }
         None
@@ -351,7 +349,7 @@ impl CompositorHandler for WaylandServer {
             }
         });
 
-        let _ = with_states(surface, |states| {
+        let () = with_states(surface, |states| {
             let mut attrs = states.cached_state.get::<SurfaceAttributes>();
             let buffer = attrs.current().buffer.as_ref();
             if let Some(smithay::wayland::compositor::BufferAssignment::NewBuffer(buffer)) = buffer
@@ -472,7 +470,7 @@ impl SelectionHandler for WaylandServer {
         _: String,
         _: std::os::unix::io::OwnedFd,
         _: Seat<Self>,
-        _: &Self::SelectionUserData,
+        (): &Self::SelectionUserData,
     ) {
     }
 }

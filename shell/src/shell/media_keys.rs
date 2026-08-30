@@ -1,13 +1,5 @@
 //! The hardware keys along the top of every laptop keyboard.
 //!
-//! `NamedKey::AudioVolumeUp`, `AudioVolumeDown`, `AudioVolumeMute`,
-//! `BrightnessUp`, `BrightnessDown`, `MediaPlayPause`, `MediaTrackNext`
-//! and `MediaTrackPrevious` existed in the vendored winit keyboard tables
-//! and appeared in no handler anywhere in the compositor. Of the whole
-//! function row only `NamedKey::Power` did anything. Pressing volume-up
-//! on a qOS machine sent the keysym to whichever client had focus, which
-//! is not what a user pressing a speaker glyph is asking for.
-//!
 //! This module is the classification and the actuation, kept out of the
 //! backend loops so both of them route the same press to the same
 //! outcome. The loop's job is one `else if`.
@@ -47,11 +39,9 @@ const VOLUME_STEP: f32 = 0.05;
 /// presses to get from "readable indoors" to "readable in sunlight".
 const BRIGHTNESS_STEP: f32 = 0.10;
 
-/// Classify a window event as a media/brightness key press.
-///
 /// Only key *presses* count. These keys autorepeat, and a repeat is a
-/// genuine second press — holding volume-down to fade out is the
-/// expected gesture — so repeats are not filtered here.
+/// genuine second press — holding volume-down to fade out is the expected
+/// gesture — so repeats are not filtered here.
 pub fn classify(event: &WindowEvent) -> Option<MediaKey> {
     let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return None;
@@ -78,18 +68,10 @@ pub fn classify(event: &WindowEvent) -> Option<MediaKey> {
     })
 }
 
-/// Apply `key` and return the readout to put on screen.
-///
-/// `status` is the live-status bridge, when one is running. It is both an
-/// input and an output: the current level is read from the last poll
-/// rather than by shelling out again (which would double the subprocess
-/// cost of every keypress and race the press that came before it), and
-/// the new level is published straight back so the tray indicator moves
-/// in the same frame rather than up to a poll interval later.
-///
-/// Returns `None` when nothing could be done — no audio daemon, no
-/// backlight — so the caller shows no OSD rather than a slab reporting a
-/// change that did not happen.
+/// `status`, when running, is read for the current level (rather than
+/// shelling out again) and written back so the tray indicator moves the
+/// same frame. `None` when nothing could be done, so the caller shows no
+/// OSD rather than claim a change that didn't happen.
 pub fn apply(key: MediaKey, actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
     match key {
         MediaKey::VolumeUp => step_volume(VOLUME_STEP, actions, status),
@@ -117,10 +99,8 @@ fn step_volume(delta: f32, actions: &dyn QsActions, status: Option<&StatusBridge
     let now = current_volume(status)?;
     let next = (now.level + delta).clamp(0.0, 1.0);
     actions.set_volume(next * 100.0).ok()?;
-    // Nudging the volume un-mutes. A user reaching for volume-up on a
-    // muted sink is asking to hear something, and leaving it muted while
-    // the number climbs is the single most confusing thing this key can
-    // do.
+    // Nudging the volume un-mutes: reaching for volume-up on a muted sink
+    // means "let me hear it".
     let muted = if now.muted && delta > 0.0 {
         let _ = actions.set_mute(false);
         false
@@ -136,12 +116,11 @@ fn step_volume(delta: f32, actions: &dyn QsActions, status: Option<&StatusBridge
 
 fn toggle_mute(actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
     actions.toggle_mute().ok()?;
-    // `wpctl set-mute toggle` reports nothing, so the new state is the
-    // inverse of what we last knew. Reading it back would be a second
-    // subprocess on a key that can be hammered.
+    // `wpctl set-mute toggle` reports nothing, so assume the inverse of
+    // what we last knew rather than pay a second subprocess.
     let now = current_volume(status);
-    let level = now.map(|v| v.level).unwrap_or(0.0);
-    let muted = !now.map(|v| v.muted).unwrap_or(false);
+    let level = now.map_or(0.0, |v| v.level);
+    let muted = !now.is_some_and(|v| v.muted);
     if let Some(s) = status {
         s.set_volume(os_actions::VolumeState { level, muted });
     }
@@ -154,10 +133,8 @@ fn toggle_mic_mute() -> Option<Osd> {
 }
 
 fn step_brightness(delta: f32, actions: &dyn QsActions) -> Option<Osd> {
-    // Brightness has no poller behind it — it only changes when
-    // something on this machine changes it, and reading sysfs is a file
-    // read rather than a subprocess, so asking every time is honest and
-    // cheap.
+    // No poller: reading sysfs is a file read, not a subprocess, so
+    // asking every time is cheap.
     let now = os_actions::get_brightness().ok()?;
     let next = (now + delta).clamp(0.0, 1.0);
     actions.set_brightness(next * 100.0).ok()?;
@@ -181,9 +158,8 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// Build a `KeyboardInput` event for `key`. Mirrors the zeroed-struct
-    /// workaround the compositor's own key-event builders use: winit's
-    /// `KeyEvent` has a private `platform_specific` field.
+    /// Build a `KeyboardInput` event for `key` via the zeroed-struct
+    /// workaround (winit's `KeyEvent` has a private `platform_specific` field).
     fn press(key: Key) -> WindowEvent {
         key_event(key, ElementState::Pressed)
     }
@@ -194,8 +170,9 @@ mod tests {
         // invariant `native::keyboard_input_event` relies on.
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = key;
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = state;
         ev.repeat = false;
@@ -361,7 +338,6 @@ mod tests {
         assert_eq!(osd.caption(), "Muted");
         assert!(bridge.snapshot().volume.unwrap().muted);
 
-        // And back again.
         let osd = apply(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
         assert_eq!(osd.caption(), "Volume 50%");
         assert!(!bridge.snapshot().volume.unwrap().muted);
@@ -370,8 +346,7 @@ mod tests {
     #[test]
     fn a_machine_with_no_audio_daemon_shows_no_readout() {
         let rec = Recorder::default();
-        // No bridge reading, and this host has no wpctl in the test
-        // sandbox — so there is no level to step from.
+        // No bridge reading; this host may have no wpctl in the test sandbox.
         if os_actions::get_volume_state().is_err() {
             assert!(
                 apply(MediaKey::VolumeUp, &rec, None).is_none(),

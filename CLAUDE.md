@@ -1,300 +1,227 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Scope
 
-qOS is a collaborative, spatial Linux OS built on **Fedora Bootc**. It is a stack, not a single app:
+qOS is a collaborative Linux OS and desktop environment on **Fedora Bootc**: Niri-like
+strips of non-overlapping windows, inside workspaces that carry their own collaborators,
+permissions and host. It is a stack, not a single app:
 
 - An immutable container-based OS image
-- A custom Wayland compositor with a Niri-inspired scrollable-strip tiling model
+- A Wayland compositor
 - A P2P FUSE filesystem that projects remote files and hydrates on demand
-- A custom CRDT-native UI toolkit used by system apps
-- Native system apps (terminal, file explorer, browser)
+- A CRDT-native UI toolkit used by system apps
+- ~40 native system apps
 
-Treat these as deeply interrelated — a change in `ui` or `fs` can break the OS image build; changes to the compositor affect sandboxing and collaboration semantics.
+Treat these as deeply interrelated — a change in `ui` or `fs` can break the OS image build;
+changes to the compositor affect sandboxing and collaboration semantics.
+
+Collaboration lives *below* applications rather than inside them — it has to work in the
+ebook reader, the file manager and the terminal, not only in the document editor.
+**Applications own neither their pixels nor their storage.** An app declares its UI through
+`ui`, which the compositor draws, and exports **resources** — hierarchical and typed (an
+ebook; the highlights and annotations inside it) — each carrying its own **actions**. The
+state behind a resource is a CRDT the system owns.
+
+Most user-facing design questions reduce to that one decision:
+
+- **Accessibility and automation are the same door.** A screen-reader user, a script and an
+  agent browse resources and invoke actions; none touch the UI. A capability reachable only
+  by clicking is not finished.
+- **Search is a system service.** Apps register a search provider *and* a renderer per
+  resource type, so a hit opens the app at that position.
+- **Undo, history, device sync and theming are system services**, not forty implementations.
+- **Collaboration reduces to transport.** Invite someone to a workspace, give them a role per
+  app; each machine draws natively and state syncs as a CRDT. Agents are ordinary
+  collaborators — same presence, same cursor colour, same attributed history.
+- **A workspace is a unit of collaboration** — its own collaborators, permissions and host —
+  not a region of screen space.
+- **Apps are ~2 MB and are not installed.** Search, press enter, it downloads and opens;
+  unused copies are evicted; keeping one is opt-in. Sandboxing (Landlock + Wayland + portals)
+  is what makes that safe, and it is the security boundary — never weaken it for convenience.
+- **The filesystem is collaborative and versioned.** Apps register (de)serialisation for
+  legacy formats, so `fs` understands both native resources and `.docx`; history, diff and
+  undo look the same in the file manager and inside the app.
+- **Rendering and state are decoupled**, which is why a workspace can be hosted on another
+  machine and still render locally at full speed.
+- **The OS owns window chrome**; apps must not draw their own title bar. Windows never
+  overlap — reject designs that reintroduce floating.
 
 ## Repository Layout
 
-This is a **Cargo workspace (monorepo)**. The workspace members in `Cargo.toml` are:
+Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
 
-- `shell/` (binary `shell`) — Wayland compositor. Built on `smithay` + `vello`/`wgpu` + `libp2p` (gossipsub, mdns). Contains the workspace/strip/sandbox/collaboration logic (Niri-inspired scrollable strips; wheel-disc workspace switcher).
-- `fs/` — FUSE3 driver, Iroh-based P2P, mounted at `/var/workspace` with cache at `/var/cache/qos-fs`. 10s metadata TTL, 1MB readahead.
-- `ui/` (in-tree) — The UI toolkit. Retained-mode, CRDT-native. Stack: `wgpu` + `vello` (render), `taffy` (layout), `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
-- `apps/terminal/` (binary `terminal`) — GPU-accelerated terminal. Uses `ui`. `--shots PATH` for headless screenshot.
-- `apps/file-explorer/` — Spatial file manager. Uses `ui`. `--shots PATH` for headless screenshot.
-- `apps/browser/` (binary `browser`) — Servo-based, uses `iced` directly. No `--shots` mode yet — iced 0.13 has no headless surface; deferred until upstream exposes one or the browser migrates to `ui`.
-- `crates/<domain>/` — supporting libraries grouped by domain (`collab`, `doc`, `runtime`, `packaging`, `session`, `system`, `text`, `format`). See `Cargo.toml` for the full member list.
-- `os/` — `Containerfile`, `Containerfile.test`, systemd units, build and VM scripts.
-- `plan/`, `docs/` — Architecture, collaboration, compositor, security design notes. Read these before non-trivial changes in those areas.
-
-Everything lives in this one repository — normal commits, no submodule pointer dance (see "Monorepo workflow" below).
+- `shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
+  sandboxing, collaboration. Also the `qos-control` CLI and the `shots` renderer.
+- `ui/` — the toolkit: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
+  `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
+- `fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/qos-fs`.
+- `apps/` — ~40 app crates built on `ui`.
+- `crates/<domain>/` — collab, doc, runtime, packaging, session, system, text, format.
+- `os/` — Containerfile, systemd units, image build scripts.
 
 ## Build & Test
 
-### First time (clone)
+Run plain `cargo`. The toolchain is pinned in `rust-toolchain.toml` and the whole workspace is
+edition 2024 — don't add a crate on an older edition. `tools/check-build-env.sh` names any
+missing native library, which Rust otherwise reports as `pkg-config exited with status code 1`
+inside a `-sys` crate. How those libraries get there is per-machine and `DEVELOPMENT.md`'s
+business, not this file's.
+
+**Never set `CARGO_TARGET_DIR`, and never point two worktrees at one target directory.** The
+first is hashed into sccache's cache key, so it costs every hit even when set to the path
+cargo would have picked anyway; the second collides silently and hands you the other
+worktree's binary. Delete a landed worktree's `target/` — those bytes serve one worktree, the
+same bytes in the cache serve all of them. `DEVELOPMENT.md` carries the measurements.
+
+Scope tests to what you are proving — the compile dominates, and a whole-crate run is minutes:
 
 ```bash
-git clone ssh://git@code.podesta.ai/qos/qos.git
+cargo test -p shell --lib room_activity
+cargo test -p shell --test interaction_test   # headless Wayland state, no GPU
 ```
 
-### Building Rust components individually (fast inner loop)
+Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
+targets, which is how test files have silently stopped building for days at a time.
 
-```bash
-cargo build -p shell        # compositor
-cargo build -p fs        # FUSE driver
-cargo build -p ui             # UI toolkit
-cargo build -p terminal
-cargo build -p file-explorer
-cargo build -p browser
-```
-
-### Build environment — just run `cargo`
-
-**Run plain `cargo`.** `~/.local/bin/cargo` is a shim: it reads `.build-container` at the repo
-root, routes the build into `my-distrobox`, enables sccache, and selects the sccache server in
-that container's namespace. This works from the main tree and from every worktree with no
-per-worktree setup.
-
-```bash
-cargo test -p shell
-```
-
-**Do not set** `RUSTC_WRAPPER`, `SCCACHE_DIR`, `SCCACHE_SERVER_PORT`, `SCCACHE_CACHE_SIZE`,
-`CARGO_TARGET_DIR` or `CARGO_BUILD_JOBS` — the shim handles them and overriding can break the
-build. `jobs = 4` lives in `.cargo/config.toml`. There is no build semaphore; memory is bounded
-by systemd cgroups, so builds do not need serialising. Do not reintroduce a concurrency cap — it
-throttled the machine even when idle.
-
-`QCARGO_DEBUG=1 cargo …` prints the routing decision; `QCARGO_BYPASS=1` skips the shim.
-
-**Never share a target dir or `build.build-dir` between worktrees.** Cargo's artifact key does not
-include the package path, and worktrees of one repo share a name and version, so they collide —
-you silently get another worktree's binary and cargo reports `Fresh`. Per-worktree targets plus
-sccache give the dedup safely: a second worktree building the same deps takes cache hits.
-
-The host is image-based (Bazzite/Silverblue, `/usr` read-only) and has **none** of the native
-development libraries — not just capnp. Adding them would mean `rpm-ostree` layering plus a
-reboot, re-layered after every base update, with a build environment that drifts as the host
-image moves. The container is also what pins the build environment for everyone. Deps it needs
-(install via `sudo dnf install` inside `distrobox enter my-distrobox` if it's been rebuilt):
-
-```
-xkbcommon-devel          # smithay-client-toolkit (every build)
-libseat-devel            # compositor DRM backend
-libinput-devel           # compositor DRM input
-libudev-devel            # compositor DRM device enum
-libdrm-devel             # compositor DRM
-mesa-libgbm-devel        # compositor DRM buffer alloc
-mesa-libGL-devel         # compositor DRM paint (Phase 5.2)
-mesa-libEGL-devel        # compositor DRM paint (Phase 5.2)
-pipewire-devel           # portal ScreenCast streams
-nasm                     # openh264-sys2 fallback (optional; the `source` feature compiles pure-C without)
-```
-
-Missing one of these surfaces as a `pkg-config exited with status code 1` error at the top of the cargo output. Don't `sudo dnf install` on the host — install inside `distrobox enter my-distrobox`.
-
-### Running tests
-
-**Prefer targeted tests over workspace-wide runs** — the `shell` suite alone is ~950 tests and
-the compile dominates. Scope to the crate, or to the test names you are proving:
-
-```bash
-cargo test -p fs
-cargo test -p shell --lib room_activity      # just the ones you're working on
-```
-
-`shell --lib` runs cleanly under **default parallel** as of 2026-05-23. The previous SIGSEGV (wgpu Vulkan instance contention from many OffscreenRenderer-using tests creating Instances in parallel) was fixed by a process-wide shared `Arc<Mutex<RenderContext>>` in `ui/src/offscreen.rs`. The `apply_grants_dev_scan_is_memoised` memo-flake (D-6 static state) was fixed via `serial_test::serial` on the 8 `apply_grants`-touching tests.
-
-```bash
-cargo test -p shell --lib
-```
-
-If a future change reintroduces a parallel-test crash, the historical bisect threshold was 4-threads OK / 8-threads SIGSEGV — restart by running `--test-threads 4` and bisect upward.
-
-The compositor has a headless integration test harness that exercises the Wayland state without a GPU:
-
-```bash
-cd shell && cargo test --test interaction_test
-```
-
-### Running `ui` examples
-
-```bash
-cargo run -p ui --example gallery
-cargo run -p ui --example responsive_gallery
-# Enable debug overlays:
-QUICK_UI_DEBUG=1 cargo run -p ui --example gallery
-```
-
-### Full OS image
-
-```bash
-./os/build.sh            # production image (requires podman)
-./os/verify-test.sh      # test image with validation service
-./os/test-vm.sh [path/to/disk.qcow2]    # boot it in QEMU (needs OVMF + KVM)
-```
-
-`./os/build.sh` builds the container image (the Rust binaries compile *inside* it) and then calls `os/dev/disk-image.sh` to produce `os/output*/qcow2/disk.qcow2` — `systemd-repart` for the partitions, `bootc install to-filesystem` into them. `bootc-image-builder` is gone: it has no composefs/UKI surface, and it cannot install this image at all, since qOS asks for systemd-boot and the ostree backend refuses it. The container build step uses rootless `podman`; the disk-image step needs `sudo` for loopback mounts and a local registry to push to (the composefs backend will not install from container storage).
-
-**VM login:** `quickuser` / `quickdesktop`. Verify the FUSE mount with `mountpoint /var/workspace`. The test image runs `quick-fs-test.service` on boot — check results with `journalctl -u quick-fs-test`.
+Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `quickuser` /
+`quickdesktop`.
 
 ## Architecture Essentials
 
-### `ui` — the UI toolkit
+### `ui` — five passes per frame
 
-Every widget implements the `Widget` trait in `ui/src/widget/mod.rs`. A frame is **five passes**, not one:
+Every widget implements `Widget` (`ui/src/widget/mod.rs`):
 
-1. `sync(state, path)` — pull visual state from the Automerge CRDT document.
-2. `build_layout(taffy, theme, node_map)` — build the Taffy tree; widgets that size themselves implement `measure`.
-3. `apply_layout(taffy, node, origin)` — taffy's computed layout → widget's `Rect`.
-4. `draw(scene, transform, text_renderer, theme)` — render into a Vello `Scene`.
-5. `handle_event(event, ...)` — winit events may **mutate the CRDT directly** (e.g. text input splices into an Automerge `Text` object). No message-passing layer.
+1. `sync(state, path)` — pull visual state from the Automerge document
+2. `build_layout(taffy, theme, node_map)` — build the Taffy tree; self-sizing widgets
+   implement `measure`
+3. `apply_layout(taffy, node, origin)` — computed layout → the widget's `Rect`
+4. `draw(scene, transform, text_renderer, theme)` — render into a Vello scene
+5. `handle_event(...)` — winit events, which **mutate the CRDT directly**
 
-Key implications when writing or modifying widgets:
-- State lives in the CRDT (`State::doc`, an `AutoCommit`), **not** in widget fields. Widget structs hold render/layout caches only.
-- Undo/redo is implemented by snapshotting the full CRDT (`State::commit_action`, see `ui/src/state/mod.rs`). Widgets signal "this is an undo point" via `needs_commit()`/`on_commit()`. Ephemeral per-widget state (caret position, selection) is restored across undo via `get_state`/`set_state`.
-- Focus is 2D and directional, not tab-order-only. The `App` in `ui/src/app.rs` maintains a `focusable_order` and does spatial navigation for arrow keys.
-- Collaboration (`ui/src/collaboration.rs`) is implemented as a Unix-socket protocol to the compositor (`CollabRequest`/`CollabEvent`, serde-encoded). CRDT sync uses `SyncIncremental`. Remote cursors come in as `RemoteCursorMoved` events and render on top of the scene.
-- Theming is **OS-controlled**: widgets must read colors/spacing from the `Theme` passed to `draw`, never hard-code. This is how the OS enforces consistent look across system apps.
-- i18n via `fluent` — pass translation keys, not literal strings, to user-facing widgets.
+There is no message-passing layer. Consequences:
 
-### Compositor (`shell`)
+- Widget structs hold render and layout caches **only**. State lives in `State::doc`, an
+  `AutoCommit`.
+- Undo/redo snapshot the whole document (`State::commit_action`). Widgets mark undo points
+  with `needs_commit()`/`on_commit()` and restore ephemeral state (caret, selection) via
+  `get_state`/`set_state`.
+- Focus is 2D and directional — `App::focusable_order` in `ui/src/app.rs`, not tab order.
+- **Theming is OS-controlled.** Read every colour and spacing value from the `Theme` passed
+  to `draw`; never hard-code. Same for strings: pass `fluent` keys, never literals.
+- **Never hand-roll a text input, button, dialog or control.** Extend the shared widget — it
+  carries correctness, accessibility and theming that a local copy will not.
+- **Apps start empty.** No seeded feeds, messages, events or documents on the live path.
+  Sample data belongs behind `--shots` or a demo flag, never in the app a user opens.
+- Rewriting a whole CRDT `Text` or list on every keystroke blows up tombstones. Diff and
+  splice.
 
-- **Spatial model**: `Workspace → Strip → WindowGroup → Tab`. Tabs tile within a group, groups scroll horizontally within a strip (Niri-inspired), strips stack within a workspace, and workspaces are switched via the wheel disc. No overlapping floating windows — reject any design that reintroduces them.
-- **Per-workspace sandbox**: each workspace is a Bubblewrap sandbox with its own file-access policy. When an app requests a path not in the workspace's allowlist, the compositor prompts the user; approvals can be granted temporarily or permanently to the workspace.
-- **Collaboration**: peers can be invited to a specific workspace. Sharing is via Wayland buffer streaming + remote input injection, coordinated over `libp2p` (gossipsub + mdns). Sandboxing is the security boundary — do not weaken it for convenience.
-- The Wayland state is decoupled from the graphical `vello`/`wgpu` paint layer so it can run headless for integration tests.
+### `shell` — `Workspace → Strip → WindowGroup → Tab`
+
+Tabs tile within a group; groups scroll horizontally within a strip; strips stack vertically;
+workspaces switch via the wheel disc. Tabs are a **frame** primitive grouping arbitrary apps —
+not per-app tabs.
+
+Each workspace is a bubblewrap sandbox with its own file-access policy; a path outside it
+prompts the user, and approval can be scoped to the workspace. The Wayland state is decoupled
+from the vello/wgpu paint layer so it runs headless.
 
 ### `fs`
 
-- Mounted at `/var/workspace`. Uses Iroh for content addressing + `iroh-blobs` for transfer; `blake3` hashes; `moka` for caching.
-- **Projection vs. hydration**: metadata is visible immediately via P2P gossip; content is fetched on first read. Don't assume `open()` implies bytes are local.
-- Cache lives at `/var/cache/qos-fs` so the root can stay read-only under bootc.
+Iroh content addressing, `blake3` hashes, `moka` cache. Metadata arrives immediately over
+gossip; content hydrates on first read — so `open()` does not mean the bytes are local.
 
-### OS image
+### Actions and resources
 
-- Base: Fedora bootc 44, mirrored to `code.podesta.ai/qos/fedora-bootc` and pinned by digest in `os/base-snapshot.env` — upstream garbage-collects the manifest a digest points at within a day, so a pin straight at quay.io stops resolving. The image is immutable; persistent state goes under `/var`.
-- Boot chain: UEFI/GRUB → `greetd` (tuigreet) → `quick-fs.service` mounts the FUSE → `shell` starts as the Wayland session → `shell-firstboot.service` handles first-run setup.
-- `Containerfile.test` adds a validation systemd service; use it instead of shipping test code in the production image.
+`crates/collab/actions` (`qos-actions`) is the app-facing registry: `resource.rs`,
+`action.rs`, `registry.rs`, `executor.rs`, `envelope.rs`. An app registers its resources and
+the actions on them; the shell serves them into search, the palette and the control socket.
 
-## Monorepo workflow
+**This is the app's public surface.** Automation, accessibility and agents use it and nothing
+else. When you add a capability to an app, add the action — a feature that exists only as a
+click handler is invisible to every one of them.
 
-All components (`ui`, `shell`, `fs`, `apps/*`, `os`, and the top-level crates)
-live in this **single repository** — commit normally, no submodule pointer dance.
-Prefer explicit paths over `git add -A` so you only stage what you intend.
+## Driving a running desktop
 
-### Build output is the disk budget
+**There is one story. Do not build a second one.**
 
-One worktree's `target/` reaches 150+ GB, and targets cannot be shared between worktrees (see
-above). Debug profiles are pinned to `debug = "line-tables-only"` in the workspace `Cargo.toml`
-for that reason — full DWARF across ~200 test binaries was the bulk of it.
+`qos-control` is the CLI over the compositor's control socket — path from `$QOS_TEST_CONTROL`,
+default `/tmp/nirios.sock`. It is a `shell` binary and is **not on PATH**; run it with
+`cargo run -q --bin qos-control --` , or `cargo install --path shell --bin qos-control` once
+if you use it often. It has two halves; reach for the first.
 
-Two things to know when the disk gets tight:
-
-- `target/debug/incremental` is pure cache (~45 GB per worktree). Delete it freely; it costs one
-  slower rebuild.
-- **After merging a branch, delete its worktree's `target/`**, and prune the worktree once the
-  branch has landed. A finished worktree holding 300 GB is the usual cause of a full disk here.
-
-If builds *hang* rather than run slowly — uninterruptible sleep, no progress at all — that is
-btrfs metadata exhaustion, not memory, and **deleting files will not help on its own**: freed space
-returns inside existing chunks, so `df` moves while `unallocated` stays at 2 MiB and metadata cannot
-grow. A daily timer balances automatically; to force it:
+Semantic — how a collaborator, an agent or a script drives an app:
 
 ```bash
-sudo btrfs balance start -dusage=80 -dlimit=25 /var/home
+cargo run -q --bin qos-control -- actions list                 # what this desktop can do
+cargo run -q --bin qos-control -- actions invoke PROVIDER ID   # do it: no coordinates
+cargo run -q --bin qos-control -- state-dump --pretty          # what it believes is on screen
 ```
 
-**Use 80, not 30.** `-dusage=30` relocates only chunks under 30% full, and on this filesystem the
-data chunks average ~96% full, so it finds nothing: `Done, had to relocate 0 out of 2757 chunks`,
-exit 0, `unallocated` unchanged. That looks like the remedy failing to work rather than not
-applying. `-dusage=80` recovered 8 GiB in ~300 s from the same state. Confirmed four separate times.
+Input — for when the thing under test *is* the pointer, hit-testing or painting:
 
-The reliable sequence when `unallocated` is at the 2 MiB floor:
-
-1. **Free something first** — a balance can only return chunks that are mostly empty, so if nothing
-   has been deleted there is nothing to consolidate. Prune podman with `podman image prune -a -f`
-   in *both* stores (plain `prune` only removes *dangling* images; `-a` removes unreferenced tagged
-   ones, which is where the ~90 GB usually is), and delete `target/` from worktrees whose branches
-   have landed. Never `podman system prune -a` — needed containers exist.
-2. **Then balance at 80.** Pruning alone moves `df` and leaves `unallocated` flat, which is the
-   trap.
-
-Also note the shared filesystem: another session's worktree caches are usually the bulk of the
-usage and are not yours to delete.
-
-### Cargo.lock is committed — do not regenerate it casually
-
-`Cargo.lock` is tracked, and it has to be. A fresh resolve does not currently
-produce a working tree: `iroh` pulls a **pre-release** `ed25519-dalek 3.0.0-pre.1`
-+ `curve25519-dalek 5.0.0-pre.1` + `signature 3.0.0-rc.10` for its own node
-identity, and against newer transitive versions that stack fails to compile. So
-`cargo generate-lockfile` will hand you a repository that does not build, and the
-failure appears inside a dependency rather than anywhere you touched.
-
-That also means the lock is the only thing pinning a pre-release crypto stack in
-an OS image, so treat a lock change as a real change: read the diff, and rebuild
-the workspace before pushing it. `--locked` is the safe default for CI and for any
-build whose result you intend to trust.
-
-qOS's own identities never touch dalek 3 — every signing path resolves to the
-stable `ed25519-dalek 2.2.0` → `curve25519-dalek 4.1.3` → `rand_core 0.6.4`. That
-is why `rand` is pinned to 0.8 in `[workspace.dependencies]` rather than current:
-rand 0.9+ expose a `rand_core` shape that does not satisfy dalek 2's bound.
-
-### NEVER `git worktree remove --force` before committing untracked files
-
-`--force` deletes the entire worktree directory — including untracked files (`??`).
-If a worker created `new_module.rs` but never `git add`ed it, that file is **gone**
-(untracked files were never in the object DB, so reflog / lost-found won't help).
-Always `git status --short` and commit or stage anything you want to keep **before**
-removing a worktree.
-
-## Where state lives across nirios
-
-Adding a field to `Workspace`, `WorkspaceTree`, `Strip`, or any other struct in `shell/src/shell/state.rs` ripples to **every test fixture** that constructs that struct by-field. Symptoms: cargo errors like `E0063: missing field <new_field> in initializer of <Struct>`. Files that historically need updating:
-
-```
-shell/src/portal/*.rs              # test fixtures
-shell/tests/active_group_wireup_test.rs
-shell/tests/cross_strip_drag.rs
-shell/tests/maximize_persist_wireup_test.rs
-shell/tests/concept_parity_spec.rs (1000+ lines — be careful)
+```bash
+cargo run -q --bin qos-control -- list-targets      # named rects, via Widget::test_id
+cargo run -q --bin qos-control -- click NAME        # also click-at X Y | drag | key | type
+cargo run -q --bin qos-control -- snapshot PATH     # PNG of the live scene
 ```
 
-Mitigation: prefer a `Workspace::test_default()` builder helper over hand-constructed `Workspace { ... }` blocks. The migration to that helper hasn't happened yet; until it does, expect ripples.
+Prefer the semantic half: it is the surface real users and agents depend on, so exercising it
+is worth more than a synthetic click that proves only geometry. Add `fn test_id(&self) ->
+Option<&str>` to a widget to make it addressable by name; `Parent/Child[index]` paths work
+without opting in.
 
-## Verification covenant (`tests/concept_parity_spec.rs`)
+Stills and video with no compositor and no display:
 
-The header of `shell/tests/concept_parity_spec.rs` declares an explicit covenant:
+```bash
+cargo run --bin shots -- --list-scenarios
+cargo run --bin shots -- --mode offscreen --out target/<dir>
+cargo run --bin shots -- --mode recording --scenario <name> --out target/<file>.h264
+```
 
-- **Never** add `#[ignore]` to weaken a failing test
-- **Never** weaken an assertion (replace `==` with `>=`, comment out a checked invariant, etc.)
-- **Always** assert on the production code path, not a tautological helper
+Output is identical to the live binary except for live-surface-only bugs.
+`QOS_SHOTS_THEME=light|dark|high-contrast` — check more than one; single-theme blind spots
+have shipped repeatedly.
 
-This applies to **all** test files, not just `concept_parity_spec`. The "verification mantra" surfaces in the `docs/superpowers/archive/2026-04-30-nirios-logical-bugs.md` audit too — assert on the real path, prove the fix.
+`scripts/headless-examples/` is the worked-example index: `spawn-headless.sh` starts a
+headless compositor and prints `READY <socket>`; `_control.py` is the socket client to inline
+rather than rewrite; `full-loop.py` goes from nothing to a PNG in about five seconds.
 
-## Conventions
+**Never** run `scripts/screenshot-app.py`, and never screenshot the user's real desktop.
+Debug overlays need `QUICK_UI_DEBUG` **and** `debug_assertions`.
 
-- **Rust edition:** `ui`, `shell`, `fs` are on edition **2024**; the apps (`terminal`, `file-explorer`, `browser`) are on **2021**. Don't "normalize" these in passing.
-- **Container tooling:** use rootless `podman` (no `sudo`) for image builds where possible. `os/build.sh` only needs `sudo` for the disk-image step.
-- **Don't run workspace-wide `cargo test`** unless you genuinely need it — it blocks the shared target lock and is slow. Scope to `-p <crate>`.
-- Debug overlays in `ui` are gated by `QUICK_UI_DEBUG` **and** `debug_assertions`; they're unavailable in release builds.
-- **Never** run `scripts/screenshot-app.py` to "see" the UI. Use `cargo run --bin shots -- --mode offscreen --out target/<dir>` (still images per scenario) or `cargo run --bin shots -- --mode recording --scenario <name> --out target/<file>.h264` (H.264 video). Both produce output **identical** to the live binary.
-- For **ad-hoc headless testing** (click + snapshot + check), see `docs/headless-testing.md` — covers `shots`, the `QOS_TEST_CONTROL` JSON socket, and `--backend headless`. The fastest path from "I want to test something" to "PNG on disk":
-  ```bash
-  ./scripts/headless-examples/full-loop.py
-  # spawns compositor, drives it, writes /tmp/full-loop-{palette,final}.png, tears down. ~5s, no display.
-  ```
-  All five example scripts in `scripts/headless-examples/` are tested and ~50 LOC each; the `_control.py` helper in that dir is the canonical socket-client snippet to inline into your own automation.
-- **E2E click targeting**: `ShellDriver::resolve_named_rect(name)` walks the live widget tree via `Widget::test_id` to find click coordinates. Add `fn test_id(&self) -> Option<&str>` to a widget impl to make it addressable by name from scenarios. Path-fallback (`Parent/Child[index]`) works without opt-in.
-- **End goal**: nirios is a daily-driver collaborative spatial Linux OS. The current state is "research environment" — feature-complete for single-monitor single-user with full collaboration + sandbox semantics. The road to "daily-driver" needs multi-monitor, accessibility (AT-SPI tree), audio routing, notifications, session-lock + power-management hooks. The CRDT-native UI toolkit (`ui`) is the highest-leverage layer — every system app uses it.
+## Cargo.lock is committed — do not regenerate it
+
+A fresh resolve does not produce a working tree: `iroh` pulls a pre-release
+`ed25519-dalek 3.0.0-pre.1` stack that fails to compile against newer transitive versions, and
+the failure surfaces inside a dependency rather than where you touched. qOS's own identities
+resolve to the stable `ed25519-dalek 2.2.0`, which is why `rand` is pinned to 0.8. Treat a
+lock change as a real change: read the diff and rebuild before pushing. `--locked` in CI.
+
+## Traps that have cost real time
+
+- **Adding a field to `Workspace`/`WorkspaceTree`/`Strip` in `shell/src/shell/state.rs`
+  ripples to every by-field test fixture.** Symptom `E0063: missing field`;
+  `shell/tests/concept_parity_spec.rs` is 2200+ lines.
+- **`git worktree remove --force` permanently deletes untracked files.** `git status --short`
+  and commit before removing.
+- **`git stash` is unsafe here** — the stash stack is shared across worktrees and concurrent
+  sessions. Commit WIP instead.
+- **Never write a `pkill`/`pgrep -f` pattern that matches your own command line.**
+- **Clean up compositors and runtime dirs you spawn.** Leaked compositors hold DRM
+  descriptors and starve the GPU for every session on the machine.
+- **Verify a "known-red" test list at your own base commit.** A handed-down one is usually
+  from a different tree.
+- **A check that cannot observe its subject must fail, not skip.**
+
+## Verification covenant
+
+Declared in the header of `shell/tests/concept_parity_spec.rs` and applying to **all** tests:
+never `#[ignore]` a failing test, never weaken an assertion, always assert on the production
+path rather than a tautological helper.
 
 ## Where to read first
 
-- `docs/architecture.md` — component overview
-- `docs/testing.md` — VM + headless-compositor testing
-- `plan/architecture.md`, `plan/collaboration.md`, `plan/compositor.md`, `plan/security.md` — design intent (read before non-trivial changes in those subsystems)
-- `DEVELOPMENT.md` — build basics
-- `docs/BRANCHBOX.md` — the feature-worktree workflow (`branchbox feature start …`) if the user is working in that model
+`docs/architecture.md`, `docs/headless-testing.md`, `ui/HIG.md`, and
+`plan/{architecture,collaboration,compositor,security}.md` before non-trivial changes in
+those subsystems. `DEVELOPMENT.md` for the build environment.

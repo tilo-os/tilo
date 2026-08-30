@@ -1,8 +1,8 @@
-//! `FutoSwipeModel` — the real FUTO ExecuTorch swipe decoder, wired into the
+//! `FutoSwipeModel` — the real FUTO `ExecuTorch` swipe decoder, wired into the
 //! OSK's [`SwipeModel`](crate::swipe::SwipeModel) seam via the `swipe`
 //! crate (C++/ExecuTorch over FFI).
 //!
-//! The encoder is universal; we pair it with the en_qwerty decoder + the
+//! The encoder is universal; we pair it with the `en_qwerty` decoder + the
 //! dictionary. The OSK's on-screen letter keys are normalized into the
 //! model's [0,1] layout space (both are standard QWERTY, so the bounding-box
 //! normalization aligns them).
@@ -48,17 +48,18 @@ impl FutoSwipeModel {
             lm_vocab: with_lm.then(|| lm_vocab.clone()),
             dict_combined: Some(d.join(DICT)),
         };
-        FutoSwipe::new(&paths, 100, crate::widget::MAX_SUGGESTIONS as i32).map(|engine| Self { engine })
+        FutoSwipe::new(&paths, 100, crate::widget::MAX_SUGGESTIONS as i32)
+            .map(|engine| Self { engine })
     }
 
     /// Resolve the model directory from the environment / known install
     /// locations and load. `None` if nothing is found or FUTO isn't linked.
     pub fn default_load() -> Option<Self> {
         for dir in candidate_dirs() {
-            if dir.join(ENCODER).exists() {
-                if let Some(m) = Self::load(&dir) {
-                    return Some(m);
-                }
+            if dir.join(ENCODER).exists()
+                && let Some(m) = Self::load(&dir)
+            {
+                return Some(m);
             }
         }
         None
@@ -69,7 +70,10 @@ impl FutoSwipeModel {
         self.engine
             .predict_next(context, k as i32)
             .into_iter()
-            .map(|c| Candidate { word: c.word, score: c.score })
+            .map(|c| Candidate {
+                word: c.word,
+                score: c.score,
+            })
             .collect()
     }
 }
@@ -99,10 +103,9 @@ impl SwipeModel for FutoSwipeModel {
         }
         // Bounding box of the on-screen letter keys → normalize the gesture
         // into the model's [0,1] layout space.
-        let (mut minx, mut miny, mut maxx, mut maxy) =
-            (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for (id, rect) in key_geom {
-            if layout.key(*id).map(|k| k.is_letter()).unwrap_or(false) {
+            if layout.key(*id).is_some_and(super::layout::Key::is_letter) {
                 minx = minx.min(rect.x0);
                 miny = miny.min(rect.y0);
                 maxx = maxx.max(rect.x1);
@@ -153,12 +156,14 @@ mod tests {
 
     fn letter_center(geom: &[(KeyId, Rect)], layout: &KeyboardLayout, c: char) -> Point {
         for (id, rect) in geom {
-            if let Some(key) = layout.key(*id) {
-                if let crate::layout::KeyAction::Char(s) = &key.action {
-                    if s.chars().eq(std::iter::once(c)) {
-                        return Point::new((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
-                    }
-                }
+            if let Some(key) = layout.key(*id)
+                && let crate::layout::KeyAction::Char(s) = &key.action
+                && s.chars().eq(std::iter::once(c))
+            {
+                return Point::new(
+                    f64::midpoint(rect.x0, rect.x1),
+                    f64::midpoint(rect.y0, rect.y1),
+                );
             }
         }
         panic!("no key for {c}");
@@ -170,7 +175,7 @@ mod tests {
             let centre = letter_center(geom, layout, c);
             if let Some(prev) = pts.last().copied() {
                 for k in 1..=4 {
-                    let t = k as f64 / 4.0;
+                    let t = f64::from(k) / 4.0;
                     pts.push(Point::new(
                         prev.x + (centre.x - prev.x) * t,
                         prev.y + (centre.y - prev.y) * t,
@@ -194,7 +199,10 @@ mod tests {
             let path = path_through(word, &geom, &layout);
             let cands = model.decode(&path, &geom, &layout, 8);
             let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-            assert!(words.contains(&word), "{word}: expected in top-8, got {words:?}");
+            assert!(
+                words.contains(&word),
+                "{word}: expected in top-8, got {words:?}"
+            );
             eprintln!("osk-adapter {word} -> {words:?}");
         }
     }

@@ -61,26 +61,37 @@ pub fn upload_planar(
     height: u32,
 ) -> Option<VideoPlanes> {
     if img.planes.len() < 2 {
-        tracing::warn!("gpu_video: planar frame has {} planes, need 2", img.planes.len());
+        tracing::warn!(
+            "gpu_video: planar frame has {} planes, need 2",
+            img.planes.len()
+        );
         return None;
     }
     // NV12's chroma is one Rg8 texel per two pixels in each axis; P010 the
     // same shape at 16 bits per component.
     let (luma_fmt, chroma_fmt) = match img.format {
         PlanarFormat::Nv12 => (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm),
-        PlanarFormat::P010 => (wgpu::TextureFormat::R16Unorm, wgpu::TextureFormat::Rg16Unorm),
+        PlanarFormat::P010 => (
+            wgpu::TextureFormat::R16Unorm,
+            wgpu::TextureFormat::Rg16Unorm,
+        ),
     };
     let cw = width.div_ceil(2);
     let ch = height.div_ceil(2);
 
     let mut planes = Vec::with_capacity(2);
-    for (i, (fmt, (w, h))) in
-        [(luma_fmt, (width, height)), (chroma_fmt, (cw, ch))].into_iter().enumerate()
+    for (i, (fmt, (w, h))) in [(luma_fmt, (width, height)), (chroma_fmt, (cw, ch))]
+        .into_iter()
+        .enumerate()
     {
         let src = &img.planes[i];
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(if i == 0 { "video-luma" } else { "video-chroma" }),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -113,7 +124,11 @@ pub fn upload_planar(
                 bytes_per_row: Some(src.stride),
                 rows_per_image: Some(h),
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         planes.push(tex);
     }
@@ -159,7 +174,11 @@ impl ConvertUniform {
                 y_scale,
                 y_offset,
                 c_scale,
-                if layout == PlaneLayout::PackedYuv422 { 1.0 } else { 0.0 },
+                if layout == PlaneLayout::PackedYuv422 {
+                    1.0
+                } else {
+                    0.0
+                },
             ],
         }
     }
@@ -361,7 +380,11 @@ impl YuvConverter {
             self.target = Some((
                 device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("video-rgba"),
-                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -394,7 +417,10 @@ impl YuvConverter {
             label: Some("yuv-to-rgba"),
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniform.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform.as_entire_binding(),
+                },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&luma),
@@ -449,21 +475,33 @@ mod tests {
     #[test]
     fn limited_range_constants_expand_video_black_and_white_to_the_full_scale() {
         let u = ConvertUniform::for_colorimetry(
-            Colorimetry { matrix: YuvMatrix::Bt709, range: ColorRange::Limited },
+            Colorimetry {
+                matrix: YuvMatrix::Bt709,
+                range: ColorRange::Limited,
+            },
             PlaneLayout::BiPlanarYuv,
         );
         let [y_scale, y_offset, ..] = u.range;
         // The shader computes (y - offset) * scale.
         let black = (16.0 / 255.0 - y_offset) * y_scale;
         let white = (235.0 / 255.0 - y_offset) * y_scale;
-        assert!(black.abs() < 1e-4, "limited-range 16 must map to 0.0, got {black}");
-        assert!((white - 1.0).abs() < 1e-4, "limited-range 235 must map to 1.0, got {white}");
+        assert!(
+            black.abs() < 1e-4,
+            "limited-range 16 must map to 0.0, got {black}"
+        );
+        assert!(
+            (white - 1.0).abs() < 1e-4,
+            "limited-range 235 must map to 1.0, got {white}"
+        );
     }
 
     #[test]
     fn full_range_constants_are_the_identity() {
         let u = ConvertUniform::for_colorimetry(
-            Colorimetry { matrix: YuvMatrix::Bt709, range: ColorRange::Full },
+            Colorimetry {
+                matrix: YuvMatrix::Bt709,
+                range: ColorRange::Full,
+            },
             PlaneLayout::BiPlanarYuv,
         );
         assert_eq!(u.range[0], 1.0, "no scaling");
@@ -489,7 +527,10 @@ mod tests {
         // A sign error or a swapped coefficient shows up here immediately.
         for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
             let u = ConvertUniform::for_colorimetry(
-                Colorimetry { matrix, range: ColorRange::Full },
+                Colorimetry {
+                    matrix,
+                    range: ColorRange::Full,
+                },
                 PlaneLayout::BiPlanarYuv,
             );
             let [r, g, b] = convert_one(&u, 0.5, 0.5, 0.5);
@@ -502,7 +543,10 @@ mod tests {
     #[test]
     fn pure_chroma_pushes_the_expected_channel() {
         let u = ConvertUniform::for_colorimetry(
-            Colorimetry { matrix: YuvMatrix::Bt709, range: ColorRange::Full },
+            Colorimetry {
+                matrix: YuvMatrix::Bt709,
+                range: ColorRange::Full,
+            },
             PlaneLayout::BiPlanarYuv,
         );
         // Cr above neutral is red; Cb above neutral is blue. Swapping the two
@@ -510,7 +554,10 @@ mod tests {
         let [r, _, b] = convert_one(&u, 0.5, 0.5, 1.0);
         assert!(r > b, "high Cr must raise red above blue, got r={r} b={b}");
         let [r2, _, b2] = convert_one(&u, 0.5, 1.0, 0.5);
-        assert!(b2 > r2, "high Cb must raise blue above red, got r={r2} b={b2}");
+        assert!(
+            b2 > r2,
+            "high Cb must raise blue above red, got r={r2} b={b2}"
+        );
     }
 
     #[test]
@@ -518,17 +565,34 @@ mod tests {
         // `media::frame::planar_to_rgba` is the CPU path for consumers that
         // cannot use a GPU. The two must not diverge, or a frame would change
         // colour depending on which path served it.
-        use media::frame::{PlaneData, PlanarImage};
+        use media::frame::{PlanarImage, PlaneData};
         use std::sync::Arc;
 
-        let colorimetry = Colorimetry { matrix: YuvMatrix::Bt709, range: ColorRange::Limited };
-        for (y, cb, cr) in [(128u8, 128u8, 128u8), (200, 90, 160), (60, 170, 100), (235, 128, 128)]
-        {
+        let colorimetry = Colorimetry {
+            matrix: YuvMatrix::Bt709,
+            range: ColorRange::Limited,
+        };
+        for (y, cb, cr) in [
+            (128u8, 128u8, 128u8),
+            (200, 90, 160),
+            (60, 170, 100),
+            (235, 128, 128),
+        ] {
             let img = PlanarImage {
                 format: PlanarFormat::Nv12,
                 planes: vec![
-                    PlaneData { bytes: Arc::new(vec![y; 4]), stride: 2, width: 2, height: 2 },
-                    PlaneData { bytes: Arc::new(vec![cb, cr]), stride: 2, width: 1, height: 1 },
+                    PlaneData {
+                        bytes: Arc::new(vec![y; 4]),
+                        stride: 2,
+                        width: 2,
+                        height: 2,
+                    },
+                    PlaneData {
+                        bytes: Arc::new(vec![cb, cr]),
+                        stride: 2,
+                        width: 1,
+                        height: 1,
+                    },
                 ],
                 colorimetry,
             };
@@ -555,15 +619,21 @@ mod tests {
         // Two vec4s, 32 bytes; a mismatch here reads garbage constants in the
         // shader and produces a plausible-but-wrong picture.
         assert_eq!(std::mem::size_of::<ConvertUniform>(), 32);
-        let u = ConvertUniform::for_colorimetry(Colorimetry::BT709_LIMITED, PlaneLayout::BiPlanarYuv);
+        let u =
+            ConvertUniform::for_colorimetry(Colorimetry::BT709_LIMITED, PlaneLayout::BiPlanarYuv);
         let bytes = u.as_bytes();
         assert_eq!(&bytes[0..4], &u.coeffs[0].to_ne_bytes(), "coeffs lead");
-        assert_eq!(&bytes[16..20], &u.range[0].to_ne_bytes(), "range starts at the second vec4");
+        assert_eq!(
+            &bytes[16..20],
+            &u.range[0].to_ne_bytes(),
+            "range starts at the second vec4"
+        );
     }
 
     #[test]
     fn the_packed_422_flag_is_set_only_for_that_layout() {
-        let bi = ConvertUniform::for_colorimetry(Colorimetry::BT709_LIMITED, PlaneLayout::BiPlanarYuv);
+        let bi =
+            ConvertUniform::for_colorimetry(Colorimetry::BT709_LIMITED, PlaneLayout::BiPlanarYuv);
         assert_eq!(bi.range[3], 0.0);
         let packed =
             ConvertUniform::for_colorimetry(Colorimetry::BT709_LIMITED, PlaneLayout::PackedYuv422);

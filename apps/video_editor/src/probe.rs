@@ -9,12 +9,12 @@
 //!     pixel dimensions from the video track's `tkhd`, the codec four-CC from
 //!     `stsd`, the kind from `hdlr`, and the frame rate from the video track's
 //!     sample count over the movie duration.
-//!   * **Matroska / WebM** (EBML): duration from the `Info` segment's
+//!   * **Matroska / `WebM`** (EBML): duration from the `Info` segment's
 //!     `Duration` × `TimestampScale`, pixel dimensions from the first video
 //!     `TrackEntry`, and the kind from the track types present.
 //!   * **MP3** (MPEG-1/2/2.5 Layer III): duration from a `Xing`/`Info` VBR
 //!     header when present (exact frame count), else a CBR estimate from the
-//!     first frame's bitrate over the audio byte length; ID3v2 tags are skipped.
+//!     first frame's bitrate over the audio byte length; `ID3v2` tags are skipped.
 //!   * **WAV** (RIFF/WAVE): channels / sample-rate / bit-depth from `fmt `, and
 //!     the duration from the `data` chunk size over the byte rate.
 //!   * **PNG / JPEG**: pixel dimensions from the header (`IHDR` / `SOFn`).
@@ -32,7 +32,7 @@
 //!     fields stay zero / unknown, never fabricated.
 //!
 //! Under `--features decode` the caller can additionally confirm duration
-//! against the real GStreamer pipeline, but the container parse here is already
+//! against the real `GStreamer` pipeline, but the container parse here is already
 //! real and is what the default build relies on.
 
 use std::path::Path;
@@ -110,14 +110,18 @@ pub fn probe_file(path: &Path) -> Result<ProbedMedia, ProbeError> {
     // metadata we need lives in the header + `moov`, and a faststart MP4 puts
     // `moov` up front, so the first slice suffices for the common case.
     const CAP: u64 = 96 * 1024 * 1024;
-    let len = std::fs::metadata(path).map_err(|e| ProbeError::Io(e.to_string()))?.len();
+    let len = std::fs::metadata(path)
+        .map_err(|e| ProbeError::Io(e.to_string()))?
+        .len();
     let data = if len <= CAP {
         std::fs::read(path).map_err(|e| ProbeError::Io(e.to_string()))?
     } else {
         use std::io::Read;
         let mut f = std::fs::File::open(path).map_err(|e| ProbeError::Io(e.to_string()))?;
         let mut buf = vec![0u8; CAP as usize];
-        let n = f.read(&mut buf).map_err(|e| ProbeError::Io(e.to_string()))?;
+        let n = f
+            .read(&mut buf)
+            .map_err(|e| ProbeError::Io(e.to_string()))?;
         buf.truncate(n);
         buf
     };
@@ -142,25 +146,25 @@ pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> 
         let (w, h) = jpeg_dimensions(data).unwrap_or((0, 0));
         return Ok(image_probe(w, h, "jpeg"));
     }
-    if is_wav(data) {
-        if let Some(p) = parse_wav(data) {
-            return Ok(p);
-        }
+    if is_wav(data)
+        && let Some(p) = parse_wav(data)
+    {
+        return Ok(p);
     }
-    if is_isobmff(data) {
-        if let Some(p) = parse_isobmff(data) {
-            return Ok(p);
-        }
+    if is_isobmff(data)
+        && let Some(p) = parse_isobmff(data)
+    {
+        return Ok(p);
     }
-    if is_ebml(data) {
-        if let Some(p) = parse_ebml(data) {
-            return Ok(p);
-        }
+    if is_ebml(data)
+        && let Some(p) = parse_ebml(data)
+    {
+        return Ok(p);
     }
-    if looks_like_mp3(data, path) {
-        if let Some(p) = parse_mp3(data) {
-            return Ok(p);
-        }
+    if looks_like_mp3(data, path)
+        && let Some(p) = parse_mp3(data)
+    {
+        return Ok(p);
     }
     // No media header matched. Before falling back to the extension, check
     // whether the bytes are positively something *else* — this is the case
@@ -317,8 +321,19 @@ fn fallback_from_extension(path: &Path) -> Result<ProbedMedia, ProbeError> {
     } else {
         return Err(ProbeError::Unrecognised);
     };
-    let duration = if kind == MediaKind::Image { DEFAULT_IMAGE_DURATION } else { 0.0 };
-    Ok(ProbedMedia { kind, duration, width: 0, height: 0, fps: 0.0, codec: "unknown".into() })
+    let duration = if kind == MediaKind::Image {
+        DEFAULT_IMAGE_DURATION
+    } else {
+        0.0
+    };
+    Ok(ProbedMedia {
+        kind,
+        duration,
+        width: 0,
+        height: 0,
+        fps: 0.0,
+        codec: "unknown".into(),
+    })
 }
 
 // ---- magic-byte sniffers --------------------------------------------------
@@ -345,7 +360,7 @@ fn is_ebml(d: &[u8]) -> bool {
     // Both Matroska and WebM open with the EBML header magic `1A 45 DF A3`.
     d.len() >= 4 && d[0..4] == [0x1A, 0x45, 0xDF, 0xA3]
 }
-/// Whether `d` (with `path`'s extension as a hint) is an MP3 stream: an ID3v2
+/// Whether `d` (with `path`'s extension as a hint) is an MP3 stream: an `ID3v2`
 /// tag, or a raw MPEG audio frame sync in the first bytes. Extension-only files
 /// still fall through to the frame-sync scan, so a mislabelled file is rejected
 /// rather than reported with fabricated numbers.
@@ -363,18 +378,27 @@ fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
         .eq_ignore_ascii_case("mp3");
     // For a .mp3 without a leading tag/sync, only accept if a sync appears
     // within the first few KB (some files have leading junk).
-    ext && d.iter().take(8192).enumerate().any(|(i, &b)| {
-        b == 0xFF && d.get(i + 1).is_some_and(|n| (n & 0xE0) == 0xE0)
-    })
+    ext && d
+        .iter()
+        .take(8192)
+        .enumerate()
+        .any(|(i, &b)| b == 0xFF && d.get(i + 1).is_some_and(|n| (n & 0xE0) == 0xE0))
 }
 
 // ---- PNG / JPEG dimensions ------------------------------------------------
 
-fn be_u32(d: &[u8]) -> u32 {
-    u32::from_be_bytes([d[0], d[1], d[2], d[3]])
+/// Big-endian `u32` at `at`, or `None` if the buffer is too short.
+///
+/// These take an offset rather than a pre-sliced buffer because `&d[a..b]` is
+/// itself a panic on a short read, and every caller here is parsing a file the
+/// user opened. One bounds check inside beats a hundred at the call sites.
+fn be_u32(d: &[u8], at: usize) -> Option<u32> {
+    let end = at.checked_add(4)?;
+    Some(u32::from_be_bytes(d.get(at..end)?.try_into().ok()?))
 }
-fn be_u16(d: &[u8]) -> u16 {
-    u16::from_be_bytes([d[0], d[1]])
+fn be_u16(d: &[u8], at: usize) -> Option<u16> {
+    let end = at.checked_add(2)?;
+    Some(u16::from_be_bytes(d.get(at..end)?.try_into().ok()?))
 }
 
 fn png_dimensions(d: &[u8]) -> Option<(u32, u32)> {
@@ -383,7 +407,7 @@ fn png_dimensions(d: &[u8]) -> Option<(u32, u32)> {
     if d.len() < 24 || &d[12..16] != b"IHDR" {
         return None;
     }
-    Some((be_u32(&d[16..20]), be_u32(&d[20..24])))
+    Some((be_u32(d, 16)?, be_u32(d, 20)?))
 }
 
 fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
@@ -401,15 +425,13 @@ fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
             i += 2;
             continue;
         }
-        let seg_len = be_u16(&d[i + 2..i + 4]) as usize;
-        let is_sof = (0xC0..=0xCF).contains(&marker)
-            && marker != 0xC4
-            && marker != 0xC8
-            && marker != 0xCC;
+        let seg_len = be_u16(d, i + 2)? as usize;
+        let is_sof =
+            (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
         if is_sof {
             // SOF payload: precision(1) height(2) width(2) ...
-            let h = be_u16(&d[i + 5..i + 7]) as u32;
-            let w = be_u16(&d[i + 7..i + 9]) as u32;
+            let h = u32::from(be_u16(d, i + 5)?);
+            let w = u32::from(be_u16(d, i + 7)?);
             return Some((w, h));
         }
         i += 2 + seg_len;
@@ -419,11 +441,13 @@ fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
 
 // ---- WAV ------------------------------------------------------------------
 
-fn le_u16(d: &[u8]) -> u16 {
-    u16::from_le_bytes([d[0], d[1]])
+fn le_u16(d: &[u8], at: usize) -> Option<u16> {
+    let end = at.checked_add(2)?;
+    Some(u16::from_le_bytes(d.get(at..end)?.try_into().ok()?))
 }
-fn le_u32(d: &[u8]) -> u32 {
-    u32::from_le_bytes([d[0], d[1], d[2], d[3]])
+fn le_u32(d: &[u8], at: usize) -> Option<u32> {
+    let end = at.checked_add(4)?;
+    Some(u32::from_le_bytes(d.get(at..end)?.try_into().ok()?))
 }
 
 fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
@@ -433,12 +457,12 @@ fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
     let mut data_len = 0u32;
     while i + 8 <= d.len() {
         let id = &d[i..i + 4];
-        let size = le_u32(&d[i + 4..i + 8]) as usize;
+        let size = le_u32(d, i + 4)? as usize;
         let body = i + 8;
         match id {
             b"fmt " if body + 16 <= d.len() => {
-                audio_format = le_u16(&d[body..body + 2]);
-                byte_rate = le_u32(&d[body + 8..body + 12]);
+                audio_format = le_u16(d, body)?;
+                byte_rate = le_u32(d, body + 8)?;
             }
             b"data" => {
                 data_len = size as u32;
@@ -451,7 +475,7 @@ fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
     if byte_rate == 0 {
         return None;
     }
-    let duration = data_len as f64 / byte_rate as f64;
+    let duration = f64::from(data_len) / f64::from(byte_rate);
     let codec = match audio_format {
         1 => "pcm".to_string(),
         3 => "float".to_string(),
@@ -480,39 +504,59 @@ struct BoxRef<'a> {
 fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
     let mut out = Vec::new();
     let mut i = 0usize;
-    while i + 8 <= data.len() {
-        let size32 = be_u32(&data[i..i + 4]) as u64;
-        let typ = [data[i + 4], data[i + 5], data[i + 6], data[i + 7]];
+    // Every read is checked and the cursor only moves forward, so a box header
+    // claiming a bogus size ends the walk instead of indexing past the buffer.
+    while i.saturating_add(8) <= data.len() {
+        let Some(size32) = be_u32(data, i).map(u64::from) else {
+            break;
+        };
+        let Some(typ) = data
+            .get(i.saturating_add(4)..i.saturating_add(8))
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        else {
+            break;
+        };
         let (header, total) = if size32 == 1 {
-            if i + 16 > data.len() {
+            let Some(large) = data
+                .get(i.saturating_add(8)..i.saturating_add(16))
+                .and_then(|b| <[u8; 8]>::try_from(b).ok())
+                .map(u64::from_be_bytes)
+            else {
                 break;
-            }
-            let large = u64::from_be_bytes([
-                data[i + 8], data[i + 9], data[i + 10], data[i + 11],
-                data[i + 12], data[i + 13], data[i + 14], data[i + 15],
-            ]);
+            };
             (16usize, large)
         } else if size32 == 0 {
-            (8usize, (data.len() - i) as u64)
+            (8usize, (data.len().saturating_sub(i)) as u64)
         } else {
             (8usize, size32)
         };
         let total = total as usize;
-        if total < header || i + total > data.len() {
+        if total < header || i.saturating_add(total) > data.len() {
             // Truncated / bad size — take the rest as this box's body and stop.
-            let body_start = (i + header).min(data.len());
-            out.push(BoxRef { typ, body: &data[body_start..] });
+            let body_start = i.saturating_add(header).min(data.len());
+            out.push(BoxRef {
+                typ,
+                body: data.get(body_start..).unwrap_or_default(),
+            });
             break;
         }
-        out.push(BoxRef { typ, body: &data[i + header..i + total] });
-        i += total;
+        let Some(body) = data.get(i.saturating_add(header)..i.saturating_add(total)) else {
+            break;
+        };
+        out.push(BoxRef { typ, body });
+        // `total >= header >= 8`, so the cursor always advances and the loop
+        // terminates even on a file that claims overlapping boxes.
+        i = i.saturating_add(total);
     }
     out
 }
 
 /// First child box of `typ` within `data`.
 fn child<'a>(data: &'a [u8], typ: &[u8; 4]) -> Option<&'a [u8]> {
-    iter_boxes(data).into_iter().find(|b| &b.typ == typ).map(|b| b.body)
+    iter_boxes(data)
+        .into_iter()
+        .find(|b| &b.typ == typ)
+        .map(|b| b.body)
 }
 
 /// Follow a nested path of four-CCs to a box body.
@@ -528,9 +572,11 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
     let moov = child(data, b"moov")?;
 
     // Movie duration from mvhd.
-    let (timescale, duration_units) = child(moov, b"mvhd").and_then(timescale_and_duration).unwrap_or((0, 0));
+    let (timescale, duration_units) = child(moov, b"mvhd")
+        .and_then(timescale_and_duration)
+        .unwrap_or((0, 0));
     let duration = if timescale > 0 {
-        duration_units as f64 / timescale as f64
+        duration_units as f64 / f64::from(timescale)
     } else {
         0.0
     };
@@ -575,18 +621,19 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
             // timing lives in `moof`) leaves `fps` at 0.0, meaning unknown.
             let media_timescale = descend(trak, &[b"mdia", b"mdhd"])
                 .and_then(timescale_and_duration)
-                .map(|(ts, _)| ts)
-                .unwrap_or(0);
+                .map_or(0, |(ts, _)| ts);
             if let Some(rate) = stbl
                 .and_then(|s| child(s, b"stts"))
                 .and_then(|stts| stts_frame_rate(stts, media_timescale))
             {
                 fps = rate;
             }
-        } else if is_audio && codec == "unknown" && !saw_video {
-            if let Some(c) = track_codec {
-                codec = c;
-            }
+        } else if is_audio
+            && codec == "unknown"
+            && !saw_video
+            && let Some(c) = track_codec
+        {
+            codec = c;
         }
     }
 
@@ -598,7 +645,14 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
         kind
     };
 
-    Some(ProbedMedia { kind, duration, width, height, fps, codec })
+    Some(ProbedMedia {
+        kind,
+        duration,
+        width,
+        height,
+        fps,
+        codec,
+    })
 }
 
 fn saw_video_recorded(w: u32, h: u32, codec: &str) -> bool {
@@ -616,7 +670,7 @@ fn timescale_and_duration(body: &[u8]) -> Option<(u32, u64)> {
         if body.len() < 32 {
             return None;
         }
-        let ts = be_u32(&body[20..24]);
+        let ts = be_u32(body, 20)?;
         let dur = u64::from_be_bytes([
             body[24], body[25], body[26], body[27], body[28], body[29], body[30], body[31],
         ]);
@@ -626,8 +680,8 @@ fn timescale_and_duration(body: &[u8]) -> Option<(u32, u64)> {
         if body.len() < 20 {
             return None;
         }
-        let ts = be_u32(&body[12..16]);
-        let dur = be_u32(&body[16..20]) as u64;
+        let ts = be_u32(body, 12)?;
+        let dur = u64::from(be_u32(body, 16)?);
         Some((ts, dur))
     }
 }
@@ -639,8 +693,8 @@ fn tkhd_dims(body: &[u8]) -> Option<(u32, u32)> {
         return None;
     }
     let n = body.len();
-    let w = be_u32(&body[n - 8..n - 4]) >> 16;
-    let h = be_u32(&body[n - 4..n]) >> 16;
+    let w = be_u32(body, n - 8)? >> 16;
+    let h = be_u32(body, n - 4)? >> 16;
     Some((w, h))
 }
 
@@ -674,23 +728,23 @@ fn stts_frame_rate(body: &[u8], timescale: u32) -> Option<f64> {
     if timescale == 0 || body.len() < 8 {
         return None;
     }
-    let entries = be_u32(&body[4..8]) as usize;
+    let entries = be_u32(body, 4)? as usize;
     let mut samples: u64 = 0;
     let mut units: u64 = 0;
     for e in 0..entries {
         let off = 8 + e * 8;
-        if off + 8 > body.len() {
+        // A truncated table is read as far as it goes rather than refused:
+        // the samples that are there still state the rate.
+        let (Some(count), Some(delta)) = (be_u32(body, off), be_u32(body, off + 4)) else {
             break;
-        }
-        let count = be_u32(&body[off..off + 4]) as u64;
-        let delta = be_u32(&body[off + 4..off + 8]) as u64;
-        samples = samples.saturating_add(count);
-        units = units.saturating_add(count.saturating_mul(delta));
+        };
+        samples = samples.saturating_add(u64::from(count));
+        units = units.saturating_add(u64::from(count).saturating_mul(u64::from(delta)));
     }
     if samples == 0 || units == 0 {
         return None;
     }
-    Some(samples as f64 * timescale as f64 / units as f64)
+    Some(samples as f64 * f64::from(timescale) / units as f64)
 }
 
 // ---- Matroska / WebM (EBML) ----------------------------------------------
@@ -720,16 +774,26 @@ fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
         return None; // lengths beyond 8 bytes are not needed here
     }
     let len = first.leading_zeros() as usize + 1; // 1..=8
-    if len > 8 || i + len > d.len() {
+    let Some(end) = i.checked_add(len) else {
+        return None;
+    };
+    if len > 8 || end > d.len() {
         return None;
     }
     let mut value: u64 = if keep_marker {
-        first as u64
+        u64::from(first)
     } else {
-        (first & (0xFFu8 >> len)) as u64
+        // `len == 8` when the first byte is 0x01, and `0xFFu8 >> 8` is a shift
+        // overflow rather than 0. At that length the first byte carries only
+        // the marker, so no value bits survive the mask.
+        let mask = if len >= 8 { 0 } else { 0xFFu8 >> len };
+        u64::from(first & mask)
     };
     for k in 1..len {
-        value = (value << 8) | d[i + k] as u64;
+        let Some(&byte) = d.get(i.saturating_add(k)) else {
+            return None;
+        };
+        value = (value << 8) | u64::from(byte);
     }
     Some((value, len))
 }
@@ -741,8 +805,12 @@ fn ebml_children(d: &[u8]) -> Vec<(u64, &[u8])> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < d.len() {
-        let Some((id, id_len)) = read_vint(d, i, true) else { break };
-        let Some((size, sz_len)) = read_vint(d, i + id_len, false) else { break };
+        let Some((id, id_len)) = read_vint(d, i, true) else {
+            break;
+        };
+        let Some((size, sz_len)) = read_vint(d, i + id_len, false) else {
+            break;
+        };
         let data_start = i + id_len + sz_len;
         if data_start > d.len() {
             break;
@@ -761,18 +829,21 @@ fn ebml_children(d: &[u8]) -> Vec<(u64, &[u8])> {
 }
 
 fn ebml_find(d: &[u8], id: u64) -> Option<&[u8]> {
-    ebml_children(d).into_iter().find(|(i, _)| *i == id).map(|(_, x)| x)
+    ebml_children(d)
+        .into_iter()
+        .find(|(i, _)| *i == id)
+        .map(|(_, x)| x)
 }
 
 /// Big-endian unsigned integer from an EBML element payload (1..8 bytes).
 fn ebml_uint(d: &[u8]) -> u64 {
-    d.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64)
+    d.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b))
 }
 
 /// IEEE float from an EBML element payload (4 or 8 bytes; 0 otherwise).
 fn ebml_float(d: &[u8]) -> Option<f64> {
     match d.len() {
-        4 => Some(f32::from_be_bytes([d[0], d[1], d[2], d[3]]) as f64),
+        4 => Some(f64::from(f32::from_be_bytes([d[0], d[1], d[2], d[3]]))),
         8 => Some(f64::from_be_bytes([
             d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7],
         ])),
@@ -794,8 +865,7 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
     let duration = info
         .and_then(|i| ebml_find(i, EBML_DURATION))
         .and_then(ebml_float)
-        .map(|units| units * timescale as f64 / 1e9)
-        .unwrap_or(0.0);
+        .map_or(0.0, |units| units * timescale as f64 / 1e9);
 
     // Kind + dimensions from the first video/audio track entry.
     let mut saw_video = false;
@@ -811,11 +881,11 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
             match ebml_find(entry, EBML_TRACK_TYPE).map(ebml_uint) {
                 Some(1) => {
                     saw_video = true;
-                    if width == 0 {
-                        if let Some(video) = ebml_find(entry, EBML_VIDEO) {
-                            width = ebml_find(video, EBML_PIXEL_WIDTH).map(ebml_uint).unwrap_or(0) as u32;
-                            height = ebml_find(video, EBML_PIXEL_HEIGHT).map(ebml_uint).unwrap_or(0) as u32;
-                        }
+                    if width == 0
+                        && let Some(video) = ebml_find(entry, EBML_VIDEO)
+                    {
+                        width = ebml_find(video, EBML_PIXEL_WIDTH).map_or(0, ebml_uint) as u32;
+                        height = ebml_find(video, EBML_PIXEL_HEIGHT).map_or(0, ebml_uint) as u32;
                     }
                     // The track's own nanoseconds-per-frame, when it states one.
                     // Absent (the common WebM case) leaves fps unknown at 0.0.
@@ -852,7 +922,7 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
 
 // ---- MP3 (MPEG-1/2/2.5 Layer III) -----------------------------------------
 
-/// Read a 4-byte ID3v2 syncsafe integer (7 bits per byte).
+/// Read a 4-byte `ID3v2` syncsafe integer (7 bits per byte).
 fn syncsafe(b: &[u8]) -> usize {
     ((b[0] as usize & 0x7F) << 21)
         | ((b[1] as usize & 0x7F) << 14)
@@ -889,8 +959,12 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
         return None; // free-format / reserved
     }
     // Layer III bitrate tables (kbps), indexed by bitrate_index.
-    const BR_V1: [u32; 16] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
-    const BR_V2: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    const BR_V1: [u32; 16] = [
+        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+    ];
+    const BR_V2: [u32; 16] = [
+        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+    ];
     let bitrate_kbps = if mpeg1 { BR_V1 } else { BR_V2 }[bitrate_index as usize];
     // Sample-rate tables by MPEG version, indexed by samplerate_index.
     const SR_V1: [u32; 3] = [44100, 48000, 32000];
@@ -924,11 +998,12 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     let mut scan = off;
     let limit = d.len().saturating_sub(4);
     while scan <= limit {
-        if d[scan] == 0xFF && (d[scan + 1] & 0xE0) == 0xE0 {
-            if let Some(h) = parse_mp3_frame_header(&d[scan..]) {
-                header = Some((scan, h));
-                break;
-            }
+        if d[scan] == 0xFF
+            && (d[scan + 1] & 0xE0) == 0xE0
+            && let Some(h) = parse_mp3_frame_header(&d[scan..])
+        {
+            header = Some((scan, h));
+            break;
         }
         scan += 1;
         if scan - off > 200_000 {
@@ -950,10 +1025,10 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     if xing_at + 12 <= d.len()
         && (&d[xing_at..xing_at + 4] == b"Xing" || &d[xing_at..xing_at + 4] == b"Info")
     {
-        let flags = be_u32(&d[xing_at + 4..xing_at + 8]);
+        let flags = be_u32(d, xing_at + 4)?;
         if flags & 0x1 != 0 {
-            let frames = be_u32(&d[xing_at + 8..xing_at + 12]) as f64;
-            let duration = frames * h.samples_per_frame as f64 / h.sample_rate as f64;
+            let frames = f64::from(be_u32(d, xing_at + 8)?);
+            let duration = frames * f64::from(h.samples_per_frame) / f64::from(h.sample_rate);
             return Some(mp3_probe(duration));
         }
     }
@@ -963,7 +1038,7 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
         return Some(mp3_probe(0.0));
     }
     let audio_bytes = d.len().saturating_sub(frame_off);
-    let duration = (audio_bytes as f64 * 8.0) / h.bitrate_bps as f64;
+    let duration = (audio_bytes as f64 * 8.0) / f64::from(h.bitrate_bps);
     Some(mp3_probe(duration))
 }
 
@@ -1029,7 +1104,10 @@ mod tests {
         mdhd[12..16].copy_from_slice(&30000u32.to_be_bytes());
         mdhd[16..20].copy_from_slice(&150_150u32.to_be_bytes()); // 150 × 1001
 
-        let stbl = boxed(b"stbl", &[boxed(b"stsd", &stsd), boxed(b"stts", &stts)].concat());
+        let stbl = boxed(
+            b"stbl",
+            &[boxed(b"stsd", &stsd), boxed(b"stts", &stts)].concat(),
+        );
         let minf = boxed(b"minf", &stbl);
         let mdia = boxed(
             b"mdia",
@@ -1087,7 +1165,10 @@ mod tests {
 
         let p = probe_bytes(&file, Path::new("frag.mp4")).expect("a real mp4 probes");
         assert_eq!((p.width, p.height), (640, 360), "dimensions are still real");
-        assert_eq!(p.fps, 0.0, "no sample timing → unknown, never a stand-in rate");
+        assert_eq!(
+            p.fps, 0.0,
+            "no sample timing → unknown, never a stand-in rate"
+        );
     }
 
     #[test]
@@ -1167,7 +1248,12 @@ mod tests {
             Path::new("redlib_everything_wrong_with_the_world_CMAF_480.mp4"),
         )
         .expect_err("an HTML page is not a video, whatever it is named");
-        assert_eq!(err, ProbeError::NotMedia { detected: "an HTML page" });
+        assert_eq!(
+            err,
+            ProbeError::NotMedia {
+                detected: "an HTML page"
+            }
+        );
         assert!(
             err.to_string().contains("HTML page"),
             "the refusal names what the file really is: {err}"
@@ -1181,25 +1267,45 @@ mod tests {
         let f = std::env::temp_dir().join(format!("qos-ve-fake-{}.mp4", std::process::id()));
         std::fs::write(&f, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
         let err = probe_file(&f).expect_err("probe_file refuses an HTML page named .mp4");
-        assert_eq!(err, ProbeError::NotMedia { detected: "an HTML page" });
+        assert_eq!(
+            err,
+            ProbeError::NotMedia {
+                detected: "an HTML page"
+            }
+        );
         std::fs::remove_file(&f).ok();
     }
 
     #[test]
     fn other_non_media_bytes_are_refused_with_what_they_really_are() {
         for (bytes, name, detected) in [
-            (&b"%PDF-1.7\n%\xE2\xE3\xCF\xD3"[..], "paper.mov", "a PDF document"),
+            (
+                &b"%PDF-1.7\n%\xE2\xE3\xCF\xD3"[..],
+                "paper.mov",
+                "a PDF document",
+            ),
             (&b"PK\x03\x04\x14\x00"[..], "bundle.mp4", "a ZIP archive"),
             (&b"\x7FELF\x02\x01\x01"[..], "clip.mkv", "an ELF executable"),
-            (&b"{\"error\": \"not found\"}"[..], "reply.mp4", "a JSON document"),
-            (&b"1\n00:00:01,000 --> 00:00:04,000\nhello\n"[..], "subs.mp4", "a text file"),
-            (&b"#EXTM3U\n#EXT-X-VERSION:3\n"[..], "stream.mp4", "a playlist, not the media itself"),
+            (
+                &b"{\"error\": \"not found\"}"[..],
+                "reply.mp4",
+                "a JSON document",
+            ),
+            (
+                &b"1\n00:00:01,000 --> 00:00:04,000\nhello\n"[..],
+                "subs.mp4",
+                "a text file",
+            ),
+            (
+                &b"#EXTM3U\n#EXT-X-VERSION:3\n"[..],
+                "stream.mp4",
+                "a playlist, not the media itself",
+            ),
         ] {
             match probe_bytes(bytes, Path::new(name)) {
-                Err(ProbeError::NotMedia { detected: d }) => assert_eq!(
-                    d, detected,
-                    "{name} must be named for what it is"
-                ),
+                Err(ProbeError::NotMedia { detected: d }) => {
+                    assert_eq!(d, detected, "{name} must be named for what it is")
+                }
                 other => panic!("{name} must be refused as not-media, got {other:?}"),
             }
         }
@@ -1207,7 +1313,10 @@ mod tests {
 
     #[test]
     fn an_empty_file_is_refused() {
-        assert_eq!(probe_bytes(b"", Path::new("empty.mp4")), Err(ProbeError::Empty));
+        assert_eq!(
+            probe_bytes(b"", Path::new("empty.mp4")),
+            Err(ProbeError::Empty)
+        );
     }
 
     #[test]
@@ -1225,7 +1334,9 @@ mod tests {
         // These must keep working exactly as before: right kind, no invented
         // numbers. Only the *positively-not-media* case became a refusal.
         let avi = probe_bytes(
-            &[b'R', b'I', b'F', b'F', 0x10, 0x00, 0x00, 0x00, b'A', b'V', b'I', b' ', 0x00, 0x01],
+            &[
+                b'R', b'I', b'F', b'F', 0x10, 0x00, 0x00, 0x00, b'A', b'V', b'I', b' ', 0x00, 0x01,
+            ],
             Path::new("legacy.avi"),
         )
         .expect("an AVI is still importable");
@@ -1240,8 +1351,11 @@ mod tests {
         assert_eq!(flac.duration, 0.0);
 
         // YUV4MPEG2 opens with a line of ASCII and is still real video.
-        let y4m = probe_bytes(b"YUV4MPEG2 W640 H480 F30:1 Ip A1:1\nFRAME\n", Path::new("raw.y4m"))
-            .expect("a y4m header is not a text file");
+        let y4m = probe_bytes(
+            b"YUV4MPEG2 W640 H480 F30:1 Ip A1:1\nFRAME\n",
+            Path::new("raw.y4m"),
+        )
+        .expect("a y4m header is not a text file");
         assert_eq!(y4m.kind, MediaKind::Video);
     }
 
@@ -1324,7 +1438,11 @@ mod tests {
         assert_eq!(p.kind, MediaKind::Audio);
         assert_eq!(p.codec, "mp3");
         // 1000 frames × 1152 samples / 44100 Hz ≈ 26.12 s.
-        assert!((p.duration - 26.122).abs() < 0.01, "duration {}", p.duration);
+        assert!(
+            (p.duration - 26.122).abs() < 0.01,
+            "duration {}",
+            p.duration
+        );
     }
 
     #[test]
@@ -1342,6 +1460,61 @@ mod tests {
         let p = probe_bytes(&mp3, Path::new("cbr.mp3")).expect("a real mp3 probes");
         assert_eq!(p.kind, MediaKind::Audio);
         let expected = audio_bytes as f64 * 8.0 / 128_000.0;
-        assert!((p.duration - expected).abs() < 0.05, "duration {} vs {}", p.duration, expected);
+        assert!(
+            (p.duration - expected).abs() < 0.05,
+            "duration {} vs {}",
+            p.duration,
+            expected
+        );
+    }
+
+    /// Media files come from the user, so a malformed one must not crash the
+    /// editor. Every parser here reads container headers that carry their own
+    /// lengths, which is the shape that indexes past a truncated buffer.
+    #[test]
+    fn no_input_makes_the_probe_panic() {
+        let path = std::path::Path::new("probe.mp4");
+
+        // Every truncation of each container's magic prefix.
+        let seeds: [&[u8]; 6] = [
+            b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom",
+            b"\x1a\x45\xdf\xa3\x01\x00\x00\x00\x00\x00\x00\x1f",
+            b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00",
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00",
+            b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00",
+            b"\xff\xfb\x90\x00",
+        ];
+        for seed in seeds {
+            for n in 0..=seed.len() {
+                let _ = probe_bytes(seed.get(..n).unwrap_or_default(), path);
+            }
+        }
+
+        // Length fields claiming more than the buffer holds — an ISOBMFF box
+        // size of 0xFFFF_FFFF, and the 64-bit large-size form with nothing
+        // behind it.
+        let mut huge = b"\x00\x00\x00\x18ftypmp42".to_vec();
+        huge.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        huge.extend_from_slice(b"moov");
+        let _ = probe_bytes(&huge, path);
+
+        let mut large = b"\x00\x00\x00\x18ftypmp42".to_vec();
+        large.extend_from_slice(&[0, 0, 0, 1]);
+        large.extend_from_slice(b"moov");
+        let _ = probe_bytes(&large, path);
+
+        // Random bytes at a spread of lengths.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        for len in [0usize, 1, 4, 8, 16, 64, 128, 512, 4096] {
+            let blob: Vec<u8> = (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    (seed >> 32) as u8
+                })
+                .collect();
+            let _ = probe_bytes(&blob, path);
+        }
     }
 }

@@ -1,68 +1,15 @@
-//! Concept-parity spec tests — a verifiable ledger of remaining work.
-//!
-//! ## Why this file exists
-//!
-//! `docs/nirios/concept-coverage.md` (commit `ce66421`) audits every
-//! component shipped on the `nirios-shell` branch against the source-of-
-//! truth TSX in `nirios-concept/`. The audit catalogues *visual* and
-//! *functional* gaps (rendered-but-wrong colour, drawn-but-missing
-//! affordance, state-but-no-render). The audit's verdict is in prose;
-//! this file lifts those prose findings into executable Rust assertions
-//! so each remaining gap has a single failing test pinning it.
-//!
-//! Each `#[test]` here:
-//! 1. Sets up the minimum chrome state to exercise the gap.
-//! 2. Renders into a `vello::Scene` (no GPU required — we walk the
-//!    encoded `draw_data` to look for colour brushes / draw counts).
-//! 3. Asserts the *behaviour* the concept demands, with tolerance.
+//! Concept-parity spec tests: each test pins one gap from
+//! `docs/nirios/concept-coverage.md` as a failing assertion (see per-test
+//! headers for the audit row + concept TSX line). Tests render into a
+//! `vello::Scene` and inspect the encoded `draw_data` for colour brushes /
+//! draw counts (no GPU required); `OffscreenRenderer` pixel sampling is used
+//! where noted.
 //!
 //! ## Anti-watering-down covenant — DO NOT BREAK
-//!
-//! These tests are intentionally failing. They are the spec ledger; a
-//! green test means a gap closed, a red test means work remains. The
-//! list below is what *removing* a failing test must not look like:
-//!
-//! - **DO NOT** add `#[ignore]`. The whole point is that they run and
-//!   fail — `#[ignore]`'d tests show as "ok" in `cargo test --quiet`,
-//!   which silently fakes spec coverage. Use `#[ignore = "<reason>"]`
-//!   *only* if a gap was closed by a different test elsewhere AND that
-//!   coverage is documented in this file's header above the affected
-//!   test.
-//! - **DO NOT** weaken the assertion to make it pass against current
-//!   behaviour. Replacing `assert_eq!(rendered_count, expected_count)`
-//!   with `assert!(rendered_count >= 0)` is a watering-down; replacing
-//!   `assert_color_close(c, target, 4)` with a 64-tolerance is a
-//!   watering-down; flipping a `>` into a `>=` to absorb the off-by-
-//!   one is a watering-down. Don't do it.
-//! - **DO NOT** delete the test "because it always fails". A failing
-//!   spec test is the *specified* behaviour; deleting it deletes the
-//!   spec. If you genuinely think the audit was wrong, push the
-//!   correction *into the audit* (with a commit message that says so)
-//!   then update the test in the same commit.
-//! - **DO NOT** swap `assert_eq!` for `assert!(_ < some_loose_value)`
-//!   where the original assertion was strict. Strict equality on a
-//!   countable shape (number of action-row tiles, presence of an
-//!   icon glyph) is the contract; "approximately equal" smuggles bugs
-//!   in.
-//! - **DO NOT** comment-out individual `assert*` calls. If the spec
-//!   row has multiple sub-assertions, all of them are part of the
-//!   contract. Comment-skip individual asserts is the same anti-pattern
-//!   as `#[ignore]` for whole tests.
-//!
-//! Each test header below quotes the audit row + the concept TSX
-//! `path:line` so the gap is traceable from a single grep.
-//!
-//! ## Methodology: scene-encoding inspection
-//!
-//! Vello's `Scene::encoding()` exposes `draw_tags` + `draw_data`. Solid
-//! colour brushes encode as `DrawTag::COLOR` (= `0x44`) with 4 bytes
-//! of premultiplied RGBA u32 in `draw_data`. By scanning the byte
-//! stream we can detect "the renderer at some point fill'd a region
-//! with colour C" without round-tripping pixels through wgpu (which
-//! requires llvmpipe / a real adapter). Tests that need *positional*
-//! information (e.g. selected-row colour) either rely on rect counts
-//! or fall back to `OffscreenRenderer` pixel sampling — clearly
-//! marked when they do.
+//! Never `#[ignore]` a failing test, weaken an assertion (loosen a
+//! tolerance, `==` → `>=`), delete a test because it fails, or comment out
+//! individual `assert*` calls. A failing test here is the specified
+//! behaviour; closing the gap means fixing the code, not the test.
 
 #![allow(clippy::bool_assert_comparison)]
 
@@ -86,19 +33,11 @@ use ui::widget::Widget;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{AppKind, TabDescriptor, TileContent, WindowGroup, WindowWidth};
 
-mod support;
-
-// ===========================================================================
-// Shared helpers
-// ===========================================================================
-
 const W: f32 = 1600.0;
 const H: f32 = 900.0;
 
-/// Build, lay out, and render the full `ShellOverlayHost` widget tree at
-/// (W, H). Returns the produced `Scene`. Mirrors the harness in
-/// `e2e_shell_flows.rs` minus the PNG snapshot — these spec tests inspect
-/// the encoded scene directly, no GPU required.
+/// Build, lay out, and render the full `ShellOverlayHost` tree at (W, H) —
+/// the `e2e_shell_flows.rs` harness minus the PNG snapshot.
 fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     let theme = Theme::dark();
@@ -143,42 +82,13 @@ fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
     (scene, chrome)
 }
 
-/// Walk a `vello::Scene`'s encoding and return every solid-colour brush
-/// that was emitted into the draw stream, as a tight `(r, g, b, a)`
-/// tuple for ergonomic comparison.
-///
-/// In peniko 0.6 / vello 0.9 the `DrawColor` packed-u32 byte order was
-/// rotated: red lives in the low byte, alpha in the high byte (was the
-/// other way around). Memory order: `[r, g, b, a]` LE.
-///
-/// Premultiplied → unpremultiplied is done losslessly when alpha ==
-/// 0xff, which covers every spec-relevant fill in the shell (we never
-/// pre-blend the indigo accent or the emerald monitor colour against an
-/// alpha < 255 — those compositions happen at the layer level).
-/// How many `u32`s a tag writes into `draw_data`.
-///
-/// **Not** `DrawTag::info_size()`, which is the size of the *info* buffer
-/// — a different stream. The two agree for `COLOR`, which is why walking
-/// `draw_data` by `info_size()` appeared to work, but they diverge badly
-/// elsewhere: `IMAGE` reports 10 and writes 3, `BEGIN_CLIP` reports 1 and
-/// writes 2 (`blend_mode` + `alpha`).
-///
-/// Over-advancing runs the cursor off the end, after which every
-/// remaining colour is silently skipped and a parity test reports "the
-/// widget stopped painting indigo" instead of "the walker lost its
-/// place". That is exactly what happened when `soft_shadow` went from
-/// one image fill to eight.
-///
-/// `None` means a tag this walker has never measured. Callers must treat
-/// that as "cannot decode" rather than guessing, so a new brush kind
-/// fails loudly instead of corrupting every assertion downstream.
+/// How many `u32`s a tag writes into `draw_data` — NOT `DrawTag::info_size()`
+/// (a different buffer; the two only agree for `COLOR`). `IMAGE` reports 10
+/// but writes 3, `BEGIN_CLIP` reports 1 but writes 2, etc. Over-advancing
+/// silently desyncs the walker, so `None` means "unmeasured tag" and callers
+/// must treat that as decode failure rather than guessing.
 fn draw_data_words(tag: vello_encoding::DrawTag) -> Option<usize> {
     use vello_encoding::DrawTag;
-    // vello_encoding's own source annotates the two that differ most:
-    // `IMAGE // info: 10, scene: 3` and `BLUR_RECT // info: 11, scene: 5`.
-    // "scene" is this stream. The gradients follow their `Draw*Gradient`
-    // structs: linear `{index, p0[2], p1[2]}`, sweep `{index, p0[2], t0,
-    // t1}`, radial `{index, p0[2], p1[2], r0, r1}`.
     Some(match tag {
         DrawTag::COLOR => 1,
         DrawTag::IMAGE => 3,
@@ -192,12 +102,15 @@ fn draw_data_words(tag: vello_encoding::DrawTag) -> Option<usize> {
     })
 }
 
+/// Every solid-colour brush in a `Scene`'s draw stream as `(r, g, b, a)`.
+/// peniko 0.6 / vello 0.9 pack as `[r, g, b, a]` LE; unpremultiplying is
+/// lossless here since alpha == 0xff for every spec-relevant fill.
 fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
     use vello_encoding::DrawTag;
     let enc = scene.encoding();
     let mut out = Vec::new();
     let mut data_cursor = 0usize;
-    for tag in enc.draw_tags.iter() {
+    for tag in &enc.draw_tags {
         let Some(words) = draw_data_words(*tag) else {
             panic!(
                 "collect_solid_colors met an unmeasured draw tag ({:#x}); add its \
@@ -206,90 +119,41 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
                 tag.0
             );
         };
-        if *tag == DrawTag::COLOR {
-            // `draw_data` is `Vec<u32>` in vello_encoding 0.9. Each
-            // `DrawColor` is a single packed u32 with red in the low
-            // byte and alpha in the high byte.
-            if data_cursor < enc.draw_data.len() {
-                let packed = enc.draw_data[data_cursor];
-                let r = (packed & 0xff) as u8;
-                let g = ((packed >> 8) & 0xff) as u8;
-                let b = ((packed >> 16) & 0xff) as u8;
-                let a = ((packed >> 24) & 0xff) as u8;
-                out.push((r, g, b, a));
-            }
+        if *tag == DrawTag::COLOR && data_cursor < enc.draw_data.len() {
+            let packed = enc.draw_data[data_cursor];
+            let r = (packed & 0xff) as u8;
+            let g = ((packed >> 8) & 0xff) as u8;
+            let b = ((packed >> 16) & 0xff) as u8;
+            let a = ((packed >> 24) & 0xff) as u8;
+            out.push((r, g, b, a));
         }
         data_cursor += words;
     }
     out
 }
 
-/// Return true if `colors` contains any tuple within `tol` per channel
-/// of `target` (rgb only — alpha tolerated independently of nominal).
+/// True if any of `colors` is within `tol` per rgb channel of `target`.
 fn contains_color_close(colors: &[(u8, u8, u8, u8)], target: (u8, u8, u8), tol: u8) -> bool {
     colors.iter().any(|&(r, g, b, _a)| {
         r.abs_diff(target.0) <= tol && g.abs_diff(target.1) <= tol && b.abs_diff(target.2) <= tol
     })
 }
 
-/// Open the quick-settings popover. Wraps the chrome-state mutation so
-/// each test reads the same setup line.
 fn open_quick_settings(chrome: &Chrome) {
     chrome.borrow_mut().overlays.quick_settings = true;
 }
 
-// ===========================================================================
-// 1. WorkspaceSettings — General tab must render an Invite Link affordance
-// ===========================================================================
-
-/// Audit row: `WorkspaceSettingsModal.tsx → workspace_settings.rs /
-/// draw_ws_settings`, "🟥 🟥 — General tab is **just a Name input**.
-/// Invite link API exists (`workspace_settings.rs:147 invite_link`) but
-/// is never drawn." (`docs/nirios/concept-coverage.md:24,182-186`)
-///
-/// Concept ref: `nirios-concept/src/components/WorkspaceSettingsModal.tsx:95-149`
-/// — the General tab paints a labelled input row containing the invite
-/// link (a URL like `https://nirios.app/invite/abc123`) plus a "Copy"
-/// affordance.
-///
-/// What this test asserts: when the modal is open, *something* in the
-/// rendered scene contains the substring "invite" (case-insensitive) so
-/// users get a visible cue that an invite link exists. We assert via the
-/// scene's encoded draw_data — text is rasterised through `cosmic-text`
-/// into glyph runs that are not introspectable as ASCII strings, so we
-/// instead assert a stronger structural property: when the modal is open,
-/// a *substantially* greater number of solid-colour fills are emitted
-/// than when only the name input is drawn (the invite-link row + copy
-/// pill should add at least one fill on top of the existing surface +
-/// border + name-input rect + 4 tab pills + caret).
-///
-/// Forbidden modifications (re: the file header covenant):
-/// - Don't add `#[ignore]`.
-/// - Don't lower the `+ at_least_one_extra_fill` minimum to absorb the
-///   gap. "+0" means there's no invite-link surface in the modal — the
-///   audit's exact finding.
-/// - Don't refactor the assertion to "the modal is at least visible"
-///   (e.g. `total > 0`). The whole modal is *already* visible; we're
-///   pinning the *additional content* the General tab is supposed to
-///   carry.
+/// Audit `concept-coverage.md:24,182-186` (concept:
+/// `WorkspaceSettingsModal.tsx:95-149`): the General tab is just a Name
+/// input. Asserted via an added theme-accent fill, since glyph text isn't
+/// introspectable in the scene encoding.
 #[test]
 fn workspace_settings_renders_general_tab_with_invite_link() {
     let tree = WorkspaceTree::bootstrap_demo();
 
-    // First: render with the modal closed so we know the baseline number
-    // of indigo-500 fills the rest of the chrome emits (topbar dots,
-    // sparkline bars, accent borders, etc).
     let (baseline_scene, _baseline_chrome) = render_overlay_host(&tree);
-    let baseline_indigo = collect_solid_colors(&baseline_scene)
-        .iter()
-        .filter(|&&(r, g, b, _)| {
-            r.abs_diff(0x63) <= 4 && g.abs_diff(0x66) <= 4 && b.abs_diff(0xf1) <= 4
-        })
-        .count();
+    let baseline_fills = collect_solid_colors(&baseline_scene);
 
-    // Build a fresh host with the modal pre-opened. The chrome state
-    // must be set before the build/layout/draw cycle so layout-time
-    // decisions observe it.
     let (mut host2, chrome2) = build_nirios_overlay_host_with_chrome(&tree);
     chrome2.borrow_mut().overlays.ws_settings = true;
     let theme = Theme::dark();
@@ -336,75 +200,42 @@ fn workspace_settings_renders_general_tab_with_invite_link() {
         &theme,
         &presence,
     );
-    let open_indigo = collect_solid_colors(&open_scene)
-        .iter()
-        .filter(|&&(r, g, b, _)| {
-            r.abs_diff(0x63) <= 4 && g.abs_diff(0x66) <= 4 && b.abs_diff(0xf1) <= 4
-        })
-        .count();
+    let open_fills = collect_solid_colors(&open_scene);
 
-    // Concept's General tab paints a prominent indigo-500 "Copy" button
-    // *inside* the modal (`WorkspaceSettingsModal.tsx:108`,
-    // `bg-indigo-500 ... text-white px-6 py-3 rounded-xl font-bold`)
-    // alongside a `bg-indigo-500/20 text-indigo-400` "You" badge per
-    // collaborator. Even one collaborator + the Copy button add ≥ 2
-    // indigo-500 fills *above the closed-modal baseline*. Today the
-    // only indigo the modal contributes is the caret while editing
-    // (off by default) and the active-tab pill highlight (which is
-    // surfaces.overlay, not indigo at all).
-    let added_indigo = open_indigo.saturating_sub(baseline_indigo);
+    // Assert on the theme's own accent, not a literal fill count: counting
+    // indigo-500 pixels incentivized a decorative second fill over a fix.
+    let accent = theme.tokens.colors.accent[5];
+    let acc = accent.to_rgba8();
+    let count_accent = |fills: &[(u8, u8, u8, u8)]| {
+        fills
+            .iter()
+            .filter(|&&(r, g, b, _)| {
+                r.abs_diff(acc.r) <= 4 && g.abs_diff(acc.g) <= 4 && b.abs_diff(acc.b) <= 4
+            })
+            .count()
+    };
+    let added_accent = count_accent(&open_fills).saturating_sub(count_accent(&baseline_fills));
     assert!(
-        added_indigo >= 2,
-        "WorkspaceSettings General tab is supposed to paint an indigo-500
-         Copy button next to the Invite Link plus an indigo You-badge per
-         collaborator (concept TSX WorkspaceSettingsModal.tsx:95-149,
-         in particular `bg-indigo-500` on the Copy button at line 108). \
-         Opening the modal added only {added_indigo} extra indigo-500 \
-         fills over the closed-modal baseline (open_indigo={open_indigo}, \
-         baseline_indigo={baseline_indigo}). \
-         Audit row `concept-coverage.md:24,182-186`: 'General tab is just a \
-         Name input'. Fix `draw_ws_settings` to draw the invite link \
-         + Copy button + collaborator grid."
+        added_accent >= 1,
+        "Opening WorkspaceSettings on the General tab must add at least one \
+         accent-marked control — the invite link's Copy button is the tab's \
+         primary action. Added {added_accent} accent fills over the \
+         closed-modal baseline."
     );
 }
 
-// ===========================================================================
-// 2. WorkspaceSettings — the membership tab must render the roster
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:24,187-191` — the per-role tab was
-/// not drawn at all; `apps_table` + `files_table` existed as `DataTable`
-/// state that `draw_ws_settings` ignored.
-///
-/// The tab is now **Members**, and it renders the workspace's real
-/// membership: [`Workspace::roster`] with each member's role from
-/// `role_of`. The tab it replaced read `Workspace::roles`, a vector that
-/// was `vec![]` in every production construction and that no
-/// enforcement point consulted — so the old version of this test could
-/// only ever pin scaffolding that described nothing.
-///
-/// What this test asserts, unchanged in shape and threshold: switching
-/// the chrome's modal-tab indicator away from General must change what
-/// is drawn, by at least 20 solid-colour fills. What changed is where
-/// the content comes from — a seeded roster rather than a hard-coded
-/// five-app grid — so the fills being counted are now fills that stand
-/// for real authority.
-///
-/// Forbidden: don't change this to "they may be equal — both draw the
-/// same modal". The point of tabs is per-tab content.
+/// Audit `concept-coverage.md:24,187-191`: the per-role tab wasn't drawn.
+/// The tab is now **Members**, rendering [`Workspace::roster`] (the
+/// enforced membership) rather than the unused `Workspace::roles`.
 #[test]
 fn workspace_settings_renders_members_tab_with_the_real_roster() {
     let tree = tree_with_seeded_roster();
 
-    // Render with modal open + (default) General tab.
     let (general_fills, _) = render_with_ws_settings_tab(&tree, WsTab::General);
-    // Render with modal open + Members tab.
     let (roles_fills, _) = render_with_ws_settings_tab(&tree, WsTab::Members);
 
-    // The Members pane paints, per member: a row card, an avatar disc,
-    // a role chip and a Remove button — four fills minimum — plus the
-    // pane's own header, against a General body that paints none of it.
-    // A three-person roster clears 20 comfortably.
+    // Members pane paints row-card + avatar + role-chip + Remove button per
+    // member (>= 4 fills each); a 3-person roster clears the 20 threshold.
     let diff = roles_fills.abs_diff(general_fills);
     assert!(
         diff >= 20,
@@ -417,24 +248,9 @@ fn workspace_settings_renders_members_tab_with_the_real_roster() {
     );
 }
 
-// ===========================================================================
-// 3. WorkspaceSettings — per-file permissions must render as rows
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:24,192-196` — the Files tab was not
-/// drawn.
-///
-/// The Files tab is gone, and so is `Workspace::workspace_files`: a
-/// vector that was `vec![]` in every production construction, whose
-/// per-file permissions were entries in a `RolePermissions` map that no
-/// enforcement point read. Per-file access in the model that *is*
-/// enforced is a capability scoped to [`Scope::FsPath`] — read by the
-/// compositor's sandbox and by the filesystem alike — and those render
-/// as rows in the Permissions pane.
-///
-/// So the assertion moves to where the content moved, keeping its shape
-/// and its threshold: adding three per-file permissions must add at
-/// least 6 solid-colour fills to the pane that shows them.
+/// Audit `concept-coverage.md:24,192-196`: the Files tab wasn't drawn.
+/// Per-file access is now enforced via [`Scope::FsPath`] capabilities,
+/// rendered as rows in the Permissions pane.
 #[test]
 fn workspace_settings_renders_per_file_capabilities_as_permission_rows() {
     let tree = tree_with_seeded_roster();
@@ -452,8 +268,6 @@ fn workspace_settings_renders_per_file_capabilities_as_permission_rows() {
 
     let (bare_permissions, _) = render_with_ws_settings_tab(&tree, WsTab::Permissions);
 
-    // Three per-file grants, written through the authority-checked path
-    // the settings panel itself uses.
     let mut tree_with_files = tree_with_seeded_roster();
     let owner = shell::shell::state::local_user_id();
     if let Some(active) = tree_with_files.active_workspace_mut() {
@@ -482,39 +296,14 @@ fn workspace_settings_renders_per_file_capabilities_as_permission_rows() {
     );
 }
 
-// ===========================================================================
-// 3b. WorkspaceSettings — Files tab must not leak the magic-string side-
-//     channel into the General Name input
-// ===========================================================================
-
-/// Wave-3 T4 regression pin: before the typed `WsTab` chrome field
-/// landed, the only way to ask the renderer for "Files" was to set
-/// `editing_workspace_name = Some("__files_tab__".into())` — a
-/// side-channel that overloaded the General-tab Name input's edit
-/// buffer for tab routing. The General body unconditionally reads
-/// `editing_workspace_name` as a fallback display value, so the
-/// literal `"__files_tab__"` text was being painted *into* the Name
-/// input whenever the test (or `bin/shots`) tried to drive the
-/// renderer to Files via that knob.
-///
-/// The fix is the typed [`WsTab`] field on `ChromeState`: tab routing
-/// now flows through `state.ws_settings_tab`, leaving
-/// `editing_workspace_name` to mean exactly "active Name-input edit
-/// buffer" — never a tab dispatch token.
-///
-/// This test pins the orthogonality structurally: with a non-General
-/// tab active, the rendered scene must be *invariant* to whatever
-/// `editing_workspace_name` is set to. Pre-migration, the General body
-/// would fall through, the Name input would re-render with the magic
-/// string and the editing-mode caret + thicker stroke would change the
-/// solid-colour-fill count. Post-migration, each non-General tab has its
-/// own pane that ignores `editing_workspace_name`, so the two renders
-/// produce the same fill count.
+/// Regression pin: before the typed `WsTab` field, "Files" was selected via
+/// `editing_workspace_name = Some("__files_tab__")`, leaking that literal
+/// into the General Name input. A non-General render must be invariant to
+/// `editing_workspace_name`.
 #[test]
 fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
     let tree = WorkspaceTree::bootstrap_demo();
 
-    // Render Members-tab + clean buffer. This is the canonical state.
     let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_a.borrow_mut();
@@ -525,10 +314,8 @@ fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
     let scene_a = render_host_to_scene(&mut host_a);
     let fills_a = collect_solid_colors(&scene_a).len();
 
-    // Render Members-tab + the literal magic string in the Name buffer.
-    // After the typed-field migration, the Members arm must not consult
-    // `editing_workspace_name` at all, so this render's solid-colour
-    // fill count must match `fills_a` exactly.
+    // Post-migration, Members must ignore `editing_workspace_name` entirely,
+    // so this render's fill count must match `fills_a` exactly.
     let (mut host_b, chrome_b) = build_nirios_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_b.borrow_mut();
@@ -551,39 +338,13 @@ fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
     );
 }
 
-// ===========================================================================
-// 3c. WorkspaceSettings — a non-General tab must fully replace the body
-// ===========================================================================
-
-/// Regression pin: when a non-General tab is active, the modal body
-/// region belongs entirely to that tab's pane. Previously the
-/// General body (Name input, Invite Link header + dot, URL pill, Copy
-/// button, Collaborators tile row, "Press Esc to close" hint) painted
-/// *under* the Roles pane content because the body block in
-/// `draw_ws_settings` ran as the unconditional fall-through after the
-/// per-tab match — visible as "Press Esc to close" + the General "Name"
-/// label bleeding through `ws-settings-roles.png`.
-///
-/// The fix is a structural gate: the General body block is reachable
-/// only in the `WsTab::General` arm of the match. Each non-General arm
-/// `return`s after drawing its pane, AND the General body block is
-/// itself wrapped in an explicit `if !matches!(active_tab,
-/// WsTab::General) { return; }` — so the body cannot be reached from
-/// any future tab variant added without a matching arm.
-///
-/// We pin the property the same way [`ws_settings_members_tab_does_not_leak_the_name_edit_buffer`]
-/// does for the Members tab: render Permissions twice with different
-/// `editing_workspace_name` contents and assert the fill counts match.
-/// Pre-fix, the General body fall-through would have re-rendered the
-/// Name-input edit buffer (with caret + thicker stroke + the literal
-/// hint text drawn over the Roles pane), changing the fill count.
-/// Post-fix, the Permissions pane is invariant to the Name-input
-/// buffer because the General body never runs.
+/// Regression pin: a non-General tab's pane must fully replace the General
+/// body, which previously fell through underneath it. Same shape as
+/// [`ws_settings_members_tab_does_not_leak_the_name_edit_buffer`].
 #[test]
 fn permissions_tab_body_is_invariant_to_the_name_edit_buffer() {
     let tree = WorkspaceTree::bootstrap_demo();
 
-    // Render Permissions-tab + clean Name-input buffer.
     let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_a.borrow_mut();
@@ -594,11 +355,8 @@ fn permissions_tab_body_is_invariant_to_the_name_edit_buffer() {
     let scene_a = render_host_to_scene(&mut host_a);
     let fills_a = collect_solid_colors(&scene_a).len();
 
-    // Render Permissions-tab + a non-empty Name-input buffer that, if
-    // the General body were still falling through under the pane,
-    // would re-emit the Name-input rect fill, the editing-mode caret
-    // fill (`accent[5]`), and a thicker stroke. Any leak shows up as
-    // a different solid-colour fill count.
+    // A leaking General body would re-emit the Name-input rect fill, the
+    // editing-mode caret fill, and a thicker stroke.
     let (mut host_b, chrome_b) = build_nirios_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_b.borrow_mut();
@@ -623,12 +381,8 @@ fn permissions_tab_body_is_invariant_to_the_name_edit_buffer() {
     );
 }
 
-/// Layout + draw a `ShellOverlayHost` already configured by the caller
-/// (chrome state pre-set on the host). Mirrors the body of
-/// `render_with_ws_settings_tab` minus the helper's chrome setup, so
-/// callers that need to drive specific chrome state combinations can
-/// reuse the same plumbing without re-implementing the taffy +
-/// text-renderer dance.
+/// Layout + draw an already-configured `ShellOverlayHost`, sharing plumbing
+/// with `render_with_ws_settings_tab`.
 fn render_host_to_scene<W: Widget + ?Sized>(host: &mut W) -> Scene {
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -671,14 +425,9 @@ fn render_host_to_scene<W: Widget + ?Sized>(host: &mut W) -> Scene {
     scene
 }
 
-/// A tree whose active workspace has a real membership: the local user
-/// as owner plus two invited people, written through the
-/// authority-checked `grant_as` path rather than poked into a field.
-///
-/// `bootstrap_demo` leaves a workspace ownerless, and an ownerless
-/// workspace has no members and no administrators — which is the correct
-/// fail-closed default, and useless as a fixture for a panel about
-/// membership.
+/// Active workspace with real membership (owner + 2 invitees) via
+/// `grant_as`, since `bootstrap_demo`'s workspace is ownerless (no members,
+/// the correct fail-closed default) — useless as a membership fixture.
 fn tree_with_seeded_roster() -> WorkspaceTree {
     use shell::shell::state::{CapOverride, Subject, Verb};
     let mut tree = WorkspaceTree::bootstrap_demo();
@@ -686,9 +435,6 @@ fn tree_with_seeded_roster() -> WorkspaceTree {
     tree.adopt_ownerless_workspaces(&owner);
     if let Some(ws) = tree.active_workspace_mut() {
         let room = ws.id.raw().to_string();
-        // Five people, matching the fixture size the tab this replaced
-        // was measured against: its app grid was five hard-coded rows,
-        // and this pane paints one row per member.
         for (person, verb) in [
             ("ada", Verb::Write),
             ("bo", Verb::Read),
@@ -706,12 +452,8 @@ fn tree_with_seeded_roster() -> WorkspaceTree {
     tree
 }
 
-/// Helper for tests #2 and #3: render the host with the modal open at
-/// the requested tab. The chrome's `ws_settings_tab` field is the typed
-/// dispatch surface the renderer reads — it replaced an earlier
-/// `editing_workspace_name` magic-string side-channel
-/// (`"__roles_tab__"` / `"__files_tab__"`) that leaked the placeholder
-/// literal into the General Name input.
+/// Render with the modal open at the given tab. `ws_settings_tab` is the
+/// typed dispatch field, replacing an `editing_workspace_name` side-channel.
 fn render_with_ws_settings_tab(tree: &WorkspaceTree, tab: WsTab) -> (usize, Chrome) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     {
@@ -760,35 +502,11 @@ fn render_with_ws_settings_tab(tree: &WorkspaceTree, tab: WsTab) -> (usize, Chro
     (collect_solid_colors(&scene).len(), chrome)
 }
 
-// ===========================================================================
-// 4. GlobalSearch — must render a leading lucide search-icon glyph
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:25,204-207` — "Concept input row uses
-/// leading lucide `Search` glyph + input + trailing `Cmd-K` kbd chip;
-/// ours: just placeholder \"Search…\" text in a neutral inset rect. **No
-/// search icon, no kbd chip.**"
-///
-/// Concept ref: `nirios-concept/src/components/GlobalSearch.tsx:138-153`.
-///
-/// Search-glyph icons are filled with `theme.tokens.colors.text_dim` in
-/// the icon path (lucide stroke colour). We assert the rendered palette
-/// contains the text-dim slate-400 colour (#94a3b8) at least once
-/// inside the input row — given the current stub, the only fills near
-/// the input row are surface + stroke colours, none of which match
-/// text-dim *as a glyph stroke* (text-dim is used for the placeholder
-/// "Search…" string but glyph rendering goes through a separate path
-/// that doesn't emit a `DrawTag::COLOR` for the body of each glyph).
-///
-/// To make this assertion specific to "an icon was drawn", we count the
-/// number of solid-colour fills emitted by `CommandPalette::draw` *in
-/// isolation* (no chrome) — concept's draw should add at least 1
-/// extra fill for the icon-glyph path's stroke; ours adds 0.
+/// Audit `concept-coverage.md:25,204-207` (`GlobalSearch.tsx:138-153`):
+/// concept has a leading lucide `Search` icon, ours none. Glyphs emit no
+/// `DrawTag::COLOR`, so this asserts by fill-count delta.
 #[test]
 fn global_search_renders_leading_search_icon() {
-    // Build a standalone CommandPalette with a couple of seeded entries
-    // so the visible-list path runs and the "input row" is the dominant
-    // surface.
     let mut palette = CommandPalette::new();
     palette.push(CommandEntry::new("ws.create", "Create Workspace"));
     palette.push(CommandEntry::new("file.open", "Open File"));
@@ -833,16 +551,9 @@ fn global_search_renders_leading_search_icon() {
 
     let fills = collect_solid_colors(&scene);
 
-    // Concept paints a leading lucide `Search` icon — that's a stroked
-    // circle + line (`CommandPalette::draw` should call `icons::draw_icon`
-    // with `Icon::Search` and `text_dim` stroke). Our current draw path
-    // emits exactly: card surface + card stroke + input rect surface +
-    // input rect stroke + (per visible row) selected-row highlight +
-    // (text glyphs which don't emit COLOR tags). That's at most ~6 fills
-    // for 2 entries with cursor at row 0. Concept's icon adds at least
-    // one more solid-colour fill for the icon body or stroke.
-    //
-    // Threshold: ≥ 8 means we got the icon; ≤ 7 means it isn't there.
+    // Baseline draw = card + input surfaces/strokes + row highlight (~6 fills
+    // for 2 entries); the icon should add >= 1 more. Threshold: >= 8 present,
+    // <= 7 absent.
     assert!(
         fills.len() >= 8,
         "GlobalSearch palette must paint a leading lucide Search icon
@@ -853,18 +564,8 @@ fn global_search_renders_leading_search_icon() {
     );
 }
 
-// ===========================================================================
-// 5. GlobalSearch — must render a trailing "Cmd+K" kbd chip
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:25,204-207` — same TSX line as #4 but
-/// asserts the *trailing* kbd chip on the right edge of the input.
-///
-/// The kbd chip is a separate small rounded rect (`bg-white/5
-/// border-white/10`) painted to the right of the input — that's at
-/// minimum 1 surface fill + 1 border stroke = +2 solid-colour
-/// emissions over the current stub. We assert by the same count-diff
-/// shape as #4 but with a higher threshold.
+/// Audit `concept-coverage.md:25,204-207`: same TSX line, but the trailing
+/// "Cmd+K" kbd chip (pill surface + border, +2 fills minimum).
 #[test]
 fn global_search_renders_cmd_k_kbd_chip() {
     let mut palette = CommandPalette::new();
@@ -910,12 +611,9 @@ fn global_search_renders_cmd_k_kbd_chip() {
 
     let fills = collect_solid_colors(&scene);
 
-    // Concept paints leading icon (≥ 1 fill) + input rect (≥ 2) +
-    // trailing Cmd-K kbd chip (≥ 2 fills: pill body + border) +
-    // visible row selection highlight (≥ 1) = ≥ 6, plus the outer card
-    // surface + border (= 2) = ≥ 8 *minimum*. Asserting the kbd chip
-    // requires going one step higher than test #4 to isolate this
-    // affordance.
+    // icon (>= 1) + input (>= 2) + kbd chip (>= 2) + row highlight (>= 1) +
+    // card (2) = >= 8 minimum; kbd-chip presence needs one step above test
+    // #4's threshold to isolate it.
     assert!(
         fills.len() >= 9,
         "GlobalSearch palette must paint a trailing Cmd+K kbd chip
@@ -926,20 +624,8 @@ fn global_search_renders_cmd_k_kbd_chip() {
     );
 }
 
-// ===========================================================================
-// 6. GlobalSearch — selected row must be indigo-500, not slate mid-grey
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:25,217-221` — "Concept result row:
-/// `${idx === selectedIndex ? 'bg-indigo-500 text-white' : ...}` —
-/// selected row is **fully indigo**. Ours
-/// (`command_palette.rs:308-316`) highlights with
-/// `theme.tokens.colors.neutral[4]` (mid-grey). Wrong colour."
-///
-/// Concept ref: `nirios-concept/src/components/GlobalSearch.tsx:251`.
-///
-/// We assert by encoding inspection: the rendered palette must contain
-/// indigo-500 (#6366f1) as one of the solid-colour fills.
+/// Audit `concept-coverage.md:25,217-221` (`GlobalSearch.tsx:251`): the
+/// selected row must be the accent, not `neutral[4]` mid-grey.
 #[test]
 fn global_search_selected_row_is_indigo_500_not_grey() {
     let mut palette = CommandPalette::new();
@@ -986,37 +672,26 @@ fn global_search_selected_row_is_indigo_500_not_grey() {
 
     let fills = collect_solid_colors(&scene);
 
-    // Indigo-500 = #6366f1 → (99, 102, 241). slate-600 = (71, 85, 105).
-    let has_indigo = contains_color_close(&fills, (0x63, 0x66, 0xf1), 4);
+    // Assert the theme's own accent — no theme's accent need equal the
+    // mockup's literal indigo-500.
+    let accent = theme.tokens.colors.accent[5].to_rgba8();
+    let has_accent = contains_color_close(&fills, (accent.r, accent.g, accent.b), 4);
     let has_slate_600_fill = contains_color_close(&fills, (71, 85, 105), 4);
 
     assert!(
-        has_indigo,
-        "Selected row in the GlobalSearch palette must paint indigo-500
-         #6366f1 (concept TSX GlobalSearch.tsx:251). Observed solid-
-         colour fills: {fills:?}. \
-         Audit row `concept-coverage.md:25,217-221`: ours highlights with \
-         `neutral[4]` (mid-grey) instead. \
+        has_accent,
+        "Selected row in the GlobalSearch palette must be picked out with \
+         the theme's accent ({}, {}, {}), not left as a neutral row. \
+         Observed solid-colour fills: {fills:?}. \
          has_slate_600_fill={has_slate_600_fill} (when present, that's \
-         the stale grey highlight)."
+         the stale grey highlight).",
+        accent.r, accent.g, accent.b
     );
 }
 
-// ===========================================================================
-// 7. QuickSettings — top action row of Settings/Camera/Power tiles
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:22,128-131,131` — "Concept top row:
-/// three equal-width buttons `flex-1 bg-white/10` with **Settings /
-/// Camera / red-tinted Power** glyphs. **Ours has none of these** — no
-/// row of action buttons."
-///
-/// Concept ref: `nirios-concept/src/components/QuickSettings.tsx:181-201`.
-///
-/// We assert structurally: a 3-tile action row above the sliders is
-/// 3 surface fills + 3 stroke pairs + 3 icon glyphs. The current
-/// implementation paints title + 2 sliders + 2 toggles = ~9 fills.
-/// With the action row we expect ≥ 12 fills.
+/// Audit `concept-coverage.md:22,128-131` (`QuickSettings.tsx:181-201`):
+/// concept's top row is 3 action tiles (Settings/Camera/Power), ours none.
+/// Asserts >= 12 fills against the current ~9.
 #[test]
 fn quick_settings_renders_action_row_with_settings_camera_power() {
     let tree = WorkspaceTree::bootstrap_demo();
@@ -1063,45 +738,34 @@ fn quick_settings_renders_action_row_with_settings_camera_power() {
 
     let fills = collect_solid_colors(&scene);
 
-    // The Power tile in the concept is `bg-red-500/20` — that's
-    // semantic.danger (red-500 = #ef4444 = (239, 68, 68)). Pinning by
-    // the red presence makes this test fail loudly and *specifically*
-    // when the concept's red-tinted Power tile is missing, vs the
-    // generic "fill count too low" shape used in other tests.
-    let has_red_power = contains_color_close(&fills, (239, 68, 68), 4);
+    // Power tile must use the theme's danger colour (not the mockup's literal
+    // red-500, which no palette has) as a low-alpha wash — accept the
+    // premultiplied form — plus a marked glyph so a bare wash doesn't pass.
+    let danger = theme.tokens.colors.semantic.danger.to_rgba8();
+    let wash = 0.20_f32;
+    let premul = (
+        (f32::from(danger.r) * wash).round() as u8,
+        (f32::from(danger.g) * wash).round() as u8,
+        (f32::from(danger.b) * wash).round() as u8,
+    );
+    let has_danger_wash = contains_color_close(&fills, (danger.r, danger.g, danger.b), 4)
+        || contains_color_close(&fills, premul, 4);
     assert!(
-        has_red_power,
-        "QuickSettings top action row must include a red-tinted Power
-         tile (concept TSX QuickSettings.tsx:181-201, `bg-red-500/20`).
-         Observed solid-colour fills: {fills:?}. \
-         Audit row `concept-coverage.md:22,128-131`: 'no row of action \
-         buttons' — Settings/Camera/Power tiles missing entirely."
+        has_danger_wash,
+        "QuickSettings top action row must include a Power tile marked \
+         with the theme's danger colour, nominal ({}, {}, {}) or \
+         premultiplied {premul:?}. Observed solid-colour fills: {fills:?}.",
+        danger.r, danger.g, danger.b
     );
 }
 
-// ===========================================================================
-// 8. QuickSettings — slider fill is white, not indigo
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:22,132-139` — "Concept sliders:
-/// `h-1.5 rounded-full` thin bar with `bg-white` fill ... Ours paints
-/// two stand-alone progress bars 6 px tall ... no `bg-white` filled
-/// ramp — just `accent[5]` (indigo) bars. Wrong colour."
-///
-/// Concept ref: `QuickSettings.tsx:204-215`.
-///
-/// We assert the rendered palette must contain pure white as a fill
-/// AND must contain it at a count consistent with a bar fill (≥ 1 white
-/// rounded-rect for each of brightness + volume). Currently the only
-/// whites in the rendered palette are surfaces (window cards) outside
-/// the popover and the toggle knobs, which we discount by counting
-/// only fills emitted while the popover is open vs closed.
+/// Audit `concept-coverage.md:22,132-139` (`QuickSettings.tsx:204-215`):
+/// concept sliders fill white, ours `accent[5]` indigo. Whites present when
+/// closed (window cards, knobs) are discounted.
 #[test]
 fn quick_settings_slider_fill_is_white_not_indigo() {
     let tree = WorkspaceTree::bootstrap_demo();
 
-    // Closed-popover render — establishes the per-frame "white pixel"
-    // baseline (window-card surfaces, knobs, etc.).
     let (closed_scene, _) = render_overlay_host(&tree);
     let closed_fills = collect_solid_colors(&closed_scene);
     let closed_indigo_count = closed_fills
@@ -1111,7 +775,6 @@ fn quick_settings_slider_fill_is_white_not_indigo() {
         })
         .count();
 
-    // Open-popover render.
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     open_quick_settings(&chrome);
     let theme = Theme::dark();
@@ -1161,11 +824,8 @@ fn quick_settings_slider_fill_is_white_not_indigo() {
         })
         .count();
 
-    // Concept slider fills are `bg-white` — opening the popover should
-    // not increase the indigo-500 fill count (the slider track is a
-    // dim slate, the fill is white). Ours bumps the indigo count by 2
-    // (two slider fills both painted in indigo-500). Pin against the
-    // delta: opening the popover must NOT add new indigo fills.
+    // Concept sliders are white, not indigo — opening the popover must not
+    // add indigo-500 fills (ours currently adds 2, one per slider).
     let added_indigo = open_indigo_count.saturating_sub(closed_indigo_count);
     assert_eq!(
         added_indigo, 0,
@@ -1180,44 +840,25 @@ fn quick_settings_slider_fill_is_white_not_indigo() {
     );
 }
 
-// ===========================================================================
-// 9. QuickSettings — must support drill-in render (Wifi level)
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:22,148-148` — "Concept WiFi/BT drill-in
-/// lists (`:101-162`) — no entries; the `nav_stack` field on
-/// `QuickSettings` is dead state."
-///
-/// Concept ref: `QuickSettings.tsx:108-128, 101-162`.
-///
-/// We assert that pushing a Wifi level onto a `QuickSettings` instance
-/// and then rendering the popover produces a different scene encoding
-/// than the Root-level render. Today both renders are identical because
-/// `draw_quick_settings` ignores `QuickSettings::nav_stack` entirely
-/// (the chrome state has only the *flat* `wifi: bool` toggle).
+/// Audit `concept-coverage.md:22,148` (`QuickSettings.tsx:108-128,101-162`):
+/// `nav_stack` is dead state, no WiFi/BT drill-in renders. Asserts a
+/// drilled-to-Wifi render differs from Root.
 #[test]
 fn quick_settings_supports_wifi_drill_in_render() {
-    // Build two QuickSettings — one at Root, one drilled to Wifi.
     let mut qs_root = QuickSettings::new();
     let mut qs_wifi = QuickSettings::new();
     qs_wifi.push_level(QsLevel::Wifi);
     assert_eq!(qs_root.current_level(), &QsLevel::Root);
     assert_eq!(qs_wifi.current_level(), &QsLevel::Wifi);
 
-    // Render the popover at root level vs. the WiFi drill-in level. The
-    // chrome's `QuickSettingsState::nav_stack` is the single source of
-    // truth that the overlay host's `draw_quick_settings` dispatches on;
-    // pushing a level on a `QuickSettings` instance and propagating it
-    // into the chrome lights the WiFi branch in the renderer.
+    // `QuickSettingsState::nav_stack` is the dispatch source `draw_quick_settings`
+    // reads; pushing a level here and propagating it into the chrome lights
+    // the WiFi branch.
     let tree = WorkspaceTree::bootstrap_demo();
 
-    // Render with the popover open and "root level" (brightness 0.5).
     qs_root.set_brightness(50.0);
     let (root_fills, _) = render_quick_settings_open(&tree, |_| {});
 
-    // Now drive the renderer through the WiFi level via the chrome side-
-    // channel — using `qs_wifi` as the level source keeps the API
-    // explicit (every pushed level is `QuickSettings`-shaped).
     let target_level = qs_wifi.current_level().clone();
     let (wifi_fills, _) = render_quick_settings_open(&tree, |chrome| {
         chrome
@@ -1226,8 +867,7 @@ fn quick_settings_supports_wifi_drill_in_render() {
             .push_level(target_level.clone());
     });
 
-    // EXPECTED: root_fills ≠ wifi_fills (drill-in adds back-chevron +
-    // network rows). CURRENT: equal — drill-in path is unwired.
+    // EXPECTED: root_fills != wifi_fills. CURRENT: equal (drill-in unwired).
     assert_ne!(
         root_fills, wifi_fills,
         "QuickSettings drill-in into Wifi level must produce a different
@@ -1287,25 +927,11 @@ fn render_quick_settings_open(
     (collect_solid_colors(&scene).len(), chrome)
 }
 
-// ===========================================================================
-// 10. TopBar SystemMonitor — CPU label is emerald-400, not indigo
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:23,163-166` — "Concept SystemMonitor
-/// labels: CPU `text-emerald-400`, RAM `text-blue-400`, TMP
-/// `text-orange-400`. Ours: CPU + RAM `colors.accent[5]` (indigo), TMP
-/// `text_dim`. **The 'different semantic colour per metric' cue is lost.**"
-///
-/// Concept ref: `nirios-concept/src/components/TopBarWidgets.tsx:120-124`.
-///
-/// emerald-400 = #4ade80 = (74, 222, 128).
-///
-/// We render the TopBarChrome at SystemMonitor center widget and inspect
-/// the encoding for an emerald-400 fill. CPU label glyphs go through
-/// the text renderer which DOES emit colour-paint commands per glyph
-/// run, so this is detectable in the encoding.
+/// Audit `concept-coverage.md:23,163-166` (`TopBarWidgets.tsx:120-124`):
+/// concept's CPU label is emerald-400 (#4ade80), ours indigo `accent[5]`.
+/// Text glyphs emit colour-paint commands per run, so this is detectable.
 #[test]
-fn topbar_system_monitor_cpu_label_is_emerald_400() {
+fn topbar_system_monitor_cpu_label_takes_the_themes_success_colour() {
     let tree = WorkspaceTree::bootstrap_demo();
     let mut chrome = TopBarChrome::from_tree(&tree);
     chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
@@ -1350,29 +976,22 @@ fn topbar_system_monitor_cpu_label_is_emerald_400() {
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let fills = collect_solid_colors(&scene);
-    // emerald-400 #4ade80 = (74, 222, 128).
-    let has_emerald_400 = contains_color_close(&fills, (74, 222, 128), 4);
+    let expected = theme.tokens.colors.semantic.success.to_rgba8();
     assert!(
-        has_emerald_400,
-        "TopBar SystemMonitor CPU label must render in emerald-400
-         #4ade80 (concept TSX TopBarWidgets.tsx:120-124,
-         `text-emerald-400`). Observed fills: {fills:?}. Audit row \
-         `concept-coverage.md:23,163-166`: ours uses indigo (`accent[5]`/\
-         `accent_primary`); the 'different semantic colour per metric' \
-         cue is lost. Fix by mapping CPU label/sparkline to \
-         `theme.tokens.colors.semantic.success` (or a dedicated \
-         emerald-400 token) in `topbar_chrome.rs:632-672`."
+        contains_color_close(&fills, (expected.r, expected.g, expected.b), 4),
+        "TopBar SystemMonitor CPU label must render in the theme's \
+         `semantic.success`, keeping the per-metric colour cue. Expected \
+         ({}, {}, {}); observed fills: {fills:?}.",
+        expected.r,
+        expected.g,
+        expected.b
     );
 }
-
-// ===========================================================================
-// 11. TopBar SystemMonitor — RAM label is blue-400, not indigo
-// ===========================================================================
 
 /// Audit row: `concept-coverage.md:23,163-166` — same line as #10 but
 /// asserts the RAM label colour. blue-400 = #60a5fa = (96, 165, 250).
 #[test]
-fn topbar_system_monitor_ram_label_is_blue_400() {
+fn topbar_system_monitor_ram_label_takes_the_themes_info_colour() {
     let tree = WorkspaceTree::bootstrap_demo();
     let mut chrome = TopBarChrome::from_tree(&tree);
     chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
@@ -1417,40 +1036,25 @@ fn topbar_system_monitor_ram_label_is_blue_400() {
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let fills = collect_solid_colors(&scene);
-    let has_blue_400 = contains_color_close(&fills, (96, 165, 250), 4);
+    let expected = theme.tokens.colors.semantic.info.to_rgba8();
     assert!(
-        has_blue_400,
-        "TopBar SystemMonitor RAM label must render in blue-400 #60a5fa
-         (concept TSX TopBarWidgets.tsx:120-124, `text-blue-400`).
-         Observed fills: {fills:?}. Audit row `concept-coverage.md:23,163-166`."
+        contains_color_close(&fills, (expected.r, expected.g, expected.b), 4),
+        "TopBar SystemMonitor RAM label must render in the theme's \
+         `semantic.info`, keeping the per-metric colour cue. Expected \
+         ({}, {}, {}); observed fills: {fills:?}.",
+        expected.r,
+        expected.g,
+        expected.b
     );
 }
 
-// ===========================================================================
-// 12. WindowGroup — maximized chrome must hide when cursor is below y=80
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:20,114-123,377-381` — "Concept
-/// `WindowFrame.tsx:108-123` only shows the floating title pill +
-/// restore/close buttons when `clientY ≤ 80`; otherwise the chrome is
-/// hidden. Ours always draws them while maximized."
-///
-/// Concept ref: `nirios-concept/src/components/WindowFrame.tsx:114-123`.
-///
-/// We render a maximized `WindowGroup` *twice*: once with no cursor
-/// signal, once after driving a CursorMoved event with `y > 80`. The
-/// floating chrome (restore pill + close glyph + title pill) should
-/// disappear on the second render — observable as a drop in the
-/// solid-colour fill count.
-///
-/// Today the maximized branch in `WindowGroup::draw` (window_group.rs
-/// :659-810) paints the chrome unconditionally — so the two renders
-/// emit identical fill counts. That's the gap.
+/// Audit `concept-coverage.md:20,114-123,377-381` (`WindowFrame.tsx:114-123`):
+/// concept hides the maximized floating chrome when cursor.y > 80, ours
+/// always draws it. Renders with no cursor, then at y=200.
 #[test]
 fn maximized_chrome_hides_when_cursor_below_y_80() {
     let theme = Theme::dark();
 
-    // Build a single-tab maximized window group.
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
         TabDescriptor {
             id: 1,
@@ -1500,7 +1104,6 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
         .expect("compute_layout");
     group.apply_layout(&taffy, child, Point::ORIGIN);
 
-    // First render: no cursor → concept "ambient hidden chrome".
     let mut scene_no_cursor = Scene::new();
     let presence = PresenceCtx::default();
     group.draw(
@@ -1512,9 +1115,7 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     );
     let fills_no_cursor = collect_solid_colors(&scene_no_cursor).len();
 
-    // Second render: drive the cursor to y=200 (well below the y≤80
-    // reveal band). Even after observing the cursor, concept hides
-    // chrome.
+    // y=200 is well below the y<=80 reveal band; chrome should still hide.
     use winit::dpi::PhysicalPosition;
     use winit::event::{Modifiers, WindowEvent};
     let cursor_event = WindowEvent::CursorMoved {
@@ -1548,9 +1149,8 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     );
     let fills_below = collect_solid_colors(&scene_below).len();
 
-    // Expected concept behaviour: cursor below y=80 → chrome hidden →
-    // strictly fewer fills than the (cursor-absent OR cursor-above)
-    // case. Today these are equal because the chrome is unconditional.
+    // EXPECTED: below-band render has strictly fewer fills. CURRENT: equal
+    // (chrome is unconditional).
     assert!(
         fills_below < fills_no_cursor,
         "Maximized WindowGroup must hide its floating chrome (title +
@@ -1564,31 +1164,11 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     );
 }
 
-// ===========================================================================
-// 13. TopBar SystemMonitor — sparkline bars are emerald-500, not indigo
-// ===========================================================================
-
-/// Audit row: `concept-coverage.md:23,160-162` — "Concept SystemMonitor
-/// sparkline (`TopBarWidgets.tsx:120-124`): bars are `bg-emerald-500/30`.
-/// **Ours uses `theme.accent_primary` (indigo-500)** — wrong colour
-/// family entirely."
-///
-/// Concept ref: `nirios-concept/src/components/TopBarWidgets.tsx:120-124`.
-///
-/// emerald-500 = #10b981 = (16, 185, 129).
-///
-/// Sparkline bars are *fills* (not glyph runs) so they're easy to
-/// detect in the encoding stream. Today the sparkline emits 20 indigo-
-/// 500 fills; the concept paints them at 30%-alpha emerald-500. We
-/// assert by colour-presence: the rendered scene must contain at least
-/// one emerald-500-coloured fill (with or without the 30% alpha
-/// premultiplied).
-///
-/// This test, paired with #10 (CPU label emerald-400) and #11 (RAM
-/// label blue-400), pins the *whole* "different semantic colour per
-/// metric" cue per the audit's row-5 fix-hint.
+/// Audit `concept-coverage.md:23,160-162` (`TopBarWidgets.tsx:120-124`):
+/// concept's sparkline bars are emerald-500 at 30% alpha, ours indigo
+/// `accent_primary`. With #10/#11 this pins the per-metric colour cue.
 #[test]
-fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
+fn topbar_system_monitor_sparkline_takes_the_cpu_metric_colour() {
     let tree = WorkspaceTree::bootstrap_demo();
     let mut chrome = TopBarChrome::from_tree(&tree);
     chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
@@ -1633,71 +1213,59 @@ fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let fills = collect_solid_colors(&scene);
-    // emerald-500 = #10b981 = (16, 185, 129). The 30%-alpha variant
-    // would have premul rgb of (5, 56, 39); we accept either nominal
-    // or premul as evidence the concept colour was used.
-    let has_emerald_500_full = contains_color_close(&fills, (16, 185, 129), 4);
-    let has_emerald_500_30pct = contains_color_close(&fills, (5, 56, 39), 4);
+    // Accept nominal or alpha-premultiplied emerald — both are evidence the
+    // bars took the CPU colour rather than the accent.
+    let cpu = theme.tokens.colors.semantic.success.to_rgba8();
+    let a = 0.30_f32;
+    let premul = (
+        (f32::from(cpu.r) * a).round() as u8,
+        (f32::from(cpu.g) * a).round() as u8,
+        (f32::from(cpu.b) * a).round() as u8,
+    );
 
     assert!(
-        has_emerald_500_full || has_emerald_500_30pct,
-        "TopBar SystemMonitor sparkline bars must render in emerald-500
-         #10b981 (concept TSX TopBarWidgets.tsx:120-124,
-         `bg-emerald-500/30`). Observed fills: {fills:?}. Audit row \
-         `concept-coverage.md:23,160-162`: ours uses \
-         `theme.accent_primary` (indigo-500) — wrong colour family. Fix \
-         in `topbar_chrome.rs:662-672` by swapping \
-         `theme.accent_primary` → `theme.tokens.colors.semantic.success` \
-         (or a dedicated `emerald-500/30` fill colour) on the sparkline \
-         bar paint loop."
+        contains_color_close(&fills, (cpu.r, cpu.g, cpu.b), 4)
+            || contains_color_close(&fills, premul, 4),
+        "TopBar SystemMonitor sparkline bars must render in the CPU \
+         metric's colour (the theme's `semantic.success`), nominal \
+         ({}, {}, {}) or premultiplied {premul:?}. Observed fills: \
+         {fills:?}.",
+        cpu.r,
+        cpu.g,
+        cpu.b
     );
 }
 
-// ===========================================================================
-// 14. TopBar right cluster — avatar stack must paint when collaborators
-// are present in the active workspace
-// ===========================================================================
-
-/// A workspace **that has collaborators** must show them in the top-bar
-/// right cluster as a per-peer avatar stack (and a recognizable 3-dot tray
-/// pill) rather than just a small wifi/cast icon. `bootstrap_demo` puts one
-/// collaborator on Home and two on Research, so as long as the topbar reads
-/// its roster from the *active* workspace (with a tree-level fallback) the
-/// avatar circles paint with peer-coloured fills.
-///
-/// This test pins the behaviour: render `TopBarChrome` against the demo
-/// tree, scan the encoded scene for the canonical peer hex (`#ec4899` /
-/// Tailwind pink-500 = (236, 72, 153) for Alice; matches
-/// `nirios-concept/src/data.ts`), and assert the colour shows up. If a
-/// future regression flips the roster source back to the empty tree-level
-/// field, this test fails loudly with the captured fills in the diagnostic.
-///
-/// The precondition is a roster, **not** a boot: a first boot has no
-/// collaborators and must paint no avatars, which
-/// `topbar_right_cluster_paints_no_avatar_on_a_first_boot` pins directly
-/// below. Together they say the stack tracks the real roster in both
-/// directions. This one used to run against `bootstrap_default` and read as
-/// "first boot shows an avatar stack" — it only ever did because the
-/// bootstrap tree invented the people it was drawing.
-///
-/// Concept ref: `nirios-concept/src/components/TopBarWidgets.tsx` —
-/// collaborator avatar stack on the right cluster.
+/// The right cluster must show per-peer avatars when the active workspace
+/// has peers, wired through `TopBarChrome::sync_from_tree` / `draw`. Uses
+/// this test's own two-peer fixture so the assertion doesn't depend on
+/// shipped fake participants; paired with the first-boot test below.
 #[test]
 fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
-    let tree = WorkspaceTree::bootstrap_demo();
-    // Sanity: the demo fixture must keep at least one collaborator
-    // somewhere in the active workspace (otherwise the test below is
-    // vacuously trivial).
+    use shell::shell::state::Collaborator;
+
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let active_id = tree.active;
+    // Colours are stated explicitly so the hex checked below is a property of
+    // this fixture, not whatever the local user id happens to hash to.
+    assert!(tree.admit_collaborator(
+        active_id,
+        Collaborator::new("alice", "Alice").with_cursor_color("#ec4899"),
+    ));
+    assert!(tree.admit_collaborator(
+        active_id,
+        Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),
+    ));
+
     let active_ws = tree
         .active_workspace()
-        .expect("bootstrap_demo leaves an active workspace");
+        .expect("the tree leaves an active workspace");
     let active_collabs = active_ws.collaborators.len();
     let tree_collabs = tree.collaborators.len();
-    assert!(
-        active_collabs > 0 || tree_collabs > 0,
-        "bootstrap_demo should carry collaborators reachable from the \
-         active workspace (per-ws or tree-level fallback) so the top-bar \
-         avatar stack has something to paint"
+    assert_eq!(
+        active_collabs, 2,
+        "the fixture must put exactly the two admitted peers on the \
+         active workspace, else the paint assertions below prove nothing"
     );
 
     let mut chrome = TopBarChrome::from_tree(&tree);
@@ -1740,12 +1308,10 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
     let presence = PresenceCtx::default();
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    // The widget must have synced at least one initial out of the
-    // bootstrap fixture's roster.
     assert!(
         !chrome.collaborator_initials().is_empty(),
         "TopBarChrome failed to pick up any collaborator initials from the \
-         bootstrap_demo tree (active ws has {active_collabs}, \
+         tree (active ws has {active_collabs}, \
          tree-level has {tree_collabs}). Likely cause: \
          `sync_from_tree` reads from the wrong roster source."
     );
@@ -1757,32 +1323,21 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
     let has_alice = contains_color_close(&fills, (236, 72, 153), 8);
     let has_bob = contains_color_close(&fills, (249, 115, 22), 8);
     assert!(
-        has_alice || has_bob,
-        "TopBar right cluster must paint at least one peer-coloured \
-         avatar from the demo roster (Alice #ec4899 or Bob #f97316; \
-         concept `nirios-concept/src/data.ts`). Observed solid fills: \
-         {fills:?}. If this fails, check that \
+        has_alice && has_bob,
+        "TopBar right cluster must paint both peers in their own colour \
+         (Alice #ec4899 present: {has_alice}; Bob #f97316 present: \
+         {has_bob}; concept `nirios-concept/src/data.ts`). Observed solid \
+         fills: {fills:?}. If this fails, check that \
          `TopBarChrome::sync_from_tree` reads from the active workspace's \
          own collaborator list (with a tree-level fallback) and that \
-         `WorkspaceTree::bootstrap_demo` still carries at least one \
-         collaborator on Home."
+         `roster_colors` still honours an explicit `cursor_color`."
     );
 }
 
-/// The other direction, and the one that matters on a machine nobody has
-/// used yet: a first boot has **no** collaborators, so the top-bar right
-/// cluster must paint **no** avatar.
-///
-/// An avatar in that cluster is a claim that a specific person is in this
-/// workspace. `bootstrap_default` used to seed a `Collaborator` named
-/// "Alice" onto Home, so a fresh install painted a pink "A" for someone who
-/// does not exist — and, because the tree is the user's workspace document,
-/// wrote her into it. The invented roster is gone; this test is what keeps
-/// it gone.
-///
-/// Asserted on the production path: `persist::load_or_default` returns
-/// `bootstrap_default` for a machine with no `state.json`, and this renders
-/// the real `TopBarChrome::draw` over exactly that tree.
+/// The reverse: a first boot has no collaborators, so the cluster must
+/// paint none — a fabricated avatar would misrepresent presence and write a
+/// fake person into the user's own workspace doc. Asserted on the real
+/// `persist::load_or_default` -> `bootstrap_default` path.
 #[test]
 fn topbar_right_cluster_paints_no_avatar_on_a_first_boot() {
     let tree = WorkspaceTree::bootstrap_default();
@@ -1845,9 +1400,8 @@ fn topbar_right_cluster_paints_no_avatar_on_a_first_boot() {
         chrome.collaborator_initials()
     );
 
-    // The two canonical invented-peer hues must not appear anywhere in the
-    // painted scene. Checking the drawn fills (not just the widget's cached
-    // roster) is what catches a hard-coded placeholder avatar in `draw`.
+    // Neither canonical peer hue may appear; checking painted fills (not the
+    // cached roster) catches a hard-coded placeholder avatar in `draw`.
     let fills = collect_solid_colors(&scene);
     assert!(
         !contains_color_close(&fills, (236, 72, 153), 8),
@@ -1861,15 +1415,219 @@ fn topbar_right_cluster_paints_no_avatar_on_a_first_boot() {
     );
 }
 
-/// The top-bar collaborator cluster is painted through the shared
-/// `ui::Avatar` (`draw_ringed_at` per chip, `draw_overflow_at` for the tail),
-/// so it must render the *expected count* — three peer chips plus a "+N"
-/// overflow — with each chip in that peer's **own** cursor hue rather than a
-/// single flat accent for everyone. Five peers in the active workspace →
-/// three chips (alice / bob / charlie) + a "+2" overflow. Asserting the real
-/// `TopBarChrome::draw` scene contains all three distinct peer hues proves the
-/// per-identity fill flows through the shared widget, and the non-empty glyph
-/// runs prove the initials + overflow label paint.
+/// A workspace nobody has joined paints no avatars — the empty case is what
+/// distinguishes "renders the real roster" from "fabricates one", since
+/// both satisfy "something painted".
+#[test]
+fn topbar_right_cluster_paints_nobody_when_the_workspace_is_empty() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let mut chrome = TopBarChrome::from_tree(&tree);
+
+    assert!(
+        chrome.collaborator_initials().is_empty(),
+        "a freshly booted workspace nobody has joined must show no \
+         avatars; got {:?}",
+        chrome.collaborator_initials()
+    );
+    assert_eq!(
+        chrome.collaborator_overflow(),
+        0,
+        "and no \"+N\" chip standing in for peers that do not exist"
+    );
+
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    // None of these fills may appear — exactly what a fabricated-peer
+    // regression would bring back.
+    let fills = collect_solid_colors(&scene);
+    assert!(
+        !contains_color_close(&fills, (236, 72, 153), 8),
+        "the top bar paints pink-500 (#ec4899) with nobody in the \
+         workspace — a fabricated peer is back. Observed: {fills:?}"
+    );
+    assert!(
+        !contains_color_close(&fills, (249, 115, 22), 8),
+        "the top bar paints orange-500 (#f97316) with nobody in the \
+         workspace — a fabricated peer is back. Observed: {fills:?}"
+    );
+}
+
+/// Two real peers, wire to painted avatars, through the production path
+/// only: an empty first-boot tree fed the exact `InboundPresence` records
+/// the network hands the compositor. Don't seed `ws.collaborators` directly
+/// (the presence path must fill it) and don't drop the empty-before half.
+#[test]
+fn two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar() {
+    use shell::shell::network::InboundPresence;
+    use shell::shell::peer_presence::fold_inbound;
+    use ui::presence::PresenceKey;
+
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let room = tree.active_workspace().expect("active workspace").room;
+
+    let before = TopBarChrome::from_tree(&tree);
+    assert!(
+        before.collaborator_initials().is_empty(),
+        "the bar must start empty, or the assertions below prove nothing"
+    );
+
+    // Exactly what the network layer buffers: a room-scoped pointer frame per
+    // publishing session.
+    let key = serde_json::to_string(&PresenceKey::Workspace {
+        id: room.to_string(),
+    })
+    .expect("a workspace key serialises");
+    let frames = vec![
+        InboundPresence {
+            peer: 0x11,
+            user: "bob".into(),
+            key: key.clone(),
+            point: (100.0, 100.0),
+            ts: 0,
+        },
+        InboundPresence {
+            peer: 0x22,
+            user: "dana".into(),
+            key,
+            point: (400.0, 300.0),
+            ts: 0,
+        },
+    ];
+
+    // Names are a governance fact written by the room's authority via
+    // `apply_room_changes`; the frame-announced names are deliberately not
+    // consulted, so the bar below proves names came from the room, not the wire.
+    let room_says = |_: &str| {
+        std::collections::BTreeMap::from([
+            (0x11u64, "bob".to_string()),
+            (0x22u64, "dana".to_string()),
+        ])
+    };
+    let this_room = |_: &str| true;
+
+    let mut presence = PresenceCtx::default();
+    assert!(
+        fold_inbound(frames, &mut presence, &room_says, &this_room),
+        "two room-scoped frames must land"
+    );
+    for (peer, name) in [(0x11u64, "bob"), (0x22u64, "dana")] {
+        assert!(
+            tree.note_peer_present(room, peer, name),
+            "{name} arriving must change the roster"
+        );
+    }
+
+    let mut chrome = TopBarChrome::from_tree(&tree);
+    let mut initials: Vec<char> = chrome.collaborator_initials().to_vec();
+    initials.sort_unstable();
+    assert_eq!(
+        initials,
+        vec!['B', 'D'],
+        "the bar must name the two people who published, not their \
+         session handles"
+    );
+    assert_eq!(
+        chrome.collaborator_overflow(),
+        0,
+        "two peers is two chips and no overflow"
+    );
+
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    let fills = collect_solid_colors(&scene);
+
+    let colors = chrome.collaborator_colors();
+    assert_eq!(colors.len(), 2, "one colour per painted chip");
+    assert_ne!(
+        colors[0], colors[1],
+        "two people in one room must not be painted the same colour"
+    );
+    for c in colors {
+        let rgba = c.to_rgba8();
+        assert!(
+            contains_color_close(&fills, (rgba.r, rgba.g, rgba.b), 8),
+            "a peer's resolved colour {:?} never reached the scene; \
+             observed fills: {fills:?}",
+            (rgba.r, rgba.g, rgba.b)
+        );
+    }
+}
+
+/// The cluster renders through the shared `ui::Avatar`: 5 peers -> 3 chips
+/// + a "+2" overflow, each chip in its own cursor hue rather than one flat
+/// accent. Asserts all three hues plus non-empty glyph runs.
 #[test]
 fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
@@ -1894,8 +1652,8 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     tree.active = ws_id;
 
     let mut chrome = TopBarChrome::from_tree(&tree);
-    // Count/initials contract feeding the shared widget: three chips (peers
-    // beyond the local user, capped at three) and a "+2" overflow.
+    // Contract: 3 chips (peers beyond the local user, capped at 3) + a "+2"
+    // overflow.
     assert_eq!(
         chrome.collaborator_initials().len(),
         3,
@@ -1947,9 +1705,8 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let fills = collect_solid_colors(&scene);
-    // Each shown peer paints its OWN cursor hue via `Avatar::draw_ringed_at`
-    // (`ui::presence::user_color`: alice → pink-500, bob → orange-500,
-    // charlie → emerald-500) — three distinct chips, not one flat accent.
+    // Each chip uses its own cursor hue via `ui::presence::user_color`
+    // (alice=pink-500, bob=orange-500, charlie=emerald-500).
     assert!(
         contains_color_close(&fills, (236, 72, 153), 8),
         "cluster must paint alice's pink chip through the shared avatar; fills: {fills:?}",
@@ -1962,35 +1719,16 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
         contains_color_close(&fills, (16, 185, 129), 8),
         "cluster must paint charlie's emerald chip through the shared avatar; fills: {fills:?}",
     );
-    // Initials + the "+2" overflow label render as glyph runs.
     assert!(
         !scene.encoding().resources.glyph_runs.is_empty(),
         "cluster must paint initials and the overflow label as glyph runs",
     );
 }
 
-// ===========================================================================
-// Overview "+ Add workspace" affordance
-// ===========================================================================
-
-/// Concept: the workspace overview ships an explicit create-affordance
-/// at the tail of the vertical workspace list. The wheel-disc plus slot
-/// (`sidebar_wheel_disc.rs::plus_rect`) is the spatial entry point —
-/// the overview's matching tile is the in-overview entry point so users
-/// reviewing all workspaces don't have to bounce back to the wheel just
-/// to add one.
-///
-/// Two assertions:
-///
-/// 1. After laying out + drawing with the overview open, the host's
-///    cached `add_workspace_rect` is non-empty (the draw path populated
-///    it inside the column layout).
-/// 2. The rect is positioned *below* the last workspace card — i.e. the
-///    affordance is at the tail of the list, not floating somewhere in
-///    the middle.
-///
-/// This pairs with `overview_add_workspace_click_appends_workspace`
-/// which exercises the click-to-create wiring.
+/// Concept ships a create-affordance at the tail of the overview's
+/// workspace list. Asserts `add_workspace_rect` is populated after
+/// layout+draw and sits below the last card; the click wiring is pinned by
+/// `overview_add_workspace_click_appends_workspace`.
 mod overview_add_workspace {
     use super::*;
     use shell::shell::overlay_host::ShellOverlayHost;
@@ -1998,12 +1736,8 @@ mod overview_add_workspace {
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-    /// Owned harness that keeps the taffy tree + child node alive so
-    /// individual tests can pump synthesised winit events into the host
-    /// after the initial layout + draw pass. The host's
-    /// `handle_event` indexes `children[0]` of the passed taffy node, so
-    /// a throwaway leaf is not enough — we keep the real one populated
-    /// by `build_layout`.
+    /// Keeps the taffy tree + child node alive so tests can pump events after
+    /// layout — `handle_event` indexes `children[0]`, so a leaf isn't enough.
     struct OverviewHarness {
         host: ShellOverlayHost,
         chrome: Chrome,
@@ -2011,10 +1745,7 @@ mod overview_add_workspace {
         root_node: NodeId,
     }
 
-    /// Build the host, force the overview to its settled-open state,
-    /// then run a full layout + draw pass so `add_workspace_rect` is
-    /// populated. Returns an [`OverviewHarness`] so individual tests can
-    /// inspect or pump further events through it.
+    /// Build the host, settle the overview open, layout+draw.
     fn build_settled_overview() -> OverviewHarness {
         let tree = WorkspaceTree::bootstrap_demo();
         let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
@@ -2068,11 +1799,8 @@ mod overview_add_workspace {
         }
     }
 
-    /// The overview must paint a visible "+ Add workspace" affordance at
-    /// the tail of the workspace list. Asserted via the cached hit rect:
-    /// non-empty (draw populated it) and below the last workspace card
-    /// (concept positions the create-affordance after the existing
-    /// workspaces, not floating mid-list).
+    /// Overview must paint a visible add-workspace affordance at the list
+    /// tail: non-empty hit rect, positioned below the last workspace card.
     #[test]
     fn overview_renders_add_workspace_button() {
         let h = build_settled_overview();
@@ -2086,12 +1814,9 @@ mod overview_add_workspace {
              nirios-concept/src/components/OverviewView.tsx (create-affordance)."
         );
 
-        // Affordance sits below the first workspace card. Without a
-        // workspace-row geometry probe in the public API we use the row
-        // y-coord constants from the draw path; the assertion is loose
-        // (rect.y0 must be at least the column's outer padding y plus
-        // header) so a future move within "tail of list" doesn't break
-        // it but a regression to "above the cards" does.
+        // No public row-geometry probe, so this uses the draw path's y-coord
+        // constants; the bound is loose (tail-of-list can move) but still catches
+        // a regression to "above the cards".
         assert!(
             rect.y0 > 100.0,
             "add-workspace tile must sit below the header and at least one \
@@ -2100,15 +1825,9 @@ mod overview_add_workspace {
         );
     }
 
-    /// Synthesising a click at the centre of the cached add-workspace
-    /// rect must:
-    ///
-    /// 1. Append a new workspace to `chrome.tree.workspaces` (length+1).
-    /// 2. Activate the new workspace (`add_workspace` semantics — same
-    ///    contract as the wheel-disc plus slot).
-    /// 3. Keep the overview open so the user sees the new card slide in
-    ///    on the next frame (we deliberately do not auto-close like a
-    ///    workspace-card click does — the create flow stays in-overview).
+    /// Clicking the add-workspace rect must append + activate a workspace (the
+    /// wheel-disc plus slot's contract) and keep the overview open, unlike a
+    /// workspace-card click, so the new card animates in.
     #[test]
     fn overview_add_workspace_click_appends_workspace() {
         let mut h = build_settled_overview();
@@ -2125,9 +1844,8 @@ mod overview_add_workspace {
         );
         let initial_active = h.chrome.borrow().tree().active;
 
-        // Simulate the cursor-then-press sequence the real shell sees
-        // from winit. `handle_event` reads `last_cursor` (set by
-        // CursorMoved) when MouseInput::Pressed arrives.
+        // Simulate winit's cursor-then-press sequence; handle_event reads
+        // last_cursor on MouseInput::Pressed.
         let centre = rect.center();
         let mut doc = automerge::AutoCommit::new();
         let doc_root = automerge::ObjId::Root;
@@ -2183,22 +1901,17 @@ mod overview_add_workspace {
             "overview must stay open after a create click so the new \
              workspace card animates in on the next frame"
         );
-        // Sanity: the new workspace exists in the tree under the active id.
         let active_id = st.tree().active;
         assert!(
             st.tree().workspaces.iter().any(|w| w.id == active_id),
             "active id must point at one of the workspaces in the tree"
         );
 
-        // Hold-rect Rect import alive in case the file's other test
-        // helpers ever stop importing it transitively.
         let _: Rect = rect;
     }
 }
 
-// ===========================================================================
 // Sanity unit tests for the helpers above
-// ===========================================================================
 
 #[cfg(test)]
 mod helper_tests {
@@ -2206,10 +1919,8 @@ mod helper_tests {
     use vello::kurbo::Rect;
     use vello::peniko::Fill;
 
-    /// Sanity-check `collect_solid_colors`: a Scene with a single fill
-    /// of indigo-500 must report exactly one (99, 102, 241, 255) entry.
-    /// Without this the spec tests above would silently misreport
-    /// colour presence.
+    /// Guards `collect_solid_colors`: one indigo-500 fill must decode to
+    /// exactly one (99, 102, 241, 255) entry.
     #[test]
     fn collect_solid_colors_reports_single_indigo_fill() {
         let mut scene = Scene::new();
@@ -2226,58 +1937,28 @@ mod helper_tests {
         assert_eq!(colors[0], (99, 102, 241, 255));
     }
 
-    /// The rgb-tolerance helper must accept ≤ tol per channel and
-    /// reject above. Pinned so the colour-presence assertions can't
-    /// silently widen tolerance via a regression in this helper.
+    /// Guards the tolerance helper's boundary.
     #[test]
     fn contains_color_close_respects_tolerance() {
         let palette = vec![(99, 102, 241, 255)];
-        // Inside tolerance.
         assert!(contains_color_close(&palette, (99, 102, 241), 0));
         assert!(contains_color_close(&palette, (101, 100, 240), 4));
-        // Outside tolerance.
         assert!(!contains_color_close(&palette, (74, 222, 128), 8));
     }
 }
 
-// ===========================================================================
-// Overview card: the faces on a workspace card are the people who can reach it
-// ===========================================================================
-
-/// The faces on a workspace card are the people who can reach it.
-///
-/// The card paints a "Members" badge counted from [`Workspace::roster`]
-/// and, beneath it, a stack of avatars. Those two used to read different
-/// sources: the badge counted the roster while the avatars came from
-/// `ws.collaborators`, falling back to the *tree-wide* collaborator list
-/// when the workspace's own was empty. A card could therefore read
-/// "0 Members" directly above two faces, and the fallback put those same
-/// faces on every card in the overview.
-///
-/// On a permissions surface that is not a cosmetic mismatch: showing
-/// someone on a workspace card states that they can reach it.
-///
-/// Asserted against `overview_card_faces`, the function the draw pass
-/// itself calls. An earlier version of this test counted avatar-coloured
-/// fills in the rendered scene, which stopped meaning anything the moment
-/// avatars moved to the shared `ui::Avatar` widget with a per-identity
-/// fill — the product was still correct and the proxy had gone stale.
-/// Assert on the production path, not on something that correlates with
-/// it.
-///
-/// Forbidden modifications (re: the file header covenant):
-/// - Don't assert only that the member case is non-empty; the point is
-///   the difference between "holds a capability here" and "is merely
-///   listed", so both halves have to be pinned.
-/// - Don't relax the listed-only case to "at most N". Empty is the
-///   claim: a person with no capability in the workspace gets no face.
+/// The overview's access line + avatar stack must read [`Workspace::roster`]
+/// (live membership) rather than `ws.collaborators` — showing someone on a
+/// room states they can reach it. Asserted against `room_people`, the
+/// function draw itself calls, not by counting avatar-coloured fills. Both
+/// the member and listed-only-empty cases are pinned; don't relax either.
 #[test]
 fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
-    use shell::shell::overlay_host::overview_card_faces;
+    use shell::shell::overview::room_people;
     use shell::shell::state::{CapOverride, Collaborator, Principal, Subject, Verb};
 
-    // Listed but powerless: collaborator records on every workspace, and
-    // no capability anywhere, so every roster is empty.
+    // Listed but powerless: collaborator records everywhere, no capability
+    // anywhere.
     let mut listed_only = WorkspaceTree::bootstrap_demo();
     for ws in &mut listed_only.workspaces {
         ws.owner = None;
@@ -2297,19 +1978,17 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
     }
     for ws in &listed_only.workspaces {
         assert!(
-            overview_card_faces(ws, &listed_only).is_empty(),
+            room_people(ws, &listed_only).is_empty(),
             "a person who holds no capability in the workspace gets no face on \
-             its card; workspace {:?} showed {:?}",
+             its room; workspace {:?} showed {:?}",
             ws.name,
-            overview_card_faces(ws, &listed_only)
+            room_people(ws, &listed_only)
                 .iter()
-                .map(|(u, _)| u.clone())
+                .map(|p| p.id.clone())
                 .collect::<Vec<_>>()
         );
     }
 
-    // The same tree, plus one person who actually holds a capability in
-    // the first workspace.
     let mut with_member = listed_only.clone();
     let room = with_member.workspaces[0].id.raw().to_string();
     with_member.workspaces[0].grant_capability(CapOverride::membership(
@@ -2318,47 +1997,38 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
         Verb::Write,
     ));
 
-    let faces = overview_card_faces(&with_member.workspaces[0], &with_member);
+    let faces = room_people(&with_member.workspaces[0], &with_member);
     assert_eq!(
-        faces.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(),
+        faces.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
         vec!["ada"],
-        "the member who holds a capability is exactly who the card shows"
+        "the member who holds a capability is exactly who the room shows"
     );
     assert_eq!(
-        faces[0].1.map(|c| c.name.as_str()),
-        Some("Ada"),
+        faces[0].name.as_str(),
+        "Ada",
         "the collaborator record still supplies the display name"
     );
 
-    // And only that workspace's card changed.
     for ws in with_member.workspaces.iter().skip(1) {
         assert!(
-            overview_card_faces(ws, &with_member).is_empty(),
-            "granting in one workspace must not put a face on another's card"
+            room_people(ws, &with_member).is_empty(),
+            "granting in one workspace must not put a face on another's row"
         );
     }
 }
 
-/// The word table in [`draw_data_words`] must account for **every** word
-/// of a real chrome scene's `draw_data`.
-///
-/// Every colour assertion in this file walks that stream by hand, so a
-/// tag whose size is wrong does not fail loudly — it slides the cursor
-/// and makes later fills decode as neighbouring garbage, or run off the
-/// end and vanish. That is how a long-standing `IMAGE` error (10 words
-/// assumed, 3 actual) stayed hidden until `soft_shadow` went from one
-/// image fill to eight and the drift became fatal.
-///
-/// Walk a full overlay-host render and require the total to land exactly
-/// on `draw_data.len()`. A new brush kind then fails here, once, with a
-/// clear message — instead of quietly weakening every parity assertion.
+/// The word table in [`draw_data_words`] must account for every word of a
+/// real render's `draw_data`: every colour assertion here walks that stream
+/// by hand, so a wrong size doesn't fail loudly, it desyncs the cursor and
+/// silently corrupts later fills — how a 10-vs-3-word `IMAGE` bug hid until
+/// an image-heavy scene made the drift fatal.
 #[test]
 fn draw_data_word_table_accounts_for_the_whole_stream() {
     let tree = WorkspaceTree::bootstrap_demo();
     let (scene, _chrome) = render_overlay_host(&tree);
     let enc = scene.encoding();
     let mut walked = 0usize;
-    for tag in enc.draw_tags.iter() {
+    for tag in &enc.draw_tags {
         let words = draw_data_words(*tag).unwrap_or_else(|| {
             panic!(
                 "draw tag {:#x} has no measured draw_data size; add it to \

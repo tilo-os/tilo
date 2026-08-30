@@ -13,10 +13,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use capnp_rpc::{rpc_twoparty_capnp, twoparty, RpcSystem};
+use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use format_host::format_router_capnp::format_router;
-use format_host::router::{load_into, Router};
-use format_host::runner::{spawn_epoch_ticker, LoadedComponent};
+use format_host::router::{Router, load_into};
+use format_host::runner::{LoadedComponent, spawn_epoch_ticker};
 use format_host::{transport, watch::spawn_watcher};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -32,11 +32,7 @@ fn markdown_wasm() -> Option<PathBuf> {
         .join("wasm32-wasip2")
         .join("release")
         .join("qdoc_codec_markdown_wasm.wasm");
-    if p.exists() {
-        Some(p)
-    } else {
-        None
-    }
+    if p.exists() { Some(p) } else { None }
 }
 
 /// Spin up the host in-process: shared engine, router with a freshly-written
@@ -86,7 +82,7 @@ impl HostHarness {
                 }
             }
         }
-        Err(anyhow::anyhow!("connect failed: {:?}", last))
+        Err(anyhow::anyhow!("connect failed: {last:?}"))
     }
 }
 
@@ -112,7 +108,10 @@ fn single_provider_round_trip() {
         eprintln!("markdown wasm not built; skip");
         return;
     };
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
         let reg_text = format!(
@@ -137,7 +136,10 @@ priority = "builtin"
         let names: Vec<String> = (0..providers.len())
             .map(|i| providers.get(i).unwrap().to_string().unwrap())
             .collect();
-        assert!(names.contains(&"dev.qos.qdoc-md".to_string()), "got {names:?}");
+        assert!(
+            names.contains(&"dev.qos.qdoc-md".to_string()),
+            "got {names:?}"
+        );
 
         // detect("# hi") — markdown provider declares medium confidence.
         let mut det = client.detect_request();
@@ -166,7 +168,10 @@ priority = "builtin"
         }
         let response = imp.send().promise.await.unwrap();
         let canonical_a: Vec<u8> = response.get().unwrap().get_canonical().unwrap().to_vec();
-        assert!(!canonical_a.is_empty(), "canonical bytes flow through capnp");
+        assert!(
+            !canonical_a.is_empty(),
+            "canonical bytes flow through capnp"
+        );
 
         let mut exp = client.export_as_request();
         {
@@ -176,7 +181,11 @@ priority = "builtin"
         }
         let response = exp.send().promise.await.unwrap();
         let out_a: Vec<u8> = response.get().unwrap().get_bytes().unwrap().to_vec();
-        assert!(out_a.starts_with(b"# Title"), "got {:?}", String::from_utf8_lossy(&out_a));
+        assert!(
+            out_a.starts_with(b"# Title"),
+            "got {:?}",
+            String::from_utf8_lossy(&out_a)
+        );
 
         // Re-import the exported markdown; re-export; assert idempotence.
         let mut imp2 = client.import_as_request();
@@ -195,7 +204,10 @@ priority = "builtin"
         }
         let response = exp2.send().promise.await.unwrap();
         let out_b: Vec<u8> = response.get().unwrap().get_bytes().unwrap().to_vec();
-        assert_eq!(out_a, out_b, "round-trip is idempotent through the WASM boundary");
+        assert_eq!(
+            out_a, out_b,
+            "round-trip is idempotent through the WASM boundary"
+        );
 
         // Drop registry to trigger Drop of the temp dir.
         let _ = h.registry_path;
@@ -204,7 +216,10 @@ priority = "builtin"
 
 #[test]
 fn unknown_mime_returns_clear_error() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
         // Empty registry → importAs for any provider id fails clearly.
@@ -235,7 +250,10 @@ fn registry_hot_reload() {
         eprintln!("markdown wasm not built; skip");
         return;
     };
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
         // Start empty.
@@ -267,7 +285,7 @@ priority = "builtin"
             let _ = list.get();
             let response = list.send().promise.await.unwrap();
             let providers = response.get().unwrap().get_providers().unwrap();
-            if providers.len() >= 1 {
+            if !providers.is_empty() {
                 let name = providers.get(0).unwrap().to_string().unwrap();
                 assert_eq!(name, "dev.qos.qdoc-md");
                 return;
@@ -279,7 +297,10 @@ priority = "builtin"
 
 #[test]
 fn resource_limit_kills_runaway() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
         // Compile the WAT to a Component Model wasm at test time.

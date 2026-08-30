@@ -41,7 +41,13 @@ pub fn star(
 
 /// A solid dot — the "unread" marker.
 pub fn dot(scene: &mut Scene, transform: Affine, center: Point, radius: f64, color: Color) {
-    scene.fill(Fill::NonZero, transform, color, None, &Circle::new(center, radius));
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        color,
+        None,
+        &Circle::new(center, radius),
+    );
 }
 
 /// A hollow ring — the "read" marker (subtle).
@@ -74,7 +80,10 @@ pub fn refresh(scene: &mut Scene, transform: Affine, center: Point, radius: f64,
     }
     scene.stroke(&stroke, transform, color, None, &path);
     // Arrowhead tangent to the arc's start point.
-    let tip = Point::new(center.x + radius * start.cos(), center.y + radius * start.sin());
+    let tip = Point::new(
+        center.x + radius * start.cos(),
+        center.y + radius * start.sin(),
+    );
     let mut head = BezPath::new();
     head.move_to(Point::new(tip.x - radius * 0.55, tip.y - radius * 0.25));
     head.line_to(tip);
@@ -131,13 +140,7 @@ pub fn chevron(
 }
 
 /// An external-link glyph (a box with an arrow out the corner).
-pub fn external_link(
-    scene: &mut Scene,
-    transform: Affine,
-    center: Point,
-    half: f64,
-    color: Color,
-) {
+pub fn external_link(scene: &mut Scene, transform: Affine, center: Point, half: f64, color: Color) {
     let stroke = Stroke::new(1.4);
     // Box (open at the top-right).
     let mut boxp = BezPath::new();
@@ -228,16 +231,31 @@ pub fn back_arrow(scene: &mut Scene, transform: Affine, center: Point, size: f64
 pub fn gear(scene: &mut Scene, transform: Affine, center: Point, radius: f64, color: Color) {
     let stroke = Stroke::new(1.5);
     // Outer ring.
-    scene.stroke(&stroke, transform, color, None, &Circle::new(center, radius));
+    scene.stroke(
+        &stroke,
+        transform,
+        color,
+        None,
+        &Circle::new(center, radius),
+    );
     // Hub.
-    scene.fill(Fill::NonZero, transform, color, None, &Circle::new(center, radius * 0.34));
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        color,
+        None,
+        &Circle::new(center, radius * 0.34),
+    );
     // Teeth.
     let teeth = 8;
     for i in 0..teeth {
         let a = i as f64 * (2.0 * PI / teeth as f64);
         let (sx, sy) = (a.cos(), a.sin());
         let p0 = Point::new(center.x + sx * radius, center.y + sy * radius);
-        let p1 = Point::new(center.x + sx * (radius + radius * 0.42), center.y + sy * (radius + radius * 0.42));
+        let p1 = Point::new(
+            center.x + sx * (radius + radius * 0.42),
+            center.y + sy * (radius + radius * 0.42),
+        );
         scene.stroke(&stroke, transform, color, None, &Line::new(p0, p1));
     }
 }

@@ -24,7 +24,10 @@ pub struct Labeled {
 
 impl Labeled {
     pub fn new(label: &str, value: &str) -> Self {
-        Self { label: label.to_string(), value: value.to_string() }
+        Self {
+            label: label.to_string(),
+            value: value.to_string(),
+        }
     }
 }
 
@@ -45,7 +48,13 @@ impl Address {
     /// A single-line rendering for compact list / summary contexts.
     pub fn one_line(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
-        for p in [&self.street, &self.city, &self.region, &self.postal, &self.country] {
+        for p in [
+            &self.street,
+            &self.city,
+            &self.region,
+            &self.postal,
+            &self.country,
+        ] {
             if !p.is_empty() {
                 parts.push(p.as_str());
             }
@@ -97,7 +106,8 @@ impl Birthday {
 
     /// Build a full date, validating the components against the calendar.
     fn full(year: i32, month: u32, day: u32) -> Option<Birthday> {
-        if (1..=12).contains(&month) && (1..=crate::date::days_in_month(year, month)).contains(&day) {
+        if (1..=12).contains(&month) && (1..=crate::date::days_in_month(year, month)).contains(&day)
+        {
             Some(Birthday::Full { year, month, day })
         } else {
             None
@@ -107,7 +117,8 @@ impl Birthday {
     /// Build a year-less date. Validated against a leap year so `--02-29`
     /// (a Feb-29 birthday whose year is unknown) is accepted.
     fn month_day(month: u32, day: u32) -> Option<Birthday> {
-        if (1..=12).contains(&month) && (1..=crate::date::days_in_month(2000, month)).contains(&day) {
+        if (1..=12).contains(&month) && (1..=crate::date::days_in_month(2000, month)).contains(&day)
+        {
             Some(Birthday::MonthDay { month, day })
         } else {
             None
@@ -132,7 +143,7 @@ impl Birthday {
 
         // vCard truncated "year unknown" forms: --MMDD or --MM-DD.
         if let Some(rest) = s.strip_prefix("--") {
-            let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+            let digits: String = rest.chars().filter(char::is_ascii_digit).collect();
             if digits.len() == 4 {
                 let m = digits[0..2].parse().ok()?;
                 let d = digits[2..4].parse().ok()?;
@@ -150,10 +161,15 @@ impl Birthday {
         }
 
         let sep = s.chars().find(|c| matches!(c, '-' | '/' | '.'))?;
-        let parts: Vec<&str> = s.split(sep).map(str::trim).filter(|p| !p.is_empty()).collect();
+        let parts: Vec<&str> = s
+            .split(sep)
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .collect();
         match parts.as_slice() {
             [a, b, c] => {
-                let (a, b, c): (i64, i64, i64) = (a.parse().ok()?, b.parse().ok()?, c.parse().ok()?);
+                let (a, b, c): (i64, i64, i64) =
+                    (a.parse().ok()?, b.parse().ok()?, c.parse().ok()?);
                 if a >= 1000 {
                     // Year first: Y-M-D.
                     Self::full(a as i32, u32::try_from(b).ok()?, u32::try_from(c).ok()?)
@@ -225,7 +241,10 @@ pub struct Contact {
 
 impl Contact {
     pub fn new() -> Self {
-        Self { id: Uuid::new_v4(), ..Default::default() }
+        Self {
+            id: Uuid::new_v4(),
+            ..Default::default()
+        }
     }
 
     /// Best-effort display name: "First Last", falling back to the
@@ -255,8 +274,7 @@ impl Contact {
                 .trim()
                 .chars()
                 .next()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "?".to_string()),
+                .map_or_else(|| "?".to_string(), |c| c.to_string()),
         }
         .to_uppercase()
     }
@@ -419,14 +437,8 @@ fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let key = |c: &Contact| -> (String, String) {
         match sort {
-            SortKey::Name => (
-                c.last.trim().to_lowercase(),
-                c.first.trim().to_lowercase(),
-            ),
-            SortKey::Org => (
-                c.org.trim().to_lowercase(),
-                c.display_name().to_lowercase(),
-            ),
+            SortKey::Name => (c.last.trim().to_lowercase(), c.first.trim().to_lowercase()),
+            SortKey::Org => (c.org.trim().to_lowercase(), c.display_name().to_lowercase()),
         }
     };
     let (ka1, ka2) = key(a);
@@ -440,7 +452,10 @@ fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     }
     match ka1.cmp(&kb1) {
         Ordering::Equal => match ka2.cmp(&kb2) {
-            Ordering::Equal => a.display_name().to_lowercase().cmp(&b.display_name().to_lowercase()),
+            Ordering::Equal => a
+                .display_name()
+                .to_lowercase()
+                .cmp(&b.display_name().to_lowercase()),
             other => other,
         },
         other => other,
@@ -475,7 +490,10 @@ pub fn sample_contacts() -> Vec<Contact> {
             phones: phones.iter().map(|(l, v)| Labeled::new(l, v)).collect(),
             emails: emails.iter().map(|(l, v)| Labeled::new(l, v)).collect(),
             addresses,
-            groups: groups.iter().map(|s| s.to_string()).collect(),
+            groups: groups
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             favorite,
         }
     };
@@ -487,12 +505,15 @@ pub fn sample_contacts() -> Vec<Contact> {
             "Analytical Engines",
             "Chief Mathematician",
             &[("mobile", "+44 20 7946 0101"), ("work", "+44 20 7946 0199")],
-            &[("work", "ada@analyticalengines.co.uk"), ("home", "ada.lovelace@example.com")],
+            &[
+                ("work", "ada@analyticalengines.co.uk"),
+                ("home", "ada.lovelace@example.com"),
+            ],
             vec![Address {
                 label: "home".into(),
                 street: "12 St James's Square".into(),
                 city: "London".into(),
-                region: "".into(),
+                region: String::new(),
                 postal: "SW1Y 4LE".into(),
                 country: "United Kingdom".into(),
             }],
@@ -620,21 +641,63 @@ mod tests {
         assert_eq!(b.year(), Some(1815));
         assert_eq!(b.month(), 12);
         assert_eq!(b.day(), 10);
-        assert_eq!(b, Birthday::Full { year: 1815, month: 12, day: 10 });
+        assert_eq!(
+            b,
+            Birthday::Full {
+                year: 1815,
+                month: 12,
+                day: 10
+            }
+        );
     }
 
     #[test]
     fn birthday_accepts_common_typed_formats() {
         // Year-first with any separator.
-        assert_eq!(Birthday::parse("2001/03/09"), Some(Birthday::Full { year: 2001, month: 3, day: 9 }));
+        assert_eq!(
+            Birthday::parse("2001/03/09"),
+            Some(Birthday::Full {
+                year: 2001,
+                month: 3,
+                day: 9
+            })
+        );
         // Basic 8-digit.
-        assert_eq!(Birthday::parse("20010309"), Some(Birthday::Full { year: 2001, month: 3, day: 9 }));
+        assert_eq!(
+            Birthday::parse("20010309"),
+            Some(Birthday::Full {
+                year: 2001,
+                month: 3,
+                day: 9
+            })
+        );
         // US month-first, year-last.
-        assert_eq!(Birthday::parse("03/09/2001"), Some(Birthday::Full { year: 2001, month: 3, day: 9 }));
+        assert_eq!(
+            Birthday::parse("03/09/2001"),
+            Some(Birthday::Full {
+                year: 2001,
+                month: 3,
+                day: 9
+            })
+        );
         // European day-first with dots.
-        assert_eq!(Birthday::parse("09.03.2001"), Some(Birthday::Full { year: 2001, month: 3, day: 9 }));
+        assert_eq!(
+            Birthday::parse("09.03.2001"),
+            Some(Birthday::Full {
+                year: 2001,
+                month: 3,
+                day: 9
+            })
+        );
         // Ambiguous order disambiguated by an out-of-range day/month.
-        assert_eq!(Birthday::parse("25/12/1990"), Some(Birthday::Full { year: 1990, month: 12, day: 25 }));
+        assert_eq!(
+            Birthday::parse("25/12/1990"),
+            Some(Birthday::Full {
+                year: 1990,
+                month: 12,
+                day: 25
+            })
+        );
         // Garbage is rejected, not silently coerced.
         assert_eq!(Birthday::parse("not a date"), None);
         assert_eq!(Birthday::parse(""), None);
@@ -644,9 +707,18 @@ mod tests {
     #[test]
     fn birthday_handles_year_less_month_day() {
         // Typed MM-DD, and both vCard truncated forms, land on MonthDay.
-        assert_eq!(Birthday::parse("12-10"), Some(Birthday::MonthDay { month: 12, day: 10 }));
-        assert_eq!(Birthday::parse("--12-10"), Some(Birthday::MonthDay { month: 12, day: 10 }));
-        assert_eq!(Birthday::parse("--1210"), Some(Birthday::MonthDay { month: 12, day: 10 }));
+        assert_eq!(
+            Birthday::parse("12-10"),
+            Some(Birthday::MonthDay { month: 12, day: 10 })
+        );
+        assert_eq!(
+            Birthday::parse("--12-10"),
+            Some(Birthday::MonthDay { month: 12, day: 10 })
+        );
+        assert_eq!(
+            Birthday::parse("--1210"),
+            Some(Birthday::MonthDay { month: 12, day: 10 })
+        );
         let b = Birthday::parse("12-10").unwrap();
         assert_eq!(b.year(), None, "a year-less birthday has no year");
         assert_eq!((b.month(), b.day()), (12, 10));
@@ -655,18 +727,42 @@ mod tests {
     #[test]
     fn birthday_iso_round_trips_through_parse() {
         for b in [
-            Birthday::Full { year: 1815, month: 12, day: 10 },
-            Birthday::Full { year: 2000, month: 2, day: 29 },
+            Birthday::Full {
+                year: 1815,
+                month: 12,
+                day: 10,
+            },
+            Birthday::Full {
+                year: 2000,
+                month: 2,
+                day: 29,
+            },
             Birthday::MonthDay { month: 6, day: 23 },
         ] {
-            assert_eq!(Birthday::parse(&b.iso()), Some(b), "{} round-trips", b.iso());
+            assert_eq!(
+                Birthday::parse(&b.iso()),
+                Some(b),
+                "{} round-trips",
+                b.iso()
+            );
         }
     }
 
     #[test]
     fn birthday_pretty_prints_month_name() {
-        assert_eq!(Birthday::Full { year: 1815, month: 12, day: 10 }.pretty(), "December 10, 1815");
-        assert_eq!(Birthday::MonthDay { month: 12, day: 10 }.pretty(), "December 10");
+        assert_eq!(
+            Birthday::Full {
+                year: 1815,
+                month: 12,
+                day: 10
+            }
+            .pretty(),
+            "December 10, 1815"
+        );
+        assert_eq!(
+            Birthday::MonthDay { month: 12, day: 10 }.pretty(),
+            "December 10"
+        );
     }
 
     #[test]
@@ -706,20 +802,24 @@ mod tests {
         }
         // Name sort puts "Berners-Lee" before "Hopper" before "Lovelace".
         let ids = store.filtered_sorted("", None, SortKey::Name);
-        let names: Vec<String> =
-            ids.iter().map(|id| store.get(*id).unwrap().last.clone()).collect();
+        let names: Vec<String> = ids
+            .iter()
+            .map(|id| store.get(*id).unwrap().last.clone())
+            .collect();
         let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
         assert!(pos("Berners-Lee") < pos("Hopper"));
         assert!(pos("Hopper") < pos("Lovelace"));
 
         // Group filter narrows to Friends only.
         let friends = store.filtered_sorted("", Some("Friends"), SortKey::Name);
-        assert!(friends.iter().all(|id| store
-            .get(*id)
-            .unwrap()
-            .groups
-            .iter()
-            .any(|g| g.eq_ignore_ascii_case("Friends"))));
+        assert!(friends.iter().all(|id| {
+            store
+                .get(*id)
+                .unwrap()
+                .groups
+                .iter()
+                .any(|g| g.eq_ignore_ascii_case("Friends"))
+        }));
         assert!(!friends.is_empty());
     }
 

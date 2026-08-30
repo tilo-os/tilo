@@ -22,16 +22,14 @@ pub struct SearchResult {
     /// a `kind` are bucketed together under this label in the results overlay,
     /// so a mixed query reads as sectioned groups rather than one flat list.
     pub kind: String,
-    /// Opaque id the caller dispatches on when this row is activated. The
-    /// framework treats it as a token; give it whatever your app can resolve
-    /// (a record id, a command name, a URL).
+    /// Opaque token the caller dispatches on when this row is activated —
+    /// a record id, a command name, a URL, whatever the app can resolve.
     pub action_id: String,
     /// Optional leading glyph drawn at the start of the row.
     pub icon: Option<Icon>,
-    /// Provider-supplied relevance bias. Leave `0` to let the registry rank by
-    /// query match alone; raise it to float pinned / recent / favourite hits.
-    /// The registry adds a query-match bonus on top, so this is a nudge, not an
-    /// override.
+    /// Provider-supplied relevance bias — a nudge, not an override, since the
+    /// registry adds a query-match bonus on top. `0` ranks by query match
+    /// alone; raise it to float pinned/recent/favourite hits.
     pub score: i32,
 }
 
@@ -52,19 +50,16 @@ impl SearchResult {
         }
     }
 
-    /// Attach the dim secondary line.
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
 
-    /// Attach the leading glyph.
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
-    /// Set the provider relevance bias (see [`SearchResult::score`]).
     pub fn with_score(mut self, score: i32) -> Self {
         self.score = score;
         self
@@ -74,12 +69,12 @@ impl SearchResult {
 /// A source of search results — implemented by an app for each searchable
 /// *type* it exposes (its contacts, its open files, its commands, …).
 ///
-/// A provider is responsible for **filtering** to plausible matches; the
-/// [`SearchRegistry`](crate::search::SearchRegistry) is responsible for
-/// **ranking** across providers. Return everything you consider a match (a
+/// A provider **filters** to plausible matches; the
+/// [`SearchRegistry`](crate::search::SearchRegistry) **ranks** across
+/// providers via [`fuzzy_score`]. Return everything you consider a match (a
 /// contact whose phone number matches even though the title is a name, say) —
-/// the registry will still float the strongest title matches to the top via
-/// [`fuzzy_score`], without discarding your field-aware hits.
+/// the registry floats the strongest title matches without discarding
+/// your field-aware hits.
 pub trait SearchProvider {
     /// The kind label this provider produces, used for diagnostics and as the
     /// default group header. Individual results may still carry a different
@@ -105,8 +100,8 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-    let q: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
-    let t: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
+    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
 
     let is_boundary = |i: usize| -> bool {
         if i == 0 {
@@ -184,7 +179,10 @@ mod tests {
         // scattered through "Critical Analysis Log".
         let prefix = fuzzy_score("cal", "Calculator").unwrap();
         let scattered = fuzzy_score("cal", "Critical Analysis Log").unwrap();
-        assert!(prefix > scattered, "prefix {prefix} should beat scattered {scattered}");
+        assert!(
+            prefix > scattered,
+            "prefix {prefix} should beat scattered {scattered}"
+        );
     }
 
     #[test]
@@ -192,14 +190,20 @@ mod tests {
         // Matching the start of the second word ("Ng") should score positively
         // — a common case for "last name" queries over "First Last".
         let boundary = fuzzy_score("ng", "Alice Ng").unwrap();
-        assert!(boundary > 0, "word-boundary match should be positive, got {boundary}");
+        assert!(
+            boundary > 0,
+            "word-boundary match should be positive, got {boundary}"
+        );
     }
 
     #[test]
     fn contiguous_beats_gappy() {
         let contiguous = fuzzy_score("abc", "abcdef").unwrap();
         let gappy = fuzzy_score("abc", "a_b_c_def").unwrap();
-        assert!(contiguous > gappy, "contiguous {contiguous} should beat gappy {gappy}");
+        assert!(
+            contiguous > gappy,
+            "contiguous {contiguous} should beat gappy {gappy}"
+        );
     }
 
     #[test]

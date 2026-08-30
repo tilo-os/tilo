@@ -1,20 +1,12 @@
 //! Shell-side notification system — title + body toast cards stacked
-//! top-right of the screen, fading in/out and auto-dismissing.
+//! top-right, fading in/out and auto-dismissing. Richer than
+//! `ui::widget::toast::ToastStack`: dual-line layout, a severity dot, an
+//! X-close affordance, and real-clock expiry.
 //!
-//! This complements (and is richer than) `ui::widget::toast::ToastStack`:
-//! - dual-line (title + body) layout instead of single-line text,
-//! - explicit severity dot (info / warning / error) keyed to
-//!   `theme.tokens.colors.semantic.*`,
-//! - an X-close affordance so the user can dismiss manually,
-//! - real-clock auto-expiry (no need to feed `tick(dt)` each frame).
-//!
-//! State lives on [`ChromeState`]: each subsystem calls
-//! [`ChromeState::push_notification`] to enqueue, and the overlay host
-//! mounts a [`NotificationStack`] above the desktop content but below
-//! the permission prompt + modal overlays so a prompt always wins
-//! focus (the spec gates that explicitly).
-//!
-//! [`ChromeState`]: crate::shell::chrome_state::ChromeState
+//! State lives on `ChromeState`; subsystems enqueue through
+//! `push_notification`, and the overlay host mounts a
+//! [`NotificationStack`] above desktop content but below the permission
+//! prompt and modals, so a prompt always wins focus.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -34,23 +26,16 @@ use ui::widget::toast::{ToastCard, ToastKind};
 
 use crate::shell::chrome_state::Chrome;
 
-/// Severity tier for a notification, controlling the colour of the
-/// leading dot and (optionally) any future accent treatment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Severity tier for a notification, controlling the leading-dot colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NotificationSeverity {
+    #[default]
     Info,
     Warning,
     Error,
 }
 
-impl Default for NotificationSeverity {
-    fn default() -> Self {
-        Self::Info
-    }
-}
-
 impl NotificationSeverity {
-    /// Resolve the severity-tinted colour from the active [`Theme`].
     pub fn color(self, theme: &Theme) -> vello::peniko::Color {
         match self {
             Self::Info => theme.tokens.colors.semantic.info,
@@ -59,8 +44,8 @@ impl NotificationSeverity {
         }
     }
 
-    /// Map onto the shared toast severity ramp so a desktop notification and
-    /// an in-app `ui::ToastStack` toast tint identically.
+    /// Maps onto the shared toast ramp so a desktop notification and an
+    /// in-app `ui::ToastStack` toast tint identically.
     pub fn toast_kind(self) -> ToastKind {
         match self {
             Self::Info => ToastKind::Info,
@@ -70,12 +55,8 @@ impl NotificationSeverity {
     }
 }
 
-/// Optional icon-kind hint for a notification. Reserved for future use
-/// (we don't yet have an icon font in the shell render path), but it
-/// rides in the data model now so subsystems can already classify the
-/// notification with the right type — e.g. `Workspace`, `Network`,
-/// `Permission`, `Generic`. The render path treats every kind the
-/// same for now: a severity-tinted dot is shown in lieu of a glyph.
+/// Icon-kind hint for a notification. No icon font in the shell render
+/// path yet, so every kind renders the same severity-tinted dot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NotificationIconKind {
     #[default]
@@ -85,36 +66,22 @@ pub enum NotificationIconKind {
     Permission,
 }
 
-/// Default time-to-live for a freshly pushed notification — matches
-/// the spec's "~5 s" hint. Subsystems that need a longer dwell can
-/// override via [`Notification::with_dismiss_after`].
+/// Default dwell — matches the spec's "~5s" hint. Override via
+/// [`Notification::with_dismiss_after`].
 pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 
-/// Effective "never auto-expire" dwell used for `expire_timeout == 0`
-/// notifications and for `critical`-urgency notifications (which the
-/// freedesktop spec says must not time out). We model "persistent" as a
-/// very long finite duration rather than a separate `Option<Duration>`
-/// variant so the expiry / animation arithmetic in [`Notification`] and
-/// [`NotificationStack`] stays a single code path — a day is far longer
-/// than any session and the user can always dismiss the toast by hand.
-pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(24 * 3600);
+/// Effective "never auto-expire" dwell, for `expire_timeout == 0` and
+/// `critical`-urgency (freedesktop spec: must not time out). A long
+/// finite duration rather than `Option<Duration>` keeps the expiry
+/// arithmetic a single code path.
+pub const PERSISTENT_DISMISS: Duration = Duration::from_hours(24);
 
-/// In/out animation duration. 220 ms is comfortable on the
-/// human-perception side and matches the modal entry timing already
-/// in `overlay_host.rs`.
+/// In/out animation duration; matches `overlay_host.rs`'s modal entry timing.
 const ANIM_MS: u64 = 220;
 
-/// Put a startup refusal on the screen, and leave it there.
-///
-/// The compositor can decline to open the session's state file — most often
-/// because the file was written by a newer qOS than this build understands, which
-/// is the ordinary situation after a rollback. It then starts from a bootstrapped
-/// tree, and the person is looking at a desktop that is not theirs.
-///
-/// That has to be said where they are looking. `Error` severity so it is not
-/// mistaken for chatter, [`PERSISTENT_DISMISS`] so it waits for them rather than
-/// sliding away in five seconds, and the file's path in the body so the next step
-/// is obvious.
+/// Put a startup refusal on the screen and leave it there. The compositor
+/// falling back to a bootstrapped tree means the person is looking at a
+/// desktop that isn't theirs, so `Error` severity + [`PERSISTENT_DISMISS`].
 pub fn announce_state_notice(chrome: &Chrome, notice: &crate::shell::persist::StateNotice) {
     chrome.borrow_mut().push_notification_full(
         Notification::new(notice.title(), notice.body())
@@ -124,19 +91,15 @@ pub fn announce_state_notice(chrome: &Chrome, notice: &crate::shell::persist::St
 }
 
 /// Monotonically-incrementing id source for [`Notification::id`].
-/// Tests can pin behaviour by checking exact ids; production code
-/// only treats ids as opaque tokens (used by `dismiss(id)`).
 fn next_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
-/// A single transient notification. The `id` is a process-unique
-/// internal token (used by `dismiss(id)`); the optional `dbus_id` is the
-/// freedesktop `org.freedesktop.Notifications` id used to address the
-/// originating app via the `NotificationClosed` / `ActionInvoked`
-/// signals.
+/// A single transient notification. `id` is a process-unique internal
+/// token; `dbus_id` is the freedesktop id used to address the
+/// originating app via `NotificationClosed`/`ActionInvoked`.
 #[derive(Clone, Debug)]
 pub struct Notification {
     pub id: u64,
@@ -146,35 +109,26 @@ pub struct Notification {
     pub severity: NotificationSeverity,
     pub created_at: Instant,
     pub dismiss_after: Duration,
-    /// freedesktop notification id, set when this toast originated from a
-    /// D-Bus `Notify` call. `None` for shell-internal notifications
-    /// (workspace-switch toasts, permission results, etc.).
+    /// Set when this toast originated from a D-Bus `Notify` call. `None`
+    /// for shell-internal notifications.
     pub dbus_id: Option<u32>,
-    /// Sending application's display name (the `Notify` `app_name` arg).
-    /// Rendered as a caption above the title when present.
+    /// Sending application's display name; rendered as a caption above
+    /// the title when present.
     pub app_name: Option<String>,
-    /// Workspace the sending app belongs to, for attribution. `None` for
-    /// shell-internal notifications or unattributable senders.
+    /// Workspace the sending app belongs to, for attribution.
     pub source_workspace: Option<u64>,
-    /// `(action_key, action_label)` pairs from the `Notify` call.
-    /// Activating the toast invokes the default (or first) action.
+    /// `(action_key, action_label)` pairs; activating the toast invokes
+    /// the default (or first) action.
     pub actions: Vec<(String, String)>,
-    /// Show this toast even while Do-Not-Disturb is on.
-    ///
-    /// Do-Not-Disturb is a request for quiet, not a request to be kept
-    /// uninformed about the machine's own security state. A handful of
-    /// notifications *are* the outcome of an action the user just took
-    /// with a panic key, and holding one of those back turns "I stopped
-    /// it" into "nothing happened" — the same thing a broken kill switch
-    /// looks like. Reserved for the shell; nothing reachable from D-Bus
-    /// sets it, so an app cannot opt itself out of DND.
+    /// Show this toast even under Do-Not-Disturb: DND asks for quiet,
+    /// not to be kept uninformed of the machine's own security state.
+    /// Shell-only; nothing reachable from D-Bus sets it.
     pub bypass_dnd: bool,
 }
 
 impl Notification {
-    /// Construct a brand-new notification with a freshly minted id and
-    /// `created_at = Instant::now()`. Default severity is `Info` and
-    /// the default dismiss window is [`DEFAULT_DISMISS_AFTER`].
+    /// Default severity is `Info`, default dismiss window
+    /// [`DEFAULT_DISMISS_AFTER`].
     pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
         Self {
             id: next_id(),
@@ -192,16 +146,11 @@ impl Notification {
         }
     }
 
-    /// Build a toast from a D-Bus [`IncomingNotification`].
-    ///
-    /// Mapping:
-    /// - `summary` → title, `body` → body, `app_name` → caption,
-    /// - `urgency` 2 (critical) → [`NotificationSeverity::Error`], else
-    ///   `Info`,
-    /// - `expire_timeout`: `-1` → [`DEFAULT_DISMISS_AFTER`], `0` →
-    ///   [`PERSISTENT_DISMISS`], `> 0` → that many milliseconds. Critical
-    ///   notifications are forced persistent regardless of `expire_timeout`
-    ///   (spec: critical must not auto-expire).
+    /// Build a toast from a D-Bus notification. `urgency` 2 (critical)
+    /// is forced persistent regardless of `expire_timeout` — the spec
+    /// says critical must not auto-expire; otherwise `-1` →
+    /// [`DEFAULT_DISMISS_AFTER`], `0` → [`PERSISTENT_DISMISS`], `> 0` →
+    /// that many milliseconds.
     pub fn from_incoming(inc: crate::notifications::IncomingNotification) -> Self {
         let severity = match inc.urgency {
             2 => NotificationSeverity::Error,
@@ -238,9 +187,8 @@ impl Notification {
         }
     }
 
-    /// The action key to invoke when the toast is activated (clicked):
-    /// the `"default"` action if present, else the first action, else
-    /// `None`.
+    /// Action to invoke on activation: `"default"` if present, else the
+    /// first action, else `None`.
     pub fn default_action_key(&self) -> Option<String> {
         if let Some((k, _)) = self.actions.iter().find(|(k, _)| k == "default") {
             return Some(k.clone());
@@ -248,13 +196,11 @@ impl Notification {
         self.actions.first().map(|(k, _)| k.clone())
     }
 
-    /// Attach a sending-app display name (caption).
     pub fn with_app_name(mut self, app: impl Into<String>) -> Self {
         self.app_name = Some(app.into());
         self
     }
 
-    /// Attach a freedesktop notification id.
     pub fn with_dbus_id(mut self, id: u32) -> Self {
         self.dbus_id = Some(id);
         self
@@ -275,17 +221,13 @@ impl Notification {
         self
     }
 
-    /// Show this toast even under Do-Not-Disturb. See [`Self::bypass_dnd`].
     pub fn bypassing_dnd(mut self) -> Self {
         self.bypass_dnd = true;
         self
     }
 
-    /// Backdate `created_at`. Used by snapshot scenarios so the
-    /// toast skips its slide-in animation and renders settled in a
-    /// still frame — without this, `shots --scenes notifications`
-    /// captures the very-first frame of the enter animation, with
-    /// every toast still ~`TOAST_WIDTH` off-screen-right.
+    /// Backdate `created_at` so a snapshot render skips the slide-in
+    /// animation and shows the toast settled rather than mid-entry.
     pub fn with_created_at(mut self, t: Instant) -> Self {
         self.created_at = t;
         self
@@ -297,14 +239,7 @@ impl Notification {
     }
 }
 
-// ----- Layout constants -----
-//
-// Reused by both the widget and the unit tests. Kept here so the
-// shell-side render is deterministic — concept tokens flow through
-// `theme.tokens.colors.*` / `radii` / `typography` for *colour* and
-// *radius*, but pixel-precise placement is shell business (the spec
-// nails the top-right inset at ~24 px).
-
+// Layout constants — reused by both the widget and unit tests.
 const TOAST_WIDTH: f64 = 360.0;
 const TOAST_HEIGHT: f64 = 64.0;
 const TOAST_GAP: f64 = 8.0;
@@ -313,24 +248,16 @@ const CARD_PADDING_X: f64 = 14.0;
 const DOT_RADIUS: f64 = 5.0;
 const DOT_GAP: f64 = 12.0;
 
-/// Maximum number of notifications kept in the active stack. Older
-/// entries are dropped from the front when the cap is exceeded — same
-/// FIFO behaviour as `ui::widget::toast::ToastStack`.
+/// Max notifications in the active stack; older entries drop from the
+/// front (same FIFO as `ui::widget::toast::ToastStack`).
 pub const MAX_NOTIFICATIONS: usize = 6;
 
-/// Maximum number of entries retained in the notification *history*
-/// (the message-log the notification centre reads). Every notification
-/// that leaves the active stack — dismissed, expired, closed, or
-/// evicted by the active cap — is appended here, as is every
-/// notification suppressed while Do-Not-Disturb is on. Bounded so a
-/// long-running session can't grow it without limit; the oldest entry
-/// is dropped from the front once the cap is exceeded.
+/// Max entries in notification *history* (every toast that leaves the
+/// active stack, plus every one suppressed under DND).
 pub const MAX_HISTORY: usize = 50;
 
-/// Lock-screen redaction label: shown in place of the entire toast stack
-/// while the session is locked, so only the *count* leaks (never an app
-/// name, summary, or body). Pure helper so the redaction contract is
-/// unit-testable without rendering a scene.
+/// Lock-screen redaction label — only the *count* leaks, never title,
+/// body, or app name.
 pub fn lock_suppressed_label(count: usize) -> String {
     match count {
         0 => String::new(),
@@ -339,26 +266,17 @@ pub fn lock_suppressed_label(count: usize) -> String {
     }
 }
 
-/// Top-right notification stack widget. The widget itself is a thin
-/// renderer over [`ChromeState::notifications`] — the chrome owns the
-/// data, the widget only paints + routes clicks (dismiss-on-click).
-///
-/// Mounted by `ShellOverlayHost` as an absolutely-positioned overlay
-/// above the desktop content but below the permission prompt and the
-/// command-palette / settings modals.
+/// Top-right notification stack widget — a thin renderer over
+/// [`ChromeState::notifications`]; the chrome owns the data, the widget
+/// only paints + routes clicks.
 pub struct NotificationStack {
     chrome: Chrome,
-    /// Anchor rect for the *entire* viewport — set every frame by the
-    /// overlay host via [`Self::set_viewport`] so we can pin to the
-    /// top-right edge regardless of where Taffy decides this widget
-    /// sits in the tree. The stack's own `Rect` is derived from this
-    /// each frame in `draw`.
+    /// Anchor rect for the viewport, set each frame via
+    /// [`Self::set_viewport`] so the stack pins top-right regardless of
+    /// where Taffy places this widget.
     viewport: Rect,
-    /// Per-toast hit rects, computed each frame in `draw` and consumed
-    /// by `handle_event`. `Vec<(notification_id, full_rect,
-    /// close_rect)>` — clicking the close rect or the full rect
-    /// dismisses by id. Cleared on every `draw` so a stale hit can't
-    /// fire after a notification expires.
+    /// Per-toast hit rects; cleared every `draw` so a stale hit can't
+    /// fire after expiry.
     hit_rects: Vec<(u64, Rect, Rect)>,
     rect: Rect,
 }
@@ -383,17 +301,14 @@ impl NotificationStack {
         }
     }
 
-    /// Update the viewport rect the stack pins to. Called by the
-    /// overlay host every frame from its own `draw` so the stack
-    /// follows real window resizes without going through Taffy.
+    /// Called every frame by the overlay host so the stack follows real
+    /// window resizes without going through Taffy.
     pub fn set_viewport(&mut self, viewport: Rect) {
         self.viewport = viewport;
     }
 
-    /// Compute the enter/exit alpha + horizontal slide for a single
-    /// notification. The card slides in from the right (`+TOAST_WIDTH`
-    /// off-axis) and fades in over [`ANIM_MS`] ms; near expiry it
-    /// fades back out over the same window.
+    /// Enter/exit alpha + horizontal slide: slides in from the right and
+    /// fades over [`ANIM_MS`], fades out near expiry over the same window.
     fn animation_state(n: &Notification, now: Instant) -> (f32, f64) {
         let anim_window = Duration::from_millis(ANIM_MS);
         let age = now.saturating_duration_since(n.created_at);
@@ -416,7 +331,7 @@ impl NotificationStack {
             1.0
         };
         let alpha = (enter * exit).clamp(0.0, 1.0);
-        let slide_dx = (1.0 - enter as f64) * TOAST_WIDTH;
+        let slide_dx = (1.0 - f64::from(enter)) * TOAST_WIDTH;
         (alpha, slide_dx)
     }
 }
@@ -425,11 +340,9 @@ impl Widget for NotificationStack {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
-        // Lifecycle (expired-toast drop) is driven by the overlay host
-        // each frame via `ChromeState::update_notification_lifecycle` —
-        // that path runs even when this widget is mounted out-of-tree
-        // (as it is in `ShellOverlayHost`). Re-driving it here would
-        // double-tick the bump counter; keep this a no-op.
+        // Driven by the overlay host via
+        // `ChromeState::update_notification_lifecycle`; re-driving here
+        // would double-tick the bump counter.
         false
     }
 
@@ -439,8 +352,7 @@ impl Widget for NotificationStack {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Absolutely positioned by the overlay host; we just register
-        // a zero-sized leaf so the tree walker sees us.
+        // Absolutely positioned by the overlay host; a zero-sized leaf.
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -450,13 +362,12 @@ impl Widget for NotificationStack {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
-        // We pin to `self.viewport` in `draw`, not Taffy. The host
-        // calls `set_viewport` each frame.
+        // Pinned to `self.viewport` in `draw`, not Taffy.
     }
 
     fn draw(
@@ -476,15 +387,13 @@ impl Widget for NotificationStack {
         let (snapshot, locked, dnd, history_count): (Vec<Notification>, bool, bool, usize) = {
             let ch = self.chrome.borrow();
             (
-                ch.notifications().iter().cloned().collect(),
+                ch.notifications().to_vec(),
                 ch.session_locked(),
                 ch.dnd(),
                 ch.notification_history_count(),
             )
         };
-        // Nothing to paint when there are no active toasts — unless
-        // Do-Not-Disturb is on and unlocked, in which case we still show
-        // the DND status pill so the user knows banners are being held.
+        // Nothing to paint unless DND is on and unlocked (show its status pill).
         if snapshot.is_empty() && !(dnd && !locked) {
             self.rect = Rect::ZERO;
             return;
@@ -492,20 +401,13 @@ impl Widget for NotificationStack {
 
         let title_size = theme.tokens.typography.scale.sm;
         let body_size = theme.tokens.typography.scale.xs;
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
 
         let x0_rest = self.viewport.x1 - EDGE_INSET - TOAST_WIDTH;
         let mut y = self.viewport.y0 + EDGE_INSET;
 
-        // Lock-suppression (consistent with Track D2): while the session
-        // is locked, withhold every notification's app name / summary /
-        // body so secrets never render on (or near) the lock screen.
-        // Collapse the whole stack into a single redacted card that shows
-        // only the count, and register no dismiss hit-rects (the toast
-        // can't be acted on while locked). The native compositor already
-        // paints the lock overlay *instead* of the chrome while locked,
-        // so this is belt-and-suspenders for any path that mounts the
-        // stack directly (e.g. hosted mode).
+        // While locked, collapse into a single redacted card: count only,
+        // no dismiss hit-rects.
         if locked {
             let card_rect = Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + TOAST_HEIGHT);
             let shape = RoundedRect::from_rect(card_rect, radius);
@@ -532,7 +434,7 @@ impl Widget for NotificationStack {
                 transform
                     * Affine::translate((
                         card_rect.x0 + CARD_PADDING_X,
-                        card_rect.y0 + (TOAST_HEIGHT - title_size as f64) / 2.0,
+                        card_rect.y0 + (TOAST_HEIGHT - f64::from(title_size)) / 2.0,
                     )),
                 Some((TOAST_WIDTH - CARD_PADDING_X * 2.0) as f32),
             );
@@ -543,13 +445,7 @@ impl Widget for NotificationStack {
         let mut stack_min_y = f64::INFINITY;
         let mut stack_max_y = f64::NEG_INFINITY;
 
-        // Do-Not-Disturb status pill: OS-owned chrome rendered at the top
-        // of the notification region whenever DND is on, even with no
-        // active toasts. It tells the user *why* banners aren't appearing
-        // and how many notifications were held back into history. Muted
-        // fill so it reads as a status chip, not a dismissible toast; it
-        // registers no hit-rect (toggle DND from the palette / quick
-        // settings, not from here).
+        // Muted, no hit-rect — reads as a status chip, not a dismissible toast.
         if dnd {
             let pill_h = 30.0;
             let pill_rect = Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + pill_h);
@@ -589,7 +485,10 @@ impl Widget for NotificationStack {
                 body_size,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((text_x, pill_rect.y0 + (pill_h - body_size as f64) / 2.0)),
+                    * Affine::translate((
+                        text_x,
+                        pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0,
+                    )),
                 Some((TOAST_WIDTH - (text_x - pill_rect.x0) - CARD_PADDING_X) as f32),
             );
             stack_min_y = stack_min_y.min(pill_rect.y0);
@@ -597,7 +496,7 @@ impl Widget for NotificationStack {
             y += pill_h + TOAST_GAP;
         }
 
-        for n in snapshot.iter() {
+        for n in &snapshot {
             let (alpha, slide_dx) = Self::animation_state(n, now);
             if alpha <= 0.0 {
                 y += TOAST_HEIGHT + TOAST_GAP;
@@ -608,13 +507,8 @@ impl Widget for NotificationStack {
             stack_min_y = stack_min_y.min(card_rect.y0);
             stack_max_y = stack_max_y.max(card_rect.y1);
 
-            // One shared card renderer for every toast surface: the desktop
-            // notification and an in-app `ui::ToastStack` toast are the same
-            // painter now (HIG §8 — extend the widget, don't fork it). The
-            // stack still owns *what* to show — D-Bus attribution, severity,
-            // actions, expiry — and the click routing; `ui::widget::toast`
-            // owns the card's look, the severity stripe, and the dismiss
-            // button, and hands back the button rect to hit-test.
+            // This stack owns what to show + click routing; the toast
+            // widget owns the card's look and hands back the dismiss rect.
             let hit = ui::widget::toast::paint_card(
                 scene,
                 transform,
@@ -661,21 +555,13 @@ impl Widget for NotificationStack {
             ..
         } = event
         {
-            // We don't have the position on `MouseInput`; the overlay
-            // host already tracks the last cursor and forwards events
-            // to us. For locality, fall back to last-seen via a
-            // separate cursor cache embedded in the host. Here we
-            // need the last cursor position — but `WindowEvent::
-            // MouseInput` doesn't carry it. The overlay host calls
-            // us with the press position via `notify_click_at` (an
-            // inherent method below) when it's our turn, so this
-            // branch is intentionally a no-op for the event-driven
-            // path. The press dispatch lives in `notify_click_at`.
+            // No position on this event; the overlay host calls
+            // `notify_click_at` with the resolved point instead.
             let _ = scale_factor;
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NotificationStack"
     }
 
@@ -687,11 +573,7 @@ impl Widget for NotificationStack {
         self.rect
     }
 
-    /// The stack is a live region of transient notifications — the same
-    /// contract `ui::widget::toast::ToastStack` exposes, so a screen reader
-    /// announces a freshly-posted toast without the user having to focus it.
-    /// While the session is locked the value is redacted to a count so no
-    /// title/body/app-name ever reaches the a11y tree.
+    /// A live region so a screen reader announces a freshly-posted toast.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Politeness, Role};
         let ch = self.chrome.borrow();
@@ -725,17 +607,10 @@ impl Widget for NotificationStack {
 }
 
 impl NotificationStack {
-    /// Inherent click dispatcher. The overlay host already tracks the
-    /// last cursor position; when a `MouseInput::Pressed` arrives, it
-    /// calls this with the resolved logical point so we don't have to
-    /// duplicate the cursor cache here. Returns `true` if the click
-    /// was consumed (i.e. landed on a toast).
+    /// Called by the overlay host with the resolved press point. Returns
+    /// `true` if the click landed on a toast.
     pub fn notify_click_at(&mut self, p: Point) -> bool {
-        // Iterate a copy of the hit rects so we don't hold a borrow
-        // across the chrome mutation below. Clicking the explicit close
-        // (X) glyph always just dismisses; clicking anywhere else on the
-        // card *activates* it — invoking the default/first action (and
-        // emitting `ActionInvoked`) if the notification carries any.
+        // Copy so we don't hold a borrow across the chrome mutation below.
         let hits = self.hit_rects.clone();
         for (id, full, close) in hits {
             if close.contains(p) {
@@ -777,19 +652,17 @@ mod tests {
         use ui::a11y::{Politeness, Role};
         let chrome = new_chrome();
         let stack = NotificationStack::new(chrome.clone());
-        // Empty: a named assertive live region with no value yet — the anchor
-        // a freshly-posted toast announces through.
         let node = Widget::accessibility(&stack).expect("the stack is a live region");
         assert_eq!(node.role, Role::Group);
         assert_eq!(node.name.as_deref(), Some("Notifications"));
         assert_eq!(node.live, Some(Politeness::Assertive));
         assert!(node.value.is_none(), "an empty stack announces nothing");
-        // With a toast, the latest surfaces as the announced value.
-        chrome.borrow_mut().push_notification("New mail", "secret subject");
+        chrome
+            .borrow_mut()
+            .push_notification("New mail", "secret subject");
         let node = Widget::accessibility(&stack).unwrap();
         assert_eq!(node.value.as_deref(), Some("New mail. secret subject"));
-        // Locked: content is redacted to a count — no title/body/app reaches
-        // the a11y tree.
+        // Locked: no title/body/app reaches the a11y tree.
         chrome.borrow_mut().set_session_locked(true);
         let node = Widget::accessibility(&stack).unwrap();
         assert_eq!(node.value.as_deref(), Some("1 notification"));
@@ -802,14 +675,12 @@ mod tests {
         let id = chrome.borrow_mut().push_notification_full(
             Notification::new("Quick", "fades fast").with_dismiss_after(Duration::from_millis(50)),
         );
-        // Active immediately after push.
         assert_eq!(chrome.borrow().notifications().len(), 1);
-        // Simulate "now" 200 ms in the future.
         let future = Instant::now() + Duration::from_millis(200);
         let dropped = chrome.borrow_mut().update_notification_lifecycle(future);
         assert_eq!(dropped, 1);
         assert!(chrome.borrow().notifications().is_empty());
-        // Re-dismissing a dropped id is a no-op (not a panic).
+        // Re-dismissing a dropped id is a no-op, not a panic.
         chrome.borrow_mut().dismiss_notification(id);
     }
 
@@ -822,7 +693,6 @@ mod tests {
         assert_eq!(chrome.borrow().notifications().len(), 3);
         chrome.borrow_mut().dismiss_notification(id_a);
         assert_eq!(chrome.borrow().notifications().len(), 2);
-        // Order preserved (B, C) — A removed from the front.
         let titles: Vec<_> = chrome
             .borrow()
             .notifications()
@@ -842,43 +712,35 @@ mod tests {
             chrome.borrow_mut().push_notification(format!("n{i}"), "");
         }
         assert_eq!(chrome.borrow().notifications().len(), MAX_NOTIFICATIONS);
-        // First three should have been evicted from the front.
         let first_title = chrome.borrow().notifications()[0].title.clone();
         assert_eq!(first_title, "n3");
     }
 
     #[test]
-    fn switch_workspace_pushes_a_notification() {
-        // Use `bootstrap_demo` so we have ≥2 workspaces and a switch
-        // is meaningful. `WorkspaceTree::default()` constructs an empty
-        // tree which cannot exercise the down-switch.
+    fn switch_workspace_does_not_push_a_notification() {
+        // `bootstrap_demo` gives ≥2 workspaces so a switch is meaningful;
+        // `default()` builds an empty tree that can't exercise it.
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        // Bootstrap leaves the first workspace active; clear any
-        // notifications synthesised by setup helpers.
         chrome.borrow_mut().notifications.clear();
-        let before = chrome.borrow().notifications().len();
         let switched = chrome.borrow_mut().switch_workspace(1);
         assert!(switched, "expected a workspace switch");
-        let after = chrome.borrow().notifications().len();
-        assert_eq!(
-            after,
-            before + 1,
-            "switch_workspace should push exactly one notification"
-        );
-        let last_title = chrome
-            .borrow()
-            .notifications()
-            .last()
-            .unwrap()
-            .title
-            .clone();
         assert!(
-            last_title.to_lowercase().contains("workspace"),
-            "title should mention the workspace, got: {last_title}"
+            chrome.borrow().notifications().is_empty(),
+            "a workspace switch must not raise a banner, got {:?}",
+            chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .map(|n| n.title.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            chrome.borrow().notification_history().is_empty(),
+            "a workspace switch must not be recorded in history"
         );
     }
 
-    // ---------- Track D1: D-Bus bridge wiring ----------
+    // ---------- D-Bus bridge wiring ----------
 
     use crate::notifications::{CloseReason, IncomingNotification, NotificationBridge};
     use crate::portal::PortalCaller;
@@ -1023,7 +885,6 @@ mod tests {
         bridge.push_incoming(incoming(51, 1, 5000));
         chrome.borrow_mut().pump_dbus_notifications();
         assert_eq!(chrome.borrow().notifications().len(), 1);
-        // App calls CloseNotification(51).
         bridge.request_close(51);
         chrome.borrow_mut().pump_dbus_notifications();
         assert!(chrome.borrow().notifications().is_empty());
@@ -1035,8 +896,6 @@ mod tests {
 
     #[test]
     fn internal_notifications_never_emit_dbus_signals() {
-        // A shell-internal toast (no dbus_id) must not emit any signal
-        // when dismissed — only D-Bus-originated toasts do.
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
         chrome.borrow_mut().set_notification_bridge(bridge.clone());
@@ -1067,12 +926,10 @@ mod tests {
         assert!(chrome.borrow().dnd());
         let id = chrome.borrow_mut().push_notification("Held", "while DND");
         let ch = chrome.borrow();
-        // Suppressed from the display surface…
         assert!(
             ch.notifications().is_empty(),
             "DND must keep the active banner stack empty"
         );
-        // …but retained in history, verbatim.
         assert_eq!(ch.notification_history().len(), 1);
         assert_eq!(ch.notification_history()[0].title, "Held");
         assert_eq!(ch.notification_history()[0].id, id);
@@ -1080,9 +937,6 @@ mod tests {
 
     #[test]
     fn dnd_suppressed_dbus_notification_preserves_attribution_in_history() {
-        // The real pump path: a D-Bus `Notify` while DND is on must land
-        // in history with its dbus_id / app / workspace intact, and never
-        // hit the active stack.
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
         chrome.borrow_mut().set_notification_bridge(bridge.clone());
@@ -1104,7 +958,6 @@ mod tests {
         let id = chrome
             .borrow_mut()
             .push_notification("Shown", "then dismissed");
-        // While active it is NOT yet in history (history == past toasts).
         assert_eq!(chrome.borrow().notifications().len(), 1);
         assert_eq!(chrome.borrow().notification_history().len(), 0);
         chrome.borrow_mut().dismiss_notification(id);
@@ -1153,9 +1006,8 @@ mod tests {
         for i in 0..(MAX_NOTIFICATIONS + 3) {
             chrome.borrow_mut().push_notification(format!("n{i}"), "");
         }
-        // Active capped…
         assert_eq!(chrome.borrow().notifications().len(), MAX_NOTIFICATIONS);
-        // …and the 3 evicted from the front are in history, oldest-first.
+        // The 3 evicted from the front are in history, oldest-first.
         let ch = chrome.borrow();
         assert_eq!(ch.notification_history().len(), 3);
         let titles: Vec<_> = ch
@@ -1169,18 +1021,14 @@ mod tests {
     #[test]
     fn history_is_bounded_to_max() {
         let chrome = new_chrome();
-        // Dismiss far more than the cap; history must not grow unbounded.
         for i in 0..(MAX_HISTORY + 10) {
             let id = chrome.borrow_mut().push_notification(format!("h{i}"), "");
             chrome.borrow_mut().dismiss_notification(id);
         }
         let ch = chrome.borrow();
         assert_eq!(ch.notification_history().len(), MAX_HISTORY);
-        // Oldest entries dropped from the front: the newest survivor is
-        // the last pushed.
         let last = ch.notification_history().last().unwrap().title.clone();
         assert_eq!(last, format!("h{}", MAX_HISTORY + 10 - 1));
-        // The very first ones are gone.
         assert!(
             ch.notification_history().iter().all(|n| n.title != "h0"),
             "the oldest entry must have been evicted"
@@ -1213,7 +1061,7 @@ mod tests {
     fn set_dnd_is_idempotent() {
         let chrome = new_chrome();
         let r0 = chrome.borrow().revision;
-        chrome.borrow_mut().set_dnd(false); // already off
+        chrome.borrow_mut().set_dnd(false);
         assert_eq!(
             chrome.borrow().revision,
             r0,
@@ -1225,8 +1073,6 @@ mod tests {
 
     #[test]
     fn leaving_dnd_does_not_replay_held_notifications() {
-        // Turning DND off must not resurrect suppressed toasts onto the
-        // banner surface — they stay in history only.
         let chrome = new_chrome();
         chrome.borrow_mut().set_dnd(true);
         chrome.borrow_mut().push_notification("held", "");

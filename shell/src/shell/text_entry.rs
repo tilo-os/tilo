@@ -23,11 +23,10 @@ use winit::keyboard::{Key, NamedKey};
 /// What the caller should do after handing a key to [`apply`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edit {
-    /// The key was not ours — let it fall through to whatever is behind
-    /// the field.
+    /// Not ours — let it fall through to whatever is behind the field.
     Ignored,
-    /// Consumed, and nothing visible changed (a no-op `Ctrl+C` on an
-    /// empty selection, say). Swallow the key, skip the repaint.
+    /// Consumed, nothing visible changed (a no-op `Ctrl+C`, say): swallow
+    /// the key, skip the repaint.
     ConsumedQuiet,
     /// Consumed and the buffer or selection changed — repaint.
     Changed,
@@ -55,11 +54,8 @@ impl Mods {
     }
 }
 
-/// Apply one key press to `buf` / `sel`.
-///
-/// `buf` and `sel` are the caller's own storage; `sel`'s anchor and
-/// cursor are byte indices into `buf` and are always left on a character
-/// boundary.
+/// Apply one key press to the caller's own `buf` / `sel`; `sel`'s anchor
+/// and cursor are byte indices into `buf`, always left on a char boundary.
 pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Edit {
     let Mods { shift, ctrl } = mods;
     match key {
@@ -175,10 +171,9 @@ pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Ed
             _ => Edit::Ignored,
         },
         Key::Character(s) => {
-            // Control characters never enter a buffer — a stray one would
-            // be invisible, unremovable by eye, and would travel into
-            // whatever the field feeds (an nmcli argument, a workspace
-            // name that syncs to peers).
+            // Control characters never enter a buffer — invisible,
+            // unremovable by eye, and travels into whatever the field
+            // feeds (an nmcli argument, a synced workspace name).
             let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
             if filtered.is_empty() {
                 return Edit::Ignored;
@@ -192,12 +187,8 @@ pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Ed
     }
 }
 
-/// Render `buf` as a password field's visible text: one bullet per
-/// character, so the width still tracks what was typed.
-///
-/// Bullets rather than asterisks because the field is proportional-set —
-/// `•` is round and even at the chrome's text size where `*` sits high
-/// and reads as a footnote marker.
+/// One bullet per character. Bullets over asterisks: `•` is round and even
+/// at the chrome's text size, where `*` sits high like a footnote marker.
 pub fn masked(buf: &str) -> String {
     "•".repeat(buf.chars().count())
 }
@@ -221,7 +212,6 @@ mod tests {
         }
     }
 
-    /// Type a string into an empty buffer the way a user would.
     fn typed(s: &str) -> (String, Selection) {
         let mut buf = String::new();
         let mut sel = Selection::collapsed(0);
@@ -246,8 +236,7 @@ mod tests {
 
     #[test]
     fn space_is_a_character_not_a_command() {
-        // Wi-Fi passphrases contain spaces, and the Space key arrives as
-        // a NamedKey rather than a Character.
+        // Space arrives as a NamedKey, not a Character.
         let (buf, _) = typed("correct horse");
         assert_eq!(buf, "correct horse");
     }
@@ -255,7 +244,15 @@ mod tests {
     #[test]
     fn backspace_removes_one_character_and_a_word_under_ctrl() {
         let (mut buf, mut sel) = typed("hello world");
-        assert_eq!(apply(&Key::Named(NamedKey::Backspace), plain(), &mut buf, &mut sel), Edit::Changed);
+        assert_eq!(
+            apply(
+                &Key::Named(NamedKey::Backspace),
+                plain(),
+                &mut buf,
+                &mut sel
+            ),
+            Edit::Changed
+        );
         assert_eq!(buf, "hello worl");
         apply(&Key::Named(NamedKey::Backspace), ctrl(), &mut buf, &mut sel);
         assert_eq!(buf, "hello ", "ctrl+backspace deletes the word");
@@ -266,7 +263,12 @@ mod tests {
         let mut buf = String::new();
         let mut sel = Selection::collapsed(0);
         assert_eq!(
-            apply(&Key::Named(NamedKey::Backspace), plain(), &mut buf, &mut sel),
+            apply(
+                &Key::Named(NamedKey::Backspace),
+                plain(),
+                &mut buf,
+                &mut sel
+            ),
             Edit::ConsumedQuiet,
             "swallowed, but no repaint is owed"
         );
@@ -285,7 +287,10 @@ mod tests {
     #[test]
     fn select_all_spans_the_buffer_without_owing_a_repaint() {
         let (mut buf, mut sel) = typed("abc");
-        assert_eq!(apply(&ch("a"), ctrl(), &mut buf, &mut sel), Edit::ConsumedQuiet);
+        assert_eq!(
+            apply(&ch("a"), ctrl(), &mut buf, &mut sel),
+            Edit::ConsumedQuiet
+        );
         assert_eq!(sel.anchor, 0);
         assert_eq!(sel.cursor, 3);
         assert_eq!(buf, "abc", "ctrl+a must not type an 'a'");
@@ -303,7 +308,10 @@ mod tests {
     #[test]
     fn shift_arrow_extends_a_selection_rather_than_collapsing_it() {
         let (mut buf, mut sel) = typed("abcdef");
-        let shift = Mods { shift: true, ctrl: false };
+        let shift = Mods {
+            shift: true,
+            ctrl: false,
+        };
         apply(&Key::Named(NamedKey::ArrowLeft), shift, &mut buf, &mut sel);
         apply(&Key::Named(NamedKey::ArrowLeft), shift, &mut buf, &mut sel);
         assert!(!sel.is_collapsed());
@@ -313,8 +321,14 @@ mod tests {
     #[test]
     fn enter_and_escape_are_reported_rather_than_typed() {
         let (mut buf, mut sel) = typed("pw");
-        assert_eq!(apply(&Key::Named(NamedKey::Enter), plain(), &mut buf, &mut sel), Edit::Submit);
-        assert_eq!(apply(&Key::Named(NamedKey::Escape), plain(), &mut buf, &mut sel), Edit::Cancel);
+        assert_eq!(
+            apply(&Key::Named(NamedKey::Enter), plain(), &mut buf, &mut sel),
+            Edit::Submit
+        );
+        assert_eq!(
+            apply(&Key::Named(NamedKey::Escape), plain(), &mut buf, &mut sel),
+            Edit::Cancel
+        );
         assert_eq!(buf, "pw", "neither key changes the buffer");
     }
 
@@ -325,8 +339,12 @@ mod tests {
         apply(&ch("é"), plain(), &mut buf, &mut sel);
         apply(&ch("漢"), plain(), &mut buf, &mut sel);
         assert_eq!(buf, "é漢");
-        // One backspace removes exactly one character, not one byte.
-        apply(&Key::Named(NamedKey::Backspace), plain(), &mut buf, &mut sel);
+        apply(
+            &Key::Named(NamedKey::Backspace),
+            plain(),
+            &mut buf,
+            &mut sel,
+        );
         assert_eq!(buf, "é");
         assert!(buf.is_char_boundary(sel.cursor));
     }
@@ -335,7 +353,10 @@ mod tests {
     fn control_characters_are_dropped_rather_than_stored() {
         let mut buf = String::new();
         let mut sel = Selection::collapsed(0);
-        assert_eq!(apply(&ch("\u{7}"), plain(), &mut buf, &mut sel), Edit::Ignored);
+        assert_eq!(
+            apply(&ch("\u{7}"), plain(), &mut buf, &mut sel),
+            Edit::Ignored
+        );
         assert!(buf.is_empty(), "an invisible byte must never reach nmcli");
     }
 
@@ -343,7 +364,10 @@ mod tests {
     fn unrelated_keys_fall_through() {
         let mut buf = String::new();
         let mut sel = Selection::collapsed(0);
-        assert_eq!(apply(&Key::Named(NamedKey::F5), plain(), &mut buf, &mut sel), Edit::Ignored);
+        assert_eq!(
+            apply(&Key::Named(NamedKey::F5), plain(), &mut buf, &mut sel),
+            Edit::Ignored
+        );
         assert_eq!(apply(&ch("q"), ctrl(), &mut buf, &mut sel), Edit::Ignored);
     }
 

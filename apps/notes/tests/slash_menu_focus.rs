@@ -160,9 +160,27 @@ fn slash_menu_arrows_navigate_the_menu_not_the_page_list() {
     // while loading the page focuses the editor too — the exact state in
     // which the sidebar used to steal the arrows.
     let r0 = app.sidebar_row_center_for_test(0).unwrap();
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(r0.x, r0.y));
-    dispatch(&mut app, &mut state, &taffy, child, &mouse(ElementState::Pressed));
-    dispatch(&mut app, &mut state, &taffy, child, &mouse(ElementState::Released));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(r0.x, r0.y),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &mouse(ElementState::Pressed),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &mouse(ElementState::Released),
+    );
     assert_eq!(app.selected_for_test(), Some(welcome));
 
     // Type `/` in the editor → the block menu opens.
@@ -172,26 +190,44 @@ fn slash_menu_arrows_navigate_the_menu_not_the_page_list() {
         "typing `/` opens the block menu"
     );
     assert_eq!(
-        app.main_panel_mut().editor().slash_menu().highlighted_kind(),
+        app.main_panel_mut()
+            .editor()
+            .slash_menu()
+            .highlighted_kind(),
         Some(&BlockKind::Paragraph),
         "the menu starts on the first row"
     );
 
     // ArrowDown must move the MENU highlight, not the page selection.
-    dispatch(&mut app, &mut state, &taffy, child, &named_key(NamedKey::ArrowDown));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &named_key(NamedKey::ArrowDown),
+    );
     assert_eq!(
         app.selected_for_test(),
         Some(welcome),
         "the page selection must NOT move while the `/` menu owns the arrows"
     );
     assert_eq!(
-        app.main_panel_mut().editor().slash_menu().highlighted_kind(),
+        app.main_panel_mut()
+            .editor()
+            .slash_menu()
+            .highlighted_kind(),
         Some(&BlockKind::Heading(1)),
         "ArrowDown advances the block-menu highlight"
     );
 
     // Escape closes the menu.
-    dispatch(&mut app, &mut state, &taffy, child, &named_key(NamedKey::Escape));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &named_key(NamedKey::Escape),
+    );
     assert!(
         !app.editor_slash_menu_visible_for_test(),
         "Escape closes the block menu"
@@ -212,8 +248,20 @@ fn slash_menu_enter_inserts_the_chosen_block() {
     // Open the menu, arrow to Heading 1, Enter to convert the block.
     dispatch(&mut app, &mut state, &taffy, child, &char_key("/"));
     assert!(app.editor_slash_menu_visible_for_test());
-    dispatch(&mut app, &mut state, &taffy, child, &named_key(NamedKey::ArrowDown));
-    dispatch(&mut app, &mut state, &taffy, child, &named_key(NamedKey::Enter));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &named_key(NamedKey::ArrowDown),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &named_key(NamedKey::Enter),
+    );
 
     assert!(
         !app.editor_slash_menu_visible_for_test(),

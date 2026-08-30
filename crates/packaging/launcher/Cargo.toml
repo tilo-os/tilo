@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "launcher"
 version = "0.1.0"
 edition = "2024"
@@ -57,3 +59,10 @@ tempfile.workspace = true
 # have to be serialised against each other across modules. Same pattern
 # (and same crate) the shell uses for its static-state tests.
 serial_test.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

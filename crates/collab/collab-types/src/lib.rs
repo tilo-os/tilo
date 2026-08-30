@@ -1,77 +1,43 @@
 //! `collab-types` — the cryptographic foundation for qOS Spaces,
 //! Channels, and role-based access control.
 //!
-//! This crate implements **Phase 2** of the
-//! `2026-06-29-spaces-channels-and-cryptographic-roles.md` design spec.
-//! It is intentionally self-contained: pure types, pure functions, no
-//! I/O, no async runtime, no compositor or UI dependencies. Every later
-//! phase of the collaboration roadmap (signed-roles enforcement on the
-//! wire in Phase 3, MLS encryption in Phase 7, threshold identity in
-//! Phase 8) layers on the primitives defined here.
+//! Self-contained: pure types, pure functions, no I/O, no async runtime,
+//! no compositor or UI dependencies. Signed-roles wire enforcement, MLS
+//! encryption, and threshold identity all layer on the primitives here.
 //!
-//! ## What is in this crate
-//!
-//! - [`identity`] — `Identity`, `Attestation`, `Claim`, `Clearance`.
-//!   The human-facing key material plus the signed claims that
-//!   identities carry across spaces.
-//! - [`space`] — `Space`, the social-formation container that groups
-//!   channels and caches a member directory.
+//! - [`identity`] — `Identity`, `Attestation`, `Claim`, `Clearance`: key
+//!   material and signed claims identities carry across spaces.
+//! - [`space`] — `Space`, the social-formation container grouping channels.
 //! - [`channel`] — `Channel`, `MemberRef`, `ChannelRef`, `ArtifactRef`,
-//!   `Artifact`. The working-area primitive that holds artifacts and
-//!   maps members to roles.
-//! - [`role`] — `Role`, `OpClass`, `ArtifactKind` plus the
-//!   spec-defined static permission table
-//!   ([`role::role_permits`]). This is the coarse base layer for
-//!   "is this op allowed?".
+//!   `Artifact`: the working-area primitive mapping members to roles.
+//! - [`role`] — `Role`, `OpClass`, `ArtifactKind` plus the static
+//!   permission table ([`role::role_permits`]) — the coarse base layer.
 //! - [`caps`] — the richer `(subject × scope × verb)` capability model
-//!   stacked on the role table: roles are named cap-bundles, and
-//!   per-app / per-resource overrides ([`caps::CapOverride`]) narrow or
-//!   extend the base. Wired into the validator's step 5a.
+//!   stacked on the role table; wired into the validator's step 5a.
 //! - [`invite`] — attenuable capability invite tokens
-//!   ([`invite::InviteToken`]): a signed, delegable grant that can only
-//!   narrow down a chain, never widen.
-//! - [`event`] — `ChannelEvent`, the append-only governance log:
-//!   genesis, attestation issue/revoke, ownership transfer, rename,
-//!   settings update.
-//! - [`op`] — `SignedOp`, the per-op envelope that wraps every CRDT
+//!   ([`invite::InviteToken`]): a signed, delegable grant that can only narrow.
+//! - [`event`] — `ChannelEvent`, the append-only governance log.
+//! - [`op`] — `SignedOp`, the per-op envelope wrapping every CRDT
 //!   mutation crossing a process or network boundary.
-//! - [`canonical`] — deterministic byte serialisation via `postcard`.
-//!   All signed payloads bottom out here so that signatures are stable
-//!   across machines and Rust versions.
+//! - [`canonical`] — deterministic `postcard` serialisation; every
+//!   signed payload bottoms out here so signatures are stable across
+//!   machines and Rust versions.
 //! - [`crypto`] — Ed25519 signing + verification primitives.
-//!   `sign_event` / `verify_event` for governance events;
-//!   `sign_op` / `verify_op` for `SignedOp`.
-//! - [`validator`] — the eight-step inbound-op validation pipeline
-//!   from the spec, implemented as a single pure function
-//!   ([`validator::validate_inbound_op`]) consuming a
+//! - [`validator`] — the eight-step inbound-op validation pipeline, a
+//!   single pure function ([`validator::validate_inbound_op`]) over a
 //!   [`validator::ChannelState`] snapshot.
 //!
-//! ## Non-goals (deliberate)
+//! Non-goals: no network code (the validator operates on a snapshot;
+//! lazy-fetch of unknown attestations lives in the broker); no MLS/
+//! encryption (the wire format here is plaintext); no FROST/threshold
+//! sharing (`Identity::public_key` is a single Ed25519 key); no persistence.
 //!
-//! - No network code. The validator operates on a snapshot; resolution
-//!   of unknown attestation ids (the spec's "lazy-fetch from peers")
-//!   lives in the broker, not here.
-//! - No MLS / encryption. The wire format described here is
-//!   *plaintext*; Phase 7 layers `openmls` on top.
-//! - No FROST / threshold sharing. `Identity::public_key` is a single
-//!   Ed25519 public key in this phase; the threshold-shared private
-//!   key arrives in Phase 8.
-//! - No persistence. Nothing in this crate touches the filesystem.
-//!
-//! ## Wire-protocol stability
-//!
-//! All on-wire structures derive `Serialize` + `Deserialize`. Where
-//! a future name-based decoder (JSON, RON) might pick them up,
-//! every struct also carries `#[serde(deny_unknown_fields)]` so an
-//! extension field cannot quietly slip past. Canonical bytes for
-//! signing flow through [`canonical::canonical_bytes`], which pins
-//! serialisation to `postcard`'s deterministic byte order, and
-//! [`canonical::from_canonical_bytes`] enforces exact-length input
-//! — an envelope plus trailing bytes is an error, not a successful
-//! decode that silently drops the tail.
-//!
-//! Once we ship Phase 3, any field reorder or addition is a
-//! wire-breaking change and needs a version bump.
+//! Every on-wire struct derives `Serialize`/`Deserialize` and carries
+//! `#[serde(deny_unknown_fields)]` so an extension field can't quietly
+//! slip past a future name-based decoder. Canonical bytes for signing
+//! flow through [`canonical::canonical_bytes`] (postcard's deterministic
+//! byte order); [`canonical::from_canonical_bytes`] enforces exact-length
+//! input — trailing bytes are an error, not a silent drop.
 
 pub mod canonical;
 pub mod caps;
@@ -82,6 +48,7 @@ pub mod event;
 pub mod identity;
 pub mod invite;
 pub mod op;
+pub mod peer;
 pub mod redaction;
 pub mod role;
 pub mod space;
@@ -95,9 +62,6 @@ pub use caps::{
     Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, ResourceScope, Scope,
     Subject, Verb, decide, decide_actor, decide_capability, host_covers, path_covers,
     role_base_applies, role_caps, verb_for_opclass,
-};
-pub use invite::{
-    INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
 };
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
@@ -113,7 +77,11 @@ pub use crypto::{
 };
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
+pub use invite::{
+    INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
+};
 pub use op::{EncryptionMetadata, SignedOp};
+pub use peer::{PeerPresence, PeerPresencePayload};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
     encode_redact_payload, hash_target_op, parse_redact_payload,

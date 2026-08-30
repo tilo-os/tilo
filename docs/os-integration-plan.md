@@ -40,8 +40,17 @@ enterprise = the same workspace with its host being that machine. Everything dow
    - On `main`: registry spine (`app-registry`), sandbox (`launcher`), `runtime-bundle` crate.
    - Branches: `shell-app-model-integration` (+6), `registry-infra` (+3), `apps-store` (+5),
      `apps-qpkg-fleet` (+10), `ci-app-model` (+8).
-   - Build gap: apps link the shared runtime dylib (target <2MB, from 15–26MB); software_store
+   - Build gap: apps link the shared runtime dylib; store
      Open/add-not-install path; a deployed registry. Prove: one relinked app <2MB runs.
+   - Measured 2026-08-23 on the word processor, the first `ui` app relinked this way
+     (`ui` re-exported from `runtime-dylib`, app built `--profile thin-app --features thin`
+     with `-C prefer-dynamic`): 24,802,000 B → 4,357,040 B, `.text` 19,167,280 B →
+     2,527,879 B, `.qpkg` 24,813,056 B → 4,367,872 B. The shared object is 78,392,032 B and
+     ships once — a dylib exports everything and `thin-app` must disable LTO, so it gets no
+     cross-crate dead-code elimination; break-even is ~4 apps, and 45 packaged apps go from
+     1.04 GiB to 0.26 GiB. So the <2MB target is NOT met at 4.16 MB, and the remaining
+     binary is app code plus the crates outside the toolkit (`qdoc*`, `spellcheck` — whose
+     707,859 B word list is `include_str!`-embedded, the largest single item found).
 
 5. **Peer-app local render (the collaboration keystone).**
    - `legacy-collab-*` = the OLD surface-stream+input-injection approach (the honest fallback tier;

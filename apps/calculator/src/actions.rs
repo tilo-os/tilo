@@ -178,10 +178,10 @@ impl Action for CalculatorAction {
                 }
             }
             CalculatorAction::DeleteHistoryEntry { index } => {
-                if let Some(list) = list_at(doc, "history") {
-                    if *index < doc.length(&list) {
-                        doc.delete(&list, *index)?;
-                    }
+                if let Some(list) = list_at(doc, "history")
+                    && *index < doc.length(&list)
+                {
+                    doc.delete(&list, *index)?;
                 }
             }
             CalculatorAction::ClearHistory => {
@@ -201,25 +201,25 @@ impl Action for CalculatorAction {
                 put_if_changed(doc, &row, "visible", true);
             }
             CalculatorAction::SetGraphExpr { kind, index, expr } => {
-                if let Some(list) = list_at(doc, kind.doc_key()) {
-                    if let Some(row) = row_at(doc, &list, *index) {
-                        put_text_diffed(doc, &row, "expr", expr);
-                    }
+                if let Some(list) = list_at(doc, kind.doc_key())
+                    && let Some(row) = row_at(doc, &list, *index)
+                {
+                    put_text_diffed(doc, &row, "expr", expr);
                 }
             }
             CalculatorAction::ToggleGraphVisible { kind, index } => {
-                if let Some(list) = list_at(doc, kind.doc_key()) {
-                    if let Some(row) = row_at(doc, &list, *index) {
-                        let now = !row_visible(doc, &row);
-                        doc.put(&row, "visible", now)?;
-                    }
+                if let Some(list) = list_at(doc, kind.doc_key())
+                    && let Some(row) = row_at(doc, &list, *index)
+                {
+                    let now = !row_visible(doc, &row);
+                    doc.put(&row, "visible", now)?;
                 }
             }
             CalculatorAction::DeleteGraph { kind, index } => {
-                if let Some(list) = list_at(doc, kind.doc_key()) {
-                    if *index < doc.length(&list) {
-                        doc.delete(&list, *index)?;
-                    }
+                if let Some(list) = list_at(doc, kind.doc_key())
+                    && *index < doc.length(&list)
+                {
+                    doc.delete(&list, *index)?;
                 }
             }
         }
@@ -426,7 +426,11 @@ pub fn provide_resources(ctx: &CalcResourceCtx, _doc: &AutoCommit) -> Vec<Resour
                 "calculator.history_entry",
                 history_label(e),
             )
-            .with_action(immediate_spec("delete", "Delete entry", &delete_history_entry_action(i))),
+            .with_action(immediate_spec(
+                "delete",
+                "Delete entry",
+                &delete_history_entry_action(i),
+            )),
         );
     }
 
@@ -466,7 +470,10 @@ mod tests {
         let mut m = CalcModel::default();
         let rows: Vec<PlotFn> = exprs
             .iter()
-            .map(|e| PlotFn { expr: e.to_string(), visible: true })
+            .map(|e| PlotFn {
+                expr: e.to_string(),
+                visible: true,
+            })
             .collect();
         match kind {
             GraphKind::Curve2d => m.funcs = rows,
@@ -517,7 +524,10 @@ mod tests {
         if let Some(list) = list_at(doc, "history") {
             for i in 0..doc.length(&list) {
                 if let Some(row) = row_at(doc, &list, i) {
-                    out.push((scalar_str(doc, &row, "expr"), scalar_str(doc, &row, "result")));
+                    out.push((
+                        scalar_str(doc, &row, "expr"),
+                        scalar_str(doc, &row, "result"),
+                    ));
                 }
             }
         }
@@ -529,7 +539,7 @@ mod tests {
         if let Some(list) = list_at(doc, kind.doc_key()) {
             for i in 0..doc.length(&list) {
                 if let Some(row) = row_at(doc, &list, i) {
-                    let expr = doc.text(&row_text(doc, &row)).unwrap_or_default();
+                    let expr = doc.text(row_text(doc, &row)).unwrap_or_default();
                     out.push((expr, row_visible(doc, &row)));
                 }
             }
@@ -553,28 +563,45 @@ mod tests {
         dispatch(&mut doc, &commit_history_action("sqrt(2)", "1.41"));
         let h = read_history(&doc);
         assert_eq!(h.len(), 2);
-        assert_eq!(h[0], ("sqrt(2)".into(), "1.41".into()), "newest is at the front");
+        assert_eq!(
+            h[0],
+            ("sqrt(2)".into(), "1.41".into()),
+            "newest is at the front"
+        );
         assert_eq!(h[1], ("2+3".into(), "5".into()));
 
         // Overflow drops from the tail, keeping the newest HISTORY_CAP.
         for i in 0..(HISTORY_CAP + 10) {
-            dispatch(&mut doc, &commit_history_action(&format!("{i}"), &format!("{i}")));
+            dispatch(
+                &mut doc,
+                &commit_history_action(&format!("{i}"), &format!("{i}")),
+            );
         }
         let h = read_history(&doc);
         assert_eq!(h.len(), HISTORY_CAP, "history is capped");
-        assert_eq!(h[0].0, format!("{}", HISTORY_CAP + 10 - 1), "front is the newest commit");
+        assert_eq!(
+            h[0].0,
+            format!("{}", HISTORY_CAP + 10 - 1),
+            "front is the newest commit"
+        );
     }
 
     #[test]
     fn clear_and_delete_history() {
         let mut doc = AutoCommit::new();
         for i in 0..4 {
-            dispatch(&mut doc, &commit_history_action(&format!("e{i}"), &format!("{i}")));
+            dispatch(
+                &mut doc,
+                &commit_history_action(&format!("e{i}"), &format!("{i}")),
+            );
         }
         // History front→back is e3,e2,e1,e0. Delete the middle (index 1 = e2).
         dispatch(&mut doc, &delete_history_entry_action(1));
         let h = read_history(&doc);
-        assert_eq!(h.iter().map(|(e, _)| e.clone()).collect::<Vec<_>>(), vec!["e3", "e1", "e0"]);
+        assert_eq!(
+            h.iter().map(|(e, _)| e.clone()).collect::<Vec<_>>(),
+            vec!["e3", "e1", "e0"]
+        );
         // Clear empties it.
         dispatch(&mut doc, &clear_history_action());
         assert!(read_history(&doc).is_empty());
@@ -582,7 +609,10 @@ mod tests {
         // no-op action — affordances gate on a real change — so the executor's
         // empty-change handling is never exercised mid-sequence).
         dispatch(&mut doc, &delete_history_entry_action(99));
-        assert!(read_history(&doc).is_empty(), "out-of-range delete changed nothing");
+        assert!(
+            read_history(&doc).is_empty(),
+            "out-of-range delete changed nothing"
+        );
     }
 
     #[test]
@@ -616,7 +646,10 @@ mod tests {
         // plain Str — `read_graph`'s `row_text` asserts exactly this shape.
         let mut doc = AutoCommit::new();
         dispatch(&mut doc, &add_graph_action(GraphKind::Curve2d, "cos(x)"));
-        assert_eq!(read_graph(&doc, GraphKind::Curve2d), vec![("cos(x)".into(), true)]);
+        assert_eq!(
+            read_graph(&doc, GraphKind::Curve2d),
+            vec![("cos(x)".into(), true)]
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -628,7 +661,10 @@ mod tests {
         // into a host State so undo is the real host path.
         let mut seeded = AutoCommit::new();
         let mut model = CalcModel::default();
-        model.history = vec![HistoryEntry { expr: "1+1".into(), result: "2".into() }];
+        model.history = vec![HistoryEntry {
+            expr: "1+1".into(),
+            result: "2".into(),
+        }];
         crate::doc::store(&mut seeded, &model);
         let mut state = ui::State::new();
         state.doc = seeded;
@@ -642,27 +678,31 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
+        state.record_committed_action(before_heads, None, None);
+
+        assert_eq!(
+            read_history(&state.doc).len(),
+            before + 1,
+            "the action added a history row"
+        );
+        assert_eq!(read_history(&state.doc)[0], ("6*7".into(), "42".into()));
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
         );
 
-        assert_eq!(read_history(&state.doc).len(), before + 1, "the action added a history row");
-        assert_eq!(read_history(&state.doc)[0], ("6*7".into(), "42".into()));
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
-
         // Ctrl+Z reverts exactly this action.
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
-        assert_eq!(read_history(&state.doc).len(), before, "undo reverted only the commit");
-        assert_eq!(read_history(&state.doc)[0], ("1+1".into(), "2".into()), "the prior entry survives");
+        state.undo(None, None).expect("an undo entry to pop");
+        assert_eq!(
+            read_history(&state.doc).len(),
+            before,
+            "undo reverted only the commit"
+        );
+        assert_eq!(
+            read_history(&state.doc)[0],
+            ("1+1".into(), "2".into()),
+            "the prior entry survives"
+        );
     }
 
     /// The collaboration guarantee: replaying the same encoded action on a second
@@ -676,7 +716,11 @@ mod tests {
         doc_a.commit();
         let bytes = doc_a.save();
         let mut doc_b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(doc_a.get_heads(), doc_b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            doc_a.get_heads(),
+            doc_b.get_heads(),
+            "precondition: same base state"
+        );
 
         // A applies a formula edit locally; B replays the envelope.
         let action = set_graph_expr_action(GraphKind::Curve2d, 1, "x^3+1");
@@ -684,8 +728,16 @@ mod tests {
         let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
         qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
-        assert_eq!(doc_a.get_heads(), doc_b.get_heads(), "replay reproduced the identical change");
-        assert_eq!(read_graph(&doc_b, GraphKind::Curve2d)[1].0, "x^3+1", "edit landed on the peer");
+        assert_eq!(
+            doc_a.get_heads(),
+            doc_b.get_heads(),
+            "replay reproduced the identical change"
+        );
+        assert_eq!(
+            read_graph(&doc_b, GraphKind::Curve2d)[1].0,
+            "x^3+1",
+            "edit landed on the peer"
+        );
     }
 
     /// A toggle also replays byte-identically — the read-then-flip path, proving
@@ -701,22 +753,44 @@ mod tests {
         let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
         qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
-        assert_eq!(doc_a.get_heads(), doc_b.get_heads(), "toggle replayed identically");
-        assert!(!read_graph(&doc_b, GraphKind::Surface3d)[0].1, "hidden on the peer");
+        assert_eq!(
+            doc_a.get_heads(),
+            doc_b.get_heads(),
+            "toggle replayed identically"
+        );
+        assert!(
+            !read_graph(&doc_b, GraphKind::Surface3d)[0].1,
+            "hidden on the peer"
+        );
     }
 
     fn ctx() -> CalcResourceCtx {
         CalcResourceCtx {
             mode: Mode::Graph2d,
             history: vec![
-                HistoryEntry { expr: "2^10".into(), result: "1024".into() },
-                HistoryEntry { expr: "sqrt(2)".into(), result: "1.41".into() },
+                HistoryEntry {
+                    expr: "2^10".into(),
+                    result: "1024".into(),
+                },
+                HistoryEntry {
+                    expr: "sqrt(2)".into(),
+                    result: "1.41".into(),
+                },
             ],
             funcs: vec![
-                PlotFn { expr: "sin(x)".into(), visible: true },
-                PlotFn { expr: "x^2".into(), visible: false },
+                PlotFn {
+                    expr: "sin(x)".into(),
+                    visible: true,
+                },
+                PlotFn {
+                    expr: "x^2".into(),
+                    visible: false,
+                },
             ],
-            surfaces: vec![PlotFn { expr: "x*y".into(), visible: true }],
+            surfaces: vec![PlotFn {
+                expr: "x*y".into(),
+                visible: true,
+            }],
         }
     }
 
@@ -733,10 +807,18 @@ mod tests {
         assert!(ws_actions.contains(&"clear-history"), "{ws_actions:?}");
 
         // Two history entries + two curves + one surface = five children.
-        let hist: Vec<&Resource> = ws.children.iter().filter(|r| r.kind == "calculator.history_entry").collect();
+        let hist: Vec<&Resource> = ws
+            .children
+            .iter()
+            .filter(|r| r.kind == "calculator.history_entry")
+            .collect();
         assert_eq!(hist.len(), 2);
         assert!(hist[0].actions.iter().any(|a| a.id == "delete"));
-        let graphs: Vec<&Resource> = ws.children.iter().filter(|r| r.kind == "calculator.graph").collect();
+        let graphs: Vec<&Resource> = ws
+            .children
+            .iter()
+            .filter(|r| r.kind == "calculator.graph")
+            .collect();
         assert_eq!(graphs.len(), 3, "2 curves + 1 surface");
         let g0 = &graphs[0];
         let g0_actions: Vec<&str> = g0.actions.iter().map(|a| a.id.as_str()).collect();
@@ -749,9 +831,18 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Add function")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Clear history")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete formula")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Add function")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Clear history")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete formula")),
+            "{labels:?}"
+        );
     }
 
     /// Single source of truth: the palette specs encode byte-identically to the
@@ -771,9 +862,17 @@ mod tests {
         );
 
         // A curve's toggle/delete specs == the row affordance builders.
-        let graphs: Vec<&Resource> = ws.children.iter().filter(|r| r.kind == "calculator.graph").collect();
+        let graphs: Vec<&Resource> = ws
+            .children
+            .iter()
+            .filter(|r| r.kind == "calculator.graph")
+            .collect();
         let curve0 = graphs[0];
-        let toggle = curve0.actions.iter().find(|a| a.id == "toggle-visibility").unwrap();
+        let toggle = curve0
+            .actions
+            .iter()
+            .find(|a| a.id == "toggle-visibility")
+            .unwrap();
         assert_eq!(
             immediate_encode(toggle).payload,
             encode(&toggle_graph_visible_action(GraphKind::Curve2d, 0)).payload,
@@ -827,7 +926,10 @@ mod tests {
             .node(&ui::SemanticId("r:calculator.workspace".into()))
             .expect("workspace node present");
         assert_eq!(ws.name.as_deref(), Some("Calculator"));
-        assert!(ws.action("clear-history").is_some(), "workspace affords clear-history");
+        assert!(
+            ws.action("clear-history").is_some(),
+            "workspace affords clear-history"
+        );
         let ids1: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
 
         let d2 = tree.refresh(&root, &node_map, None, &resources);
@@ -872,6 +974,10 @@ mod tests {
             read_history(&via_affordance),
             "invoking the a11y affordance deletes the same entry the control does"
         );
-        assert_eq!(read_history(&via_a11y).len(), 1, "one entry remains after the delete");
+        assert_eq!(
+            read_history(&via_a11y).len(),
+            1,
+            "one entry remains after the delete"
+        );
     }
 }

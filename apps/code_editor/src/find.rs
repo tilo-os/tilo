@@ -28,7 +28,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::search::{line_matches, Query};
+use crate::search::{Query, line_matches};
 
 /// Height of the bar. Two 38 px fields plus breathing room, matching the tab
 /// bar's visual weight so the editor column reads as one stack.
@@ -193,10 +193,11 @@ impl FindBar {
     pub fn open(&mut self, replace: bool, seed: Option<&str>) {
         self.visible = true;
         self.replace_open = replace;
-        if let Some(s) = seed {
-            if !s.is_empty() && !s.contains('\n') {
-                self.find.set_query(s);
-            }
+        if let Some(s) = seed
+            && !s.is_empty()
+            && !s.contains('\n')
+        {
+            self.find.set_query(s);
         }
         self.find.set_focused(true);
         self.replace.set_focused(false);
@@ -223,10 +224,6 @@ impl FindBar {
         self.replace.value()
     }
 
-    pub fn is_replace_open(&self) -> bool {
-        self.replace_open
-    }
-
     /// Push the recount in: how many matches there are and which one the caret
     /// is on.
     pub fn set_match_state(&mut self, total: usize, current: Option<usize>) {
@@ -235,10 +232,6 @@ impl FindBar {
             self.current = current;
             self.needs_redraw = true;
         }
-    }
-
-    pub fn match_total(&self) -> usize {
-        self.total
     }
 
     /// Drain the actions the bar produced this frame.
@@ -262,7 +255,14 @@ impl FindBar {
 
     /// The controls showing right now, right-to-left from the bar's edge.
     fn buttons(&self) -> Vec<Btn> {
-        vec![Btn::Case, Btn::Word, Btn::Prev, Btn::Next, Btn::ToggleReplace, Btn::Close]
+        vec![
+            Btn::Case,
+            Btn::Word,
+            Btn::Prev,
+            Btn::Next,
+            Btn::ToggleReplace,
+            Btn::Close,
+        ]
     }
 
     fn label_of(b: Btn) -> &'static str {
@@ -406,8 +406,7 @@ impl Widget for FindBar {
         // The find row leaves room on the right for the status readout and the
         // control cluster; the fields themselves are shared widgets sized by
         // their own layout.
-        let controls_w =
-            STATUS_W + self.buttons().len() as f64 * (BTN_W + GAP) + PAD * 2.0;
+        let controls_w = STATUS_W + self.buttons().len() as f64 * (BTN_W + GAP) + PAD * 2.0;
 
         let find_node = self.find.build_layout(taffy, theme, node_map);
         let find_row = taffy
@@ -422,8 +421,8 @@ impl Widget for FindBar {
                     padding: taffy::Rect {
                         left: length(PAD as f32),
                         right: length(controls_w as f32),
-                        top: length(0.0),
-                        bottom: length(0.0),
+                        top: length(0.0_f32),
+                        bottom: length(0.0_f32),
                     },
                     ..Default::default()
                 },
@@ -451,8 +450,8 @@ impl Widget for FindBar {
                         padding: taffy::Rect {
                             left: length(PAD as f32),
                             right: length(replace_controls as f32),
-                            top: length(0.0),
-                            bottom: length(0.0),
+                            top: length(0.0_f32),
+                            bottom: length(0.0_f32),
                         },
                         ..Default::default()
                     },
@@ -480,7 +479,7 @@ impl Widget for FindBar {
                 &rows,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -488,40 +487,42 @@ impl Widget for FindBar {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if !self.visible {
             return;
         }
-        let Ok(rows) = taffy.children(node) else { return };
+        let Ok(rows) = taffy.children(node) else {
+            return;
+        };
         let base = Point::new(self.rect.x0, self.rect.y0);
         if let Some(&find_row) = rows.first() {
             let rl = taffy.layout(find_row).unwrap();
             let row_origin = Point::new(
-                base.x + rl.location.x as f64,
-                base.y + rl.location.y as f64,
+                base.x + f64::from(rl.location.x),
+                base.y + f64::from(rl.location.y),
             );
-            if let (Ok(kids), Some(_)) = (taffy.children(find_row), self.find_node) {
-                if let Some(&k) = kids.first() {
-                    self.find.apply_layout(taffy, k, row_origin);
-                }
+            if let (Ok(kids), Some(_)) = (taffy.children(find_row), self.find_node)
+                && let Some(&k) = kids.first()
+            {
+                self.find.apply_layout(taffy, k, row_origin);
             }
         }
-        if self.replace_open {
-            if let Some(&replace_row) = rows.get(1) {
-                let rl = taffy.layout(replace_row).unwrap();
-                let row_origin = Point::new(
-                    base.x + rl.location.x as f64,
-                    base.y + rl.location.y as f64,
-                );
-                if let Ok(kids) = taffy.children(replace_row) {
-                    if let Some(&k) = kids.first() {
-                        self.replace.apply_layout(taffy, k, row_origin);
-                    }
-                }
+        if self.replace_open
+            && let Some(&replace_row) = rows.get(1)
+        {
+            let rl = taffy.layout(replace_row).unwrap();
+            let row_origin = Point::new(
+                base.x + f64::from(rl.location.x),
+                base.y + f64::from(rl.location.y),
+            );
+            if let Ok(kids) = taffy.children(replace_row)
+                && let Some(&k) = kids.first()
+            {
+                self.replace.apply_layout(taffy, k, row_origin);
             }
         }
     }
@@ -555,9 +556,11 @@ impl Widget for FindBar {
             &Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1),
         );
 
-        self.find.draw(scene, transform, text_renderer, theme, presence);
+        self.find
+            .draw(scene, transform, text_renderer, theme, presence);
         if self.replace_open {
-            self.replace.draw(scene, transform, text_renderer, theme, presence);
+            self.replace
+                .draw(scene, transform, text_renderer, theme, presence);
         }
 
         self.button_rects.clear();
@@ -581,7 +584,7 @@ impl Widget for FindBar {
                 12.0,
                 color,
                 transform
-                    * Affine::translate((cluster_x0 - GAP - w as f64, find_row_mid - 7.0)),
+                    * Affine::translate((cluster_x0 - GAP - f64::from(w), find_row_mid - 7.0)),
                 None,
             );
         }
@@ -590,7 +593,12 @@ impl Widget for FindBar {
         // hover/press/disabled palette is the OS's, not this app's.
         let mut x = cluster_x0;
         for b in buttons {
-            let rect = Rect::new(x, find_row_mid - BTN_H / 2.0, x + BTN_W, find_row_mid + BTN_H / 2.0);
+            let rect = Rect::new(
+                x,
+                find_row_mid - BTN_H / 2.0,
+                x + BTN_W,
+                find_row_mid + BTN_H / 2.0,
+            );
             let enabled = match b {
                 Btn::Prev | Btn::Next => self.total > 0,
                 _ => true,
@@ -706,50 +714,61 @@ impl Widget for FindBar {
             button: MouseButton::Left,
             ..
         } = event
-        {
-            if let Some((b, _)) = self
+            && let Some((b, _)) = self
                 .button_rects
                 .iter()
                 .find(|(_, r)| r.contains(self.hover))
                 .copied()
-            {
-                let enabled = !matches!(b, Btn::Prev | Btn::Next | Btn::ReplaceOne | Btn::ReplaceAll)
-                    || self.total > 0;
-                if enabled {
-                    self.press(b);
-                }
-                *handled = true;
-                return;
+        {
+            let enabled = !matches!(b, Btn::Prev | Btn::Next | Btn::ReplaceOne | Btn::ReplaceAll)
+                || self.total > 0;
+            if enabled {
+                self.press(b);
             }
+            *handled = true;
+            return;
         }
 
         // Otherwise the fields own it.
-        let Ok(rows) = taffy.children(node_id) else { return };
-        if let Some(&find_row) = rows.first() {
-            if let Ok(kids) = taffy.children(find_row) {
-                if let Some(&k) = kids.first() {
-                    self.find.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, k,
-                        taffy,
-                    );
-                }
-            }
+        let Ok(rows) = taffy.children(node_id) else {
+            return;
+        };
+        if let Some(&find_row) = rows.first()
+            && let Ok(kids) = taffy.children(find_row)
+            && let Some(&k) = kids.first()
+        {
+            self.find.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                k,
+                taffy,
+            );
         }
-        if self.replace_open {
-            if let Some(&replace_row) = rows.get(1) {
-                if let Ok(kids) = taffy.children(replace_row) {
-                    if let Some(&k) = kids.first() {
-                        self.replace.handle_event(
-                            event, scale_factor, modifiers, state, path, handled, focus_target,
-                            k, taffy,
-                        );
-                    }
-                }
-            }
+        if self.replace_open
+            && let Some(&replace_row) = rows.get(1)
+            && let Ok(kids) = taffy.children(replace_row)
+            && let Some(&k) = kids.first()
+        {
+            self.replace.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                k,
+                taffy,
+            );
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FindBar"
     }
 
@@ -762,7 +781,8 @@ impl Widget for FindBar {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.needs_redraw || (self.visible && (self.find.needs_redraw() || self.replace.needs_redraw()))
+        self.needs_redraw
+            || (self.visible && (self.find.needs_redraw() || self.replace.needs_redraw()))
     }
 
     fn mark_drawn(&mut self) {
@@ -785,9 +805,30 @@ mod tests {
         let text = "let foo = 1;\nfn bar() {}\n// foo again foo\n";
         let m = matches_in(text, &q("foo"));
         assert_eq!(m.len(), 3);
-        assert_eq!(m[0], Match { line: 0, col: 4, len: 3 });
-        assert_eq!(m[1], Match { line: 2, col: 3, len: 3 });
-        assert_eq!(m[2], Match { line: 2, col: 13, len: 3 });
+        assert_eq!(
+            m[0],
+            Match {
+                line: 0,
+                col: 4,
+                len: 3
+            }
+        );
+        assert_eq!(
+            m[1],
+            Match {
+                line: 2,
+                col: 3,
+                len: 3
+            }
+        );
+        assert_eq!(
+            m[2],
+            Match {
+                line: 2,
+                col: 13,
+                len: 3
+            }
+        );
     }
 
     #[test]
@@ -893,7 +934,11 @@ mod tests {
         bar.open(false, None);
         assert_eq!(bar.height(), BAR_HEIGHT);
         bar.press_named("replace-toggle");
-        assert_eq!(bar.height(), BAR_HEIGHT_REPLACE, "the replace row adds height");
+        assert_eq!(
+            bar.height(),
+            BAR_HEIGHT_REPLACE,
+            "the replace row adds height"
+        );
         bar.press_named("close");
         assert!(!bar.is_visible());
         assert_eq!(bar.height(), 0.0);

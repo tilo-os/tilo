@@ -32,7 +32,11 @@ pub struct Prefs {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { interval_ms: 1500, show_kernel_threads: false, confirm_kill: true }
+        Self {
+            interval_ms: 1500,
+            show_kernel_threads: false,
+            confirm_kill: true,
+        }
     }
 }
 
@@ -60,8 +64,7 @@ impl Prefs {
         let d = Prefs::default();
         Prefs {
             interval_ms: get_int(doc, path, "interval_ms")
-                .map(|v| v.clamp(250, 60_000) as u64)
-                .unwrap_or(d.interval_ms),
+                .map_or(d.interval_ms, |v| v.clamp(250, 60_000) as u64),
             show_kernel_threads: get_bool(doc, path, "show_kernel_threads")
                 .unwrap_or(d.show_kernel_threads),
             confirm_kill: get_bool(doc, path, "confirm_kill").unwrap_or(d.confirm_kill),
@@ -90,7 +93,7 @@ impl Prefs {
     }
 
     pub fn interval_label(&self) -> String {
-        if self.interval_ms % 1000 == 0 {
+        if self.interval_ms.is_multiple_of(1000) {
             format!("{}s", self.interval_ms / 1000)
         } else {
             format!("{:.1}s", self.interval_ms as f32 / 1000.0)
@@ -126,7 +129,10 @@ mod tests {
 
     #[test]
     fn interval_cycles() {
-        let mut p = Prefs { interval_ms: 1000, ..Prefs::default() };
+        let mut p = Prefs {
+            interval_ms: 1000,
+            ..Prefs::default()
+        };
         p.cycle_interval();
         assert_eq!(p.interval_ms, 1500);
         p.cycle_interval();

@@ -28,23 +28,21 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::colors::{ON_FILL_MIN_CONTRAST, over};
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Semantic role each segment of a [`TriStateControl`] plays — drives the
-/// active-segment colour. `Neutral` is the de-emphasised middle ("inherit").
+/// Drives the active-segment colour. `Neutral` is the de-emphasised
+/// middle ("inherit").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SegmentTone {
-    /// Positive / success (e.g. "Allow"), rendered in the success colour.
     Positive,
-    /// Neutral / inherit, rendered de-emphasised.
     Neutral,
-    /// Negative / danger (e.g. "Deny"), rendered in the danger colour.
     Negative,
 }
 
 const SEGMENT_HEIGHT: f64 = 28.0;
 
-/// A three-segment selector with one active segment.
 pub struct TriStateControl {
     labels: [String; 3],
     tones: [SegmentTone; 3],
@@ -57,18 +55,24 @@ pub struct TriStateControl {
 }
 
 impl TriStateControl {
-    /// Build an allow / inherit / deny control with the middle selected.
     pub fn allow_inherit_deny() -> Self {
         Self::new(
             ["Allow", "Inherit", "Deny"],
-            [SegmentTone::Positive, SegmentTone::Neutral, SegmentTone::Negative],
+            [
+                SegmentTone::Positive,
+                SegmentTone::Neutral,
+                SegmentTone::Negative,
+            ],
         )
     }
 
-    /// Build a control with arbitrary labels + tones.
     pub fn new(labels: [&str; 3], tones: [SegmentTone; 3]) -> Self {
         Self {
-            labels: [labels[0].to_string(), labels[1].to_string(), labels[2].to_string()],
+            labels: [
+                labels[0].to_string(),
+                labels[1].to_string(),
+                labels[2].to_string(),
+            ],
             tones,
             selected: 1,
             choice: None,
@@ -78,24 +82,22 @@ impl TriStateControl {
         }
     }
 
-    /// Set which segment (0..3) is active. Out-of-range values are clamped.
+    /// Out-of-range values are clamped.
     pub fn with_selected(mut self, idx: usize) -> Self {
         self.selected = idx.min(2);
         self
     }
 
-    /// Programmatically set the active segment (host syncing from its model).
     pub fn set_selected(&mut self, idx: usize) {
         self.selected = idx.min(2);
     }
 
-    /// The currently-active segment index.
     pub fn selected(&self) -> usize {
         self.selected
     }
 
-    /// Drain the index the user just chose (once). Re-clicking the active
-    /// segment yields the middle index (1, "inherit") — toggle-to-neutral.
+    /// Re-clicking the active segment yields the middle index (1,
+    /// "inherit") — toggle-to-neutral.
     pub fn take_choice(&mut self) -> Option<usize> {
         self.choice.take()
     }
@@ -126,14 +128,15 @@ impl Widget for TriStateControl {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: taffy::Size { width: percent(1.0), height: length(SEGMENT_HEIGHT as f32) },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            flex_shrink: 0.0,
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(SEGMENT_HEIGHT as f32),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -143,17 +146,20 @@ impl Widget for TriStateControl {
         _a: taffy::Size<taffy::AvailableSpace>,
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        // A sensible intrinsic width (3 × 56) so it works in an auto slot.
-        taffy::Size { width: 168.0, height: SEGMENT_HEIGHT as f32 }
+        // 3 × 56, so it works in an auto slot.
+        taffy::Size {
+            width: 168.0,
+            height: SEGMENT_HEIGHT as f32,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_segments();
     }
@@ -169,17 +175,31 @@ impl Widget for TriStateControl {
         if self.rect.width() <= 0.0 {
             return;
         }
-        // Track.
-        let radius = theme.tokens.radii.sm as f64;
+        let radius = f64::from(theme.tokens.radii.sm);
         let track = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &track);
-        scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &track);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &track,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &track,
+        );
 
-        // Active segment fill.
         let active = self.seg_rects[self.selected];
         let tone = self.tones[self.selected];
         let fill = Self::tone_color(theme, tone);
-        let alpha = if tone == SegmentTone::Neutral { 0.18 } else { 0.9 };
+        let alpha = if tone == SegmentTone::Neutral {
+            0.18
+        } else {
+            0.9
+        };
         scene.fill(
             Fill::NonZero,
             transform,
@@ -187,21 +207,31 @@ impl Widget for TriStateControl {
             None,
             &RoundedRect::from_rect(active, radius),
         );
+        // What the selected segment's label is actually drawn on: the tone at
+        // its alpha over the track, not the tone token. Measuring against the
+        // token would report a contrast the screen never holds.
+        let active_ground = over(theme.tokens.colors.surfaces.raised, fill, alpha);
 
-        // Labels.
         let text_size = theme.tokens.typography.scale.sm;
         for i in 0..3 {
             let on = i == self.selected;
             let col = if on && tone != SegmentTone::Neutral {
-                Color::WHITE
+                theme
+                    .tokens
+                    .colors
+                    .ink_on_any(&[active_ground], Color::WHITE, ON_FILL_MIN_CONTRAST)
             } else if on {
-                theme.tokens.colors.text_primary
+                theme.tokens.colors.ink_on_any(
+                    &[active_ground],
+                    theme.tokens.colors.text_primary,
+                    ON_FILL_MIN_CONTRAST,
+                )
             } else {
                 theme.text_dim
             };
             let (tw, _) = text_renderer.measure(&self.labels[i], text_size, None);
-            let cx = self.seg_rects[i].center().x - tw as f64 / 2.0;
-            let cy = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
+            let cx = self.seg_rects[i].center().x - f64::from(tw) / 2.0;
+            let cy = self.rect.y0 + (self.rect.height() - f64::from(text_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &self.labels[i],
@@ -229,10 +259,16 @@ impl Widget for TriStateControl {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                if let Some(i) = self.seg_rects.iter().position(|r| r.contains(self.last_cursor)) {
-                    // Re-clicking the active segment toggles back to the
-                    // middle (neutral / inherit); else select the clicked one.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(i) = self
+                    .seg_rects
+                    .iter()
+                    .position(|r| r.contains(self.last_cursor))
+                {
                     let target = if i == self.selected { 1 } else { i };
                     self.selected = target;
                     self.choice = Some(target);
@@ -243,17 +279,19 @@ impl Widget for TriStateControl {
         }
     }
 
-    fn name(&self) -> &str { "TriStateControl" }
+    fn name(&self) -> &'static str {
+        "TriStateControl"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A three-way exclusive selector is a radio group. The segments are
-        // drawn, not child widgets, so each is a synthetic `RadioButton` child
-        // carrying the checked (selected) state; the group surfaces the active
-        // segment's label as its value so an AT announces the current choice.
-        // Labels are host-provided runtime strings, not FTL keys → no `i18n!`.
+        // Segments are drawn, not child widgets, so each is a synthetic
+        // `RadioButton` child. Labels are host-provided runtime strings,
+        // not FTL keys → no `i18n!`.
         let count = self.labels.len();
         let value = self.labels.get(self.selected).cloned();
         let segments: Vec<AccessNode> = self
@@ -284,8 +322,6 @@ impl Widget for TriStateControl {
     }
 }
 
-/// A fixed-palette colour-swatch picker. Lays a grid of swatches and records
-/// the index clicked.
 pub struct ColorSwatchPicker {
     /// Packed `0xRRGGBB` palette.
     palette: Vec<u32>,
@@ -299,24 +335,25 @@ pub struct ColorSwatchPicker {
     hovered: Option<usize>,
 }
 
-/// The default 12-colour role palette (matches the permissions editor).
+/// Matches the permissions editor.
 pub const DEFAULT_PALETTE: [u32; 12] = [
-    0xE6_4A_4A, 0xE6_8A_3A, 0xE6_C8_4A, 0x6F_C7_4A, 0x4A_C7_7A, 0x4A_C7_B8,
-    0x4A_8F_E6, 0x6A_5A_E6, 0x9A_4A_E6, 0xE6_4A_B8, 0x9A_9A_9A, 0x5A_64_72,
+    0xE6_4A_4A, 0xE6_8A_3A, 0xE6_C8_4A, 0x6F_C7_4A, 0x4A_C7_7A, 0x4A_C7_B8, 0x4A_8F_E6, 0x6A_5A_E6,
+    0x9A_4A_E6, 0xE6_4A_B8, 0x9A_9A_9A, 0x5A_64_72,
 ];
 
-/// Convert a packed `0xRRGGBB` value to a vello `Color`.
 pub fn packed_color(rgb: u32) -> Color {
-    Color::from_rgb8(((rgb >> 16) & 0xff) as u8, ((rgb >> 8) & 0xff) as u8, (rgb & 0xff) as u8)
+    Color::from_rgb8(
+        ((rgb >> 16) & 0xff) as u8,
+        ((rgb >> 8) & 0xff) as u8,
+        (rgb & 0xff) as u8,
+    )
 }
 
 impl ColorSwatchPicker {
-    /// Picker over the default 12-colour palette in 4 columns.
     pub fn new() -> Self {
         Self::with_palette(DEFAULT_PALETTE.to_vec(), 4)
     }
 
-    /// Picker over a custom palette + column count.
     pub fn with_palette(palette: Vec<u32>, columns: usize) -> Self {
         Self {
             palette,
@@ -331,18 +368,15 @@ impl ColorSwatchPicker {
         }
     }
 
-    /// Mark a palette index as the current selection (host syncing).
     pub fn with_selected(mut self, idx: usize) -> Self {
         self.selected = Some(idx);
         self
     }
 
-    /// Drain the palette index the user just chose (once).
     pub fn take_choice(&mut self) -> Option<usize> {
         self.choice.take()
     }
 
-    /// The packed colour at `idx`, if in range.
     pub fn color_at(&self, idx: usize) -> Option<u32> {
         self.palette.get(idx).copied()
     }
@@ -359,7 +393,12 @@ impl ColorSwatchPicker {
             let c = (i % self.columns) as f64;
             let x = self.rect.x0 + pad + c * self.cell;
             let y = self.rect.y0 + pad + r * self.cell;
-            self.swatch_rects.push(Rect::new(x + 2.0, y + 2.0, x + self.cell - 2.0, y + self.cell - 2.0));
+            self.swatch_rects.push(Rect::new(
+                x + 2.0,
+                y + 2.0,
+                x + self.cell - 2.0,
+                y + self.cell - 2.0,
+            ));
         }
     }
 }
@@ -382,14 +421,15 @@ impl Widget for ColorSwatchPicker {
         let pad = 8.0_f32;
         let w = self.columns as f32 * self.cell as f32 + pad * 2.0;
         let h = self.rows() as f32 * self.cell as f32 + pad * 2.0;
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: taffy::Size { width: length(w), height: length(h) },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            flex_shrink: 0.0,
+            size: taffy::Size {
+                width: length(w),
+                height: length(h),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -407,12 +447,12 @@ impl Widget for ColorSwatchPicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_swatches();
     }
@@ -428,17 +468,39 @@ impl Widget for ColorSwatchPicker {
         if self.rect.width() <= 0.0 {
             return;
         }
-        // Panel.
-        let panel = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &panel);
-        scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &panel);
+        let panel = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &panel,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &panel,
+        );
 
         for (i, sr) in self.swatch_rects.iter().enumerate() {
             let shape = RoundedRect::from_rect(*sr, 6.0);
-            scene.fill(Fill::NonZero, transform, packed_color(self.palette[i]), None, &shape);
-            // Selection / hover ring.
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                packed_color(self.palette[i]),
+                None,
+                &shape,
+            );
             if self.selected == Some(i) {
-                scene.stroke(&Stroke::new(2.5), transform, theme.tokens.colors.border_focus, None, &shape);
+                scene.stroke(
+                    &Stroke::new(2.5),
+                    transform,
+                    theme.tokens.colors.border_focus,
+                    None,
+                    &shape,
+                );
             } else if self.hovered == Some(i) {
                 scene.stroke(&Stroke::new(2.0), transform, Color::WHITE, None, &shape);
             }
@@ -460,10 +522,21 @@ impl Widget for ColorSwatchPicker {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.hovered = self.swatch_rects.iter().position(|r| r.contains(self.last_cursor));
+                self.hovered = self
+                    .swatch_rects
+                    .iter()
+                    .position(|r| r.contains(self.last_cursor));
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                if let Some(i) = self.swatch_rects.iter().position(|r| r.contains(self.last_cursor)) {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(i) = self
+                    .swatch_rects
+                    .iter()
+                    .position(|r| r.contains(self.last_cursor))
+                {
                     self.selected = Some(i);
                     self.choice = Some(i);
                     *handled = true;
@@ -473,17 +546,18 @@ impl Widget for ColorSwatchPicker {
         }
     }
 
-    fn name(&self) -> &str { "ColorSwatchPicker" }
+    fn name(&self) -> &'static str {
+        "ColorSwatchPicker"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A palette grid is a single-select list. Each swatch is drawn (not a
-        // child widget), so it becomes a synthetic `ListItem` named by its hex
-        // value — derived from the real colour, not fabricated — and marked
-        // selected when it is the current choice. The list surfaces the chosen
-        // swatch's hex as its value.
+        // Each swatch is drawn (not a child widget), so it becomes a
+        // synthetic `ListItem` named by its hex value.
         let hex = |rgb: u32| format!("#{rgb:06X}");
         let count = self.palette.len();
         let value = self
@@ -556,16 +630,30 @@ mod tests {
         }
     }
     fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Pressed, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
     }
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut ft = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        w.handle_event(e, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        w.handle_event(
+            e,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         handled
     }
 
@@ -573,7 +661,6 @@ mod tests {
     fn tri_state_click_selects_segment() {
         let mut t = TriStateControl::allow_inherit_deny(); // starts on middle
         lay_out(&mut t);
-        // Click the first (Allow) segment.
         let p = t.seg_rects[0].center();
         dispatch(&mut t, &cursor_at(p));
         assert!(dispatch(&mut t, &left_press()), "segment click consumed");
@@ -589,7 +676,11 @@ mod tests {
         let p = t.seg_rects[2].center();
         dispatch(&mut t, &cursor_at(p));
         dispatch(&mut t, &left_press());
-        assert_eq!(t.selected(), 1, "re-clicking the active segment falls to neutral");
+        assert_eq!(
+            t.selected(),
+            1,
+            "re-clicking the active segment falls to neutral"
+        );
         assert_eq!(t.take_choice(), Some(1));
     }
 
@@ -597,7 +688,6 @@ mod tests {
     fn swatch_picker_records_clicked_index() {
         let mut p = ColorSwatchPicker::new();
         lay_out(&mut p);
-        // Click swatch 5.
         let c = p.swatch_rects[5].center();
         dispatch(&mut p, &cursor_at(c));
         assert!(dispatch(&mut p, &left_press()), "swatch click consumed");

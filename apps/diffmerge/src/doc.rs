@@ -41,9 +41,7 @@ impl MergeDoc {
     /// Read the merged buffer's current contents.
     pub fn merged_text(doc: &AutoCommit) -> String {
         match doc.get(&ROOT, "merged") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => {
-                doc.text(&id).unwrap_or_default()
-            }
+            Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -87,11 +85,13 @@ impl MergeDoc {
         let mut out = Vec::new();
         if let Ok(Some((Value::Object(ObjType::Map), id))) = doc.get(&ROOT, "resolutions") {
             for key in doc.keys(&id) {
-                let Ok(idx) = key.parse::<usize>() else { continue };
-                if let Ok(Some((Value::Scalar(v), _))) = doc.get(&id, &key) {
-                    if let automerge::ScalarValue::Str(s) = v.as_ref() {
-                        out.push((idx, s.to_string()));
-                    }
+                let Ok(idx) = key.parse::<usize>() else {
+                    continue;
+                };
+                if let Ok(Some((Value::Scalar(v), _))) = doc.get(&id, &key)
+                    && let automerge::ScalarValue::Str(s) = v.as_ref()
+                {
+                    out.push((idx, s.to_string()));
                 }
             }
         }
@@ -201,9 +201,15 @@ mod tests {
         );
         // Overwriting a hunk's choice replaces, not duplicates.
         MergeDoc::set_resolution(&mut doc, 2, "ours");
-        assert_eq!(MergeDoc::resolutions(&doc), vec![(0, "both".to_string()), (2, "ours".to_string())]);
+        assert_eq!(
+            MergeDoc::resolutions(&doc),
+            vec![(0, "both".to_string()), (2, "ours".to_string())]
+        );
         MergeDoc::clear_resolutions(&mut doc);
-        assert!(MergeDoc::resolutions(&doc).is_empty(), "clear drops every choice");
+        assert!(
+            MergeDoc::resolutions(&doc).is_empty(),
+            "clear drops every choice"
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Prefetching lyrics / the next queued song / album metadata is only polite on
 //! a **stable, non-metered** connection (home Wi-Fi / ethernet) — never on a
 //! metered cellular link where it would burn the user's data. This module
-//! answers "is the connection metered?" from NetworkManager when it's available
+//! answers "is the connection metered?" from `NetworkManager` when it's available
 //! (the qOS default), with an env override for tests + headless boxes and a
 //! sensible default (assume unmetered / stable) when NM can't be reached.
 
@@ -28,7 +28,7 @@ pub fn connection_is_stable() -> bool {
     !is_metered()
 }
 
-/// Best-effort NetworkManager metered probe via `nmcli`. Returns `None` when
+/// Best-effort `NetworkManager` metered probe via `nmcli`. Returns `None` when
 /// `nmcli` is missing / errors (so the caller falls back to the default).
 ///
 /// NM's metered enum: `yes`/`yes (guessed)` ⇒ metered; `no`/`no (guessed)` ⇒
@@ -44,7 +44,11 @@ fn nm_metered() -> Option<bool> {
     let text = String::from_utf8_lossy(&out.stdout);
     let mut saw_known = false;
     for line in text.lines() {
-        let val = line.splitn(2, ':').nth(1).unwrap_or("").trim().to_ascii_lowercase();
+        let val = line
+            .split_once(':')
+            .map_or("", |(_, v)| v)
+            .trim()
+            .to_ascii_lowercase();
         if val.starts_with("yes") {
             return Some(true);
         }

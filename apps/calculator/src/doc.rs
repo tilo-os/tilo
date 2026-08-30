@@ -26,6 +26,15 @@ use ui::doc::{put_if_changed, put_text_diffed};
 
 use crate::model::{CalcModel, HistoryEntry, Mode, PlotFn, View2d, View3d};
 
+// Ints are read back as floats so a document that stored a whole number (or an
+// older document that stored an index) still yields a usable value. Above 2^53
+// that conversion rounds, which is why row indices are read by `get_index`
+// below rather than through here.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the only f64 fields are `ans`/`memory`/view geometry, where a \
+              rounded magnitude past 2^53 is already the displayed value"
+)]
 fn get_f64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<f64> {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
@@ -46,6 +55,20 @@ fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
         },
         Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).ok(),
         _ => None,
+    }
+}
+
+/// Read a row index. `store` writes these as `Int`, so this stays in the
+/// integer domain: a negative or out-of-range value falls back to the first
+/// row (which `load` re-checks against the list length anyway).
+fn get_index(doc: &AutoCommit, obj: &ObjId, key: &str) -> usize {
+    let Ok(Some((Value::Scalar(v), _))) = doc.get(obj, key) else {
+        return 0;
+    };
+    match v.as_ref() {
+        ScalarValue::Int(i) => usize::try_from(*i).unwrap_or(0),
+        ScalarValue::Uint(u) => usize::try_from(*u).unwrap_or(0),
+        _ => 0,
     }
 }
 
@@ -118,11 +141,8 @@ fn history_matches(doc: &AutoCommit, hist: &[HistoryEntry]) -> bool {
 /// no longer rewrites the whole list (the old wholesale delete+reinsert both
 /// broke character-level merge and churned the document each keystroke).
 fn store_funcs(doc: &mut AutoCommit, key: &str, funcs: &[PlotFn]) {
-    let lid = match doc.get(&ROOT, key) {
-        Ok(Some((Value::Object(ObjType::List), id))) => id,
-        _ => doc
-            .put_object(&ROOT, key, ObjType::List)
-            .expect("put_object funcs list"),
+    let Some(lid) = list_at_root(doc, key) else {
+        return; // the document rejected the write; leave it as it was
     };
     let cur = doc.length(&lid);
     // Shrink: drop trailing rows the model no longer has (back-to-front so
@@ -130,18 +150,18 @@ fn store_funcs(doc: &mut AutoCommit, key: &str, funcs: &[PlotFn]) {
     for i in (funcs.len()..cur).rev() {
         let _ = doc.delete(&lid, i);
     }
-    // Grow: append empty rows for newly-added functions.
+    // Grow: append empty rows for newly-added functions. A rejected insert
+    // stops the growth — the update loop below skips any row that is missing.
     for i in cur..funcs.len() {
-        let _ = doc
-            .insert_object(&lid, i, ObjType::Map)
-            .expect("insert func row");
+        if doc.insert_object(&lid, i, ObjType::Map).is_err() {
+            break;
+        }
     }
     // Update every row in place — the `expr` Text is spliced by diff, so an
     // unchanged formula emits no ops and a one-character edit emits one op.
     for (i, f) in funcs.iter().enumerate() {
-        let row = match doc.get(&lid, i) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => continue,
+        let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&lid, i) else {
+            continue;
         };
         put_text_diffed(doc, &row, "expr", &f.expr);
         put_if_changed(doc, &row, "visible", f.visible);
@@ -165,12 +185,22 @@ fn load_fn_list(doc: &AutoCommit, key: &str) -> Vec<PlotFn> {
     out
 }
 
-fn put_map(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
-    if let Some(id) = map_at(doc, obj, key) {
-        id
-    } else {
-        doc.put_object(obj, key, ObjType::Map).expect("put_object map")
+/// The list at `root[key]`, created if it is missing. `None` when the document
+/// refuses the write, in which case the caller has nothing to store into.
+fn list_at_root(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
+    if let Ok(Some((Value::Object(ObjType::List), id))) = doc.get(&ROOT, key) {
+        return Some(id);
     }
+    doc.put_object(&ROOT, key, ObjType::List).ok()
+}
+
+/// The map at `obj[key]`, created if it is missing. `None` when the document
+/// refuses the write.
+fn put_map(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
+    if let Some(id) = map_at(doc, obj, key) {
+        return Some(id);
+    }
+    doc.put_object(obj, key, ObjType::Map).ok()
 }
 
 fn mode_str(m: Mode) -> &'static str {
@@ -199,19 +229,34 @@ pub fn store(doc: &mut AutoCommit, m: &CalcModel) {
     put_text_diffed(doc, &ROOT, "expr", &m.expr);
     put_f64_if_changed(doc, &ROOT, "ans", m.ans);
     put_f64_if_changed(doc, &ROOT, "memory", m.memory);
-    put_if_changed(doc, &ROOT, "active", m.active_fn as i64);
-    put_if_changed(doc, &ROOT, "active_surface", m.active_surface as i64);
+    // Row indices are bounded by the list they point into, so a value that does
+    // not fit an i64 cannot name a real row — store the first row instead.
+    put_if_changed(
+        doc,
+        &ROOT,
+        "active",
+        i64::try_from(m.active_fn).unwrap_or(0),
+    );
+    put_if_changed(
+        doc,
+        &ROOT,
+        "active_surface",
+        i64::try_from(m.active_surface).unwrap_or(0),
+    );
 
     // history / funcs: only rewrite when the list actually differs. Rewriting a
     // list wholesale on every keystroke (even unchanged) permanently grew the
     // document; the equality guard makes an unchanged history a no-op.
     if !history_matches(doc, &m.history) {
         let _ = doc.delete(&ROOT, "history");
-        let hist = doc.put_object(&ROOT, "history", ObjType::List).unwrap();
-        for (i, e) in m.history.iter().enumerate() {
-            let row = doc.insert_object(&hist, i, ObjType::Map).unwrap();
-            let _ = doc.put(&row, "expr", e.expr.as_str());
-            let _ = doc.put(&row, "result", e.result.as_str());
+        if let Ok(hist) = doc.put_object(&ROOT, "history", ObjType::List) {
+            for (i, e) in m.history.iter().enumerate() {
+                let Ok(row) = doc.insert_object(&hist, i, ObjType::Map) else {
+                    break; // the document refused the row; stop rather than skew indices
+                };
+                let _ = doc.put(&row, "expr", e.expr.as_str());
+                let _ = doc.put(&row, "result", e.result.as_str());
+            }
         }
     }
 
@@ -221,15 +266,17 @@ pub fn store(doc: &mut AutoCommit, m: &CalcModel) {
     store_funcs(doc, "funcs", &m.funcs);
     store_funcs(doc, "surfaces", &m.surfaces);
 
-    let v2 = put_map(doc, &ROOT, "view2d");
-    put_f64_if_changed(doc, &v2, "cx", m.view2d.cx);
-    put_f64_if_changed(doc, &v2, "cy", m.view2d.cy);
-    put_f64_if_changed(doc, &v2, "scale", m.view2d.scale);
+    if let Some(v2) = put_map(doc, &ROOT, "view2d") {
+        put_f64_if_changed(doc, &v2, "cx", m.view2d.cx);
+        put_f64_if_changed(doc, &v2, "cy", m.view2d.cy);
+        put_f64_if_changed(doc, &v2, "scale", m.view2d.scale);
+    }
 
-    let v3 = put_map(doc, &ROOT, "view3d");
-    put_f64_if_changed(doc, &v3, "yaw", m.view3d.yaw);
-    put_f64_if_changed(doc, &v3, "pitch", m.view3d.pitch);
-    put_f64_if_changed(doc, &v3, "zoom", m.view3d.zoom);
+    if let Some(v3) = put_map(doc, &ROOT, "view3d") {
+        put_f64_if_changed(doc, &v3, "yaw", m.view3d.yaw);
+        put_f64_if_changed(doc, &v3, "pitch", m.view3d.pitch);
+        put_f64_if_changed(doc, &v3, "zoom", m.view3d.zoom);
+    }
 }
 
 /// Read the full model from the document, if present.
@@ -237,14 +284,16 @@ pub fn load(doc: &AutoCommit) -> Option<CalcModel> {
     if !is_seeded(doc) {
         return None;
     }
-    let mut m = CalcModel::default();
-    m.mode = mode_from(&get_str(doc, &ROOT, "mode").unwrap_or_default());
-    m.deg = get_bool(doc, &ROOT, "deg").unwrap_or(false);
-    m.expr = get_str(doc, &ROOT, "expr").unwrap_or_default();
-    m.ans = get_f64(doc, &ROOT, "ans").unwrap_or(0.0);
-    m.memory = get_f64(doc, &ROOT, "memory").unwrap_or(0.0);
-    m.active_fn = get_f64(doc, &ROOT, "active").unwrap_or(0.0) as usize;
-    m.active_surface = get_f64(doc, &ROOT, "active_surface").unwrap_or(0.0) as usize;
+    let mut m = CalcModel {
+        mode: mode_from(&get_str(doc, &ROOT, "mode").unwrap_or_default()),
+        deg: get_bool(doc, &ROOT, "deg").unwrap_or(false),
+        expr: get_str(doc, &ROOT, "expr").unwrap_or_default(),
+        ans: get_f64(doc, &ROOT, "ans").unwrap_or(0.0),
+        memory: get_f64(doc, &ROOT, "memory").unwrap_or(0.0),
+        active_fn: get_index(doc, &ROOT, "active"),
+        active_surface: get_index(doc, &ROOT, "active_surface"),
+        ..CalcModel::default()
+    };
 
     if let Ok(Some((Value::Object(ObjType::List), hist))) = doc.get(&ROOT, "history") {
         m.history.clear();
@@ -299,9 +348,14 @@ mod tests {
         assert_eq!(loaded.expr, m.expr);
         assert_eq!(loaded.funcs.len(), m.funcs.len());
         assert_eq!(loaded.surfaces.len(), m.surfaces.len());
-        assert_eq!(loaded.surfaces, m.surfaces, "surfaces round-trip byte-identically");
+        assert_eq!(
+            loaded.surfaces, m.surfaces,
+            "surfaces round-trip byte-identically"
+        );
         assert_eq!(loaded.history.len(), m.history.len());
-        assert_eq!(loaded.memory, m.memory);
+        // Bit-exact: the memory value must survive the CRDT round-trip
+        // unchanged, which an epsilon compare would not prove.
+        assert_eq!(loaded.memory.to_bits(), m.memory.to_bits());
         assert!((loaded.view2d.scale - m.view2d.scale).abs() < 1e-9);
     }
 
@@ -365,12 +419,14 @@ mod tests {
             let Ok(Some((Value::Object(ObjType::List), lid))) = doc.get(&ROOT, key) else {
                 panic!("{key} list missing");
             };
-            let row = match doc.get(&lid, 0) {
-                Ok(Some((Value::Object(ObjType::Map), id))) => id,
-                _ => panic!("{key} row 0 missing"),
+            let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&lid, 0) else {
+                panic!("{key} row 0 missing")
             };
             assert!(
-                matches!(doc.get(&row, "expr"), Ok(Some((Value::Object(ObjType::Text), _)))),
+                matches!(
+                    doc.get(&row, "expr"),
+                    Ok(Some((Value::Object(ObjType::Text), _)))
+                ),
                 "each {key} row's expr must be a CRDT Text object"
             );
         }
@@ -382,8 +438,13 @@ mod tests {
         // grows the doc a little (one spliced op), not by rewriting the whole
         // funcs list — the old wholesale delete+reinsert did the latter.
         let mut doc = AutoCommit::new();
-        let mut m = CalcModel::default();
-        m.funcs = vec![PlotFn { expr: "123456789012345678901234567890".into(), visible: true }];
+        let mut m = CalcModel {
+            funcs: vec![PlotFn {
+                expr: "123456789012345678901234567890".into(),
+                visible: true,
+            }],
+            ..CalcModel::default()
+        };
         store(&mut doc, &m);
         let before = doc.save().len();
         m.funcs[0].expr.push('7');
@@ -402,14 +463,19 @@ mod tests {
         // known expression, appending one char must round-trip and the doc must
         // grow only a little — not by the whole (re-inserted) string.
         let mut doc = AutoCommit::new();
-        let mut m = CalcModel::default();
-        m.expr = "123456789012345678901234567890".into();
+        let mut m = CalcModel {
+            expr: "123456789012345678901234567890".into(),
+            ..CalcModel::default()
+        };
         store(&mut doc, &m);
         let before = doc.save().len();
         m.expr.push('5');
         store(&mut doc, &m);
         let grew = doc.save().len() - before;
         assert_eq!(load(&doc).unwrap().expr, m.expr);
-        assert!(grew < 40, "appending one char grew the doc by {grew} bytes (expected a single-char splice)");
+        assert!(
+            grew < 40,
+            "appending one char grew the doc by {grew} bytes (expected a single-char splice)"
+        );
     }
 }

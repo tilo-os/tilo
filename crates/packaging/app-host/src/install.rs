@@ -33,7 +33,7 @@ use crate::store::{Store, StoreError};
 /// One-line header at the top of every .qpkg tarball.
 #[derive(Debug, Deserialize)]
 struct QpkgHeader {
-    /// `qpkg:<hex>` form of the PackageId.
+    /// `qpkg:<hex>` form of the `PackageId`.
     package_id: String,
     #[allow(dead_code)]
     format: u32,
@@ -78,10 +78,7 @@ pub fn install_qpkg(
         .map_err(|e| InstallError::Parse(e.to_string()))?
     {
         let mut entry = entry.map_err(|e| InstallError::Parse(e.to_string()))?;
-        let entry_path = entry
-            .path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+        let entry_path = entry.path().map(|p| p.to_path_buf()).unwrap_or_default();
         let name = entry_path.to_string_lossy().to_string();
         let mut buf = Vec::new();
         entry
@@ -89,9 +86,8 @@ pub fn install_qpkg(
             .map_err(|e| InstallError::Parse(e.to_string()))?;
         match name.as_str() {
             "qpkg.toml" => {
-                let s = String::from_utf8(buf).map_err(|e| {
-                    InstallError::Parse(format!("qpkg.toml not UTF-8: {e}"))
-                })?;
+                let s = String::from_utf8(buf)
+                    .map_err(|e| InstallError::Parse(format!("qpkg.toml not UTF-8: {e}")))?;
                 header = Some(
                     toml::from_str(&s)
                         .map_err(|e| InstallError::Parse(format!("qpkg.toml: {e}")))?,
@@ -108,8 +104,7 @@ pub fn install_qpkg(
             _ => { /* unknown tar entry — ignore */ }
         }
     }
-    let header = header
-        .ok_or_else(|| InstallError::Parse(".qpkg is missing qpkg.toml".into()))?;
+    let header = header.ok_or_else(|| InstallError::Parse(".qpkg is missing qpkg.toml".into()))?;
     let id: PackageId = header
         .package_id
         .parse()
@@ -147,8 +142,7 @@ pub fn install_qpkg(
     // Unpack directly out of the scratch memory store — the fs store
     // has the same content, but pkg::unpack takes `&impl BlobStore`
     // and the memory store is Send + Sync-friendly.
-    pkg::unpack(id, &mem, &payload_root)
-        .map_err(|e| InstallError::Unpack(e.to_string()))?;
+    pkg::unpack(id, &mem, &payload_root).map_err(|e| InstallError::Unpack(e.to_string()))?;
 
     let manifest_text = manifest
         .to_toml_string()

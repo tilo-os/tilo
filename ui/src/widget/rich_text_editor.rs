@@ -1,13 +1,9 @@
 //! `RichTextEditor` — a shared CRDT-native WYSIWYG rich-text editor widget.
 //!
-//! The toolkit already had a caret core (the shared [`text_selection`] walkers,
-//! now formalised as [`EditCore`](crate::text_edit::EditCore)) and a rich-run
-//! layout primitive ([`RichTextLayout`]), but no *editable* widget tied them
-//! together — every app that wanted WYSIWYG formatting (the word processor, slide
-//! text boxes, a rich caption) re-implemented caret motion, selection, splicing,
-//! and run styling by hand. This is that widget: type into it, select ranges,
-//! toggle **bold** / *italic* / underline over a selection, and switch the block
-//! between body / heading / bullet — all backed by the CRDT.
+//! Ties together the shared caret core ([`EditCore`](crate::text_edit::EditCore))
+//! and the rich-run layout primitive ([`RichTextLayout`]) into an *editable*
+//! widget, so apps that want WYSIWYG formatting stop re-implementing caret
+//! motion, selection, splicing, and run styling by hand.
 //!
 //! Design, following the five-pass [`Widget`] model:
 //!
@@ -15,26 +11,20 @@
 //!   inline formatting is stored as Automerge **native marks** (`bold` / `italic`
 //!   / `underline`), which shift automatically as text is spliced and merge
 //!   collaboratively — the same mechanism [`TextInput`] uses for authorship. The
-//!   block style is a scalar beside the text. The widget holds only render / caret
-//!   caches.
-//! * **Caret + selection are [`EditCore`].** Motion (char / word / line / doc),
-//!   shift-select, select-all, and the insert / delete splices come from the
-//!   shared core, so this editor and any future adopter get identical, tested
-//!   behaviour rather than a private fork.
-//! * **Runs render through [`RichTextLayout`].** Marks become
-//!   [`RichSpan`]s via the shared [`marks::segments_for`] partition, so bold /
-//!   italic / underline shape as real attributed runs (not glyph over-paint), with
-//!   caret geometry, selection rectangles, and click hit-testing from the same
-//!   laid-out buffer.
+//!   widget holds only render / caret caches.
+//! * **Caret + selection are [`EditCore`].** Motion, shift-select, select-all,
+//!   and the insert/delete splices come from the shared core, so this editor
+//!   and any future adopter get identical, tested behaviour.
+//! * **Runs render through [`RichTextLayout`].** Marks become [`RichSpan`]s via
+//!   the shared [`marks::segments_for`] partition, so bold/italic/underline
+//!   shape as real attributed runs (not glyph over-paint).
 //! * **IME-friendly.** Committed IME text is inserted; an in-progress preedit is
-//!   rendered inline (underlined) at the caret without touching the CRDT until it
-//!   commits.
+//!   rendered inline at the caret without touching the CRDT until it commits.
 //!
 //! Scope: this is a **single-paragraph** rich field that *word-wraps* — one
 //! Automerge `Text`, no hard line breaks (Enter is a no-op and pasted newlines
-//! fold to spaces), because [`RichTextLayout`] indexes bytes per paragraph. That
-//! covers titles, captions, and formatted fields; a multi-paragraph document is
-//! composed as a column of these (one editor per block) and is a later step.
+//! fold to spaces), because [`RichTextLayout`] indexes bytes per paragraph. A
+//! multi-paragraph document composes a column of these, one editor per block.
 //!
 //! [`text_selection`]: crate::text_selection
 //! [`TextInput`]: crate::widget::TextInput
@@ -46,9 +36,10 @@ use std::time::{Duration, Instant};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -57,8 +48,11 @@ use crate::presence::PresenceCtx;
 use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use crate::text_edit::{EditCore, Motion};
 use crate::text_render::TextRenderer;
-use crate::text_selection::{clipboard_copy, clipboard_paste, word_boundaries};
+use crate::text_selection::{
+    TextAffinity, TextPosition, clipboard_copy, clipboard_paste, word_boundaries,
+};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::marks::{self, Mark, MarkSpan};
 
@@ -164,6 +158,7 @@ pub struct RichTextEditor {
 
     // --- IME ---
     preedit: String,
+    preedit_cursor: Option<(usize, usize)>,
 
     // --- persistence / undo ---
     dirty: bool,
@@ -196,6 +191,7 @@ impl RichTextEditor {
             click_count: 0,
             last_click_time: None,
             preedit: String::new(),
+            preedit_cursor: None,
             dirty: false,
             last_edit_time: None,
         }
@@ -217,17 +213,20 @@ impl RichTextEditor {
         self
     }
 
-    /// The current plain text.
     pub fn text(&self) -> &str {
         &self.text
     }
-    /// The current block style.
     pub fn block_style(&self) -> RichBlockStyle {
         self.style
     }
     /// The caret byte offset.
     pub fn caret(&self) -> usize {
         self.core.caret()
+    }
+
+    /// The caret's document offset and visual side at an ambiguous boundary.
+    pub fn caret_position(&self) -> TextPosition {
+        self.core.caret_position()
     }
     /// The selected byte range (empty when collapsed).
     pub fn selection(&self) -> Range<usize> {
@@ -241,19 +240,15 @@ impl RichTextEditor {
 
     // --- host-facing formatting actions (call from the app's event handler) ---
 
-    /// Toggle **bold** over the current selection.
     pub fn toggle_bold(&mut self, state: &mut AutoCommit) {
         self.toggle_mark(state, Mark::Bold, "bold");
     }
-    /// Toggle *italic* over the current selection.
     pub fn toggle_italic(&mut self, state: &mut AutoCommit) {
         self.toggle_mark(state, Mark::Italic, "italic");
     }
-    /// Toggle underline over the current selection.
     pub fn toggle_underline(&mut self, state: &mut AutoCommit) {
         self.toggle_mark(state, Mark::Underline, "underline");
     }
-    /// Set the block style (heading / body / bullet …).
     pub fn set_block_style(&mut self, state: &mut AutoCommit, style: RichBlockStyle) {
         if let Some(f) = self.field_obj.clone() {
             let _ = state.put(&f, "style", style.as_str());
@@ -261,7 +256,6 @@ impl RichTextEditor {
         self.style = style;
         self.mark_dirty();
     }
-    /// Rotate to the next block style.
     pub fn cycle_block_style(&mut self, state: &mut AutoCommit) {
         let next = self.style.next();
         self.set_block_style(state, next);
@@ -279,13 +273,17 @@ impl RichTextEditor {
     fn ensure_map(state: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         match state.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => state.put_object(parent, key, ObjType::Map).expect("put map"),
+            _ => state
+                .put_object(parent, key, ObjType::Map)
+                .expect("put map"),
         }
     }
     fn ensure_text(state: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         match state.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => state.put_object(parent, key, ObjType::Text).expect("put text"),
+            _ => state
+                .put_object(parent, key, ObjType::Text)
+                .expect("put text"),
         }
     }
 
@@ -334,7 +332,9 @@ impl RichTextEditor {
         if self.core.selection().is_collapsed() {
             return;
         }
-        let Some(tid) = self.text_obj.clone() else { return };
+        let Some(tid) = self.text_obj.clone() else {
+            return;
+        };
         let r = self.core.range();
         let covered = marks::range_fully_covered(&self.marks, &r, &mark);
         let cs = self.text[..r.start].chars().count();
@@ -353,8 +353,10 @@ impl RichTextEditor {
         // Single-paragraph field: fold any newlines (typed or pasted) into
         // spaces so the buffer stays one paragraph — `RichTextLayout` indexes
         // bytes per paragraph, so a hard `\n` would desync caret geometry.
-        let cleaned: String =
-            s.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+        let cleaned: String = s
+            .chars()
+            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+            .collect();
         if cleaned.is_empty() {
             return;
         }
@@ -366,7 +368,12 @@ impl RichTextEditor {
     /// (rendered but not yet committed). Returns the preedit byte range too.
     fn display_state(&self) -> (String, Vec<MarkSpan>, usize, Option<Range<usize>>) {
         if self.preedit.is_empty() {
-            (self.text.clone(), self.marks.clone(), self.core.caret(), None)
+            (
+                self.text.clone(),
+                self.marks.clone(),
+                self.core.caret(),
+                None,
+            )
         } else {
             let c = self.core.caret().min(self.text.len());
             let mut dt = String::with_capacity(self.text.len() + self.preedit.len());
@@ -375,7 +382,12 @@ impl RichTextEditor {
             dt.push_str(&self.text[c..]);
             let mut dm = self.marks.clone();
             marks::shift_after_edit(&mut dm, c, self.preedit.len(), 0);
-            (dt, dm, c + self.preedit.len(), Some(c..c + self.preedit.len()))
+            let within = self
+                .preedit_cursor
+                .map_or(self.preedit.len(), |(_, end)| end.min(self.preedit.len()));
+            let within =
+                crate::text_selection::grapheme_boundary_at_or_before(&self.preedit, within);
+            (dt, dm, c + within, Some(c..c + self.preedit.len()))
         }
     }
 
@@ -395,6 +407,19 @@ impl RichTextEditor {
         }
     }
 
+    fn display_caret_position(&self) -> TextPosition {
+        let (_, _, byte, _) = self.display_state();
+        if self.preedit.is_empty() {
+            TextPosition::with_affinity(byte, self.core.caret_position().affinity)
+        } else {
+            TextPosition::new(byte)
+        }
+    }
+
+    fn display_to_text_position(&self, position: TextPosition) -> TextPosition {
+        TextPosition::with_affinity(self.display_to_text_byte(position.byte), position.affinity)
+    }
+
     fn content_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0 + PAD,
@@ -404,12 +429,20 @@ impl RichTextEditor {
         )
     }
     fn text_origin(&self) -> Point {
-        let indent = if self.style == RichBlockStyle::Bullet { BULLET_INDENT } else { 0.0 };
+        let indent = if self.style == RichBlockStyle::Bullet {
+            BULLET_INDENT
+        } else {
+            0.0
+        };
         let inner = self.content_rect();
         Point::new(inner.x0 + indent, inner.y0)
     }
     fn text_width(&self) -> f32 {
-        let indent = if self.style == RichBlockStyle::Bullet { BULLET_INDENT } else { 0.0 };
+        let indent = if self.style == RichBlockStyle::Bullet {
+            BULLET_INDENT
+        } else {
+            0.0
+        };
         ((self.content_rect().width() - indent).max(1.0)) as f32
     }
 
@@ -453,9 +486,8 @@ impl RichTextEditor {
     }
 
     fn ensure_layout(&mut self, tr: &mut TextRenderer, width: f32) {
-        let stale = self.layout.is_none()
-            || self.layout_dirty
-            || (self.layout_width - width).abs() > 0.5;
+        let stale =
+            self.layout.is_none() || self.layout_dirty || (self.layout_width - width).abs() > 0.5;
         if stale {
             self.layout = Some(self.shape(tr, width.max(1.0)));
             self.layout_width = width;
@@ -463,26 +495,69 @@ impl RichTextEditor {
         }
     }
 
-    /// Byte offset (in committed text) under a logical point.
-    fn byte_at(&self, pt: Point) -> usize {
-        let Some(layout) = &self.layout else { return self.core.caret() };
+    /// Exact committed-text position under a logical point.
+    fn position_at(&self, pt: Point) -> TextPosition {
+        let Some(layout) = &self.layout else {
+            return self.core.caret_position();
+        };
         let origin = self.text_origin();
         let x = (pt.x - origin.x) as f32;
         let y = (pt.y - origin.y) as f32;
-        let disp = layout.hit(x.max(0.0), y.max(0.0));
-        self.display_to_text_byte(disp)
+        let disp = layout.hit_position(x.max(0.0), y.max(0.0));
+        self.display_to_text_position(disp)
     }
 
     fn move_vertical(&mut self, down: bool, extend: bool) {
         let Some(layout) = &self.layout else { return };
-        let (_dt, _dm, caret_disp, _pr) = self.display_state();
-        let (cx, top, h) = layout.caret_geometry(caret_disp);
+        let caret_disp = self.display_caret_position();
+        let (cx, top, h) = layout.caret_geometry_at(caret_disp);
         let goal = self.goal_x.unwrap_or(cx);
-        let ty = if down { top + h + h * 0.5 } else { top - h * 0.5 };
-        let disp = layout.hit(goal, ty.max(0.0));
-        let target = self.display_to_text_byte(disp);
-        self.core.place(target, extend);
+        let ty = if down {
+            top + h + h * 0.5
+        } else {
+            top - h * 0.5
+        };
+        let disp = layout.hit_position(goal, ty.max(0.0));
+        let target = self.display_to_text_position(disp);
+        self.core.place_position(target, extend);
         self.goal_x = Some(goal);
+        self.redraw = true;
+    }
+
+    fn move_horizontal(&mut self, right: bool, extend: bool, word: bool) {
+        if word {
+            self.core.motion(
+                &self.text,
+                if right {
+                    Motion::WordRight
+                } else {
+                    Motion::WordLeft
+                },
+                extend,
+            );
+        } else if let Some(layout) = &self.layout {
+            if !extend && self.core.has_selection() {
+                let range = self.core.range();
+                let left = layout.caret_geometry(range.start).0;
+                let right_x = layout.caret_geometry(range.end).0;
+                let target = if right == (right_x >= left) {
+                    range.end
+                } else {
+                    range.start
+                };
+                self.core.place(target, false);
+            } else {
+                let target = layout.visual_motion_position(self.core.caret_position(), right);
+                self.core.place_position(target, extend);
+            }
+        } else {
+            self.core.motion(
+                &self.text,
+                if right { Motion::Right } else { Motion::Left },
+                extend,
+            );
+        }
+        self.goal_x = None;
         self.redraw = true;
     }
 
@@ -495,7 +570,9 @@ impl RichTextEditor {
 }
 
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
-    text.char_indices().nth(char_idx).map(|(b, _)| b).unwrap_or(text.len())
+    text.char_indices()
+        .nth(char_idx)
+        .map_or(text.len(), |(b, _)| b)
 }
 
 impl Widget for RichTextEditor {
@@ -523,13 +600,14 @@ impl Widget for RichTextEditor {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -543,20 +621,30 @@ impl Widget for RichTextEditor {
             AvailableSpace::Definite(w) => w,
             _ => 400.0,
         });
-        let indent = if self.style == RichBlockStyle::Bullet { BULLET_INDENT as f32 } else { 0.0 };
+        let indent = if self.style == RichBlockStyle::Bullet {
+            BULLET_INDENT as f32
+        } else {
+            0.0
+        };
         let inner_w = (width - 2.0 * PAD as f32 - indent).max(1.0);
         self.ensure_layout(text_renderer, inner_w);
-        let text_h = self.layout.as_ref().map(|l| l.height()).unwrap_or(self.base_font_size * 1.4);
-        taffy::Size { width, height: text_h + 2.0 * PAD as f32 }
+        let text_h = self.layout.as_ref().map_or(
+            self.base_font_size * 1.4,
+            super::super::richtext::RichTextLayout::height,
+        );
+        taffy::Size {
+            width,
+            height: text_h + 2.0 * PAD as f32,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.layout_dirty = true;
     }
@@ -569,11 +657,15 @@ impl Widget for RichTextEditor {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         if self.frame {
             let body = RoundedRect::from_rect(self.rect, radius);
             scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &body);
-            let border = if self.focused { theme.border_focus } else { theme.border_standard };
+            let border = if self.focused {
+                theme.border_focus
+            } else {
+                theme.border_standard
+            };
             scene.stroke(&Stroke::new(1.0), transform, border, None, &body);
         }
 
@@ -585,7 +677,7 @@ impl Widget for RichTextEditor {
 
         // Bullet marker.
         if self.style == RichBlockStyle::Bullet {
-            let size = self.base_font_size as f64;
+            let size = f64::from(self.base_font_size);
             let cy = self.content_rect().y0 + size * 0.7;
             let cx = self.content_rect().x0 + BULLET_INDENT * 0.4;
             scene.fill(
@@ -603,14 +695,18 @@ impl Widget for RichTextEditor {
             if r.start < r.end {
                 let sel = theme.accent_primary.with_alpha_factor(0.30);
                 for (x0, y0, x1, y1) in layout.selection_rects(r.start, r.end) {
-                    let rect = Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64);
+                    let rect =
+                        Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
                     scene.fill(Fill::NonZero, t, sel, None, &rect);
                 }
             }
         }
 
         // Placeholder when empty and unfocused.
-        if self.text.is_empty() && self.preedit.is_empty() && !self.focused && !self.placeholder.is_empty()
+        if self.text.is_empty()
+            && self.preedit.is_empty()
+            && !self.focused
+            && !self.placeholder.is_empty()
         {
             text_renderer.draw_text(
                 scene,
@@ -626,9 +722,13 @@ impl Widget for RichTextEditor {
 
         // Caret (solid; no blink → no idle redraw).
         if self.focused {
-            let (_dt, _dm, caret_disp, _pr) = self.display_state();
-            let (cx, top, h) = layout.caret_geometry(caret_disp);
-            let caret = Rect::new(cx as f64, top as f64, cx as f64 + CARET_WIDTH, (top + h) as f64);
+            let (cx, top, h) = layout.caret_geometry_at(self.display_caret_position());
+            let caret = Rect::new(
+                f64::from(cx),
+                f64::from(top),
+                f64::from(cx) + CARET_WIDTH,
+                f64::from(top + h),
+            );
             scene.fill(Fill::NonZero, t, theme.accent_primary, None, &caret);
         }
         self.redraw = false;
@@ -646,20 +746,24 @@ impl Widget for RichTextEditor {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        let ctrl = modifiers.state().control_key();
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         let shift = modifiers.state().shift_key();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
                 if self.is_dragging {
-                    let b = self.byte_at(pt);
-                    self.core.place(b, true);
+                    let position = self.position_at(pt);
+                    self.core.place_position(position, true);
                     self.redraw = true;
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 let pt = self.last_cursor;
                 if !self.rect.contains(pt) {
                     return;
@@ -670,17 +774,17 @@ impl Widget for RichTextEditor {
                 let now = Instant::now();
                 let is_double = self
                     .last_click_time
-                    .map(|t| now.duration_since(t) < MULTI_CLICK)
-                    .unwrap_or(false);
+                    .is_some_and(|t| now.duration_since(t) < MULTI_CLICK);
                 self.last_click_time = Some(now);
                 self.click_count = if is_double { self.click_count + 1 } else { 1 };
 
-                let b = self.byte_at(pt);
+                let position = self.position_at(pt);
+                let b = position.byte;
                 if self.click_count >= 2 {
                     let (s, e) = word_boundaries(&self.text, b);
                     self.core.set_selection(s, e);
                 } else {
-                    self.core.place(b, shift);
+                    self.core.place_position(position, shift);
                     self.is_dragging = true;
                 }
                 self.focused = true;
@@ -689,7 +793,11 @@ impl Widget for RichTextEditor {
                 self.redraw = true;
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if self.is_dragging {
                     self.is_dragging = false;
                     *handled = true;
@@ -700,20 +808,28 @@ impl Widget for RichTextEditor {
                     return;
                 }
                 self.preedit.clear();
+                self.preedit_cursor = None;
                 self.insert_str(state, s);
                 *handled = true;
             }
-            WindowEvent::Ime(Ime::Preedit(s, _)) => {
+            WindowEvent::Ime(Ime::Preedit(s, cursor)) => {
                 if !self.focused {
                     return;
                 }
                 self.preedit = s.clone();
+                self.preedit_cursor = *cursor;
                 self.redraw = true;
                 self.layout_dirty = true;
                 *handled = true;
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        text,
+                        ..
+                    },
                 ..
             } => {
                 if !self.focused {
@@ -721,17 +837,11 @@ impl Widget for RichTextEditor {
                 }
                 match logical_key {
                     Key::Named(NamedKey::ArrowLeft) => {
-                        let m = if ctrl { Motion::WordLeft } else { Motion::Left };
-                        self.core.motion(&self.text, m, shift);
-                        self.goal_x = None;
-                        self.redraw = true;
+                        self.move_horizontal(false, shift, ctrl);
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowRight) => {
-                        let m = if ctrl { Motion::WordRight } else { Motion::Right };
-                        self.core.motion(&self.text, m, shift);
-                        self.goal_x = None;
-                        self.redraw = true;
+                        self.move_horizontal(true, shift, ctrl);
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
@@ -743,15 +853,27 @@ impl Widget for RichTextEditor {
                         *handled = true;
                     }
                     Key::Named(NamedKey::Home) => {
-                        let m = if ctrl { Motion::DocStart } else { Motion::LineStart };
-                        self.core.motion(&self.text, m, shift);
+                        if ctrl {
+                            self.core.motion(&self.text, Motion::DocStart, shift);
+                        } else if let Some(layout) = &self.layout {
+                            let (home, _) = layout.visual_line_edges(self.core.caret());
+                            self.core.place(home, shift);
+                        } else {
+                            self.core.motion(&self.text, Motion::LineStart, shift);
+                        }
                         self.goal_x = None;
                         self.redraw = true;
                         *handled = true;
                     }
                     Key::Named(NamedKey::End) => {
-                        let m = if ctrl { Motion::DocEnd } else { Motion::LineEnd };
-                        self.core.motion(&self.text, m, shift);
+                        if ctrl {
+                            self.core.motion(&self.text, Motion::DocEnd, shift);
+                        } else if let Some(layout) = &self.layout {
+                            let (_, end) = layout.visual_line_edges(self.core.caret());
+                            self.core.place(end, shift);
+                        } else {
+                            self.core.motion(&self.text, Motion::LineEnd, shift);
+                        }
                         self.goal_x = None;
                         self.redraw = true;
                         *handled = true;
@@ -817,13 +939,13 @@ impl Widget for RichTextEditor {
                     _ => {
                         // Fall back to any committed text winit attached (dead
                         // keys, layout composition) when it isn't a control combo.
-                        if !ctrl {
-                            if let Some(t) = text {
-                                if !t.is_empty() && !t.chars().all(|c| c.is_control()) {
-                                    self.insert_str(state, t);
-                                    *handled = true;
-                                }
-                            }
+                        if !ctrl
+                            && let Some(t) = text
+                            && !t.is_empty()
+                            && !t.chars().all(char::is_control)
+                        {
+                            self.insert_str(state, t);
+                            *handled = true;
                         }
                     }
                 }
@@ -832,7 +954,7 @@ impl Widget for RichTextEditor {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RichTextEditor"
     }
 
@@ -841,7 +963,9 @@ impl Widget for RichTextEditor {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.content_rect().contains(point).then_some(winit::window::CursorIcon::Text)
+        self.content_rect()
+            .contains(point)
+            .then_some(winit::window::CursorIcon::Text)
     }
 
     fn is_focusable(&self) -> bool {
@@ -852,12 +976,27 @@ impl Widget for RichTextEditor {
             self.focused = focused;
             if !focused {
                 self.preedit.clear();
+                self.preedit_cursor = None;
             }
             self.redraw = true;
         }
     }
     fn is_focused(&self) -> bool {
         self.focused
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.focused {
+            return None;
+        }
+        let layout = self.layout.as_ref()?;
+        let (x, top, height) = layout.caret_geometry_at(self.display_caret_position());
+        let origin = self.text_origin();
+        Some(Rect::new(
+            origin.x + f64::from(x),
+            origin.y + f64::from(top),
+            origin.x + f64::from(x) + CARET_WIDTH,
+            origin.y + f64::from(top + height),
+        ))
     }
 
     fn needs_redraw(&self) -> bool {
@@ -868,19 +1007,36 @@ impl Widget for RichTextEditor {
     }
 
     fn needs_commit(&self) -> bool {
-        self.last_edit_time.map(|t| t.elapsed() >= Duration::from_secs(1)).unwrap_or(false)
+        self.last_edit_time
+            .is_some_and(|t| t.elapsed() >= Duration::from_secs(1))
     }
     fn on_commit(&mut self) {
         self.last_edit_time = None;
     }
     fn get_state(&self) -> Option<String> {
-        Some(format!("{}:{}", self.core.selection().anchor, self.core.selection().cursor))
+        let affinity = match self.core.caret_position().affinity {
+            TextAffinity::Before => "b",
+            TextAffinity::After => "a",
+        };
+        Some(format!(
+            "{}:{}:{affinity}",
+            self.core.selection().anchor,
+            self.core.selection().cursor
+        ))
     }
     fn set_state(&mut self, s: &str) {
-        if let Some((a, c)) = s.split_once(':') {
-            if let (Ok(a), Ok(c)) = (a.parse::<usize>(), c.parse::<usize>()) {
-                self.core.set_selection(a, c);
-            }
+        let mut parts = s.split(':');
+        if let (Some(a), Some(c)) = (parts.next(), parts.next())
+            && let (Ok(a), Ok(c)) = (a.parse::<usize>(), c.parse::<usize>())
+        {
+            let affinity = if parts.next() == Some("a") {
+                TextAffinity::After
+            } else {
+                TextAffinity::Before
+            };
+            self.core.set_selection(a, c);
+            self.core
+                .place_position(TextPosition::with_affinity(c, affinity), true);
         }
     }
 
@@ -889,12 +1045,52 @@ impl Widget for RichTextEditor {
         Some(
             AccessNode::new(Role::TextInput)
                 .with_optional_value(Some(self.text.clone()))
+                .with_text_selection(self.core.selection().anchor, self.core.selection().cursor)
                 .with_state(AccessState {
                     focusable: true,
                     focused: self.focused,
                     ..Default::default()
                 }),
         )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+
+        match action {
+            Action::SetValue(value) => {
+                let cleaned = value
+                    .chars()
+                    .filter_map(|c| match c {
+                        '\n' | '\r' => Some(' '),
+                        c if c.is_control() => None,
+                        c => Some(c),
+                    })
+                    .collect::<String>();
+                self.core.set_selection(0, self.text.len());
+                let edit = self.core.insert(&cleaned);
+                self.apply_edit(state, edit);
+                true
+            }
+            Action::SetSelection { anchor, focus } => {
+                let byte_at = |character_index: usize| {
+                    self.text
+                        .grapheme_indices(true)
+                        .nth(character_index)
+                        .map_or(self.text.len(), |(byte, _)| byte)
+                };
+                self.core.set_selection(byte_at(*anchor), byte_at(*focus));
+                self.goal_x = None;
+                self.redraw = true;
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -927,33 +1123,54 @@ mod tests {
     fn char_ev(s: &str) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(SmolStr::new(s));
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = Some(SmolStr::new(s));
-        WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
     }
     fn named_ev(k: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(k);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
-        WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
     }
     fn mouse_move(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: winit::dpi::PhysicalPosition::new(x, y) }
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
     }
     fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
     }
     fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Released, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
     }
 
     fn press(ed: &mut RichTextEditor, state: &mut State, ev: &WindowEvent, m: &Modifiers) {
@@ -961,13 +1178,28 @@ mod tests {
         let node = NodeId::from(0usize);
         let mut handled = false;
         let mut ft = None;
-        ed.handle_event(ev, 1.0, m, &mut state.doc, &state.root, &mut handled, &mut ft, node, &taffy);
+        ed.handle_event(
+            ev,
+            1.0,
+            m,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
     }
 
     fn type_str(ed: &mut RichTextEditor, state: &mut State, s: &str) {
         for ch in s.chars() {
             let mut buf = [0u8; 4];
-            press(ed, state, &char_ev(ch.encode_utf8(&mut buf)), &mods(false, false));
+            press(
+                ed,
+                state,
+                &char_ev(ch.encode_utf8(&mut buf)),
+                &mods(false, false),
+            );
         }
     }
 
@@ -982,16 +1214,27 @@ mod tests {
         taffy
             .compute_layout_with_measure(
                 node,
-                Size { width: AvailableSpace::Definite(w), height: AvailableSpace::Definite(h) },
+                Size {
+                    width: AvailableSpace::Definite(w),
+                    height: AvailableSpace::Definite(h),
+                },
                 |known, available, nid, _, _| {
-                    nm.get(&nid).map(|&p| unsafe { (*p).measure(known, available, &mut tr) }).unwrap_or(Size::ZERO)
+                    nm.get(&nid)
+                        .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
+                        .unwrap_or(Size::ZERO)
                 },
             )
             .unwrap();
         ed.apply_layout(&taffy, node, Point::ZERO);
         // Build the layout cache at the final content width (what draw does).
         let mut scene = Scene::new();
-        ed.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::default());
+        ed.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
     }
 
     fn crdt_text_obj(state: &State) -> ObjId {
@@ -1007,21 +1250,45 @@ mod tests {
         assert_eq!(ed.text(), "hello");
         assert_eq!(ed.caret(), 5);
         let tid = crdt_text_obj(&state);
-        assert_eq!(state.doc.text(&tid).unwrap(), "hello", "characters land in the CRDT Text");
+        assert_eq!(
+            state.doc.text(&tid).unwrap(),
+            "hello",
+            "characters land in the CRDT Text"
+        );
     }
 
     #[test]
     fn arrow_and_word_motion_walk_the_caret() {
         let (mut state, mut ed) = setup();
         type_str(&mut ed, &mut state, "hi there");
-        press(&mut ed, &mut state, &named_ev(NamedKey::ArrowLeft), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::ArrowLeft),
+            &mods(false, false),
+        );
         assert_eq!(ed.caret(), 7);
         // Ctrl+Left → previous word boundary ("there" starts at byte 3).
-        press(&mut ed, &mut state, &named_ev(NamedKey::ArrowLeft), &mods(true, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::ArrowLeft),
+            &mods(true, false),
+        );
         assert_eq!(ed.caret(), 3);
-        press(&mut ed, &mut state, &named_ev(NamedKey::Home), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Home),
+            &mods(false, false),
+        );
         assert_eq!(ed.caret(), 0);
-        press(&mut ed, &mut state, &named_ev(NamedKey::End), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::End),
+            &mods(false, false),
+        );
         assert_eq!(ed.caret(), 8);
     }
 
@@ -1029,9 +1296,19 @@ mod tests {
     fn shift_arrow_selects_then_typing_replaces_selection() {
         let (mut state, mut ed) = setup();
         type_str(&mut ed, &mut state, "abcdef");
-        press(&mut ed, &mut state, &named_ev(NamedKey::Home), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Home),
+            &mods(false, false),
+        );
         for _ in 0..3 {
-            press(&mut ed, &mut state, &named_ev(NamedKey::ArrowRight), &mods(false, true));
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::ArrowRight),
+                &mods(false, true),
+            );
         }
         assert_eq!(ed.selection(), 0..3, "shift+right extends the selection");
         type_str(&mut ed, &mut state, "X");
@@ -1042,13 +1319,33 @@ mod tests {
     fn backspace_char_and_word_and_delete() {
         let (mut state, mut ed) = setup();
         type_str(&mut ed, &mut state, "one two");
-        press(&mut ed, &mut state, &named_ev(NamedKey::Backspace), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Backspace),
+            &mods(false, false),
+        );
         assert_eq!(ed.text(), "one tw");
         // Ctrl+Backspace deletes the rest of the word.
-        press(&mut ed, &mut state, &named_ev(NamedKey::Backspace), &mods(true, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Backspace),
+            &mods(true, false),
+        );
         assert_eq!(ed.text(), "one ");
-        press(&mut ed, &mut state, &named_ev(NamedKey::Home), &mods(false, false));
-        press(&mut ed, &mut state, &named_ev(NamedKey::Delete), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Home),
+            &mods(false, false),
+        );
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Delete),
+            &mods(false, false),
+        );
         assert_eq!(ed.text(), "ne ");
     }
 
@@ -1056,13 +1353,130 @@ mod tests {
     fn enter_is_a_noop_and_pasted_newlines_fold_to_spaces() {
         let (mut state, mut ed) = setup();
         type_str(&mut ed, &mut state, "a");
-        press(&mut ed, &mut state, &named_ev(NamedKey::Enter), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Enter),
+            &mods(false, false),
+        );
         type_str(&mut ed, &mut state, "b");
         // Single-paragraph: Enter inserted nothing; the buffer stays one line.
         assert_eq!(ed.text(), "ab");
         // A commit carrying a newline (e.g. a multi-line paste) folds to a space.
-        press(&mut ed, &mut state, &WindowEvent::Ime(Ime::Commit("x\ny".to_string())), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &WindowEvent::Ime(Ime::Commit("x\ny".to_string())),
+            &mods(false, false),
+        );
         assert_eq!(ed.text(), "abx y");
+    }
+
+    #[test]
+    fn rich_editor_preedit_honours_internal_caret_and_candidate_anchor() {
+        let (mut state, mut ed) = setup();
+        type_str(&mut ed, &mut state, "ab");
+        ed.core.set_caret(1);
+        let composition = "漢字";
+        press(
+            &mut ed,
+            &mut state,
+            &WindowEvent::Ime(Ime::Preedit(
+                composition.into(),
+                Some(("漢".len(), "漢".len())),
+            )),
+            &mods(false, false),
+        );
+        assert_eq!(ed.text(), "ab", "preedit is display-only");
+        layout(&mut ed, 400.0, 80.0);
+        let (_, _, display_caret, preedit) = ed.display_state();
+        assert_eq!(display_caret, 1 + "漢".len());
+        assert_eq!(preedit, Some(1..1 + composition.len()));
+        assert!(Widget::ime_cursor_rect(&ed).is_some());
+
+        press(
+            &mut ed,
+            &mut state,
+            &WindowEvent::Ime(Ime::Commit(composition.into())),
+            &mods(false, false),
+        );
+        assert_eq!(ed.text(), "a漢字b");
+        assert!(ed.preedit.is_empty());
+    }
+
+    #[test]
+    fn rich_editor_arrows_follow_rtl_visual_direction() {
+        let (mut state, mut ed) = setup();
+        let text = "שלום";
+        type_str(&mut ed, &mut state, text);
+        layout(&mut ed, 400.0, 80.0);
+        ed.core.set_caret(0);
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::ArrowLeft),
+            &mods(false, false),
+        );
+        assert_eq!(ed.caret(), text.chars().next().unwrap().len_utf8());
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::ArrowRight),
+            &mods(false, false),
+        );
+        assert_eq!(ed.caret(), 0);
+    }
+
+    #[test]
+    fn rich_editor_arrows_retain_mixed_bidi_affinity() {
+        let (mut state, mut ed) = setup();
+        type_str(&mut ed, &mut state, "abc אבג xyz");
+        layout(&mut ed, 400.0, 80.0);
+        let shaped = ed.layout.as_ref().unwrap();
+        let (_, top, height) = shaped.caret_geometry(0);
+        let y = top + height * 0.5;
+        let mut positions = Vec::new();
+        for x in 0..=shaped.width().ceil() as usize {
+            let position = shaped.hit_position(x as f32, y);
+            if positions.last() != Some(&position) {
+                positions.push(position);
+            }
+        }
+        let (a, b) = positions
+            .iter()
+            .find_map(|a| {
+                let ax = shaped.caret_geometry_at(*a).0;
+                positions
+                    .iter()
+                    .find(|b| {
+                        a.byte == b.byte
+                            && a.affinity != b.affinity
+                            && (ax - shaped.caret_geometry_at(**b).0).abs() > 1.0
+                    })
+                    .map(|b| (*a, *b))
+            })
+            .expect("mixed BiDi exposes an ambiguous boundary");
+        let (left, right) = if shaped.caret_geometry_at(a).0 < shaped.caret_geometry_at(b).0 {
+            (a, b)
+        } else {
+            (b, a)
+        };
+
+        ed.core.set_caret_position(left);
+        for _ in 0..16 {
+            if ed.caret_position() == right {
+                break;
+            }
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::ArrowRight),
+                &mods(false, false),
+            );
+        }
+        assert_eq!(ed.caret_position(), right);
+        assert_eq!(left.byte, right.byte);
+        assert_ne!(left.affinity, right.affinity);
     }
 
     #[test]
@@ -1079,22 +1493,38 @@ mod tests {
         type_str(&mut ed, &mut state, "abcdef");
         // Select "abc" (Home + 3× shift-right) and bold it via the production
         // toolbar method (the same one Ctrl+B invokes).
-        press(&mut ed, &mut state, &named_ev(NamedKey::Home), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Home),
+            &mods(false, false),
+        );
         for _ in 0..3 {
-            press(&mut ed, &mut state, &named_ev(NamedKey::ArrowRight), &mods(false, true));
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::ArrowRight),
+                &mods(false, true),
+            );
         }
         ed.toggle_bold(&mut state.doc);
         let tid = crdt_text_obj(&state);
         let marks = state.doc.marks(&tid).unwrap();
         let bold: Vec<_> = marks.iter().filter(|m| m.name.as_str() == "bold").collect();
         assert_eq!(bold.len(), 1, "one bold mark written");
-        assert_eq!((bold[0].start, bold[0].end), (0, 3), "bold covers the selected chars");
+        assert_eq!(
+            (bold[0].start, bold[0].end),
+            (0, 3),
+            "bold covers the selected chars"
+        );
 
         // A fresh editor reads the mark back as a byte-range MarkSpan.
         let mut ed2 = RichTextEditor::new("doc");
         ed2.sync(&mut state.doc, &state.root);
         assert!(
-            ed2.marks.iter().any(|s| s.mark == Mark::Bold && s.range == (0..3)),
+            ed2.marks
+                .iter()
+                .any(|s| s.mark == Mark::Bold && s.range == (0..3)),
             "the bold span round-trips through the CRDT: {:?}",
             ed2.marks
         );
@@ -1103,7 +1533,9 @@ mod tests {
         ed.toggle_bold(&mut state.doc);
         let marks = state.doc.marks(&tid).unwrap();
         assert!(
-            marks.iter().all(|m| m.name.as_str() != "bold" || m.value == ScalarValue::Boolean(false)),
+            marks
+                .iter()
+                .all(|m| m.name.as_str() != "bold" || m.value == ScalarValue::Boolean(false)),
             "toggling the covered range again clears bold"
         );
     }
@@ -1116,23 +1548,41 @@ mod tests {
         // A fresh editor reads the persisted style.
         let mut ed2 = RichTextEditor::new("doc");
         ed2.sync(&mut state.doc, &state.root);
-        assert_eq!(ed2.block_style(), RichBlockStyle::Heading, "style survives via the CRDT");
+        assert_eq!(
+            ed2.block_style(),
+            RichBlockStyle::Heading,
+            "style survives via the CRDT"
+        );
     }
 
     #[test]
     fn caret_state_round_trips_for_undo_restore() {
         let (mut state, mut ed) = setup();
         type_str(&mut ed, &mut state, "abcdef");
-        press(&mut ed, &mut state, &named_ev(NamedKey::Home), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Home),
+            &mods(false, false),
+        );
         for _ in 0..2 {
-            press(&mut ed, &mut state, &named_ev(NamedKey::ArrowRight), &mods(false, true));
+            press(
+                &mut ed,
+                &mut state,
+                &named_ev(NamedKey::ArrowRight),
+                &mods(false, true),
+            );
         }
         let saved = Widget::get_state(&ed).unwrap();
         // A rebuild resets the caret; set_state restores it.
         let mut ed2 = RichTextEditor::new("doc");
         ed2.sync(&mut state.doc, &state.root);
         Widget::set_state(&mut ed2, &saved);
-        assert_eq!(ed2.selection(), 0..2, "caret + selection restore across a rebuild");
+        assert_eq!(
+            ed2.selection(),
+            0..2,
+            "caret + selection restore across a rebuild"
+        );
     }
 
     #[test]
@@ -1142,10 +1592,19 @@ mod tests {
         layout(&mut ed, 400.0, 80.0);
         let origin = ed.text_origin();
         // A click at the very start seats the caret at the beginning.
-        press(&mut ed, &mut state, &mouse_move(origin.x, origin.y + 4.0), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &mouse_move(origin.x, origin.y + 4.0),
+            &mods(false, false),
+        );
         press(&mut ed, &mut state, &left_press(), &mods(false, false));
         press(&mut ed, &mut state, &left_release(), &mods(false, false));
-        assert!(ed.caret() <= 1, "click at the start seats the caret near 0, got {}", ed.caret());
+        assert!(
+            ed.caret() <= 1,
+            "click at the start seats the caret near 0, got {}",
+            ed.caret()
+        );
         // A double-click inside "hello" selects the whole word.
         let p = mouse_move(origin.x + 12.0, origin.y + 4.0);
         press(&mut ed, &mut state, &p, &mods(false, false));
@@ -1153,22 +1612,52 @@ mod tests {
         press(&mut ed, &mut state, &left_release(), &mods(false, false));
         press(&mut ed, &mut state, &p, &mods(false, false));
         press(&mut ed, &mut state, &left_press(), &mods(false, false));
-        assert_eq!(ed.selection(), 0..5, "double-click selects the word under the pointer");
+        assert_eq!(
+            ed.selection(),
+            0..5,
+            "double-click selects the word under the pointer"
+        );
     }
 
     #[test]
     fn arrow_down_up_move_across_wrapped_lines() {
         let (mut state, mut ed) = setup();
         // A single paragraph long enough to wrap at a narrow width.
-        type_str(&mut ed, &mut state, "alpha bravo charlie delta echo foxtrot golf hotel india");
+        type_str(
+            &mut ed,
+            &mut state,
+            "alpha bravo charlie delta echo foxtrot golf hotel india",
+        );
         layout(&mut ed, 160.0, 240.0);
-        press(&mut ed, &mut state, &named_ev(NamedKey::Home), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::Home),
+            &mods(true, false),
+        );
         assert_eq!(ed.caret(), 0);
-        press(&mut ed, &mut state, &named_ev(NamedKey::ArrowDown), &mods(false, false));
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::ArrowDown),
+            &mods(false, false),
+        );
         let down = ed.caret();
-        assert!(down > 0, "ArrowDown moves to a lower wrapped line, got {down}");
-        press(&mut ed, &mut state, &named_ev(NamedKey::ArrowUp), &mods(false, false));
-        assert!(ed.caret() < down, "ArrowUp moves back toward the first line, got {}", ed.caret());
+        assert!(
+            down > 0,
+            "ArrowDown moves to a lower wrapped line, got {down}"
+        );
+        press(
+            &mut ed,
+            &mut state,
+            &named_ev(NamedKey::ArrowUp),
+            &mods(false, false),
+        );
+        assert!(
+            ed.caret() < down,
+            "ArrowUp moves back toward the first line, got {}",
+            ed.caret()
+        );
     }
 
     #[test]
@@ -1178,17 +1667,50 @@ mod tests {
         layout(&mut ed, 400.0, 80.0);
         assert!(Widget::is_focusable(&ed));
         let inside = ed.content_rect().center();
-        assert_eq!(Widget::cursor_shape(&ed, inside), Some(winit::window::CursorIcon::Text));
+        assert_eq!(
+            Widget::cursor_shape(&ed, inside),
+            Some(winit::window::CursorIcon::Text)
+        );
     }
 
     #[test]
     fn accessibility_reports_a_text_input() {
-        use crate::a11y::Role;
+        use crate::a11y::{AccessibleTextSelection, Action, Role};
         let (mut state, mut ed) = setup();
-        type_str(&mut ed, &mut state, "hi");
+        type_str(&mut ed, &mut state, "a👩‍👩‍👧‍👦b");
+        ed.core.set_selection(1, 1 + "👩‍👩‍👧‍👦".len());
         let node = Widget::accessibility(&ed).unwrap();
         assert_eq!(node.role, Role::TextInput);
-        assert_eq!(node.value.as_deref(), Some("hi"));
+        assert_eq!(node.value.as_deref(), Some("a👩‍👩‍👧‍👦b"));
+        assert_eq!(
+            node.text_selection,
+            Some(AccessibleTextSelection {
+                anchor: 1,
+                focus: 1 + "👩‍👩‍👧‍👦".len(),
+            })
+        );
         assert!(node.state.focusable);
+
+        assert!(Widget::perform_action(
+            &mut ed,
+            &Action::SetSelection {
+                anchor: 1,
+                focus: 2,
+            },
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_eq!(ed.selection(), 1..1 + "👩‍👩‍👧‍👦".len());
+        assert!(Widget::perform_action(
+            &mut ed,
+            &Action::SetValue("replacement".into()),
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_eq!(ed.text(), "replacement");
+        assert_eq!(
+            state.doc.text(ed.text_obj.as_ref().unwrap()).unwrap(),
+            "replacement"
+        );
     }
 }

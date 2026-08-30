@@ -327,7 +327,7 @@ impl HexModel {
     /// selection is cleared.
     pub fn move_to(&mut self, offset: usize, extend: bool) {
         let max = self.bytes.len().saturating_sub(1);
-        let target = offset.min(max.max(0));
+        let target = offset.min(max);
         if extend {
             if self.anchor.is_none() {
                 self.anchor = Some(self.cursor);
@@ -418,8 +418,10 @@ impl HexModel {
             if *slot != value {
                 *slot = value;
                 self.dirty.insert(offset);
-                self.pending_edits
-                    .push(BufferEdit::Overwrite { offset, bytes: vec![value] });
+                self.pending_edits.push(BufferEdit::Overwrite {
+                    offset,
+                    bytes: vec![value],
+                });
             }
             true
         } else {
@@ -441,8 +443,10 @@ impl HexModel {
             .collect();
         self.dirty = shifted;
         self.dirty.insert(at);
-        self.pending_edits
-            .push(BufferEdit::Insert { offset: at, bytes: vec![value] });
+        self.pending_edits.push(BufferEdit::Insert {
+            offset: at,
+            bytes: vec![value],
+        });
     }
 
     /// Remove the byte at `offset`. Returns the removed byte, or None if
@@ -490,8 +494,10 @@ impl HexModel {
             })
             .collect();
         self.dirty = shifted;
-        self.pending_edits
-            .push(BufferEdit::Delete { offset, len: removed });
+        self.pending_edits.push(BufferEdit::Delete {
+            offset,
+            len: removed,
+        });
     }
 
     /// Type a single hex digit (`0-9a-f`) at the cursor. In overwrite

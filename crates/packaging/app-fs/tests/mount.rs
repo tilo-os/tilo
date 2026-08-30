@@ -1,29 +1,26 @@
 //! Integration tests for the app-fs FUSE mount.
 //!
-//! Two flavours:
+//! Fast, always-run tests exercise the FUSE handler code path through
+//! the crate's public helpers (`QosAppFs::ino_of`, `blob_at`,
+//! `cache().read()`) without a real kernel mount, proving the
+//! "page-fault streaming" contract through the same page cache the
+//! FUSE `read` handler uses.
 //!
-//! - **Fast, always-run**: exercise the FUSE handler code path
-//!   through the crate's public helpers (`QosAppFs::ino_of`,
-//!   `blob_at`, `cache().read()`) without a real kernel mount.
-//!   These prove the "page-fault streaming" contract holds
-//!   through the same page cache the FUSE `read` handler uses.
-//!
-//! - **`#[ignore]`d real-mount tests**: spin up a real FUSE3
-//!   session via `Mount::spawn`, cat a file with std::fs, and
-//!   check the bytes. These require `/dev/fuse` + a working
-//!   `fusermount3` and are skipped in constrained CI. Run with
-//!   `cargo test -p app-fs -- --include-ignored` locally.
+//! `#[ignore]`d real-mount tests spin up a real FUSE3 session via
+//! `Mount::spawn`, cat a file with `std::fs`, and check the bytes; they
+//! need `/dev/fuse` + `fusermount3` and are skipped in constrained CI
+//! (`cargo test -p app-fs -- --include-ignored` locally).
 
 use std::sync::Arc;
 
 use app_fs::{
-    store::CountingStore, Collection, CounterSnapshot, MemoryBlobStore, Mount, MountOptions,
-    QosAppFs, PAGE_SIZE,
+    Collection, CounterSnapshot, MemoryBlobStore, Mount, MountOptions, PAGE_SIZE, QosAppFs,
+    store::CountingStore,
 };
 
-/// Common fixture: put a single 1 KiB file at `bin/hello` into
-/// a counting-wrapped memory store, build a filesystem for it,
-/// and return `(fs, counter, hash, bytes)`.
+/// Common fixture: put a single 1 KiB file at bin/hello into a
+/// counting-wrapped memory store, build a filesystem, and return
+/// (fs, counter, hash, bytes).
 fn fixture_1k() -> (
     QosAppFs<Arc<CountingStore<MemoryBlobStore>>>,
     Arc<CountingStore<MemoryBlobStore>>,
@@ -31,9 +28,10 @@ fn fixture_1k() -> (
     Vec<u8>,
 ) {
     let inner = MemoryBlobStore::new();
-    // 1 KiB of "aB" repeating so partial reads are easy to
-    // eyeball.
-    let bytes: Vec<u8> = (0..1024).map(|i| if i & 1 == 0 { b'a' } else { b'B' }).collect();
+    // 1 KiB of "aB" repeating so partial reads are easy to eyeball.
+    let bytes: Vec<u8> = (0..1024)
+        .map(|i| if i & 1 == 0 { b'a' } else { b'B' })
+        .collect();
     let hash = inner.put(&bytes);
     let counter = Arc::new(CountingStore::new(inner));
     let collection = Collection::from_entries([("bin/hello".to_string(), hash)]);
@@ -41,18 +39,15 @@ fn fixture_1k() -> (
     (fs, counter, hash, bytes)
 }
 
-/// The FS should resolve `lookup`/`getattr`-style traversals
-/// (via `ino_of`) without pulling any blob bytes from the
-/// store. Constructing the FS incurs one `size()` call per
-/// file entry (for the inode-table's cached size); after that,
-/// only `range_calls` matters for "did we accidentally fetch
-/// bytes?".
+/// The FS should resolve lookup/getattr-style traversals (via
+/// `ino_of`) without pulling blob bytes. Construction incurs one
+/// `size()` call per file entry (for the cached inode size); after
+/// that, only `range_calls` matters.
 #[test]
 fn lookup_resolves_without_fetch() {
     let (fs, counter, _hash, _bytes) = fixture_1k();
 
-    // Construction should have called `size()` exactly once
-    // (one blob), and no range reads.
+    // Construction should have called size() exactly once (one blob), and no range reads.
     let snap = counter.snapshot();
     assert_eq!(
         snap,
@@ -77,8 +72,7 @@ fn lookup_resolves_without_fetch() {
     let (blob_hash, blob_size) = fs.blob_at(hello_ino).expect("file resolves to blob");
     assert_eq!(blob_size, 1024);
 
-    // Post-lookup counters must be identical to the
-    // post-construction snapshot — no additional store calls.
+    // Post-lookup counters must match the post-construction snapshot — no additional store calls.
     let after = counter.snapshot();
     assert_eq!(
         after, snap,
@@ -89,11 +83,10 @@ fn lookup_resolves_without_fetch() {
     assert_eq!(blob_hash, _hash);
 }
 
-/// Reading the first 100 bytes must fetch at most one page from
-/// the store — this is the crate's "page-fault streaming"
-/// contract, the whole reason for having the mount rather than
-/// bulk-hydrating on open. Repeating the same read must hit the
-/// cache and NOT cause a second fetch.
+/// Reading the first 100 bytes must fetch at most one page from the
+/// store — the "page-fault streaming" contract that's the whole
+/// reason for the mount rather than bulk-hydrating on open. A repeat
+/// read must hit cache, not refetch.
 #[test]
 fn partial_read_does_not_fetch_whole_blob() {
     let (fs, counter, hash, bytes) = fixture_1k();
@@ -110,16 +103,14 @@ fn partial_read_does_not_fetch_whole_blob() {
         1,
         "expected exactly one store range fetch for a 100-byte read"
     );
-    // At most one page's worth of bytes were requested from
-    // the store — regardless of what the caller asked for.
+    // At most one page's worth of bytes were requested from the store — regardless of what the caller asked for.
     let bytes_from_store = after_first.bytes_requested - baseline.bytes_requested;
     assert!(
-        bytes_from_store <= PAGE_SIZE as u64,
+        bytes_from_store <= u64::from(PAGE_SIZE),
         "store fetched {bytes_from_store} bytes; expected <= {PAGE_SIZE} (one page)"
     );
 
-    // A second read of the same 100 bytes must be served from
-    // the page cache — no new store fetches.
+    // A second read of the same 100 bytes must be served from the page cache — no new store fetches.
     let second = cache.read(&hash, bytes.len() as u64, 0, 100).expect("read");
     assert_eq!(second, first);
     let after_second = counter.snapshot();
@@ -130,13 +121,10 @@ fn partial_read_does_not_fetch_whole_blob() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Real-mount tests — need /dev/fuse and a working `fusermount3`.
-// ---------------------------------------------------------------------------
+// Real-mount tests — need /dev/fuse and a working fusermount3.
 
-/// Full end-to-end: mount + `std::fs::read` + unmount. Verifies
-/// the FUSE kernel path stitches together correctly, not just
-/// the internal handler code.
+/// Full end-to-end: mount + `std::fs::read` + unmount — verifies the
+/// FUSE kernel path stitches together, not just the internal handler code.
 #[test]
 #[ignore = "requires /dev/fuse + fusermount3; run with --include-ignored"]
 fn mount_and_read_single_file() {
@@ -164,27 +152,20 @@ fn mount_and_read_single_file() {
         }
     };
 
-    // Give the kernel a moment to publish the mount before we
-    // path-walk into it. In practice `spawn_mount2` returns
-    // after INIT completes, so this is belt-and-braces.
+    // Give the kernel a moment to publish the mount before path-walking
+    // into it; belt-and-braces, spawn_mount2 already returns after INIT.
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    let read_back = std::fs::read(mountpoint.path().join("hello.bin"))
-        .expect("read mounted file");
+    let read_back = std::fs::read(mountpoint.path().join("hello.bin")).expect("read mounted file");
     assert_eq!(read_back, fs_bytes);
 
     // Clean unmount.
     mount.unmount().expect("unmount");
 }
 
-// The partial-read-through-the-real-FUSE-kernel invariant is
-// asserted at the crate boundary in `partial_read_does_not_fetch_whole_blob`
-// above — it exercises the same `PageCache::read` path the FUSE
-// `read` handler calls into. Adding a further test that measures
-// the kernel-driven read pattern is possible but flaky in
-// container environments where kernel readahead behaviour
-// depends on cgroup / memory pressure and can pull a whole
-// small blob into a single read op. If you need to verify
-// kernel-side page-fault streaming, run
-// `mount_and_read_single_file` with a large payload and observe
-// `CountingStore` counts before / after.
+// The partial-read-through-real-FUSE invariant is asserted at the
+// crate boundary in `partial_read_does_not_fetch_whole_blob` above,
+// via the same `PageCache::read` path. A kernel-driven equivalent is
+// flaky under container readahead/cgroup pressure; to check
+// kernel-side streaming, run `mount_and_read_single_file` with a
+// large payload and compare `CountingStore` counts before/after.

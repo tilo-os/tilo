@@ -1,26 +1,14 @@
-//! Search-type seam — registering a "YouTube video" result type with qOS's
+//! Search-type seam — registering a "`YouTube` video" result type with qOS's
 //! coming **global-search** framework.
 //!
-//! Tube must *not* build a bespoke global search. Instead it exposes a clean
-//! descriptor the global-search framework can register, so a video shows up in
-//! the OS-wide search palette with a thumbnail, length, title and creator — and
-//! activating it deep-links into Tube's watch page.
-//!
-//! The global-search framework doesn't exist in-tree yet, so this module
-//! defines the *provider side* of the contract Tube can already satisfy:
-//!
-//! * [`SearchableType`] — the static descriptor (id, display name, the icon /
-//!   "kind" the palette shows). One per app-provided result type.
-//! * [`SearchHit`] — one result row: thumbnail seed, length, title, creator,
-//!   plus the [`crate::action::Action`]-equivalent deep link to open it.
-//! * [`VideoSearchProvider`] — turns a query string into [`SearchHit`]s by
-//!   delegating to a [`crate::backend::YtBackend`]. The framework will call
-//!   `query`; until it lands, this is unit-tested directly.
-//!
-//! When the framework arrives, the integration is: construct a
-//! `VideoSearchProvider`, hand the framework its [`SearchableType`] and a
-//! callback to `provider.query(...)`. No code here needs to change — that's the
-//! point of pinning the seam now.
+//! Tube must *not* build a bespoke global search. The global-search framework
+//! doesn't exist in-tree yet, so this module defines the *provider side* of
+//! the contract Tube can already satisfy: [`SearchableType`] is the static
+//! per-type descriptor, [`SearchHit`] is one result row, and
+//! [`VideoSearchProvider`] turns a query into hits by delegating to a
+//! [`crate::backend::YtBackend`] — the framework will call `query`; until it
+//! lands, this is unit-tested directly. When the framework arrives, no code
+//! here needs to change; that's the point of pinning the seam now.
 
 use crate::backend::{BackendResult, YtBackend};
 
@@ -43,7 +31,6 @@ pub struct SearchableType {
     pub has_thumbnail: bool,
 }
 
-/// The descriptor Tube registers for video results.
 pub fn video_searchable_type() -> SearchableType {
     SearchableType {
         id: VIDEO_TYPE_ID,
@@ -52,7 +39,6 @@ pub fn video_searchable_type() -> SearchableType {
     }
 }
 
-/// The descriptor Tube registers for channel results.
 pub fn channel_searchable_type() -> SearchableType {
     SearchableType {
         id: CHANNEL_TYPE_ID,
@@ -64,42 +50,42 @@ pub fn channel_searchable_type() -> SearchableType {
 /// A single global-search result row contributed by Tube.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
-    /// The result type this hit belongs to ([`VIDEO_TYPE_ID`]).
+    /// [`VIDEO_TYPE_ID`] or [`CHANNEL_TYPE_ID`].
     pub type_id: &'static str,
-    /// Video title (DeArrow-corrected at registration time if enabled).
+    /// Video title (DeArrow-corrected at registration time if enabled), or
+    /// channel name.
     pub title: String,
-    /// Uploader / creator name.
+    /// Uploader / creator name, or the channel's own handle for a channel hit.
     pub creator: String,
-    /// Duration in seconds (for the length pill the palette renders).
+    /// Duration in seconds (for the length pill the palette renders); 0 for
+    /// a channel hit.
     pub length_secs: u32,
     /// Seed for Tube's deterministic thumbnail gradient — the palette can ask
     /// Tube to render it, so no image bytes cross the boundary.
     pub thumbnail_seed: String,
     /// Opaque deep link the framework round-trips back to Tube to open the
-    /// result. Format: `tube://watch/<video_id>`.
+    /// result: `tube://watch/<video_id>` or `tube://channel/<channel_id>`.
     pub deep_link: String,
 }
 
 impl SearchHit {
-    /// The watch deep-link for a video id.
     pub fn watch_link(video_id: &str) -> String {
         format!("tube://watch/{video_id}")
     }
 
-    /// The channel deep-link for a channel id.
     pub fn channel_link(channel_id: &str) -> String {
         format!("tube://channel/{channel_id}")
     }
 
-    /// Parse a `tube://watch/<id>` deep link back into the video id Tube should
-    /// open. The app's router calls this when the framework activates a hit.
+    /// The app's router calls this when the framework activates a hit.
     pub fn parse_watch_link(link: &str) -> Option<String> {
-        link.strip_prefix("tube://watch/").map(|s| s.to_string())
+        link.strip_prefix("tube://watch/")
+            .map(std::string::ToString::to_string)
     }
 
-    /// Parse a `tube://channel/<id>` deep link back into the channel id.
     pub fn parse_channel_link(link: &str) -> Option<String> {
-        link.strip_prefix("tube://channel/").map(|s| s.to_string())
+        link.strip_prefix("tube://channel/")
+            .map(std::string::ToString::to_string)
     }
 }
 
@@ -109,7 +95,7 @@ impl SearchHit {
 /// across types; this provider only contributes Tube's rows.
 pub struct VideoSearchProvider<'a> {
     backend: &'a dyn YtBackend,
-    /// Whether DeArrow title correction is applied to contributed hits.
+    /// Whether `DeArrow` title correction is applied to contributed hits.
     dearrow: bool,
 }
 
@@ -118,7 +104,6 @@ impl<'a> VideoSearchProvider<'a> {
         Self { backend, dearrow }
     }
 
-    /// The descriptor this provider contributes.
     pub fn searchable_type(&self) -> SearchableType {
         video_searchable_type()
     }
@@ -202,7 +187,10 @@ mod tests {
         let hits = provider.query("rust");
         assert!(!hits.is_empty());
         assert!(hits.iter().all(|h| h.type_id == VIDEO_TYPE_ID));
-        assert!(hits.iter().all(|h| h.deep_link.starts_with("tube://watch/")));
+        assert!(
+            hits.iter()
+                .all(|h| h.deep_link.starts_with("tube://watch/"))
+        );
         assert!(hits.iter().all(|h| !h.thumbnail_seed.is_empty()));
     }
 
@@ -234,10 +222,17 @@ mod tests {
         // vid_rust_async has a DeArrow title in the sample.
         let plain = VideoSearchProvider::new(&backend, false).query("compositor");
         let dearrowed = VideoSearchProvider::new(&backend, true).query("compositor");
-        let p = plain.iter().find(|h| h.deep_link.contains("vid_rust_async"));
-        let d = dearrowed.iter().find(|h| h.deep_link.contains("vid_rust_async"));
+        let p = plain
+            .iter()
+            .find(|h| h.deep_link.contains("vid_rust_async"));
+        let d = dearrowed
+            .iter()
+            .find(|h| h.deep_link.contains("vid_rust_async"));
         if let (Some(p), Some(d)) = (p, d) {
-            assert_ne!(p.title, d.title, "DeArrow should change the contributed title");
+            assert_ne!(
+                p.title, d.title,
+                "DeArrow should change the contributed title"
+            );
         }
     }
 }

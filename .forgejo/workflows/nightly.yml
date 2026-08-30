@@ -1,121 +1,44 @@
-name: Nightly workspace build + core tests
+name: Nightly complete workspace coverage
 
-# WHY A SCHEDULE, NOT A PUSH TRIGGER
-#
-# There is one shared runner. Pushes to main already trigger `check.yml` and the
-# ~60-minute `build-image.yml`, and at the time of writing three image builds sit
-# queued behind one running — so a per-commit full-workspace build would not make
-# feedback faster, it would push everything else further back in the queue. A
-# nightly run at a low-traffic hour gets the whole tree compiled and the core
-# suites run without competing for the runner while anyone is waiting on it.
-#
-# Daily rather than weekly because this tree moves fast (a dozen-plus commits on
-# a normal day): a week of accumulated rot is a bisect, one night of it is a
-# diff. Daily rather than per-commit because a full workspace build is measured
-# in tens of minutes, which is longer than the interval between pushes here —
-# per-commit would simply queue runs faster than they drain.
-#
-# 03:00 UTC is chosen to land after the working day's push-triggered image builds
-# have drained, so the nightly gets an idle runner rather than the back of a queue.
-
+# This is the coverage backstop for dependency-aware pull-request CI. Every
+# Cargo package and every target is checked, and every test is executed daily.
 on:
   schedule:
     - cron: "0 3 * * *"
-  # So a run can be taken on demand without waiting for the small hours — this is
-  # also the only way to exercise a change to this file before it lands.
   workflow_dispatch:
 
 concurrency:
-  # Never stack nightlies: a run that overruns into the next day's slot must not
-  # be joined by a second one competing for the same runner and sccache entry.
   group: nightly
   cancel-in-progress: false
 
 jobs:
-  nightly:
+  complete:
     runs-on: runner
-    # A hung compile must not hold the shared runner until someone notices.
-    # Comfortably above a cold run, far below "all night".
-    timeout-minutes: 180
+    timeout-minutes: 240
     container:
-      image: quay.io/fedora/fedora:42
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     env:
-      # --- caching -------------------------------------------------------
-      # Fixed paths so the cache keys below address something unambiguous,
-      # rather than depending on which user the container happens to run as.
       CARGO_HOME: /cargo-home
-      SCCACHE_DIR: /sccache
-      RUSTC_WRAPPER: sccache
-      # Bound the compile cache. Left unbounded it grows without limit and the
-      # cache artifact grows with it, until saving costs more than the compile it
-      # saves. 8G comfortably holds this workspace (a local, fully-warm sccache
-      # for this tree measures 4.6G).
-      SCCACHE_CACHE_SIZE: "8G"
-      # Incremental compilation is not cacheable by sccache — every unit becomes
-      # a local-state miss — and it inflates target/ for no benefit on a machine
-      # that is discarded at the end of the run.
-      CARGO_INCREMENTAL: "0"
-      # --- legibility ----------------------------------------------------
-      # NOT `always`. Cargo colours the word "error" by wrapping it in escape
-      # sequences, which puts bytes in front of the text and defeats the
-      # anchored `^error` matching that scripts/ci-run.sh distils failures with.
-      # Plain output is what makes the failure summary work.
-      CARGO_TERM_COLOR: never
-      # --- resource bounds (inherited from check.yml's findings) ----------
-      # A workspace-wide test build otherwise fans out to ~30 parallel rustc
-      # linking test binaries and OOM-kills the runner mid-compile.
       CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
-      # Transient registry failures should cost a retry, not a whole nightly.
-      CARGO_NET_RETRY: "3"
-
+      CARGO_TERM_COLOR: never
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
+      WGPU_BACKEND: vulkan
+      XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
     steps:
-      # The fedora container ships neither node (which actions/checkout needs)
-      # nor the native stack this workspace links against. Kept in step with
-      # check.yml — the two lists describe the same tree.
-      - name: Install build dependencies
-        run: |
-          dnf install -y \
-            nodejs \
-            rust cargo sccache capnproto \
-            gcc gcc-c++ make cmake perl perl-FindBin python3 git \
-            clang clang-devel pkgconf-pkg-config \
-            libxkbcommon-devel wayland-devel \
-            libseat-devel libinput-devel systemd-devel libdrm-devel \
-            mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
-            pipewire-devel \
-            ffmpeg-free-devel libva-devel \
-            gstreamer1-devel gstreamer1-plugins-base-devel \
-            openssl-devel sqlite-devel zlib-ng-compat-devel \
-            fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
-            nasm \
-            vulkan-loader mesa-vulkan-drivers \
-          && dnf clean all
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      # ---------------------------------------------------------------------
-      # CACHE 1 — the dependency tree, keyed on the lockfile.
-      #
-      # `index` + `cache` + `git/db` only, deliberately NOT registry/src: src is
-      # the extracted form of the .crate archives already in `cache`, and cargo
-      # re-extracts it locally far faster than a cache round-trip. Measured on
-      # this workspace's 1592 crates: cache 801M + index 161M + git/db 1.9G,
-      # against 3.3G for src alone. Caching src would roughly double the artifact
-      # to store a copy of what it is stored next to.
-      #
-      # An exact key on Cargo.lock is right precisely because this repo builds
-      # --locked: the lock only moves when someone deliberately moves it, so the
-      # key is stable for weeks and a hit is a true hit. restore-keys still lets
-      # a lock change start from the previous tree and fetch only the delta.
-      # ---------------------------------------------------------------------
-      - name: Restore cargo registry + git checkouts
+      - name: Restore Cargo downloads
         id: cargo-cache
         uses: actions/cache/restore@v4
-        # A cache server that is unavailable must make the build slow, not red.
         continue-on-error: true
         with:
           path: |
@@ -123,118 +46,49 @@ jobs:
             /cargo-home/registry/cache
             /cargo-home/git/db
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-deps-
+          restore-keys: cargo-deps-
 
-      # ---------------------------------------------------------------------
-      # CACHE 2 — the compile cache.
-      #
-      # This is the one that pays for the exercise, and the reason it is sccache
-      # rather than target/:
-      #
-      #   * target/ for this workspace is enormous — CLAUDE.md records a single
-      #     one reaching 150+ GB, and a --all-targets test build is the shape
-      #     that gets there. Moving that through a cache server would cost more
-      #     than the compile.
-      #   * cargo's fingerprints are not portable. Restored into a different
-      #     absolute path or with different mtimes, much of a cached target/ is
-      #     ruled stale and recompiled anyway — paying the transfer for nothing.
-      #   * sccache is keyed on preprocessed source + compiler + flags, so it is
-      #     machine-independent by construction, it self-evicts under
-      #     SCCACHE_CACHE_SIZE, and it survives the target/ wipe that any cargo
-      #     invalidation causes.
-      #
-      # NOTE: check.yml already sets RUSTC_WRAPPER: sccache but persists nothing,
-      # so today that wrapper is pure overhead — every run starts with an empty
-      # cache and pays sccache's indirection for a guaranteed 0% hit rate. The
-      # cache below is what turns that setting into the thing it was meant to be.
-      #
-      # A rolling key (run_id) with a prefix restore-key: each run starts from the
-      # most recent cache and saves an updated one, so it compounds night over
-      # night instead of being pinned to one snapshot.
-      # ---------------------------------------------------------------------
-      - name: Restore sccache compile cache
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: /sccache
-          key: sccache-${{ github.run_id }}
-          restore-keys: |
-            sccache-
+      - name: Prepare runtime and cache metrics
+        run: |
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          bash tools/ci-sccache.sh prepare
 
-      - name: Zero sccache counters for this run
-        run: sccache --zero-stats || true
-
-      # Cheap fail-fast: no crate silently dropped from the workspace.
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
-      # --locked, everywhere and without exception. A fresh resolve on this tree
-      # pulls a pre-release ed25519-dalek stack (via iroh) that does not compile,
-      # and the failure surfaces deep inside a dependency rather than anywhere
-      # this repo touches. --locked turns "silently resolved to something broken"
-      # into "the lockfile is out of date", which is a one-line diagnosis.
-      #
-      # --all-targets so test and example code is type-checked too: that code
-      # rots exactly as readily as the library it exercises, and a check that
-      # skips it reports green on a tree whose tests no longer compile.
-      - name: Check the whole workspace
-        run: ./scripts/ci-run.sh "cargo check --workspace" -- cargo check --workspace --locked --all-targets
+      # Build/run tests first so the following checks can reuse emitted
+      # rlibs/rmeta instead of compiling metadata before codegen.
+      - name: Run every workspace test
+        run: >-
+          bash tools/ci-measure.sh "nightly workspace nextest" --
+          bash scripts/ci-run.sh "cargo nextest --workspace" --
+          cargo nextest run --workspace --locked --profile ci
 
-      # Tests are a SUBSET, on purpose. `cargo test --workspace` over 216 members
-      # (90 of them apps) is dominated by linking test binaries for crates whose
-      # failure modes are visual rather than assertable, and it is what makes the
-      # existing job run out of memory. These five are the load-bearing stack that
-      # everything else is built on — the toolkit, the compositor, the filesystem,
-      # the document model and the packaging format — so a regression here breaks
-      # every app, and a regression in one app does not hide behind them.
-      - name: Test the core libraries
-        env:
-          # Headless GPU via llvmpipe; live-network tests self-skip unless opted in.
-          WGPU_BACKEND: vulkan
-        run: ./scripts/ci-run.sh "cargo test (core libs)" -- cargo test --locked -p ui -p fs -p qdoc -p pkg -p collab-types
+      - name: Check every workspace target
+        run: >-
+          bash tools/ci-measure.sh "nightly all-target check" --
+          bash scripts/ci-run.sh "cargo check --workspace --all-targets" --
+          cargo check --workspace --locked --all-targets
 
-      # Split from the above so a compositor failure is attributed on sight, and
-      # because this crate alone is ~950 tests. --lib keeps it to the unit suite;
-      # the heavier headless integration harness (tests/interaction_test.rs) is a
-      # deliberate next step, not an oversight.
-      - name: Test the compositor
-        env:
-          WGPU_BACKEND: vulkan
-        run: ./scripts/ci-run.sh "cargo test (shell --lib)" -- cargo test --locked -p shell --lib
+      # `cargo check --all-targets` type-checks examples but does not exercise
+      # their final link. Keep that coverage here, once per day rather than on
+      # every pull request.
+      - name: Build every workspace example
+        run: >-
+          bash tools/ci-measure.sh "nightly workspace examples" --
+          bash scripts/ci-run.sh "cargo build --workspace --examples" --
+          cargo build --workspace --examples --locked
 
-      # Evidence, not assertion: the hit rate is what says whether the caching
-      # above is actually working, and it lands in the run summary where it can
-      # be compared night to night.
-      - name: Report cache effectiveness
+      - name: Report remote compiler-cache effectiveness
         if: always()
         run: |
-          echo "### sccache" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          { sccache --show-stats 2>&1 || echo "sccache unavailable"; } | tee -a "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "### cache sizes" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          du -sh /sccache /cargo-home/registry/cache /cargo-home/registry/index /cargo-home/git/db 2>/dev/null \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### nightly sccache" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci-sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      # `if: always()` on both saves, and it matters most on the failing runs: a
-      # nightly that dies 40 minutes into the compile has still done 40 minutes of
-      # cacheable work, and throwing it away would make the next run pay for it
-      # again. Save-on-failure is what stops a red streak from also being a slow one.
-      - name: Save sccache compile cache
-        if: always()
-        continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: /sccache
-          key: sccache-${{ github.run_id }}
-
-      # Guarded on a miss: re-uploading a byte-identical dependency tree every
-      # night would churn the cache server for nothing. The lockfile key means a
-      # hit is already the current tree.
-      - name: Save cargo registry + git checkouts
+      - name: Save Cargo downloads
         if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@v4

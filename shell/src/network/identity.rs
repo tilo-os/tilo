@@ -1,51 +1,26 @@
 //! Peer identity — the shell-side wiring for user-scoped identities.
 //!
-//! A peer is named by its [`PeerOrigin`]: the whole base58 libp2p peer
-//! id, as the transport authenticated it. That is stable across
-//! restarts and adequate to route messages, but it carries no statement
-//! about *who* the peer is — every device is anonymous until an
-//! out-of-band invite ties it to a workspace.
+//! A peer is named by its [`PeerOrigin`] (the complete iroh endpoint id,
+//! as the transport authenticated it) — stable across restarts, but
+//! silent about *who* the peer is until an out-of-band invite ties it to a workspace.
 //!
-//! The name is carried whole rather than folded to a `u64`, because
-//! this table decides whether a signed CRDT op is accepted. Under a
-//! 64-bit key, an attacker who lands on a trusted peer's digest
-//! replaces that peer's entry in the map, and from then on their own
-//! ops verify *as* the trusted peer while the real one's are rejected.
-//! 64 bits is within reach of grinding; the full peer id is not, and
-//! there is no reason for an equality decision to turn on a digest.
+//! The name is carried whole rather than folded to a `u64`, because this
+//! table decides whether a signed CRDT op is accepted: under a 64-bit
+//! key, an attacker who lands on a trusted peer's digest replaces that
+//! peer's entry, and their own ops then verify *as* the trusted peer —
+//! 64 bits is within reach of grinding, the full peer id is not.
 //!
-//! This module layers user-scoped identity on top of that name. When
-//! two devices first exchange messages (either at libp2p dial time
-//! or over an existing gossipsub topic), each side presents:
+//! When two devices first exchange messages, each presents its device
+//! public key (32-byte Ed25519) and a signed [`DeviceCert`] binding it to
+//! the user's root public key. The shell reconstructs a [`PeerIdentity`]
+//! from those for CRDT-op validation, share-session admission, and
+//! revocation checks — an op whose cert fails to verify, has expired, or
+//! has been revoked is dropped before it reaches the workspace tree.
 //!
-//! - its **device public key** (32-byte Ed25519),
-//! - a signed **[`DeviceCert`]** binding that key to the user's
-//!   root public key with the labels + capabilities the user
-//!   consented to at enrollment time.
-//!
-//! From those two, the shell reconstructs a [`PeerIdentity`] that
-//! subsequent CRDT-op validation, share-session admission, and
-//! revocation checks read from. Any op signed by a device whose
-//! cert either (a) does not verify under the workspace owner's
-//! root key, (b) has expired, or (c) has been revoked, is dropped
-//! before it reaches the workspace tree.
-//!
-//! # Non-goals in this module
-//!
-//! - Persistence. Loading `/var/lib/qos/user-identity/*` at boot
-//!   lives in the shell's firstboot / login flow, not here.
-//! - Transport. The wire that carries [`DeviceCert`]s between peers
-//!   is a separate concern (SP2); this module just holds the
-//!   verified-once, keyed-by-hash lookup table.
-//! - CRDT-op validation itself lives in
-//!   `network::replica` — this module exposes the primitives
-//!   ([`PeerIdentityStore::verify_signature_from`]) that the
-//!   validator calls.
-//!
-//! Everything wire-facing (the `DeviceCert` byte layout, the
-//! signing preimage, the revocation entry) lives in
-//! `qos-user-identity`. The shell should never invent its own
-//! variant of those types.
+//! Persistence, transport, and CRDT-op validation itself live elsewhere;
+//! this module only holds the verified-once, keyed-by-hash lookup table
+//! ([`PeerIdentityStore::verify_signature_from`] is what `network::replica`
+//! calls). The `DeviceCert` byte layout and revocation entry live in `qos-user-identity`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -61,39 +36,25 @@ use crate::shell::state::PeerOrigin;
 
 /// Everything the shell knows about a peer's identity.
 ///
-/// Constructed at connect time from the peer's presented cert +
-/// device pubkey. Stored in a [`PeerIdentityStore`] keyed by the
-/// peer's [`PeerOrigin`] so `replica` and share-session code can look
-/// it up in O(1) when validating a CRDT op or admitting a share.
+/// Constructed at connect time from the peer's presented cert + device
+/// pubkey; stored in a [`PeerIdentityStore`] keyed by [`PeerOrigin`] so `replica` and share-session code can look it up in O(1).
 #[derive(Clone, Debug)]
 pub struct PeerIdentity {
     /// Peer's device Ed25519 public key. 32 bytes.
     pub device_pubkey: [u8; 32],
-    /// User root Ed25519 public key that certified this device.
-    /// Multiple peers may share the same value — they are all
-    /// devices of the same user. When it matches the workspace
-    /// owner's root key, the peer is one of the user's own
-    /// devices and gets owner permissions automatically.
+    /// User root Ed25519 public key that certified this device. Multiple
+    /// peers may share it (devices of the same user); matching the workspace owner's root key gives the peer owner permissions.
     pub user_pubkey: [u8; 32],
-    /// The full signed device cert. Retained so downstream
-    /// validation can re-verify without a second lookup, and so
-    /// the peer's [`DeviceCapabilities`] survive a later cache
-    /// eviction of the pubkey-only view.
+    /// The full signed device cert, retained so downstream validation can re-verify without a second lookup.
     pub device_cert: DeviceCert,
-    /// Convenience copy of `device_cert.capabilities`. What the
-    /// peer may do on behalf of its user.
+    /// Convenience copy of `device_cert.capabilities`.
     pub capabilities: DeviceCapabilities,
 }
 
 impl PeerIdentity {
-    /// Build a `PeerIdentity` from a peer's presented cert.
-    ///
-    /// Verifies the cert's signature under the embedded
-    /// `user_public_key`, checks it has not expired at `now_ns`,
-    /// and mirrors the `capabilities` field for cheap lookup.
-    /// Does NOT check the revocation list — that check lives with
-    /// the [`PeerIdentityStore`] because the list is shared
-    /// across peers.
+    /// Build a `PeerIdentity` from a peer's presented cert: verifies the
+    /// signature under the embedded `user_public_key`, checks it hasn't
+    /// expired at `now_ns`. Does NOT check the revocation list — that lives with the [`PeerIdentityStore`], shared across peers.
     pub fn from_cert(cert: DeviceCert, now_ns: u64) -> Result<Self, DeviceCertError> {
         verify_device_cert_at(&cert, now_ns)?;
         Ok(Self {
@@ -104,21 +65,14 @@ impl PeerIdentity {
         })
     }
 
-    /// True if this peer's user identity matches the given user
-    /// root key — i.e. the peer is one of the user's own devices.
+    /// True if this peer's user identity matches the given user root key.
     pub fn is_same_user(&self, user_pubkey: &[u8; 32]) -> bool {
         &self.user_pubkey == user_pubkey
     }
 }
 
-/// A thread-safe map from [`PeerOrigin`] to verified
-/// [`PeerIdentity`], plus the shared revocation list the identity
-/// belongs to.
-///
-/// The store holds one [`RevocationList`] per user identity —
-/// keyed by the user's root pubkey — because different peers can
-/// belong to different users (a workspace-share invitee is not
-/// necessarily one of the owner's devices).
+/// A thread-safe map from [`PeerOrigin`] to verified [`PeerIdentity`],
+/// plus one [`RevocationList`] per user identity (keyed by root pubkey, since different peers can belong to different users).
 #[derive(Clone, Default)]
 pub struct PeerIdentityStore {
     inner: Arc<RwLock<PeerIdentityStoreInner>>,
@@ -127,8 +81,7 @@ pub struct PeerIdentityStore {
 #[derive(Default)]
 struct PeerIdentityStoreInner {
     by_peer: HashMap<PeerOrigin, PeerIdentity>,
-    /// Per-user-identity revocation lists. The value stays stable
-    /// across cert cache churn — revocations are additive.
+    /// Per-user-identity revocation lists — stable across cert cache churn, since revocations are additive.
     revocations: HashMap<[u8; 32], RevocationList>,
 }
 
@@ -138,16 +91,11 @@ impl PeerIdentityStore {
         Self::default()
     }
 
-    /// Insert or replace a peer's identity.
+    /// Insert or replace a peer's identity. `Err` if the cert's signature
+    /// doesn't verify or the cert has expired at `now_ns`.
     ///
-    /// Returns `Err` if the cert's signature does not verify OR
-    /// the cert has expired at `now_ns`. On success the peer is
-    /// addressable by its [`PeerOrigin`] until [`Self::remove`] or a
-    /// later [`Self::insert`] replaces it.
-    ///
-    /// `peer` must be the origin the *transport* authenticated, never
-    /// one a payload claimed: an entry inserted under someone else's
-    /// name is an entry that verifies that someone else's ops.
+    /// `peer` must be the origin the *transport* authenticated, never one a
+    /// payload claimed: an entry inserted under someone else's name is an entry that verifies that someone else's ops.
     pub fn insert(
         &self,
         peer: PeerOrigin,
@@ -160,9 +108,7 @@ impl PeerIdentityStore {
         Ok(identity)
     }
 
-    /// Drop a peer's cached identity — used when the peer
-    /// disconnects. Idempotent: removing a missing peer is a
-    /// no-op.
+    /// Drop a peer's cached identity — used on disconnect. Idempotent.
     pub fn remove(&self, peer: &PeerOrigin) {
         let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
         inner.by_peer.remove(peer);
@@ -174,16 +120,13 @@ impl PeerIdentityStore {
         inner.by_peer.get(peer).cloned()
     }
 
-    /// Merge a user's revocation list. Additive — later inserts
-    /// only overwrite older entries with earlier `revoked_at_ns`
-    /// timestamps (see [`RevocationList::insert`]).
+    /// Merge a user's revocation list — additive, see [`RevocationList::insert`].
     pub fn set_revocations(&self, user_pubkey: [u8; 32], list: RevocationList) {
         let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
         inner.revocations.insert(user_pubkey, list);
     }
 
-    /// True if `device_pubkey` has been revoked under `user_pubkey`
-    /// at or before `at_ns`.
+    /// True if `device_pubkey` has been revoked under `user_pubkey` at or before `at_ns`.
     pub fn is_revoked(&self, user_pubkey: &[u8; 32], device_pubkey: &[u8; 32], at_ns: u64) -> bool {
         let inner = self.inner.read().expect("PeerIdentityStore lock poisoned");
         inner
@@ -192,23 +135,10 @@ impl PeerIdentityStore {
             .is_some_and(|list| list.is_revoked_at(device_pubkey, at_ns))
     }
 
-    /// Verify an Ed25519 signature made by `peer`'s device
-    /// against a message.
-    ///
-    /// Runs the full identity-chain check:
-    ///
-    /// 1. The peer must be registered in the store.
-    /// 2. Their cert must (still) verify under the embedded user
-    ///    root key.
-    /// 3. Their cert must not have expired at `now_ns`.
-    /// 4. Their device must not be revoked under their user
-    ///    identity at or before `signed_at_ns`.
-    /// 5. The Ed25519 signature must verify under the device
-    ///    pubkey.
-    ///
-    /// Returns `Ok(PeerIdentity)` on all-pass. Callers can then
-    /// use the returned identity's `capabilities` /
-    /// `user_pubkey` for authorization decisions.
+    /// Verify an Ed25519 signature made by `peer`'s device against a
+    /// message. Full identity-chain check: peer registered, cert still
+    /// verifies under the embedded user root key, cert not expired at
+    /// `now_ns`, device not revoked at or before `signed_at_ns`, signature verifies under the device pubkey. `Ok(PeerIdentity)` on all-pass.
     pub fn verify_signature_from(
         &self,
         peer: &PeerOrigin,
@@ -218,8 +148,7 @@ impl PeerIdentityStore {
         now_ns: u64,
     ) -> Result<PeerIdentity, PeerIdentityError> {
         let identity = self.get(peer).ok_or(PeerIdentityError::UnknownPeer)?;
-        // Re-verify the cert (defence in depth against a corrupted
-        // in-memory copy).
+        // Re-verify the cert — defence in depth against a corrupted in-memory copy.
         verify_device_cert(&identity.device_cert)?;
         if identity.device_cert.is_expired_at(now_ns) {
             return Err(PeerIdentityError::CertExpired);
@@ -239,24 +168,19 @@ impl PeerIdentityStore {
 /// Failure modes for peer identity operations.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum PeerIdentityError {
-    /// No cached identity for that peer. Caller should either
-    /// re-request the cert from the peer or drop the message.
+    /// No cached identity for that peer — caller should either re-request the cert or drop the message.
     #[error("no cached identity for peer")]
     UnknownPeer,
-    /// Cert-level error (bad signature, invalid pubkey, expired,
-    /// etc.).
+    /// Cert-level error (bad signature, invalid pubkey, expired, etc.).
     #[error("device cert invalid: {0}")]
     Cert(#[from] DeviceCertError),
     /// The cert has expired.
     #[error("device cert expired")]
     CertExpired,
-    /// The peer's device has been revoked at or before the
-    /// message's `signed_at_ns` timestamp.
+    /// The peer's device has been revoked at or before the message's `signed_at_ns` timestamp.
     #[error("peer device is revoked")]
     Revoked,
-    /// The peer's device pubkey does not decode to a valid Ed25519
-    /// point. Reachable only for a cert whose pubkey bytes were
-    /// tampered with post-verification (i.e. never in practice).
+    /// The peer's device pubkey doesn't decode to a valid Ed25519 point — reachable only for a cert tampered with post-verification.
     #[error("device pubkey invalid")]
     BadDevicePubkey,
     /// The Ed25519 signature over the message did not verify.
@@ -289,10 +213,7 @@ mod tests {
 
     /// A peer, named the way the transport names it.
     fn peer(n: u8) -> PeerOrigin {
-        PeerOrigin::peer(&libp2p::identity::Keypair::ed25519_from_bytes([n; 32])
-            .unwrap()
-            .public()
-            .to_peer_id())
+        PeerOrigin::peer(&iroh::SecretKey::from_bytes(&[n; 32]).public())
     }
 
     #[test]
@@ -307,11 +228,8 @@ mod tests {
         assert_eq!(looked_up.device_pubkey, cert.device_public_key);
     }
 
-    /// The store is keyed by the whole peer id, so two peers that a
-    /// 64-bit fold could collide keep separate entries. Under the old
-    /// `u64` key, an attacker who landed on a trusted peer's digest
-    /// displaced that peer's cert and had their own ops verified as
-    /// them; here the two names simply differ.
+    /// The store is keyed by the whole peer id, so two peers a 64-bit fold
+    /// could collide keep separate entries (see the module doc's digest-collision attack).
     #[test]
     fn distinct_peers_never_share_an_entry() {
         let (_r1, dev_sk_a, cert_a) = fresh_identity(DeviceCapabilities::primary());
@@ -336,7 +254,9 @@ mod tests {
         // And a's signature does not verify when attributed to b.
         let msg = b"authored by a";
         let sig = dev_sk_a.sign(msg).to_bytes();
-        store.verify_signature_from(&a, msg, &sig, 600, 700).unwrap();
+        store
+            .verify_signature_from(&a, msg, &sig, 600, 700)
+            .unwrap();
         assert_eq!(
             store
                 .verify_signature_from(&b, msg, &sig, 600, 700)
@@ -345,8 +265,7 @@ mod tests {
         );
     }
 
-    /// A hub subscriber id can never be mistaken for a peer id — the
-    /// namespacing `PeerOrigin` applies is what the store now keys on.
+    /// A hub subscriber id can never be mistaken for a peer id — the namespacing `PeerOrigin` applies is what the store keys on.
     #[test]
     fn hub_origin_does_not_alias_a_peer_origin() {
         let (_root_sk, _dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
@@ -472,8 +391,7 @@ mod tests {
             PeerIdentityError::Revoked
         );
 
-        // Old ops (signed before cut-off) still accepted — grace
-        // for legitimately-authored history.
+        // Old ops (signed before cut-off) still accepted — grace for legitimately-authored history.
         let msg = b"still-old";
         let sig = dev_sk.sign(msg).to_bytes();
         store

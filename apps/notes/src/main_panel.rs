@@ -42,9 +42,10 @@ use ui::Widget;
 use ui::presence::PresenceCtx;
 use ui::text_render::{FontChoice, TextRenderer};
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, EditableLabel, EditOutcome, EmptyState};
+use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState};
 
 use crate::model::PageId;
+use crate::num;
 
 /// Page-title size. The title is the note's most prominent element — a
 /// large, editable heading pinned above the body, the way Notion/Bear put
@@ -57,7 +58,7 @@ const TITLE_SIZE: f32 = 30.0;
 const PADDING_PX: f64 = 32.0;
 /// Vertical gap between the title and the block editor.
 const TITLE_TO_EDITOR_GAP: f64 = 14.0;
-/// Title row height (~ TITLE_SIZE * 1.4) — enough for the editable field's
+/// Title row height (~ `TITLE_SIZE` * 1.4) — enough for the editable field's
 /// caret band without clipping descenders.
 const TITLE_HEIGHT: f64 = 44.0;
 
@@ -85,7 +86,7 @@ pub struct MainPanel {
     editor: BlockEditor,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
-    /// document — if so we skip the to_markdown serialisation.
+    /// document — if so we skip the `to_markdown` serialisation.
     body: String,
     /// Panel rect, populated by `apply_layout`.
     rect: Rect,
@@ -185,8 +186,7 @@ impl MainPanel {
         title: String,
         body: String,
         resolver: F,
-    )
-    where
+    ) where
         F: FnMut(&str) -> Option<PageId>,
     {
         self.page_id = Some(id);
@@ -252,11 +252,12 @@ impl MainPanel {
     /// while the title is itself being edited, so a model echo doesn't stomp
     /// the user's in-flight typing.
     pub fn set_title(&mut self, title: Option<String>) {
-        if let Some(t) = title {
-            if !self.title_label.is_editing() && self.title_label.value() != t {
-                self.title_label.set_value(&t);
-                self.dirty = true;
-            }
+        if let Some(t) = title
+            && !self.title_label.is_editing()
+            && self.title_label.value() != t
+        {
+            self.title_label.set_value(&t);
+            self.dirty = true;
         }
     }
 
@@ -378,11 +379,11 @@ impl Widget for MainPanel {
                         height: Dimension::auto(),
                     },
                     inset: taffy::Rect {
-                        left: length(PADDING_PX as f32),
-                        right: length(PADDING_PX as f32),
-                        top: length(
-                            (PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP) as f32,
-                        ),
+                        left: length(num::f32_of_f64(PADDING_PX)),
+                        right: length(num::f32_of_f64(PADDING_PX)),
+                        top: length(num::f32_of_f64(
+                            PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP,
+                        )),
                         bottom: taffy::LengthPercentageAuto::auto(),
                     },
                     ..existing
@@ -411,17 +412,17 @@ impl Widget for MainPanel {
                 &[editor_node],
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let new_rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
             self.dirty = true;
@@ -443,33 +444,43 @@ impl Widget for MainPanel {
             let unshifted_origin = Point::new(self.rect.x0, self.rect.y0);
             self.editor.apply_layout(taffy, n, unshifted_origin);
             let editor_rect = self.editor.get_rect();
-            let last_block_bottom = self
-                .editor
-                .blocks()
-                .iter()
-                .map(|b| b.line.get_rect().y1)
-                .fold(editor_rect.y0, f64::max);
+            let last_block_bottom = self.editor.content_bottom();
             // Content height = where the lowest block actually ends,
             // minus the editor's top. This catches taffy under-reports
             // for flex-column overflow (same kludge ui::Scrollable uses
             // in its apply_layout).
             let content_h = (last_block_bottom - editor_rect.y0).max(0.0);
-            let viewport_h = (self.rect.height() - 2.0 * PADDING_PX
-                - TITLE_HEIGHT
-                - TITLE_TO_EDITOR_GAP)
-                .max(0.0);
+            let viewport_h =
+                (self.rect.height() - 2.0 * PADDING_PX - TITLE_HEIGHT - TITLE_TO_EDITOR_GAP)
+                    .max(0.0);
             let max_scroll = (content_h - viewport_h).max(0.0);
-            let clamped = self.scroll_y.clamp(0.0, max_scroll);
-            if clamped != self.scroll_y {
-                self.scroll_y = clamped;
-                self.dirty = true;
+            // A layout pass can land before the editor's text has been shaped.
+            // Every block rect is then degenerate, `content_h` collapses, and
+            // clamping against it throws the reader back to the top of the
+            // document with nothing to explain it — the position is gone, not
+            // restored on the next frame. Ask whether anything was measured at
+            // all rather than whether the total came out at exactly zero: a
+            // partial pass yields a small non-zero height that clamps just as
+            // destructively. An empty document has no blocks, and 0 is right
+            // for it.
+            let measured = self.editor.blocks().is_empty()
+                || self
+                    .editor
+                    .blocks()
+                    .iter()
+                    .any(|b| b.line.get_rect().height() > 0.0);
+            if measured {
+                let clamped = self.scroll_y.clamp(0.0, max_scroll);
+                if clamped != self.scroll_y {
+                    self.scroll_y = clamped;
+                    self.dirty = true;
+                }
             }
             // Re-apply layout with the (possibly clamped) scroll
             // offset so block rects reflect their on-screen position.
             // Without this, click hit-tests would target stale rects
             // for a scrolled view.
-            let shifted_origin =
-                Point::new(self.rect.x0, self.rect.y0 - self.scroll_y);
+            let shifted_origin = Point::new(self.rect.x0, self.rect.y0 - self.scroll_y);
             self.editor.apply_layout(taffy, n, shifted_origin);
         }
     }
@@ -521,7 +532,8 @@ impl Widget for MainPanel {
             // Overlay popovers (slash menu / link popover) — drawn AFTER the
             // main editor scene so they land on top of every block, and
             // OUTSIDE the scroll clip so they stay visible at their anchor.
-            self.editor.draw_overlay(scene, transform, text_renderer, theme);
+            self.editor
+                .draw_overlay(scene, transform, text_renderer, theme);
         } else {
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
@@ -556,8 +568,7 @@ impl Widget for MainPanel {
         // Track the pointer so a press (which carries no position) can be
         // classified as landing in the title band.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer =
-                Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
         if self.page_id.is_none() {
             return;
@@ -585,7 +596,14 @@ impl Widget for MainPanel {
         if self.title_label.is_editing() {
             self.title_label.apply_layout_external(self.title_rect);
             self.title_label.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
                 taffy,
             );
             match self.title_label.take_outcome() {
@@ -611,7 +629,7 @@ impl Widget for MainPanel {
         // delta as a cursor move.
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => -(*y as f64) * 40.0,
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 40.0,
                 winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
             };
             if dy != 0.0 {
@@ -640,7 +658,7 @@ impl Widget for MainPanel {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MainPanel"
     }
 

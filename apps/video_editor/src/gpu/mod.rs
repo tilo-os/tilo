@@ -116,7 +116,10 @@ where
     F: FnMut(MediaId, f64) -> Option<CpuFrame>,
 {
     pub fn new(produce: F) -> Self {
-        Self { produce, cache: HashMap::new() }
+        Self {
+            produce,
+            cache: HashMap::new(),
+        }
     }
 
     /// Drop cached uploads. Worth calling when the playhead jumps far, so
@@ -168,7 +171,10 @@ impl HeadlessCompositor {
     /// with no usable adapter, so callers can report it honestly.
     pub fn new() -> Result<Self, String> {
         let gpu = ui::offscreen::shared_gpu().map_err(|e| e.to_string())?;
-        Ok(Self { gpu, compositor: VideoCompositor::new() })
+        Ok(Self {
+            gpu,
+            compositor: VideoCompositor::new(),
+        })
     }
 
     /// Composite the timeline at `playhead` and hand back a tightly-packed
@@ -248,7 +254,8 @@ mod tests {
             kind: TrackKind::Video,
             index,
             muted: false,
-            locked: false, solo: false,
+            locked: false,
+            solo: false,
         });
         id
     }
@@ -348,7 +355,10 @@ mod tests {
         let buf = c.frame(&p, 1.0, 64, 64, &mut green());
         // Half scale on a square source in a square frame: the picture
         // occupies the middle half, x and y in 16..48.
-        assert!(is_green(px(&buf, 64, 32, 32)), "the centre still has picture");
+        assert!(
+            is_green(px(&buf, 64, 32, 32)),
+            "the centre still has picture"
+        );
         assert!(is_green(px(&buf, 64, 20, 32)), "just inside the left edge");
         assert!(is_black(px(&buf, 64, 8, 32)), "well outside is black");
         assert!(is_black(px(&buf, 64, 32, 4)), "and above it");
@@ -376,7 +386,10 @@ mod tests {
             "the clip sits up and to the right; got {:?}",
             px(&buf, 64, 48, 16),
         );
-        assert!(is_black(px(&buf, 64, 32, 32)), "and no longer at the centre");
+        assert!(
+            is_black(px(&buf, 64, 32, 32)),
+            "and no longer at the centre"
+        );
         assert!(is_black(px(&buf, 64, 16, 48)), "nor opposite it");
     }
 
@@ -409,15 +422,24 @@ mod tests {
         // turn must put the left (red) half on top.
         let (mut p, cid) = square_clip();
         let mut src = painted(32, 32, |u, _v| {
-            if u < 0.5 { [220, 40, 40, 255] } else { [40, 40, 220, 255] }
+            if u < 0.5 {
+                [220, 40, 40, 255]
+            } else {
+                [40, 40, 220, 255]
+            }
         });
         let mut c = compositor();
         let flat = c.frame(&p, 1.0, 64, 64, &mut src);
         let left = px(&flat, 64, 12, 32);
-        assert!(left.r > left.b + 0.2, "unrotated, red is on the left: {left:?}");
+        assert!(
+            left.r > left.b + 0.2,
+            "unrotated, red is on the left: {left:?}"
+        );
 
-        p.clip_mut(cid).unwrap().transform =
-            Transform { rotation: 90.0, ..Transform::default() };
+        p.clip_mut(cid).unwrap().transform = Transform {
+            rotation: 90.0,
+            ..Transform::default()
+        };
         let turned = c.frame(&p, 1.0, 64, 64, &mut src);
         let top = px(&turned, 64, 32, 12);
         let bottom = px(&turned, 64, 32, 52);
@@ -436,11 +458,16 @@ mod tests {
         let (mut p, cid) = square_clip();
         let mut c = compositor();
         let full = c.frame(&p, 1.0, 64, 64, &mut green());
-        assert!(is_green(px(&full, 64, 4, 32)), "uncropped, the left edge has picture");
+        assert!(
+            is_green(px(&full, 64, 4, 32)),
+            "uncropped, the left edge has picture"
+        );
 
         // Cut the left third away.
-        p.clip_mut(cid).unwrap().transform =
-            Transform { crop_left: 1.0 / 3.0, ..Transform::default() };
+        p.clip_mut(cid).unwrap().transform = Transform {
+            crop_left: 1.0 / 3.0,
+            ..Transform::default()
+        };
         let cropped = c.frame(&p, 1.0, 64, 64, &mut green());
         assert!(
             is_black(px(&cropped, 64, 4, 32)),
@@ -451,7 +478,10 @@ mod tests {
             is_green(px(&cropped, 64, 32, 32)),
             "what is left of the picture has not moved",
         );
-        assert!(is_green(px(&cropped, 64, 60, 32)), "including its right edge");
+        assert!(
+            is_green(px(&cropped, 64, 60, 32)),
+            "including its right edge"
+        );
     }
 
     #[test]
@@ -495,9 +525,7 @@ mod tests {
         let upper_pal = palette_rgb(3);
         // Compare which palette each region is nearer to.
         let near = |c: Rgb, a: Rgb, b: Rgb| {
-            let d = |x: Rgb, y: Rgb| {
-                (x.r - y.r).abs() + (x.g - y.g).abs() + (x.b - y.b).abs()
-            };
+            let d = |x: Rgb, y: Rgb| (x.r - y.r).abs() + (x.g - y.g).abs() + (x.b - y.b).abs();
             d(c, a) < d(c, b)
         };
         assert!(
@@ -537,7 +565,11 @@ mod tests {
 
         // Opaque green in the left half, fully transparent in the right.
         let mut src = painted(32, 32, |u, _v| {
-            if u < 0.5 { [40, 200, 90, 255] } else { [40, 200, 90, 0] }
+            if u < 0.5 {
+                [40, 200, 90, 255]
+            } else {
+                [40, 200, 90, 0]
+            }
         });
         let mut c = compositor();
         let buf = c.frame(&p, 1.0, 64, 64, &mut src);
@@ -617,11 +649,13 @@ mod tests {
         // a layer with alpha, not an opaque card.
         let bed_px = buf
             .chunks_exact(4)
-            .filter(|q| is_green(Rgb::new(
-                q[0] as f64 / 255.0,
-                q[1] as f64 / 255.0,
-                q[2] as f64 / 255.0,
-            )))
+            .filter(|q| {
+                is_green(Rgb::new(
+                    q[0] as f64 / 255.0,
+                    q[1] as f64 / 255.0,
+                    q[2] as f64 / 255.0,
+                ))
+            })
             .count();
         assert!(
             bed_px > 3000,
@@ -651,11 +685,20 @@ mod tests {
             .chunks_exact(4)
             .filter(|q| q[0] > 200 && q[1] < 110 && q[2] < 110)
             .count();
-        assert!(red > 30, "the title renders with no decoder, got {red} red pixels");
+        assert!(
+            red > 30,
+            "the title renders with no decoder, got {red} red pixels"
+        );
         // Nothing else is on the timeline, so the rest is letterbox black —
         // not the two-band stand-in a source-less clip would otherwise draw.
-        let black = buf.chunks_exact(4).filter(|q| q[0] < 12 && q[1] < 12 && q[2] < 12).count();
-        assert!(black > 5000, "the field around the glyphs stays black, got {black}");
+        let black = buf
+            .chunks_exact(4)
+            .filter(|q| q[0] < 12 && q[1] < 12 && q[2] < 12)
+            .count();
+        assert!(
+            black > 5000,
+            "the field around the glyphs stays black, got {black}"
+        );
     }
 
     #[test]
@@ -708,7 +751,8 @@ mod tests {
         let buf = c.frame(&p, 0.0, 16, 16, &mut NoSources);
         assert_eq!(buf.len(), 16 * 16 * 4);
         assert!(
-            buf.chunks(4).all(|q| q[0] < 4 && q[1] < 4 && q[2] < 4 && q[3] == 255),
+            buf.chunks(4)
+                .all(|q| q[0] < 4 && q[1] < 4 && q[2] < 4 && q[3] == 255),
             "no clips means an opaque black frame",
         );
     }
@@ -725,18 +769,27 @@ mod tests {
         let neutral = c.frame(&p, 2.0, 32, 32, &mut NoSources);
         // The clip's palette colour is on the canvas, not black.
         let mid = px(&neutral, 32, 16, 20);
-        assert!(mid.luma() > 0.1, "a clip renders visible colour, got {mid:?}");
+        assert!(
+            mid.luma() > 0.1,
+            "a clip renders visible colour, got {mid:?}"
+        );
 
-        p.clip_mut(cid).unwrap().filters =
-            Filters { brightness: 0.95, contrast: 0.5, saturation: 0.5 };
+        p.clip_mut(cid).unwrap().filters = Filters {
+            brightness: 0.95,
+            contrast: 0.5,
+            saturation: 0.5,
+        };
         let bright = c.frame(&p, 2.0, 32, 32, &mut NoSources);
         assert!(
             px(&bright, 32, 16, 20).luma() > mid.luma() + 0.02,
             "raising brightness brightens the composited frame",
         );
 
-        p.clip_mut(cid).unwrap().filters =
-            Filters { brightness: 0.5, contrast: 0.5, saturation: 0.0 };
+        p.clip_mut(cid).unwrap().filters = Filters {
+            brightness: 0.5,
+            contrast: 0.5,
+            saturation: 0.0,
+        };
         let flat = px(&c.frame(&p, 2.0, 32, 32, &mut NoSources), 32, 16, 20);
         assert!(
             (flat.r - flat.g).abs() < 0.03 && (flat.g - flat.b).abs() < 0.03,
@@ -752,7 +805,11 @@ mod tests {
         let m = media(&mut p, 0);
         let t = track(&mut p, 1);
         let cid = p.add_clip(t, m, 0.0).unwrap();
-        let f = Filters { brightness: 0.66, contrast: 0.58, saturation: 0.34 };
+        let f = Filters {
+            brightness: 0.66,
+            contrast: 0.58,
+            saturation: 0.34,
+        };
         p.clip_mut(cid).unwrap().out_point = 10.0;
         p.clip_mut(cid).unwrap().filters = f;
 
@@ -805,9 +862,7 @@ mod tests {
             let t = level as f64 / 255.0;
             let (wr, wg, wb) = curve.apply(t, t, t);
             assert!(
-                (got.r - wr).abs() < 0.02
-                    && (got.g - wg).abs() < 0.02
-                    && (got.b - wb).abs() < 0.02,
+                (got.r - wr).abs() < 0.02 && (got.g - wg).abs() < 0.02 && (got.b - wb).abs() < 0.02,
                 "level {level}: shader curve {got:?} should match the CPU curve \
                  ({wr:.3}, {wg:.3}, {wb:.3})",
             );
@@ -873,15 +928,25 @@ mod tests {
             let c = p.clip_mut(over).unwrap();
             c.out_point = 10.0;
             c.curves = crush;
-            c.transform = Transform { scale_x: 0.4, scale_y: 0.4, ..Transform::default() };
+            c.transform = Transform {
+                scale_x: 0.4,
+                scale_y: 0.4,
+                ..Transform::default()
+            };
         }
 
         let mut c = compositor();
         let buf = c.frame(&p, 1.0, 64, 64, &mut flat(128));
         let centre = px(&buf, 64, 32, 32);
         let corner = px(&buf, 64, 4, 32);
-        assert!(centre.luma() < 0.2, "the upper layer's own curve crushed it: {centre:?}");
-        assert!(corner.luma() > 0.8, "the lower layer's own curve lifted it: {corner:?}");
+        assert!(
+            centre.luma() < 0.2,
+            "the upper layer's own curve crushed it: {centre:?}"
+        );
+        assert!(
+            corner.luma() > 0.8,
+            "the lower layer's own curve lifted it: {corner:?}"
+        );
     }
 
     #[test]
@@ -910,9 +975,18 @@ mod tests {
             (start - 0.502).abs() < 0.02,
             "mixed all the way out, the grey is untouched: {start}",
         );
-        assert!(middle > start + 0.15, "half way through it has lifted: {start} → {middle}");
-        assert!(end > middle + 0.15, "and further by the end: {middle} → {end}");
-        assert!(end > 0.9, "at full strength the midtone reaches the point drawn: {end}");
+        assert!(
+            middle > start + 0.15,
+            "half way through it has lifted: {start} → {middle}"
+        );
+        assert!(
+            end > middle + 0.15,
+            "and further by the end: {middle} → {end}"
+        );
+        assert!(
+            end > 0.9,
+            "at full strength the midtone reaches the point drawn: {end}"
+        );
     }
 
     #[test]
@@ -951,7 +1025,10 @@ mod tests {
         let mut c = compositor();
         let opaque = px(&c.frame(&p, 2.0, 32, 32, &mut NoSources), 32, 16, 20);
         // Opaque top layer: the red clip wins outright.
-        assert!(opaque.r > opaque.g, "an opaque top layer covers the one below: {opaque:?}");
+        assert!(
+            opaque.r > opaque.g,
+            "an opaque top layer covers the one below: {opaque:?}"
+        );
 
         p.clip_mut(c2).unwrap().opacity = 0.5;
         let blended = px(&c.frame(&p, 2.0, 32, 32, &mut NoSources), 32, 16, 20);
@@ -999,8 +1076,10 @@ mod tests {
 
         let mut c = compositor();
         let plain = c.frame(&p, 1.0, 64, 64, &mut NoSources);
-        p.clip_mut(cid).unwrap().effects =
-            vec![ClipEffect { kind: EffectKind::Vignette, amount: 1.0 }];
+        p.clip_mut(cid).unwrap().effects = vec![ClipEffect {
+            kind: EffectKind::Vignette,
+            amount: 1.0,
+        }];
         let vign = c.frame(&p, 1.0, 64, 64, &mut NoSources);
 
         let corner_before = px(&plain, 64, 1, 62).luma();
@@ -1083,10 +1162,27 @@ mod tests {
         );
         // ...and it is genuinely between the two ends.
         let start = px(&c.frame(&p, 5.001, 32, 32, &mut NoSources), 32, 16, 20);
-        let end = px(&c.frame(&p, 5.0 + crate::preview::TRANSITION_SECS + 0.01, 32, 32, &mut NoSources), 32, 16, 20);
-        assert!(start.g > start.r, "the dissolve opens on the outgoing clip: {start:?}");
+        let end = px(
+            &c.frame(
+                &p,
+                5.0 + crate::preview::TRANSITION_SECS + 0.01,
+                32,
+                32,
+                &mut NoSources,
+            ),
+            32,
+            16,
+            20,
+        );
+        assert!(
+            start.g > start.r,
+            "the dissolve opens on the outgoing clip: {start:?}"
+        );
         assert!(end.r > end.g, "and lands on the incoming clip: {end:?}");
-        assert!(mid.r > start.r && mid.g > end.g, "the middle is a real blend: {mid:?}");
+        assert!(
+            mid.r > start.r && mid.g > end.g,
+            "the middle is a real blend: {mid:?}"
+        );
     }
 
     #[test]
@@ -1095,13 +1191,25 @@ mod tests {
         let mut c = compositor();
         let early = px(&c.frame(&p, 5.02, 32, 32, &mut NoSources), 32, 16, 20);
         let late = px(
-            &c.frame(&p, 5.0 + crate::preview::TRANSITION_SECS * 0.9, 32, 32, &mut NoSources),
+            &c.frame(
+                &p,
+                5.0 + crate::preview::TRANSITION_SECS * 0.9,
+                32,
+                32,
+                &mut NoSources,
+            ),
             32,
             16,
             20,
         );
-        assert!(early.luma() < 0.06, "a fade opens on black, not the previous clip: {early:?}");
-        assert!(late.luma() > early.luma() + 0.1, "and rises out of it: {late:?}");
+        assert!(
+            early.luma() < 0.06,
+            "a fade opens on black, not the previous clip: {early:?}"
+        );
+        assert!(
+            late.luma() > early.luma() + 0.1,
+            "and rises out of it: {late:?}"
+        );
         assert!(late.r > late.g, "what rises is the incoming clip: {late:?}");
     }
 
@@ -1110,12 +1218,36 @@ mod tests {
         let (p, _) = two_clip_project(Transition::DipToBlack);
         let mut c = compositor();
         let dur = crate::preview::TRANSITION_SECS;
-        let quarter = px(&c.frame(&p, 5.0 + dur * 0.25, 32, 32, &mut NoSources), 32, 16, 20);
-        let middle = px(&c.frame(&p, 5.0 + dur * 0.5, 32, 32, &mut NoSources), 32, 16, 20);
-        let three_q = px(&c.frame(&p, 5.0 + dur * 0.75, 32, 32, &mut NoSources), 32, 16, 20);
-        assert!(middle.luma() < 0.03, "the dip bottoms out at black: {middle:?}");
-        assert!(quarter.g > quarter.r, "it leaves on the outgoing clip: {quarter:?}");
-        assert!(three_q.r > three_q.g, "and returns on the incoming one: {three_q:?}");
+        let quarter = px(
+            &c.frame(&p, 5.0 + dur * 0.25, 32, 32, &mut NoSources),
+            32,
+            16,
+            20,
+        );
+        let middle = px(
+            &c.frame(&p, 5.0 + dur * 0.5, 32, 32, &mut NoSources),
+            32,
+            16,
+            20,
+        );
+        let three_q = px(
+            &c.frame(&p, 5.0 + dur * 0.75, 32, 32, &mut NoSources),
+            32,
+            16,
+            20,
+        );
+        assert!(
+            middle.luma() < 0.03,
+            "the dip bottoms out at black: {middle:?}"
+        );
+        assert!(
+            quarter.g > quarter.r,
+            "it leaves on the outgoing clip: {quarter:?}"
+        );
+        assert!(
+            three_q.r > three_q.g,
+            "and returns on the incoming one: {three_q:?}"
+        );
     }
 
     #[test]
@@ -1127,8 +1259,14 @@ mod tests {
         // incoming clip, the right side is still the outgoing one.
         let left = px(&buf, 64, 6, 30);
         let right = px(&buf, 64, 57, 30);
-        assert!(left.r > left.g, "the revealed side shows the incoming clip: {left:?}");
-        assert!(right.g > right.r, "the unreached side still shows the outgoing one: {right:?}");
+        assert!(
+            left.r > left.g,
+            "the revealed side shows the incoming clip: {left:?}"
+        );
+        assert!(
+            right.g > right.r,
+            "the unreached side still shows the outgoing one: {right:?}"
+        );
         // A soft edge: somewhere near the middle the two are mixed.
         let edge = px(&buf, 64, 32, 30);
         assert!(
@@ -1192,8 +1330,14 @@ mod tests {
         let cid = p.add_clip(t, m, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 10.0;
         p.clip_mut(cid).unwrap().effects = vec![
-            ClipEffect { kind: EffectKind::Sepia, amount: 0.7 },
-            ClipEffect { kind: EffectKind::Vignette, amount: 0.5 },
+            ClipEffect {
+                kind: EffectKind::Sepia,
+                amount: 0.7,
+            },
+            ClipEffect {
+                kind: EffectKind::Vignette,
+                amount: 0.5,
+            },
         ];
         let mut c = compositor();
         let a = c.frame(&p, 3.25, 48, 48, &mut NoSources);
@@ -1213,8 +1357,14 @@ mod tests {
         // Sepia last tints a neutral grey warm; sepia first is flattened
         // back to grey by the grayscale that follows it.
         p.clip_mut(cid).unwrap().effects = vec![
-            ClipEffect { kind: EffectKind::Grayscale, amount: 1.0 },
-            ClipEffect { kind: EffectKind::Sepia, amount: 1.0 },
+            ClipEffect {
+                kind: EffectKind::Grayscale,
+                amount: 1.0,
+            },
+            ClipEffect {
+                kind: EffectKind::Sepia,
+                amount: 1.0,
+            },
         ];
         let gray_then_sepia = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
         p.clip_mut(cid).unwrap().effects.swap(0, 1);
@@ -1247,16 +1397,22 @@ mod tests {
         let mut c = compositor();
         let head = px(&c.frame(&p, 0.05, 32, 32, &mut NoSources), 32, 16, 20).luma();
         let mid = px(&c.frame(&p, 5.0, 32, 32, &mut NoSources), 32, 16, 20).luma();
-        assert!(head < mid * 0.2, "the head of a fade-in is near black: {head} vs {mid}");
+        assert!(
+            head < mid * 0.2,
+            "the head of a fade-in is near black: {head} vs {mid}"
+        );
     }
-
 
     /// The bundled demo clip, if this checkout has it.
     #[cfg(feature = "decode")]
     fn demo_clip() -> std::path::PathBuf {
         if let Some(p) = std::env::var_os("QOS_VE_TEST_CLIP") {
             let p = std::path::PathBuf::from(p);
-            assert!(p.exists(), "$QOS_VE_TEST_CLIP does not exist: {}", p.display());
+            assert!(
+                p.exists(),
+                "$QOS_VE_TEST_CLIP does not exist: {}",
+                p.display()
+            );
             return p;
         }
         let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1333,7 +1489,8 @@ mod tests {
             kind: TrackKind::Video,
             index: 1,
             muted: false,
-            locked: false, solo: false,
+            locked: false,
+            solo: false,
         });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 57.0;
@@ -1364,7 +1521,11 @@ mod tests {
         // Hand that frame to the compositor exactly as the canvas does.
         let frame = decoder.frame().expect("decoded frame").clone();
         let decoded_media = decoder.frame_media();
-        assert_eq!(decoded_media, Some(mid), "the frame belongs to the clip under the playhead");
+        assert_eq!(
+            decoded_media,
+            Some(mid),
+            "the frame belongs to the clip under the playhead"
+        );
         let mut sources = CpuFrames::new(move |media, _t| {
             (media == mid).then(|| CpuFrame {
                 width: frame.width,
@@ -1463,7 +1624,6 @@ mod tests {
         );
     }
 
-
     /// The compositor painting a real hardware-decoded frame.
     ///
     /// This is the whole point of the media seam: a decoder emits NV12, the
@@ -1525,7 +1685,9 @@ mod tests {
 
         assert_ne!(live, fallback, "the decoded frame must reach the canvas");
         let live_detail = horizontal_detail(&live, w, h);
-        let report = src.hw_report(mid).expect("the session reports what it plugged");
+        let report = src
+            .hw_report(mid)
+            .expect("the session reports what it plugged");
         println!("decoder={report:?}  canvas detail={live_detail:.3}");
         assert!(
             live_detail > 2.0,
@@ -1628,7 +1790,10 @@ mod tests {
             c.in_point = 40.0;
             c.out_point = 50.0;
             c.opacity = 0.5;
-            c.effects = vec![ClipEffect { kind: EffectKind::Invert, amount: 1.0 }];
+            c.effects = vec![ClipEffect {
+                kind: EffectKind::Invert,
+                amount: 1.0,
+            }];
         }
 
         let mut src = MediaFrameSource::new(&p, Fetch::Exact)
@@ -1639,15 +1804,28 @@ mod tests {
         // With the upper layer half-transparent over the lower one, the
         // result must be neither layer alone.
         let mut only_lower = p.clone();
-        only_lower.tracks.iter_mut().find(|t| t.id == v2).unwrap().muted = true;
+        only_lower
+            .tracks
+            .iter_mut()
+            .find(|t| t.id == v2)
+            .unwrap()
+            .muted = true;
         let lower_only = c.frame(&only_lower, 1.0, 96, 54, &mut src);
 
         let mut only_upper = p.clone();
-        only_upper.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
+        only_upper
+            .tracks
+            .iter_mut()
+            .find(|t| t.id == v1)
+            .unwrap()
+            .muted = true;
         only_upper.clip_mut(upper).unwrap().opacity = 1.0;
         let upper_only = c.frame(&only_upper, 1.0, 96, 54, &mut src);
 
-        assert_ne!(both, lower_only, "the upper layer contributes to the composite");
+        assert_ne!(
+            both, lower_only,
+            "the upper layer contributes to the composite"
+        );
         assert_ne!(both, upper_only, "so does the lower one");
         assert_ne!(
             lower_only, upper_only,
@@ -1717,7 +1895,12 @@ mod tests {
                 }
                 std::sync::Arc::new(buf)
             });
-            Some(CpuFrame { width: w, height: h, rgba: rgba.clone(), identity: 0 })
+            Some(CpuFrame {
+                width: w,
+                height: h,
+                rgba: rgba.clone(),
+                identity: 0,
+            })
         })
     }
 
@@ -1765,8 +1948,11 @@ mod tests {
 
     /// A stack whose lower layer is flat red and whose upper layer is the
     /// key green with an orange bar across its middle third.
-    fn plate_over_red()
-    -> (Project, Uuid, CpuFrames<impl FnMut(Uuid, f64) -> Option<CpuFrame>>) {
+    fn plate_over_red() -> (
+        Project,
+        Uuid,
+        CpuFrames<impl FnMut(Uuid, f64) -> Option<CpuFrame>>,
+    ) {
         let (p, _under, over, under_m, _over_m) = stacked();
         let src = per_media(32, 32, move |media, _u, v| {
             if media == under_m {
@@ -1794,7 +1980,10 @@ mod tests {
                 px(&buf, 64, 32, y),
             );
         }
-        assert!(is_green(px(&buf, 64, 32, 4)), "the plate is what is on screen");
+        assert!(
+            is_green(px(&buf, 64, 32, 4)),
+            "the plate is what is on screen"
+        );
     }
 
     #[test]
@@ -1884,9 +2073,13 @@ mod tests {
         let (p, _under, over, under_m, _over_m) = stacked();
         // A subject washed with green light, over red.
         let tinted: [u8; 4] = [160, 150, 95, 255];
-        let mut src = per_media(32, 32, move |media, _u, _v| {
-            if media == under_m { BENEATH } else { tinted }
-        });
+        let mut src = per_media(
+            32,
+            32,
+            move |media, _u, _v| {
+                if media == under_m { BENEATH } else { tinted }
+            },
+        );
         let key = |spill: f64| crate::model::ChromaKey {
             enabled: true,
             color: [
@@ -1930,7 +2123,11 @@ mod tests {
     fn an_ellipse_mask_cuts_the_upper_layer_to_a_disc() {
         let (p, _under, over, under_m, _over_m) = stacked();
         let mut src = per_media(32, 32, move |media, _u, _v| {
-            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+            if media == under_m {
+                BENEATH
+            } else {
+                [40, 200, 90, 255]
+            }
         });
         let mut p = p;
         p.clip_mut(over).unwrap().mask = crate::model::Mask {
@@ -1942,7 +2139,10 @@ mod tests {
         };
         let mut c = compositor();
         let buf = c.frame(&p, 1.0, 64, 64, &mut src);
-        assert!(is_green(px(&buf, 64, 32, 32)), "inside the disc the upper layer shows");
+        assert!(
+            is_green(px(&buf, 64, 32, 32)),
+            "inside the disc the upper layer shows"
+        );
         for (x, y) in [(2, 2), (61, 2), (2, 61), (61, 61), (32, 2)] {
             assert!(
                 is_reddish(px(&buf, 64, x, y)),
@@ -1956,7 +2156,11 @@ mod tests {
     fn inverting_the_mask_swaps_which_layer_is_where() {
         let (p, _under, over, under_m, _over_m) = stacked();
         let mut src = per_media(32, 32, move |media, _u, _v| {
-            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+            if media == under_m {
+                BENEATH
+            } else {
+                [40, 200, 90, 255]
+            }
         });
         let mut p = p;
         p.clip_mut(over).unwrap().mask = crate::model::Mask {
@@ -1969,8 +2173,14 @@ mod tests {
         };
         let mut c = compositor();
         let buf = c.frame(&p, 1.0, 64, 64, &mut src);
-        assert!(is_reddish(px(&buf, 64, 32, 32)), "the centre is now the hole");
-        assert!(is_green(px(&buf, 64, 2, 2)), "and the corner keeps the upper layer");
+        assert!(
+            is_reddish(px(&buf, 64, 32, 32)),
+            "the centre is now the hole"
+        );
+        assert!(
+            is_green(px(&buf, 64, 2, 2)),
+            "and the corner keeps the upper layer"
+        );
     }
 
     /// A rect and an ellipse of one size have to composite differently, or
@@ -1980,7 +2190,11 @@ mod tests {
     fn a_rect_mask_is_not_the_same_composite_as_an_ellipse() {
         let (p, _under, over, under_m, _over_m) = stacked();
         let mut src = per_media(32, 32, move |media, _u, _v| {
-            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+            if media == under_m {
+                BENEATH
+            } else {
+                [40, 200, 90, 255]
+            }
         });
         let base = crate::model::Mask {
             w: 0.8,
@@ -1992,11 +2206,15 @@ mod tests {
         let mut p = p;
         // Just inside the corner of the 0.8-wide box.
         let (x, y) = (55, 55);
-        p.clip_mut(over).unwrap().mask =
-            crate::model::Mask { shape: crate::model::MaskShape::Rect, ..base };
+        p.clip_mut(over).unwrap().mask = crate::model::Mask {
+            shape: crate::model::MaskShape::Rect,
+            ..base
+        };
         let rect = px(&c.frame(&p, 1.0, 64, 64, &mut src), 64, x, y);
-        p.clip_mut(over).unwrap().mask =
-            crate::model::Mask { shape: crate::model::MaskShape::Ellipse, ..base };
+        p.clip_mut(over).unwrap().mask = crate::model::Mask {
+            shape: crate::model::MaskShape::Ellipse,
+            ..base
+        };
         let ellipse = px(&c.frame(&p, 1.0, 64, 64, &mut src), 64, x, y);
         assert!(is_green(rect), "the rect reaches its own corner: {rect:?}");
         assert!(is_reddish(ellipse), "the ellipse does not: {ellipse:?}");
@@ -2006,7 +2224,11 @@ mod tests {
     fn feathering_a_mask_puts_a_real_ramp_at_its_edge() {
         let (p, _under, over, under_m, _over_m) = stacked();
         let mut src = per_media(32, 32, move |media, _u, _v| {
-            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+            if media == under_m {
+                BENEATH
+            } else {
+                [40, 200, 90, 255]
+            }
         });
         let mut c = compositor();
         let mut p = p;
@@ -2030,9 +2252,15 @@ mod tests {
                 })
                 .count()
         };
-        p.clip_mut(over).unwrap().mask = crate::model::Mask { feather: 0.005, ..base };
+        p.clip_mut(over).unwrap().mask = crate::model::Mask {
+            feather: 0.005,
+            ..base
+        };
         let hard = ramp(&c.frame(&p, 1.0, 64, 64, &mut src));
-        p.clip_mut(over).unwrap().mask = crate::model::Mask { feather: 0.5, ..base };
+        p.clip_mut(over).unwrap().mask = crate::model::Mask {
+            feather: 0.5,
+            ..base
+        };
         let soft = ramp(&c.frame(&p, 1.0, 64, 64, &mut src));
         assert!(
             hard <= 4,
@@ -2050,7 +2278,11 @@ mod tests {
     fn a_keyframed_mask_is_in_a_different_place_in_each_second() {
         let (p, _under, over, under_m, _over_m) = stacked();
         let mut src = per_media(32, 32, move |media, _u, _v| {
-            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+            if media == under_m {
+                BENEATH
+            } else {
+                [40, 200, 90, 255]
+            }
         });
         let mut p = p;
         {
@@ -2062,16 +2294,32 @@ mod tests {
                 feather: 0.05,
                 ..crate::model::Mask::default()
             };
-            c.set_key_at(crate::param::Param::MaskX, 0.0, -0.3, crate::param::Interp::Linear);
-            c.set_key_at(crate::param::Param::MaskX, 4.0, 0.3, crate::param::Interp::Linear);
+            c.set_key_at(
+                crate::param::Param::MaskX,
+                0.0,
+                -0.3,
+                crate::param::Interp::Linear,
+            );
+            c.set_key_at(
+                crate::param::Param::MaskX,
+                4.0,
+                0.3,
+                crate::param::Interp::Linear,
+            );
         }
         let mut c = compositor();
         let early = c.frame(&p, 0.0, 64, 64, &mut src);
         let late = c.frame(&p, 4.0, 64, 64, &mut src);
         // Left of centre early, right of centre late.
-        assert!(is_green(px(&early, 64, 13, 32)), "the disc starts on the left");
+        assert!(
+            is_green(px(&early, 64, 13, 32)),
+            "the disc starts on the left"
+        );
         assert!(is_reddish(px(&early, 64, 51, 32)), "and not on the right");
-        assert!(is_reddish(px(&late, 64, 13, 32)), "by the end it has left the left");
+        assert!(
+            is_reddish(px(&late, 64, 13, 32)),
+            "by the end it has left the left"
+        );
         assert!(is_green(px(&late, 64, 51, 32)), "and arrived on the right");
     }
 }

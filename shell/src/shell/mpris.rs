@@ -1,28 +1,16 @@
 //! Driving whatever is playing, over MPRIS.
 //!
-//! The transport keys (play/pause, next, previous) are the one part of
-//! the function row that is not a property of the machine — they address
-//! *an application*, and which application is a question only the session
-//! bus can answer. `org.mpris.MediaPlayer2` is that answer: every player
-//! worth the name owns a `org.mpris.MediaPlayer2.<something>` bus name
-//! and implements `Player.PlayPause` / `.Next` / `.Previous` on it. qOS's
-//! own Music app publishes one (`apps/music/src/mpris.rs`); so does
-//! anything running under the launcher's `via-host` D-Bus proxy, which
-//! explicitly allows the MPRIS interface through.
+//! The transport keys (play/pause, next, previous) address *an
+//! application*, not the machine, so they go over `org.mpris.MediaPlayer2`
+//! on the session bus — the interface every real player and qOS's own
+//! Music app (`apps/music/src/mpris.rs`) implements.
 //!
-//! # Why a worker thread with a deadline
-//!
-//! This is called from the compositor's input path, and a D-Bus round
-//! trip to a *wedged* peer has no natural bound — the default reply
-//! timeout is tens of seconds. A frame loop cannot wait on that. So the
-//! bus work happens on a throwaway thread and the caller waits on a
-//! channel with a short deadline: a healthy player answers in under a
-//! millisecond, and an unhealthy one costs one dropped OSD instead of a
-//! frozen desktop. The orphaned thread finishes on its own and exits.
-//!
-//! `zbus::block_on` also cannot run inside a tokio worker, and the
-//! compositor has a runtime; a plain `std::thread` has no runtime context
-//! attached, which is the second reason the work goes off-loop.
+//! Called from the compositor's input path, but a D-Bus round trip has no
+//! natural bound (tens of seconds) and `zbus::block_on` can't run inside
+//! the compositor's tokio runtime — so the bus work happens on a throwaway
+//! `std::thread`, and the caller waits on a channel with a short deadline:
+//! a healthy player answers in under a millisecond, an unhealthy one costs
+//! one dropped OSD instead of a frozen desktop.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -53,9 +41,8 @@ impl Command {
     }
 }
 
-/// What happened, so the OSD can report the resulting state rather than
-/// the button that was pressed. `PlayPause` is a toggle, and a slab that
-/// said "Play" when it had in fact paused would be worse than none.
+/// So the OSD reports the resulting state, not the button pressed —
+/// `PlayPause` is a toggle, and a wrong label would be worse than none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     NowPlaying,
@@ -63,35 +50,29 @@ pub enum Outcome {
     Skipped,
 }
 
-/// Send `cmd` to the active player.
-///
-/// Returns `None` when there is no player on the bus, when the bus itself
-/// is unreachable, or when the player did not answer inside
-/// [`DEADLINE`] — all cases where the caller should show nothing rather
-/// than claim something happened.
+/// Send `cmd` to the active player. Returns `None` when there is no
+/// player, the bus is unreachable, or the player didn't answer inside
+/// [`DEADLINE`] — cases where the caller should show nothing rather than
+/// claim something happened.
 pub fn send(cmd: Command) -> Option<Outcome> {
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("qos-mpris".to_string())
         .spawn(move || {
-            // A send failure means the caller already gave up; the value
-            // is simply dropped.
-            let _ = tx.send(run(cmd));
+            let _ = tx.send(run(cmd)); // dropped if the caller already gave up
         });
     if let Err(e) = spawned {
         tracing::warn!(target: "qos::mpris", error = %e, "could not spawn mpris worker");
         return None;
     }
-    match rx.recv_timeout(DEADLINE) {
-        Ok(outcome) => outcome,
-        Err(_) => {
-            tracing::debug!(target: "qos::mpris", "no player answered within the deadline");
-            None
-        }
+    if let Ok(outcome) = rx.recv_timeout(DEADLINE) {
+        outcome
+    } else {
+        tracing::debug!(target: "qos::mpris", "no player answered within the deadline");
+        None
     }
 }
 
-/// The bus work. Runs on the worker thread.
 fn run(cmd: Command) -> Option<Outcome> {
     let conn = zbus::blocking::Connection::session()
         .map_err(|e| {
@@ -100,12 +81,10 @@ fn run(cmd: Command) -> Option<Outcome> {
         .ok()?;
 
     let name = active_player(&conn)?;
-    let proxy = zbus::blocking::Proxy::new(&conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE)
-        .ok()?;
+    let proxy = zbus::blocking::Proxy::new(&conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE).ok()?;
 
-    // Read the status *before* acting, so a toggle can report what it
-    // toggled to. Reading afterwards would race the player's own state
-    // change, which is asynchronous on its side.
+    // Read status *before* acting: reading after would race the player's
+    // own (asynchronous) state change.
     let was_playing = matches!(playback_status(&proxy).as_deref(), Some("Playing"));
 
     proxy
@@ -127,13 +106,9 @@ fn run(cmd: Command) -> Option<Outcome> {
     })
 }
 
-/// Pick the player to drive.
-///
-/// A machine can have several — a browser tab, a music app, a video
-/// player — and the one the user means is the one making sound. So a
-/// player reporting `Playing` wins; failing that, the first MPRIS name on
-/// the bus, which is the only defensible choice when everything is
-/// paused and lets play/pause resume the last thing that was open.
+/// A machine can have several players; the one reporting `Playing` wins,
+/// else the first MPRIS name on the bus, so play/pause resumes whatever
+/// was last open.
 fn active_player(conn: &zbus::blocking::Connection) -> Option<String> {
     let dbus = zbus::blocking::fdo::DBusProxy::new(conn).ok()?;
     let names = dbus.list_names().ok()?;
@@ -146,8 +121,7 @@ fn active_player(conn: &zbus::blocking::Connection) -> Option<String> {
         return None;
     }
     for name in &players {
-        let Ok(proxy) =
-            zbus::blocking::Proxy::new(conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE)
+        let Ok(proxy) = zbus::blocking::Proxy::new(conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE)
         else {
             continue;
         };
@@ -168,9 +142,7 @@ mod tests {
 
     #[test]
     fn commands_map_to_the_spec_method_names() {
-        // These are wire names in the MPRIS spec, not ours to rename —
-        // a typo here is a transport key that silently does nothing on
-        // every player in existence.
+        // Wire names in the MPRIS spec, not ours to rename.
         assert_eq!(Command::PlayPause.method(), "PlayPause");
         assert_eq!(Command::Next.method(), "Next");
         assert_eq!(Command::Previous.method(), "Previous");
@@ -183,9 +155,8 @@ mod tests {
         assert_eq!(PLAYER_IFACE, "org.mpris.MediaPlayer2.Player");
     }
 
-    /// The compositor must survive a machine with no session bus and no
-    /// player — which is exactly what CI is. `send` has to come back
-    /// within its deadline and report nothing, not hang and not panic.
+    /// Must survive a machine with no session bus and no player — which
+    /// is exactly what CI is.
     #[test]
     fn send_is_bounded_and_reports_nothing_when_there_is_no_player() {
         let started = std::time::Instant::now();
@@ -195,11 +166,9 @@ mod tests {
             elapsed < DEADLINE * 4,
             "the input path must not wait on the bus: took {elapsed:?}"
         );
-        // On a developer machine with a player running this legitimately
-        // returns Some; the invariant under test is the bound, plus that
-        // an absent player is reported as absence.
-        if outcome.is_none() {
-            assert!(true, "no player: reported as nothing, which is correct");
-        }
+        // A dev machine with a player running legitimately returns Some; on
+        // a machine with none (CI), `outcome` is `None` — either is correct,
+        // the assertion above is the only hard requirement.
+        let _ = outcome;
     }
 }

@@ -1,60 +1,29 @@
-//! Phase 9 (second half) end-to-end: cooperative cryptographic
-//! redaction flowing through the broker.
-//!
-//! Eight scenarios:
-//!
-//! 1. `owner_can_redact_a_recent_op` — happy path: owner mints a
-//!    Redact, the broker fans it out, the targeted op's payload in
-//!    the local log gets rewritten to the marker, and the redaction
-//!    is in `redactions_for(artifact)`.
-//!
-//! 2. `editor_redact_request_is_rejected` — an Editor cannot redact;
-//!    the validator's role-table check (step 5) refuses with
-//!    `RoleForbidsOpClass`.
-//!
-//! 3. `redaction_persists_through_audit_log_across_compaction` — a
-//!    redaction record survives a subsequent Compaction checkpoint.
-//!
-//! 4. `redacted_op_is_filtered_from_scrollback` — `FetchScrollback`
-//!    no longer surfaces the original payload after the Redact
-//!    applies.
-//!
-//! 5. `late_arriving_op_with_already_redacted_id_is_dropped` — a
-//!    buggy peer's re-broadcast of an already-redacted op does NOT
-//!    re-introduce the content; the broker pushes a marker entry
-//!    and audit-logs `OpAlreadyRedacted` instead of fanning out.
-//!
-//! 6. `redaction_of_mls_encrypted_op_succeeds` — per the design
-//!    doc §5 (option c, "mark redacted, keep ciphertext"): a
-//!    Redact targeting an MLS-encrypted op gets through the
-//!    validator and applies the redaction.
-//!
-//! 7. `recursive_redaction_is_rejected` — a Redact whose
-//!    `target_op_id` points to another Redact is rejected with
-//!    `RecursiveRedaction`.
-//!
-//! 8. `audit_entry_carries_reason_and_redactor_pk` — verifies
-//!    `BrokerHandle::redactions_for` returns the structured record
-//!    with the expected fields.
+//! End-to-end: cooperative cryptographic redaction flowing through the
+//! broker. Eight scenarios cover the happy path, role enforcement
+//! (`RoleForbidsOpClass`), survival across a `Compaction` checkpoint,
+//! scrollback filtering, a late-arriving already-redacted op being
+//! dropped (`OpAlreadyRedacted`) rather than re-fanned, redaction of an
+//! MLS-encrypted op ("mark redacted, keep ciphertext" — never decrypts
+//! during validation), recursive redaction being rejected
+//! (`RecursiveRedaction`), and the audit record's fields.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
-    CompactionCheckpoint, Ed25519PublicKey, EncryptionMetadata, OpClass, OpId, RedactRequest,
-    RedactedMarker, Role, RoleAttestation, Signature, SignedOp, ValidationError,
-    encode_compaction_payload, encode_redact_payload, generate_keypair, hash_op_prefix,
-    hash_target_op, parse_redact_payload, sign_event, sign_op,
-};
 use collab_fixtures::{role_attestation, signed_op, signed_op_encrypted};
+use collab_types::{
+    ArtifactId, ArtifactKind, AttestationId, ChannelId, ChannelState, CompactionCheckpoint,
+    Ed25519PublicKey, EncryptionMetadata, OpClass, OpId, RedactRequest, RedactedMarker, Role,
+    SignedOp, ValidationError, encode_compaction_payload, encode_redact_payload, generate_keypair,
+    hash_op_prefix, hash_target_op, parse_redact_payload,
+};
 use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
-// ---------- frame helpers ----------
+// frame helpers
 
 fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, v: &T) {
     let bytes = serde_json::to_vec(v).expect("serialize");
@@ -90,29 +59,23 @@ fn unique_socket(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!("qos-broker-rd-{label}-{pid}-{nanos}.sock"))
 }
 
-/// The collaboration cluster every client in these scenarios joins.
-///
-/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
-/// client announces on its `Hello`, so peers that are meant to observe
-/// each other's edits must announce the same pair — these scenarios
-/// pair this cluster with a single app id per file. A per-client
-/// random uuid would put every client in a cluster of its own, which
-/// is how a real deployment keeps unrelated documents apart.
+/// The collaboration cluster every client in these scenarios joins. The
+/// broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
+/// client announces on `Hello`, so peers meant to observe each other
+/// must announce the same pair — a per-client random uuid would put
+/// every client in a cluster of its own.
 fn test_cluster() -> uuid::Uuid {
     uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
 }
 
-/// Block until `n` clients have announced their route.
-///
-/// Connecting and saying `Hello` are separate steps, and only the
-/// second makes a client addressable — the broker routes CRDT traffic
-/// by the announced `(app_id, cluster_id)` pair. A send that races
-/// another client's `Hello` would reach nobody.
+/// Block until `n` clients have announced their route. Connecting and
+/// saying `Hello` are separate steps; only the second makes a client
+/// addressable, so a send that races another client's `Hello` would
+/// reach nobody.
 fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -140,12 +103,11 @@ fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     }
 }
 
-// ---------- attestation / op factories ----------
+// attestation / op factories
 
-/// Build a channel state populated with `owner_pk` as the
-/// authorised-signers list, plus an Owner attestation for `owner_pk`
-/// and an Editor attestation for `editor_pk`. Returns (state,
-/// owner_attestation_id, editor_attestation_id).
+/// A channel state with `owner_pk` as the authorised signer, plus an
+/// Owner attestation for `owner_pk` and an Editor attestation for
+/// `editor_pk`.
 fn channel_state_with(
     owner_sk: &SigningKey,
     owner_pk: Ed25519PublicKey,
@@ -166,9 +128,7 @@ fn channel_state_with(
     (state, owner_att_id, editor_att_id)
 }
 
-/// Build a Redact op envelope that targets `target_op` with the
-/// given reason. The envelope is signed by `owner_sk` and references
-/// `owner_att`.
+/// Signed Redact envelope targeting `target_op`, referencing `owner_att`.
 fn build_redact_op(
     owner_sk: &SigningKey,
     owner_pk: Ed25519PublicKey,
@@ -200,9 +160,7 @@ fn build_redact_op(
     )
 }
 
-// =====================================================================
 // Scenario 1: happy path
-// =====================================================================
 
 #[test]
 fn owner_can_redact_a_recent_op() {
@@ -233,7 +191,6 @@ fn owner_can_redact_a_recent_op() {
     }
     wait_for_announced(&handle, 3);
 
-    // Editor publishes one op carrying a secret payload.
     let secret_payload = b"PII: alice@example.com home address 123 Main St".to_vec();
     let target_op = signed_op(
         &editor_sk,
@@ -253,7 +210,6 @@ fn owner_can_redact_a_recent_op() {
     let _ = drain_events(&mut observer, Duration::from_millis(300));
     let _ = drain_events(&mut owner, Duration::from_millis(150));
 
-    // Owner mints a Redact targeting the editor's op.
     let redact = build_redact_op(
         &owner_sk,
         owner_pk,
@@ -269,7 +225,6 @@ fn owner_can_redact_a_recent_op() {
             envelope: Box::new(redact),
         },
     );
-    // The Redact fan-out reaches the observer.
     let fanned = drain_events(&mut observer, Duration::from_millis(400));
     assert!(
         fanned.iter().any(|e| matches!(
@@ -279,7 +234,6 @@ fn owner_can_redact_a_recent_op() {
         "observer must see the Redact event fan out",
     );
 
-    // The broker now reports the redaction structurally.
     let records = handle.redactions_for(artifact);
     assert_eq!(records.len(), 1, "exactly one redaction recorded");
     let rec = &records[0];
@@ -287,7 +241,6 @@ fn owner_can_redact_a_recent_op() {
     assert_eq!(rec.redactor_pk, owner_pk);
     assert_eq!(rec.reason, "GDPR request from data subject");
 
-    // Scrollback for the editor's seq no longer carries the secret bytes.
     write_frame(
         &mut observer,
         &CollabRequest::FetchScrollback {
@@ -305,7 +258,6 @@ fn owner_can_redact_a_recent_op() {
                         op.payload, secret_payload,
                         "redacted op's payload must not be the original secret",
                     );
-                    // It IS the canonical marker payload.
                     let marker_bytes = RedactedMarker::v1().canonical().unwrap();
                     assert_eq!(op.payload, marker_bytes);
                 }
@@ -321,9 +273,7 @@ fn owner_can_redact_a_recent_op() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 2: editor cannot redact
-// =====================================================================
 
 #[test]
 fn editor_redact_request_is_rejected() {
@@ -353,7 +303,8 @@ fn editor_redact_request_is_rejected() {
     }
     wait_for_announced(&handle, 2);
 
-    // Craft a target op (unused, but lets us build a well-formed Redact).
+    // Never delivered to the broker — just needed to build a well-formed
+    // Redact (target_op_id / target_op_hash).
     let target = signed_op(
         &editor_sk,
         editor_pk,
@@ -364,7 +315,6 @@ fn editor_redact_request_is_rejected() {
         1,
     );
 
-    // Editor tries to redact it themselves.
     let req = RedactRequest {
         artifact,
         target_op_id: OpId::from_op(&target),
@@ -396,7 +346,6 @@ fn editor_redact_request_is_rejected() {
         "Editor-issued Redact must not be fanned out"
     );
 
-    // The validator dropped it with RoleForbidsOpClass.
     let audit = handle.audit_for(artifact);
     assert!(
         audit
@@ -405,7 +354,6 @@ fn editor_redact_request_is_rejected() {
         "audit must record RoleForbidsOpClass, got {:?}",
         audit.iter().map(|e| &e.rejection).collect::<Vec<_>>(),
     );
-    // And no redaction record was filed.
     assert!(handle.redactions_for(artifact).is_empty());
 
     drop(editor);
@@ -414,9 +362,7 @@ fn editor_redact_request_is_rejected() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 3: redaction persists across compaction
-// =====================================================================
 
 #[test]
 fn redaction_persists_through_audit_log_across_compaction() {
@@ -446,7 +392,6 @@ fn redaction_persists_through_audit_log_across_compaction() {
     }
     wait_for_announced(&handle, 2);
 
-    // Editor publishes 3 ops.
     let mut ops: Vec<SignedOp> = Vec::new();
     for seq in 1..=3_u64 {
         let op = signed_op(
@@ -468,7 +413,6 @@ fn redaction_persists_through_audit_log_across_compaction() {
     }
     let _ = drain_events(&mut owner, Duration::from_millis(300));
 
-    // Owner redacts op #2 (the middle one).
     let redact = build_redact_op(
         &owner_sk, owner_pk, artifact, owner_att, &ops[1], "policy", 10,
     );
@@ -485,9 +429,8 @@ fn redaction_persists_through_audit_log_across_compaction() {
         "redaction record present before compaction"
     );
 
-    // Owner now emits a Compaction covering ops 1..=3. The prefix
-    // hash must be computed over the **original** envelope bytes
-    // (design doc §4), not the post-redaction marker bytes.
+    // Compaction's prefix hash must be computed over the **original**
+    // envelope bytes, not the post-redaction marker bytes.
     let prefix = ops
         .iter()
         .filter(|o| o.seq <= 3)
@@ -516,7 +459,6 @@ fn redaction_persists_through_audit_log_across_compaction() {
     );
     let _ = drain_events(&mut editor, Duration::from_millis(300));
 
-    // The redaction record still exists after compaction.
     let records = handle.redactions_for(artifact);
     assert_eq!(
         records.len(),
@@ -531,9 +473,7 @@ fn redaction_persists_through_audit_log_across_compaction() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 4: redacted op is filtered from scrollback
-// =====================================================================
 
 #[test]
 fn redacted_op_is_filtered_from_scrollback() {
@@ -600,7 +540,6 @@ fn redacted_op_is_filtered_from_scrollback() {
     );
     let _ = drain_events(&mut observer, Duration::from_millis(300));
 
-    // Observer fetches scrollback for the targeted seq range.
     write_frame(
         &mut observer,
         &CollabRequest::FetchScrollback {
@@ -636,9 +575,7 @@ fn redacted_op_is_filtered_from_scrollback() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 5: late-arriving already-redacted op is dropped
-// =====================================================================
 
 #[test]
 fn late_arriving_op_with_already_redacted_id_is_dropped() {
@@ -669,9 +606,8 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
     }
     wait_for_announced(&handle, 3);
 
-    // Build an op (the redaction target). DO NOT push it through the
-    // broker yet — we redact it first so we can simulate "late
-    // arrival from a peer who never got the Redact".
+    // Not pushed through the broker yet — redacted first, to simulate a
+    // late arrival from a peer who never got the Redact.
     let target = signed_op(
         &editor_sk,
         editor_pk,
@@ -682,8 +618,6 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
         3,
     );
 
-    // Owner pre-emptively redacts the op (the redaction reached this
-    // broker first; the original op hasn't arrived yet).
     let redact = build_redact_op(
         &owner_sk,
         owner_pk,
@@ -702,18 +636,15 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
     let _ = drain_events(&mut observer, Duration::from_millis(300));
     assert_eq!(handle.redactions_for(artifact).len(), 1);
 
-    // Now the "buggy peer" re-broadcasts the original (pre-redaction)
-    // envelope — possibly because their network was offline and they
-    // queued it.
+    // The "buggy peer" re-broadcasts the original (pre-redaction) envelope,
+    // e.g. because it queued it while offline.
     write_frame(
         &mut buggy_peer,
         &CollabRequest::SignedSyncIncremental {
-            envelope: Box::new(target.clone()),
+            envelope: Box::new(target),
         },
     );
 
-    // The observer must NOT receive the original payload — the broker
-    // refuses to fan a late-arrival of a redacted op.
     let events = drain_events(&mut observer, Duration::from_millis(400));
     for event in &events {
         if let CollabEvent::SignedCRDTIncremental { envelope, .. } = event {
@@ -725,7 +656,6 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
         }
     }
 
-    // The audit log records OpAlreadyRedacted.
     let audit = handle.audit_for(artifact);
     assert!(
         audit
@@ -742,19 +672,14 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 6: redaction of MLS-encrypted op succeeds
-// =====================================================================
 
 #[test]
 fn redaction_of_mls_encrypted_op_succeeds() {
-    // Per design doc §5, option (c): a Redact targeting an op whose
-    // payload is MLS ciphertext does NOT decrypt. The validator's
-    // role table + redaction-aware step both apply regardless of
-    // encryption. The audit log records the redaction; the op-log
-    // entry's payload is rewritten to the marker (the original
-    // ciphertext is preserved in `original_envelopes` so the audit
-    // path can re-verify the original `target_op_hash`).
+    // A Redact targeting an MLS-encrypted op never decrypts it — validator
+    // role/redaction checks apply regardless of encryption. The op-log
+    // payload is rewritten to the marker; the original ciphertext stays in
+    // `original_envelopes` so audit can re-verify `target_op_hash`.
     let socket = unique_socket("redact-mls");
     let handle = collab_broker::spawn(socket.clone()).expect("broker bind");
 
@@ -781,9 +706,8 @@ fn redaction_of_mls_encrypted_op_succeeds() {
     }
     wait_for_announced(&handle, 2);
 
-    // Editor publishes an op whose payload is "ciphertext" (we fake
-    // the ciphertext with arbitrary bytes — the broker treats
-    // ciphertext opaquely; it never decrypts inside validation).
+    // Arbitrary bytes standing in for ciphertext — the broker treats it
+    // opaquely.
     let ciphertext = b"\x00\x01\xfe\xff...mls-ciphertext-blob".to_vec();
     let target = signed_op_encrypted(
         &editor_sk,
@@ -791,7 +715,7 @@ fn redaction_of_mls_encrypted_op_succeeds() {
         artifact,
         editor_att,
         OpClass::Splice,
-        ciphertext.clone(),
+        ciphertext,
         2,
         EncryptionMetadata { epoch: 7, channel },
     );
@@ -830,9 +754,7 @@ fn redaction_of_mls_encrypted_op_succeeds() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 7: recursive redaction is rejected
-// =====================================================================
 
 #[test]
 fn recursive_redaction_is_rejected() {
@@ -863,7 +785,6 @@ fn recursive_redaction_is_rejected() {
     }
     wait_for_announced(&handle, 3);
 
-    // 1) Editor publishes a Splice op.
     let target = signed_op(
         &editor_sk,
         editor_pk,
@@ -881,7 +802,6 @@ fn recursive_redaction_is_rejected() {
     );
     let _ = drain_events(&mut observer, Duration::from_millis(200));
 
-    // 2) Owner redacts the Splice. This Redact lands in the op log.
     let first_redact = build_redact_op(
         &owner_sk, owner_pk, artifact, owner_att, &target, "first", 10,
     );
@@ -893,7 +813,7 @@ fn recursive_redaction_is_rejected() {
     );
     let _ = drain_events(&mut observer, Duration::from_millis(300));
 
-    // 3) Owner attempts to redact the *first Redact* itself.
+    // Owner attempts to redact the *first Redact* itself.
     let second_redact = build_redact_op(
         &owner_sk,
         owner_pk,
@@ -910,9 +830,8 @@ fn recursive_redaction_is_rejected() {
         },
     );
 
-    // The observer should NOT receive a second SignedCRDTIncremental
-    // event from the recursive Redact. The first one DOES still land
-    // here from step (2), so we look at events arriving AFTER step (3).
+    // The first Redact's own event already landed above, so filter by
+    // seq 20 to isolate whether the recursive one was wrongly fanned out.
     let events = drain_events(&mut observer, Duration::from_millis(400));
     let recursive_fanned = events.iter().any(|e| {
         matches!(
@@ -926,7 +845,6 @@ fn recursive_redaction_is_rejected() {
         "recursive Redact (seq 20) must not be fanned out",
     );
 
-    // Audit log records RecursiveRedaction.
     let audit = handle.audit_for(artifact);
     assert!(
         audit.iter().any(|e| matches!(
@@ -937,7 +855,6 @@ fn recursive_redaction_is_rejected() {
         audit.iter().map(|e| &e.rejection).collect::<Vec<_>>(),
     );
 
-    // The first redaction record is still the only one filed.
     assert_eq!(
         handle.redactions_for(artifact).len(),
         1,
@@ -951,9 +868,7 @@ fn recursive_redaction_is_rejected() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// =====================================================================
 // Scenario 8: audit entry carries structured fields
-// =====================================================================
 
 #[test]
 fn audit_entry_carries_reason_and_redactor_pk() {
@@ -1021,12 +936,10 @@ fn audit_entry_carries_reason_and_redactor_pk() {
     assert_eq!(r.redactor_pk, owner_pk);
     assert_eq!(r.reason, reason);
 
-    // The redact_envelope copy verifies as a well-formed Redact.
     assert_eq!(r.redact_envelope.op_class, OpClass::Redact);
     let parsed = parse_redact_payload(&r.redact_envelope).expect("parse redact");
     assert_eq!(parsed.redacted_by, owner_pk);
     assert_eq!(parsed.reason, reason);
-    // The captured envelope's signature is the same one minted by the owner.
     assert_eq!(
         r.redact_envelope.signature.as_bytes(),
         redact_op_for_assert.signature.as_bytes(),

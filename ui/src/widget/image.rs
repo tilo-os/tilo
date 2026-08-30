@@ -1,30 +1,28 @@
-//! General-purpose [`Image`] widget for displaying PNG/JPEG content.
+//! General-purpose [`Image`] widget for displaying PNG/JPEG content. Decoded
+//! RGBA pixels are wrapped in a [`peniko::ImageData`] and painted via
+//! `scene.fill(..)`. Three fit modes mirror CSS `object-fit`:
+//! [`ImageFit::Fill`] stretches, [`ImageFit::Contain`] letterboxes,
+//! [`ImageFit::Cover`] crops.
 //!
-//! Decoded RGBA pixels are wrapped in a [`peniko::ImageData`] and painted via
-//! `scene.fill(..)` — the same call shape `quick-shell`'s desktop backdrop
-//! uses for its tiled noise overlay. Three fit modes mirror CSS
-//! `object-fit`: [`ImageFit::Fill`] stretches, [`ImageFit::Contain`]
-//! letterboxes, [`ImageFit::Cover`] crops.
+//! The `ImageData` is built lazily on first draw and cached (cloning only
+//! bumps the internal `Arc`). A decode failure renders a red border +
+//! "Image failed" text so it surfaces during development instead of
+//! silently painting nothing.
 //!
-//! The peniko::ImageData is built lazily on first draw and cached; subsequent
-//! draws reuse the cached handle (cloning a [`peniko::ImageData`] only bumps
-//! the internal `Arc`). Path-loaded variants that fail to decode render
-//! a red border + "Image failed" text so the failure surfaces during
-//! development rather than silently painting nothing.
-//!
-//! Only PNG decoding is provided in-tree (via the `png` crate already in
-//! the workspace). JPEG support arrives whenever `image` crate
-//! dependency conflicts — the API surface is decoder-agnostic; consumers
-//! can call [`Image::from_rgba`] with bytes they decoded themselves.
+//! Only PNG decoding is provided in-tree. The API is decoder-agnostic —
+//! call [`Image::from_rgba`] with bytes decoded elsewhere for other formats.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format};
+use vello::peniko::{
+    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
+};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
@@ -214,19 +212,17 @@ impl Image {
                 self.cached_image = Some(img);
             }
             Source::Path(path) => {
-                let bytes = match std::fs::read(path) {
-                    Ok(b) => b,
-                    Err(_) => {
-                        self.source = Source::Failed;
-                        return;
-                    }
+                let bytes = if let Ok(b) = std::fs::read(path) {
+                    b
+                } else {
+                    self.source = Source::Failed;
+                    return;
                 };
-                let (rgba, width, height) = match decode_png(&bytes) {
-                    Ok(t) => t,
-                    Err(_) => {
-                        self.source = Source::Failed;
-                        return;
-                    }
+                let (rgba, width, height) = if let Ok(t) = decode_png(&bytes) {
+                    t
+                } else {
+                    self.source = Source::Failed;
+                    return;
                 };
                 let blob = Blob::new(Arc::new(rgba));
                 let img = PenikoImage {
@@ -260,8 +256,8 @@ impl Image {
 
         let rw = self.rect.width();
         let rh = self.rect.height();
-        let iw_f = iw as f64;
-        let ih_f = ih as f64;
+        let iw_f = f64::from(iw);
+        let ih_f = f64::from(ih);
 
         // Brush-transform shape: we apply the brush to the rect itself
         // (`scene.fill(.., &rect)`), so the brush_transform must map
@@ -283,8 +279,7 @@ impl Image {
                 let dh = ih_f * scale;
                 let dx = self.rect.x0 + (rw - dw) * 0.5;
                 let dy = self.rect.y0 + (rh - dh) * 0.5;
-                let bt =
-                    Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
+                let bt = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
                 let dest = Rect::new(dx, dy, dx + dw, dy + dh);
                 (bt, dest)
             }
@@ -294,8 +289,7 @@ impl Image {
                 let dh = ih_f * scale;
                 let dx = self.rect.x0 + (rw - dw) * 0.5;
                 let dy = self.rect.y0 + (rh - dh) * 0.5;
-                let bt =
-                    Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
+                let bt = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
                 // Clip to the widget rect so cover crops on the long axis.
                 (bt, self.rect)
             }
@@ -424,28 +418,26 @@ impl Widget for Image {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: taffy::Dimension::auto(),
-                    height: taffy::Dimension::auto(),
-                },
-                flex_shrink: 1.0,
-                flex_grow: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: taffy::Dimension::auto(),
+                height: taffy::Dimension::auto(),
+            },
+            flex_shrink: 1.0,
+            flex_grow: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -474,7 +466,7 @@ impl Widget for Image {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Image"
     }
 
@@ -542,8 +534,8 @@ mod tests {
 
     #[test]
     fn image_with_fill_fit_fills_entire_rect() {
-        let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
-            .with_fit(ImageFit::Fill);
+        let img =
+            Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16).with_fit(ImageFit::Fill);
         let mut scene = Scene::new();
         let mut img = img;
         img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 50.0));
@@ -566,8 +558,8 @@ mod tests {
     #[test]
     fn accessibility_alt_text_surfaces_as_accessible_name() {
         use crate::a11y::Role;
-        let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
-            .with_alt("A red square");
+        let img =
+            Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16).with_alt("A red square");
         assert_eq!(img.alt(), Some("A red square"));
         let node = Widget::accessibility(&img).expect("image is not presentational");
         assert_eq!(node.role, Role::Image);

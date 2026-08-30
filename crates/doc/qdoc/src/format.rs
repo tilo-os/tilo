@@ -1,6 +1,5 @@
-//! Layer-1 generic format-provider contract + registry. Providers are pure
-//! transforms between file bytes and canonical-document changes; in production
-//! they run sandboxed (Phase 3). Here we define the contract + registry.
+//! Layer-1 generic format-provider contract + registry: providers are pure transforms between
+//! file bytes and canonical-document changes; in production they run sandboxed.
 
 use crate::model::{DocMut, DocRef};
 
@@ -29,15 +28,19 @@ pub enum CodecError {
     Unsupported(String),
 }
 
-/// A format provider: a pure transform between file bytes and a canonical
-/// document. In production this trait object lives behind a sandbox IPC
-/// boundary (Phase 3); the contract is identical either side. Operating over
-/// the borrowed [`DocMut`]/[`DocRef`] views means the same codec works whether
-/// the document lives in an owned `Document` (FS) or a host's doc (editor).
+/// A format provider: a pure transform between file bytes and a canonical document, run behind a
+/// sandbox IPC boundary in production. Operating over the borrowed [`DocMut`]/[`DocRef`] views
+/// means the same codec works whether the document lives in an owned `Document` (FS) or a host's doc (editor).
 pub trait FormatProvider: Send + Sync {
     fn schema_id(&self) -> &str;
     fn detect(&self, head: &[u8]) -> Confidence;
+    /// # Errors
+    /// Returns [`CodecError`] if `bytes` are malformed, exceed the codec's
+    /// resource bounds, or use a construct the codec refuses to import.
     fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError>;
+    /// # Errors
+    /// Returns [`CodecError`] if the document cannot be serialised into this
+    /// format, or if writing its container fails.
     fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError>;
 }
 
@@ -72,8 +75,7 @@ impl Registry {
             .map(|e| e.provider.as_ref())
     }
 
-    /// Every registered extension (lowercased), sorted. The OS uses this as the
-    /// source of truth for which files are editable documents.
+    /// Every registered extension (lowercased), sorted; the OS uses this as the source of truth for which files are editable documents.
     pub fn extensions(&self) -> Vec<String> {
         let mut v: Vec<String> = self.by_ext.keys().cloned().collect();
         v.sort();

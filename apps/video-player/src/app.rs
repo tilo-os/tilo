@@ -6,7 +6,7 @@
 //! video immersive). The media title and the Open action float in a top overlay
 //! that appears with the player's controls and auto-hides during playback, so
 //! immersive video is truly edge-to-edge. It opens files through the XDG
-//! FileChooser portal (or `--open PATH`), and — when a collab session is
+//! `FileChooser` portal (or `--open PATH`), and — when a collab session is
 //! attached — keeps playback in sync across peers via the shared [`media`]
 //! transport.
 
@@ -20,7 +20,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use ui::collaboration::{CollabEvent, CollaborationManager, CollabRequest};
+use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -106,28 +106,28 @@ impl PlayerApp {
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
-        match open {
-            Some(path) => app.open_path(path),
-            None => {
-                // The demo shot must stay hermetic: pin the deterministic
-                // synthesized-frame engine so no real GStreamer pipeline is
-                // built and the placeholder `demo.local` host is never
-                // contacted — even though `decode` compiles the real backend in
-                // by default. `--shots --open <file>` is the real-decode path.
-                app.player.set_engine(media::MediaEngine::new_synthesized());
-                app.player
-                    .open(media::Source::Remote { url: "https://demo.local/clip.mp4".into() });
-                app.title = "Demo clip".to_string();
-                // Park at a fixed position and pause so the synthesized frame and
-                // the transport read-out are byte-deterministic across runs: a
-                // *playing* demo would capture a different synth frame each time
-                // depending on warm-up timing. `open` already seeded a frame, so
-                // the `--shots` warm-up still breaks immediately.
-                app.player.seek_to_ms(8_000);
-                app.player.pause();
-            }
+        if let Some(path) = open {
+            app.open_path(path);
+        } else {
+            // The demo shot must stay hermetic: pin the deterministic
+            // synthesized-frame engine so no real GStreamer pipeline is
+            // built and the placeholder `demo.local` host is never
+            // contacted — even though `decode` compiles the real backend in
+            // by default. `--shots --open <file>` is the real-decode path.
+            app.player.set_engine(media::MediaEngine::new_synthesized());
+            app.player.open(media::Source::Remote {
+                url: "https://demo.local/clip.mp4".into(),
+            });
+            app.title = "Demo clip".to_string();
+            // Park at a fixed position and pause so the synthesized frame and
+            // the transport read-out are byte-deterministic across runs: a
+            // *playing* demo would capture a different synth frame each time
+            // depending on warm-up timing. `open` already seeded a frame, so
+            // the `--shots` warm-up still breaks immediately.
+            app.player.seek_to_ms(8_000);
+            app.player.pause();
         }
-        if matches!(scenario, Some("settings") | Some("fullscreen")) {
+        if matches!(scenario, Some("settings" | "fullscreen")) {
             app.register_demo_settings();
         }
         match scenario {
@@ -154,7 +154,13 @@ impl PlayerApp {
             vec!["1080p".into(), "720p".into(), "480p".into(), "Auto".into()],
             0,
         ));
-        self.player.set_setting(PlayerSetting::toggle("captions", Icon::FileText, "Captions", 2, true));
+        self.player.set_setting(PlayerSetting::toggle(
+            "captions",
+            Icon::FileText,
+            "Captions",
+            2,
+            true,
+        ));
         self.player.set_setting(PlayerSetting::choice(
             "speed",
             Icon::List,
@@ -163,8 +169,15 @@ impl PlayerApp {
             vec!["0.5×".into(), "1×".into(), "1.5×".into(), "2×".into()],
             1,
         ));
-        self.player.set_setting(PlayerSetting::toggle("autoplay", Icon::Play, "Autoplay", 0, true));
-        self.player.set_setting(PlayerSetting::button("loop", Icon::Refresh, "Loop", 0));
+        self.player.set_setting(PlayerSetting::toggle(
+            "autoplay",
+            Icon::Play,
+            "Autoplay",
+            0,
+            true,
+        ));
+        self.player
+            .set_setting(PlayerSetting::button("loop", Icon::Refresh, "Loop", 0));
     }
 
     /// Attach collaborative playback: a live collab socket plus the host/
@@ -191,10 +204,10 @@ impl PlayerApp {
 
     fn open_path(&mut self, path: PathBuf) {
         let source = source_for_path(&path);
-        self.title = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        self.title = path.file_name().map_or_else(
+            || path.to_string_lossy().into_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         self.player.open(source);
         self.player.play();
         self.dirty = true;
@@ -216,7 +229,7 @@ impl PlayerApp {
                     chosen = Some(p);
                     clear = true;
                 }
-                Ok(OpenOutcome::Cancelled) | Ok(OpenOutcome::Failed(_)) => clear = true,
+                Ok(OpenOutcome::Cancelled | OpenOutcome::Failed(_)) => clear = true,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
             }
@@ -240,7 +253,7 @@ impl PlayerApp {
                 CollabEvent::CRDTIncremental { data } => collab.ingest(&data),
                 CollabEvent::CRDTUpdate { data } => collab.ingest_snapshot(&data),
                 CollabEvent::SignedCRDTIncremental { envelope, .. } => {
-                    collab.ingest(&envelope.payload)
+                    collab.ingest(&envelope.payload);
                 }
                 _ => {}
             }
@@ -248,10 +261,10 @@ impl PlayerApp {
         let now = media::now_ms();
         match collab.role() {
             Role::Host => {
-                if let Some(engine) = self.player.engine() {
-                    if let Some(delta) = collab.host_step(engine, now) {
-                        mgr.send(CollabRequest::SyncIncremental { data: delta });
-                    }
+                if let Some(engine) = self.player.engine()
+                    && let Some(delta) = collab.host_step(engine, now)
+                {
+                    mgr.send(CollabRequest::SyncIncremental { data: delta });
                 }
             }
             Role::Follower => {
@@ -284,7 +297,12 @@ impl PlayerApp {
         // A soft translucent scrim behind the title so it stays legible over
         // bright frames, without a hard opaque bar.
         let scrim_h = 44.0;
-        let scrim = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + scrim_h);
+        let scrim = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + scrim_h,
+        );
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -297,7 +315,7 @@ impl PlayerApp {
         // theme — `text_primary` would flip to near-black on light and vanish
         // against the dark scrim.
         let title_size = 15.0f32;
-        let ty = self.rect.y0 + (scrim_h - title_size as f64) * 0.5;
+        let ty = self.rect.y0 + (scrim_h - f64::from(title_size)) * 0.5;
         text_renderer.draw_text(
             scene,
             &self.title,
@@ -353,23 +371,26 @@ impl Widget for PlayerApp {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
-                    size: Size { width: percent(1.0), height: percent(1.0) },
+                    size: Size {
+                        width: percent(1.0_f32),
+                        height: percent(1.0_f32),
+                    },
                     ..Default::default()
                 },
                 &[player_node],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap();
@@ -390,7 +411,8 @@ impl Widget for PlayerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.player.draw(scene, transform, text_renderer, theme, presence);
+        self.player
+            .draw(scene, transform, text_renderer, theme, presence);
         if self.overlay_visible() {
             self.paint_overlay(scene, transform, text_renderer, theme);
         }
@@ -430,7 +452,14 @@ impl Widget for PlayerApp {
         let children = taffy.children(node_id).unwrap();
         if let Some(&player_node) = children.first() {
             self.player.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, player_node,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                player_node,
                 taffy,
             );
         }
@@ -444,7 +473,7 @@ impl Widget for PlayerApp {
         vec![&mut self.player as &mut (dyn Widget + '_)]
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PlayerApp"
     }
 
@@ -550,7 +579,7 @@ mod tests {
 
     /// A player pinned to the deterministic synthesized backend, so the app's
     /// open/transport wiring is exercised hermetically regardless of build
-    /// features (real GStreamer decode is proven separately by the
+    /// features (real `GStreamer` decode is proven separately by the
     /// `--features decode` integration test with a real generated file).
     fn synth_app() -> PlayerApp {
         let mut app = PlayerApp::new();
@@ -564,8 +593,14 @@ mod tests {
         app.open_path(PathBuf::from("/tmp/Clip.mp4"));
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &root());
-        assert!(app.player.latest_frame().is_some(), "a frame is produced once opened");
-        assert!(app.player.duration_ms() > 0, "duration mirrored from the engine");
+        assert!(
+            app.player.latest_frame().is_some(),
+            "a frame is produced once opened"
+        );
+        assert!(
+            app.player.duration_ms() > 0,
+            "duration mirrored from the engine"
+        );
         assert!(app.player.is_playing(), "autoplay after open");
     }
 
@@ -577,7 +612,10 @@ mod tests {
         app.sync(&mut doc, &root()); // baseline the synth clock
         std::thread::sleep(std::time::Duration::from_millis(40));
         app.sync(&mut doc, &root());
-        assert!(app.player.position_ms() > 0, "playhead advanced while playing");
+        assert!(
+            app.player.position_ms() > 0,
+            "playhead advanced while playing"
+        );
 
         // Seek mid-play: the target lands in both the widget cache and the engine.
         app.player.seek_to_ms(50_000);
@@ -587,7 +625,10 @@ mod tests {
         // Playback continues forward from the seek target, not back to the start.
         std::thread::sleep(std::time::Duration::from_millis(30));
         app.sync(&mut doc, &root());
-        assert!(app.player.position_ms() >= 50_000, "seek stuck; playback rode on from it");
+        assert!(
+            app.player.position_ms() >= 50_000,
+            "seek stuck; playback rode on from it"
+        );
     }
 
     #[test]
@@ -648,8 +689,22 @@ mod tests {
                 is_synthetic: false,
             }
         };
-        app.handle_event(&space, 1.0, &mods, &mut doc, &r, &mut handled, &mut focus_target, node, &taffy);
+        app.handle_event(
+            &space,
+            1.0,
+            &mods,
+            &mut doc,
+            &r,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
         assert!(handled, "the app forwarded the key to the player");
-        assert_ne!(app.player.is_playing(), was_playing, "Space toggled playback via the app");
+        assert_ne!(
+            app.player.is_playing(),
+            was_playing,
+            "Space toggled playback via the app"
+        );
     }
 }

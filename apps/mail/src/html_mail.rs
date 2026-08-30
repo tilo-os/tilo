@@ -1,4 +1,4 @@
-//! Sandboxing for **untrusted HTML email** rendered in the reader's WebView.
+//! Sandboxing for **untrusted HTML email** rendered in the reader's `WebView`.
 //!
 //! An email's `text/html` part is hostile input: it can carry tracking pixels,
 //! remote images that phone home the instant the mail is opened, web fonts that
@@ -23,7 +23,7 @@
 //! (via [`data_url`]) so it has an opaque, unique origin with no ambient
 //! cookies/storage — a second layer of isolation on top of the CSP.
 //!
-//! [`content_filter_json`] additionally emits a WebKit content-blocker rule set
+//! [`content_filter_json`] additionally emits a `WebKit` content-blocker rule set
 //! that blocks remote sub-resource loads at the network layer, for engines that
 //! honour it (`SetContentFilter`); it mirrors the CSP so the two agree.
 
@@ -47,8 +47,6 @@ word-break:break-word;overflow-wrap:anywhere}}\
 img{{max-width:100%;height:auto}}a{{color:#7aa2ff}}\
 blockquote{{border-left:3px solid #3a3f4b;margin:0;padding-left:12px;color:#a9afbd}}\
 </style></head><body>{html}</body></html>",
-        csp = csp,
-        html = html,
     )
 }
 
@@ -87,10 +85,13 @@ font-src data:; ",
 /// the document an opaque origin.
 pub fn data_url(html: &str, block_remote: bool) -> String {
     let doc = sandbox_document(html, block_remote);
-    format!("data:text/html;charset=utf-8;base64,{}", base64_encode(doc.as_bytes()))
+    format!(
+        "data:text/html;charset=utf-8;base64,{}",
+        base64_encode(doc.as_bytes())
+    )
 }
 
-/// A WebKit content-blocker rule set (JSON) that blocks remote sub-resource
+/// A `WebKit` content-blocker rule set (JSON) that blocks remote sub-resource
 /// loads at the network layer, mirroring the CSP. Handed to engines via
 /// `SetContentFilter`; engines without native filtering ignore it and rely on
 /// the CSP alone. When `block_remote` is false, remote *images* are allowed
@@ -111,14 +112,22 @@ fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
+        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[((n >> 18) & 63) as usize] as char);
         out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TABLE[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -131,7 +140,10 @@ mod tests {
     fn scripts_are_always_blocked() {
         for block in [true, false] {
             let doc = sandbox_document("<script>steal()</script><p>hi</p>", block);
-            assert!(doc.contains("script-src 'none'"), "scripts must never be allowed");
+            assert!(
+                doc.contains("script-src 'none'"),
+                "scripts must never be allowed"
+            );
             // The CSP meta precedes the mail's own body markup.
             let csp_at = doc.find("Content-Security-Policy").unwrap();
             let body_at = doc.find("<body>").unwrap();
@@ -142,19 +154,31 @@ mod tests {
     #[test]
     fn remote_content_blocked_by_default() {
         let doc = sandbox_document("<img src=\"https://tracker.example/x.gif\">", true);
-        assert!(doc.contains("img-src data:;"), "default policy blocks remote images");
-        assert!(!doc.contains("img-src data: https:"), "no https image source by default");
+        assert!(
+            doc.contains("img-src data:;"),
+            "default policy blocks remote images"
+        );
+        assert!(
+            !doc.contains("img-src data: https:"),
+            "no https image source by default"
+        );
         assert!(doc.contains("connect-src 'none'"), "no network connections");
     }
 
     #[test]
     fn opting_in_widens_images_only() {
         let doc = sandbox_document("<img src=\"https://cdn.example/x.png\">", false);
-        assert!(doc.contains("img-src data: https: http:"), "opt-in allows remote images");
+        assert!(
+            doc.contains("img-src data: https: http:"),
+            "opt-in allows remote images"
+        );
         // Still no scripts and no remote styles/fonts.
         assert!(doc.contains("script-src 'none'"));
         assert!(doc.contains("font-src data:;") || doc.contains("font-src data: "));
-        assert!(!doc.contains("style-src 'unsafe-inline' https"), "remote styles stay blocked");
+        assert!(
+            !doc.contains("style-src 'unsafe-inline' https"),
+            "remote styles stay blocked"
+        );
     }
 
     #[test]
@@ -172,10 +196,19 @@ mod tests {
     fn content_filter_blocks_remote_by_default_and_frees_images_on_optin() {
         let blocked = content_filter_json(true);
         assert!(blocked.contains(r#""url-filter":"^https?://""#));
-        assert!(!blocked.contains("resource-type"), "block-all has no type restriction");
+        assert!(
+            !blocked.contains("resource-type"),
+            "block-all has no type restriction"
+        );
         let opt_in = content_filter_json(false);
-        assert!(opt_in.contains("resource-type"), "opt-in keeps blocking non-image types");
-        assert!(opt_in.contains("script"), "scripts still blocked at the network layer");
+        assert!(
+            opt_in.contains("resource-type"),
+            "opt-in keeps blocking non-image types"
+        );
+        assert!(
+            opt_in.contains("script"),
+            "scripts still blocked at the network layer"
+        );
     }
 
     #[test]
@@ -192,9 +225,9 @@ mod tests {
     fn base64_decode(s: &str) -> Vec<u8> {
         fn val(c: u8) -> Option<u32> {
             match c {
-                b'A'..=b'Z' => Some((c - b'A') as u32),
-                b'a'..=b'z' => Some((c - b'a' + 26) as u32),
-                b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+                b'A'..=b'Z' => Some(u32::from(c - b'A')),
+                b'a'..=b'z' => Some(u32::from(c - b'a' + 26)),
+                b'0'..=b'9' => Some(u32::from(c - b'0' + 52)),
                 b'+' => Some(62),
                 b'/' => Some(63),
                 _ => None,
@@ -212,9 +245,15 @@ mod tests {
                 }
             }
             n <<= 6 * (4 - cnt);
-            if cnt >= 2 { out.push((n >> 16) as u8); }
-            if cnt >= 3 { out.push((n >> 8) as u8); }
-            if cnt >= 4 { out.push(n as u8); }
+            if cnt >= 2 {
+                out.push((n >> 16) as u8);
+            }
+            if cnt >= 3 {
+                out.push((n >> 8) as u8);
+            }
+            if cnt >= 4 {
+                out.push(n as u8);
+            }
         }
         out
     }

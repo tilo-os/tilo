@@ -1,18 +1,16 @@
 //! Two-member end-to-end: alice creates a group, invites bob via
 //! Welcome, both encrypt+decrypt application messages.
 //!
-//! This is the headline Phase-7 test: it exercises every step of the
-//! minimum-viable surface — create → key-package → add_member →
-//! process_welcome → encrypt → decrypt — without touching any of
-//! the openmls-3+-member surface. A failure here means the crate is
-//! fundamentally broken; the other test files refine specific edge
-//! cases on top.
+//! The headline test: exercises every step of the minimum-viable
+//! surface — create → key-package → `add_member` → `process_welcome` →
+//! encrypt → decrypt — without touching the openmls 3+-member surface.
+//! A failure here means the crate is fundamentally broken.
 
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
 
-/// Spin up alice + bob + a fresh channel id so every test starts
-/// from a clean slate.
+/// Spin up alice + bob + a fresh channel id so every test starts from a
+/// clean slate.
 fn fixture() -> (ChannelId, MemberKey, MemberKey) {
     (
         ChannelId::new(),
@@ -27,8 +25,8 @@ fn owner_alone_is_a_one_member_group() {
     let g = ChannelGroup::create(cid, alice).unwrap();
     assert_eq!(g.member_count(), 1);
     assert_eq!(g.channel_id(), cid);
-    // Initial epoch is 0 — the openmls convention; we mirror it in
-    // the EncryptionMetadata so receivers can compare equal-to-zero.
+    // Initial epoch is 0 (openmls convention), mirrored in
+    // EncryptionMetadata so receivers can compare equal-to-zero.
     assert_eq!(g.epoch(), 0);
 }
 
@@ -80,8 +78,7 @@ fn alice_encrypts_bob_decrypts() {
 #[test]
 fn bob_encrypts_alice_decrypts() {
     // Direction-reverse of the previous test — proves the group key
-    // schedule is symmetric (both members hold the same epoch key
-    // and either can encrypt for the other).
+    // schedule is symmetric.
     let (cid, alice, bob) = fixture();
     let bob_kp = bob.fresh_key_package().unwrap();
 
@@ -134,9 +131,9 @@ fn channel_id_is_preserved_across_create_and_join() {
 
 #[test]
 fn fresh_key_packages_are_distinct() {
-    // MLS rejects a re-used KeyPackage. The test asserts that two
-    // back-to-back `fresh_key_package` calls produce structurally
-    // distinct artefacts (different HPKE init keys).
+    // MLS rejects a re-used KeyPackage: two back-to-back
+    // `fresh_key_package` calls must produce structurally distinct
+    // artefacts (different HPKE init keys).
     let alice = MemberKey::generate("alice").unwrap();
     let kp1 = alice.fresh_key_package().unwrap();
     let kp2 = alice.fresh_key_package().unwrap();
@@ -152,12 +149,11 @@ fn member_key_does_not_expose_secret_in_debug() {
     // Defence-in-depth: a developer accidentally `{:?}`-printing a
     // MemberKey must not leak signature secret bytes into logs.
     let alice = MemberKey::generate("alice-secret-name").unwrap();
-    let dbg = format!("{:?}", alice);
+    let dbg = format!("{alice:?}");
     assert!(dbg.contains("alice-secret-name"));
-    // Crude guard: the signing-key private bytes shouldn't be in
-    // there. We don't have direct access to them via the public
-    // API, so we instead assert the debug output is short — full
-    // SignatureKeyPair debug would dump 32 bytes of secret.
+    // Crude guard: signing-key private bytes shouldn't be in the debug
+    // output. No direct API access to them, so assert the output is
+    // short — a full SignatureKeyPair debug would dump 32 secret bytes.
     assert!(
         dbg.len() < 200,
         "debug output unexpectedly long; possibly leaking secret material: {dbg}"

@@ -69,6 +69,19 @@ pub struct NewMessage {
     pub attachment: Option<Attachment>,
     pub history: Vec<EditRecord>,
     pub edited: bool,
+    /// Who the body refers to, already resolved to participant ids. Minted at
+    /// authoring time by [`crate::mention::resolve`] and carried into the
+    /// document, so a reader never has to re-parse the text.
+    pub mentions: Vec<crate::mention::Mention>,
+    /// The address of the thing this message is about, when it was written
+    /// by selecting something. Minted by the publishing app at authoring
+    /// time and carried verbatim, so it survives into the document instead
+    /// of being lost at the composer.
+    pub reference: Option<qos_reference::ResourceRef>,
+    /// An agent's record of what it is doing with the message this one
+    /// replies to. Written by the agent at the moment it takes a summons, so
+    /// the reply exists — and says so — before there is an outcome.
+    pub work: Option<crate::model::AgentWork>,
 }
 
 pub struct ChatDoc;
@@ -153,7 +166,11 @@ fn monogram(name: &str) -> String {
         .take(2)
         .collect::<String>()
         .to_uppercase();
-    if letters.is_empty() { "WS".to_string() } else { letters }
+    if letters.is_empty() {
+        "WS".to_string()
+    } else {
+        letters
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -183,8 +200,26 @@ impl ChatDoc {
         Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
         Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0, false);
         Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1, false);
-        Self::put_channel(doc, "c_general", "ws_home", "cat_home_text", "general", "", ChannelKind::Text, 0);
-        Self::put_channel(doc, "c_lounge", "ws_home", "cat_home_voice", "Lounge", "", ChannelKind::Voice, 0);
+        Self::put_channel(
+            doc,
+            "c_general",
+            "ws_home",
+            "cat_home_text",
+            "general",
+            "",
+            ChannelKind::Text,
+            0,
+        );
+        Self::put_channel(
+            doc,
+            "c_lounge",
+            "ws_home",
+            "cat_home_voice",
+            "Lounge",
+            "",
+            ChannelKind::Voice,
+            0,
+        );
     }
 
     /// Populate the document with a believable demo workspace if it is
@@ -235,19 +270,123 @@ impl ChatDoc {
         // messages (the `read` watermark). #general carries a welcome message
         // the demo peer hasn't opened, so it shows a real "1" out of the box.
         let chans: &[(&str, &str, &str, &str, &str, ChannelKind, u32)] = &[
-            ("c_general", "ws_acme", "cat_acme_main", "general", "Company-wide announcements", ChannelKind::Text, 0),
-            ("c_crit", "ws_acme", "cat_acme_main", "design-crit", "Share work, get sharp feedback", ChannelKind::Text, 1),
-            ("c_frontend", "ws_acme", "cat_acme_main", "frontend", "ui toolkit + app shells", ChannelKind::Text, 2),
-            ("c_random", "ws_acme", "cat_acme_main", "random", "Off-topic & watercooler", ChannelKind::Text, 3),
-            ("c_standup", "ws_acme", "cat_acme_voice", "Daily Standup", "", ChannelKind::Voice, 0),
-            ("c_huddle", "ws_acme", "cat_acme_voice", "Design Huddle", "", ChannelKind::Voice, 1),
-            ("c_kernel", "ws_qos", "cat_qos_eng", "kernel", "bootc + immutable base", ChannelKind::Text, 0),
-            ("c_compositor", "ws_qos", "cat_qos_eng", "compositor", "2D clusters & sandboxing", ChannelKind::Text, 1),
-            ("c_fssync", "ws_qos", "cat_qos_eng", "fs-sync", "iroh projection & hydration", ChannelKind::Text, 2),
-            ("c_releases", "ws_qos", "cat_qos_eng", "releases", "ship logs", ChannelKind::Text, 3),
-            ("c_warroom", "ws_qos", "cat_qos_voice", "War Room", "", ChannelKind::Voice, 0),
-            ("c_ideas", "ws_jam", "cat_jam_main", "ideas", "weekend hacks", ChannelKind::Text, 0),
-            ("c_music", "ws_jam", "cat_jam_main", "music", "now playing", ChannelKind::Text, 1),
+            (
+                "c_general",
+                "ws_acme",
+                "cat_acme_main",
+                "general",
+                "Company-wide announcements",
+                ChannelKind::Text,
+                0,
+            ),
+            (
+                "c_crit",
+                "ws_acme",
+                "cat_acme_main",
+                "design-crit",
+                "Share work, get sharp feedback",
+                ChannelKind::Text,
+                1,
+            ),
+            (
+                "c_frontend",
+                "ws_acme",
+                "cat_acme_main",
+                "frontend",
+                "ui toolkit + app shells",
+                ChannelKind::Text,
+                2,
+            ),
+            (
+                "c_random",
+                "ws_acme",
+                "cat_acme_main",
+                "random",
+                "Off-topic & watercooler",
+                ChannelKind::Text,
+                3,
+            ),
+            (
+                "c_standup",
+                "ws_acme",
+                "cat_acme_voice",
+                "Daily Standup",
+                "",
+                ChannelKind::Voice,
+                0,
+            ),
+            (
+                "c_huddle",
+                "ws_acme",
+                "cat_acme_voice",
+                "Design Huddle",
+                "",
+                ChannelKind::Voice,
+                1,
+            ),
+            (
+                "c_kernel",
+                "ws_qos",
+                "cat_qos_eng",
+                "kernel",
+                "bootc + immutable base",
+                ChannelKind::Text,
+                0,
+            ),
+            (
+                "c_compositor",
+                "ws_qos",
+                "cat_qos_eng",
+                "compositor",
+                "2D clusters & sandboxing",
+                ChannelKind::Text,
+                1,
+            ),
+            (
+                "c_fssync",
+                "ws_qos",
+                "cat_qos_eng",
+                "fs-sync",
+                "iroh projection & hydration",
+                ChannelKind::Text,
+                2,
+            ),
+            (
+                "c_releases",
+                "ws_qos",
+                "cat_qos_eng",
+                "releases",
+                "ship logs",
+                ChannelKind::Text,
+                3,
+            ),
+            (
+                "c_warroom",
+                "ws_qos",
+                "cat_qos_voice",
+                "War Room",
+                "",
+                ChannelKind::Voice,
+                0,
+            ),
+            (
+                "c_ideas",
+                "ws_jam",
+                "cat_jam_main",
+                "ideas",
+                "weekend hacks",
+                ChannelKind::Text,
+                0,
+            ),
+            (
+                "c_music",
+                "ws_jam",
+                "cat_jam_main",
+                "music",
+                "now playing",
+                ChannelKind::Text,
+                1,
+            ),
         ];
         for (id, ws, cat, name, topic, kind, order) in chans {
             Self::put_channel(doc, id, ws, cat, name, topic, *kind, *order);
@@ -458,7 +597,7 @@ impl ChatDoc {
         let _ = doc.put(&w, "name", name);
         let _ = doc.put(&w, "glyph", glyph);
         let _ = doc.put(&w, "color_idx", color as i64);
-        let _ = doc.put(&w, "order", order as i64);
+        let _ = doc.put(&w, "order", i64::from(order));
     }
 
     fn put_category(
@@ -473,7 +612,7 @@ impl ChatDoc {
         let cat = get_or_map(doc, &cats, id);
         let _ = doc.put(&cat, "workspace", ws);
         let _ = doc.put(&cat, "name", name);
-        let _ = doc.put(&cat, "order", order as i64);
+        let _ = doc.put(&cat, "order", i64::from(order));
         let _ = doc.put(&cat, "collapsed", collapsed);
     }
 
@@ -495,7 +634,7 @@ impl ChatDoc {
         let _ = doc.put(&c, "name", name);
         let _ = doc.put(&c, "topic", topic);
         let _ = doc.put(&c, "kind", kind.as_str());
-        let _ = doc.put(&c, "order", order as i64);
+        let _ = doc.put(&c, "order", i64::from(order));
         // Pre-create the shared, empty voice-membership map for a voice channel
         // at creation time. Without this, two peers who join the same call
         // before syncing each independently create the `voice→channel` map, and
@@ -523,7 +662,9 @@ impl ChatDoc {
     ) -> String {
         let list = Self::messages_list_mut(doc, channel);
         let idx = doc.length(&list);
-        let block = doc.insert_object(&list, idx, ObjType::Map).expect("insert msg");
+        let block = doc
+            .insert_object(&list, idx, ObjType::Map)
+            .expect("insert msg");
         let _ = doc.put(&block, "id", id);
         let _ = doc.put(&block, "author", nm.author.as_str());
         let _ = doc.put(&block, "ts", nm.ts);
@@ -541,7 +682,9 @@ impl ChatDoc {
         // with the *same new emoji* concurrently converge: independent
         // appends to one List both survive a merge, whereas two competing
         // objects under the same map key would not.
-        let rx = doc.put_object(&block, "reactions", ObjType::List).expect("rx");
+        let rx = doc
+            .put_object(&block, "reactions", ObjType::List)
+            .expect("rx");
         let mut ri = 0usize;
         for (emoji, users) in &nm.reactions {
             for u in users {
@@ -552,8 +695,51 @@ impl ChatDoc {
             }
         }
 
+        // mentions — an ordered List of resolved participant references. A
+        // list (not a set) because two mentions of one person are two
+        // references, and the order is the order they read in the body.
+        let mentions = doc
+            .put_object(&block, "mentions", ObjType::List)
+            .expect("mentions");
+        for (i, m) in nm.mentions.iter().enumerate() {
+            let e = doc
+                .insert_object(&mentions, i, ObjType::Map)
+                .expect("mention");
+            let _ = doc.put(&e, "user", m.user.as_str());
+            let _ = doc.put(&e, "start", m.start as i64);
+            let _ = doc.put(&e, "len", m.len as i64);
+            let _ = doc.put(&e, "agent", m.is_agent);
+        }
+
+        // reference — the address of what this message is about.
+        //
+        // One JSON scalar rather than a map of its parts, because a reference
+        // is authored once and never co-edited: nothing merges two peers'
+        // idea of which block was selected, so splitting it into fields would
+        // buy convergence nobody needs and risk a half-written address that
+        // still parses. Absent for an ordinary message, which is what keeps
+        // `Message::reference` honest as "written about something".
+        if let Some(r) = &nm.reference
+            && let Ok(json) = serde_json::to_string(r)
+        {
+            let _ = doc.put(&block, "reference", json.as_str());
+        }
+
+        // work — an agent's record of what it did with the message this one
+        // replies to. One JSON scalar for the same reason `reference` is
+        // one: the agent that took the summons is the only thing that ever
+        // sets it, so a later state simply supersedes an earlier one and
+        // there is nothing for a merge to reconcile.
+        if let Some(w) = &nm.work
+            && let Ok(json) = serde_json::to_string(w)
+        {
+            let _ = doc.put(&block, "work", json.as_str());
+        }
+
         // history
-        let hist = doc.put_object(&block, "history", ObjType::List).expect("hist");
+        let hist = doc
+            .put_object(&block, "history", ObjType::List)
+            .expect("hist");
         for (i, rec) in nm.history.iter().enumerate() {
             let h = doc.insert_object(&hist, i, ObjType::Map).expect("hrec");
             let _ = doc.put(&h, "ts", rec.ts);
@@ -562,21 +748,29 @@ impl ChatDoc {
 
         // attachment
         if let Some(att) = &nm.attachment {
-            let a = doc.put_object(&block, "attachment", ObjType::Map).expect("att");
+            let a = doc
+                .put_object(&block, "attachment", ObjType::Map)
+                .expect("att");
             match att {
                 Attachment::Image { name, path, w, h } => {
                     let _ = doc.put(&a, "kind", "image");
                     let _ = doc.put(&a, "name", name.as_str());
                     let _ = doc.put(&a, "path", path.as_str());
-                    let _ = doc.put(&a, "w", *w as i64);
-                    let _ = doc.put(&a, "h", *h as i64);
+                    let _ = doc.put(&a, "w", i64::from(*w));
+                    let _ = doc.put(&a, "h", i64::from(*h));
                 }
-                Attachment::Video { name, path, w, h, size } => {
+                Attachment::Video {
+                    name,
+                    path,
+                    w,
+                    h,
+                    size,
+                } => {
                     let _ = doc.put(&a, "kind", "video");
                     let _ = doc.put(&a, "name", name.as_str());
                     let _ = doc.put(&a, "path", path.as_str());
-                    let _ = doc.put(&a, "w", *w as i64);
-                    let _ = doc.put(&a, "h", *h as i64);
+                    let _ = doc.put(&a, "w", i64::from(*w));
+                    let _ = doc.put(&a, "h", i64::from(*h));
                     let _ = doc.put(&a, "size", *size as i64);
                 }
                 Attachment::File { name, path, size } => {
@@ -600,10 +794,10 @@ impl ChatDoc {
         let root_map = map_at(doc, &ROOT, "messages")?;
         let list = list_at(doc, &root_map, channel)?;
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                if get_str(doc, &m, "id") == msg_id {
-                    return Some(m);
-                }
+            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+                && get_str(doc, &m, "id") == msg_id
+            {
+                return Some(m);
             }
         }
         None
@@ -619,28 +813,28 @@ impl ChatDoc {
         emoji: &str,
         user: &str,
     ) {
-        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else { return };
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
+            return;
+        };
         let list = get_or_list(doc, &block, "reactions");
         // Find an existing (emoji,user) entry.
         let mut found: Option<usize> = None;
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) {
-                if get_str(doc, &e, "emoji") == emoji && get_str(doc, &e, "user") == user {
-                    found = Some(i);
-                    break;
-                }
+            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i)
+                && get_str(doc, &e, "emoji") == emoji
+                && get_str(doc, &e, "user") == user
+            {
+                found = Some(i);
+                break;
             }
         }
-        match found {
-            Some(i) => {
-                let _ = doc.delete(&list, i);
-            }
-            None => {
-                let n = doc.length(&list);
-                let e = doc.insert_object(&list, n, ObjType::Map).expect("rxentry");
-                let _ = doc.put(&e, "emoji", emoji);
-                let _ = doc.put(&e, "user", user);
-            }
+        if let Some(i) = found {
+            let _ = doc.delete(&list, i);
+        } else {
+            let n = doc.length(&list);
+            let e = doc.insert_object(&list, n, ObjType::Map).expect("rxentry");
+            let _ = doc.put(&e, "emoji", emoji);
+            let _ = doc.put(&e, "user", user);
         }
     }
 
@@ -649,10 +843,11 @@ impl ChatDoc {
     /// "already reacted" means.
     fn reaction_index(doc: &AutoCommit, list: &ObjId, emoji: &str, user: &str) -> Option<usize> {
         for i in 0..doc.length(list) {
-            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(list, i) {
-                if get_str(doc, &e, "emoji") == emoji && get_str(doc, &e, "user") == user {
-                    return Some(i);
-                }
+            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(list, i)
+                && get_str(doc, &e, "emoji") == emoji
+                && get_str(doc, &e, "user") == user
+            {
+                return Some(i);
             }
         }
         None
@@ -662,8 +857,16 @@ impl ChatDoc {
     /// the same `(emoji, user)` is a no-op, so replaying an add never
     /// double-counts. The counterpart of [`Self::remove_reaction`]; the on-screen
     /// toggle picks whichever the current state calls for at authoring time.
-    pub fn add_reaction(doc: &mut AutoCommit, channel: &str, msg_id: &str, emoji: &str, user: &str) {
-        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else { return };
+    pub fn add_reaction(
+        doc: &mut AutoCommit,
+        channel: &str,
+        msg_id: &str,
+        emoji: &str,
+        user: &str,
+    ) {
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
+            return;
+        };
         let list = get_or_list(doc, &block, "reactions");
         if Self::reaction_index(doc, &list, emoji, user).is_some() {
             return;
@@ -676,9 +879,19 @@ impl ChatDoc {
 
     /// Remove `user`'s `emoji` reaction from a message. Idempotent: removing an
     /// absent reaction is a no-op, so a bad replay can't wedge.
-    pub fn remove_reaction(doc: &mut AutoCommit, channel: &str, msg_id: &str, emoji: &str, user: &str) {
-        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else { return };
-        let Some(list) = list_at(doc, &block, "reactions") else { return };
+    pub fn remove_reaction(
+        doc: &mut AutoCommit,
+        channel: &str,
+        msg_id: &str,
+        emoji: &str,
+        user: &str,
+    ) {
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
+            return;
+        };
+        let Some(list) = list_at(doc, &block, "reactions") else {
+            return;
+        };
         if let Some(i) = Self::reaction_index(doc, &list, emoji, user) {
             let _ = doc.delete(&list, i);
         }
@@ -688,14 +901,18 @@ impl ChatDoc {
     /// no-op. Threaded replies (if any) are left in place; they simply lose their
     /// parent card, which is recoverable.
     pub fn delete_message(doc: &mut AutoCommit, channel: &str, msg_id: &str) {
-        let Some(root_map) = map_at(doc, &ROOT, "messages") else { return };
-        let Some(list) = list_at(doc, &root_map, channel) else { return };
+        let Some(root_map) = map_at(doc, &ROOT, "messages") else {
+            return;
+        };
+        let Some(list) = list_at(doc, &root_map, channel) else {
+            return;
+        };
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                if get_str(doc, &m, "id") == msg_id {
-                    let _ = doc.delete(&list, i);
-                    return;
-                }
+            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+                && get_str(doc, &m, "id") == msg_id
+            {
+                let _ = doc.delete(&list, i);
+                return;
             }
         }
     }
@@ -703,7 +920,9 @@ impl ChatDoc {
     /// Set (or clear) a message's pinned flag. Shared truth: every peer sees the
     /// same pins. Guarded so a redundant write doesn't churn the document.
     pub fn set_message_pinned(doc: &mut AutoCommit, channel: &str, msg_id: &str, pinned: bool) {
-        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else { return };
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
+            return;
+        };
         if get_bool(doc, &block, "pinned") != pinned {
             let _ = doc.put(&block, "pinned", pinned);
         }
@@ -718,7 +937,9 @@ impl ChatDoc {
         new_text: &str,
         ts: i64,
     ) {
-        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else { return };
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
+            return;
+        };
         let old = get_text(doc, &block, "text");
         if old == new_text {
             return;
@@ -774,7 +995,10 @@ impl ChatDoc {
 
     /// Number of top-level (non-threaded) messages in `channel`.
     pub fn top_level_count(doc: &AutoCommit, channel: &str) -> usize {
-        Self::list_messages(doc, channel).iter().filter(|m| m.is_top_level()).count()
+        Self::list_messages(doc, channel)
+            .iter()
+            .filter(|m| m.is_top_level())
+            .count()
     }
 
     /// Guarded upsert of a user record: writes each field only when it differs
@@ -870,8 +1094,7 @@ impl ChatDoc {
             .filter(|c| c.workspace == ws)
             .map(|c| c.order)
             .max()
-            .map(|m| m + 1)
-            .unwrap_or(0)
+            .map_or(0, |m| m + 1)
     }
 
     /// Next free `order` for a channel within `(ws, category)`.
@@ -881,8 +1104,7 @@ impl ChatDoc {
             .filter(|c| c.workspace == ws && c.category == category)
             .map(|c| c.order)
             .max()
-            .map(|m| m + 1)
-            .unwrap_or(0)
+            .map_or(0, |m| m + 1)
     }
 
     /// Create a category at the end of `ws`. Returns its fresh id.
@@ -904,8 +1126,7 @@ impl ChatDoc {
             .into_iter()
             .map(|w| w.order)
             .max()
-            .map(|m| m + 1)
-            .unwrap_or(0);
+            .map_or(0, |m| m + 1);
         Self::put_workspace(doc, &id, name, &monogram(name), order as usize, order);
         let text_cat = Self::create_category(doc, &id, "Channels");
         Self::create_channel(doc, &id, &text_cat, "general", ChannelKind::Text);
@@ -949,10 +1170,10 @@ impl ChatDoc {
     /// the sidebar but stay in the document. Guarded so a redundant write doesn't
     /// churn the document.
     pub fn set_channel_archived(doc: &mut AutoCommit, id: &str, archived: bool) {
-        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
-            if get_bool(doc, &c, "archived") != archived {
-                let _ = doc.put(&c, "archived", archived);
-            }
+        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id)
+            && get_bool(doc, &c, "archived") != archived
+        {
+            let _ = doc.put(&c, "archived", archived);
         }
     }
 
@@ -984,8 +1205,7 @@ impl ChatDoc {
         let collapsed = Self::list_categories(doc)
             .into_iter()
             .find(|c| c.id == id)
-            .map(|c| c.collapsed)
-            .unwrap_or(false);
+            .is_some_and(|c| c.collapsed);
         Self::set_category_collapsed(doc, id, !collapsed);
     }
 
@@ -1024,34 +1244,44 @@ impl ChatDoc {
     /// Move a channel into `category` (within its own workspace), appending
     /// it at the end of the target group.
     pub fn move_channel(doc: &mut AutoCommit, id: &str, category: &str) {
-        let Some(ch) = Self::list_channels(doc).into_iter().find(|c| c.id == id) else { return };
+        let Some(ch) = Self::list_channels(doc).into_iter().find(|c| c.id == id) else {
+            return;
+        };
         let order = Self::next_channel_order(doc, &ch.workspace, category);
         if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
             let _ = doc.put(&c, "category", category);
-            let _ = doc.put(&c, "order", order as i64);
+            let _ = doc.put(&c, "order", i64::from(order));
         }
     }
 
     /// Move a channel one slot up/down within its category by swapping the
     /// `order` of the adjacent sibling. `up == true` moves it earlier.
     pub fn reorder_channel(doc: &mut AutoCommit, id: &str, up: bool) {
-        let Some(ch) = Self::list_channels(doc).into_iter().find(|c| c.id == id) else { return };
+        let Some(ch) = Self::list_channels(doc).into_iter().find(|c| c.id == id) else {
+            return;
+        };
         let mut siblings: Vec<Channel> = Self::list_channels(doc)
             .into_iter()
             .filter(|c| c.workspace == ch.workspace && c.category == ch.category)
             .collect();
         siblings.sort_by_key(|c| c.order);
-        let Some(pos) = siblings.iter().position(|c| c.id == id) else { return };
-        let swap = if up { pos.checked_sub(1) } else { pos.checked_add(1).filter(|&p| p < siblings.len()) };
+        let Some(pos) = siblings.iter().position(|c| c.id == id) else {
+            return;
+        };
+        let swap = if up {
+            pos.checked_sub(1)
+        } else {
+            pos.checked_add(1).filter(|&p| p < siblings.len())
+        };
         let Some(swap) = swap else { return };
         let a_order = siblings[pos].order;
         let b_order = siblings[swap].order;
         let chans = map_at(doc, &ROOT, "channels").unwrap_or(ROOT);
         if let Some(a) = map_at(doc, &chans, &siblings[pos].id) {
-            let _ = doc.put(&a, "order", b_order as i64);
+            let _ = doc.put(&a, "order", i64::from(b_order));
         }
         if let Some(b) = map_at(doc, &chans, &siblings[swap].id) {
-            let _ = doc.put(&b, "order", a_order as i64);
+            let _ = doc.put(&b, "order", i64::from(a_order));
         }
     }
 
@@ -1083,10 +1313,10 @@ impl ChatDoc {
     }
 
     pub fn voice_leave(doc: &mut AutoCommit, channel: &str, user: &str) {
-        if let Some(voice) = map_at(doc, &ROOT, "voice") {
-            if let Some(ch) = map_at(doc, &voice, channel) {
-                let _ = doc.delete(&ch, user);
-            }
+        if let Some(voice) = map_at(doc, &ROOT, "voice")
+            && let Some(ch) = map_at(doc, &voice, channel)
+        {
+            let _ = doc.delete(&ch, user);
         }
     }
 
@@ -1108,7 +1338,13 @@ impl ChatDoc {
         let _ = doc.put(&m, "audio_only", audio_only);
     }
 
-    pub fn voice_set_field(doc: &mut AutoCommit, channel: &str, user: &str, field: &str, value: bool) {
+    pub fn voice_set_field(
+        doc: &mut AutoCommit,
+        channel: &str,
+        user: &str,
+        field: &str,
+        value: bool,
+    ) {
         let ch = Self::voice_channel_map(doc, channel);
         let m = get_or_map(doc, &ch, user);
         let _ = doc.put(&m, field, value);
@@ -1143,13 +1379,15 @@ impl ChatDoc {
     // -----------------------------------------------------------------------
 
     pub fn list_categories(doc: &AutoCommit) -> Vec<Category> {
-        let Some(cats) = map_at(doc, &ROOT, "categories") else { return vec![] };
+        let Some(cats) = map_at(doc, &ROOT, "categories") else {
+            return vec![];
+        };
         let mut out: Vec<Category> = doc
             .keys(&cats)
             .filter_map(|id| {
                 let cat = map_at(doc, &cats, &id)?;
                 Some(Category {
-                    id: id.clone(),
+                    id,
                     workspace: get_str(doc, &cat, "workspace"),
                     name: get_str(doc, &cat, "name"),
                     order: get_i64(doc, &cat, "order") as u32,
@@ -1163,21 +1401,29 @@ impl ChatDoc {
 
     /// All members of a voice channel, sorted talking-first then by name-key.
     pub fn list_voice_members(doc: &AutoCommit, channel: &str) -> Vec<VoiceMember> {
-        let Some(voice) = map_at(doc, &ROOT, "voice") else { return vec![] };
-        let Some(ch) = map_at(doc, &voice, channel) else { return vec![] };
+        let Some(voice) = map_at(doc, &ROOT, "voice") else {
+            return vec![];
+        };
+        let Some(ch) = map_at(doc, &voice, channel) else {
+            return vec![];
+        };
         let mut out: Vec<VoiceMember> = doc
             .keys(&ch)
             .filter_map(|user| {
                 let m = map_at(doc, &ch, &user)?;
                 let ticket = get_str(doc, &m, "ticket");
                 Some(VoiceMember {
-                    user: user.clone(),
+                    user,
                     talking: get_bool(doc, &m, "talking"),
                     muted: get_bool(doc, &m, "muted"),
                     deafened: get_bool(doc, &m, "deafened"),
                     audio_only: get_bool(doc, &m, "audio_only"),
                     sharing: get_bool(doc, &m, "sharing"),
-                    ticket: if ticket.is_empty() { None } else { Some(ticket) },
+                    ticket: if ticket.is_empty() {
+                        None
+                    } else {
+                        Some(ticket)
+                    },
                 })
             })
             .collect();
@@ -1190,13 +1436,15 @@ impl ChatDoc {
     }
 
     pub fn list_workspaces(doc: &AutoCommit) -> Vec<Workspace> {
-        let Some(wss) = map_at(doc, &ROOT, "workspaces") else { return vec![] };
+        let Some(wss) = map_at(doc, &ROOT, "workspaces") else {
+            return vec![];
+        };
         let mut out: Vec<Workspace> = doc
             .keys(&wss)
             .filter_map(|id| {
                 let w = map_at(doc, &wss, &id)?;
                 Some(Workspace {
-                    id: id.clone(),
+                    id,
                     name: get_str(doc, &w, "name"),
                     glyph: get_str(doc, &w, "glyph"),
                     color_idx: get_i64(doc, &w, "color_idx") as usize,
@@ -1209,29 +1457,34 @@ impl ChatDoc {
     }
 
     pub fn list_users(doc: &AutoCommit) -> Vec<User> {
-        let Some(us) = map_at(doc, &ROOT, "users") else { return vec![] };
+        let Some(us) = map_at(doc, &ROOT, "users") else {
+            return vec![];
+        };
         doc.keys(&us)
             .filter_map(|id| {
                 let u = map_at(doc, &us, &id)?;
                 Some(User {
-                    id: id.clone(),
+                    id,
                     name: get_str(doc, &u, "name"),
                     initials: get_str(doc, &u, "initials"),
                     color_idx: get_i64(doc, &u, "color_idx") as usize,
                     status: Presence::from_str(&get_str(doc, &u, "status")),
+                    is_agent: get_bool(doc, &u, "agent"),
                 })
             })
             .collect()
     }
 
     pub fn list_channels(doc: &AutoCommit) -> Vec<Channel> {
-        let Some(chans) = map_at(doc, &ROOT, "channels") else { return vec![] };
+        let Some(chans) = map_at(doc, &ROOT, "channels") else {
+            return vec![];
+        };
         let mut out: Vec<Channel> = doc
             .keys(&chans)
             .filter_map(|id| {
                 let c = map_at(doc, &chans, &id)?;
                 Some(Channel {
-                    id: id.clone(),
+                    id,
                     workspace: get_str(doc, &c, "workspace"),
                     category: get_str(doc, &c, "category"),
                     name: get_str(doc, &c, "name"),
@@ -1250,11 +1503,17 @@ impl ChatDoc {
     }
 
     pub fn list_messages(doc: &AutoCommit, channel: &str) -> Vec<Message> {
-        let Some(root_map) = map_at(doc, &ROOT, "messages") else { return vec![] };
-        let Some(list) = list_at(doc, &root_map, channel) else { return vec![] };
+        let Some(root_map) = map_at(doc, &ROOT, "messages") else {
+            return vec![];
+        };
+        let Some(list) = list_at(doc, &root_map, channel) else {
+            return vec![];
+        };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else { continue };
+            let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
+                continue;
+            };
             let parent = get_str(doc, &m, "parent");
             out.push(Message {
                 id: get_str(doc, &m, "id"),
@@ -1264,23 +1523,58 @@ impl ChatDoc {
                 text: get_text(doc, &m, "text"),
                 edited: get_bool(doc, &m, "edited"),
                 history: Self::read_history(doc, &m),
-                parent: if parent.is_empty() { None } else { Some(parent) },
+                parent: if parent.is_empty() {
+                    None
+                } else {
+                    Some(parent)
+                },
                 reactions: Self::read_reactions(doc, &m),
+                mentions: Self::read_mentions(doc, &m),
+                reference: Self::read_reference(doc, &m),
                 attachment: Self::read_attachment(doc, &m),
+                work: Self::read_work(doc, &m),
                 pinned: get_bool(doc, &m, "pinned"),
             });
         }
         out
     }
 
+    /// The resolved participant references stored on a message block.
+    fn read_mentions(doc: &AutoCommit, msg: &ObjId) -> Vec<crate::mention::Mention> {
+        let Some(list) = list_at(doc, msg, "mentions") else {
+            return vec![];
+        };
+        let mut out = Vec::new();
+        for i in 0..doc.length(&list) {
+            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
+                continue;
+            };
+            let user = get_str(doc, &e, "user");
+            if user.is_empty() {
+                continue;
+            }
+            out.push(crate::mention::Mention {
+                user,
+                start: get_i64(doc, &e, "start").max(0) as usize,
+                len: get_i64(doc, &e, "len").max(0) as usize,
+                is_agent: get_bool(doc, &e, "agent"),
+            });
+        }
+        out
+    }
+
     fn read_reactions(doc: &AutoCommit, msg: &ObjId) -> Vec<Reaction> {
-        let Some(list) = list_at(doc, msg, "reactions") else { return vec![] };
+        let Some(list) = list_at(doc, msg, "reactions") else {
+            return vec![];
+        };
         // Group the flat (emoji,user) entries back into per-emoji buckets,
         // remembering first-seen order for a stable layout.
         let mut order: Vec<String> = Vec::new();
         let mut buckets: HashMap<String, Vec<String>> = HashMap::new();
         for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else { continue };
+            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
+                continue;
+            };
             let emoji = get_str(doc, &e, "emoji");
             let user = get_str(doc, &e, "user");
             if emoji.is_empty() {
@@ -1306,12 +1600,18 @@ impl ChatDoc {
             })
             .collect();
         // Stable display order: most-reacted first, then emoji codepoint.
-        out.sort_by(|a, b| b.count().cmp(&a.count()).then_with(|| a.emoji.cmp(&b.emoji)));
+        out.sort_by(|a, b| {
+            b.count()
+                .cmp(&a.count())
+                .then_with(|| a.emoji.cmp(&b.emoji))
+        });
         out
     }
 
     fn read_history(doc: &AutoCommit, msg: &ObjId) -> Vec<EditRecord> {
-        let Some(h) = list_at(doc, msg, "history") else { return vec![] };
+        let Some(h) = list_at(doc, msg, "history") else {
+            return vec![];
+        };
         let mut out = Vec::new();
         for i in 0..doc.length(&h) {
             if let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(&h, i) {
@@ -1348,6 +1648,69 @@ impl ChatDoc {
             _ => None,
         }
     }
+
+    /// The address of what a message is about, or `None` for an ordinary
+    /// message — and also for one whose stored address will not parse, which
+    /// is deliberately not the same as a nearby address that does. A
+    /// reference that cannot be read is no reference at all.
+    fn read_reference(doc: &AutoCommit, msg: &ObjId) -> Option<qos_reference::ResourceRef> {
+        let raw = get_str(doc, msg, "reference");
+        if raw.is_empty() {
+            return None;
+        }
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// The agent record stored on a message, or `None` for an ordinary one —
+    /// and also for a record that will not parse, which is deliberately not
+    /// read as some nearby state that does. A state that cannot be read is
+    /// no claim about the agent at all, and inventing one would be exactly
+    /// the fabrication this field exists to avoid.
+    fn read_work(doc: &AutoCommit, msg: &ObjId) -> Option<crate::model::AgentWork> {
+        let raw = get_str(doc, msg, "work");
+        if raw.is_empty() {
+            return None;
+        }
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// Record what an agent is doing with the message `msg` replies to, and
+    /// optionally give `msg` the words it did not have when it was posted.
+    ///
+    /// `say` splices into a body that is still **empty**. That is an
+    /// authoring completion, not an edit: nothing is archived into the
+    /// message's history and it is never flagged `edited`, because nobody
+    /// reworded anything — the agent posted the reply before it had an
+    /// answer and is now supplying the answer. A body that already has text
+    /// is left alone rather than silently rewritten.
+    ///
+    /// Returns whether the document changed.
+    pub fn set_message_work(
+        doc: &mut AutoCommit,
+        channel: &str,
+        msg: &str,
+        work: &crate::model::AgentWork,
+        say: Option<&str>,
+    ) -> bool {
+        let Some(block) = Self::find_message_obj(doc, channel, msg) else {
+            return false;
+        };
+        let mut changed = false;
+        if let Ok(json) = serde_json::to_string(work)
+            && get_str(doc, &block, "work") != json
+        {
+            let _ = doc.put(&block, "work", json.as_str());
+            changed = true;
+        }
+        if let Some(text) = say.filter(|t| !t.is_empty())
+            && let Ok(Some((Value::Object(ObjType::Text), t))) = doc.get(&block, "text")
+            && doc.text(&t).is_ok_and(|s| s.is_empty())
+        {
+            let _ = doc.splice_text(&t, 0, 0, text);
+            changed = true;
+        }
+        changed
+    }
 }
 
 #[cfg(test)]
@@ -1359,6 +1722,51 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_if_empty(&mut doc);
         doc
+    }
+
+    /// A message's `reference` — the address of the thing it is about —
+    /// survives being written and read back, and an ordinary message carries
+    /// none. Read through [`ChatDoc::list_messages`], the same path every
+    /// consumer uses, not a lower-level accessor that could drift from it.
+    #[test]
+    fn a_messages_reference_round_trips_and_an_ordinary_message_carries_none() {
+        let mut doc = seeded();
+        let about = qos_reference::ResourceRef::whole(
+            "files.entry",
+            "files.entry:/var/workspace/harbour.png",
+            "harbour.png",
+        );
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            "c_general",
+            "m_about",
+            NewMessage {
+                author: model::ME.into(),
+                ts: 1000,
+                text: "look at this".into(),
+                reference: Some(about.clone()),
+                ..Default::default()
+            },
+        );
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            "c_general",
+            "m_plain",
+            NewMessage {
+                author: model::ME.into(),
+                ts: 1001,
+                text: "hi".into(),
+                ..Default::default()
+            },
+        );
+        let msgs = ChatDoc::list_messages(&doc, "c_general");
+        let with_ref = msgs.iter().find(|m| m.id == "m_about").unwrap();
+        assert_eq!(with_ref.reference, Some(about));
+        let plain = msgs.iter().find(|m| m.id == "m_plain").unwrap();
+        assert_eq!(
+            plain.reference, None,
+            "an ordinary message must carry no reference"
+        );
     }
 
     #[test]
@@ -1378,7 +1786,11 @@ mod tests {
         assert!(ws.iter().all(|w| w.id != "ws_acme"), "no demo workspaces");
 
         let chans = ChatDoc::list_channels(&doc);
-        assert!(chans.iter().any(|c| c.id == "c_general" && c.kind == ChannelKind::Text));
+        assert!(
+            chans
+                .iter()
+                .any(|c| c.id == "c_general" && c.kind == ChannelKind::Text)
+        );
         assert!(chans.iter().any(|c| c.kind == ChannelKind::Voice));
         assert!(chans.iter().all(|c| c.id != "c_crit"), "no demo channels");
         assert!(
@@ -1437,7 +1849,11 @@ mod tests {
         ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
         let msgs = ChatDoc::list_messages(&doc, "c_crit");
         let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
-        assert!(m.reactions.iter().any(|r| r.emoji == "🔥" && r.reacted_by(model::ME)));
+        assert!(
+            m.reactions
+                .iter()
+                .any(|r| r.emoji == "🔥" && r.reacted_by(model::ME))
+        );
         // toggling again removes it and prunes the emoji
         ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
         let msgs = ChatDoc::list_messages(&doc, "c_crit");
@@ -1471,13 +1887,17 @@ mod tests {
         // 30 corrections, each touching only the last word.
         for i in 0..30 {
             let edited = format!("{body} v{i}");
-            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &edited, NOW + i as i64);
+            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &edited, NOW + i64::from(i));
         }
         let grown = doc.save().len() - baseline;
 
         let msgs = ChatDoc::list_messages(&doc, "c_crit");
         let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
-        assert_eq!(m.text, format!("{body} v29"), "the last edit must be the body");
+        assert_eq!(
+            m.text,
+            format!("{body} v29"),
+            "the last edit must be the body"
+        );
         // Each edit legitimately archives the previous body into `history`, so
         // the bound is against the archive cost, not zero. A full rewrite would
         // add the body a second time per edit on top of that.
@@ -1517,7 +1937,12 @@ mod tests {
         ChatDoc::push_message(
             &mut doc,
             "c_crit",
-            NewMessage { author: model::ME.into(), ts: NOW, text: "hi there".into(), ..Default::default() },
+            NewMessage {
+                author: model::ME.into(),
+                ts: NOW,
+                text: "hi there".into(),
+                ..Default::default()
+            },
         );
         ChatDoc::clear_draft(&mut doc, "c_crit");
         assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "");
@@ -1527,10 +1952,16 @@ mod tests {
     #[test]
     fn channels_carry_category_and_voice_seed() {
         let doc = seeded();
-        let crit = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_crit").unwrap();
+        let crit = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| c.id == "c_crit")
+            .unwrap();
         assert_eq!(crit.category, "cat_acme_main");
         let cats = ChatDoc::list_categories(&doc);
-        assert!(cats.iter().any(|c| c.workspace == "ws_acme" && c.name == "Voice"));
+        assert!(
+            cats.iter()
+                .any(|c| c.workspace == "ws_acme" && c.name == "Voice")
+        );
         // The huddle is pre-populated with three members; Aria is talking.
         let members = ChatDoc::list_voice_members(&doc, "c_huddle");
         assert_eq!(members.len(), 3);
@@ -1543,14 +1974,26 @@ mod tests {
     fn channel_crud_roundtrips() {
         let mut doc = seeded();
         let before = ChatDoc::list_channels(&doc).len();
-        let id = ChatDoc::create_channel(&mut doc, "ws_acme", "cat_acme_main", "design-ops", ChannelKind::Text);
+        let id = ChatDoc::create_channel(
+            &mut doc,
+            "ws_acme",
+            "cat_acme_main",
+            "design-ops",
+            ChannelKind::Text,
+        );
         assert_eq!(ChatDoc::list_channels(&doc).len(), before + 1);
         ChatDoc::rename_channel(&mut doc, &id, "ops");
-        let c = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == id).unwrap();
+        let c = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap();
         assert_eq!(c.name, "ops");
         // Move into the voice category, then delete.
         ChatDoc::move_channel(&mut doc, &id, "cat_acme_voice");
-        let c = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == id).unwrap();
+        let c = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap();
         assert_eq!(c.category, "cat_acme_voice");
         ChatDoc::delete_channel(&mut doc, &id);
         assert!(ChatDoc::list_channels(&doc).into_iter().all(|c| c.id != id));
@@ -1560,22 +2003,48 @@ mod tests {
     fn reorder_channel_swaps_adjacent_order() {
         let mut doc = seeded();
         // general(0), design-crit(1) in cat_acme_main — move design-crit up.
-        let general_before = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_general").unwrap().order;
-        let crit_before = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_crit").unwrap().order;
+        let general_before = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| c.id == "c_general")
+            .unwrap()
+            .order;
+        let crit_before = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| c.id == "c_crit")
+            .unwrap()
+            .order;
         assert!(crit_before > general_before);
         ChatDoc::reorder_channel(&mut doc, "c_crit", true);
-        let general_after = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_general").unwrap().order;
-        let crit_after = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_crit").unwrap().order;
-        assert!(crit_after < general_after, "design-crit now sorts before general");
+        let general_after = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| c.id == "c_general")
+            .unwrap()
+            .order;
+        let crit_after = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| c.id == "c_crit")
+            .unwrap()
+            .order;
+        assert!(
+            crit_after < general_after,
+            "design-crit now sorts before general"
+        );
     }
 
     #[test]
     fn deleting_category_rehomes_its_channels() {
         let mut doc = seeded();
         ChatDoc::delete_category(&mut doc, "cat_acme_main");
-        assert!(ChatDoc::list_categories(&doc).into_iter().all(|c| c.id != "cat_acme_main"));
+        assert!(
+            ChatDoc::list_categories(&doc)
+                .into_iter()
+                .all(|c| c.id != "cat_acme_main")
+        );
         // Its channels survive, rehomed to the uncategorised group.
-        let general = ChatDoc::list_channels(&doc).into_iter().find(|c| c.id == "c_general").unwrap();
+        let general = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| c.id == "c_general")
+            .unwrap();
         assert_eq!(general.category, "");
     }
 
@@ -1585,7 +2054,10 @@ mod tests {
         ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
         assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 4);
         ChatDoc::voice_set_field(&mut doc, "c_huddle", "u_me", "muted", true);
-        let me = ChatDoc::list_voice_members(&doc, "c_huddle").into_iter().find(|m| m.user == "u_me").unwrap();
+        let me = ChatDoc::list_voice_members(&doc, "c_huddle")
+            .into_iter()
+            .find(|m| m.user == "u_me")
+            .unwrap();
         assert!(me.muted);
         ChatDoc::voice_leave(&mut doc, "c_huddle", "u_me");
         assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 3);
@@ -1599,8 +2071,7 @@ mod tests {
             ChatDoc::list_voice_members(doc, "c_huddle")
                 .into_iter()
                 .find(|m| m.user == "u_me")
-                .map(|m| m.sharing)
-                .unwrap_or(false)
+                .is_some_and(|m| m.sharing)
         };
         assert!(!sharing(&doc), "a fresh member is not sharing");
         ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", true);
@@ -1617,13 +2088,24 @@ mod tests {
         ChatDoc::push_message(
             &mut doc,
             "c_general",
-            NewMessage { author: "u_me".into(), ts: NOW, text: "persisted!".into(), ..Default::default() },
+            NewMessage {
+                author: "u_me".into(),
+                ts: NOW,
+                text: "persisted!".into(),
+                ..Default::default()
+            },
         );
         let bytes = doc.save();
         let reloaded = AutoCommit::load(&bytes).unwrap();
-        assert!(ChatDoc::is_seeded(&reloaded), "reloaded doc keeps the seed guard");
+        assert!(
+            ChatDoc::is_seeded(&reloaded),
+            "reloaded doc keeps the seed guard"
+        );
         let msgs = ChatDoc::list_messages(&reloaded, "c_general");
-        assert!(msgs.iter().any(|m| m.text == "persisted!"), "message survived reload");
+        assert!(
+            msgs.iter().any(|m| m.text == "persisted!"),
+            "message survived reload"
+        );
     }
 
     #[test]
@@ -1636,11 +2118,20 @@ mod tests {
         let ws = wss.iter().find(|w| w.id == id).unwrap();
         assert_eq!(ws.name, "Weekend Jam Two");
         assert_eq!(ws.glyph, "WJ", "glyph is a monogram of the name");
-        assert!(ws.order as usize >= before, "appended at the end of the rail");
+        assert!(
+            ws.order as usize >= before,
+            "appended at the end of the rail"
+        );
         // It comes with a usable text channel and a voice channel to call in.
-        let chans: Vec<_> =
-            ChatDoc::list_channels(&doc).into_iter().filter(|c| c.workspace == id).collect();
-        assert!(chans.iter().any(|c| c.name == "general" && c.kind == ChannelKind::Text));
+        let chans: Vec<_> = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .filter(|c| c.workspace == id)
+            .collect();
+        assert!(
+            chans
+                .iter()
+                .any(|c| c.name == "general" && c.kind == ChannelKind::Text)
+        );
         assert!(chans.iter().any(|c| c.kind == ChannelKind::Voice));
     }
 
@@ -1658,7 +2149,12 @@ mod tests {
         ChatDoc::push_message(
             &mut doc,
             "c_crit",
-            NewMessage { author: "u_aria".into(), ts: NOW, text: "one more".into(), ..Default::default() },
+            NewMessage {
+                author: "u_aria".into(),
+                ts: NOW,
+                text: "one more".into(),
+                ..Default::default()
+            },
         );
         assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 1);
         // A threaded reply is not a top-level message, so it doesn't count.
@@ -1673,7 +2169,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 1, "thread replies don't bump unread");
+        assert_eq!(
+            ChatDoc::unread_count(&doc, "c_crit", model::ME),
+            1,
+            "thread replies don't bump unread"
+        );
     }
 
     #[test]
@@ -1705,9 +2205,21 @@ mod tests {
         let mut b2 = AutoCommit::load(&b.save()).unwrap();
         a.merge(&mut b2).unwrap();
         let members = ChatDoc::list_voice_members(&a, "c_lounge");
-        assert_eq!(members.len(), 2, "both concurrent joiners survive the merge");
-        assert!(members.iter().any(|m| m.user == "u_alice" && m.ticket.as_deref() == Some("iroh://alice")));
-        assert!(members.iter().any(|m| m.user == "u_bob" && m.ticket.as_deref() == Some("iroh://bob")));
+        assert_eq!(
+            members.len(),
+            2,
+            "both concurrent joiners survive the merge"
+        );
+        assert!(
+            members
+                .iter()
+                .any(|m| m.user == "u_alice" && m.ticket.as_deref() == Some("iroh://alice"))
+        );
+        assert!(
+            members
+                .iter()
+                .any(|m| m.user == "u_bob" && m.ticket.as_deref() == Some("iroh://bob"))
+        );
     }
 
     #[test]
@@ -1733,7 +2245,13 @@ mod tests {
         );
         let msgs = ChatDoc::list_messages(&doc, "c_general");
         match msgs.last().and_then(|m| m.attachment.clone()) {
-            Some(Attachment::Video { name, path, w, h, size }) => {
+            Some(Attachment::Video {
+                name,
+                path,
+                w,
+                h,
+                size,
+            }) => {
                 assert_eq!(name, "demo.mp4");
                 assert_eq!(path, "/var/workspace/clips/demo.mp4");
                 assert_eq!((w, h), (1920, 1080));
@@ -1751,7 +2269,11 @@ mod tests {
         let mut doc = seeded();
         let wrote = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
         assert!(wrote, "a new peer is announced");
-        assert!(ChatDoc::list_users(&doc).iter().any(|u| u.id == "u_bob" && u.name == "Bob"));
+        assert!(
+            ChatDoc::list_users(&doc)
+                .iter()
+                .any(|u| u.id == "u_bob" && u.name == "Bob")
+        );
         let again = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
         assert!(!again, "an unchanged re-announce writes nothing");
     }
@@ -1765,7 +2287,11 @@ mod tests {
         let total = ChatDoc::top_level_count(&doc, "c_crit") as u32;
         assert!(total > 0);
         ChatDoc::mark_read(&mut doc, "c_crit", "u_alice");
-        assert_eq!(ChatDoc::unread_count(&doc, "c_crit", "u_alice"), 0, "alice caught up");
+        assert_eq!(
+            ChatDoc::unread_count(&doc, "c_crit", "u_alice"),
+            0,
+            "alice caught up"
+        );
         assert_eq!(
             ChatDoc::unread_count(&doc, "c_crit", "u_bob"),
             total,

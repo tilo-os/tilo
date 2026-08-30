@@ -1,28 +1,23 @@
-//! `runtime-portal` — service discovery and connected-fd → RPC
-//! plumbing for qOS apps.
+//! `runtime-portal` — service discovery and connected-fd → RPC plumbing for
+//! qOS apps.
 //!
-//! qOS apps run inside a launcher-managed sandbox. The launcher
-//! opens a Unix socket per system service (collab, fs, ...) and
-//! passes the connected file descriptor in to the child via the
-//! environment variable `QOS_SVC_<NAME>_FD`. This crate provides:
+//! qOS apps run inside a launcher-managed sandbox. The launcher opens a Unix
+//! socket per system service (collab, fs, ...) and passes the connected fd
+//! to the child via `QOS_SVC_<NAME>_FD`. This crate provides:
 //!
 //! - [`service_fd`] — pull the raw fd out of the environment.
-//! - [`is_qos_native`] — heuristic: are we running under a qOS
-//!   compositor at all, or as a stock Flatpak on a vanilla desktop?
-//! - [`UnixCapnpClient`] — lift a connected `RawFd` into a tokio
-//!   Cap'n Proto two-party RPC client. Higher-level service crates
-//!   (`runtime-collab`, `runtime-fs`) build typed clients
+//! - [`is_qos_native`] — heuristic: running under a qOS compositor, or as a
+//!   stock Flatpak on a vanilla desktop?
+//! - [`UnixCapnpClient`] — lift a connected `RawFd` into a tokio Cap'n Proto
+//!   two-party RPC client; higher-level service crates build typed clients
 //!   on top of the bootstrap returned here.
-//! - [`NotAvailable`] — the single error type service clients
-//!   surface when the platform can't provide the requested service.
+//! - [`NotAvailable`] — the single error type service clients surface when
+//!   the platform can't provide the requested service.
 //!
-//! ## Design intent: graceful degradation
-//!
-//! qOS apps must ALSO be able to run as Flatpaks on stock Linux.
-//! There is no service connection there. Every system-service
-//! client therefore returns [`NotAvailable::ServiceFdMissing`]
-//! rather than panicking, and the app is expected to fall back to
-//! a local-only mode.
+//! qOS apps must also run as Flatpaks on stock Linux, where there is no
+//! service connection: every client returns
+//! [`NotAvailable::ServiceFdMissing`] rather than panicking, and the app is
+//! expected to fall back to a local-only mode.
 
 use std::env;
 use std::io;
@@ -37,46 +32,36 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 /// All ways a system service can be unavailable to an app.
 #[derive(Debug, thiserror::Error)]
 pub enum NotAvailable {
-    /// The launcher did not pass an fd for this service. Either
-    /// we're running outside qOS (stock Linux / Flatpak) or the
-    /// service was not declared in the package manifest.
+    /// The launcher did not pass an fd for this service: either we're outside
+    /// qOS (stock Linux / Flatpak) or the service wasn't declared in the manifest.
     #[error("service fd env var missing or fd is not open")]
     ServiceFdMissing,
-    /// The fd was present but the socket has been closed or the
-    /// peer hung up before we could speak RPC.
+    /// The fd was present but the socket closed or the peer hung up before RPC could start.
     #[error("service connection failed: {0}")]
     ConnectionFailed(#[from] io::Error),
-    /// The service responded but its protocol version does not
-    /// match what this client was compiled against.
+    /// The service responded but its protocol version doesn't match this client's.
     #[error("protocol mismatch: expected {expected}, got {got}")]
     ProtocolMismatch { expected: u32, got: u32 },
-    /// Capability error talking to the service (the RPC layer
-    /// rejected our request, the remote sent a malformed reply).
+    /// Capability error talking to the service (rejected request, malformed reply).
     #[error("capnp error: {0}")]
     Capnp(#[from] capnp::Error),
 }
 
-/// True iff we appear to be running inside a qOS session. Heuristic
-/// only — apps must NOT use this as an authorisation gate, they
-/// must instead try the relevant service client and react to
-/// [`NotAvailable`] if it fails. This is intended for telemetry,
-/// boot-time feature toggles, and friendly first-run messaging
-/// ("Welcome to qOS!" vs. "Running on stock Linux — collaboration
-/// disabled.").
+/// True iff we appear to be running inside a qOS session. Heuristic only —
+/// apps must NOT use this as an authorisation gate; try the relevant
+/// service client and react to [`NotAvailable`] instead. Intended for
+/// telemetry, boot-time toggles, and friendly first-run messaging.
 pub fn is_qos_native() -> bool {
     env::var_os("QOS_WORKSPACE_ID").is_some()
 }
 
-/// Look up a service fd by canonical name (e.g. "collab", "fs").
-/// Returns `None` if the env var is unset, not a valid integer, or
-/// the fd is not currently open. Names are case-insensitive but
-/// callers should pass lowercase to keep call sites consistent.
+/// Look up a service fd by canonical name (e.g. "collab", "fs"). `None` if
+/// the env var is unset, not a valid integer, or the fd isn't currently open.
 pub fn service_fd(name: &str) -> Option<RawFd> {
     let var_name = format!("QOS_SVC_{}_FD", name.to_uppercase());
     let raw = env::var(&var_name).ok()?;
     let fd: RawFd = raw.parse().ok()?;
-    // F_GETFD returns the close-on-exec flag; we only care that the
-    // syscall succeeds. EBADF means the fd slot is empty.
+    // F_GETFD only needs to succeed; EBADF means the fd slot is empty.
     // SAFETY: we don't mutate the fd; if the slot is closed, fcntl
     // returns EBADF and we return None. We hand the BorrowedFd
     // immediately back to fcntl and discard it.
@@ -87,24 +72,21 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
 
 /// A tokio Cap'n Proto two-party RPC client wrapped around an
 /// already-connected Unix socket fd. Typed service crates call
-/// [`Self::bootstrap`] to obtain the remote root capability and
-/// own the [`RpcSystem`] driver task that keeps the connection
-/// pumping.
+/// [`Self::bootstrap`] for the root capability; this owns the driver task.
 pub struct UnixCapnpClient {
     rpc_system: RpcSystem<rpc_twoparty_capnp::Side>,
     bootstrap_side: rpc_twoparty_capnp::Side,
 }
 
 impl UnixCapnpClient {
-    /// Wrap an owned `RawFd` that points to a connected Unix
-    /// stream socket. Takes ownership of the fd; the caller must
-    /// NOT close it afterwards.
-    ///
-    /// `side` determines which end of the two-party protocol we
-    /// are. App SDK clients are always `Client`; service
-    /// implementations are `Server`.
-    pub fn from_connected_fd(fd: RawFd, side: rpc_twoparty_capnp::Side) -> Result<Self, NotAvailable> {
-        // Take exclusive ownership and hand to tokio.
+    /// Wrap an owned `RawFd` for a connected Unix stream socket; takes
+    /// ownership, so the caller must not close it afterwards. `side` is which
+    /// end of the two-party protocol we are — SDK clients are `Client`, services are `Server`.
+    pub fn from_connected_fd(
+        fd: RawFd,
+        side: rpc_twoparty_capnp::Side,
+    ) -> Result<Self, NotAvailable> {
+        // Hands exclusive ownership to tokio.
         // SAFETY: the launcher guarantees the fd is a connected
         // SOCK_STREAM Unix socket. We checked F_GETFD on it before
         // this call (via service_fd) so the slot is at least open.
@@ -133,35 +115,26 @@ impl UnixCapnpClient {
         })
     }
 
-    /// Take the remote bootstrap capability as a typed client.
-    /// Spawns the RPC driver task on the current tokio LocalSet
-    /// (capnp-rpc requires `!Send` futures, so callers must run
-    /// this from a `LocalSet`-aware context).
-    ///
-    /// The returned client is the typed root interface of the
-    /// remote service.
+    /// Take the remote bootstrap capability as a typed client, spawning the RPC
+    /// driver task on the current tokio `LocalSet` (capnp-rpc needs `!Send`
+    /// futures, so callers must run this from a `LocalSet`-aware context).
     pub fn bootstrap<C>(mut self) -> C
     where
         C: capnp::capability::FromClientHook,
     {
         let client: C = self.rpc_system.bootstrap(self.bootstrap_side);
-        // The driver future must be polled; capnp-rpc futures are
-        // !Send so we spawn onto the LocalSet via `spawn_local`.
+        // capnp-rpc futures are !Send, so the driver is spawned via `spawn_local`.
         tokio::task::spawn_local(async move {
-            // RpcSystem resolves when the connection closes; we
-            // silently drop the result (the only thing we could
-            // do with an error here is log it, and the higher
-            // layer will see the connection drop via a Disconnected
-            // capnp error on its next call).
+            // Resolves when the connection closes; the result is dropped since the
+            // higher layer sees the drop via a Disconnected capnp error on its next call.
             let _ = self.rpc_system.await;
         });
         client
     }
 }
 
-/// Helper for service crates: probe an fd, lift it to capnp, and
-/// pull out the bootstrap. Returns [`NotAvailable::ServiceFdMissing`]
-/// if the env var isn't there.
+/// Helper for service crates: probe an fd, lift it to capnp, and pull out
+/// the bootstrap. [`NotAvailable::ServiceFdMissing`] if the env var isn't there.
 pub fn try_open_service<C>(name: &str) -> Result<C, NotAvailable>
 where
     C: capnp::capability::FromClientHook,
@@ -171,8 +144,20 @@ where
     Ok(client.bootstrap::<C>())
 }
 
-/// Tiny convenience: capnp-rpc's `Promise` made return-friendly
-/// for `Result<_, capnp::Error>` futures so service-client wrappers
+/// The same, for a caller that already holds the connection.
+/// [`try_open_service`] reads its fd from the environment, right for a
+/// launched process; a caller with its own connection reaching for the
+/// environment anyway risks two clients racing `set_var`, which is unsound
+/// while any other thread reads the environment.
+pub fn open_service_on_fd<C>(fd: RawFd) -> Result<C, NotAvailable>
+where
+    C: capnp::capability::FromClientHook,
+{
+    let client = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
+    Ok(client.bootstrap::<C>())
+}
+
+/// `Promise` made return-friendly for `Result<_, capnp::Error>`, so wrappers
 /// can write `let p: Promise<_, _> = ...` without importing capnp.
 pub type RpcPromise<T> = Promise<T, capnp::Error>;
 
@@ -225,8 +210,7 @@ mod tests {
     #[test]
     fn service_fd_returns_none_for_closed_fd() {
         clear_qos_env();
-        // Pick a fd well above stdin/stdout/stderr that we know
-        // can't currently be open in a normal test process.
+        // A fd well above stdin/stdout/stderr, unlikely to be open in a test process.
         unsafe { env::set_var("QOS_SVC_COLLAB_FD", "999") };
         assert!(service_fd("collab").is_none());
         unsafe { env::remove_var("QOS_SVC_COLLAB_FD") };

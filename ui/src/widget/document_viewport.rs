@@ -1,57 +1,15 @@
 //! `DocumentViewport` — a reusable zoom/pan viewport for document & canvas
-//! content.
+//! content: cursor-focal Ctrl+wheel zoom, centre zoom for +/- buttons,
+//! fit-reset, drag-to-pan, arrow-key pan, Shift+wheel horizontal pan, and
+//! scrollbars that appear only on overflow.
 //!
-//! This is the promotion of the zoom/pan kernel proven in the PDF reader
-//! (`apps/pdf_viewer`): cursor-focal Ctrl+wheel zoom, centre zoom for the
-//! +/- buttons, fit-reset, drag-to-pan, arrow-key pan, Shift+wheel
-//! horizontal pan, scroll clamping that keeps the full content reachable,
-//! and horizontal + vertical scrollbars that appear only when the content
-//! overflows the viewport.
+//! Two entry points share the same [`ViewportState`] math: the kernel
+//! itself, for a canvas-root app that owns its own draw + event handling;
+//! or [`DocumentViewport`], the composing `Widget` that wraps a child
+//! [`Element`] (or draw closure).
 //!
-//! It is offered through **two entry points** so it fits both shapes of
-//! host:
-//!
-//! 1. **[`ViewportState`] — the standalone state kernel.** A pure, render-
-//!    agnostic value (like [`crate::widget::FlapState`]) that owns the
-//!    zoom + scroll, the content↔screen transform, and every input
-//!    reducer. A *canvas-root* app — one whose root is a single custom-draw
-//!    widget, like the PDF reader — keeps a `ViewportState`, feeds it
-//!    pointer/keyboard/wheel events from its own `handle_event`, draws its
-//!    content under [`ViewportState::content_to_screen`], and hit-tests
-//!    pointer events back with [`ViewportState::screen_to_content`]. No
-//!    second widget is involved; the host stays in full control of paint
-//!    order and chrome. This is the recommended path for apps that already
-//!    own their canvas.
-//!
-//! 2. **[`DocumentViewport`] — the composing widget.** Wraps a single
-//!    content [`Element`] (or a host-supplied draw closure) and *is* a
-//!    `Widget`: it handles the zoom/pan input itself, applies the transform
-//!    when drawing the content, and paints the scrollbars on top. Drop it
-//!    into a normal widget tree when the content is itself expressible as a
-//!    child widget and you want the viewport to own the interaction. The
-//!    wrapped child is drawn under the viewport transform, so its own
-//!    coordinate space is the content space.
-//!
-//! Both share the exact same [`ViewportState`] math, so behaviour is
-//! identical whichever entry point a host chooses.
-//!
-//! ## Coordinate spaces
-//!
-//! * **Content space** — the intrinsic coordinate system of the document
-//!   (PDF page points, an image's pixels, a canvas's world units). The
-//!   host declares the content's size in this space via
-//!   [`ViewportState::set_content_size`]. The origin `(0, 0)` is the
-//!   content's top-left.
-//! * **Screen space** — logical pixels in the window, the same space the
-//!   viewport's own `rect` lives in.
-//!
-//! The mapping is a uniform `zoom` scale plus a translation:
-//!
-//! ```text
-//! screen = content * zoom + viewport_top_left + pad - scroll
-//! ```
-//!
-//! recovered exactly by [`ViewportState::content_to_screen`] /
+//! `screen = content * zoom + viewport_top_left + pad - scroll`, recovered
+//! exactly by [`ViewportState::content_to_screen`] /
 //! [`ViewportState::screen_to_content`].
 
 use std::time::Instant;
@@ -69,8 +27,9 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{Element, Widget};
+use crate::widget::TaffyTreeExt;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use crate::widget::{Element, Widget};
 
 /// Default lower zoom bound (25 %).
 pub const DEFAULT_MIN_ZOOM: f64 = 0.25;
@@ -210,7 +169,11 @@ impl ViewportState {
 
     /// Override how content is aligned along each axis when it is smaller
     /// than the viewport on that axis.
-    pub fn with_alignment(mut self, align_x: SmallContentAlign, align_y: SmallContentAlign) -> Self {
+    pub fn with_alignment(
+        mut self,
+        align_x: SmallContentAlign,
+        align_y: SmallContentAlign,
+    ) -> Self {
         self.align_x = align_x;
         self.align_y = align_y;
         self
@@ -236,7 +199,6 @@ impl ViewportState {
 
     // ---- read-only accessors ----------------------------------------
 
-    /// The viewport's on-screen rect.
     pub fn rect(&self) -> Rect {
         self.rect
     }
@@ -365,7 +327,12 @@ impl ViewportState {
     /// document or empty viewport margin.
     pub fn content_contains_screen(&self, p: Point) -> bool {
         let o = self.content_origin();
-        let r = Rect::new(o.x, o.y, o.x + self.content_w * self.zoom, o.y + self.content_h * self.zoom);
+        let r = Rect::new(
+            o.x,
+            o.y,
+            o.x + self.content_w * self.zoom,
+            o.y + self.content_h * self.zoom,
+        );
         r.contains(p)
     }
 
@@ -511,7 +478,7 @@ impl ViewportState {
     /// End a drag-to-pan. Returns `true` if the gesture actually moved the
     /// content (so the host can treat a no-move release as a click).
     pub fn end_pan(&mut self) -> bool {
-        self.pan.take().map(|a| a.moved).unwrap_or(false)
+        self.pan.take().is_some_and(|a| a.moved)
     }
 
     /// Whether a drag-to-pan is currently in progress.
@@ -539,7 +506,7 @@ impl ViewportState {
         scale_factor: f64,
     ) -> bool {
         let (raw_x, raw_y) = match delta {
-            MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 56.0, *y as f64 * 56.0),
+            MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
             MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
         };
         let ctrl = modifiers.control_key() || modifiers.super_key();
@@ -615,10 +582,9 @@ impl ViewportState {
     /// re-deriving the clock. The first call returns `0.0`.
     pub fn frame_dt(&mut self) -> f64 {
         let now = Instant::now();
-        let dt = self
-            .last_tick
-            .map(|t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT))
-            .unwrap_or(0.0);
+        let dt = self.last_tick.map_or(0.0, |t| {
+            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
+        });
         self.last_tick = Some(now);
         dt
     }
@@ -659,10 +625,18 @@ impl ViewportState {
     }
 
     fn h_metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.scaled_content_width(), self.rect.width(), self.scroll_x)
+        ScrollMetrics::new(
+            self.scaled_content_width(),
+            self.rect.width(),
+            self.scroll_x,
+        )
     }
     fn v_metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.scaled_content_height(), self.rect.height(), self.scroll_y)
+        ScrollMetrics::new(
+            self.scaled_content_height(),
+            self.rect.height(),
+            self.scroll_y,
+        )
     }
 
     /// The horizontal scrollbar thumb rect (screen space), or `None` when
@@ -782,11 +756,23 @@ impl ViewportState {
         let active = theme.tokens.colors.text_dim.with_alpha_factor(0.85);
         if let Some(r) = self.h_scrollbar_thumb() {
             let c = if self.hbar.is_active() { active } else { idle };
-            scene.fill(Fill::NonZero, transform, c, None, &RoundedRect::from_rect(r, radius));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                c,
+                None,
+                &RoundedRect::from_rect(r, radius),
+            );
         }
         if let Some(r) = self.v_scrollbar_thumb() {
             let c = if self.vbar.is_active() { active } else { idle };
-            scene.fill(Fill::NonZero, transform, c, None, &RoundedRect::from_rect(r, radius));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                c,
+                None,
+                &RoundedRect::from_rect(r, radius),
+            );
         }
     }
 }
@@ -804,18 +790,14 @@ enum Content {
     Draw(ContentDraw),
 }
 
-/// The composing viewport widget. Wraps content (a child widget or a draw
-/// closure) and *is* a [`Widget`]: it owns the zoom/pan input, draws the
-/// content under the content→screen transform, and paints scrollbars on top.
-///
-/// Use this when the content is expressible as a child widget (or a small
-/// draw closure) and you want the viewport to own the interaction. For a
-/// canvas-root app that already owns its draw + event handling, prefer the
-/// standalone [`ViewportState`] kernel instead — see the module docs.
+/// The composing viewport widget: wraps content (a child widget or a draw
+/// closure), owns the zoom/pan input, and paints scrollbars on top. See the
+/// module docs for when to prefer the standalone [`ViewportState`] kernel
+/// instead.
 pub struct DocumentViewport {
     state: ViewportState,
     content: Content,
-    /// Last cursor position in screen space (MouseInput carries none).
+    /// Last cursor position in screen space (`MouseInput` carries none).
     last_cursor: Point,
     /// Inner taffy tree for a wrapped child widget (so it lays out + can be
     /// asked for its measured/intrinsic size). `None` for the draw-closure
@@ -874,7 +856,11 @@ impl DocumentViewport {
     }
 
     /// Override small-content alignment (forwards to the kernel builder).
-    pub fn with_alignment(mut self, align_x: SmallContentAlign, align_y: SmallContentAlign) -> Self {
+    pub fn with_alignment(
+        mut self,
+        align_x: SmallContentAlign,
+        align_y: SmallContentAlign,
+    ) -> Self {
         self.state = self.state.with_alignment(align_x, align_y);
         self
     }
@@ -943,26 +929,24 @@ impl Widget for DocumentViewport {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.state.set_rect(self.rect);
         let theme = Theme::dark();
@@ -1034,7 +1018,15 @@ impl Widget for DocumentViewport {
                     // Let the wrapped child take the press next (e.g. a
                     // button on the canvas); only start a pan if it didn't.
                     if let Content::Widget(_) = &self.content {
-                        self.route_to_child(event, scale_factor, modifiers, state, path, handled, focus_target);
+                        self.route_to_child(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            handled,
+                            focus_target,
+                        );
                         if *handled {
                             return;
                         }
@@ -1071,19 +1063,29 @@ impl Widget for DocumentViewport {
                     return;
                 }
             }
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed =>
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed
+                && self
+                    .state
+                    .on_key(&key_event.logical_key, &modifiers.state()) =>
             {
-                if self.state.on_key(&key_event.logical_key, &modifiers.state()) {
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
+                self.dirty = true;
+                *handled = true;
+                return;
             }
             _ => {}
         }
         if !*handled {
-            self.route_to_child(event, scale_factor, modifiers, state, path, handled, focus_target);
+            self.route_to_child(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+            );
         }
     }
 
@@ -1101,7 +1103,7 @@ impl Widget for DocumentViewport {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DocumentViewport"
     }
 
@@ -1121,11 +1123,9 @@ impl Widget for DocumentViewport {
 }
 
 impl DocumentViewport {
-    /// Route an event to the wrapped child (if any) with the child's content
-    /// transform implicit in its content-space layout. Events reach the
-    /// child in window/screen coordinates; the child is responsible for
-    /// mapping with the host's help. The child's inner taffy node is passed
-    /// through so child containers can recurse.
+    /// Route an event to the wrapped child, if any. Events reach the child
+    /// in window/screen coordinates; its inner taffy node is passed through
+    /// so child containers can recurse.
     #[allow(clippy::too_many_arguments)]
     fn route_to_child(
         &mut self,
@@ -1137,9 +1137,11 @@ impl DocumentViewport {
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
     ) {
-        let (Content::Widget(c), Some(taffy), Some(node)) =
-            (&mut self.content, self.inner_taffy.as_ref(), self.content_node)
-        else {
+        let (Content::Widget(c), Some(taffy), Some(node)) = (
+            &mut self.content,
+            self.inner_taffy.as_ref(),
+            self.content_node,
+        ) else {
             return;
         };
         c.handle_event(
@@ -1181,8 +1183,18 @@ mod tests {
         ] {
             let screen = v.content_point_to_screen(p);
             let back = v.screen_to_content(screen);
-            assert!((back.x - p.x).abs() < 1e-6, "x round-trip: {} vs {}", back.x, p.x);
-            assert!((back.y - p.y).abs() < 1e-6, "y round-trip: {} vs {}", back.y, p.y);
+            assert!(
+                (back.x - p.x).abs() < 1e-6,
+                "x round-trip: {} vs {}",
+                back.x,
+                p.x
+            );
+            assert!(
+                (back.y - p.y).abs() < 1e-6,
+                "y round-trip: {} vs {}",
+                back.y,
+                p.y
+            );
         }
     }
 
@@ -1317,7 +1329,9 @@ mod tests {
         v.reset_to_fit();
         // At fit zoom the content fits inside the viewport on both axes.
         assert!(!v.overflows_x() || v.zoom() == v.zoom_bounds().0);
-        assert!(v.scaled_content_height() <= v.rect().height() + 1.0 || v.zoom() == v.zoom_bounds().0);
+        assert!(
+            v.scaled_content_height() <= v.rect().height() + 1.0 || v.zoom() == v.zoom_bounds().0
+        );
         assert_eq!(v.scroll_x(), 0.0);
         assert_eq!(v.scroll_y(), 0.0);
     }
@@ -1357,7 +1371,10 @@ mod tests {
         // Bottom: thumb sits at the track end.
         v.set_scroll(0.0, v.max_scroll_y());
         let bottom = v.v_scrollbar_thumb().unwrap();
-        assert!(bottom.y0 > top.y0, "v-thumb moves down as content scrolls down");
+        assert!(
+            bottom.y0 > top.y0,
+            "v-thumb moves down as content scrolls down"
+        );
     }
 
     #[test]
@@ -1379,7 +1396,10 @@ mod tests {
         assert!(v.scroll_y() <= v.max_scroll_y(), "stays clamped");
         // A huge drag clamps at the bottom.
         v.drag_scrollbar(Point::new(mid.x, mid.y + 100_000.0));
-        assert!((v.scroll_y() - v.max_scroll_y()).abs() < 1.0, "clamped to bottom");
+        assert!(
+            (v.scroll_y() - v.max_scroll_y()).abs() < 1.0,
+            "clamped to bottom"
+        );
         assert!(v.release_scrollbar(), "release ends the drag");
         assert!(!v.scrollbar_dragging());
     }
@@ -1393,7 +1413,11 @@ mod tests {
         let below = Point::new((thumb.x0 + thumb.x1) / 2.0, thumb.y1 + 5.0);
         assert!(v.press_scrollbar(below), "track click consumed");
         assert!(!v.scrollbar_dragging(), "track click is not a drag");
-        assert!(v.scroll_y() > 0.0, "paged down toward the click: {}", v.scroll_y());
+        assert!(
+            v.scroll_y() > 0.0,
+            "paged down toward the click: {}",
+            v.scroll_y()
+        );
     }
 
     #[test]
@@ -1401,7 +1425,10 @@ mod tests {
         let mut v = kernel();
         v.set_zoom(3.0);
         // Middle of the viewport, far from either edge bar → pan is free.
-        assert!(!v.press_scrollbar(Point::new(400.0, 300.0)), "content press leaves pan free");
+        assert!(
+            !v.press_scrollbar(Point::new(400.0, 300.0)),
+            "content press leaves pan free"
+        );
         assert!(!v.scrollbar_dragging());
     }
 
@@ -1414,7 +1441,11 @@ mod tests {
         let mid = Point::new((thumb.x0 + thumb.x1) / 2.0, (thumb.y0 + thumb.y1) / 2.0);
         assert!(v.press_scrollbar(mid), "press on the h-thumb is consumed");
         v.drag_scrollbar(Point::new(mid.x + 80.0, mid.y));
-        assert!(v.scroll_x() > 0.0, "h-thumb drag scrolls x: {}", v.scroll_x());
+        assert!(
+            v.scroll_x() > 0.0,
+            "h-thumb drag scrolls x: {}",
+            v.scroll_x()
+        );
         assert!(v.release_scrollbar());
     }
 
@@ -1428,8 +1459,14 @@ mod tests {
         v.update_pan(Point::new(401.0, 300.0));
         // Big move: content tracks the cursor (scroll decreases by drag delta).
         v.update_pan(Point::new(450.0, 360.0));
-        assert!((v.scroll_x() - (100.0 - 50.0)).abs() < 1e-6, "x tracks drag");
-        assert!((v.scroll_y() - (100.0 - 60.0)).abs() < 1e-6, "y tracks drag");
+        assert!(
+            (v.scroll_x() - (100.0 - 50.0)).abs() < 1e-6,
+            "x tracks drag"
+        );
+        assert!(
+            (v.scroll_y() - (100.0 - 60.0)).abs() < 1e-6,
+            "y tracks drag"
+        );
         assert!(v.end_pan(), "a real drag reports movement");
     }
 
@@ -1470,7 +1507,10 @@ mod tests {
         let origin = v.content_origin();
         let c = v.screen_to_content(origin);
         assert!(c.x.abs() < 1e-6 && c.y.abs() < 1e-6);
-        assert!(v.content_contains_screen(origin), "origin is inside content");
+        assert!(
+            v.content_contains_screen(origin),
+            "origin is inside content"
+        );
         // Far above the content is outside.
         assert!(!v.content_contains_screen(Point::new(origin.x, origin.y - 50.0)));
     }

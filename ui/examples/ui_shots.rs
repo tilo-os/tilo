@@ -1,0 +1,30 @@
+//! Deterministic screenshot and visual-regression scenario runner.
+
+#[path = "common/gallery_scene.rs"]
+mod gallery_scene;
+#[path = "registry.rs"]
+mod registry;
+
+registry::scenario_modules! {
+    Shots;
+    ctrl_k_palette, "ctrl_k_palette.rs", "unified Ctrl+K palette states";
+    data_table, "data_table.rs", "virtualized data-table states";
+    fractional_scale_shots, "fractional_scale_shots.rs", "fractional-scale gallery renders";
+    gallery_shots, "gallery_shots.rs", "dark and light component gallery";
+    history_cases, "history_cases.rs", "history and collaboration cases";
+    nav_shell_shots, "nav_shell_shots.rs", "navigation shell states";
+    perf_hud_shot, "perf_hud_shot.rs", "frame profiler HUD";
+    rich_text_editor_shots, "rich_text_editor_shots.rs", "rich-text editor states";
+    scrollbar_shots, "scrollbar_shots.rs", "scrollbar states";
+    search_showcase, "search_showcase.rs", "search-field states and results";
+    soft_shadow_shots, "soft_shadow_shots.rs", "soft-shadow rendering";
+    table_shots, "table_shots.rs", "table layouts and states";
+    text_shots, "text_shots.rs", "typography rendering";
+    textinput_ext_shots, "textinput_ext_shots.rs", "extended text input states";
+    widget_showcase_snapshot, "widget_showcase_snapshot.rs", "showcase visual snapshot";
+    widget_snapshot, "widget_snapshot.rs", "individual widget snapshots";
+}
+
+fn main() {
+    registry::dispatch(registry::Surface::Shots, SCENARIOS, None);
+}

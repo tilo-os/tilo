@@ -1,35 +1,39 @@
 use ui::ColorCompat;
-use ui::{Theme, widget::Widget, text_render::{TextRenderer, TextWeight, FontChoice}};
+use ui::{
+    Theme,
+    text_render::{FontChoice, TextRenderer, TextWeight},
+    widget::Widget,
+};
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
 // click gesture detection, or clipboard access.
-use ui::{
-    clipboard_copy, clipboard_copy_primary, clipboard_paste, clipboard_paste_primary,
-    extend_span_drag, line_boundaries, word_boundaries, DragSelect, Granularity,
-};
-use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::presence::{PresenceCtx, PresenceKey};
-use ui::permissions::{AppKind as PermAppKind, PermissionContext};
-use ui::collaboration::PresencePayload;
-use ui::icons::{draw_icon, Icon};
-use automerge::{AutoCommit, ObjId, Value, transaction::Transactable, ObjType, ReadDoc};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use base64::Engine as _;
-use vello::Scene;
-use vello::kurbo::{Affine, Rect, Point, RoundedRect};
-use vello::peniko::{Color, Fill};
-use winit::event::{WindowEvent, ElementState, KeyEvent, MouseButton, MouseScrollDelta};
-use winit::event_loop::EventLoopProxy;
-use winit::keyboard::{Key, NamedKey};
-use ui::app::UserEvent;
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use portable_pty::{native_pty_system, CommandBuilder, PtySize, MasterPty};
+use crossbeam_channel::Receiver;
+use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use vte::{Parser, Perform};
-use crossbeam_channel::Receiver;
+use std::sync::{Arc, Mutex};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::app::UserEvent;
+use ui::collaboration::PresencePayload;
+use ui::icons::{Icon, draw_icon};
+use ui::permissions::{AppKind as PermAppKind, PermissionContext};
+use ui::presence::{PresenceCtx, PresenceKey};
+use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::{
+    DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
+    clipboard_paste_primary, extend_span_drag, line_boundaries, word_boundaries,
+};
 use unicode_width::UnicodeWidthChar;
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::{Color, Fill};
+use vte::{Parser, Perform};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event_loop::EventLoopProxy;
+use winit::keyboard::{Key, NamedKey};
 
 /// Cell coordinate within the terminal buffer. `row` is an **absolute** index
 /// into the full `grid` (scrollback included), not a viewport-local row — the
@@ -151,7 +155,7 @@ pub struct Attr {
 }
 
 /// Bytes per cell in the packed `attrs` blob: fg(4) + bg(4) + flags(1) +
-/// link_id(2, little-endian).
+/// `link_id(2`, little-endian).
 const ATTR_BYTES: usize = 11;
 
 impl Attr {
@@ -159,18 +163,36 @@ impl Attr {
         let f = self.fg.pack();
         let b = self.bg.pack();
         let mut flags = 0u8;
-        if self.bold { flags |= 0b000_0001; }
-        if self.italic { flags |= 0b000_0010; }
-        if self.underline { flags |= 0b000_0100; }
-        if self.reverse { flags |= 0b000_1000; }
-        if self.is_wide_cont { flags |= 0b001_0000; }
-        if self.dim { flags |= 0b010_0000; }
-        if self.strike { flags |= 0b100_0000; }
+        if self.bold {
+            flags |= 0b000_0001;
+        }
+        if self.italic {
+            flags |= 0b000_0010;
+        }
+        if self.underline {
+            flags |= 0b000_0100;
+        }
+        if self.reverse {
+            flags |= 0b000_1000;
+        }
+        if self.is_wide_cont {
+            flags |= 0b001_0000;
+        }
+        if self.dim {
+            flags |= 0b010_0000;
+        }
+        if self.strike {
+            flags |= 0b100_0000;
+        }
         let l = self.link_id.to_le_bytes();
-        [f[0], f[1], f[2], f[3], b[0], b[1], b[2], b[3], flags, l[0], l[1]]
+        [
+            f[0], f[1], f[2], f[3], b[0], b[1], b[2], b[3], flags, l[0], l[1],
+        ]
     }
     pub fn unpack(bytes: &[u8]) -> Self {
-        if bytes.len() < ATTR_BYTES { return Self::default(); }
+        if bytes.len() < ATTR_BYTES {
+            return Self::default();
+        }
         let flags = bytes[8];
         Self {
             fg: CellColor::unpack(&bytes[0..4]),
@@ -431,7 +453,7 @@ pub struct TerminalWidget {
     /// (`terminal_title`) each `sync` so a collaborator sees the same title;
     /// surfaced through `AppWidget::app_title`. Defaults to "Terminal".
     title: String,
-    /// CRDT map id for `terminal_links`: string(link_id) → URL. Populated by
+    /// CRDT map id for `terminal_links`: `string(link_id)` → URL. Populated by
     /// OSC 8 during `feed`; read back into `links` on `sync`.
     links_id: Option<ObjId>,
     /// Local fast-lookup mirror of the OSC 8 hyperlink registry (id → URL),
@@ -466,7 +488,11 @@ pub struct TerminalWidget {
 }
 
 impl TerminalWidget {
-    pub fn new(writer: Arc<Mutex<Box<dyn Write + Send>>>, master: Arc<Mutex<Box<dyn MasterPty + Send>>>, output_rx: Receiver<Vec<u8>>) -> Self {
+    pub fn new(
+        writer: Arc<Mutex<Box<dyn Write + Send>>>,
+        master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+        output_rx: Receiver<Vec<u8>>,
+    ) -> Self {
         let width = 80;
         let height = 24;
         let mut grid = Vec::new();
@@ -557,20 +583,30 @@ impl TerminalWidget {
 
     /// Color used for the block cursor on the last `draw`. Test-only accessor
     /// so palette-swap tests can assert the terminal picks up a new theme.
-    pub fn last_cursor_color(&self) -> Color { self.last_cursor_color }
+    pub fn last_cursor_color(&self) -> Color {
+        self.last_cursor_color
+    }
 
     /// Active selection, if any. Test-only — production code reads from
     /// the widget directly inside `draw` / `handle_event`.
-    pub fn selection(&self) -> Option<Selection> { self.selection }
+    pub fn selection(&self) -> Option<Selection> {
+        self.selection
+    }
     /// True between left-mouse-press and left-mouse-release. Test-only.
-    pub fn is_dragging(&self) -> bool { self.drag_select.is_dragging() }
+    pub fn is_dragging(&self) -> bool {
+        self.drag_select.is_dragging()
+    }
     /// Current window title (OSC 0/2), defaulting to "Terminal". Host/test
     /// accessor — also what `AppWidget::app_title` returns.
-    pub fn title(&self) -> &str { &self.title }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
     /// Enable/disable "select to copy": when on, finishing a selection also
     /// writes it to the system clipboard (in addition to the always-set
     /// primary selection used by middle-click paste).
-    pub fn set_select_to_copy(&mut self, on: bool) { self.select_to_copy = on; }
+    pub fn set_select_to_copy(&mut self, on: bool) {
+        self.select_to_copy = on;
+    }
     /// Set (or clear) the selection programmatically over buffer-absolute
     /// cells. Host/demo API — e.g. "select all", or a screenshot scenario
     /// that highlights a range. Coordinates are absolute grid rows/columns
@@ -596,15 +632,23 @@ impl TerminalWidget {
     pub fn hyperlink_at(&self, row: usize, col: usize) -> Option<&str> {
         let attrs = self.grid_attrs.get(row)?;
         let link_id = attrs.get(col)?.link_id;
-        if link_id == 0 { return None; }
+        if link_id == 0 {
+            return None;
+        }
         self.links.get(&link_id).map(String::as_str)
     }
     /// True while the alternate screen buffer is active. Test/host accessor.
-    pub fn is_alt_screen(&self) -> bool { self.alt_active }
+    pub fn is_alt_screen(&self) -> bool {
+        self.alt_active
+    }
     /// Current terminal mode flags. Test/host accessor.
-    pub fn modes(&self) -> TermModes { self.modes }
+    pub fn modes(&self) -> TermModes {
+        self.modes
+    }
     /// Rows currently scrolled back from the live bottom. Test/host accessor.
-    pub fn scroll_offset(&self) -> usize { self.scroll_offset }
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
     /// Force the widget into a known *grid* geometry for tests. Sets both the
     /// outer widget rect and the inner grid content rect to `rect` (i.e. the
     /// passed rect IS the cell area, with no chrome inset), so grid-level
@@ -622,10 +666,14 @@ impl TerminalWidget {
     /// The inner grid content rect (below the header, inside the padding).
     /// Test accessor for the chrome-inset geometry.
     #[cfg(test)]
-    pub fn grid_rect(&self) -> Rect { self.grid_rect }
+    pub fn grid_rect(&self) -> Rect {
+        self.grid_rect
+    }
     /// The current cell height used for grid layout. Test accessor.
     #[cfg(test)]
-    pub fn grid_char_h(&self) -> f64 { self.char_h }
+    pub fn grid_char_h(&self) -> f64 {
+        self.char_h
+    }
     /// Force a viewport scrollback offset for tests that exercise
     /// `selected_text` over a `grid` larger than the visible viewport.
     #[cfg(test)]
@@ -652,7 +700,11 @@ impl TerminalWidget {
     pub fn visible_lines(&self) -> Vec<String> {
         let vis = self.current_visible_rows();
         let max_top = self.grid.len().saturating_sub(vis);
-        let scroll = if self.alt_active { 0 } else { self.scroll_offset };
+        let scroll = if self.alt_active {
+            0
+        } else {
+            self.scroll_offset
+        };
         let start = max_top.saturating_sub(scroll);
         self.grid.iter().skip(start).take(vis).cloned().collect()
     }
@@ -682,13 +734,19 @@ impl TerminalWidget {
     }
     /// Test-only access to the selected-text helper.
     #[cfg(test)]
-    pub fn test_selected_text(&self) -> Option<String> { self.selected_text() }
+    pub fn test_selected_text(&self) -> Option<String> {
+        self.selected_text()
+    }
     /// Default-fg color last drawn with (sampled from the theme's terminal
     /// palette). Test-only.
-    pub fn last_fg_default(&self) -> Color { self.last_fg_default }
+    pub fn last_fg_default(&self) -> Color {
+        self.last_fg_default
+    }
     /// Default-bg color last drawn with (sampled from the theme's terminal
     /// palette). Test-only.
-    pub fn last_bg_default(&self) -> Color { self.last_bg_default }
+    pub fn last_bg_default(&self) -> Color {
+        self.last_bg_default
+    }
 
     /// The full terminal buffer as text — one grid row per line, including
     /// retained scrollback. Host-facing: lets an embedder read the on-screen
@@ -706,7 +764,9 @@ impl TerminalWidget {
 
     /// Number of grid rows currently visible, from the paint geometry.
     fn current_visible_rows(&self) -> usize {
-        (self.grid_rect.height() / self.char_h.max(1.0)).floor().max(1.0) as usize
+        (self.grid_rect.height() / self.char_h.max(1.0))
+            .floor()
+            .max(1.0) as usize
     }
 
     /// Refresh the cached body metrics (padding, scrollbar gutter) from the
@@ -715,8 +775,8 @@ impl TerminalWidget {
     /// shared spacing scale so the OS can retune the spacing centrally.
     fn refresh_chrome_metrics(&mut self, theme: &Theme) {
         let sp = &theme.tokens.spacing;
-        self.chrome_body_pad = sp.s3 as f64;
-        self.chrome_scrollbar_w = sp.s2 as f64;
+        self.chrome_body_pad = f64::from(sp.s3);
+        self.chrome_scrollbar_w = f64::from(sp.s2);
     }
 
     /// The inner grid content rect for a given widget rect: the widget rect
@@ -737,7 +797,7 @@ impl TerminalWidget {
     /// True when every mirrored grid row is blank — used to gate the
     /// first-run empty-state watermark.
     fn grid_is_blank(&self) -> bool {
-        self.grid.iter().all(|l| l.chars().all(|c| c.is_whitespace()))
+        self.grid.iter().all(|l| l.chars().all(char::is_whitespace))
     }
 
     /// Furthest the viewport can scroll up: the number of rows above the
@@ -748,7 +808,9 @@ impl TerminalWidget {
 
     /// Scroll the viewport back (toward older output) by `n` rows.
     pub fn scroll_up(&mut self, n: usize) {
-        if self.alt_active { return; }
+        if self.alt_active {
+            return;
+        }
         self.scroll_offset = (self.scroll_offset + n).min(self.max_scroll());
     }
     /// Scroll the viewport forward (toward the live bottom) by `n` rows.
@@ -757,7 +819,9 @@ impl TerminalWidget {
     }
     /// Jump to the oldest retained line.
     pub fn scroll_to_top(&mut self) {
-        if self.alt_active { return; }
+        if self.alt_active {
+            return;
+        }
         self.scroll_offset = self.max_scroll();
     }
     /// Pin the viewport back to the live output.
@@ -863,11 +927,11 @@ impl TerminalWidget {
 
         // Persist an OSC 0/2 title change into the CRDT so a collaborator sees
         // it, and reflect it locally for `app_title`.
-        if let Some(t) = title_out {
-            if t != self.title {
-                let _ = state.put(root, "terminal_title", t.clone());
-                self.title = t;
-            }
+        if let Some(t) = title_out
+            && t != self.title
+        {
+            let _ = state.put(root, "terminal_title", t.clone());
+            self.title = t;
         }
 
         // We just mutated the grid: let `sync` take the cheap incremental
@@ -904,7 +968,9 @@ impl TerminalWidget {
     /// input; otherwise newlines are normalised to carriage returns (what
     /// the Enter key sends). Pasting snaps the viewport to the live bottom.
     pub fn paste(&mut self, text: &str) {
-        if text.is_empty() { return; }
+        if text.is_empty() {
+            return;
+        }
         let mut out = Vec::new();
         if self.modes.bracketed_paste {
             out.extend_from_slice(b"\x1b[200~");
@@ -940,12 +1006,15 @@ impl TerminalWidget {
         // overflow rows render empty until the grid is made sparse/lazy.
         let new_width = new_width.min(200);
         let new_height = new_height.min(80);
-        if new_width > 0 && new_height > 0 && (new_width != self.width || new_height != self.height) {
+        if new_width > 0 && new_height > 0 && (new_width != self.width || new_height != self.height)
+        {
             let history_offset = self.line_ids.len().saturating_sub(self.height);
             let absolute_y = history_offset + self.cursor_y;
 
             let new_history_offset = self.line_ids.len().saturating_sub(new_height);
-            let new_cursor_y = absolute_y.saturating_sub(new_history_offset).min(new_height.saturating_sub(1));
+            let new_cursor_y = absolute_y
+                .saturating_sub(new_history_offset)
+                .min(new_height.saturating_sub(1));
 
             self.cursor_y = new_cursor_y;
             self.cursor_x = self.cursor_x.min(new_width.saturating_sub(1));
@@ -968,29 +1037,47 @@ impl TerminalWidget {
     pub(crate) fn init_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.grid_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid") {
-                self.grid_id = Some(id.clone());
+                self.grid_id = Some(id);
             } else {
-                let id = state.put_object(root, "terminal_grid", ObjType::List).unwrap();
+                let id = state
+                    .put_object(root, "terminal_grid", ObjType::List)
+                    .unwrap();
                 self.grid_id = Some(id);
             }
         }
-        Self::ensure_lines(state, self.grid_id.as_ref().unwrap(), self.height, &mut self.line_ids);
+        Self::ensure_lines(
+            state,
+            self.grid_id.as_ref().unwrap(),
+            self.height,
+            &mut self.line_ids,
+        );
 
         if self.alt_grid_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid_alt") {
-                self.alt_grid_id = Some(id.clone());
+            if let Ok(Some((Value::Object(ObjType::List), id))) =
+                state.get(root, "terminal_grid_alt")
+            {
+                self.alt_grid_id = Some(id);
             } else {
-                let id = state.put_object(root, "terminal_grid_alt", ObjType::List).unwrap();
+                let id = state
+                    .put_object(root, "terminal_grid_alt", ObjType::List)
+                    .unwrap();
                 self.alt_grid_id = Some(id);
             }
         }
-        Self::ensure_lines(state, self.alt_grid_id.as_ref().unwrap(), self.height, &mut self.alt_line_ids);
+        Self::ensure_lines(
+            state,
+            self.alt_grid_id.as_ref().unwrap(),
+            self.height,
+            &mut self.alt_line_ids,
+        );
 
         if self.links_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links") {
                 self.links_id = Some(id);
             } else {
-                let id = state.put_object(root, "terminal_links", ObjType::Map).unwrap();
+                let id = state
+                    .put_object(root, "terminal_links", ObjType::Map)
+                    .unwrap();
                 self.links_id = Some(id);
             }
         }
@@ -1010,12 +1097,14 @@ impl TerminalWidget {
         if self.cursor_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "cursor") {
                 self.cursor_id = Some(id.clone());
-                if let Ok(Some((Value::Scalar(v), _))) = state.get(&id, "y") {
-                    if let Some(y) = v.to_i64() {
-                        let abs_y = y as usize;
-                        let history_offset = self.line_ids.len().saturating_sub(self.height);
-                        self.cursor_y = abs_y.saturating_sub(history_offset).min(self.height.saturating_sub(1));
-                    }
+                if let Ok(Some((Value::Scalar(v), _))) = state.get(&id, "y")
+                    && let Some(y) = v.to_i64()
+                {
+                    let abs_y = y as usize;
+                    let history_offset = self.line_ids.len().saturating_sub(self.height);
+                    self.cursor_y = abs_y
+                        .saturating_sub(history_offset)
+                        .min(self.height.saturating_sub(1));
                 }
             } else {
                 let cursor_id = state.put_object(root, "cursor", ObjType::Map).unwrap();
@@ -1077,7 +1166,12 @@ const HISTORY_TRIM_SLACK: usize = 256;
 const HISTORY_TRIM_SLACK: usize = 8;
 
 impl Widget for TerminalWidget {
-    fn measure(&mut self, _known: taffy::Size<Option<f32>>, _available: taffy::Size<taffy::AvailableSpace>, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
+    fn measure(
+        &mut self,
+        _known: taffy::Size<Option<f32>>,
+        _available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
         // `measure` does not receive a theme; read the cached font size set
         // by the most recent `draw` (which pulls from
         // `theme.tokens.font_size_base`). Before the first draw the cache is
@@ -1086,9 +1180,16 @@ impl Widget for TerminalWidget {
         if self.font_size > 0.0 {
             // Measure with the monospace family so the cell advance matches
             // the mono glyphs `draw` actually paints.
-            let (w, _h) = text_renderer.measure_styled(" ", self.font_size, None, TextWeight::Regular, false, true);
-            self.char_w = (w as f64).max(1.0);
-            self.char_h = ((self.font_size as f64) * 1.25f64).ceil().max(1.0);
+            let (w, _h) = text_renderer.measure_styled(
+                " ",
+                self.font_size,
+                None,
+                TextWeight::Regular,
+                false,
+                true,
+            );
+            self.char_w = f64::from(w).max(1.0);
+            self.char_h = (f64::from(self.font_size) * 1.25f64).ceil().max(1.0);
         }
         taffy::Size::ZERO
     }
@@ -1162,15 +1263,16 @@ impl Widget for TerminalWidget {
         self.grid_attrs.resize(len, Vec::new());
 
         for i in start..len.min(line_ids.len()) {
-            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = state.get(&line_ids[i], "text") {
-                if let Ok(text) = state.text(&text_id) {
-                    self.grid[i] = text;
-                }
+            if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
+                state.get(&line_ids[i], "text")
+                && let Ok(text) = state.text(&text_id)
+            {
+                self.grid[i] = text;
             }
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(&line_ids[i], "attrs") {
-                if let automerge::ScalarValue::Bytes(bytes) = v.as_ref() {
-                    self.grid_attrs[i] = bytes.chunks_exact(ATTR_BYTES).map(Attr::unpack).collect();
-                }
+            if let Ok(Some((Value::Scalar(v), _))) = state.get(&line_ids[i], "attrs")
+                && let automerge::ScalarValue::Bytes(bytes) = v.as_ref()
+            {
+                self.grid_attrs[i] = bytes.chunks_exact(ATTR_BYTES).map(Attr::unpack).collect();
             }
         }
         self.mirror_valid = true;
@@ -1180,33 +1282,37 @@ impl Widget for TerminalWidget {
         // collaborator picking up a remote OSC 0/2/8 sees the same title and
         // can resolve the same links. Cheap: title is one scalar, links is a
         // small map keyed by link id.
-        if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_title") {
-            if let Some(t) = v.to_str() {
-                self.title = t.to_string();
-            }
+        if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_title")
+            && let Some(t) = v.to_str()
+        {
+            self.title = t.to_string();
         }
         if let Some(links_id) = self.links_id.clone() {
             self.links.clear();
             for key in state.keys(&links_id) {
-                if let Ok(Some((Value::Scalar(v), _))) = state.get(&links_id, &key) {
-                    if let (Ok(id), Some(url)) = (key.parse::<u16>(), v.to_str()) {
-                        self.links.insert(id, url.to_string());
-                    }
+                if let Ok(Some((Value::Scalar(v), _))) = state.get(&links_id, &key)
+                    && let (Ok(id), Some(url)) = (key.parse::<u16>(), v.to_str())
+                {
+                    self.links.insert(id, url.to_string());
                 }
             }
         }
 
         let active_len = line_ids.len();
         if let Some(cursor_id) = self.cursor_id.as_ref() {
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "x") {
-                if let Some(x) = v.to_i64() { self.cursor_x = x as usize; }
+            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "x")
+                && let Some(x) = v.to_i64()
+            {
+                self.cursor_x = x as usize;
             }
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "y") {
-                if let Some(y) = v.to_i64() {
-                    let abs_y = y as usize;
-                    let history_offset = active_len.saturating_sub(self.height);
-                    self.cursor_y = abs_y.saturating_sub(history_offset).min(self.height.saturating_sub(1));
-                }
+            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "y")
+                && let Some(y) = v.to_i64()
+            {
+                let abs_y = y as usize;
+                let history_offset = active_len.saturating_sub(self.height);
+                self.cursor_y = abs_y
+                    .saturating_sub(history_offset)
+                    .min(self.height.saturating_sub(1));
             }
         }
     }
@@ -1223,7 +1329,7 @@ impl Widget for TerminalWidget {
     /// armed — embedded in a host that pumps us, or during startup before the
     /// loop runs — we keep requesting frames so output still surfaces.
     fn needs_animation_frame(&self) -> bool {
-        self.waker.lock().map(|g| g.is_none()).unwrap_or(true)
+        self.waker.lock().map_or(true, |g| g.is_none())
     }
 
     /// The event-loop wake we requested has been delivered. Clear the coalescing
@@ -1234,27 +1340,44 @@ impl Widget for TerminalWidget {
         self.wake_pending.store(false, Ordering::Release);
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
-            size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
-            ..Default::default()
-        }).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.set_geometry(rect);
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &ui::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
         // Pull every visual parameter from design tokens. Nothing in this
         // method may hard-code a color, font size, or padding — the OS owns
         // the theme and swapping it must reflect in the rendered output.
@@ -1263,7 +1386,7 @@ impl Widget for TerminalWidget {
         // Horizontal gutter between the terminal's left edge and the first
         // glyph column. Sourced from the shared spacing scale (`s1` == 4px
         // in the default tokens) so the OS can tune it centrally.
-        let padding_x = theme.tokens.spacing.s1 as f64;
+        let padding_x = f64::from(theme.tokens.spacing.s1);
         // Cache the real gutter so pointer hit-testing (which has no `Theme`)
         // maps clicks to the same column the glyphs were painted at.
         self.last_padding_x = padding_x;
@@ -1285,7 +1408,13 @@ impl Widget for TerminalWidget {
         // The terminal body fills the whole widget in the theme's terminal
         // background (a deliberate deep surface, not an accidental void). No
         // header/tab bar — the compositor owns the window-group decoration.
-        scene.fill(Fill::NonZero, transform, palette.bg_default, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            palette.bg_default,
+            None,
+            &self.rect,
+        );
 
         // Resolve the terminal font: the theme's named monospace face when it is
         // installed, else the generic monospace family — never the proportional
@@ -1294,14 +1423,19 @@ impl Widget for TerminalWidget {
         // if the two disagreed, each colour run would be positioned on a grid
         // finer than its glyphs and the row would smear over itself.
         let mono = self.resolve_mono(theme, text_renderer);
-        let (w, _h) = text_renderer.measure_font(" ", font_size, None, TextWeight::Regular, false, &mono);
-        self.char_w = (w as f64).max(1.0);
-        self.char_h = ((font_size as f64) * 1.25f64).ceil().max(1.0);
+        let (w, _h) =
+            text_renderer.measure_font(" ", font_size, None, TextWeight::Regular, false, &mono);
+        self.char_w = f64::from(w).max(1.0);
+        self.char_h = (f64::from(font_size) * 1.25f64).ceil().max(1.0);
 
         let visible_rows = (grid_rect.height() / self.char_h).floor() as usize;
         let max_top = self.grid.len().saturating_sub(visible_rows);
         // Alt screen has no scrollback; clamp the offset for the main buffer.
-        let scroll = if self.alt_active { 0 } else { self.scroll_offset.min(max_top) };
+        let scroll = if self.alt_active {
+            0
+        } else {
+            self.scroll_offset.min(max_top)
+        };
         self.scroll_offset = scroll;
         let start_y = max_top.saturating_sub(scroll);
 
@@ -1339,7 +1473,9 @@ impl Widget for TerminalWidget {
             // reads clearly over black, still translucent so glyphs show.
             let sel_color = theme.accent_primary.with_alpha_factor(0.35);
             for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
-                if row < start_y || row >= start_y + visible_rows { continue; }
+                if row < start_y || row >= start_y + visible_rows {
+                    continue;
+                }
                 let vrow = row - start_y;
                 let py = (grid_rect.y0 + vrow as f64 * self.char_h).floor();
                 let x0 = grid_rect.x0 + padding_x + start_col as f64 * self.char_w;
@@ -1349,10 +1485,18 @@ impl Widget for TerminalWidget {
             }
         }
 
-        for (y, line_text) in self.grid.iter().skip(start_y).take(visible_rows).enumerate() {
+        for (y, line_text) in self
+            .grid
+            .iter()
+            .skip(start_y)
+            .take(visible_rows)
+            .enumerate()
+        {
             let py = (grid_rect.y0 + y as f64 * self.char_h).floor();
             let attrs_idx = y + start_y;
-            if attrs_idx >= self.grid_attrs.len() { continue; }
+            if attrs_idx >= self.grid_attrs.len() {
+                continue;
+            }
             let attrs = &self.grid_attrs[attrs_idx];
 
             let mut current_run = String::new();
@@ -1362,12 +1506,29 @@ impl Widget for TerminalWidget {
             let mut cell_idx = 0;
             for c in line_text.chars() {
                 let c_w = c.width().unwrap_or(1);
-                if cell_idx >= self.width { break; }
-                let attr = if cell_idx < attrs.len() { attrs[cell_idx] } else { Attr::default() };
+                if cell_idx >= self.width {
+                    break;
+                }
+                let attr = if cell_idx < attrs.len() {
+                    attrs[cell_idx]
+                } else {
+                    Attr::default()
+                };
 
                 if Some(attr) != current_attr {
                     if !current_run.is_empty() {
-                        self.draw_run(scene, &current_run, current_attr.unwrap(), py, run_start_cell_idx as f64 * self.char_w + padding_x, text_renderer, transform, font_size, palette, &mono);
+                        self.draw_run(
+                            scene,
+                            &current_run,
+                            current_attr.unwrap(),
+                            py,
+                            run_start_cell_idx as f64 * self.char_w + padding_x,
+                            text_renderer,
+                            transform,
+                            font_size,
+                            palette,
+                            &mono,
+                        );
                     }
                     current_run.clear();
                     current_attr = Some(attr);
@@ -1377,7 +1538,18 @@ impl Widget for TerminalWidget {
                 cell_idx += c_w;
             }
             if !current_run.is_empty() {
-                self.draw_run(scene, &current_run, current_attr.unwrap(), py, run_start_cell_idx as f64 * self.char_w + padding_x, text_renderer, transform, font_size, palette, &mono);
+                self.draw_run(
+                    scene,
+                    &current_run,
+                    current_attr.unwrap(),
+                    py,
+                    run_start_cell_idx as f64 * self.char_w + padding_x,
+                    text_renderer,
+                    transform,
+                    font_size,
+                    palette,
+                    &mono,
+                );
             }
         }
 
@@ -1412,20 +1584,19 @@ impl Widget for TerminalWidget {
                 .grid
                 .get(cursor_abs)
                 .and_then(|line| cell_char_at(line, self.cursor_x))
+                && !ch.is_whitespace()
             {
-                if !ch.is_whitespace() {
-                    text_renderer.draw_text_font(
-                        scene,
-                        &ch.to_string(),
-                        font_size,
-                        palette.bg_default,
-                        transform * Affine::translate((cx, cy)),
-                        None,
-                        TextWeight::Regular,
-                        false,
-                        &mono,
-                    );
-                }
+                text_renderer.draw_text_font(
+                    scene,
+                    &ch.to_string(),
+                    font_size,
+                    palette.bg_default,
+                    transform * Affine::translate((cx, cy)),
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    &mono,
+                );
             }
         }
 
@@ -1435,21 +1606,45 @@ impl Widget for TerminalWidget {
 
         // The right-click Copy/Paste menu draws on top of everything when open.
         if self.context_menu.is_open() {
-            Widget::draw(&mut self.context_menu, scene, transform, text_renderer, theme, presence);
+            Widget::draw(
+                &mut self.context_menu,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
         self.init_crdt(state, root);
 
         match event {
             WindowEvent::MouseWheel { delta, .. } => {
-                if !self.rect.contains(self.last_cursor_pos) { return; }
+                if !self.rect.contains(self.last_cursor_pos) {
+                    return;
+                }
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => (*y * 3.0).round() as i32,
-                    MouseScrollDelta::PixelDelta(pos) => (pos.y / self.char_h.max(1.0)).round() as i32,
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        (pos.y / self.char_h.max(1.0)).round() as i32
+                    }
                 };
-                if lines == 0 { return; }
+                if lines == 0 {
+                    return;
+                }
                 if self.alt_active && !self.modes.mouse_report {
                     // In the alternate screen (pager / editor) forward wheel
                     // notches as arrow keys so `less`/`man` scroll naturally.
@@ -1463,10 +1658,16 @@ impl Widget for TerminalWidget {
                     };
                     let reps = lines.unsigned_abs() as usize;
                     let mut out = Vec::new();
-                    for _ in 0..reps { out.extend_from_slice(seq); }
+                    for _ in 0..reps {
+                        out.extend_from_slice(seq);
+                    }
                     self.write_input(&out);
                 } else if !self.alt_active {
-                    if lines > 0 { self.scroll_up(lines as usize); } else { self.scroll_down((-lines) as usize); }
+                    if lines > 0 {
+                        self.scroll_up(lines as usize);
+                    } else {
+                        self.scroll_down((-lines) as usize);
+                    }
                 }
                 *handled = true;
             }
@@ -1482,7 +1683,11 @@ impl Widget for TerminalWidget {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 // A left click while the context menu is open routes to the menu
                 // (pick a row, or dismiss on click-outside) instead of starting a
                 // new selection.
@@ -1502,16 +1707,18 @@ impl Widget for TerminalWidget {
                         self.begin_selection(intent.extend, intent.granularity, pos);
                         *handled = true;
                     }
-                    ElementState::Released => {
-                        if self.drag_select.release() {
-                            self.finish_selection();
-                            *handled = true;
-                        }
+                    ElementState::Released if self.drag_select.release() => {
+                        self.finish_selection();
+                        *handled = true;
                     }
                     _ => {}
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Middle, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
                 // X11/Wayland primary-selection paste: middle-click inserts the
                 // currently-selected text (from any app), matching every
                 // terminal. Snaps the viewport back to the live bottom.
@@ -1522,7 +1729,11 @@ impl Widget for TerminalWidget {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
                 // Right-click opens the Copy/Paste context menu (Copy only when
                 // there's a selection). The window-group decoration is the OS's;
                 // this menu is app content, so it uses the shared toolkit primitive.
@@ -1531,84 +1742,116 @@ impl Widget for TerminalWidget {
                     *handled = true;
                 }
             }
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: element_state, .. }, .. } => {
-                if *element_state == ElementState::Pressed {
-                    // Escape dismisses an open context menu before the app sees it.
-                    if self.context_menu.is_open() {
-                        if let Key::Named(NamedKey::Escape) = logical_key {
-                            self.context_menu.close();
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        text,
+                        state: element_state,
+                        ..
+                    },
+                ..
+            } if *element_state == ElementState::Pressed => {
+                // Escape dismisses an open context menu before the app sees it.
+                if self.context_menu.is_open()
+                    && let Key::Named(NamedKey::Escape) = logical_key
+                {
+                    self.context_menu.close();
+                    *handled = true;
+                    return;
+                }
+                let mods = modifiers.state();
+                // Ctrl+Shift+C → clipboard copy; Ctrl+Shift+V → paste.
+                // Both must be matched BEFORE the regular Ctrl+C → SIGINT
+                // path or the user would lose the ability to interrupt.
+                if mods.control_key()
+                    && mods.shift_key()
+                    && let Key::Character(c) = logical_key
+                {
+                    if c.as_str().eq_ignore_ascii_case("c") {
+                        if let Some(text) = self.selected_text()
+                            && !text.is_empty()
+                        {
+                            clipboard_copy(&text);
+                        }
+                        *handled = true;
+                        return;
+                    }
+                    if c.as_str().eq_ignore_ascii_case("v") {
+                        if let Some(text) = clipboard_paste() {
+                            self.paste(&text);
+                        }
+                        *handled = true;
+                        return;
+                    }
+                }
+
+                // Scrollback navigation — only intercepted for the main
+                // buffer; the alternate screen (pager / editor) gets the
+                // keys forwarded to the app instead.
+                if !self.alt_active
+                    && let Key::Named(named) = logical_key
+                {
+                    let page = self.current_visible_rows().saturating_sub(1).max(1);
+                    match named {
+                        NamedKey::PageUp => {
+                            self.scroll_up(page);
                             *handled = true;
                             return;
                         }
-                    }
-                    let mods = modifiers.state();
-                    // Ctrl+Shift+C → clipboard copy; Ctrl+Shift+V → paste.
-                    // Both must be matched BEFORE the regular Ctrl+C → SIGINT
-                    // path or the user would lose the ability to interrupt.
-                    if mods.control_key() && mods.shift_key() {
-                        if let Key::Character(c) = logical_key {
-                            if c.as_str().eq_ignore_ascii_case("c") {
-                                if let Some(text) = self.selected_text() {
-                                    if !text.is_empty() {
-                                        clipboard_copy(&text);
-                                    }
-                                }
-                                *handled = true;
-                                return;
-                            }
-                            if c.as_str().eq_ignore_ascii_case("v") {
-                                if let Some(text) = clipboard_paste() {
-                                    self.paste(&text);
-                                }
-                                *handled = true;
-                                return;
-                            }
+                        NamedKey::PageDown => {
+                            self.scroll_down(page);
+                            *handled = true;
+                            return;
                         }
+                        NamedKey::Home if mods.shift_key() => {
+                            self.scroll_to_top();
+                            *handled = true;
+                            return;
+                        }
+                        NamedKey::End if mods.shift_key() => {
+                            self.scroll_to_bottom();
+                            *handled = true;
+                            return;
+                        }
+                        _ => {}
                     }
+                }
 
-                    // Scrollback navigation — only intercepted for the main
-                    // buffer; the alternate screen (pager / editor) gets the
-                    // keys forwarded to the app instead.
-                    if !self.alt_active {
-                        if let Key::Named(named) = logical_key {
-                            let page = self.current_visible_rows().saturating_sub(1).max(1);
-                            match named {
-                                NamedKey::PageUp => { self.scroll_up(page); *handled = true; return; }
-                                NamedKey::PageDown => { self.scroll_down(page); *handled = true; return; }
-                                NamedKey::Home if mods.shift_key() => { self.scroll_to_top(); *handled = true; return; }
-                                NamedKey::End if mods.shift_key() => { self.scroll_to_bottom(); *handled = true; return; }
-                                _ => {}
-                            }
-                        }
+                let mut bytes = self.map_key(logical_key, modifiers);
+                if bytes.is_none()
+                    && let Some(t) = text
+                    && !t
+                        .as_str()
+                        .chars()
+                        .any(|c| c as u32 == 0x23CE || c as u32 == 0x21B5)
+                {
+                    bytes = Some(t.as_str().as_bytes().to_vec());
+                }
+                if let Some(b) = bytes {
+                    {
+                        let mut w = self.pty_write.lock().unwrap();
+                        let _ = w.write_all(&b);
+                        let _ = w.flush();
                     }
-
-                    let mut bytes = self.map_key(logical_key, modifiers);
-                    if bytes.is_none() {
-                        if let Some(t) = text {
-                            if !t.as_str().chars().any(|c| c as u32 == 0x23CE || c as u32 == 0x21B5) {
-                                bytes = Some(t.as_str().as_bytes().to_vec());
-                            }
-                        }
-                    }
-                    if let Some(b) = bytes {
-                        {
-                            let mut w = self.pty_write.lock().unwrap();
-                            let _ = w.write_all(&b);
-                            let _ = w.flush();
-                        }
-                        // Typing snaps the viewport back to the live bottom.
-                        self.scroll_offset = 0;
-                        *handled = true;
-                    }
+                    // Typing snaps the viewport back to the live bottom.
+                    self.scroll_offset = 0;
+                    *handled = true;
                 }
             }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str { "Terminal" }
-    fn get_rect(&self) -> Rect { self.rect }
-    fn is_focusable(&self) -> bool { true }
+    fn name(&self) -> &'static str {
+        "Terminal"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
 
     /// Scope this terminal's collaboration presence to a shared pane id (see
     /// `terminal_pane_id` in the CRDT) so both peers of a shared session file
@@ -1628,11 +1871,17 @@ impl Widget for TerminalWidget {
         let key = self.presence_key()?;
         let payload = if let Some(sel) = self.selection {
             let (a, b) = sel.ordered();
-            PresencePayload::Selection { start: self.lin(a), end: self.lin(b) }
+            PresencePayload::Selection {
+                start: self.lin(a),
+                end: self.lin(b),
+            }
         } else {
             let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
             PresencePayload::Caret {
-                pos: self.lin(GridPos { row: cursor_abs, col: self.cursor_x }),
+                pos: self.lin(GridPos {
+                    row: cursor_abs,
+                    col: self.cursor_x,
+                }),
             }
         };
         Some((key, payload))
@@ -1657,14 +1906,14 @@ impl Widget for TerminalWidget {
 
         if let Some(key) = self.presence_key() {
             if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list.iter() {
+                for (user, range) in list {
                     for rect in self.peer_selection_rects(range.start, range.end) {
                         presence.draw_peer_selection(scene, theme, transform, user, rect);
                     }
                 }
             }
             if let Some(list) = presence.carets.get(&key) {
-                for (user, caret) in list.iter() {
+                for (user, caret) in list {
                     if let Some(rect) = self.peer_caret_rect(*caret) {
                         presence.draw_peer_caret(scene, theme, transform, user, rect);
                     }
@@ -1713,10 +1962,20 @@ impl TerminalWidget {
 
         if let Some(bg_color) = bg_opt {
             let bg_rect = Rect::new(tx, py, tx + visual_width + 0.5, py + self.char_h + 0.5);
-            scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &bg_rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                bg_color,
+                None,
+                &bg_rect,
+            );
         }
 
-        let weight = if attr.bold { TextWeight::Bold } else { TextWeight::Regular };
+        let weight = if attr.bold {
+            TextWeight::Bold
+        } else {
+            TextWeight::Regular
+        };
         text_renderer.draw_text_font(
             scene,
             text,
@@ -1753,10 +2012,10 @@ impl TerminalWidget {
     /// every multi-colour run smears over itself.
     fn resolve_mono(&mut self, theme: &Theme, tr: &TextRenderer) -> FontChoice {
         let fam = theme.tokens.font_mono.family.trim();
-        if let Some((cached, choice)) = &self.mono_choice {
-            if cached == fam {
-                return choice.clone();
-            }
+        if let Some((cached, choice)) = &self.mono_choice
+            && cached == fam
+        {
+            return choice.clone();
         }
         let choice = if fam.is_empty() || fam.eq_ignore_ascii_case("monospace") {
             FontChoice::Monospace
@@ -1773,17 +2032,58 @@ impl TerminalWidget {
         choice
     }
 
+    /// Rows of the buffer that carry anything: the last row with text on it,
+    /// or the cursor's row when it sits below that (an empty line the caret
+    /// is on is a real position, and has to stay reachable).
+    ///
+    /// This is deliberately not `grid.len()`. A session allocates a full
+    /// screen of rows up front and fills them as output arrives, so the
+    /// buffer is `height` rows long from the first frame — before anything
+    /// has ever been printed to it.
+    fn content_rows(&self) -> usize {
+        let written = self
+            .grid
+            .iter()
+            .rposition(|line| !line.trim_end().is_empty())
+            .map_or(0, |i| i + 1);
+        let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
+        written.max(cursor_abs + 1)
+    }
+
+    /// Whether the scrollbar represents anything, for a viewport of
+    /// `visible_rows` rows. The predicate [`Self::draw_scrollbar`] gates on.
+    ///
+    /// Two conditions, and the second is the one that is easy to miss: the
+    /// buffer has to be longer than the viewport **and** actually have
+    /// content past it. A buffer can satisfy the first on its own — a
+    /// session allocates a full screen of rows up front, and a window one
+    /// row shorter than that screen then makes `grid.len() > visible_rows`
+    /// true before anything has ever been printed. A bar drawn on that
+    /// advertises travel that does not exist: the thumb moves and the view
+    /// goes from blank to blank. A scrollbar is a claim about content, so
+    /// it appears only when there is content to reach.
+    pub(crate) fn scrollbar_visible(&self, visible_rows: usize) -> bool {
+        !self.alt_active
+            && visible_rows > 0
+            && self.grid.len() > visible_rows
+            && self.content_rows() > visible_rows
+    }
+
     /// A themed scrollbar in the reserved right gutter, drawn only when the
     /// buffer overflows the viewport. Brighter while the user is scrolled back
     /// into history, faint when pinned to the live bottom.
-    fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, theme: &Theme, start_y: usize, visible_rows: usize) {
-        if self.alt_active || visible_rows == 0 {
+    fn draw_scrollbar(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        start_y: usize,
+        visible_rows: usize,
+    ) {
+        if !self.scrollbar_visible(visible_rows) {
             return;
         }
         let total = self.grid.len();
-        if total <= visible_rows {
-            return;
-        }
         let gr = self.grid_rect;
         let track_x1 = self.rect.x1 - self.chrome_body_pad;
         let track_w = (self.chrome_scrollbar_w - 2.0).max(3.0);
@@ -1797,11 +2097,15 @@ impl TerminalWidget {
         let thumb_y0 = gr.y0 + pos_frac * (track_h - thumb_h);
 
         // Faint track groove so the bar has a visible extent even when pinned.
-        let track = RoundedRect::from_rect(
-            Rect::new(track_x0, gr.y0, track_x1, gr.y1),
-            track_w / 2.0,
+        let track =
+            RoundedRect::from_rect(Rect::new(track_x0, gr.y0, track_x1, gr.y1), track_w / 2.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surface_white_5,
+            None,
+            &track,
         );
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surface_white_5, None, &track);
 
         let thumb_alpha = if self.scroll_offset > 0 { 0.85 } else { 0.4 };
         let thumb = RoundedRect::from_rect(
@@ -1819,7 +2123,13 @@ impl TerminalWidget {
 
     /// Honest first-run empty state: a centred, muted watermark shown before
     /// the session has ever produced output — a themed placeholder, not a void.
-    fn draw_empty_state(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_empty_state(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let gr = self.grid_rect;
         if gr.width() <= 0.0 || gr.height() <= 0.0 {
             return;
@@ -1851,7 +2161,7 @@ impl TerminalWidget {
             label,
             size,
             theme.text_dim.with_alpha_factor(0.7),
-            transform * Affine::translate((cx - lw as f64 / 2.0, cy + 4.0)),
+            transform * Affine::translate((cx - f64::from(lw) / 2.0, cy + 4.0)),
             None,
             TextWeight::Medium,
         );
@@ -1889,7 +2199,7 @@ impl TerminalWidget {
     /// terminal word selection matches every other qOS text surface. Returns
     /// `(start, end)` as `GridPos`es on the same row, `end` exclusive.
     fn word_span_at(&self, pos: GridPos) -> (GridPos, GridPos) {
-        let line = self.grid.get(pos.row).map(String::as_str).unwrap_or("");
+        let line = self.grid.get(pos.row).map_or("", String::as_str);
         // Column → byte offset (accounting for wide glyphs), find the word in
         // byte space, then map the byte range back to columns.
         let byte = col_to_byte(line, pos.col);
@@ -1897,8 +2207,14 @@ impl TerminalWidget {
         let cs = byte_to_col(line, bs);
         let ce = byte_to_col(line, be);
         (
-            GridPos { row: pos.row, col: cs },
-            GridPos { row: pos.row, col: ce.max(cs + 1).min(self.width) },
+            GridPos {
+                row: pos.row,
+                col: cs,
+            },
+            GridPos {
+                row: pos.row,
+                col: ce.max(cs + 1).min(self.width),
+            },
         )
     }
 
@@ -1908,11 +2224,17 @@ impl TerminalWidget {
     /// with the shared primitive even though a single row has no interior
     /// newline.
     fn line_span_at(&self, pos: GridPos) -> (GridPos, GridPos) {
-        let line = self.grid.get(pos.row).map(String::as_str).unwrap_or("");
+        let line = self.grid.get(pos.row).map_or("", String::as_str);
         let (_bs, _be) = line_boundaries(line, col_to_byte(line, pos.col));
         (
-            GridPos { row: pos.row, col: 0 },
-            GridPos { row: pos.row, col: self.width },
+            GridPos {
+                row: pos.row,
+                col: 0,
+            },
+            GridPos {
+                row: pos.row,
+                col: self.width,
+            },
         )
     }
 
@@ -1921,28 +2243,44 @@ impl TerminalWidget {
     /// subsequent word-/line-granularity drag keeps that original word/line
     /// inside the selection.
     fn begin_selection(&mut self, extend: bool, granularity: Granularity, pos: GridPos) {
-        self.drag_granularity = if extend { Granularity::Char } else { granularity };
+        self.drag_granularity = if extend {
+            Granularity::Char
+        } else {
+            granularity
+        };
         if extend {
             // Shift+click: keep the existing anchor (or promote the current
             // cursor), move the caret to the click.
-            let anchor = self.selection.map(|s| s.anchor).unwrap_or(pos);
-            self.selection = Some(Selection { anchor, cursor: pos });
+            let anchor = self.selection.map_or(pos, |s| s.anchor);
+            self.selection = Some(Selection {
+                anchor,
+                cursor: pos,
+            });
             self.drag_anchor_span = None;
             return;
         }
         match granularity {
             Granularity::Char => {
-                self.selection = Some(Selection { anchor: pos, cursor: pos });
+                self.selection = Some(Selection {
+                    anchor: pos,
+                    cursor: pos,
+                });
                 self.drag_anchor_span = None;
             }
             Granularity::Word => {
                 let (s, e) = self.word_span_at(pos);
-                self.selection = Some(Selection { anchor: s, cursor: e });
+                self.selection = Some(Selection {
+                    anchor: s,
+                    cursor: e,
+                });
                 self.drag_anchor_span = Some((s, e));
             }
             Granularity::Line => {
                 let (s, e) = self.line_span_at(pos);
-                self.selection = Some(Selection { anchor: s, cursor: e });
+                self.selection = Some(Selection {
+                    anchor: s,
+                    cursor: e,
+                });
                 self.drag_anchor_span = Some((s, e));
             }
         }
@@ -1962,23 +2300,33 @@ impl TerminalWidget {
                 .map(|(alo, ahi)| {
                     let (ws, we) = self.word_span_at(pos);
                     let (a, c) = extend_span_drag(alo, ahi, pos, ws, we);
-                    Selection { anchor: a, cursor: c }
+                    Selection {
+                        anchor: a,
+                        cursor: c,
+                    }
                 })
-                .or_else(|| self.selection.map(|mut s| {
-                    s.cursor = pos;
-                    s
-                })),
+                .or_else(|| {
+                    self.selection.map(|mut s| {
+                        s.cursor = pos;
+                        s
+                    })
+                }),
             Granularity::Line => self
                 .drag_anchor_span
                 .map(|(alo, ahi)| {
                     let (ls, le) = self.line_span_at(pos);
                     let (a, c) = extend_span_drag(alo, ahi, pos, ls, le);
-                    Selection { anchor: a, cursor: c }
+                    Selection {
+                        anchor: a,
+                        cursor: c,
+                    }
                 })
-                .or_else(|| self.selection.map(|mut s| {
-                    s.cursor = pos;
-                    s
-                })),
+                .or_else(|| {
+                    self.selection.map(|mut s| {
+                        s.cursor = pos;
+                        s
+                    })
+                }),
         };
         if let Some(s) = new {
             self.selection = Some(s);
@@ -1991,22 +2339,21 @@ impl TerminalWidget {
     /// selection (for middle-click paste) and, when "select to copy" is on,
     /// the clipboard too.
     fn finish_selection(&mut self) {
-        let collapsed = self.selection.map(|s| s.is_collapsed()).unwrap_or(true);
+        let collapsed = self.selection.is_none_or(|s| s.is_collapsed());
         if collapsed {
-            if self.drag_granularity == Granularity::Char {
-                if let Some(sel) = self.selection {
-                    if let Some(url) = self.hyperlink_at(sel.anchor.row, sel.anchor.col) {
-                        open_url(url);
-                    }
-                }
+            if self.drag_granularity == Granularity::Char
+                && let Some(sel) = self.selection
+                && let Some(url) = self.hyperlink_at(sel.anchor.row, sel.anchor.col)
+            {
+                open_url(url);
             }
             self.selection = None;
-        } else if let Some(text) = self.selected_text() {
-            if !text.is_empty() {
-                clipboard_copy_primary(&text);
-                if self.select_to_copy {
-                    clipboard_copy(&text);
-                }
+        } else if let Some(text) = self.selected_text()
+            && !text.is_empty()
+        {
+            clipboard_copy_primary(&text);
+            if self.select_to_copy {
+                clipboard_copy(&text);
             }
         }
         self.drag_anchor_span = None;
@@ -2021,12 +2368,17 @@ impl TerminalWidget {
     /// Inverse of [`lin`]: decode a linear presence index back to a cell.
     fn unlin(&self, pos: usize) -> GridPos {
         let w = self.width.max(1);
-        GridPos { row: pos / w, col: pos % w }
+        GridPos {
+            row: pos / w,
+            col: pos % w,
+        }
     }
     /// Number of on-screen rows and the absolute row of the top visible row —
     /// the viewport window used to map buffer-absolute rows to screen rows.
     fn viewport_window(&self) -> (usize, usize) {
-        let visible_rows = (self.grid_rect.height() / self.char_h.max(1.0)).floor().max(1.0) as usize;
+        let visible_rows = (self.grid_rect.height() / self.char_h.max(1.0))
+            .floor()
+            .max(1.0) as usize;
         (self.viewport_start_y, visible_rows)
     }
 
@@ -2050,7 +2402,10 @@ impl TerminalWidget {
     /// `start..end`), clipped to the visible viewport. Mirrors the local
     /// selection painting so a peer's highlight aligns cell-for-cell.
     fn peer_selection_rects(&self, start: usize, end: usize) -> Vec<Rect> {
-        let sel = Selection { anchor: self.unlin(start), cursor: self.unlin(end) };
+        let sel = Selection {
+            anchor: self.unlin(start),
+            cursor: self.unlin(end),
+        };
         let (start_y, visible_rows) = self.viewport_window();
         let mut rects = Vec::new();
         for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
@@ -2079,7 +2434,7 @@ impl TerminalWidget {
     /// (matches every terminal). The `MenuItem` callbacks are inert — dispatch
     /// happens by label in [`Self::click_context_menu_at_cursor`].
     fn open_context_menu_at_cursor(&mut self) {
-        let has_selection = self.selected_text().map(|t| !t.is_empty()).unwrap_or(false);
+        let has_selection = self.selected_text().is_some_and(|t| !t.is_empty());
         let mut menu = ContextMenu::new();
         if has_selection {
             menu.push(MenuItem::action("Copy", || {}));
@@ -2100,14 +2455,19 @@ impl TerminalWidget {
         let p = self.last_cursor_pos;
         let point = [p.x, p.y];
         if let Some(idx) = self.context_menu.item_at(point) {
-            let label = self.context_menu.items().get(idx).and_then(|i| i.label()).map(str::to_owned);
+            let label = self
+                .context_menu
+                .items()
+                .get(idx)
+                .and_then(|i| i.label())
+                .map(str::to_owned);
             self.context_menu.close();
             match label.as_deref() {
                 Some("Copy") => {
-                    if let Some(text) = self.selected_text() {
-                        if !text.is_empty() {
-                            clipboard_copy(&text);
-                        }
+                    if let Some(text) = self.selected_text()
+                        && !text.is_empty()
+                    {
+                        clipboard_copy(&text);
                     }
                 }
                 Some("Paste") => {
@@ -2124,12 +2484,6 @@ impl TerminalWidget {
         }
     }
 
-    /// The open menu's action-row labels in order (empty when closed).
-    #[cfg(test)]
-    fn context_menu_labels(&self) -> Vec<String> {
-        self.context_menu.items().iter().filter_map(|i| i.label().map(str::to_owned)).collect()
-    }
-
     /// Walk the selected cells across grid rows and return the joined
     /// text, with trailing whitespace stripped from each row (standard
     /// terminal-copy semantics). Returns `None` if there is no selection
@@ -2137,21 +2491,27 @@ impl TerminalWidget {
     fn selected_text(&self) -> Option<String> {
         let sel = self.selection?;
         let spans = selection_row_spans(&sel, self.width);
-        if spans.is_empty() { return None; }
+        if spans.is_empty() {
+            return None;
+        }
 
         let mut out = String::new();
         for (i, (row, start_col, end_col)) in spans.iter().enumerate() {
-            if i > 0 { out.push('\n'); }
+            if i > 0 {
+                out.push('\n');
+            }
             // Selection rows are already buffer-absolute grid indices.
             let abs_row = *row;
-            let line = self.grid.get(abs_row).map(String::as_str).unwrap_or("");
+            let line = self.grid.get(abs_row).map_or("", String::as_str);
 
             // Walk chars and pick out the cells covered by [start_col, end_col).
             let mut cell_idx = 0usize;
             let mut row_text = String::new();
             for c in line.chars() {
                 let w = c.width().unwrap_or(1);
-                if cell_idx >= *end_col { break; }
+                if cell_idx >= *end_col {
+                    break;
+                }
                 if cell_idx >= *start_col {
                     row_text.push(c);
                 }
@@ -2176,9 +2536,15 @@ impl TerminalWidget {
         // meaningful when at least one is held.
         let mod_param: Option<u8> = {
             let mut m = 0u8;
-            if shift { m |= 1; }
-            if alt { m |= 2; }
-            if ctrl { m |= 4; }
+            if shift {
+                m |= 1;
+            }
+            if alt {
+                m |= 2;
+            }
+            if ctrl {
+                m |= 4;
+            }
             if m == 0 { None } else { Some(m + 1) }
         };
 
@@ -2187,14 +2553,17 @@ impl TerminalWidget {
         // which is what shells and editors decode for word-wise motion and
         // in-app selection.
         let csi_final = |final_byte: u8| -> Vec<u8> {
-            match mod_param {
-                Some(m) => format!("\x1b[1;{m}{}", final_byte as char).into_bytes(),
-                None => {
-                    let prefix: &[u8] = if self.modes.app_cursor_keys { b"\x1bO" } else { b"\x1b[" };
-                    let mut v = prefix.to_vec();
-                    v.push(final_byte);
-                    v
-                }
+            if let Some(m) = mod_param {
+                format!("\x1b[1;{m}{}", final_byte as char).into_bytes()
+            } else {
+                let prefix: &[u8] = if self.modes.app_cursor_keys {
+                    b"\x1bO"
+                } else {
+                    b"\x1b["
+                };
+                let mut v = prefix.to_vec();
+                v.push(final_byte);
+                v
             }
         };
         // Keypad-style `CSI <n> ~` keys, with the optional modifier parameter.
@@ -2253,7 +2622,7 @@ impl TerminalWidget {
                 let up = ch.to_ascii_uppercase();
                 let code = match up {
                     'A'..='Z' => (up as u8) - b'A' + 1,
-                    ' ' | '@' => 0,   // Ctrl+Space / Ctrl+@ → NUL
+                    ' ' | '@' => 0, // Ctrl+Space / Ctrl+@ → NUL
                     '[' => 27,
                     '\\' => 28,
                     ']' => 29,
@@ -2261,7 +2630,11 @@ impl TerminalWidget {
                     '_' => 31,
                     _ => return None,
                 };
-                if alt { Some(vec![27, code]) } else { Some(vec![code]) }
+                if alt {
+                    Some(vec![27, code])
+                } else {
+                    Some(vec![code])
+                }
             }
             // Alt-as-Meta for plain alphanumerics (readline word ops: Alt-f,
             // Alt-b, Alt-d, numeric arguments). Restricted to ASCII
@@ -2363,10 +2736,12 @@ pub fn terminal_da2_version() -> u32 {
     major * 10000 + minor * 100 + patch
 }
 
-impl<'a> Perform for TerminalPerformer<'a> {
+impl Perform for TerminalPerformer<'_> {
     fn print(&mut self, c: char) {
         let char_w = c.width().unwrap_or(1);
-        if char_w == 0 { return; }
+        if char_w == 0 {
+            return;
+        }
 
         if self.pending_wrap {
             self.cursor_x = 0;
@@ -2375,14 +2750,20 @@ impl<'a> Perform for TerminalPerformer<'a> {
         }
 
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
+        let line_obj = match self.active_line_id(y) {
+            Some(o) => o,
+            None => return,
+        };
 
         // Point the write buffer at this line, loading its current text + attrs
         // once. Consecutive prints to the same line then mutate memory only; the
         // CRDT is touched a single time when the line changes or an action
         // flushes (below). This is what turns a screenful of output from O(n²)
         // per-cell CRDT writes into O(cells) memory edits + O(lines) commits.
-        let need_load = self.print_buf.as_ref().map(|b| b.line_obj != line_obj).unwrap_or(true);
+        let need_load = self
+            .print_buf
+            .as_ref()
+            .is_none_or(|b| b.line_obj != line_obj);
         if need_load {
             self.flush_print_buf();
             let text_id = match self.state.get(&line_obj, "text") {
@@ -2397,7 +2778,12 @@ impl<'a> Perform for TerminalPerformer<'a> {
                 },
                 _ => Vec::new(),
             };
-            self.print_buf = Some(PrintBuf { line_obj: line_obj.clone(), text_id, text, attrs });
+            self.print_buf = Some(PrintBuf {
+                line_obj,
+                text_id,
+                text,
+                attrs,
+            });
         }
         let buf = self.print_buf.as_mut().expect("print_buf loaded above");
 
@@ -2411,7 +2797,9 @@ impl<'a> Perform for TerminalPerformer<'a> {
         }
         let mut repl: Vec<char> = Vec::with_capacity(char_w);
         repl.push(c);
-        for _ in 1..char_w { repl.push(' '); }
+        for _ in 1..char_w {
+            repl.push(' ');
+        }
         if self.cursor_x < chars.len() {
             let end = (self.cursor_x + char_w).min(chars.len());
             chars.splice(self.cursor_x..end, repl);
@@ -2424,7 +2812,9 @@ impl<'a> Perform for TerminalPerformer<'a> {
         // written (matching the on-demand text fill).
         let start = self.cursor_x * ATTR_BYTES;
         let end = (self.cursor_x + char_w) * ATTR_BYTES;
-        if buf.attrs.len() < end { buf.attrs.resize(end, 0); }
+        if buf.attrs.len() < end {
+            buf.attrs.resize(end, 0);
+        }
 
         // Carry the active OSC 8 hyperlink id onto the cell, independent of SGR
         // so a link and its styling compose.
@@ -2437,7 +2827,9 @@ impl<'a> Perform for TerminalPerformer<'a> {
             let cont_packed = cont.pack();
             for i in 1..char_w {
                 let s = (self.cursor_x + i) * ATTR_BYTES;
-                if s + ATTR_BYTES <= buf.attrs.len() { buf.attrs[s..s + ATTR_BYTES].copy_from_slice(&cont_packed); }
+                if s + ATTR_BYTES <= buf.attrs.len() {
+                    buf.attrs[s..s + ATTR_BYTES].copy_from_slice(&cont_packed);
+                }
             }
         }
 
@@ -2452,9 +2844,20 @@ impl<'a> Perform for TerminalPerformer<'a> {
     fn execute(&mut self, byte: u8) {
         self.flush_print_buf();
         match byte {
-            b'\n' | 0x0B | 0x0C => { self.pending_wrap = false; self.newline(); }
-            b'\r' => { self.pending_wrap = false; self.cursor_x = 0; }
-            8 => { self.pending_wrap = false; if self.cursor_x > 0 { self.cursor_x -= 1; } }
+            b'\n' | 0x0B | 0x0C => {
+                self.pending_wrap = false;
+                self.newline();
+            }
+            b'\r' => {
+                self.pending_wrap = false;
+                self.cursor_x = 0;
+            }
+            8 => {
+                self.pending_wrap = false;
+                if self.cursor_x > 0 {
+                    self.cursor_x -= 1;
+                }
+            }
             b'\t' => {
                 self.pending_wrap = false;
                 let next = ((self.cursor_x / 8) + 1) * 8;
@@ -2469,17 +2872,28 @@ impl<'a> Perform for TerminalPerformer<'a> {
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
         self.flush_print_buf();
         match byte {
-            b'7' => { *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr)); } // DECSC
-            b'8' => { // DECRC
+            b'7' => {
+                *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
+            } // DECSC
+            b'8' => {
+                // DECRC
                 if let Some((x, y, a)) = *self.saved_cursor {
                     self.cursor_x = x.min(self.width.saturating_sub(1));
                     self.cursor_y = y.min(self.height.saturating_sub(1));
                     self.current_attr = a;
                 }
             }
-            b'D' => { self.pending_wrap = false; self.newline(); } // IND — index (line feed)
-            b'E' => { self.pending_wrap = false; self.cursor_x = 0; self.newline(); } // NEL
-            b'M' => { // RI — reverse index
+            b'D' => {
+                self.pending_wrap = false;
+                self.newline();
+            } // IND — index (line feed)
+            b'E' => {
+                self.pending_wrap = false;
+                self.cursor_x = 0;
+                self.newline();
+            } // NEL
+            b'M' => {
+                // RI — reverse index
                 self.pending_wrap = false;
                 if self.cursor_y == self.scroll_top {
                     self.scroll_region_down(1);
@@ -2497,7 +2911,13 @@ impl<'a> Perform for TerminalPerformer<'a> {
         self.flush_print_buf();
         self.pending_wrap = false;
         let private = intermediates.first() == Some(&b'?');
-        let first = |p: &vte::Params| p.iter().next().and_then(|x| x.first()).copied().unwrap_or(0);
+        let first = |p: &vte::Params| {
+            p.iter()
+                .next()
+                .and_then(|x| x.first())
+                .copied()
+                .unwrap_or(0)
+        };
         let first_or1 = |p: &vte::Params| {
             let v = first(p);
             if v == 0 { 1 } else { v as usize }
@@ -2521,16 +2941,34 @@ impl<'a> Perform for TerminalPerformer<'a> {
         }
 
         match c {
-            'A' => { let n = first_or1(params); self.cursor_y = self.cursor_y.saturating_sub(n); }
-            'B' | 'e' => { let n = first_or1(params); self.cursor_y = (self.cursor_y + n).min(self.height - 1); }
-            'C' | 'a' => { let n = first_or1(params); self.cursor_x = (self.cursor_x + n).min(self.width - 1); }
-            'D' => { let n = first_or1(params); self.cursor_x = self.cursor_x.saturating_sub(n); }
-            'G' | '`' => { let n = first_or1(params); self.cursor_x = (n - 1).min(self.width - 1); } // CHA
-            'd' => { let n = first_or1(params); self.cursor_y = (n - 1).min(self.height - 1); } // VPA
+            'A' => {
+                let n = first_or1(params);
+                self.cursor_y = self.cursor_y.saturating_sub(n);
+            }
+            'B' | 'e' => {
+                let n = first_or1(params);
+                self.cursor_y = (self.cursor_y + n).min(self.height - 1);
+            }
+            'C' | 'a' => {
+                let n = first_or1(params);
+                self.cursor_x = (self.cursor_x + n).min(self.width - 1);
+            }
+            'D' => {
+                let n = first_or1(params);
+                self.cursor_x = self.cursor_x.saturating_sub(n);
+            }
+            'G' | '`' => {
+                let n = first_or1(params);
+                self.cursor_x = (n - 1).min(self.width - 1);
+            } // CHA
+            'd' => {
+                let n = first_or1(params);
+                self.cursor_y = (n - 1).min(self.height - 1);
+            } // VPA
             'H' | 'f' => {
                 let mut it = params.iter();
-                let y = it.next().and_then(|p| p.first()).cloned().unwrap_or(1) as usize;
-                let x = it.next().and_then(|p| p.first()).cloned().unwrap_or(1) as usize;
+                let y = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
+                let x = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
                 self.cursor_y = (y.saturating_sub(1)).min(self.height - 1);
                 self.cursor_x = (x.saturating_sub(1)).min(self.width - 1);
             }
@@ -2543,12 +2981,21 @@ impl<'a> Perform for TerminalPerformer<'a> {
             'M' => self.delete_lines(first_or1(params)), // DL
             'S' => self.scroll_region_up(first_or1(params)), // SU
             'T' => self.scroll_region_down(first_or1(params)), // SD
-            'r' => { // DECSTBM — set scrolling region
+            'r' => {
+                // DECSTBM — set scrolling region
                 let mut it = params.iter();
-                let top = it.next().and_then(|p| p.first()).cloned().unwrap_or(1) as usize;
-                let bot = it.next().and_then(|p| p.first()).cloned().unwrap_or(self.height as u16 as u16) as usize;
+                let top = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
+                let bot = it
+                    .next()
+                    .and_then(|p| p.first())
+                    .copied()
+                    .unwrap_or(self.height as u16) as usize;
                 let top0 = top.saturating_sub(1).min(self.height.saturating_sub(1));
-                let bot0 = if bot == 0 { self.height - 1 } else { (bot - 1).min(self.height - 1) };
+                let bot0 = if bot == 0 {
+                    self.height - 1
+                } else {
+                    (bot - 1).min(self.height - 1)
+                };
                 if top0 < bot0 {
                     self.scroll_top = top0;
                     self.scroll_bottom = bot0;
@@ -2556,8 +3003,11 @@ impl<'a> Perform for TerminalPerformer<'a> {
                 self.cursor_x = 0;
                 self.cursor_y = 0;
             }
-            's' => { *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr)); } // SCP
-            'u' => { // RCP
+            's' => {
+                *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
+            } // SCP
+            'u' => {
+                // RCP
                 if let Some((x, y, a)) = *self.saved_cursor {
                     self.cursor_x = x.min(self.width - 1);
                     self.cursor_y = y.min(self.height - 1);
@@ -2578,14 +3028,14 @@ impl<'a> Perform for TerminalPerformer<'a> {
             'n' if intermediates.is_empty() => self.reply_dsr(first(params)),
             // XTVERSION — `CSI > 0 q` → the terminal's name + version.
             'q' if intermediates.first() == Some(&b'>') && first(params) == 0 => {
-                self.reply_xtversion()
+                self.reply_xtversion();
             }
             // DECRQM for ANSI (non-private) modes, `CSI Pm $ p`. We do not
             // track ANSI modes, so answer "mode not recognised" (0) rather
             // than leave the requester waiting.
             'p' if intermediates.contains(&b'$') => {
                 let m = first(params);
-                self.respond(format!("\x1b[{};0$y", m).as_bytes());
+                self.respond(format!("\x1b[{m};0$y").as_bytes());
             }
             _ => {}
         }
@@ -2621,15 +3071,15 @@ impl<'a> Perform for TerminalPerformer<'a> {
                 if data == b"?" || data.is_empty() {
                     return;
                 }
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
-                    if let Ok(text) = String::from_utf8(bytes) {
-                        // `p` selects the primary selection; anything else
-                        // (`c`, `s`, default) targets the clipboard.
-                        if targets.contains(&b'p') {
-                            clipboard_copy_primary(&text);
-                        } else {
-                            clipboard_copy(&text);
-                        }
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data)
+                    && let Ok(text) = String::from_utf8(bytes)
+                {
+                    // `p` selects the primary selection; anything else
+                    // (`c`, `s`, default) targets the clipboard.
+                    if targets.contains(&b'p') {
+                        clipboard_copy_primary(&text);
+                    } else {
+                        clipboard_copy(&text);
                     }
                 }
             }
@@ -2653,28 +3103,52 @@ impl<'a> Perform for TerminalPerformer<'a> {
     }
 }
 
-impl<'a> TerminalPerformer<'a> {
+impl TerminalPerformer<'_> {
     fn active_grid_id(&self) -> ObjId {
-        if *self.alt_active { self.alt_grid_id.clone() } else { self.main_grid_id.clone() }
+        if *self.alt_active {
+            self.alt_grid_id.clone()
+        } else {
+            self.main_grid_id.clone()
+        }
     }
     fn active_len(&self) -> usize {
-        if *self.alt_active { self.alt_line_ids.len() } else { self.main_line_ids.len() }
+        if *self.alt_active {
+            self.alt_line_ids.len()
+        } else {
+            self.main_line_ids.len()
+        }
     }
     fn active_line_id(&self, idx: usize) -> Option<ObjId> {
-        let ids: &Vec<ObjId> = if *self.alt_active { self.alt_line_ids } else { self.main_line_ids };
+        let ids: &Vec<ObjId> = if *self.alt_active {
+            self.alt_line_ids
+        } else {
+            self.main_line_ids
+        };
         ids.get(idx).cloned()
     }
     fn active_line_ids_mut(&mut self) -> &mut Vec<ObjId> {
-        if *self.alt_active { self.alt_line_ids } else { self.main_line_ids }
+        if *self.alt_active {
+            self.alt_line_ids
+        } else {
+            self.main_line_ids
+        }
     }
 
     /// Insert a fresh blank line object into the active grid at `idx`,
     /// returning its id. Does not touch `line_ids`.
     fn make_blank_line(&mut self, idx: usize) -> ObjId {
         let grid_id = self.active_grid_id();
-        let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).unwrap();
-        let text_id = self.state.put_object(&line_id, "text", ObjType::Text).unwrap();
-        let _ = self.state.splice_text(&text_id, 0, 0, &" ".repeat(self.width));
+        let line_id = self
+            .state
+            .insert_object(&grid_id, idx, ObjType::Map)
+            .unwrap();
+        let text_id = self
+            .state
+            .put_object(&line_id, "text", ObjType::Text)
+            .unwrap();
+        let _ = self
+            .state
+            .splice_text(&text_id, 0, 0, &" ".repeat(self.width));
         let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
         let _ = self.state.put(&line_id, "attrs", attr_bytes);
         line_id
@@ -2698,9 +3172,17 @@ impl<'a> TerminalPerformer<'a> {
             // Main buffer accumulates scrollback.
             let grid_id = self.main_grid_id.clone();
             let idx = self.main_line_ids.len();
-            let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).unwrap();
-            let text_id = self.state.put_object(&line_id, "text", ObjType::Text).unwrap();
-            let _ = self.state.splice_text(&text_id, 0, 0, &" ".repeat(self.width));
+            let line_id = self
+                .state
+                .insert_object(&grid_id, idx, ObjType::Map)
+                .unwrap();
+            let text_id = self
+                .state
+                .put_object(&line_id, "text", ObjType::Text)
+                .unwrap();
+            let _ = self
+                .state
+                .splice_text(&text_id, 0, 0, &" ".repeat(self.width));
             let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
             let _ = self.state.put(&line_id, "attrs", attr_bytes);
             self.main_line_ids.push(line_id);
@@ -2727,10 +3209,14 @@ impl<'a> TerminalPerformer<'a> {
     /// scrolling margins.
     fn scroll_region_up(&mut self, n: usize) {
         let len = self.active_len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let top = self.scroll_top.min(len - 1);
         let bot = self.scroll_bottom.min(len - 1);
-        if top > bot { return; }
+        if top > bot {
+            return;
+        }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
             let grid_id = self.active_grid_id();
@@ -2745,10 +3231,14 @@ impl<'a> TerminalPerformer<'a> {
     /// down; blank lines appear at the top of the region).
     fn scroll_region_down(&mut self, n: usize) {
         let len = self.active_len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let top = self.scroll_top.min(len - 1);
         let bot = self.scroll_bottom.min(len - 1);
-        if top > bot { return; }
+        if top > bot {
+            return;
+        }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
             let grid_id = self.active_grid_id();
@@ -2762,10 +3252,14 @@ impl<'a> TerminalPerformer<'a> {
     /// IL — insert `n` blank lines at the cursor row, within the region.
     fn insert_lines(&mut self, n: usize) {
         let len = self.active_len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let at = self.cursor_y.max(self.scroll_top);
         let bot = self.scroll_bottom.min(len - 1);
-        if at > bot { return; }
+        if at > bot {
+            return;
+        }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
             let grid_id = self.active_grid_id();
@@ -2780,10 +3274,14 @@ impl<'a> TerminalPerformer<'a> {
     /// DL — delete `n` lines at the cursor row, within the region.
     fn delete_lines(&mut self, n: usize) {
         let len = self.active_len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let at = self.cursor_y.max(self.scroll_top);
         let bot = self.scroll_bottom.min(len - 1);
-        if at > bot { return; }
+        if at > bot {
+            return;
+        }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
             let grid_id = self.active_grid_id();
@@ -2797,19 +3295,25 @@ impl<'a> TerminalPerformer<'a> {
 
     fn erase_display(&mut self, mode: u16) {
         let len = self.active_len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let screen_top = len.saturating_sub(self.height);
         let range: Vec<usize> = match mode {
-            0 => (self.absolute_y()..len).collect(),         // cursor → end
+            0 => (self.absolute_y()..len).collect(), // cursor → end
             1 => (screen_top..=self.absolute_y().min(len - 1)).collect(), // start → cursor
-            2 | 3 => (screen_top..len).collect(),            // whole screen
+            2 | 3 => (screen_top..len).collect(),    // whole screen
             _ => return,
         };
         for abs_y in range {
             if let Some(line_obj) = self.active_line_id(abs_y) {
-                if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+                if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
+                    self.state.get(&line_obj, "text")
+                {
                     let l = self.state.length(&text_id);
-                    let _ = self.state.splice_text(&text_id, 0, l as isize, &" ".repeat(self.width));
+                    let _ =
+                        self.state
+                            .splice_text(&text_id, 0, l as isize, &" ".repeat(self.width));
                 }
                 let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
                 let _ = self.state.put(&line_obj, "attrs", attr_bytes);
@@ -2819,8 +3323,12 @@ impl<'a> TerminalPerformer<'a> {
 
     fn erase_line(&mut self, mode: u16) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+        let line_obj = match self.active_line_id(y) {
+            Some(o) => o,
+            None => return,
+        };
+        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
+        {
             let len = self.state.length(&text_id);
             let (from, count): (usize, usize) = match mode {
                 0 => (self.cursor_x, len.saturating_sub(self.cursor_x)), // cursor → end
@@ -2829,7 +3337,9 @@ impl<'a> TerminalPerformer<'a> {
                 _ => return,
             };
             if count > 0 {
-                let _ = self.state.splice_text(&text_id, from, count as isize, &" ".repeat(count));
+                let _ = self
+                    .state
+                    .splice_text(&text_id, from, count as isize, &" ".repeat(count));
             }
             self.reset_attr_range(&line_obj, from, count);
         }
@@ -2837,12 +3347,21 @@ impl<'a> TerminalPerformer<'a> {
 
     fn erase_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+        let line_obj = match self.active_line_id(y) {
+            Some(o) => o,
+            None => return,
+        };
+        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
+        {
             let len = self.state.length(&text_id);
             let count = n.min(len.saturating_sub(self.cursor_x));
             if count > 0 {
-                let _ = self.state.splice_text(&text_id, self.cursor_x, count as isize, &" ".repeat(count));
+                let _ = self.state.splice_text(
+                    &text_id,
+                    self.cursor_x,
+                    count as isize,
+                    &" ".repeat(count),
+                );
                 self.reset_attr_range(&line_obj, self.cursor_x, count);
             }
         }
@@ -2850,50 +3369,72 @@ impl<'a> TerminalPerformer<'a> {
 
     fn insert_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+        let line_obj = match self.active_line_id(y) {
+            Some(o) => o,
+            None => return,
+        };
+        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
+        {
             let n = n.min(self.width.saturating_sub(self.cursor_x));
-            if n == 0 { return; }
-            let _ = self.state.splice_text(&text_id, self.cursor_x, 0, &" ".repeat(n));
+            if n == 0 {
+                return;
+            }
+            let _ = self
+                .state
+                .splice_text(&text_id, self.cursor_x, 0, &" ".repeat(n));
             // Truncate back to the grid width.
             let len = self.state.length(&text_id);
             if len > self.width {
-                let _ = self.state.splice_text(&text_id, self.width, (len - self.width) as isize, "");
+                let _ =
+                    self.state
+                        .splice_text(&text_id, self.width, (len - self.width) as isize, "");
             }
         }
     }
 
     fn delete_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
+        let line_obj = match self.active_line_id(y) {
+            Some(o) => o,
+            None => return,
+        };
+        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
+        {
             let len = self.state.length(&text_id);
             let count = n.min(len.saturating_sub(self.cursor_x));
-            if count == 0 { return; }
-            let _ = self.state.splice_text(&text_id, self.cursor_x, count as isize, "");
+            if count == 0 {
+                return;
+            }
+            let _ = self
+                .state
+                .splice_text(&text_id, self.cursor_x, count as isize, "");
             // Pad blanks at the end to restore the width.
             let new_len = self.state.length(&text_id);
             if new_len < self.width {
-                let _ = self.state.splice_text(&text_id, new_len, 0, &" ".repeat(self.width - new_len));
+                let _ =
+                    self.state
+                        .splice_text(&text_id, new_len, 0, &" ".repeat(self.width - new_len));
             }
         }
     }
 
     /// Reset the packed attrs for cells `[from, from+count)` to default.
     fn reset_attr_range(&mut self, line_obj: &ObjId, from: usize, count: usize) {
-        if count == 0 { return; }
-        if let Ok(Some((Value::Scalar(v), _))) = self.state.get(line_obj, "attrs") {
-            if let automerge::ScalarValue::Bytes(bytes) = v.as_ref() {
-                let mut attr_bytes = bytes.clone();
-                let empty = Attr::default().pack();
-                for i in from..(from + count) {
-                    let s = i * ATTR_BYTES;
-                    if s + ATTR_BYTES <= attr_bytes.len() {
-                        attr_bytes[s..s + ATTR_BYTES].copy_from_slice(&empty);
-                    }
+        if count == 0 {
+            return;
+        }
+        if let Ok(Some((Value::Scalar(v), _))) = self.state.get(line_obj, "attrs")
+            && let automerge::ScalarValue::Bytes(bytes) = v.as_ref()
+        {
+            let mut attr_bytes = bytes.clone();
+            let empty = Attr::default().pack();
+            for i in from..(from + count) {
+                let s = i * ATTR_BYTES;
+                if s + ATTR_BYTES <= attr_bytes.len() {
+                    attr_bytes[s..s + ATTR_BYTES].copy_from_slice(&empty);
                 }
-                let _ = self.state.put(line_obj, "attrs", attr_bytes);
             }
+            let _ = self.state.put(line_obj, "attrs", attr_bytes);
         }
     }
 
@@ -2909,7 +3450,8 @@ impl<'a> TerminalPerformer<'a> {
                 2004 => self.modes.bracketed_paste = enable,
                 1048 => {
                     if enable {
-                        *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
+                        *self.saved_cursor =
+                            Some((self.cursor_x, self.cursor_y, self.current_attr));
                     } else if let Some((x, y, a)) = *self.saved_cursor {
                         self.cursor_x = x.min(self.width - 1);
                         self.cursor_y = y.min(self.height - 1);
@@ -2917,7 +3459,11 @@ impl<'a> TerminalPerformer<'a> {
                     }
                 }
                 47 | 1047 | 1049 => {
-                    if enable { self.enter_alt(n == 1049); } else { self.exit_alt(n == 1049); }
+                    if enable {
+                        self.enter_alt(n == 1049);
+                    } else {
+                        self.exit_alt(n == 1049);
+                    }
                 }
                 _ => {}
             }
@@ -2925,7 +3471,9 @@ impl<'a> TerminalPerformer<'a> {
     }
 
     fn enter_alt(&mut self, save_cursor: bool) {
-        if *self.alt_active { return; }
+        if *self.alt_active {
+            return;
+        }
         if save_cursor {
             *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
         }
@@ -2940,16 +3488,16 @@ impl<'a> TerminalPerformer<'a> {
     }
 
     fn exit_alt(&mut self, restore_cursor: bool) {
-        if !*self.alt_active { return; }
+        if !*self.alt_active {
+            return;
+        }
         *self.alt_active = false;
         self.scroll_top = 0;
         self.scroll_bottom = self.height.saturating_sub(1);
-        if restore_cursor {
-            if let Some((x, y, a)) = self.saved_cursor.take() {
-                self.cursor_x = x.min(self.width.saturating_sub(1));
-                self.cursor_y = y.min(self.height.saturating_sub(1));
-                self.current_attr = a;
-            }
+        if restore_cursor && let Some((x, y, a)) = self.saved_cursor.take() {
+            self.cursor_x = x.min(self.width.saturating_sub(1));
+            self.cursor_y = y.min(self.height.saturating_sub(1));
+            self.current_attr = a;
         }
         self.pending_wrap = false;
     }
@@ -2962,7 +3510,9 @@ impl<'a> TerminalPerformer<'a> {
         for id in &ids {
             if let Ok(Some((Value::Object(ObjType::Text), tid))) = self.state.get(id, "text") {
                 let l = self.state.length(&tid);
-                let _ = self.state.splice_text(&tid, 0, l as isize, &" ".repeat(width));
+                let _ = self
+                    .state
+                    .splice_text(&tid, 0, l as isize, &" ".repeat(width));
             }
             let attr_bytes: Vec<u8> = vec![Attr::default().pack(); width].concat();
             let _ = self.state.put(id, "attrs", attr_bytes);
@@ -2981,7 +3531,7 @@ impl<'a> TerminalPerformer<'a> {
         // Flatten into groups so we can look across `;`-separated params for
         // the extended-color introducers while still handling `:`-subparam
         // colon form within a single group.
-        let groups: Vec<Vec<u16>> = params.iter().map(|p| p.to_vec()).collect();
+        let groups: Vec<Vec<u16>> = params.iter().map(<[u16]>::to_vec).collect();
         if groups.is_empty() {
             self.current_attr = Attr::default();
             return;
@@ -3000,7 +3550,10 @@ impl<'a> TerminalPerformer<'a> {
                 9 => self.current_attr.strike = true,
                 // SGR 22 turns off both bold *and* faint (they share the
                 // intensity axis in the spec).
-                22 => { self.current_attr.bold = false; self.current_attr.dim = false; }
+                22 => {
+                    self.current_attr.bold = false;
+                    self.current_attr.dim = false;
+                }
                 23 => self.current_attr.italic = false,
                 24 => self.current_attr.underline = false,
                 27 => self.current_attr.reverse = false,
@@ -3016,24 +3569,52 @@ impl<'a> TerminalPerformer<'a> {
                     if group.len() >= 2 {
                         // Colon subparam form: `38:2:..:r:g:b` or `38:5:n`.
                         if let Some(col) = color_from_subparams(&group[1..]) {
-                            if is_fg { self.current_attr.fg = col; } else { self.current_attr.bg = col; }
+                            if is_fg {
+                                self.current_attr.fg = col;
+                            } else {
+                                self.current_attr.bg = col;
+                            }
                         }
                     } else {
                         // Semicolon form: pull the following groups.
                         let mode = groups.get(i + 1).and_then(|g| g.first()).copied();
                         match mode {
                             Some(2) => {
-                                let r = groups.get(i + 2).and_then(|g| g.first()).copied().unwrap_or(0) as u8;
-                                let g = groups.get(i + 3).and_then(|g| g.first()).copied().unwrap_or(0) as u8;
-                                let b = groups.get(i + 4).and_then(|g| g.first()).copied().unwrap_or(0) as u8;
+                                let r = groups
+                                    .get(i + 2)
+                                    .and_then(|g| g.first())
+                                    .copied()
+                                    .unwrap_or(0) as u8;
+                                let g = groups
+                                    .get(i + 3)
+                                    .and_then(|g| g.first())
+                                    .copied()
+                                    .unwrap_or(0) as u8;
+                                let b = groups
+                                    .get(i + 4)
+                                    .and_then(|g| g.first())
+                                    .copied()
+                                    .unwrap_or(0) as u8;
                                 let col = CellColor::Rgb(r, g, b);
-                                if is_fg { self.current_attr.fg = col; } else { self.current_attr.bg = col; }
+                                if is_fg {
+                                    self.current_attr.fg = col;
+                                } else {
+                                    self.current_attr.bg = col;
+                                }
                                 i += 4;
                             }
                             Some(5) => {
-                                let n = groups.get(i + 2).and_then(|g| g.first()).copied().unwrap_or(0) as u8;
+                                let n = groups
+                                    .get(i + 2)
+                                    .and_then(|g| g.first())
+                                    .copied()
+                                    .unwrap_or(0) as u8;
                                 let col = CellColor::Indexed(n);
-                                if is_fg { self.current_attr.fg = col; } else { self.current_attr.bg = col; }
+                                if is_fg {
+                                    self.current_attr.fg = col;
+                                } else {
+                                    self.current_attr.bg = col;
+                                }
                                 i += 2;
                             }
                             _ => {}
@@ -3113,7 +3694,7 @@ impl<'a> TerminalPerformer<'a> {
             6 => {
                 let row = self.cursor_y + 1;
                 let col = self.cursor_x + 1;
-                self.respond(format!("\x1b[{};{}R", row, col).as_bytes());
+                self.respond(format!("\x1b[{row};{col}R").as_bytes());
             }
             _ => {}
         }
@@ -3125,14 +3706,19 @@ impl<'a> TerminalPerformer<'a> {
         if ps == 6 {
             let row = self.cursor_y + 1;
             let col = self.cursor_x + 1;
-            self.respond(format!("\x1b[?{};{};1R", row, col).as_bytes());
+            self.respond(format!("\x1b[?{row};{col};1R").as_bytes());
         }
     }
 
     /// XTVERSION reply — DCS `> | qos-terminal(<version>) ST`.
     fn reply_xtversion(&mut self) {
         self.respond(
-            format!("\x1bP>|{}({})\x1b\\", TERMINAL_NAME, env!("CARGO_PKG_VERSION")).as_bytes(),
+            format!(
+                "\x1bP>|{}({})\x1b\\",
+                TERMINAL_NAME,
+                env!("CARGO_PKG_VERSION")
+            )
+            .as_bytes(),
         );
     }
 
@@ -3154,7 +3740,7 @@ impl<'a> TerminalPerformer<'a> {
             Some(false) => 2,
             None => 0,
         };
-        self.respond(format!("\x1b[?{};{}$y", mode, pv).as_bytes());
+        self.respond(format!("\x1b[?{mode};{pv}$y").as_bytes());
     }
 }
 
@@ -3167,7 +3753,11 @@ fn color_from_subparams(sub: &[u16]) -> Option<CellColor> {
         Some(2) => {
             let n = sub.len();
             if n >= 4 {
-                Some(CellColor::Rgb(sub[n - 3] as u8, sub[n - 2] as u8, sub[n - 1] as u8))
+                Some(CellColor::Rgb(
+                    sub[n - 3] as u8,
+                    sub[n - 2] as u8,
+                    sub[n - 1] as u8,
+                ))
             } else if n >= 2 {
                 // `38:2:r` style with too few components — treat what we have.
                 Some(CellColor::Rgb(sub.get(1).copied().unwrap_or(0) as u8, 0, 0))
@@ -3277,11 +3867,24 @@ pub(crate) fn map_ansi_256(code: u8, palette: &ui::tokens::TerminalPalette) -> C
 
 /// Resolve a `CellColor` to a concrete `Color`. Bold brightens the low 8
 /// ANSI foreground slots (xterm behaviour).
-pub(crate) fn resolve_color(c: CellColor, palette: &ui::tokens::TerminalPalette, is_fg: bool, bold: bool) -> Color {
+pub(crate) fn resolve_color(
+    c: CellColor,
+    palette: &ui::tokens::TerminalPalette,
+    is_fg: bool,
+    bold: bool,
+) -> Color {
     match c {
-        CellColor::Default => if is_fg { palette.fg_default } else { palette.bg_default },
+        CellColor::Default => {
+            if is_fg {
+                palette.fg_default
+            } else {
+                palette.bg_default
+            }
+        }
         CellColor::Indexed(mut n) => {
-            if bold && is_fg && n < 8 { n += 8; }
+            if bold && is_fg && n < 8 {
+                n += 8;
+            }
             map_ansi_256(n, palette)
         }
         CellColor::Rgb(r, g, b) => Color::from_rgb8(r, g, b),
@@ -3291,7 +3894,10 @@ pub(crate) fn resolve_color(c: CellColor, palette: &ui::tokens::TerminalPalette,
 /// Resolve a cell's `(foreground, optional background)` colors, applying
 /// reverse video. A `None` background means "leave the default terminal
 /// background showing" (no fill).
-pub(crate) fn resolve_pair(attr: Attr, palette: &ui::tokens::TerminalPalette) -> (Color, Option<Color>) {
+pub(crate) fn resolve_pair(
+    attr: Attr,
+    palette: &ui::tokens::TerminalPalette,
+) -> (Color, Option<Color>) {
     let fg = resolve_color(attr.fg, palette, true, attr.bold);
     let bg = match attr.bg {
         CellColor::Default => None,
@@ -3335,16 +3941,19 @@ pub fn resolve_login_shell() -> String {
 /// Pure core of [`resolve_login_shell`], with the two environment lookups
 /// injected so the precedence is testable without mutating process-global
 /// state (which would race parallel tests).
-pub(crate) fn resolve_login_shell_with(shell_env: Option<String>, passwd_shell: Option<String>) -> String {
-    if let Some(s) = shell_env {
-        if !s.is_empty() {
-            return s;
-        }
+pub(crate) fn resolve_login_shell_with(
+    shell_env: Option<String>,
+    passwd_shell: Option<String>,
+) -> String {
+    if let Some(s) = shell_env
+        && !s.is_empty()
+    {
+        return s;
     }
-    if let Some(s) = passwd_shell {
-        if !s.is_empty() {
-            return s;
-        }
+    if let Some(s) = passwd_shell
+        && !s.is_empty()
+    {
+        return s;
     }
     "/bin/sh".into()
 }
@@ -3371,7 +3980,12 @@ pub(crate) fn login_shell_from_passwd() -> Option<String> {
     }
 }
 
-pub struct TerminalBackend { pub writer: Box<dyn Write + Send>, pub reader: Box<dyn Read + Send>, pub master: Box<dyn MasterPty + Send>, pub shell_name: String }
+pub struct TerminalBackend {
+    pub writer: Box<dyn Write + Send>,
+    pub reader: Box<dyn Read + Send>,
+    pub master: Box<dyn MasterPty + Send>,
+    pub shell_name: String,
+}
 impl TerminalBackend {
     /// Open a PTY running a shell.
     ///
@@ -3458,12 +4072,22 @@ impl TerminalBackend {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let pty_system = native_pty_system();
-        let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
+        let pair = pty_system.openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
         let _child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
-        Ok(Self { writer, reader, master: pair.master, shell_name })
+        Ok(Self {
+            writer,
+            reader,
+            master: pair.master,
+            shell_name,
+        })
     }
 }
 
@@ -3511,7 +4135,11 @@ pub enum ConfineRoute {
 /// by the launcher's seccomp + namespace + bind mounts. Best-effort therefore
 /// never grants more than the ambient sandbox already allows.
 pub fn confinement_route() -> ConfineRoute {
-    decide_route(ush_service_fd().is_some(), can_build_namespace(), ush_binary())
+    decide_route(
+        ush_service_fd().is_some(),
+        can_build_namespace(),
+        ush_binary(),
+    )
 }
 
 /// Pure core of [`confinement_route`], with the three probed inputs injected so
@@ -3533,10 +4161,8 @@ pub fn decide_route(
     if service_available {
         return ConfineRoute::Service;
     }
-    if can_self_host {
-        if let Some(bin) = runtime {
-            return ConfineRoute::SelfHosted(bin);
-        }
+    if can_self_host && let Some(bin) = runtime {
+        return ConfineRoute::SelfHosted(bin);
     }
     ConfineRoute::BestEffort
 }
@@ -3585,8 +4211,7 @@ fn seccomp_filtered() -> bool {
                 .find_map(|l| l.strip_prefix("Seccomp:").map(|v| v.trim().to_string()))
         })
         .and_then(|v| v.parse::<u32>().ok())
-        .map(|mode| mode >= 2)
-        .unwrap_or(false)
+        .is_some_and(|mode| mode >= 2)
 }
 
 /// Whether the kernel will let an unprivileged process create a user namespace.
@@ -3596,16 +4221,16 @@ fn seccomp_filtered() -> bool {
 /// disable — never guessing "no" just because a knob is missing.
 fn unprivileged_userns_enabled() -> bool {
     // Debian/Ubuntu knob: `0` disables unprivileged user namespaces entirely.
-    if let Ok(v) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
-        if v.trim() == "0" {
-            return false;
-        }
+    if let Ok(v) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone")
+        && v.trim() == "0"
+    {
+        return false;
     }
     // Upstream cap on how many user namespaces may exist: `0` means none.
-    if let Ok(v) = std::fs::read_to_string("/proc/sys/user/max_user_namespaces") {
-        if v.trim() == "0" {
-            return false;
-        }
+    if let Ok(v) = std::fs::read_to_string("/proc/sys/user/max_user_namespaces")
+        && v.trim() == "0"
+    {
+        return false;
     }
     true
 }
@@ -3614,8 +4239,7 @@ fn unprivileged_userns_enabled() -> bool {
 /// namespace with it, so its absence means a self-hosted guest cannot start.
 fn bwrap_present() -> bool {
     std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).any(|dir| dir.join("bwrap").exists()))
-        .unwrap_or(false)
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("bwrap").exists()))
 }
 
 /// Where the runtime binary is when the terminal has to start one itself.
@@ -3671,9 +4295,7 @@ fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> 
 
     let (payload, fd) = ush::supervisor::recv_with_fd(raw)?;
     let text = String::from_utf8_lossy(&payload);
-    let fd = fd.ok_or_else(|| {
-        format!("the ush service refused this session: {}", text.trim())
-    })?;
+    let fd = fd.ok_or_else(|| format!("the ush service refused this session: {}", text.trim()))?;
 
     // SAFETY: `fd` arrived over `SCM_RIGHTS` and this process now owns it. The
     // supervisor sends a pty master and nothing else.
@@ -3783,7 +4405,9 @@ impl TerminalWidget {
                 match std::io::Read::read(&mut *r, &mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if output_tx.send(buf[..n].to_vec()).is_err() { break; }
+                        if output_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
                         // Wake the event loop so `sync` drains the PTY. Coalesced
                         // via `wake_pending`: at most one in-flight wake until the
                         // App delivers it (`on_external_event` clears the flag).
@@ -3791,9 +4415,11 @@ impl TerminalWidget {
                             let armed = waker
                                 .lock()
                                 .ok()
-                                .and_then(|g| g.as_ref().map(|p| {
-                                    let _ = p.send_event(UserEvent::External(String::new()));
-                                }))
+                                .and_then(|g| {
+                                    g.as_ref().map(|p| {
+                                        let _ = p.send_event(UserEvent::External(String::new()));
+                                    })
+                                })
                                 .is_some();
                             if !armed {
                                 // No proxy yet (embedded host, or startup before
@@ -3829,7 +4455,8 @@ impl TerminalWidget {
     /// let _term = TerminalWidget::spawn_command(cmd).unwrap();
     /// ```
     pub fn spawn_command(cmd: CommandBuilder) -> anyhow::Result<Self> {
-        let backend = TerminalBackend::with_command(cmd).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let backend =
+            TerminalBackend::with_command(cmd).map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(Self::from_backend(backend))
     }
 
@@ -3840,13 +4467,27 @@ impl TerminalWidget {
     pub fn spawn_headless() -> anyhow::Result<Self> {
         struct NullMaster;
         impl MasterPty for NullMaster {
-            fn get_size(&self) -> Result<PtySize, anyhow::Error> { Ok(PtySize::default()) }
-            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> { Ok(()) }
-            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> { Ok(Box::new(std::io::sink())) }
-            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> { Ok(Box::new(std::io::empty())) }
-            fn process_group_leader(&self) -> Option<i32> { None }
-            fn as_raw_fd(&self) -> Option<i32> { None }
-            fn tty_name(&self) -> Option<std::path::PathBuf> { None }
+            fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+                Ok(PtySize::default())
+            }
+            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+                Ok(())
+            }
+            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+                Ok(Box::new(std::io::sink()))
+            }
+            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+                Ok(Box::new(std::io::empty()))
+            }
+            fn process_group_leader(&self) -> Option<i32> {
+                None
+            }
+            fn as_raw_fd(&self) -> Option<i32> {
+                None
+            }
+            fn tty_name(&self) -> Option<std::path::PathBuf> {
+                None
+            }
         }
         let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
         let (_tx, output_rx) = crossbeam_channel::unbounded();

@@ -6,28 +6,18 @@
 //!   library. `--shots`, CI and every test run here — no network, fully
 //!   hermetic, deterministic screenshots. [`offline::OfflineBackend`] answers
 //!   metadata from the sample and reports "cannot stream".
-//! * **live** (`--features live`): real YouTube Music via the pure-Rust
-//!   [`rustypipe`](https://docs.rs/rustypipe) InnerTube client —
+//! * **live** (`--features live`): real `YouTube` Music via the pure-Rust
+//!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client —
 //!   `music_search_tracks` for real search results and, crucially, `player`
 //!   to resolve a **directly-playable audio-only stream URL** for a track.
 //!
-//! Both worlds implement the same [`MusicBackend`] trait, so the rest of the
-//! app (the non-blocking [`crate::stream`] worker) is written once against the
-//! trait and the cargo feature picks the implementation at build time; the
-//! worker then picks live-or-offline at *runtime* (falling back to offline if
-//! live init or the network fails). This is the clean seam the brief asks for:
-//! rustypipe is real but gated, the offline sample is the default, and the
-//! PoToken concern is a module you can swap ([`potoken`]).
+//! Both worlds implement the same [`MusicBackend`] trait: the cargo feature
+//! picks the implementation at build time, and [`crate::stream`]'s worker
+//! picks live-or-offline at *runtime*, falling back to offline if live init
+//! or the network fails.
 //!
-//! ## The stream-resolution gotcha (PoToken / SABR)
-//!
-//! YouTube gates *some* clients' streams behind a BotGuard-minted PoToken. The
-//! trick rustypipe uses (and we rely on): the **iOS** and **TV** player clients
-//! return direct `googlevideo` URLs **without** a PoToken. rustypipe's default
-//! `player_client_order` with no BotGuard is `[Ios, Tv]`, so
-//! [`MusicBackend::resolve_audio`] gets a real, fetchable audio URL with zero
-//! extra runtime deps. The [`potoken`] seam stays in place so a future BotGuard
-//! provider can unlock the Desktop/Music clients if YouTube ever tightens this.
+//! `PoToken` minting (why the offline-audio path works with no `BotGuard`) is
+//! documented in [`potoken`].
 
 pub mod offline;
 pub mod potoken;
@@ -37,13 +27,13 @@ pub mod ytdlp;
 #[cfg(feature = "live")]
 pub mod live;
 
-/// A track returned by a search (real from YouTube Music, or none offline).
+/// A track returned by a search (real from `YouTube` Music, or none offline).
 ///
 /// Toolkit- and serde-free so it crosses the worker-thread boundary cheaply and
 /// never leaks a rustypipe type into the UI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackHit {
-    /// YouTube video id — the key [`MusicBackend::resolve_audio`] streams from.
+    /// `YouTube` video id — the key [`MusicBackend::resolve_audio`] streams from.
     pub video_id: String,
     pub title: String,
     /// Primary artist display name ("Various Artists" for VA compilations).
@@ -54,7 +44,7 @@ pub struct TrackHit {
     pub album_id: Option<String>,
     /// Track length in whole seconds (0 when the source omits it).
     pub duration_s: u32,
-    /// Real album-cover thumbnail URL (YouTube image CDN), best-size pick.
+    /// Real album-cover thumbnail URL (`YouTube` image CDN), best-size pick.
     /// Empty when the source omits it (offline sample) — the UI then falls
     /// back to a procedural placeholder tile.
     pub cover_url: String,
@@ -101,7 +91,7 @@ pub struct AlbumHit {
 /// An artist returned by a search.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtistHit {
-    /// YouTube channel id (e.g. `UC…`) — the key [`MusicBackend::artist`] fetches.
+    /// `YouTube` channel id (e.g. `UC…`) — the key [`MusicBackend::artist`] fetches.
     pub id: String,
     pub name: String,
     /// Approximate subscriber count (0 when hidden/omitted).
@@ -116,7 +106,7 @@ pub struct PlaylistHit {
     /// YouTube-Music playlist browse id (e.g. `PL…` / `RDCLAK…`).
     pub id: String,
     pub title: String,
-    /// Channel / owner display name ("YouTube Music" for curated).
+    /// Channel / owner display name ("`YouTube` Music" for curated).
     pub subtitle: String,
     /// Track count (0 when omitted).
     pub track_count: u64,
@@ -231,7 +221,7 @@ pub struct ArtistPage {
     pub name: String,
     pub subscriber_count: u64,
     pub description: String,
-    /// Link to the artist's Wikipedia page, when YouTube exposes one.
+    /// Link to the artist's Wikipedia page, when `YouTube` exposes one.
     pub wikipedia_url: String,
     pub header_url: String,
     pub tracks: Vec<TrackHit>,
@@ -266,7 +256,7 @@ pub struct AlbumPage {
 
 /// A resolved, directly-playable audio stream — what actually gets handed to
 /// the audio engine. The `url` is a fetchable `https://…googlevideo.com/…`
-/// media URL; feeding it to GStreamer `playbin` produces sound.
+/// media URL; feeding it to `GStreamer` `playbin` produces sound.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedStream {
     pub video_id: String,
@@ -279,7 +269,7 @@ pub struct ResolvedStream {
     pub format: String,
     /// Average bitrate in bits/second (higher = better).
     pub bitrate: u32,
-    /// YouTube stream format id (itag) — e.g. 140 (m4a 128k), 251 (opus 160k).
+    /// `YouTube` stream format id (itag) — e.g. 140 (m4a 128k), 251 (opus 160k).
     pub itag: u32,
     /// Content length in bytes as reported by the player response.
     pub size_bytes: u64,
@@ -318,18 +308,18 @@ pub trait MusicBackend: Send + Sync {
     /// "youtube-music (live)").
     fn name(&self) -> &str;
 
-    /// Whether this backend can actually reach YouTube and stream audio. The UI
+    /// Whether this backend can actually reach `YouTube` and stream audio. The UI
     /// uses it to decide whether to surface live search / "streaming" state.
     fn is_live(&self) -> bool {
         false
     }
 
     /// Real full-text track search. Offline returns an empty list (the app
-    /// shows the bundled library instead); live hits YouTube Music.
+    /// shows the bundled library instead); live hits `YouTube` Music.
     fn search_tracks(&self, query: &str) -> SearchOutcome;
 
     /// A real multi-type search: the mixed "top result" plus songs, albums,
-    /// artists and playlists in one call (YouTube Music's main results page).
+    /// artists and playlists in one call (`YouTube` Music's main results page).
     /// Offline returns an empty bundle; live fills every bucket.
     fn search_all(&self, _query: &str) -> Result<SearchBundle, BackendError> {
         Ok(SearchBundle::default())
@@ -391,7 +381,9 @@ pub fn preferred_backend(note: impl FnOnce(String)) -> Box<dyn MusicBackend> {
                 return Box::new(b);
             }
             Err(e) => {
-                note(format!("live backend unavailable ({e}); using offline sample"));
+                note(format!(
+                    "live backend unavailable ({e}); using offline sample"
+                ));
             }
         }
     }

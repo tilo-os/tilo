@@ -30,10 +30,8 @@ pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
     for raw in text.lines() {
         if raw.starts_with("@@") {
             // Close the previous hunk's line range.
-            if in_hunk {
-                if let Some(h) = diff.hunks.last_mut() {
-                    h.line_range.1 = diff.lines.len();
-                }
+            if in_hunk && let Some(h) = diff.hunks.last_mut() {
+                h.line_range.1 = diff.lines.len();
             }
             let (old_start, new_start, header) = parse_hunk_header(raw);
             old_no = old_start;
@@ -127,15 +125,13 @@ pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
         });
     }
 
-    if in_hunk {
-        if let Some(h) = diff.hunks.last_mut() {
-            h.line_range.1 = diff.lines.len();
-        }
+    if in_hunk && let Some(h) = diff.hunks.last_mut() {
+        h.line_range.1 = diff.lines.len();
     }
     diff
 }
 
-/// Parse an `@@ -a,b +c,d @@ trailing @@` header into (old_start, new_start,
+/// Parse an `@@ -a,b +c,d @@ trailing @@` header into (`old_start`, `new_start`,
 /// remaining-section-text).
 fn parse_hunk_header(line: &str) -> (u32, u32, String) {
     // Expected shape: @@ -12,7 +12,9 @@ fn foo()
@@ -144,9 +140,17 @@ fn parse_hunk_header(line: &str) -> (u32, u32, String) {
     if let Some(rest) = line.strip_prefix("@@ ") {
         for tok in rest.split_whitespace() {
             if let Some(neg) = tok.strip_prefix('-') {
-                old_start = neg.split(',').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                old_start = neg
+                    .split(',')
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
             } else if let Some(pos) = tok.strip_prefix('+') {
-                new_start = pos.split(',').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                new_start = pos
+                    .split(',')
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
             }
         }
     }
@@ -199,18 +203,17 @@ pub struct Token {
 }
 
 const RUST_KEYWORDS: &[&str] = &[
-    "fn", "let", "mut", "pub", "use", "mod", "struct", "enum", "impl", "trait",
-    "for", "while", "loop", "if", "else", "match", "return", "self", "Self",
-    "crate", "super", "as", "in", "ref", "where", "const", "static", "move",
-    "async", "await", "dyn", "type", "unsafe", "extern", "true", "false",
-    "continue", "break", "default",
+    "fn", "let", "mut", "pub", "use", "mod", "struct", "enum", "impl", "trait", "for", "while",
+    "loop", "if", "else", "match", "return", "self", "Self", "crate", "super", "as", "in", "ref",
+    "where", "const", "static", "move", "async", "await", "dyn", "type", "unsafe", "extern",
+    "true", "false", "continue", "break", "default",
 ];
 
 const GENERIC_KEYWORDS: &[&str] = &[
-    "function", "var", "const", "let", "return", "if", "else", "for", "while",
-    "class", "import", "from", "export", "def", "elif", "try", "except",
-    "True", "False", "None", "null", "true", "false", "new", "this", "public",
-    "private", "static", "void", "int", "string", "bool", "double",
+    "function", "var", "const", "let", "return", "if", "else", "for", "while", "class", "import",
+    "from", "export", "def", "elif", "try", "except", "True", "False", "None", "null", "true",
+    "false", "new", "this", "public", "private", "static", "void", "int", "string", "bool",
+    "double",
 ];
 
 /// Tokenize one source line. Comment detection is single-line only (`//`,
@@ -236,7 +239,10 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
         // Single-line comment to end of line.
         let rest: String = chars[i..].iter().collect();
         if comment_lead.iter().any(|p| rest.starts_with(p)) {
-            out.push(Token { text: rest, class: TokenClass::Comment });
+            out.push(Token {
+                text: rest,
+                class: TokenClass::Comment,
+            });
             break;
         }
 
@@ -254,7 +260,10 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
                 }
                 i += 1;
             }
-            out.push(Token { text: s, class: TokenClass::Str });
+            out.push(Token {
+                text: s,
+                class: TokenClass::Str,
+            });
             continue;
         }
 
@@ -267,7 +276,10 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
                 s.push(chars[i]);
                 i += 1;
             }
-            out.push(Token { text: s, class: TokenClass::Number });
+            out.push(Token {
+                text: s,
+                class: TokenClass::Number,
+            });
             continue;
         }
 
@@ -280,7 +292,7 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
             }
             let class = if keywords.contains(&s.as_str()) {
                 TokenClass::Keyword
-            } else if s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            } else if s.chars().next().is_some_and(char::is_uppercase) {
                 TokenClass::Type
             } else {
                 TokenClass::Plain
@@ -301,7 +313,10 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
                 s.push(chars[i]);
                 i += 1;
             }
-            out.push(Token { text: s, class: TokenClass::Punct });
+            out.push(Token {
+                text: s,
+                class: TokenClass::Punct,
+            });
             continue;
         }
 
@@ -322,7 +337,10 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
             s.push(chars[i]);
             i += 1;
         }
-        out.push(Token { text: s, class: TokenClass::Plain });
+        out.push(Token {
+            text: s,
+            class: TokenClass::Plain,
+        });
     }
 
     out
@@ -357,17 +375,31 @@ mod tests {
 
     #[test]
     fn detects_new_and_deleted_files() {
-        let new = parse_unified("a.txt", "text", "new file mode 100644\n@@ -0,0 +1,1 @@\n+hi");
+        let new = parse_unified(
+            "a.txt",
+            "text",
+            "new file mode 100644\n@@ -0,0 +1,1 @@\n+hi",
+        );
         assert!(new.is_new);
-        let del = parse_unified("b.txt", "text", "deleted file mode 100644\n@@ -1,1 +0,0 @@\n-bye");
+        let del = parse_unified(
+            "b.txt",
+            "text",
+            "deleted file mode 100644\n@@ -1,1 +0,0 @@\n-bye",
+        );
         assert!(del.is_deleted);
     }
 
     #[test]
     fn tokenizer_classifies_rust() {
         let toks = tokenize("    let x = \"hi\"; // note", "rust");
-        assert!(toks.iter().any(|t| t.text == "let" && t.class == TokenClass::Keyword));
-        assert!(toks.iter().any(|t| t.class == TokenClass::Str && t.text.contains("hi")));
+        assert!(
+            toks.iter()
+                .any(|t| t.text == "let" && t.class == TokenClass::Keyword)
+        );
+        assert!(
+            toks.iter()
+                .any(|t| t.class == TokenClass::Str && t.text.contains("hi"))
+        );
         assert!(toks.iter().any(|t| t.class == TokenClass::Comment));
     }
 

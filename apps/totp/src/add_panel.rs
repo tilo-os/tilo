@@ -25,9 +25,9 @@
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
+use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
-use vello::Scene;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -35,7 +35,7 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{Button, ButtonFace, SegmentedFace, TextInput, ToggleGroup, Widget};
 
 use crate::model::{self, Account, Algorithm};
 
@@ -233,7 +233,13 @@ impl AddAccountPanel {
     }
 
     fn set_focus(&mut self, f: Option<Field>) {
-        for field in [Field::Uri, Field::Issuer, Field::Label, Field::Secret, Field::Period] {
+        for field in [
+            Field::Uri,
+            Field::Issuer,
+            Field::Label,
+            Field::Secret,
+            Field::Period,
+        ] {
             let on = Some(field) == f;
             self.field_mut(field).set_focus(on);
         }
@@ -250,7 +256,11 @@ impl AddAccountPanel {
             .and_then(|f| order.iter().position(|x| *x == f))
             .unwrap_or(0);
         let n = order.len();
-        let next = if backward { (cur + n - 1) % n } else { (cur + 1) % n };
+        let next = if backward {
+            (cur + n - 1) % n
+        } else {
+            (cur + 1) % n
+        };
         self.set_focus(Some(order[next]));
     }
 
@@ -327,7 +337,12 @@ impl AddAccountPanel {
         let btn_w = ((content_w - 12.0) / 2.0).min(140.0);
         let by = y0 + h - PAD - footer_h;
         self.save_rect = Rect::new(right - btn_w, by, right, by + footer_h);
-        self.cancel_rect = Rect::new(right - btn_w * 2.0 - 12.0, by, right - btn_w - 12.0, by + footer_h);
+        self.cancel_rect = Rect::new(
+            right - btn_w * 2.0 - 12.0,
+            by,
+            right - btn_w - 12.0,
+            by + footer_h,
+        );
 
         // Scrollable body between the fixed title and the fixed footer.
         let body_top = y0 + title_h;
@@ -417,7 +432,7 @@ impl AddAccountPanel {
         if secret.is_empty() {
             return Err("Enter a secret key".to_string());
         }
-        if crate::totp::decode_secret(&secret).map(|b| b.is_empty()).unwrap_or(true) {
+        if crate::totp::decode_secret(&secret).is_none_or(|b| b.is_empty()) {
             return Err("That secret isn\u{2019}t valid base32".to_string());
         }
         let issuer = self.issuer.value().trim().to_string();
@@ -425,7 +440,13 @@ impl AddAccountPanel {
         if issuer.is_empty() && label.is_empty() {
             return Err("Add an issuer or account name".to_string());
         }
-        let period = self.period.value().trim().parse::<u32>().unwrap_or(30).clamp(5, 300);
+        let period = self
+            .period
+            .value()
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(30)
+            .clamp(5, 300);
         let color = (issuer.len().wrapping_add(label.len()) % 7) as u8;
         Ok(Account {
             id: Uuid::new_v4(),
@@ -507,8 +528,14 @@ impl AddAccountPanel {
             &self.window,
         );
         // Modal card.
-        let card = RoundedRect::from_rect(self.modal, theme.tokens.radii.xl as f64);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &card);
+        let card = RoundedRect::from_rect(self.modal, f64::from(theme.tokens.radii.xl));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &card,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -546,51 +573,163 @@ impl AddAccountPanel {
         // path today); pasting a setup link is the calm secondary. ---
         let img_hover = self.image_card_rect.contains(self.last_mouse);
         self.draw_method_card(
-            scene, transform, text_renderer, theme, self.image_card_rect,
-            Glyph::Image, "Scan a QR image", "Read the code from a screenshot or photo", img_hover, true,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.image_card_rect,
+            Glyph::Image,
+            "Scan a QR image",
+            "Read the code from a screenshot or photo",
+            img_hover,
+            true,
         );
         let link_hover = self.link_card_rect.contains(self.last_mouse);
         self.draw_method_card(
-            scene, transform, text_renderer, theme, self.link_card_rect,
-            Glyph::Link, "Paste a setup link", "Fill everything from an otpauth:// link", link_hover, false,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.link_card_rect,
+            Glyph::Link,
+            "Paste a setup link",
+            "Fill everything from an otpauth:// link",
+            link_hover,
+            false,
         );
 
         // Paste-link field (disclosed).
         if self.uri_expanded {
             if self.uri.value().is_empty() {
-                self.draw_placeholder(scene, transform, text_renderer, theme, self.uri_rect, "otpauth://totp/Issuer:account?secret=\u{2026}");
+                self.draw_placeholder(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    self.uri_rect,
+                    "otpauth://totp/Issuer:account?secret=\u{2026}",
+                );
             }
-            self.uri.draw(scene, transform, text_renderer, theme, &presence);
+            self.uri
+                .draw(scene, transform, text_renderer, theme, &presence);
             let parse_hover = self.parse_rect.contains(self.last_mouse);
-            self.draw_button(scene, transform, text_renderer, theme, self.parse_rect, "Fill", parse_hover, true);
+            self.draw_button(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                self.parse_rect,
+                "Fill",
+                parse_hover,
+                true,
+            );
         }
 
         // "Or enter details" divider.
         let div_y = self.issuer_rect.y0 - 18.0 - 14.0;
-        self.draw_divider(scene, transform, text_renderer, theme, div_y, "or enter details");
+        self.draw_divider(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            div_y,
+            "or enter details",
+        );
 
         // Manual fields.
-        self.draw_text_field(scene, transform, text_renderer, theme, "Issuer", Field::Issuer, "GitHub");
-        self.draw_text_field(scene, transform, text_renderer, theme, "Account name", Field::Label, "ada@example.com");
-        self.draw_text_field(scene, transform, text_renderer, theme, "Secret key", Field::Secret, "JBSWY3DPEHPK3PXP");
+        self.draw_text_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            "Issuer",
+            Field::Issuer,
+            "GitHub",
+        );
+        self.draw_text_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            "Account name",
+            Field::Label,
+            "ada@example.com",
+        );
+        self.draw_text_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            "Secret key",
+            Field::Secret,
+            "JBSWY3DPEHPK3PXP",
+        );
 
         // --- Advanced options disclosure ---
         self.draw_advanced_header(scene, transform, text_renderer, theme);
         if self.advanced_open {
-            self.draw_field_label(scene, transform, text_renderer, theme, "Algorithm", self.alg_rects[0]);
-            for (i, alg) in Algorithm::ALL.iter().enumerate() {
-                let selected = *alg == self.algorithm;
-                let hovered = self.alg_rects[i].contains(self.last_mouse);
-                self.draw_chip(scene, transform, text_renderer, theme, self.alg_rects[i], alg.as_str(), selected, hovered);
-            }
-            self.draw_field_label(scene, transform, text_renderer, theme, "Digits", self.digit_rects[0]);
-            for (i, d) in [6u8, 8u8].iter().enumerate() {
-                let selected = *d == self.digits;
-                let hovered = self.digit_rects[i].contains(self.last_mouse);
-                self.draw_chip(scene, transform, text_renderer, theme, self.digit_rects[i], &d.to_string(), selected, hovered);
-            }
-            self.draw_field_label(scene, transform, text_renderer, theme, "Period (s)", self.period_rect);
-            self.period.draw(scene, transform, text_renderer, theme, &presence);
+            self.draw_field_label(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Algorithm",
+                self.alg_rects[0],
+            );
+            let algorithm_labels: Vec<&str> = Algorithm::ALL
+                .iter()
+                .map(|algorithm| algorithm.as_str())
+                .collect();
+            let selected = Algorithm::ALL
+                .iter()
+                .position(|algorithm| *algorithm == self.algorithm)
+                .unwrap_or(0);
+            let hovered = self
+                .alg_rects
+                .iter()
+                .position(|rect| rect.contains(self.last_mouse));
+            ToggleGroup::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &SegmentedFace::new(&self.alg_rects, &algorithm_labels, selected)
+                    .pill()
+                    .hovered(hovered),
+            );
+            self.draw_field_label(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Digits",
+                self.digit_rects[0],
+            );
+            let digit_labels = ["6", "8"];
+            let selected = usize::from(self.digits == 8);
+            let hovered = self
+                .digit_rects
+                .iter()
+                .position(|rect| rect.contains(self.last_mouse));
+            ToggleGroup::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &SegmentedFace::new(&self.digit_rects, &digit_labels, selected)
+                    .pill()
+                    .hovered(hovered),
+            );
+            self.draw_field_label(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Period (s)",
+                self.period_rect,
+            );
+            self.period
+                .draw(scene, transform, text_renderer, theme, &presence);
         }
 
         scene.pop_layer();
@@ -616,8 +755,26 @@ impl AddAccountPanel {
         let can_save = !self.secret.value().trim().is_empty();
         let cancel_hover = self.cancel_rect.contains(self.last_mouse);
         let save_hover = self.save_rect.contains(self.last_mouse);
-        self.draw_button(scene, transform, text_renderer, theme, self.cancel_rect, "Cancel", cancel_hover, true);
-        self.draw_primary_button(scene, transform, text_renderer, theme, self.save_rect, "Add account", save_hover, can_save);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.cancel_rect,
+            "Cancel",
+            cancel_hover,
+            true,
+        );
+        self.draw_primary_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.save_rect,
+            "Add account",
+            save_hover,
+            can_save,
+        );
     }
 
     /// One big, tappable method row: an icon tile, a bold title, and a calm
@@ -637,9 +794,13 @@ impl AddAccountPanel {
         hovered: bool,
         primary: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
         let bg = if primary {
-            if hovered { theme.accent_hover } else { theme.accent_primary }
+            if hovered {
+                theme.accent_hover
+            } else {
+                theme.accent_primary
+            }
         } else if hovered {
             theme.tokens.colors.surface_white_10
         } else {
@@ -647,26 +808,51 @@ impl AddAccountPanel {
         };
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
         if !primary {
-            scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &shape);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &shape,
+            );
         }
 
         let on_primary = primary;
-        let title_color = if on_primary { Color::WHITE } else { theme.tokens.colors.text_primary };
+        let title_color = if on_primary {
+            Color::WHITE
+        } else {
+            theme.tokens.colors.text_primary
+        };
         let sub_color = if on_primary {
             Color::WHITE.with_alpha_factor(0.82)
         } else {
             theme.tokens.colors.text_dim
         };
-        let icon_color = if on_primary { Color::WHITE } else { theme.accent_primary };
+        let icon_color = if on_primary {
+            Color::WHITE
+        } else {
+            theme.accent_primary
+        };
 
         // Icon tile on the left.
-        let tile = Rect::new(rect.x0 + 14.0, rect.center().y - 16.0, rect.x0 + 14.0 + 32.0, rect.center().y + 16.0);
+        let tile = Rect::new(
+            rect.x0 + 14.0,
+            rect.center().y - 16.0,
+            rect.x0 + 14.0 + 32.0,
+            rect.center().y + 16.0,
+        );
         let tile_bg = if on_primary {
             Color::WHITE.with_alpha_factor(0.18)
         } else {
             theme.accent_primary.with_alpha_factor(0.14)
         };
-        scene.fill(Fill::NonZero, transform, tile_bg, None, &RoundedRect::from_rect(tile, theme.tokens.radii.md as f64));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tile_bg,
+            None,
+            &RoundedRect::from_rect(tile, f64::from(theme.tokens.radii.md)),
+        );
         draw_glyph(scene, transform, tile, glyph, icon_color);
 
         let text_x = tile.x1 + 14.0;
@@ -695,7 +881,11 @@ impl AddAccountPanel {
         chev.move_to((cx - 4.0, cy - 6.0));
         chev.line_to((cx + 4.0, cy));
         chev.line_to((cx - 4.0, cy + 6.0));
-        let chev_color = if on_primary { Color::WHITE.with_alpha_factor(0.8) } else { theme.tokens.colors.text_dim };
+        let chev_color = if on_primary {
+            Color::WHITE.with_alpha_factor(0.8)
+        } else {
+            theme.tokens.colors.text_dim
+        };
         scene.stroke(&Stroke::new(2.0), transform, chev_color, None, &chev);
     }
 
@@ -740,7 +930,11 @@ impl AddAccountPanel {
             tri.line_to((tx + 1.0, ty + 5.0));
         }
         tri.close_path();
-        let color = if hovered { theme.tokens.colors.text_primary } else { theme.tokens.colors.text_dim };
+        let color = if hovered {
+            theme.tokens.colors.text_primary
+        } else {
+            theme.tokens.colors.text_dim
+        };
         scene.fill(Fill::NonZero, transform, color, None, &tri);
         text_renderer.draw_text_weighted(
             scene,
@@ -795,7 +989,8 @@ impl AddAccountPanel {
         if empty {
             self.draw_placeholder(scene, transform, text_renderer, theme, rect, placeholder);
         }
-        self.field_mut(field).draw(scene, transform, text_renderer, theme, &presence);
+        self.field_mut(field)
+            .draw(scene, transform, text_renderer, theme, &presence);
     }
 
     fn draw_placeholder(
@@ -807,7 +1002,7 @@ impl AddAccountPanel {
         rect: Rect,
         text: &str,
     ) {
-        let pad = theme.padding_standard as f64;
+        let pad = f64::from(theme.padding_standard);
         text_renderer.draw_text(
             scene,
             text,
@@ -830,10 +1025,10 @@ impl AddAccountPanel {
         let left = self.modal.x0 + PAD;
         let right = self.modal.x1 - PAD;
         let (tw, _) = text_renderer.measure(text, 11.0, None);
-        let cx = (left + right) / 2.0;
+        let cx = f64::midpoint(left, right);
         let line = theme.tokens.colors.border_standard.with_alpha_factor(0.6);
-        let l1 = Rect::new(left, y, cx - tw as f64 / 2.0 - 10.0, y + 1.0);
-        let l2 = Rect::new(cx + tw as f64 / 2.0 + 10.0, y, right, y + 1.0);
+        let l1 = Rect::new(left, y, cx - f64::from(tw) / 2.0 - 10.0, y + 1.0);
+        let l2 = Rect::new(cx + f64::from(tw) / 2.0 + 10.0, y, right, y + 1.0);
         scene.fill(Fill::NonZero, transform, line, None, &l1);
         scene.fill(Fill::NonZero, transform, line, None, &l2);
         text_renderer.draw_text(
@@ -841,44 +1036,8 @@ impl AddAccountPanel {
             text,
             11.0,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((cx - tw as f64 / 2.0, y - 7.0)),
+            transform * Affine::translate((cx - f64::from(tw) / 2.0, y - 7.0)),
             None,
-        );
-    }
-
-    fn draw_chip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        selected: bool,
-        hovered: bool,
-    ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-        let bg = if selected {
-            theme.accent_primary
-        } else if hovered {
-            theme.tokens.colors.surface_white_10
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        if !selected {
-            scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &shape);
-        }
-        let color = if selected { Color::WHITE } else { theme.tokens.colors.text_primary };
-        let (tw, th) = text_renderer.measure_weighted(label, 13.0, None, TextWeight::Medium);
-        text_renderer.draw_text_weighted(
-            scene,
-            label,
-            13.0,
-            color,
-            transform * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - th as f64 / 2.0)),
-            None,
-            TextWeight::Medium,
         );
     }
 
@@ -893,20 +1052,14 @@ impl AddAccountPanel {
         hovered: bool,
         enabled: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-        let bg = if hovered && enabled { theme.bg_hover } else { theme.tokens.colors.surfaces.base };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &shape);
-        let color = if enabled { theme.tokens.colors.text_primary } else { theme.tokens.colors.text_dim };
-        let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Medium);
-        text_renderer.draw_text_weighted(
+        Button::paint(
             scene,
-            label,
-            14.0,
-            color,
-            transform * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - th as f64 / 2.0)),
-            None,
-            TextWeight::Medium,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(rect, label)
+                .hovered(hovered)
+                .disabled(!enabled),
         );
     }
 
@@ -921,24 +1074,15 @@ impl AddAccountPanel {
         hovered: bool,
         enabled: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-        let bg = if !enabled {
-            theme.accent_primary.with_alpha_factor(0.4)
-        } else if hovered {
-            theme.accent_hover
-        } else {
-            theme.accent_primary
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
+        Button::paint(
             scene,
-            label,
-            14.0,
-            Color::WHITE,
-            transform * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - th as f64 / 2.0)),
-            None,
-            TextWeight::Semibold,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(rect, label)
+                .primary()
+                .hovered(hovered)
+                .disabled(!enabled),
         );
     }
 
@@ -966,10 +1110,24 @@ impl AddAccountPanel {
         // every text field so their `is_hovered` is set before a click lands.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
-            for field in [Field::Uri, Field::Issuer, Field::Label, Field::Secret, Field::Period] {
+            for field in [
+                Field::Uri,
+                Field::Issuer,
+                Field::Label,
+                Field::Secret,
+                Field::Period,
+            ] {
                 let mut throwaway = None;
                 self.field_mut(field).handle_event(
-                    event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    &mut throwaway,
+                    node_id,
+                    taffy,
                 );
             }
             return;
@@ -980,7 +1138,7 @@ impl AddAccountPanel {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             if self.max_scroll > 0.0 {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 40.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 40.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll);
@@ -990,7 +1148,12 @@ impl AddAccountPanel {
 
         // Keyboard: Esc cancels, Enter saves, Tab cycles focus.
         if let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
             ..
         } = event
         {
@@ -1071,7 +1234,15 @@ impl AddAccountPanel {
                 if r.contains(p) {
                     self.set_focus(Some(field));
                     self.field_mut(field).handle_event(
-                        event, scale_factor, modifiers, state, path, handled, &mut None, node_id, taffy,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        &mut None,
+                        node_id,
+                        taffy,
                     );
                     return;
                 }
@@ -1085,7 +1256,15 @@ impl AddAccountPanel {
         if let Some(f) = self.focused {
             let mut throwaway = None;
             self.field_mut(f).handle_event(
-                event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                &mut throwaway,
+                node_id,
+                taffy,
             );
         }
     }
@@ -1149,11 +1328,19 @@ fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, co
             let stroke = Stroke::new(1.8);
             let mut a = BezPath::new();
             a.move_to((c.x - 1.0, c.y - 5.0));
-            a.curve_to((c.x - 8.0, c.y - 5.0), (c.x - 8.0, c.y + 1.0), (c.x - 1.0, c.y + 1.0));
+            a.curve_to(
+                (c.x - 8.0, c.y - 5.0),
+                (c.x - 8.0, c.y + 1.0),
+                (c.x - 1.0, c.y + 1.0),
+            );
             scene.stroke(&stroke, transform, color, None, &a);
             let mut b = BezPath::new();
             b.move_to((c.x + 1.0, c.y + 5.0));
-            b.curve_to((c.x + 8.0, c.y + 5.0), (c.x + 8.0, c.y - 1.0), (c.x + 1.0, c.y - 1.0));
+            b.curve_to(
+                (c.x + 8.0, c.y + 5.0),
+                (c.x + 8.0, c.y - 1.0),
+                (c.x + 1.0, c.y - 1.0),
+            );
             scene.stroke(&stroke, transform, color, None, &b);
             let bar = Rect::new(c.x - 3.0, c.y - 1.0, c.x + 3.0, c.y + 1.0);
             scene.fill(Fill::NonZero, transform, color, None, &bar);
@@ -1207,8 +1394,14 @@ mod tests {
         let mut p = AddAccountPanel::new();
         p.open();
         p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        assert_eq!(p.max_scroll, 0.0, "the calm default form fits without scrolling");
-        assert!(p.save_rect.y1 <= p.modal.y1, "footer stays inside the modal");
+        assert_eq!(
+            p.max_scroll, 0.0,
+            "the calm default form fits without scrolling"
+        );
+        assert!(
+            p.save_rect.y1 <= p.modal.y1,
+            "footer stays inside the modal"
+        );
         assert!(p.modal.y1 <= 800.0 - 16.0, "modal fits inside the window");
     }
 
@@ -1219,7 +1412,10 @@ mod tests {
         p.open();
         p.toggle_advanced(); // makes the form taller than a 600px window
         p.layout(win);
-        assert!(p.max_scroll > 0.0, "advanced form must scroll in a short window");
+        assert!(
+            p.max_scroll > 0.0,
+            "advanced form must scroll in a short window"
+        );
         // The footer is pinned inside the modal, never off-screen.
         assert!(p.save_rect.y1 <= p.modal.y1);
         assert!(p.modal.y1 <= 600.0);
@@ -1236,7 +1432,10 @@ mod tests {
             "scrolling moves body content upward into view"
         );
         // Fully scrolled, the last field sits within the visible body band.
-        assert!(p.period_rect.y1 <= p.body_clip.y1 + 1.0, "bottom of form reachable");
+        assert!(
+            p.period_rect.y1 <= p.body_clip.y1 + 1.0,
+            "bottom of form reachable"
+        );
     }
 
     #[test]
@@ -1249,7 +1448,10 @@ mod tests {
         let wide_w = p.modal.width();
         assert_eq!(p.max_scroll, 0.0, "roomy window needs no scroll");
         p.layout(Rect::new(0.0, 0.0, 400.0, 420.0));
-        assert!(p.modal.width() < wide_w, "modal narrows to the smaller window");
+        assert!(
+            p.modal.width() < wide_w,
+            "modal narrows to the smaller window"
+        );
         assert!(p.max_scroll > 0.0, "a short window enables scrolling");
         // And back to roomy — it must recover, not stay narrow.
         p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
@@ -1270,7 +1472,10 @@ mod tests {
         p.layout(win);
         assert!(p.advanced_open);
         assert!(p.max_scroll > 0.0, "advanced form overflows a 600px window");
-        assert_eq!(p.scroll, p.max_scroll, "toggle scrolls the new fields into view");
+        assert_eq!(
+            p.scroll, p.max_scroll,
+            "toggle scrolls the new fields into view"
+        );
         assert_ne!(p.period_rect, Rect::ZERO, "period field is laid out");
         assert!(
             p.period_rect.y1 <= p.body_clip.y1 + 1.0,
@@ -1295,13 +1500,18 @@ mod tests {
         // Scroll back up, then relayout: the position is preserved.
         p.scroll = 0.0;
         p.layout(win);
-        assert_eq!(p.scroll, 0.0, "a plain relayout does not re-trigger the reveal");
+        assert_eq!(
+            p.scroll, 0.0,
+            "a plain relayout does not re-trigger the reveal"
+        );
     }
 
     #[test]
     fn apply_uri_fills_fields_and_reveals_nondefault_params() {
         let mut p = opened();
-        p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=45");
+        p.apply_uri(
+            "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=45",
+        );
         assert_eq!(p.issuer.value(), "Acme");
         assert_eq!(p.label.value(), "bob");
         assert_eq!(p.secret.value(), "JBSWY3DPEHPK3PXP");
@@ -1343,12 +1553,21 @@ mod tests {
     fn field_order_tracks_disclosure_state() {
         let mut p = opened();
         // Collapsed: just the three manual fields.
-        assert_eq!(p.field_order(), vec![Field::Issuer, Field::Label, Field::Secret]);
+        assert_eq!(
+            p.field_order(),
+            vec![Field::Issuer, Field::Label, Field::Secret]
+        );
         p.expand_uri();
         p.toggle_advanced();
         assert_eq!(
             p.field_order(),
-            vec![Field::Uri, Field::Issuer, Field::Label, Field::Secret, Field::Period]
+            vec![
+                Field::Uri,
+                Field::Issuer,
+                Field::Label,
+                Field::Secret,
+                Field::Period
+            ]
         );
     }
 
@@ -1404,7 +1623,11 @@ mod tests {
         let alg = p.alg_rects[2].center();
         dispatch(&mut p, &cursor_at(alg));
         dispatch(&mut p, &left_press());
-        assert_eq!(p.algorithm, Algorithm::Sha512, "clicking a chip selects the algorithm");
+        assert_eq!(
+            p.algorithm,
+            Algorithm::Sha512,
+            "clicking a chip selects the algorithm"
+        );
         // Click the 8-digit chip (index 1).
         let dig = p.digit_rects[1].center();
         dispatch(&mut p, &cursor_at(dig));
@@ -1417,12 +1640,21 @@ mod tests {
         let mut p = opened();
         p.expand_uri();
         p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        p.uri.set_text("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
+        p.uri
+            .set_text("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
         let at = p.parse_rect.center();
         dispatch(&mut p, &cursor_at(at));
         dispatch(&mut p, &left_press());
-        assert_eq!(p.issuer.value(), "Acme", "Fill parses the issuer out of the link");
-        assert_eq!(p.secret.value(), "JBSWY3DPEHPK3PXP", "Fill parses the secret");
+        assert_eq!(
+            p.issuer.value(),
+            "Acme",
+            "Fill parses the issuer out of the link"
+        );
+        assert_eq!(
+            p.secret.value(),
+            "JBSWY3DPEHPK3PXP",
+            "Fill parses the secret"
+        );
     }
 
     #[test]

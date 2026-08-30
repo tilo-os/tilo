@@ -30,9 +30,11 @@ ashpd.workspace = true
 # the `*_async` variants and drive the future themselves.
 tokio = { workspace = true, features = ["rt", "net", "macros", "sync"] }
 thiserror.workspace = true
-tracing.workspace = true
 # For the URL type in `OpenUri::open`.
 url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -9,6 +9,7 @@ use vello::peniko::Color;
 /// Component-wise colour tweaks built on top of peniko's `Color`.
 pub trait ColorExt {
     /// Darken toward black by `t` in `0.0..=1.0` (0 = unchanged).
+    #[allow(dead_code)]
     fn darken(self, t: f32) -> Color;
     /// Lighten toward white by `t` in `0.0..=1.0`.
     #[allow(dead_code)]
@@ -22,21 +23,26 @@ impl ColorExt for Color {
         let t = t.clamp(0.0, 1.0);
         let f = 1.0 - t;
         Color::from_rgba8(
-            (self.r() as f32 * f) as u8,
-            (self.g() as f32 * f) as u8,
-            (self.b() as f32 * f) as u8,
+            (f32::from(self.r()) * f) as u8,
+            (f32::from(self.g()) * f) as u8,
+            (f32::from(self.b()) * f) as u8,
             self.a(),
         )
     }
 
     fn lighten(self, t: f32) -> Color {
         let t = t.clamp(0.0, 1.0);
-        let lerp = |c: u8| (c as f32 + (255.0 - c as f32) * t) as u8;
+        let lerp = |c: u8| (f32::from(c) + (255.0 - f32::from(c)) * t) as u8;
         Color::from_rgba8(lerp(self.r()), lerp(self.g()), lerp(self.b()), self.a())
     }
 
     fn at_alpha(self, a: f32) -> Color {
-        Color::from_rgba8(self.r(), self.g(), self.b(), (a.clamp(0.0, 1.0) * 255.0) as u8)
+        Color::from_rgba8(
+            self.r(),
+            self.g(),
+            self.b(),
+            (a.clamp(0.0, 1.0) * 255.0) as u8,
+        )
     }
 }
 

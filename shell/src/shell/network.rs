@@ -1,99 +1,55 @@
-//! Shell-side bridge into the peer-sync [`Actor`]. Owns the
-//! [`WorkspaceTreeReplica`], drives the `tokio` runtime that hosts the
-//! actor, and exposes a small handle the shell calls into to drain
-//! incoming `NetEvent`s and forward replica replies back out as
-//! `NetCmd::Publish`s.
-//!
-//! v1 wires the actor into the shell's startup path behind an opt-in
-//! flag (`--enable-peer-sync`). Tasks 3.2 + 3.3 add cursor-presence
-//! pumping and palette commands on top.
-//!
-//! Plan reference: `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`,
-//! Phase 3 Task 3.1.
+//! Shell-side bridge into the peer-sync [`Actor`]: owns the
+//! [`WorkspaceTreeReplica`], drives the actor's `tokio` runtime, and drains
+//! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
+//! Wired in behind `--enable-peer-sync`.
 
 use std::sync::{Arc, Mutex};
 
-use libp2p::SwarmBuilder;
+use iroh::address_lookup::memory::MemoryLookup;
+use iroh::endpoint::presets;
 use tokio::sync::mpsc;
 
-use crate::network::actor::{Actor, NetCmd, NetEvent};
-use crate::network::behaviour::{NiriosBehaviour, load_or_create_keypair};
-use crate::network::hub::TopicSubscriber;
+use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
+use crate::network::behaviour::load_or_create_keypair;
 use crate::network::invite::accept_invite_into;
 use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
 #[cfg(test)]
 use crate::shell::state::WorkspaceTree;
-use crate::shell::state::WorkspaceTreeHandle;
+use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
-/// Default workspace topic id that v1 publishes/subscribes on. Per-
-/// workspace routing is a Phase 3 follow-up — every shell currently
-/// shares the same gossipsub topic so a v1 LAN demo "just works"
-/// without per-workspace negotiation.
+/// Compatibility/control topic used only when a message has no room identity.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
+
+/// Stable transport/host shard for a durable room. Local workspace handles are
+/// deliberately not used: they differ between devices.
+pub fn room_topic_id(room: RoomId) -> u64 {
+    if room.is_nil() {
+        return DEFAULT_WS_TOPIC;
+    }
+    qos_relay::room_workspace_id(&room.to_string()).expect("RoomId is a valid UUID")
+}
 
 /// Largest app-document snapshot this shell will put on the gossip
 /// topic, in bytes.
 ///
-/// # Where the number comes from
-///
-/// libp2p gossipsub caps one RPC at 64 KiB and
-/// [`crate::network::behaviour::NiriosBehaviour::new`] does not raise
-/// it, so a larger publish is rejected by the transport rather than
-/// truncated.
-///
-/// The budget is far tighter than that ceiling suggests, because the
-/// actor serialises a [`NeighbourMsg`] with `serde_json`
-/// (`crate::network::actor`), and serde_json writes a `Vec<u8>` as an
-/// array of decimal numbers — up to four characters (`"255,"`) per
-/// byte. A snapshot therefore costs up to **4x its size** on the wire,
-/// and the naive "64 KiB minus a little" reading of the limit is wrong
-/// by a factor of four. `snapshot_at_the_cap_fits_a_gossipsub_rpc`
-/// pins this against worst-case bytes rather than against the
-/// arithmetic in this comment, which is how the earlier figure here was
-/// caught.
-///
-/// So: 14 KiB of document expands to at most 56 KiB of JSON, leaving
-/// ~9 KiB for the envelope — the variant tag, the room uuid, a record
-/// id that may be a full path, and gossipsub's own protobuf framing
-/// (topic, signature, author key, sequence number).
-///
-/// Moving the publish path to the `postcard` encoding that
-/// `crate::network::protocol`'s own round-trip tests already use would
-/// make the payload roughly 1:1 and raise this to ~60 KiB. That is a
-/// wire-format change every peer has to agree on, so it is a decision
-/// to take deliberately rather than a constant to edit.
-///
-/// # Why a cap rather than a bigger pipe
-///
-/// A document has no upper bound, so no ceiling makes this correct in
-/// general — raising the gossipsub limit would move the failure, not
-/// remove it, and would do so on a **broadcast** medium where every
-/// peer in the room pays for every byte. The bounded case is worth
-/// having anyway because it is the common one: a document that fits is
-/// a document that converges, immediately, over transport that already
-/// exists.
-///
-/// Past this size the right carrier is a direct peer-to-peer stream
-/// rather than gossip — the substrate for one is already in
-/// [`crate::network::surface_stream`], which video frames use for the
-/// same reason (they are large, and they concern one peer rather than
-/// the room). Wiring a snapshot onto it is the follow-up this constant
-/// marks the boundary of.
+/// `serde_json` writes a `Vec<u8>` as decimal numbers, so the 14 KiB
+/// document cap can expand to roughly 56 KiB before postcard framing.
+/// The Iroh actor accepts much larger messages, but this application-level
+/// bound limits memory amplification and keeps snapshots interactive.
+/// Past this size the carrier is a direct peer-to-peer stream via
+/// [`crate::network::surface_stream`].
 pub const MAX_APP_SNAPSHOT_BYTES: usize = 14 * 1024;
 
 /// Default on-disk path of the machine's device key, from which the
-/// shell derives its libp2p identity. The FUSE mount reads the same
+/// shell derives its Iroh identity. The FUSE mount reads the same
 /// file, so one device has one identity rather than one per subsystem.
 pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
 
-/// Where this session's device key lives.
-///
 /// [`DEFAULT_KEYPAIR_PATH`] unless `QOS_PEER_KEY_PATH` names somewhere
 /// else. The override is what makes two sessions on one machine two
-/// *peers*: the key is the shell's network identity and also the seed
-/// for the id salt that keeps their minted ids disjoint, so two
-/// processes reading one key file are one peer talking to itself.
+/// *peers*: the key is the shell's network identity, so two processes
+/// reading one key file are one peer talking to itself.
 pub fn peer_key_path() -> std::path::PathBuf {
     match std::env::var("QOS_PEER_KEY_PATH") {
         Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
@@ -101,112 +57,113 @@ pub fn peer_key_path() -> std::path::PathBuf {
     }
 }
 
-/// Transport addresses the swarm binds on startup.
-///
-/// Loopback is listed first so a two-session demonstration on one
-/// machine has a dialable address that does not depend on which
-/// interface is up; the wildcard covers the LAN case.
-const LISTEN_ADDRS: [&str; 2] = ["/ip4/127.0.0.1/tcp/0", "/ip4/0.0.0.0/tcp/0"];
+fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
+    serde_json::from_str(value).ok().or_else(|| {
+        value
+            .parse::<iroh::EndpointId>()
+            .ok()
+            .map(iroh::EndpointAddr::new)
+    })
+}
+
+fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
+    let mut hosts = Vec::new();
+    if let Ok(value) = std::env::var("QOS_COLLAB_HOSTS") {
+        match serde_json::from_str::<Vec<iroh::EndpointAddr>>(&value) {
+            Ok(parsed) => hosts.extend(parsed),
+            Err(error) => {
+                tracing::warn!(%error, "QOS_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses");
+            }
+        }
+    }
+    if let Ok(value) = std::env::var("QOS_COLLAB_HOST") {
+        if let Some(addr) = parse_host_addr(&value) {
+            hosts.push(addr)
+        } else {
+            tracing::warn!("QOS_COLLAB_HOST is not a valid Iroh endpoint address or id")
+        }
+    }
+    hosts.sort_by_key(|addr| addr.id.to_string());
+    hosts.dedup_by_key(|addr| addr.id);
+    hosts
+}
 
 /// How often a shell asks the rooms it is in for anything it is
 /// missing. Room replication has no push side, so this interval is the
 /// upper bound on how stale a guest's view of a room can be.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Shell-side handle for the peer-sync subsystem.
-///
-/// Owns the tokio runtime that hosts the [`Actor`], the per-workspace
-/// [`WorkspaceTreeReplica`], and the actor↔replica event channel. The
-/// runtime is dropped (and the actor task awaited) when this struct is
-/// dropped.
+/// Shell-side handle for the peer-sync subsystem. Owns the tokio
+/// runtime hosting the [`Actor`], the per-workspace
+/// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
 pub struct ShellNetwork {
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
-    /// Shared replica that owns the tree-side reactions to
-    /// `NetEvent::Msg`. Wrapped in `Arc<Mutex<_>>` so future tasks
-    /// (cursor presence, palette commands) can hand a clone to the
-    /// shell's per-frame update loop.
+    /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
+    /// `Arc<Mutex<_>>` so other tasks can share a clone.
     pub replica: Arc<Mutex<WorkspaceTreeReplica>>,
-    /// Sender side of the actor→replica event channel. Cloned and
-    /// passed into the actor via `NetCmd::JoinWorkspace`.
+    /// Sender half of the actor→replica event channel, cloned into
+    /// `NetCmd::JoinWorkspace`.
     pub event_tx: mpsc::Sender<NetEvent>,
-    /// Receiver side of the actor→replica event channel. Drained on
-    /// each [`Self::tick`]. Wrapped in a `Mutex` so `tick` can take
-    /// `&self` — cursor-presence pumping shares the handle behind
-    /// `Arc<ShellNetwork>` between the broadcast sink (writes) and
-    /// the frame-tick (reads).
+    /// Receiver half of the actor→replica event channel, drained on
+    /// each [`Self::tick`]. `Mutex`-wrapped so `tick` can take `&self`
+    /// while shared behind `Arc<ShellNetwork>`.
     pub event_rx: Mutex<mpsc::Receiver<NetEvent>>,
-    /// Tokio runtime that hosts the actor. `Option` so we can `take`
-    /// it on drop and shut the runtime down cleanly without blocking
-    /// the test thread.
+    /// Topics already subscribed in the actor. Avoids sending a Join command on
+    /// every app delta while still allowing rooms accepted after startup.
+    joined_topics: Mutex<std::collections::HashSet<u64>>,
+    /// Tokio runtime hosting the actor. `Option` so `drop` can `take`
+    /// it and shut down without blocking the test thread.
     runtime: Option<tokio::runtime::Runtime>,
-    /// Pre-computed hash of our local libp2p `PeerId`, used as the
-    /// `peer` field on every outbound `NeighbourMsg::PresenceMoved`.
-    /// Cached once at spawn so per-pointer-move publishes don't redo
-    /// the hash work for every cursor delta.
+    /// Cached hash of the local iroh endpoint id, stamped on every
+    /// outbound `NeighbourMsg::PresenceMoved`. Computed once at spawn.
     local_peer_hash: u64,
-    /// This shell's libp2p identity. Held because an invite is a
-    /// *signed* statement by the inviting owner — [`Self::issue_invite`]
-    /// signs with it, and the receiver verifies against the public half
-    /// carried in the token.
-    keypair: libp2p::identity::Keypair,
-    /// `PeerId` derived from [`Self::keypair`], appended to the listen
-    /// address so an invite carries a fully-qualified `/p2p/…` dial
-    /// target rather than a bare transport address.
-    local_peer_id: libp2p::PeerId,
-    /// Addresses the swarm reported binding, filled by the actor.
-    listen_addrs: Arc<Mutex<Vec<libp2p::Multiaddr>>>,
+    /// This device's iroh identity. An invite is a signed statement
+    /// by the inviting owner — [`Self::issue_invite`] signs with it.
+    keypair: iroh::SecretKey,
+    /// Endpoint id derived from [`Self::keypair`].
+    local_peer_id: iroh::EndpointId,
+    /// Current direct/relay dialing addresses reported by iroh.
+    listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>>,
+    /// Always-on hosts included in newly issued invites.
+    host_addrs: Mutex<Vec<iroh::EndpointAddr>>,
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
-    /// Buffer of inbound presence updates pushed by [`Self::tick`] when
-    /// a `NeighbourMsg::PresenceMoved` arrives. The shell's frame-tick
-    /// hook drains this into `PresenceCtx::remote_cursors` once per
-    /// wakeup so the overlay paints remote peers' cursors.
+    /// Names this machine has promised to whoever redeems the invite it
+    /// last minted for a room, keyed by that room — held here rather
+    /// than in the token because the token is a bearer credential that
+    /// crosses machines, so a name inside it would be a name its
+    /// *holder* presents, which `apply_room_changes` refuses.
+    /// [`Self::name_invitee_on_arrival`] writes it once the invitee's
+    /// `PeerId` is known.
+    pending_invitees: Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
+    /// Inbound presence updates pushed by [`Self::tick`], drained by the
+    /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
-    /// Buffer of inbound app-CRDT increments pushed by [`Self::tick`]
-    /// when a `NeighbourMsg::AppCrdtIncremental` arrives. The
-    /// `collab_broker` drainer copies these into every locally-
-    /// connected app via [`super::collab_broker::BrokerHandle::fanout_event`].
-    /// See [`Self::inbound_app_crdt_handle`].
+    /// Inbound app-CRDT increments pushed by [`Self::tick`], fanned by
+    /// the `collab_broker` drainer to every locally-connected app.
     inbound_app_crdt: Arc<Mutex<Vec<InboundAppCrdt>>>,
-    /// Phase 3 buffer of inbound *signed* app-CRDT envelopes pushed
-    /// by [`Self::tick`] when a
-    /// `NeighbourMsg::AppCrdtIncrementalSigned` arrives. The
-    /// `collab_broker` drainer pulls envelopes out of here, runs them
-    /// through `validate_inbound_op`, and only then fans the payload
-    /// to locally-connected apps. See
-    /// [`Self::inbound_app_crdt_signed_handle`].
+    /// Inbound *signed* app-CRDT envelopes pushed by [`Self::tick`].
+    /// The `collab_broker` drainer runs each through `validate_inbound_op`
+    /// before fanning the payload out.
     inbound_app_crdt_signed: Arc<Mutex<Vec<InboundAppCrdtSigned>>>,
     /// Received app-presence frames awaiting fan-out to local apps.
-    /// See [`Self::inbound_app_presence_handle`].
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
     /// Received app-CRDT *snapshots* awaiting fan-out to local apps.
-    /// Separate from [`Self::inbound_app_crdt`] because the two are
-    /// not interchangeable on delivery: an increment is applied to a
-    /// document that already holds its history, a snapshot *is* that
-    /// history, and the receiving app folds them in by different calls.
-    /// See [`Self::inbound_app_crdt_snapshot_handle`].
+    /// Separate from [`Self::inbound_app_crdt`]: an increment is applied
+    /// to a document that already holds its history, a snapshot *is*
+    /// that history, and the receiving app folds them in differently.
     inbound_app_crdt_snapshot: Arc<Mutex<Vec<InboundAppCrdt>>>,
-    /// Rooms with an outstanding request for somebody's whole
-    /// document, keyed by cluster id.
-    ///
-    /// A room is entered here when a peer announces it has arrived, and
-    /// removed when a snapshot is published for it. See
-    /// [`Self::note_snapshot_request`] for why the pairing lives here
-    /// rather than in the frame.
-    snapshot_requests: Arc<Mutex<std::collections::HashSet<String>>>,
-    /// Phase 6 buffer of inbound cooperative-scrollback *requests*.
-    /// The broker's drainer reads these, consults its local op log,
-    /// and (if it has any matching ops) publishes a corresponding
-    /// `ScrollbackResponse` back over gossipsub. See
-    /// [`Self::inbound_scrollback_request_handle`].
+    /// Rooms with an outstanding request for somebody's whole document,
+    /// keyed by cluster id. Entered when a peer announces arrival,
+    /// removed when a snapshot is published for it.
+    snapshot_requests: Arc<Mutex<std::collections::HashMap<String, SnapshotWindow>>>,
+    /// Inbound cooperative-scrollback *requests*; the broker's drainer
+    /// answers any it holds matching ops for.
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
-    /// Phase 6 buffer of inbound cooperative-scrollback *responses*.
-    /// The broker's drainer pulls answers out of here and forwards
-    /// them to the local app that originally asked, as a
-    /// `CollabEvent::ScrollbackBatch`. See
-    /// [`Self::inbound_scrollback_response_handle`].
+    /// Inbound cooperative-scrollback *responses*, forwarded by the
+    /// broker's drainer to the local app that asked.
     inbound_scrollback_response: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
 }
 
@@ -215,139 +172,112 @@ pub struct ShellNetwork {
 /// to every locally-connected app.
 #[derive(Debug, Clone)]
 pub struct InboundAppCrdt {
-    /// Hashed libp2p peer id of the publisher. Useful for
-    /// debugging / attribution; the broker's fan-out routes on the
-    /// app + cluster pair below rather than on this.
+    /// Hashed Iroh peer id of the publisher; the broker's fan-out
+    /// routes on `app_id` + `cluster_id` rather than on this.
     pub peer: u64,
-    /// Originating app id (e.g. `"terminal"`), opaque to the bridge
-    /// but the first half of the broker's delivery filter.
+    /// Originating app id (e.g. `"terminal"`); first half of the
+    /// broker's delivery filter.
     pub app_id: String,
     /// Originating cluster id (uuid as string); second half of the
-    /// broker's delivery filter.
+    /// delivery filter.
     pub cluster_id: String,
-    /// Originating record id — which document these changes belong
-    /// to. Empty for a sender whose state is one document per
-    /// `(app, cluster)`. Third component of the delivery filter.
+    /// Originating record id — which document these changes belong to.
+    /// Empty for a sender with one document per `(app, cluster)`.
     pub record_id: String,
-    /// Opaque Automerge incremental change blob, passed through to
-    /// the receiving app's `CollaborationManager` as a
+    /// Opaque Automerge incremental change blob, passed through as a
     /// `CollabEvent::CRDTIncremental`.
     pub data: Vec<u8>,
 }
 
-/// One received app-presence frame, queued by [`ShellNetwork::tick`]
-/// for the `collab_broker` drainer to fan out to local apps.
-///
-/// Carries no record id: presence is fanned at cluster scope, so the
-/// room and the app are the whole delivery filter. See
-/// [`crate::network::protocol::NeighbourMsg::AppPresence`].
+/// One received app-presence frame, fanned to local apps by the
+/// `collab_broker` drainer. Carries no record id: presence is fanned
+/// at cluster scope.
 #[derive(Debug, Clone)]
 pub struct InboundAppPresence {
-    /// Hashed libp2p peer id of the publisher. Unlike the CRDT queues
-    /// this one is load-bearing rather than advisory: it becomes the
-    /// `user_id` the receiving app attributes the caret to, and so the
-    /// colour it is drawn in.
+    /// Hashed Iroh peer id of the publisher. Unlike the CRDT queues
+    /// this one is load-bearing: it becomes the `user_id` the
+    /// receiving app attributes the caret and its colour to.
     pub peer: u64,
-    /// Originating app id; first half of the delivery filter.
     pub app_id: String,
-    /// Originating cluster id (the room); second half.
     pub cluster_id: String,
-    /// The serialised `CollabRequest::Presence`, opaque here.
-    pub frame: Vec<u8>,
+    pub payload: InboundAppPresencePayload,
 }
 
-/// One received *signed* app-CRDT envelope, queued by
-/// [`ShellNetwork::tick`] for the `collab_broker` drainer to
-/// validate-and-fan. Distinct from [`InboundAppCrdt`] so the broker
-/// can keep the two streams separate — a malformed envelope should
-/// never poison the legacy fan-out path, and vice versa.
+/// Typed peer presence, plus the one-release read seam for peers that still
+/// embed a legacy JSON request. New publishes never construct `LegacyJson`.
+#[derive(Debug, Clone)]
+pub enum InboundAppPresencePayload {
+    Typed(collab_types::PeerPresence),
+    LegacyJson(Vec<u8>),
+}
+
+/// One received *signed* app-CRDT envelope. Distinct from
+/// [`InboundAppCrdt`] so a malformed envelope can never poison the
+/// legacy fan-out path, and vice versa.
 #[derive(Debug, Clone)]
 pub struct InboundAppCrdtSigned {
-    /// Hashed libp2p peer id of the publisher.
     pub peer: u64,
-    /// Originating app id, mirroring [`InboundAppCrdt::app_id`]. The
-    /// broker delivers the validated payload only to local apps that
-    /// announced the same `(app_id, cluster_id)` pair; empty (a peer
-    /// too old to stamp one) addresses nobody.
+    /// Empty (a peer too old to stamp one) addresses nobody.
     pub app_id: String,
-    /// Originating cluster id; second half of the delivery filter.
     pub cluster_id: String,
-    /// Originating record id; third component of the delivery filter.
-    /// Empty for a sender that announced no record.
     pub record_id: String,
-    /// The signed envelope. Wrapped in `Box` to mirror the wire shape
-    /// and keep the queue entry size bounded — `SignedOp` is large
-    /// (32-byte pubkey + 64-byte sig + variable payload + UUIDs).
+    /// Boxed to mirror the wire shape and bound the queue entry size —
+    /// `SignedOp` is large (32-byte pubkey + 64-byte sig + payload + UUIDs).
     pub envelope: Box<collab_types::SignedOp>,
 }
 
-/// One received cooperative-scrollback request, queued by
-/// [`ShellNetwork::tick`]. The broker's drainer reads these and may
-/// publish a `ScrollbackResponse` if its local op log holds the
-/// requested range.
+/// One received cooperative-scrollback request. The broker's drainer
+/// may answer with a `ScrollbackResponse` if its op log holds the range.
 #[derive(Debug, Clone)]
 pub struct InboundScrollbackRequest {
-    /// Hashed libp2p peer id of the asker; the broker's response
-    /// uses this to mark its own response as a reply to that peer
-    /// (i.e. fills `ScrollbackResponse::responder` with `self`, not
-    /// `requester`).
+    /// Hashed peer id of the asker; used to address the reply.
     pub requester: u64,
-    /// The artifact whose scrollback is requested.
     pub artifact: collab_types::ArtifactId,
     /// Exclusive upper bound on `seq`.
     pub before_seq: u64,
-    /// Page cap.
     pub max: u16,
 }
 
-/// One received cooperative-scrollback response, queued by
-/// [`ShellNetwork::tick`]. The broker's drainer translates these
-/// into `CollabEvent::ScrollbackBatch` events and forwards them to
-/// the local app that initiated the request.
+/// One received cooperative-scrollback response, translated by the
+/// broker's drainer into a `CollabEvent::ScrollbackBatch`.
 #[derive(Debug, Clone)]
 pub struct InboundScrollbackResponse {
-    /// Hashed libp2p peer id of the answering broker.
     pub responder: u64,
-    /// Artifact the response covers.
     pub artifact: collab_types::ArtifactId,
-    /// The page of ops the answering peer is sharing.
     pub ops: Vec<Box<collab_types::SignedOp>>,
 }
 
-/// One received cursor-presence update, queued by [`ShellNetwork::tick`]
-/// for the shell-side frame drainer to merge into `PresenceCtx`.
+/// One received cursor-presence update, merged by the shell's
+/// frame drainer into `PresenceCtx`.
 #[derive(Debug, Clone)]
 pub struct InboundPresence {
-    /// Hashed libp2p peer id of the publisher, mirrored from the
-    /// originating `NeighbourMsg::PresenceMoved::peer` field. Mapped
-    /// to a stable string id by the drainer before being stored on
-    /// the `PresenceCtx::remote_cursors` row.
     pub peer: u64,
     /// Who the publishing session says is sitting at it. Empty when it
-    /// did not say; the drainer then falls back to the session handle
-    /// rather than inventing a name.
+    /// did not say; the drainer falls back to the session handle.
     pub user: String,
-    /// Presence channel key (workspace, tab, widget path, …) — encoded
-    /// JSON so the wire format stays opaque to the bridge. The shell's
-    /// drainer decodes it back into a `PresenceKey` so a pointer lands
-    /// on the room it was published under.
+    /// Presence channel key (workspace, tab, widget path, …), JSON so
+    /// the wire format stays opaque to the bridge.
     pub key: String,
     /// Pointer position in the publisher's logical-pixel scene-space.
     pub point: (f64, f64),
-    /// Wall-clock millisecond timestamp from the publisher; preserved
-    /// so later eviction logic can age out stale rows.
+    /// Wall-clock millisecond timestamp from the publisher.
     pub ts: u64,
 }
 
+/// Short window opened by one peer arrival. Every distinct document in the
+/// room may publish one baseline; repeat snapshots from the same document are
+/// suppressed so ordinary commits cannot turn into whole-state broadcasts.
+struct SnapshotWindow {
+    opened: std::time::Instant,
+    released: std::collections::HashSet<(String, String)>,
+}
+
 impl ShellNetwork {
-    /// Build a tokio runtime, spawn the libp2p [`Actor`], wrap the
+    /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
     /// shared [`WorkspaceTree`] in a [`WorkspaceTreeReplica`], and
-    /// return a handle the shell can use to drive sync.
-    ///
-    /// `keypair_path` defaults to [`DEFAULT_KEYPAIR_PATH`]; tests pass
-    /// a tempdir path. The keypair is loaded if it already exists,
-    /// otherwise a fresh ed25519 key is generated and persisted —
-    /// matching [`load_or_create_keypair`]'s contract.
+    /// return a handle the shell can use to drive sync. The keypair is
+    /// loaded if it already exists, otherwise a fresh ed25519 key is
+    /// generated and persisted.
     pub fn spawn(
         tree: WorkspaceTreeHandle,
         keypair_path: &std::path::Path,
@@ -357,56 +287,95 @@ impl ShellNetwork {
             .build()?;
         let _enter = runtime.enter();
 
-        // Build the libp2p swarm. Mirrors the actor's existing
-        // `build_swarm` test helper but uses the persistent keypair so
-        // the shell's `PeerId` is stable across restarts.
         let keypair = load_or_create_keypair(keypair_path)?;
-        let local_peer_id = keypair.public().to_peer_id();
-        // Cache the hashed peer id once so per-pointer-move
-        // `publish_presence` doesn't redo the hash every frame.
-        // Mirrors the same hash function `tick`'s receive path uses,
+        let local_peer_id = keypair.public();
+        // Must use the same hash function `tick`'s receive path uses,
         // so a peer's own publishes hash to the same `peer` u64 on
         // both sides of the wire.
-        let local_peer_hash =
-            crate::network::behaviour::peer_liveness_handle(&keypair.public().to_peer_id());
-        let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
-            .with_tokio()
-            .with_tcp(
-                Default::default(),
-                libp2p::noise::Config::new,
-                libp2p::yamux::Config::default,
+        let local_peer_hash = crate::network::behaviour::peer_liveness_handle(&keypair.public());
+        let lookup = MemoryLookup::new();
+        let endpoint = runtime
+            .block_on(
+                iroh::Endpoint::builder(presets::N0)
+                    .secret_key(keypair.clone())
+                    .address_lookup(lookup.clone())
+                    .bind(),
             )
-            .map_err(|e| std::io::Error::other(format!("tcp: {e:?}")))?
-            .with_behaviour(|kp| NiriosBehaviour::new(kp).expect("behaviour construction"))
-            .map_err(|e| std::io::Error::other(format!("behaviour wrap: {e:?}")))?
-            .build();
-
-        // Without this the swarm has no transport address: mdns
-        // advertises nothing, an invite can carry no dialable address,
-        // and no peer can ever reach this shell. Everything downstream
-        // of it — the invite, the sync round, the capability that has to
-        // reach the guest — depends on the socket actually being bound.
-        for addr in LISTEN_ADDRS {
-            let addr: libp2p::Multiaddr = addr.parse().map_err(std::io::Error::other)?;
-            if let Err(e) = swarm.listen_on(addr.clone()) {
-                tracing::warn!(%addr, "peer-sync: listen failed ({e})");
+            .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
+        let lan_discovery = std::env::var_os("QOS_COLLAB_LAN_DISCOVERY")
+            .is_some_and(|value| value != "0" && !value.is_empty());
+        let mdns = if lan_discovery {
+            match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
+                .service_name("qos-collab-v1")
+                .build(endpoint.id())
+            {
+                Ok(mdns) => {
+                    if let Ok(address_lookup) = endpoint.address_lookup() {
+                        address_lookup.add(mdns.clone());
+                        Some(mdns)
+                    } else {
+                        tracing::warn!(
+                            "LAN discovery requested but endpoint has no address lookup registry"
+                        );
+                        None
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "LAN discovery requested but could not start");
+                    None
+                }
             }
+        } else {
+            None
+        };
+        tracing::info!(
+            local_peer_id = %local_peer_id,
+            addr = ?endpoint.addr(),
+            "peer-sync: Iroh endpoint started"
+        );
+        let listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>> = Arc::new(Mutex::new(Vec::new()));
+        let host_identity = host_identity_for_key(&keypair, keypair_path);
+        let (cmd_tx, _join) = Actor::spawn_reporting_addrs(
+            endpoint,
+            lookup,
+            host_identity,
+            Arc::clone(&listen_addrs),
+        );
+        if let Some(mdns) = mdns {
+            let discovery_tx = cmd_tx.clone();
+            runtime.spawn(async move {
+                use futures_lite::StreamExt;
+                let mut events = mdns.subscribe().await;
+                while let Some(event) = events.next().await {
+                    if let iroh_mdns_address_lookup::DiscoveryEvent::Discovered {
+                        endpoint_info,
+                        ..
+                    } = event
+                    {
+                        let _ = discovery_tx
+                            .send(NetCmd::Connect {
+                                addr: endpoint_info.into_endpoint_addr(),
+                            })
+                            .await;
+                    }
+                }
+            });
+            tracing::info!(
+                "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _qos-collab-v1._udp.local"
+            );
         }
 
-        let listen_addrs: Arc<Mutex<Vec<libp2p::Multiaddr>>> = Arc::new(Mutex::new(Vec::new()));
-        let (cmd_tx, _join) = Actor::spawn_reporting_addrs(swarm, Arc::clone(&listen_addrs));
+        let host_addrs = configured_host_addrs();
+        for addr in host_addrs.iter().cloned() {
+            let _ = cmd_tx.try_send(NetCmd::ConnectHost { addr });
+        }
 
-        // Replica owns the tree-side reactions to `NetEvent::Msg`.
-        // Peer id `1` here is the replica-side identity used by
+        // Peer id `1` is the replica-side identity for
         // `WorkspaceTreeReplica::handle`'s `_sender` arg; the actor's
-        // libp2p `PeerId` is not the same thing — it's transport-level
-        // and gets hashed to `u64` per-event by `tick`.
+        // Iroh `EndpointId` is transport-level and hashed separately.
         let replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree)));
 
-        // Event channel: actor → replica delivery. Capacity matches
-        // `Actor::spawn`'s own command-channel default so a burst of
-        // `NetEvent`s during peer discovery doesn't immediately back-
-        // pressure the actor's send loop.
+        // Capacity matches `Actor::spawn`'s command-channel default.
         let (event_tx, event_rx) = mpsc::channel(64);
 
         Ok(Self {
@@ -414,61 +383,138 @@ impl ShellNetwork {
             replica,
             event_tx,
             event_rx: Mutex::new(event_rx),
+            joined_topics: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
             local_peer_hash,
             keypair,
             local_peer_id,
             listen_addrs,
+            host_addrs: Mutex::new(host_addrs),
             last_sync_kick: Mutex::new(None),
+            pending_invitees: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
-            snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            snapshot_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
-    /// Pre-computed hash of the local libp2p `PeerId`. Stamped on every
+    /// Pre-computed hash of the local iroh endpoint id. Stamped on every
     /// outbound presence move so peers can attribute the cursor to its
     /// publisher.
     pub fn local_peer_id_hash(&self) -> u64 {
         self.local_peer_hash
     }
 
-    /// Workspace topic the next [`Self::publish_presence`] should
-    /// publish to. v1 hard-codes [`DEFAULT_WS_TOPIC`] because the actor
-    /// only joins the default workspace at startup; per-workspace
-    /// routing arrives alongside the workspace-id resolver in a Phase
-    /// 3 follow-up.
+    /// What the peers in `cluster_id` are called, keyed by the peer
+    /// handle presence frames carry. `cluster_id` is a room id, so this
+    /// is the room document's answer and nobody else's — names are
+    /// written there by the room's authority and refused from anyone
+    /// else. Empty for a cluster that is not a room this machine is in,
+    /// or a room where nobody has been named; both leave every peer
+    /// labelled with its own handle.
+    pub fn peer_labels(&self, cluster_id: &str) -> std::collections::BTreeMap<u64, String> {
+        let empty = std::collections::BTreeMap::new();
+        let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
+            return empty;
+        };
+        if room.is_nil() {
+            return empty;
+        }
+        let Ok(replica) = self.replica.lock() else {
+            return empty;
+        };
+
+        replica.tree.read().room_peer_labels(room)
+    }
+
+    /// Workspace topic for session traffic associated with the active room.
     pub fn active_ws_for_publish(&self) -> u64 {
-        DEFAULT_WS_TOPIC
+        let Ok(replica) = self.replica.lock() else {
+            return DEFAULT_WS_TOPIC;
+        };
+        replica
+            .tree
+            .read()
+            .active_workspace()
+            .map_or(DEFAULT_WS_TOPIC, |workspace| room_topic_id(workspace.room))
+    }
+
+    fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
+        let room = match msg {
+            NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } => {
+                Some(room.as_str())
+            }
+            NeighbourMsg::AppCrdtIncremental { cluster_id, .. }
+            | NeighbourMsg::AppCrdtIncrementalSigned { cluster_id, .. }
+            | NeighbourMsg::AppPresence { cluster_id, .. }
+            | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
+            | NeighbourMsg::AppCrdtSnapshot { cluster_id, .. } => Some(cluster_id.as_str()),
+            _ => None,
+        };
+        room.and_then(RoomId::parse)
+            .filter(|room| !room.is_nil())
+            .map(room_topic_id)
+    }
+
+    fn topic_for_message(&self, msg: &NeighbourMsg) -> u64 {
+        Self::explicit_topic_for_message(msg).unwrap_or_else(|| self.active_ws_for_publish())
+    }
+
+    fn join_topic(&self, ws: u64) -> bool {
+        let Ok(mut joined) = self.joined_topics.lock() else {
+            return false;
+        };
+        if !joined.insert(ws) {
+            return true;
+        }
+        if self
+            .cmd_tx
+            .try_send(NetCmd::JoinWorkspace {
+                ws,
+                on_event: self.event_tx.clone(),
+            })
+            .is_err()
+        {
+            joined.remove(&ws);
+            return false;
+        }
+        true
+    }
+
+    fn publish_message(&self, msg: NeighbourMsg) -> bool {
+        let ws = self.topic_for_message(&msg);
+        self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
+    }
+
+    fn publish_shell_checkpoint(&self, msg: NeighbourMsg) -> bool {
+        let ws = self.topic_for_message(&msg);
+        self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::PublishCheckpoint { ws, msg })
+                .is_ok()
     }
 
     /// Shared handle to the inbound-presence buffer. The shell's
-    /// per-frame drainer takes a clone, then on each frame swaps the
-    /// `Vec` out under the lock and writes each entry into
-    /// `PresenceCtx::remote_cursors`. Cloning the `Arc` is cheap; the
-    /// underlying `Mutex` only contends with the `tick` path that
-    /// pushes received messages.
+    /// per-frame drainer swaps the `Vec` out under the lock and writes
+    /// each entry into `PresenceCtx::remote_cursors`.
     pub fn inbound_presence_handle(&self) -> Arc<Mutex<Vec<InboundPresence>>> {
         Arc::clone(&self.inbound_presence)
     }
 
     /// Forward a local-cursor presence move to the active workspace's
-    /// peers. Throttling lives upstream in the toolkit
-    /// (`pointer_broadcast_allowed`); this method just packages the
-    /// event into a `NetCmd::Publish`. `try_send` failures (full
-    /// command channel, actor dropped) are intentionally swallowed —
-    /// presence is best-effort and a momentary backlog of cursor
-    /// deltas should never block the render loop.
+    /// peers. Throttling lives upstream (`pointer_broadcast_allowed`).
+    /// `try_send` failures are swallowed — presence is best-effort and
+    /// a momentary backlog should never block the render loop.
     pub fn publish_presence(&self, key: String, point: (f64, f64)) {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as u64);
         let msg = NeighbourMsg::PresenceMoved {
             peer: self.local_peer_id_hash(),
             user: crate::shell::state::local_user_id(),
@@ -476,17 +522,11 @@ impl ShellNetwork {
             point,
             ts,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
-    /// Adapter: queue a received presence move into the inbound buffer
-    /// the shell's frame-tick drains into `PresenceCtx::remote_cursors`.
-    /// Public so integration tests (and a future test-only handle in
-    /// the loopback harness) can inject presence updates without going
-    /// through gossipsub.
+    /// Queue a received presence move; public so tests can inject one
+    /// without going through gossip.
     pub fn handle_presence_message(
         &self,
         peer: u64,
@@ -511,22 +551,15 @@ impl ShellNetwork {
         }
     }
 
-    /// Shared handle to the inbound-app-CRDT buffer. The
-    /// `collab_broker` per-frame drainer takes a clone, swaps the
-    /// `Vec` out under the lock once per wakeup, and fans each entry
-    /// to every locally-connected app. Mirrors the
-    /// [`Self::inbound_presence_handle`] pattern.
+    /// Shared handle to the inbound-app-CRDT buffer, fanned to every
+    /// locally-connected app by the `collab_broker` drainer.
     pub fn inbound_app_crdt_handle(&self) -> Arc<Mutex<Vec<InboundAppCrdt>>> {
         Arc::clone(&self.inbound_app_crdt)
     }
 
     /// Publish a `NeighbourMsg::AppCrdtIncremental` to the default
-    /// workspace topic. The broker calls this for every local
-    /// `SyncIncremental` it relays so two laptops sharing the topic
-    /// converge their app-level CRDTs. `try_send` failures are
-    /// swallowed — CRDT updates are idempotent and the next
-    /// `SyncIncremental` will republish, so a brief actor backlog
-    /// is recoverable.
+    /// workspace topic. `try_send` failures are swallowed — CRDT
+    /// updates are idempotent and the next `SyncIncremental` republishes.
     pub fn publish_app_crdt_incremental(
         &self,
         app_id: String,
@@ -541,29 +574,13 @@ impl ShellNetwork {
             record_id,
             data,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
-    /// Adapter: queue a received `AppCrdtIncremental` into the
-    /// inbound buffer. Public so integration tests can inject
-    /// messages without going through gossipsub.
-    /// Is `cluster_id` a room this machine is in?
-    ///
-    /// An app addresses its traffic by `(app_id, cluster_id,
-    /// record_id)` and the cluster is the room's uuid, so this is the
-    /// same question `apply_room_changes` asks of a tree payload
-    /// before it stores anything — and it gets the same answer here.
-    /// Without it the only filter on an inbound app document was the
-    /// self-echo test, which is a `DefaultHasher` fold: fine for
-    /// suppressing your own publishes, and not something to hang an
-    /// admission decision on (`plan/collaboration.md` §4).
-    ///
-    /// A `cluster_id` that is not a uuid is not a room, so it is not
-    /// one of ours: refusing on a parse failure is the fail-closed
-    /// direction.
+    /// Is `cluster_id` a room this machine is in? An app's cluster is
+    /// the room's uuid, so this is the same question `apply_room_changes`
+    /// asks before storing anything. A `cluster_id` that fails to parse
+    /// as a uuid is not a room, and refusing it is fail-closed.
     fn is_in_room(&self, cluster_id: &str) -> bool {
         let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
             tracing::info!(
@@ -591,12 +608,13 @@ impl ShellNetwork {
             target: "qos_collab_probe",
             cluster = %cluster_id,
             in_room,
-            known = ?known.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+            known = ?known.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
             "PROBE is_in_room",
         );
         in_room
     }
 
+    /// Queue a received `AppCrdtIncremental` for the broker's drainer.
     pub fn handle_app_crdt_message(
         &self,
         peer: u64,
@@ -616,10 +634,8 @@ impl ShellNetwork {
         }
     }
 
-    /// Shared handle to the inbound-signed-app-CRDT buffer.
-    /// Mirror of [`Self::inbound_app_crdt_handle`] for the Phase 3
-    /// signed-envelope path. The broker drainer pulls envelopes off
-    /// this buffer, validates them, and fans the payload out as
+    /// Shared handle to the inbound-signed-app-CRDT buffer. The broker
+    /// drainer validates each envelope and fans it out as
     /// `CollabEvent::SignedCRDTIncremental`.
     pub fn inbound_app_crdt_signed_handle(&self) -> Arc<Mutex<Vec<InboundAppCrdtSigned>>> {
         Arc::clone(&self.inbound_app_crdt_signed)
@@ -627,10 +643,7 @@ impl ShellNetwork {
 
     /// Publish a `NeighbourMsg::AppCrdtIncrementalSigned` to the
     /// default workspace topic. Called by the broker for every
-    /// validated `CollabRequest::SignedSyncIncremental` so two
-    /// laptops sharing the topic exchange signed CRDT envelopes.
-    /// `try_send` failures are intentionally swallowed; the next
-    /// successful send will republish.
+    /// validated `CollabRequest::SignedSyncIncremental`.
     pub fn publish_app_crdt_signed(
         &self,
         app_id: String,
@@ -645,16 +658,10 @@ impl ShellNetwork {
             record_id,
             envelope: Box::new(envelope),
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
-    /// Adapter: queue a received `AppCrdtIncrementalSigned` into the
-    /// inbound buffer. Public so integration tests can inject
-    /// messages without going through gossipsub. Mirrors
-    /// [`Self::handle_app_crdt_message`] for the signed path.
+    /// Queue a received `AppCrdtIncrementalSigned` for the broker's drainer.
     pub fn handle_app_crdt_signed_message(
         &self,
         peer: u64,
@@ -674,29 +681,22 @@ impl ShellNetwork {
         }
     }
 
-    /// Publish an app's presence frame to the peers in its room.
-    ///
-    /// The counterpart to [`Self::publish_app_crdt_incremental`], and
-    /// the reason a peer's caret is visible on another machine at all:
-    /// the broker's local fan-out reaches apps on *this* host, and
-    /// without this the frame stopped there.
-    ///
-    /// `frame` is the serialised `CollabRequest::Presence`, passed
-    /// through untouched. Presence is best-effort — a dropped caret
-    /// update is corrected by the next one — so a full command channel
-    /// is swallowed rather than surfaced, exactly as the pointer path
-    /// upstream does.
-    pub fn publish_app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>) {
-        let msg = NeighbourMsg::AppPresence {
+    /// Publish an app's presence frame to the peers in its room —
+    /// without this a peer's caret never reaches another machine, since
+    /// the broker's local fan-out only reaches apps on *this* host.
+    pub fn publish_app_presence(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        presence: collab_types::PeerPresence,
+    ) {
+        let msg = NeighbourMsg::AppPresenceV2 {
             peer: self.local_peer_id_hash(),
             app_id,
             cluster_id,
-            frame,
+            presence,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
     /// Shared handle to the inbound app-presence buffer, drained by the
@@ -705,9 +705,7 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_app_presence)
     }
 
-    /// Adapter: queue a received `AppPresence`. Public so integration
-    /// tests can inject one without standing up gossipsub. Mirrors
-    /// [`Self::handle_app_crdt_message`].
+    /// Queue a received `AppPresence` for the broker's drainer.
     pub fn handle_app_presence_message(
         &self,
         peer: u64,
@@ -715,30 +713,52 @@ impl ShellNetwork {
         cluster_id: String,
         frame: Vec<u8>,
     ) {
+        self.queue_app_presence(
+            peer,
+            app_id,
+            cluster_id,
+            InboundAppPresencePayload::LegacyJson(frame),
+        );
+    }
+
+    pub fn handle_typed_app_presence_message(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        presence: collab_types::PeerPresence,
+    ) {
+        self.queue_app_presence(
+            peer,
+            app_id,
+            cluster_id,
+            InboundAppPresencePayload::Typed(presence),
+        );
+    }
+
+    fn queue_app_presence(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        payload: InboundAppPresencePayload,
+    ) {
         if let Ok(mut buf) = self.inbound_app_presence.lock() {
             buf.push(InboundAppPresence {
                 peer,
                 app_id,
                 cluster_id,
-                frame,
+                payload,
             });
         }
     }
 
-    /// Publish a `NeighbourMsg::AppCrdtSnapshot` — one document's whole
-    /// state — to the workspace topic, so a peer that has just joined
-    /// can adopt a document it holds no history for.
-    ///
-    /// Refuses above [`MAX_APP_SNAPSHOT_BYTES`] instead of handing
-    /// gossipsub a message it would reject. Both transports (the JSON
-    /// reader loop and the capnp bridge) reach the wire through this
-    /// one function, so the cap is enforced once rather than at each
-    /// caller.
-    ///
-    /// A refusal is logged at `warn` with the size and the room,
-    /// because the user-visible consequence — this document does not
-    /// converge — has no other symptom. Silence here would look
-    /// exactly like a document that simply had nothing to send.
+    /// Publish one document's whole state so a peer that has just joined
+    /// can adopt a document it holds no history for. Refuses above
+    /// [`MAX_APP_SNAPSHOT_BYTES`] to bound serialization and fan-out memory —
+    /// both transports reach the wire through here, so the cap is enforced
+    /// once. Refusal logs at `warn`: the consequence
+    /// (this document does not converge) has no other symptom.
     pub fn publish_app_crdt_snapshot(
         &self,
         app_id: String,
@@ -746,7 +766,7 @@ impl ShellNetwork {
         record_id: String,
         data: Vec<u8>,
     ) {
-        if !self.take_snapshot_request(&cluster_id) {
+        if !self.take_snapshot_request(&cluster_id, &app_id, &record_id) {
             tracing::trace!(
                 app = %app_id,
                 room = %cluster_id,
@@ -761,7 +781,7 @@ impl ShellNetwork {
                 app = %app_id,
                 room = %cluster_id,
                 record = %record_id,
-                "shell_network: refusing to publish an app snapshot over the gossip cap; this document will not converge for peers that lack its history",
+                "shell_network: refusing to publish an app snapshot over the application cap; this document will not converge for peers that lack its history",
             );
             return;
         }
@@ -772,56 +792,45 @@ impl ShellNetwork {
             record_id,
             data,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
-    /// Record that somebody in `cluster_id` needs a whole document.
-    ///
-    /// Called when a peer announces its arrival. Arrival is the only
-    /// thing that makes a snapshot worth its size on a broadcast topic:
-    /// a peer that already shares history is served by the deltas, and
-    /// a peer that does not cannot use them at all.
-    ///
-    /// # Why the pairing is reconstructed here
-    ///
-    /// `CollabRequest::SyncCRDT` is not reliably a join reply. It is one
-    /// when the toolkit answers an `Arrived`, and it is also what an app
-    /// sends to feed same-host fan-out and the undo snapshot — whether a
-    /// commit produces one is a property of the toolkit build, not
-    /// something visible in the frame. Republishing whatever arrives
-    /// therefore risks a whole document on the room topic per commit:
-    /// unbounded, growing with the session, and redundant with the delta
-    /// that already carries the same edit to anyone who shares the
-    /// history.
-    ///
-    /// The broker cannot tell those apart by looking, but it does see
-    /// the *request* — a peer's `Arrived` passes through its own drain on
-    /// the way to local apps. So the arrival arms the room and the next
-    /// whole document for it goes out. Which one that turns out to be
-    /// does not matter: any full state serves a peer that has none, so
-    /// consuming the arming on a commit's snapshot answers the join just
-    /// as well as replying to it directly.
-    ///
-    /// Gating here rather than trusting the sender is what keeps the
-    /// rate bounded no matter which way the toolkit sends.
+    /// Record that somebody in `cluster_id` needs a whole document —
+    /// called on arrival, the only thing that makes a snapshot worth its
+    /// size on a broadcast topic. `CollabRequest::SyncCRDT` is not
+    /// reliably a join reply (same-host fan-out and undo send it too),
+    /// so arming on `Arrived` and firing on the next whole document
+    /// keeps the rate bounded whichever source supplies it.
     pub fn note_snapshot_request(&self, cluster_id: &str) {
         if cluster_id.is_empty() {
             return;
         }
         if let Ok(mut pending) = self.snapshot_requests.lock() {
-            pending.insert(cluster_id.to_string());
+            pending.insert(
+                cluster_id.to_string(),
+                SnapshotWindow {
+                    opened: std::time::Instant::now(),
+                    released: std::collections::HashSet::new(),
+                },
+            );
         }
     }
 
     /// Take the outstanding snapshot request for `cluster_id`, if any.
-    fn take_snapshot_request(&self, cluster_id: &str) -> bool {
-        match self.snapshot_requests.lock() {
-            Ok(mut pending) => pending.remove(cluster_id),
-            Err(_) => false,
+    fn take_snapshot_request(&self, cluster_id: &str, app_id: &str, record_id: &str) -> bool {
+        let Ok(mut pending) = self.snapshot_requests.lock() else {
+            return false;
+        };
+        let Some(window) = pending.get_mut(cluster_id) else {
+            return false;
+        };
+        if window.opened.elapsed() > std::time::Duration::from_secs(5) {
+            pending.remove(cluster_id);
+            return false;
         }
+        window
+            .released
+            .insert((app_id.to_string(), record_id.to_string()))
     }
 
     /// Shared handle to the inbound app-snapshot buffer, drained by the
@@ -830,9 +839,7 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_app_crdt_snapshot)
     }
 
-    /// Adapter: queue a received `AppCrdtSnapshot`. Public so tests can
-    /// inject one without standing up gossipsub. Mirrors
-    /// [`Self::handle_app_crdt_message`].
+    /// Queue a received `AppCrdtSnapshot` for the broker's drainer.
     pub fn handle_app_crdt_snapshot_message(
         &self,
         peer: u64,
@@ -852,9 +859,8 @@ impl ShellNetwork {
         }
     }
 
-    /// Shared handle to the cooperative-scrollback request buffer.
-    /// The broker's drainer reads it on each tick and answers any
-    /// request for an artifact whose log it holds.
+    /// Shared handle to the cooperative-scrollback request buffer,
+    /// answered by the broker's drainer on each tick.
     pub fn inbound_scrollback_request_handle(&self) -> Arc<Mutex<Vec<InboundScrollbackRequest>>> {
         Arc::clone(&self.inbound_scrollback_request)
     }
@@ -864,12 +870,10 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_scrollback_response)
     }
 
-    /// Phase 6: publish a `NeighbourMsg::ScrollbackRequest` to the
-    /// default workspace topic. The broker calls this when a local
-    /// app's `FetchScrollback` returned `exhausted=true` with an
-    /// empty batch (the broker has nothing more in-memory, but the
-    /// app still wants the range). `try_send` failures are
-    /// swallowed; the app can re-issue the request after a back-off.
+    /// Publish a `NeighbourMsg::ScrollbackRequest`. Called when a local
+    /// app's `FetchScrollback` returned `exhausted=true` with an empty
+    /// batch — the broker has nothing more in-memory, but the app still
+    /// wants the range.
     pub fn publish_scrollback_request(
         &self,
         artifact: collab_types::ArtifactId,
@@ -882,15 +886,11 @@ impl ShellNetwork {
             max,
             requester: self.local_peer_id_hash(),
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
-    /// Phase 6: publish a `NeighbourMsg::ScrollbackResponse`. The
-    /// broker calls this when it sees a `ScrollbackRequest` for an
-    /// artifact whose log it has matching ops for.
+    /// Publish a `NeighbourMsg::ScrollbackResponse` for an artifact
+    /// whose log has matching ops.
     pub fn publish_scrollback_response(
         &self,
         artifact: collab_types::ArtifactId,
@@ -901,15 +901,10 @@ impl ShellNetwork {
             ops,
             responder: self.local_peer_id_hash(),
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
-    /// Adapter: queue a received `ScrollbackRequest` for the broker
-    /// drainer. Public for tests; in production the `tick` path
-    /// calls this when it sees the inbound `NeighbourMsg`.
+    /// Queue a received `ScrollbackRequest` for the broker's drainer.
     pub fn handle_scrollback_request_message(
         &self,
         requester: u64,
@@ -927,8 +922,7 @@ impl ShellNetwork {
         }
     }
 
-    /// Adapter: queue a received `ScrollbackResponse` for the
-    /// broker drainer.
+    /// Queue a received `ScrollbackResponse` for the broker's drainer.
     pub fn handle_scrollback_response_message(
         &self,
         responder: u64,
@@ -944,78 +938,176 @@ impl ShellNetwork {
         }
     }
 
-    /// Subscribe the actor to the default workspace topic, registering
-    /// our `event_tx` as the per-workspace event sink. v1 uses a
-    /// single topic ([`DEFAULT_WS_TOPIC`]); per-workspace routing
-    /// lands in a Phase 3 follow-up. Returns whether the command was
-    /// successfully queued.
+    /// Subscribe the actor to every durable room currently in the tree, plus
+    /// the compatibility/control topic. Rooms accepted later are joined by
+    /// [`Self::publish_message`].
     pub fn join_default_workspace(&self) -> bool {
-        self.cmd_tx
-            .try_send(NetCmd::JoinWorkspace {
-                ws: DEFAULT_WS_TOPIC,
-                on_event: self.event_tx.clone(),
-            })
-            .is_ok()
+        let mut topics = vec![DEFAULT_WS_TOPIC];
+        if let Ok(replica) = self.replica.lock() {
+            topics.extend(replica.tree.read().rooms().into_iter().map(room_topic_id));
+        }
+        topics.into_iter().all(|topic| self.join_topic(topic))
     }
 
-    /// The dial address this shell publishes in an invite.
-    ///
-    /// The first address the swarm bound, with this peer's id appended
-    /// so the receiver dials a specific peer rather than whatever
-    /// answers on that port. `None` until the swarm has reported a
-    /// listen address — an invite issued before then would name nothing.
-    pub fn dial_addr(&self) -> Option<String> {
+    /// Attach an always-on home or hosted workspace server. The actor keeps
+    /// its direct Iroh gossip path and additionally uses the authenticated
+    /// host session for offline store-and-forward.
+    pub fn connect_host(&self, addr: iroh::EndpointAddr) -> bool {
+        if let Ok(mut hosts) = self.host_addrs.lock()
+            && !hosts.iter().any(|known| known.id == addr.id)
+        {
+            hosts.push(addr.clone());
+        }
+        self.cmd_tx.try_send(NetCmd::ConnectHost { addr }).is_ok()
+    }
+
+    /// The current iroh address published in an invite. It contains the
+    /// stable endpoint id plus fresh direct/relay dialing hints.
+    pub fn dial_addr(&self) -> Option<iroh::EndpointAddr> {
         let addrs = self.listen_addrs.lock().ok()?;
-        let base = addrs.first()?.clone();
-        Some(format!("{base}/p2p/{}", self.local_peer_id))
+        addrs.first().cloned()
     }
 
     /// Mint a signed invite to the workspace `local`, valid for
-    /// `expiry_seconds_from_now`.
-    ///
-    /// The half of the invite flow that had no implementation: the
-    /// palette's `/invite` row named this function in a doc comment and
-    /// nothing defined it, so there was no way to produce a token
-    /// outside a unit test. Signs with this shell's own libp2p keypair
-    /// and embeds the address the swarm actually bound, so the token the
-    /// user copies is one a peer can act on.
+    /// `expiry_seconds_from_now`. Signs with this shell's own Iroh
+    /// key and embeds the address the endpoint actually bound, so the
+    /// token a user copies is one a peer can act on.
     pub fn issue_invite(
         &self,
         local: crate::shell::state::WorkspaceId,
         expiry_seconds_from_now: u64,
     ) -> Result<String, String> {
+        self.issue_invite_for(local, expiry_seconds_from_now, None)
+    }
+
+    /// [`Self::issue_invite`], for a person this machine will name.
+    /// `invitee` does not go into the token (see
+    /// [`Self::pending_invitees`]) and is held until that peer turns up.
+    /// A second invite for a room replaces the name waiting on it.
+    pub fn issue_invite_named(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        expiry_seconds_from_now: u64,
+        invitee: &str,
+    ) -> Result<String, String> {
+        self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee))
+    }
+
+    fn issue_invite_for(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        expiry_seconds_from_now: u64,
+        invitee: Option<&str>,
+    ) -> Result<String, String> {
         let addr = self
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
-        let replica = self
-            .replica
-            .lock()
-            .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-        let tree = replica.tree.read();
-        let ws = tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == local)
-            .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
-        crate::network::invite::make_invite_token(&self.keypair, ws, &addr, expiry_seconds_from_now)
-            .map_err(|e| e.to_string())
+        let (token, room) = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            let tree = replica.tree.read();
+            let ws = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == local)
+                .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
+            let hosts = self
+                .host_addrs
+                .lock()
+                .map(|hosts| hosts.clone())
+                .unwrap_or_default();
+            let token = crate::network::invite::make_invite_token_with_hosts(
+                &self.keypair,
+                ws,
+                &addr,
+                &hosts,
+                expiry_seconds_from_now,
+            )
+            .map_err(|e| e.to_string())?;
+            (token, ws.room)
+        };
+
+        // Nobody invites the inviter, so without this the host would be
+        // the one peer left unnamed. Self-declared, but through the same
+        // authority-checked channel every other name travels on, so it
+        // can't be forged. Best-effort: a non-administering machine has
+        // the write refused and stays an id rather than failing the invite.
+        if let Ok(replica) = self.replica.lock() {
+            let me = crate::shell::state::local_user_id();
+            let peer = self.local_peer_id.to_string();
+            replica.tree.write().name_peer(room, &me, &peer, &me);
+        }
+        self.join_topic(room_topic_id(room));
+
+        // And park the invitee's name against the room, for
+        // `name_invitee_on_arrival` to write when they turn up.
+        if let Some(invitee) = invitee.map(str::trim).filter(|n| !n.is_empty())
+            && let Ok(mut pending) = self.pending_invitees.lock()
+        {
+            pending.insert(room, invitee.to_string());
+        }
+        Ok(token)
+    }
+
+    /// Name the peer that just redeemed this room's invite. `peer` is
+    /// the *authenticated* author — gossip runs
+    /// `MessageAuthenticity::Signed` with `ValidationMode::Strict`, so
+    /// it signed what arrived rather than merely forwarding it.
+    ///
+    /// Three guards close off naming the wrong person: never this
+    /// machine, never a peer the room has already named, and only if
+    /// `name_peer` accepts the write. The pending name is consumed by
+    /// the first peer to redeem it, so a second arrival keeps its own id.
+    fn name_invitee_on_arrival(&self, peer: &iroh::EndpointId, room: &str) {
+        if *peer == self.local_peer_id {
+            return;
+        }
+        let Some(room) = crate::shell::state::RoomId::parse(room) else {
+            return;
+        };
+        let Ok(mut pending) = self.pending_invitees.lock() else {
+            return;
+        };
+        let Some(name) = pending.get(&room).cloned() else {
+            return;
+        };
+        let endpoint_id = peer.to_string();
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        let mut tree = replica.tree.write();
+        if let Some(existing) = tree
+            .room_peer_names
+            .get(&room)
+            .and_then(|n| n.get(&endpoint_id))
+        {
+            // Already named — but if it's the name that was waiting,
+            // this is the peer the invite was for. Spend the pending
+            // copy rather than leave it lying around.
+            if existing == &name {
+                pending.remove(&room);
+            }
+            return;
+        }
+        let me = crate::shell::state::local_user_id();
+        if tree.name_peer(room, &me, &endpoint_id, &name) {
+            tracing::info!(
+                peer = %endpoint_id,
+                %name,
+                %room,
+                "peer-sync: named the invitee that arrived"
+            );
+            pending.remove(&room);
+        }
     }
 
     /// Accept an invite token into `local`, then immediately ask the
-    /// room it named to catch us up.
-    ///
-    /// The two halves belong together. [`accept_invite_into`] is what
-    /// makes the invitee a member — it points their workspace at the
-    /// inviter's room, mirrors that to the document and flushes it to
-    /// disk. But membership is also what decides which rooms this machine
-    /// asks about, and replication is per room: without the request that
-    /// follows, a freshly accepted invite would sit idle until something
-    /// else happened to kick a round, and the guest would be in a room
-    /// they could not see.
-    ///
-    /// Takes the token *string* rather than a parsed token, so there is
-    /// no way to reach this having skipped validation. Returns the room
-    /// joined, or the reason the token was refused.
+    /// room it named to catch us up — replication is per room, so
+    /// without that request a freshly accepted invite sits idle until
+    /// something else kicks a round. Takes the token *string*, not a
+    /// parsed token, so validation cannot be skipped on the way in.
     pub fn accept_invite(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1029,25 +1121,25 @@ impl ShellNetwork {
             let mut tree = replica.tree.write();
             accept_invite_into(&mut tree, local, token)?
         };
-        // Dial what the token named. mdns finds peers on a LAN, but an
-        // invite that carries an address and never uses it leaves the
-        // guest waiting on discovery for a host it was handed directions
-        // to. `validate_invite_token` has already run inside
-        // `accept_invite_into`, so re-reading the token here cannot let
-        // an unverified address through.
-        if let Ok(parsed) = crate::network::invite::validate_invite_token(token)
-            && let Ok(addr) = parsed.owner_addr.parse::<libp2p::Multiaddr>()
-        {
-            let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
+        if !self.join_topic(room_topic_id(room)) {
+            return Err("peer-sync command queue is full; try accepting the invite again".into());
+        }
+        // Dial the authenticated address carried by the invite.
+        // `validate_invite_token` already ran inside `accept_invite_into`,
+        // so re-reading the token here cannot let an unverified address through.
+        if let Ok(parsed) = crate::network::invite::validate_invite_token(token) {
+            let _ = self.cmd_tx.try_send(NetCmd::Connect {
+                addr: parsed.owner_addr,
+            });
+            for host in parsed.host_addrs {
+                let _ = self.connect_host(host);
+            }
         }
         replica.request_sync();
         let outgoing = replica.drain_outgoing();
         drop(replica);
         for msg in outgoing {
-            let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                ws: DEFAULT_WS_TOPIC,
-                msg,
-            });
+            let _ = self.publish_message(msg);
         }
         Ok(room)
     }
@@ -1062,10 +1154,7 @@ impl ShellNetwork {
         let outgoing = replica.drain_outgoing();
         drop(replica);
         for msg in outgoing {
-            let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                ws: DEFAULT_WS_TOPIC,
-                msg,
-            });
+            let _ = self.publish_message(msg);
         }
     }
 
@@ -1087,46 +1176,101 @@ impl ShellNetwork {
         self.publish_sync_requests();
     }
 
-    /// Drive a single tick: drain pending [`NetEvent`]s from the actor
-    /// and forward `Msg` variants into the replica's `handle`. Each
-    /// resulting outbound message is published via `cmd_tx` so peers
-    /// observe the reply.
-    ///
-    /// Called from the shell's per-frame update path (see
-    /// `compositor::hosted::run` when `--enable-peer-sync` is set), or
-    /// directly from tests. Non-blocking — uses `try_recv` /
-    /// `try_send` so a starved channel never stalls the render loop.
+    /// Drain pending [`NetEvent`]s from the actor, forward `Msg`
+    /// variants into the replica's `handle`, and publish each resulting
+    /// outbound message via `cmd_tx`. Non-blocking — never stalls the
+    /// render loop even on a starved channel.
     pub fn tick(&self) {
-        // Room replication is pull-only: a host answers `SyncReq` and
-        // never announces. So without something asking on a cadence, a
-        // guest sees the room exactly as it was the moment they joined —
-        // a capability the owner grants or revokes afterwards never
-        // arrives, which is the difference between a snapshot and
-        // collaboration. Ask periodically; a round with nothing to send
-        // produces no reply at all.
+        // Room replication is pull-only — a host answers `SyncReq` and
+        // never announces — so nothing else brings a stale guest's view
+        // of a capability change up to date.
         self.kick_periodic_sync();
-        // Hold the receiver lock for the whole drain so a concurrent
-        // frame-tick (e.g. one queued from a redraw inside the very
-        // same wakeup) doesn't see half-merged events. The lock has
-        // no contention in practice — only the frame-tick path holds
-        // it — but keeping the scope tight is cheap and safe.
+        // Hold the lock for the whole drain so a concurrent frame-tick
+        // never sees half-merged events.
         let mut event_rx = self
             .event_rx
             .lock()
             .expect("event_rx mutex must not be poisoned");
         while let Ok(event) = event_rx.try_recv() {
-            // A peer arriving is the one moment we know for certain
-            // there is someone new to be caught up by. Documented in
-            // `plan/collaboration.md` §5 and previously not done —
-            // `PeerJoined` fell through the `if let` below unhandled.
+            if let NetEvent::HostReady { ws, peer } = event {
+                let room = self.replica.lock().ok().and_then(|replica| {
+                    replica
+                        .tree
+                        .read()
+                        .rooms()
+                        .into_iter()
+                        .find(|room| room_topic_id(*room) == ws)
+                });
+                if let Some(room) = room {
+                    // Seed a complete shell-room checkpoint. Unlike SyncReq,
+                    // this does not need another device online to answer it.
+                    let changes = self
+                        .replica
+                        .lock()
+                        .ok()
+                        .and_then(|replica| {
+                            replica.tree.write().export_room_changes_since(room, &[])
+                        })
+                        .unwrap_or_default();
+                    if !changes.is_empty() {
+                        let _ = self.publish_shell_checkpoint(NeighbourMsg::SyncResp {
+                            changes,
+                            room: room.to_string(),
+                        });
+                    }
+
+                    // Apps answer an Arrived presence event with their full
+                    // Automerge document. Synthesize that local event for the
+                    // durable host so its retained checkpoints include app
+                    // state that existed before the host connected.
+                    let host_peer = crate::network::behaviour::peer_liveness_handle(&peer);
+                    for payload in [
+                        ui::collaboration::PresencePayload::Arrived,
+                        ui::collaboration::PresencePayload::Left,
+                    ] {
+                        let key = ui::presence::PresenceKey::Workspace {
+                            id: room.to_string(),
+                        };
+                        if let Some(presence) =
+                            crate::shell::collab_presence::to_peer(&key, &payload)
+                        {
+                            self.handle_typed_app_presence_message(
+                                host_peer,
+                                String::new(),
+                                room.to_string(),
+                                presence,
+                            );
+                        }
+                    }
+                }
+                continue;
+            }
             if let NetEvent::PeerJoined { .. } = event {
                 self.publish_sync_requests();
                 continue;
             }
-            if let NetEvent::Msg { ws: _, peer, msg } = event {
-                // Presence updates skip the replica entirely — they're
-                // ephemeral overlay state, not CRDT state — and land
-                // in the inbound buffer the shell's frame-tick drains.
+            // Without this the roster only ever grows: nothing else
+            // tells it a session went quiet.
+            if let NetEvent::PeerLeft { peer, .. } = event {
+                let handle = crate::network::behaviour::peer_liveness_handle(&peer);
+                if let Ok(replica) = self.replica.lock() {
+                    replica.tree.write().retire_session(handle);
+                }
+                continue;
+            }
+            if let NetEvent::Msg { ws, peer, msg } = event {
+                if let Some(expected) = Self::explicit_topic_for_message(&msg)
+                    && expected != ws
+                {
+                    tracing::warn!(
+                        ws,
+                        expected,
+                        "dropping collaboration message on the wrong room topic"
+                    );
+                    continue;
+                }
+                // Ephemeral overlay state, not CRDT state — skips the
+                // replica entirely.
                 if let NeighbourMsg::PresenceMoved {
                     peer: peer_hash,
                     ref user,
@@ -1135,21 +1279,12 @@ impl ShellNetwork {
                     ts,
                 } = msg
                 {
-                    self.handle_presence_message(
-                        peer_hash,
-                        user.clone(),
-                        key.clone(),
-                        point,
-                        ts,
-                    );
+                    self.handle_presence_message(peer_hash, user.clone(), key.clone(), point, ts);
                     continue;
                 }
-                // App-CRDT updates skip the shell-tree replica too —
-                // they're opaque app-level Automerge blobs, not
-                // shell-tree changes — and land in the broker's
-                // inbound queue for local fan-out. Self-publishes are
-                // filtered out so a local edit doesn't loop back to
-                // its own broker as a "remote" event.
+                // Opaque app-level Automerge blobs, not shell-tree
+                // changes; self-publishes are filtered so a local edit
+                // doesn't loop back as a "remote" event.
                 if let NeighbourMsg::AppCrdtIncremental {
                     peer: peer_hash,
                     ref app_id,
@@ -1179,13 +1314,10 @@ impl ShellNetwork {
                     }
                     continue;
                 }
-                // A whole document, sent because a peer joined and
-                // has no history to apply deltas against. Same two
-                // gates the increment gets, and they matter more here
-                // rather than less: an increment landing in the wrong
-                // document is noise the widgets ignore, a whole
-                // document merged into the wrong one cannot be taken
-                // back out.
+                // A whole document for a peer with no history to apply
+                // deltas against. Same two gates as the increment, and
+                // they matter more here: a whole document merged into
+                // the wrong one cannot be taken back out.
                 if let NeighbourMsg::AppCrdtSnapshot {
                     peer: peer_hash,
                     ref app_id,
@@ -1215,10 +1347,7 @@ impl ShellNetwork {
                     }
                     continue;
                 }
-                // Phase 3 signed path. Mirrors the legacy
-                // `AppCrdtIncremental` routing: skip self-publishes,
-                // then push onto the signed-inbound queue for the
-                // broker drainer to validate + fan.
+                // Signed path, same routing as the plain increment.
                 if let NeighbourMsg::AppCrdtIncrementalSigned {
                     peer: peer_hash,
                     ref app_id,
@@ -1238,11 +1367,8 @@ impl ShellNetwork {
                     }
                     continue;
                 }
-                // App presence — a peer's caret, selection or authorship
-                // inside a shared document. Same two gates the CRDT
-                // variants get, and for the same reasons: our own
-                // gossipsub echo is not a peer, and a room we are not in
-                // does not get to put a cursor on our screen.
+                // A peer's caret/selection inside a shared document.
+                // Same two gates as the CRDT variants.
                 if let NeighbourMsg::AppPresence {
                     peer: peer_hash,
                     ref app_id,
@@ -1260,9 +1386,24 @@ impl ShellNetwork {
                     }
                     continue;
                 }
-                // Phase 6 cooperative scrollback. Skip self-echoes
-                // (we already have the answer) and route requests +
-                // responses to their dedicated buffers.
+                if let NeighbourMsg::AppPresenceV2 {
+                    peer: peer_hash,
+                    ref app_id,
+                    ref cluster_id,
+                    ref presence,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        self.handle_typed_app_presence_message(
+                            peer_hash,
+                            app_id.clone(),
+                            cluster_id.clone(),
+                            presence.clone(),
+                        );
+                    }
+                    continue;
+                }
+                // Cooperative scrollback: skip self-echoes.
                 if let NeighbourMsg::ScrollbackRequest {
                     artifact,
                     before_seq,
@@ -1288,48 +1429,61 @@ impl ShellNetwork {
                     }
                     continue;
                 }
+                // A SyncReq is a peer redeeming an invite; name it
+                // before the replica answers, so roster and reply land
+                // together.
+                if let NeighbourMsg::SyncReq { ref room, .. } = msg {
+                    self.name_invitee_on_arrival(&peer, room);
+                }
                 let mut rep = self.replica.lock().unwrap();
-                // The peer's own identity, not the liveness handle's
-                // digest of it: room replication decides from this
-                // whether a payload may rewrite a room's governance.
+                // The peer's own identity, not the liveness-handle
+                // digest: this decides whether the payload may rewrite
+                // a room's governance.
                 rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), &msg);
                 let outgoing = rep.drain_outgoing();
                 drop(rep);
                 for out_msg in outgoing {
-                    let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                        ws: DEFAULT_WS_TOPIC,
-                        msg: out_msg,
-                    });
+                    let _ = self.publish_message(out_msg);
                 }
             }
         }
     }
 }
 
+fn host_identity_for_key(
+    keypair: &iroh::SecretKey,
+    keypair_path: &std::path::Path,
+) -> Option<HostIdentity> {
+    let root = keypair_path.parent()?.parent()?;
+    let paths = qos_user_identity::IdentityPaths::under(root);
+    let user_public_key = qos_user_identity::persist::read_public_key(&paths.user_pubkey).ok()?;
+    let device_cert = qos_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
+    if qos_user_identity::verify_device_cert(&device_cert).is_err()
+        || device_cert.user_public_key != user_public_key
+        || device_cert.device_public_key != *keypair.public().as_bytes()
+    {
+        tracing::warn!("ignoring invalid collaboration device certificate");
+        return None;
+    }
+    Some(HostIdentity {
+        device_cert,
+        device_signing_key: ed25519_dalek::SigningKey::from_bytes(&keypair.to_bytes()),
+    })
+}
+
 impl Drop for ShellNetwork {
     fn drop(&mut self) {
-        // Drop the runtime explicitly so the actor's tokio task gets
-        // a chance to wind down before the surrounding test (or the
-        // process) exits. Using `take` + drop avoids the implicit
-        // "drop on panic" path that would otherwise log a noisy
-        // "runtime dropped while still running tasks" warning.
+        // `take` + explicit shutdown avoids the noisy "runtime dropped
+        // while still running tasks" warning from the implicit path.
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
     }
 }
 
-
-
 /// Test-only constructor that wires `ShellNetwork`'s command sender to
-/// a caller-owned receiver, bypassing the libp2p actor entirely. Tests
-/// use this to assert that `publish_presence` (and future Phase 3
-/// publishers) emit the expected `NetCmd::Publish` shapes without
-/// having to spin up a real swarm. Not exposed outside `cfg(test)`.
-///
-/// `pub(crate)` so the broker's own tests can drive the inbound side of the
-/// peer bridge — `handle_app_crdt_message` into the drain thread — which is
-/// where a frame's route is rebuilt from what the sending host stamped on it.
+/// a caller-owned receiver, bypassing the iroh actor. `pub(crate)` so
+/// the broker's own tests can drive the inbound side of the peer bridge too.
 #[cfg(test)]
 pub(crate) fn shell_network_for_test(
     tree: WorkspaceTreeHandle,
@@ -1337,23 +1491,30 @@ pub(crate) fn shell_network_for_test(
 ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
     let (event_tx, event_rx) = mpsc::channel(64);
+    let keypair = iroh::SecretKey::generate();
+    let local_peer_id = keypair.public();
+    let mut joined_topics = std::collections::HashSet::from([DEFAULT_WS_TOPIC]);
+    joined_topics.extend(tree.read().rooms().into_iter().map(room_topic_id));
     let net = ShellNetwork {
         cmd_tx,
         replica: Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree))),
         event_tx,
         event_rx: Mutex::new(event_rx),
+        joined_topics: Mutex::new(joined_topics),
         runtime: None,
         local_peer_hash,
-        keypair: libp2p::identity::Keypair::generate_ed25519(),
-        local_peer_id: libp2p::PeerId::random(),
+        keypair,
+        local_peer_id,
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
+        host_addrs: Mutex::new(Vec::new()),
         last_sync_kick: Mutex::new(None),
+        pending_invitees: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
-        snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        snapshot_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
@@ -1377,27 +1538,191 @@ mod tests {
         assert!(key_path.exists(), "keypair file must exist after spawn");
     }
 
+    /// Two rooms this machine governs, and the network that holds
+    /// them. Enough to ask who a name belongs to.
+    fn net_with_rooms() -> (
+        tempfile::TempDir,
+        crate::shell::state::WorkspaceTreeHandle,
+        ShellNetwork,
+        Vec<crate::shell::state::RoomId>,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let rooms: Vec<_> = {
+            let mut t = tree.write();
+            t.adopt_roomless_workspaces();
+            // `bootstrap_demo` leaves the owner `None`; `may_administer`
+            // reads it, so an unset owner would refuse every name below
+            // for the wrong reason.
+            let me = crate::shell::state::local_user_id();
+            for ws in &mut t.workspaces {
+                ws.set_owner(me.clone());
+            }
+            t.workspaces.iter().map(|w| w.room).collect()
+        };
+        assert!(
+            rooms.len() >= 2 && rooms.iter().all(|r| !r.is_nil()),
+            "the fixture governs at least two rooms: {rooms:?}"
+        );
+        let net = ShellNetwork::spawn(tree.clone(), &tmp.path().join("peer-key")).expect("spawn");
+        (tmp, tree, net, rooms)
+    }
+
+    fn name_in(
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        room: crate::shell::state::RoomId,
+        peer: &iroh::EndpointId,
+    ) -> Option<String> {
+        tree.read()
+            .room_peer_names
+            .get(&room)
+            .and_then(|names| names.get(&peer.to_string()))
+            .cloned()
+    }
+
+    /// The name the inviter typed reaches the room document only once
+    /// the person it was for turns up, when there's an identity to
+    /// attach it to.
+    #[test]
+    fn the_invitee_is_named_when_they_ask_this_room_for_its_document() {
+        let (_tmp, tree, net, rooms) = net_with_rooms();
+        let room = rooms[0];
+        net.pending_invitees
+            .lock()
+            .unwrap()
+            .insert(room, "Xaver".to_string());
+
+        let guest = iroh::SecretKey::generate().public();
+        assert_eq!(name_in(&tree, room, &guest), None, "nobody is named yet");
+        net.name_invitee_on_arrival(&guest, &room.to_string());
+        assert_eq!(
+            name_in(&tree, room, &guest).as_deref(),
+            Some("Xaver"),
+            "the room's own authority recorded the name the inviter gave"
+        );
+
+        let stranger = iroh::SecretKey::generate().public();
+        net.name_invitee_on_arrival(&stranger, &room.to_string());
+        assert_eq!(
+            name_in(&tree, room, &stranger),
+            None,
+            "a name belongs to one person, and it was already given"
+        );
+    }
+
+    /// A name waiting on one room is not a name for another.
+    #[test]
+    fn a_pending_name_does_not_leak_into_another_room() {
+        let (_tmp, tree, net, rooms) = net_with_rooms();
+        net.pending_invitees
+            .lock()
+            .unwrap()
+            .insert(rooms[0], "Xaver".to_string());
+
+        let guest = iroh::SecretKey::generate().public();
+        net.name_invitee_on_arrival(&guest, &rooms[1].to_string());
+        assert_eq!(name_in(&tree, rooms[1], &guest), None);
+        assert_eq!(
+            name_in(&tree, rooms[0], &guest),
+            None,
+            "asking about another room does not redeem this one's invite"
+        );
+        assert!(
+            net.pending_invitees.lock().unwrap().contains_key(&rooms[0]),
+            "and the name is still waiting for whoever actually redeems it"
+        );
+    }
+
+    /// Nobody invites themselves, and nothing unparseable is a room.
+    #[test]
+    fn arrival_naming_refuses_this_machine_and_nonsense_rooms() {
+        let (_tmp, tree, net, rooms) = net_with_rooms();
+        let room = rooms[0];
+        net.pending_invitees
+            .lock()
+            .unwrap()
+            .insert(room, "Xaver".to_string());
+
+        let me = net.local_peer_id;
+        net.name_invitee_on_arrival(&me, &room.to_string());
+        assert_eq!(
+            name_in(&tree, room, &me),
+            None,
+            "this machine's own sync request is not somebody arriving"
+        );
+
+        net.name_invitee_on_arrival(&iroh::SecretKey::generate().public(), "not-a-room");
+        assert!(
+            net.pending_invitees.lock().unwrap().contains_key(&room),
+            "a room id that does not parse names nothing and spends nothing"
+        );
+    }
+
     #[test]
     fn tick_with_no_events_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("peer-key");
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
-        // Should not panic on empty channel; should not block.
         net.tick();
     }
 
-    /// Accepting an invite joins the room *and* asks it to catch us up,
-    /// in one call. Both halves are checked on the real objects: the
-    /// tree's room after the call, and the command the network actor was
-    /// handed.
+    #[test]
+    fn host_ready_seeds_shell_and_app_checkpoints() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let room_id = tree.read().rooms()[0];
+        let topic = room_topic_id(room_id);
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFE);
+        // Consume the normal first-tick anti-entropy request so the assertion
+        // below is specifically about the host baseline edge.
+        net.tick();
+        while cmd_rx.try_recv().is_ok() {}
+
+        net.event_tx
+            .try_send(NetEvent::HostReady {
+                ws: topic,
+                peer: iroh::SecretKey::from_bytes(&[23; 32]).public(),
+            })
+            .unwrap();
+        net.tick();
+
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(NetCmd::PublishCheckpoint {
+                ws,
+                msg: NeighbourMsg::SyncResp { ref room, .. },
+            }) if ws == topic && room == &room_id.to_string()
+        ));
+        let app_events = net.inbound_app_presence.lock().unwrap();
+        assert_eq!(
+            app_events.len(),
+            2,
+            "Arrived + Left prompt a bounded app snapshot refresh"
+        );
+        let payloads: Vec<_> = app_events.iter().map(|event| &event.payload).collect();
+        assert!(matches!(
+            payloads[0],
+            InboundAppPresencePayload::Typed(collab_types::PeerPresence {
+                payload: collab_types::PeerPresencePayload::Arrived,
+                ..
+            })
+        ));
+        assert!(matches!(
+            payloads[1],
+            InboundAppPresencePayload::Typed(collab_types::PeerPresence {
+                payload: collab_types::PeerPresencePayload::Left,
+                ..
+            })
+        ));
+    }
+
     /// Build the inbound event a LAN peer's app-CRDT publish arrives as.
     fn app_crdt_event(cluster_id: &str, from_peer_hash: u64) -> NetEvent {
         NetEvent::Msg {
-            // The shared gossipsub topic every machine subscribes to,
-            // which is exactly how such a frame reaches us today.
-            ws: DEFAULT_WS_TOPIC,
-            peer: libp2p::PeerId::random(),
+            ws: RoomId::parse(cluster_id)
+                .filter(|room| !room.is_nil())
+                .map_or(DEFAULT_WS_TOPIC, room_topic_id),
+            peer: iroh::SecretKey::generate().public(),
             msg: NeighbourMsg::AppCrdtIncremental {
                 peer: from_peer_hash,
                 app_id: "dev.qos.notes".to_string(),
@@ -1409,18 +1734,9 @@ mod tests {
     }
 
     /// A peer's app document reaches local apps only for a room this
-    /// machine is in.
-    ///
-    /// Driven through the real receive path — an event pushed onto the
-    /// actor→shell channel and drained by `tick`, which is what the
-    /// live actor does — because the defect was that this path asked no
-    /// membership question at all. Calling the helper directly would
-    /// prove only that the helper exists.
-    ///
-    /// The accepted case is not decoration: without it an assertion
-    /// that the buffer is empty passes just as well when nothing is
-    /// ever delivered, and would keep passing if the filter were
-    /// tightened into a wall.
+    /// machine is in. Driven through the real receive path (`tick`),
+    /// not the helper directly, with a positive control so the two
+    /// refusals prove something rather than just "nothing arrives".
     #[test]
     fn app_crdt_from_a_room_we_are_not_in_never_reaches_the_broker() {
         let mut tree = WorkspaceTree::default();
@@ -1429,7 +1745,6 @@ mod tests {
         let handle = tree.shared();
         let (net, _cmd_rx) = shell_network_for_test(handle, 0xAAAAu64);
 
-        // A room this machine has never joined.
         let stranger_room = crate::shell::state::RoomId::new();
         assert_ne!(stranger_room, our_room);
 
@@ -1442,7 +1757,6 @@ mod tests {
             "a delta for a room this machine is not in must not reach the broker queue",
         );
 
-        // Not a uuid at all — fail closed rather than fall through.
         net.event_tx
             .try_send(app_crdt_event("not-a-room", 0xBBBBu64))
             .expect("queue the malformed publish");
@@ -1452,9 +1766,6 @@ mod tests {
             "a cluster id that is not a uuid names no room, so it must be refused",
         );
 
-        // The positive control: the same peer, the same shape, a room
-        // we are in — this one must arrive, or the two refusals above
-        // prove nothing.
         net.event_tx
             .try_send(app_crdt_event(&our_room.to_string(), 0xBBBBu64))
             .expect("queue the member's publish");
@@ -1471,17 +1782,17 @@ mod tests {
         use crate::network::invite::make_invite_token;
         use crate::shell::state::Workspace;
 
-        // The inviter's workspace, and the room it is inviting into.
         let host_ws = Workspace::test_default(
             crate::shell::state::WorkspaceId::new(),
             "Design review".to_string(),
         );
         let host_room = host_ws.room;
-        let owner_key = libp2p::identity::Keypair::generate_ed25519();
-        let token = make_invite_token(&owner_key, &host_ws, "/ip4/127.0.0.1/tcp/4001", 3600)
+        let owner_key = iroh::SecretKey::generate();
+        let owner_addr = iroh::EndpointAddr::new(owner_key.public())
+            .with_ip_addr("127.0.0.1:4001".parse().unwrap());
+        let token = make_invite_token(&owner_key, &host_ws, &owner_addr, 3600)
             .expect("the host issues an invite");
 
-        // The guest: its own workspace, its own room, until it accepts.
         let mut guest = WorkspaceTree::default();
         let local = guest.append_empty_workspace("Mine");
         let before = guest.room_of(local).expect("the guest's own room");
@@ -1492,27 +1803,30 @@ mod tests {
         let joined = net
             .accept_invite(local, &token)
             .expect("a well-formed invite is accepted");
-        assert_eq!(joined, host_room, "the guest joins the room it was invited to");
+        assert_eq!(
+            joined, host_room,
+            "the guest joins the room it was invited to"
+        );
         assert_eq!(
             tree.read().room_of(local),
             Some(host_room),
             "the guest's workspace now addresses the inviter's room",
         );
 
-        // Two commands, in this order: dial the address the token named,
-        // then ask that room for a catch-up. The dial is what makes the
-        // address in an invite mean anything — mdns finds peers on a
-        // LAN, but a guest handed directions should not have to wait for
-        // discovery to find the host it was pointed at.
+        // Three commands, in order: join the stable room shard, dial the
+        // address the token named, then ask that room for a catch-up.
+        let subscribe = cmd_rx
+            .try_recv()
+            .expect("accepting an invite must join its room topic");
+        match subscribe {
+            NetCmd::JoinWorkspace { ws, .. } => assert_eq!(ws, room_topic_id(host_room)),
+            other => panic!("expected NetCmd::JoinWorkspace, got {other:?}"),
+        }
         let dial = cmd_rx
             .try_recv()
             .expect("accepting an invite must dial the address it named");
         match dial {
-            NetCmd::Connect { addr } => assert_eq!(
-                addr.to_string(),
-                "/ip4/127.0.0.1/tcp/4001",
-                "the dial must go to the address inside the token",
-            ),
+            NetCmd::Connect { addr } => assert_eq!(addr, owner_addr),
             other => panic!("expected NetCmd::Connect, got {other:?}"),
         }
         let cmd = cmd_rx
@@ -1520,7 +1834,7 @@ mod tests {
             .expect("accepting an invite must ask the room for a catch-up");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, room_topic_id(host_room));
                 match msg {
                     NeighbourMsg::SyncReq { room, .. } => assert_eq!(
                         room,
@@ -1539,9 +1853,7 @@ mod tests {
         );
     }
 
-    /// A token that does not verify joins nothing and asks nothing. The
-    /// refusal comes from `accept_invite_into`'s own validation, which is
-    /// why this path takes the token string rather than a parsed token.
+    /// A token that does not verify joins nothing and asks nothing.
     #[test]
     fn a_refused_invite_changes_nothing_and_asks_nothing() {
         let mut guest = WorkspaceTree::default();
@@ -1567,19 +1879,16 @@ mod tests {
 
     #[test]
     fn publish_presence_emits_a_publish_command() {
-        // Verify that `publish_presence` packages the (key, point) pair
-        // into a `NetCmd::Publish { msg: PresenceMoved }` on the actor
-        // command channel. Uses the test-only constructor so we own the
-        // receiver and can drain commands without spinning up libp2p.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xABCDu64);
+        let expected_topic = net.active_ws_for_publish();
         net.publish_presence("local-cursor".into(), (100.0, 200.0));
         let cmd = cmd_rx
             .try_recv()
             .expect("publish_presence must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::PresenceMoved {
                         peer,
@@ -1589,9 +1898,6 @@ mod tests {
                         ts: _,
                     } => {
                         assert_eq!(peer, 0xABCDu64);
-                        // The session names who is at it, so a peer's
-                        // cursor can be labelled with a person rather
-                        // than a hashed session handle.
                         assert_eq!(user, crate::shell::state::local_user_id());
                         assert!(!user.is_empty());
                         assert_eq!(key, "local-cursor");
@@ -1606,15 +1912,10 @@ mod tests {
 
     #[test]
     fn publish_app_crdt_snapshot_wraps_the_whole_document() {
-        // The frame that makes a peer's freshly-created document adopt
-        // somebody else's. The record has to survive the wrap for the
-        // same reason it does on an increment, and more so: a whole
-        // document merged into the wrong record cannot be un-merged.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        let expected_topic = net.active_ws_for_publish();
 
-        // Nobody has arrived, so this document's state is carried by the
-        // deltas and has no business on a broadcast topic.
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
             "00000000-0000-0000-0000-000000000000".into(),
@@ -1638,7 +1939,7 @@ mod tests {
             .expect("publish_app_crdt_snapshot must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::AppCrdtSnapshot {
                         peer,
@@ -1661,15 +1962,9 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_snapshot_is_refused_rather_than_handed_to_gossipsub() {
-        // gossipsub caps an RPC at 64 KiB and rejects anything larger,
-        // so publishing a document past the cap would fail inside the
-        // transport with nothing at this layer knowing it had. Refusing
-        // here is what turns "this document silently never converges"
-        // into a log line naming the size.
-        //
-        // Asserted on the queue rather than on the log: the observable
-        // consequence is that nothing goes out.
+    fn an_oversized_snapshot_is_refused_rather_than_handed_to_gossip() {
+        // Refusing here turns "this document silently never converges"
+        // into a log line naming the size, rather than a transport-level failure.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
         net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
@@ -1684,8 +1979,6 @@ mod tests {
             "a snapshot past the cap must not be queued for publish",
         );
 
-        // Exactly at the cap still goes out — the boundary belongs to
-        // the documents that fit, not to the ones that don't.
         net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
@@ -1700,13 +1993,9 @@ mod tests {
     }
 
     #[test]
-    fn one_arrival_releases_one_document_and_no_more() {
-        // The toolkit sends a whole document on every commit that
-        // changes it, and the delta alongside already carries the edit
-        // to anyone who shares the history. Republishing each one would
-        // put an unbounded payload on the room topic per commit, so the
-        // arming is one-shot: a peer arrives, one document goes out, and
-        // the commits after it stay local until somebody else arrives.
+    fn one_arrival_releases_each_document_once() {
+        // One arrival may need baselines for several records/apps. Repeated
+        // snapshots for one record still stay local until another arrival.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
         let room = "00000000-0000-0000-0000-000000000000";
@@ -1720,13 +2009,26 @@ mod tests {
                 vec![0xAA],
             );
         }
-        assert!(cmd_rx.try_recv().is_ok(), "the arrival releases one document");
+        assert!(
+            cmd_rx.try_recv().is_ok(),
+            "the arrival releases one document"
+        );
         assert!(
             cmd_rx.try_recv().is_err(),
             "the commits after it must not each broadcast the document again",
         );
 
-        // A different room's arrival does not release this one's.
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            room.into(),
+            "a-second-record".into(),
+            vec![0xBB],
+        );
+        assert!(
+            cmd_rx.try_recv().is_ok(),
+            "the same arrival releases a baseline for each distinct document",
+        );
+
         net.note_snapshot_request("00000000-0000-0000-0000-000000000001");
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
@@ -1741,17 +2043,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_at_the_cap_fits_a_gossipsub_rpc() {
-        // The cap is only worth anything if a message built at it
-        // actually fits the transport, and the arithmetic is not the
-        // obvious one: the actor publishes with `serde_json`, which
-        // writes a `Vec<u8>` as decimal numbers, so every byte costs up
-        // to four characters. An earlier version of this constant was
-        // set as though the cost were 1:1 and would have been rejected
-        // by gossipsub for any document near it.
-        //
-        // Worst case on both axes: bytes that each need three digits,
-        // and a record id the length of a real path.
+    fn snapshot_at_the_cap_fits_the_iroh_frame_budget() {
         let msg = NeighbourMsg::AppCrdtSnapshot {
             peer: u64::MAX,
             app_id: "dev.qos.word-processor".into(),
@@ -1759,19 +2051,16 @@ mod tests {
             record_id: "file:".to_string() + &"a".repeat(4096),
             data: vec![0xFFu8; MAX_APP_SNAPSHOT_BYTES],
         };
-        let encoded = serde_json::to_vec(&msg).expect("encode");
+        let encoded = postcard::to_allocvec(&msg).expect("encode");
         assert!(
-            encoded.len() < 65536,
-            "a snapshot at the cap must still fit a gossipsub RPC; got {} bytes",
+            encoded.len() < 64 * 1024 * 1024,
+            "a snapshot at the cap must fit the Iroh frame budget; got {} bytes",
             encoded.len(),
         );
     }
 
     #[test]
     fn handle_app_crdt_snapshot_message_buffers_for_drain() {
-        // The receive-side adapter the broker's drainer reads. Every
-        // component of the routing triple has to round-trip, because
-        // the drainer rebuilds the route from exactly these fields.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_app_crdt_snapshot_handle();
@@ -1793,11 +2082,9 @@ mod tests {
 
     #[test]
     fn handle_presence_message_buffers_for_drain() {
-        // The receive-side adapter pushes to the inbound buffer that
-        // the shell's frame drainer folds into `PresenceCtx`. Verify
-        // that the entry round-trips with every field preserved so the
-        // overlay can attribute the cursor to the right person, in the
-        // right scope, at the right time.
+        // Folded into `PresenceCtx` by the shell's frame drainer; every
+        // field must round-trip so the overlay attributes the cursor
+        // correctly.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_presence_handle();
@@ -1819,10 +2106,8 @@ mod tests {
 
     #[test]
     fn a_session_does_not_take_its_own_presence_off_the_network() {
-        // A session republishes the pointers of every app under it, so
-        // gossip can hand its own frames back. Painting them would put
-        // a second cursor on screen chasing the one under the user's
-        // hand — and label it as a peer.
+        // Gossip hands a session its own frames back; painting them
+        // would draw a second cursor chasing the user's own hand.
         let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 99u64);
         let buf_handle = net.inbound_presence_handle();
@@ -1853,13 +2138,9 @@ mod tests {
 
     #[test]
     fn publish_app_crdt_incremental_emits_a_publish_command() {
-        // Phase 2 bridge: the broker should be able to forward a
-        // local `SyncIncremental` as a `NeighbourMsg::AppCrdtIncremental`.
-        // Verify the wrapping is correct (peer id stamped, payload
-        // round-trips verbatim, default workspace topic) without
-        // spinning up libp2p.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        let expected_topic = net.active_ws_for_publish();
         net.publish_app_crdt_incremental(
             "terminal".into(),
             "00000000-0000-0000-0000-000000000000".into(),
@@ -1871,7 +2152,7 @@ mod tests {
             .expect("publish_app_crdt_incremental must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::AppCrdtIncremental {
                         peer,
@@ -1883,9 +2164,6 @@ mod tests {
                         assert_eq!(peer, 0xCAFEu64);
                         assert_eq!(app_id, "terminal");
                         assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
-                        // The record has to survive the wrap: it is what
-                        // tells the receiving broker which document these
-                        // changes belong to.
                         assert_eq!(record_id, "file:/work/notes.md");
                         assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
                     }
@@ -1898,9 +2176,6 @@ mod tests {
 
     #[test]
     fn handle_app_crdt_message_buffers_for_drain() {
-        // The inbound receive-side adapter pushes onto the buffer
-        // the broker's drainer reads from. Verify all four fields
-        // round-trip so the local fan-out can attribute payloads.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_app_crdt_handle();
@@ -1920,29 +2195,6 @@ mod tests {
         assert_eq!(buf[0].data, vec![0x01, 0x02]);
     }
 
-    /// Document why a real network test (two `ShellNetwork`s + a real
-    /// libp2p mesh) isn't covered here:
-    ///
-    /// - `ShellNetwork::spawn` builds a tokio runtime and binds a
-    ///   real TCP listener via `libp2p::SwarmBuilder`. Two parallel
-    ///   spawns in the same test process compete for the same
-    ///   ports unless we plumb `0.0.0.0:0` end-to-end (which the
-    ///   current builder doesn't expose). The existing peer-sync
-    ///   integration test (`tests/peer_sync_test.rs`) uses the
-    ///   in-process `Hub` for the same reason.
-    /// - The actor-level encoder/decoder loop already round-trips
-    ///   every `NeighbourMsg` variant via `protocol::tests::*` (see
-    ///   the `app_crdt_incremental_round_trips` test below the
-    ///   enum) so the wire format itself is covered.
-    /// - The replica/match-arm side of `AppCrdtIncremental` is a
-    ///   no-op (the bridge code is in `ShellNetwork::tick` above
-    ///   and routes into the inbound buffer), so the unit tests
-    ///   above are sufficient to assert routing.
-    ///
-    /// A real two-host test belongs in the headless-integration
-    /// harness (`tests/peer_sync_test.rs` follow-up) once that
-    /// harness supports app-level CRDT injection. The two unit
-    /// tests above are the contract for now.
     fn make_envelope(seq: u64) -> collab_types::SignedOp {
         use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp};
         use std::time::SystemTime;
@@ -1959,13 +2211,9 @@ mod tests {
 
     #[test]
     fn publish_app_crdt_signed_emits_a_publish_command() {
-        // Phase 3 outbound bridge: the broker forwards a validated
-        // `SignedSyncIncremental` as a
-        // `NeighbourMsg::AppCrdtIncrementalSigned`. Verify the wrapping
-        // is correct (peer id stamped, envelope round-trips verbatim,
-        // default workspace topic) without spinning up libp2p.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
+        let expected_topic = net.active_ws_for_publish();
         let envelope = make_envelope(7);
         net.publish_app_crdt_signed(
             "notes".to_string(),
@@ -1978,7 +2226,7 @@ mod tests {
             .expect("publish_app_crdt_signed must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::AppCrdtIncrementalSigned {
                         peer,
@@ -1988,9 +2236,6 @@ mod tests {
                         envelope: got,
                     } => {
                         assert_eq!(peer, 0xFEED_u64);
-                        // The route the receiving broker filters on
-                        // has to survive the wrap verbatim, or the
-                        // envelope arrives unaddressed and is dropped.
                         assert_eq!(app_id, "notes");
                         assert_eq!(cluster_id, "cluster-7");
                         assert_eq!(record_id, "uuid:9f");
@@ -2005,10 +2250,6 @@ mod tests {
 
     #[test]
     fn handle_app_crdt_signed_message_buffers_for_drain() {
-        // The inbound adapter pushes onto the signed buffer the broker
-        // drainer reads from. Verify the entry preserves the peer hash,
-        // the route the drainer delivers against, and the envelope
-        // verbatim.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_app_crdt_signed_handle();
@@ -2030,14 +2271,11 @@ mod tests {
     }
 
     #[test]
-    fn active_ws_for_publish_returns_default_topic() {
-        // v1: publishes go to the single default workspace topic. This
-        // contract is asserted explicitly so per-workspace routing
-        // (Phase 3 follow-up) gets a tripping test rather than a
-        // silent behaviour change.
+    fn active_ws_for_publish_returns_the_active_rooms_stable_topic() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
+        let expected = room_topic_id(tree.read().active_workspace().unwrap().room);
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
-        assert_eq!(net.active_ws_for_publish(), DEFAULT_WS_TOPIC);
+        assert_eq!(net.active_ws_for_publish(), expected);
     }
 
     #[test]
@@ -2045,6 +2283,7 @@ mod tests {
         use collab_types::ArtifactId;
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
+        let expected_topic = net.active_ws_for_publish();
         let artifact = ArtifactId::new();
         net.publish_scrollback_request(artifact, 100, 25);
         let cmd = cmd_rx
@@ -2052,7 +2291,7 @@ mod tests {
             .expect("publish_scrollback_request must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::ScrollbackRequest {
                         artifact: got_art,

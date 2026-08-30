@@ -6,7 +6,7 @@
 //!
 //! Walks the whole chain the way a pairing does:
 //!
-//! 1. The compositor's [`PairingService`] connects to BlueZ and registers the
+//! 1. The compositor's [`PairingService`] connects to `BlueZ` and registers the
 //!    agent — the real daemon, not a stub.
 //! 2. A **root** process invokes `org.bluez.Agent1.RequestConfirmation`, which
 //!    is the only thing the bus policy permits to drive an agent, and is
@@ -24,18 +24,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use automerge::{transaction::Transactable, ScalarValue};
+use automerge::{ScalarValue, transaction::Transactable};
 use shell::bluetooth::{PairingPromptHandle, PairingService};
-use shell::bluetooth_prompt::{PairingPromptView, KEY_ACCEPT};
+use shell::bluetooth_prompt::{KEY_ACCEPT, PairingPromptView};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use ui::State;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::State;
-use vello::kurbo::{Affine, Point};
 use vello::Scene;
+use vello::kurbo::{Affine, Point};
 
 const DEV: &str = "/org/bluez/hci0/dev_88_C9_E8_6F_B4_8B";
 const PASSKEY: u32 = 424_242;
@@ -63,17 +63,24 @@ async fn main() {
 
 fn arg(flag: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
-    a.iter().position(|x| x == flag).and_then(|i| a.get(i + 1).cloned())
+    a.iter()
+        .position(|x| x == flag)
+        .and_then(|i| a.get(i + 1).cloned())
 }
 
 /// The root half — stands in for `bluetoothd`.
 async fn bluez_side(unique: &str) -> Result<String, String> {
-    let conn = zbus::Connection::system().await.map_err(|e| e.to_string())?;
+    let conn = zbus::Connection::system()
+        .await
+        .map_err(|e| e.to_string())?;
     let proxy = zbus::Proxy::new(&conn, unique, qos_bluez::AGENT_PATH, "org.bluez.Agent1")
         .await
         .map_err(|e| e.to_string())?;
     let dev = zbus::zvariant::ObjectPath::try_from(DEV).map_err(|e| e.to_string())?;
-    match proxy.call_method("RequestConfirmation", &(&dev, PASSKEY)).await {
+    match proxy
+        .call_method("RequestConfirmation", &(&dev, PASSKEY))
+        .await
+    {
         Ok(_) => Ok("RESULT=OK".to_string()),
         Err(zbus::Error::MethodError(name, d, _)) => Ok(format!(
             "RESULT=ERROR name={} detail={}",
@@ -142,7 +149,9 @@ async fn run() -> Result<(), String> {
 
     // 5. Answer through the widget's own key, as a click would.
     let mut state = State::new();
-    let _ = state.doc.put(&state.root, KEY_ACCEPT, ScalarValue::Boolean(true));
+    let _ = state
+        .doc
+        .put(&state.root, KEY_ACCEPT, ScalarValue::Boolean(true));
     view.sync(&mut state.doc, &state.root);
     let reply = view
         .take_answer()
@@ -195,16 +204,21 @@ fn render(view: &mut PairingPromptView, out: &PathBuf) -> Result<(), String> {
                 height: AvailableSpace::Definite(H as f32),
             },
             |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
             },
         )
         .map_err(|e| e.to_string())?;
     view.apply_layout(&taffy, node, Point::ZERO);
     let mut scene = Scene::new();
-    view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::default());
+    view.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &PresenceCtx::default(),
+    );
     OffscreenRenderer::new(W, H).render_png(&scene, theme.bg_app, out);
     Ok(())
 }

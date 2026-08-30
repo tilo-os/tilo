@@ -1,17 +1,11 @@
 //! Enforcement tests for the compositor's capability model.
 //!
-//! Every assertion here runs against the production API — `Workspace`'s
+//! Every assertion runs against the production API — `Workspace`'s
 //! decision methods, `WorkspaceTree`'s grant/revoke/replicate path, the
 //! portal's `GrantStoreHandle`, and `persist::{save_tree_to,
-//! load_tree_from}`. Nothing is re-implemented locally and no test
-//! helper stands in for the code that ships.
-//!
-//! The bias is towards **denial**, deliberately. Before this work the
-//! compositor's permission surface passed every "does allow work?"
-//! question and failed every "does deny work?" one: `is_active_
-//! workspace_owner` returned `true` unconditionally, no production code
-//! path persisted a grant, and a revoke never left the local cache. The
-//! tests below are the ones that would have caught each of those.
+//! load_tree_from}` — nothing is re-implemented locally. The bias is
+//! deliberately toward **denial**: "does deny work?", not just "does
+//! allow work?".
 
 use shell::shell::persist;
 use shell::shell::state::{
@@ -40,10 +34,6 @@ fn ws_of(tree: &WorkspaceTree, id: WorkspaceId) -> &Workspace {
         .find(|w| w.id == id)
         .expect("workspace")
 }
-
-// =====================================================================
-// Ownership is real: not everyone is an owner.
-// =====================================================================
 
 #[test]
 fn only_the_owner_may_administer_the_room() {
@@ -91,7 +81,6 @@ fn an_ownerless_room_has_no_administrators() {
 fn a_non_owner_cannot_grant_or_revoke() {
     let (mut tree, id) = room_owned_by(ALICE);
 
-    // Bob is a member — an Editor — but not an administrator.
     tree.grant_in_workspace(
         id,
         &ALICE.to_string(),
@@ -99,7 +88,7 @@ fn a_non_owner_cannot_grant_or_revoke() {
     )
     .expect("the owner may admit a member");
 
-    // Bob now tries to widen his own authority. This must fail.
+    // Bob tries to widen his own authority. This must fail.
     let escalation = tree.grant_in_workspace(
         id,
         &BOB.to_string(),
@@ -115,7 +104,6 @@ fn a_non_owner_cannot_grant_or_revoke() {
         "and the attempted escalation must not have taken effect"
     );
 
-    // Bob also cannot revoke someone else's capability.
     let carol_cap = tree
         .grant_in_workspace(
             id,
@@ -139,10 +127,6 @@ fn a_non_owner_cannot_grant_or_revoke() {
         "and the capability must still be there"
     );
 }
-
-// =====================================================================
-// A peer without the verb is denied, observably.
-// =====================================================================
 
 #[test]
 fn a_peer_without_the_verb_is_denied_and_the_denial_is_attributable() {
@@ -181,7 +165,6 @@ fn the_host_can_change_a_peers_permissions_live() {
     let (mut tree, id) = room_owned_by(ALICE);
     let bob = BOB.to_string();
 
-    // Admitted read-only.
     let membership = tree
         .grant_in_workspace(
             id,
@@ -200,7 +183,6 @@ fn the_host_can_change_a_peers_permissions_live() {
         "read-only to begin with"
     );
 
-    // The host promotes Bob to Editor. No restart, no re-invite.
     tree.grant_in_workspace(
         id,
         &ALICE.to_string(),
@@ -217,7 +199,6 @@ fn the_host_can_change_a_peers_permissions_live() {
         "the promotion takes effect immediately"
     );
 
-    // And the host demotes him again.
     assert!(tree.revoke_in_workspace(id, &ALICE.to_string(), "bob-membership"));
     assert!(
         !ws_of(&tree, id).allows(
@@ -234,11 +215,6 @@ fn the_host_can_change_a_peers_permissions_live() {
     );
 }
 
-// =====================================================================
-// Revocation replicates. This is the half that was entirely missing:
-// the old revoke touched only the local cache.
-// =====================================================================
-
 #[test]
 fn a_revoked_capability_stops_working_on_a_peer() {
     let (mut host, id) = room_owned_by(ALICE);
@@ -246,7 +222,6 @@ fn a_revoked_capability_stops_working_on_a_peer() {
 
     tree_grant(&mut host, id, "bob-write");
 
-    // Peer hydrates from the host.
     let mut peer = WorkspaceTree::default();
     let changes = host.export_changes_since(&[]);
     peer.apply_changes(&changes).expect("peer applies");
@@ -261,7 +236,6 @@ fn a_revoked_capability_stops_working_on_a_peer() {
         "the peer must see the capability the host granted"
     );
 
-    // Host revokes.
     let heads = host.current_heads();
     assert!(host.revoke_in_workspace(id, &ALICE.to_string(), "bob-write"));
     let revoke_changes = host.export_changes_since(&heads);
@@ -300,14 +274,13 @@ fn tree_grant(tree: &mut WorkspaceTree, id: WorkspaceId, cap_id: &str) {
 
 #[test]
 fn a_peers_grant_replicates_to_the_host() {
-    // Replication is two-way: the host must also converge on a
-    // capability a co-owner issued.
+    // Replication is two-way: the host must also converge on a capability a
+    // co-owner issued.
     let (mut host, id) = room_owned_by(ALICE);
     let mut peer = WorkspaceTree::default();
     peer.apply_changes(&host.export_changes_since(&[]))
         .expect("hydrate");
 
-    // Peer is a delegated administrator.
     tree_grant_admin(&mut host, id, "bob-admin");
     peer.apply_changes(&host.export_changes_since(&[]))
         .expect("sync");
@@ -346,10 +319,6 @@ fn tree_grant_admin(tree: &mut WorkspaceTree, id: WorkspaceId, cap_id: &str) {
     .expect("owner delegates");
 }
 
-// =====================================================================
-// Durability: `Always` survives a restart, `Session` does not.
-// =====================================================================
-
 #[test]
 fn always_survives_a_restart_and_session_does_not() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -378,7 +347,6 @@ fn always_survives_a_restart_and_session_does_not() {
         );
     }
 
-    // Before the restart all three are live.
     let ws = ws_of(&tree, id);
     let app = ws.actor_for_app("org.qos.Ebook");
     assert!(ws.allows(
@@ -419,10 +387,9 @@ fn always_survives_a_restart_and_session_does_not() {
 
 #[test]
 fn the_filesystem_capability_export_carries_exactly_the_path_capabilities() {
-    // The FUSE mount is a separate process enforcing the list it reads
-    // from this file. If the compositor never writes it, the
-    // filesystem's enforcement is real but always enforcing nothing —
-    // which is indistinguishable from having no enforcement at all.
+    // The FUSE mount is a separate process enforcing the list it reads from
+    // this file — if the compositor never writes it, enforcement is real but
+    // always enforcing nothing, indistinguishable from none at all.
     let dir = tempfile::tempdir().expect("tempdir");
     let acl_path = dir.path().join("fs-capabilities.json");
 
@@ -466,7 +433,6 @@ fn the_filesystem_capability_export_carries_exactly_the_path_capabilities() {
         "only path-scoped capabilities belong in the filesystem's list"
     );
 
-    // Revoking rewrites the file, so the filesystem stops honouring it.
     assert!(tree.revoke_in_workspace(id, &ALICE.to_string(), "bob-design"));
     let raw = std::fs::read_to_string(&acl_path).expect("export still present");
     let exported: Vec<CapOverride> = serde_json::from_str(&raw).expect("parse");
@@ -479,11 +445,10 @@ fn the_filesystem_capability_export_carries_exactly_the_path_capabilities() {
 
 #[test]
 fn re_granting_never_shortens_an_existing_grant() {
-    // A grant is monotonic. An app holding "Always" for the camera that
-    // then makes a fresh request — which the prompt defaults to
-    // one-shot — must not have its permanent grant quietly demoted.
-    // Reducing authority is what revoke and Restrict are for, and both
-    // are explicit acts the user can see.
+    // A grant is monotonic: an app holding "Always" for the camera that
+    // makes a fresh (one-shot-defaulting) request must not have its
+    // permanent grant quietly demoted — reducing authority is what revoke
+    // and Restrict are for, both explicit acts the user can see.
     let (mut tree, id) = room_owned_by(ALICE);
     let ws = tree.workspaces.iter_mut().find(|w| w.id == id).unwrap();
 
@@ -509,7 +474,6 @@ fn re_granting_never_shortens_an_existing_grant() {
          must not demote a permanent grant"
     );
 
-    // And it really does still survive a restart.
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.json");
     persist::save_tree_to(&tree, &path).expect("save");
@@ -551,9 +515,7 @@ fn an_expired_capability_stops_working_without_being_revoked() {
     );
 }
 
-// =====================================================================
 // The portal: an app reaching outside what it owns is denied.
-// =====================================================================
 
 #[test]
 fn the_portal_denies_an_app_a_path_it_was_never_granted() {
@@ -579,7 +541,6 @@ fn the_portal_denies_an_app_a_path_it_was_never_granted() {
         "an app with no capability must be denied"
     );
 
-    // Grant one directory.
     assert!(store.insert(
         &caller,
         Capability::Filesystem {
@@ -623,7 +584,6 @@ fn the_portal_denies_an_app_a_path_it_was_never_granted() {
         "a read grant is not a write grant"
     );
 
-    // Another app gets nothing from it.
     let other = PortalCaller::new(ws_id, "org.qos.Files");
     assert!(
         !store.permits(
@@ -671,10 +631,8 @@ fn a_network_allowlist_is_actually_a_list() {
     );
 }
 
-// =====================================================================
 // The hard UI constraint, asserted on data rather than trusted to a
 // renderer: a per-file share is never room membership.
-// =====================================================================
 
 #[test]
 fn sharing_one_file_never_puts_a_person_in_the_roster() {
@@ -712,7 +670,6 @@ fn sharing_one_file_never_puts_a_person_in_the_roster() {
          ad-hoc share as 'I made you a collaborator' is exactly what the model forbids"
     );
 
-    // And she does appear on that file's share list.
     let shares = ws.shares_of(&ResourceRef::FsPath(
         "/var/workspace/design/logo.svg".into(),
     ));
@@ -729,7 +686,6 @@ fn sharing_one_file_never_puts_a_person_in_the_roster() {
          lists are disjoint in both directions"
     );
 
-    // Carol can read the file she was given and nothing else.
     let carol = ws.actor_for_person(&"carol".to_string());
     assert!(ws.allows(
         &carol,
@@ -743,9 +699,7 @@ fn sharing_one_file_never_puts_a_person_in_the_roster() {
     assert_eq!(ws.role_of(&"carol".to_string()), None, "and no role");
 }
 
-// =====================================================================
 // File permissions inherit down the tree, Linux-style.
-// =====================================================================
 
 #[test]
 fn file_capabilities_inherit_down_the_tree_and_stop_at_the_boundary() {
@@ -867,7 +821,6 @@ fn a_bearer_token_carries_exactly_its_own_authority() {
         "a different token grants nothing"
     );
 
-    // Revoking the link kills it immediately.
     assert!(tree.revoke_in_workspace(id, &ALICE.to_string(), "share-link"));
     assert!(
         !ws_of(&tree, id).allows(&holder, &path, Verb::Read),

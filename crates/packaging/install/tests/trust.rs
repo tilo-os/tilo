@@ -102,19 +102,29 @@ fn attest_and_inject(
     let id = pack(payload_dir, manifest, &identity, &mut throwaway).expect("throwaway pack");
     let signed_bytes = throwaway.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
     let signed = SignedRoot::decode(&signed_bytes).unwrap();
-    let preimage =
-        attestation_preimage(&signed.payload_root_hash, &publisher_sk.verifying_key().to_bytes());
+    let preimage = attestation_preimage(
+        &signed.payload_root_hash,
+        &publisher_sk.verifying_key().to_bytes(),
+    );
     let sig = attestor_sk.sign(&preimage).to_bytes();
-    manifest.trust.attested_by.retain(|a| a.attestor != attestor_id);
+    manifest
+        .trust
+        .attested_by
+        .retain(|a| a.attestor != attestor_id);
     manifest.trust.attested_by.push(TrustAttestation {
         attestor: attestor_id.into(),
-        claim_hex: "".into(),
+        claim_hex: String::new(),
         signature_hex: hex::encode(sig),
     });
 }
 
 /// Build a .qpkg file with the same layout that qos-pkg-cli writes.
-fn build_qpkg(qpkg_path: &Path, manifest: &Manifest, publisher_sk: &SigningKey, payload_dir: &Path) {
+fn build_qpkg(
+    qpkg_path: &Path,
+    manifest: &Manifest,
+    publisher_sk: &SigningKey,
+    payload_dir: &Path,
+) {
     let mut store = MemoryBlobStore::new();
     let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
     let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
@@ -124,7 +134,10 @@ fn build_qpkg(qpkg_path: &Path, manifest: &Manifest, publisher_sk: &SigningKey, 
         package_id: String,
         format: u32,
     }
-    let header = QpkgHeader { package_id: id.to_string(), format: 1 };
+    let header = QpkgHeader {
+        package_id: id.to_string(),
+        format: 1,
+    };
     let header_toml = toml::to_string(&header).unwrap();
 
     let signed_bytes = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
@@ -139,7 +152,7 @@ fn build_qpkg(qpkg_path: &Path, manifest: &Manifest, publisher_sk: &SigningKey, 
     append(&mut tar, "manifest.toml", &manifest_bytes);
     append(&mut tar, "collection.qcl", &collection_bytes);
     for (h, b) in store.iter() {
-        let name = format!("blobs/{}", h);
+        let name = format!("blobs/{h}");
         append(&mut tar, &name, b);
     }
     tar.finish().unwrap();
@@ -162,7 +175,9 @@ struct TestEnv {
 
 impl TestEnv {
     fn new() -> Self {
-        Self { home: tempfile::tempdir().unwrap() }
+        Self {
+            home: tempfile::tempdir().unwrap(),
+        }
     }
 
     fn xdg_config(&self) -> PathBuf {
@@ -366,7 +381,10 @@ fn install_require_attestor_and_allow_self_signed_falls_back_when_no_match() {
         .arg("qos-curated/2026.07")
         .arg("--allow-self-signed");
     let (ok, stdout, stderr) = run(cmd);
-    assert!(ok, "expected success (allow-self-signed fallback), stderr: {stderr}");
+    assert!(
+        ok,
+        "expected success (allow-self-signed fallback), stderr: {stderr}"
+    );
     assert!(stdout.contains("installed:"), "stdout: {stdout}");
     assert!(
         stderr.contains("--allow-self-signed permits") || stderr.contains("unmatched"),
@@ -389,7 +407,7 @@ fn install_refuses_revoked_publisher() {
     env.write_trusted_attestors(&TrustedAttestors::default());
     env.write_revocation(&RevocationList {
         revoked: vec![RevokedKey {
-            pubkey_hex: publisher_pub_hex.clone(),
+            pubkey_hex: publisher_pub_hex,
             reason: "compromised 2026-07-05".into(),
         }],
     });
@@ -399,7 +417,9 @@ fn install_refuses_revoked_publisher() {
     // runtime bundle it does not ship, which is a separate axis and
     // would otherwise refuse the install before the trust decision
     // could be observed.
-    cmd.arg("install").arg(&qpkg_path).arg("--ignore-missing-runtime");
+    cmd.arg("install")
+        .arg(&qpkg_path)
+        .arg("--ignore-missing-runtime");
     let (ok, _stdout, stderr) = run(cmd);
     assert!(!ok, "expected refusal, stderr: {stderr}");
     assert!(
@@ -430,11 +450,16 @@ fn install_default_warns_but_installs_self_signed() {
     // runtime bundle it does not ship, which is a separate axis and
     // would otherwise refuse the install before the trust decision
     // could be observed.
-    cmd.arg("install").arg(&qpkg_path).arg("--ignore-missing-runtime");
+    cmd.arg("install")
+        .arg(&qpkg_path)
+        .arg("--ignore-missing-runtime");
     let (ok, stdout, stderr) = run(cmd);
     assert!(ok, "expected success, stderr: {stderr}");
     assert!(stdout.contains("installed:"), "stdout: {stdout}");
-    assert!(stderr.contains("self-signed") || stderr.contains("WARN"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("self-signed") || stderr.contains("WARN"),
+        "stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -443,7 +468,12 @@ fn trust_add_list_remove_roundtrip() {
     let pubkey = "aa".repeat(32);
 
     let mut cmd = env.cmd();
-    cmd.arg("trust").arg("add").arg("--id").arg("acme/1").arg("--pubkey").arg(&pubkey);
+    cmd.arg("trust")
+        .arg("add")
+        .arg("--id")
+        .arg("acme/1")
+        .arg("--pubkey")
+        .arg(&pubkey);
     let (ok, stdout, stderr) = run(cmd);
     assert!(ok, "trust add failed: {stderr}");
     assert!(stdout.contains("acme/1"), "stdout: {stdout}");
@@ -453,7 +483,10 @@ fn trust_add_list_remove_roundtrip() {
     let (ok, stdout, _stderr) = run(cmd);
     assert!(ok);
     assert!(stdout.contains("acme/1"), "list stdout: {stdout}");
-    assert!(stdout.contains(&pubkey), "list stdout missing key: {stdout}");
+    assert!(
+        stdout.contains(&pubkey),
+        "list stdout missing key: {stdout}"
+    );
 
     let mut cmd = env.cmd();
     cmd.arg("trust").arg("remove").arg("acme/1");
@@ -464,7 +497,10 @@ fn trust_add_list_remove_roundtrip() {
     cmd.arg("trust").arg("list");
     let (ok, stdout, _stderr) = run(cmd);
     assert!(ok);
-    assert!(stdout.contains("(no trusted attestors)"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("(no trusted attestors)"),
+        "stdout: {stdout}"
+    );
 }
 
 #[test]
@@ -473,7 +509,10 @@ fn revoke_and_revoked_list_roundtrip() {
     let pubkey = "bb".repeat(32);
 
     let mut cmd = env.cmd();
-    cmd.arg("revoke").arg(&pubkey).arg("--reason").arg("compromised");
+    cmd.arg("revoke")
+        .arg(&pubkey)
+        .arg("--reason")
+        .arg("compromised");
     let (ok, stdout, stderr) = run(cmd);
     assert!(ok, "revoke failed: {stderr}");
     assert!(stdout.contains(&pubkey), "stdout: {stdout}");

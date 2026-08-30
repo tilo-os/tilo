@@ -1,0 +1,39 @@
+# One process per test, which is what makes a single consolidated test binary
+# safe: tests that set environment variables or touch process state no longer
+# share a process with the rest of the file.
+
+[profile.default]
+# A hung test should name itself rather than stall the run.
+slow-timeout = { period = "60s", terminate-after = 4 }
+failure-output = "immediate-final"
+fail-fast = false
+
+[profile.ci]
+slow-timeout = { period = "120s", terminate-after = 4 }
+failure-output = "immediate-final"
+fail-fast = false
+# GPU and socket tests are timing-sensitive under a loaded runner; a single
+# retry distinguishes a flake from a break without hiding a real failure.
+retries = 1
+status-level = "fail"
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# Tests that spawn a real compositor process, or drive the GPU through the
+# offscreen renderer, cannot all run at once: `clipboard_e2e` starts a whole
+# `shell` binary plus two Wayland clients and waits 25 s for a drop, which is
+# comfortable alone and not comfortable against two thousand other tests.
+#
+# The in-file `TEST_LOCK` some of these hold does not help — nextest gives each
+# test its own process, so a mutex inside one serialises nothing. This does.
+[test-groups]
+compositor = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = 'binary(it) and (test(clipboard_e2e::) or test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::) or test(interaction_test::) or test(wayland_test::))'
+test-group = "compositor"
+
+[[profile.ci.overrides]]
+filter = 'binary(it) and (test(clipboard_e2e::) or test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::) or test(interaction_test::) or test(wayland_test::))'
+test-group = "compositor"

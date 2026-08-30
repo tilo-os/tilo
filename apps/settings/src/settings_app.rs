@@ -148,15 +148,14 @@ impl SettingsApp {
             Some(s) => s.is_narrow(),
             None => self
                 .width_hint
-                .map(|w| (w as f64) < NAV_BREAKPOINT)
-                .unwrap_or(false),
+                .is_some_and(|w| f64::from(w) < NAV_BREAKPOINT),
         }
     }
 
     /// Whether the sidebar / list is currently shown (always when wide, or the
     /// list screen when narrow). Used by `--shots` assertions.
     pub fn sidebar_open(&self) -> bool {
-        self.shell.as_ref().is_some_and(|s| s.sidebar_open())
+        self.shell.as_ref().is_some_and(ui::AppShell::sidebar_open)
     }
 
     /// The current search query (empty when not searching).
@@ -170,8 +169,7 @@ impl SettingsApp {
     pub fn back_button_rect(&self) -> vello::kurbo::Rect {
         self.shell
             .as_ref()
-            .map(|s| s.back_rect())
-            .unwrap_or(vello::kurbo::Rect::ZERO)
+            .map_or(vello::kurbo::Rect::ZERO, ui::AppShell::back_rect)
     }
 
     /// Pre-seed a search query so the deterministic `--shots` render shows the
@@ -253,7 +251,7 @@ impl SettingsApp {
             .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
             .with_narrow_screen(narrow_screen);
         if let Some(w) = self.width_hint {
-            shell = shell.with_width_hint(w as f64);
+            shell = shell.with_width_hint(f64::from(w));
         }
         shell
     }
@@ -273,7 +271,7 @@ impl SettingsApp {
 
 impl Widget for SettingsApp {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        use automerge::{transaction::Transactable, ReadDoc, Value};
+        use automerge::{ReadDoc, Value, transaction::Transactable};
 
         // Category selection: each sidebar row writes `settings.select.<slug>`
         // = true on click. Reading it true here switches the active category
@@ -300,24 +298,23 @@ impl Widget for SettingsApp {
         // In `--shots` there is no event loop to type into the field, so a
         // pre-seeded query (via `with_search_shot`) is spliced into the object
         // once so the field visibly shows the query it filtered by.
-        if !self.search_query.is_empty() {
-            if let Ok(existing) = state.text(&search_obj) {
-                if existing.is_empty() {
-                    let _ = state.splice_text(&search_obj, 0, 0, &self.search_query);
-                }
-            }
+        if !self.search_query.is_empty()
+            && let Ok(existing) = state.text(&search_obj)
+            && existing.is_empty()
+        {
+            let _ = state.splice_text(&search_obj, 0, 0, &self.search_query);
         }
 
         // Search query: the header's search field writes `settings.search`.
         // A changed value updates the filter and swaps the shell's (filtered)
         // nav list, then flags a rebuild. The field re-reads the same key on
         // its own `sync`, so the query text survives the rebuild.
-        if let Some(q) = read_search(state, path) {
-            if q != self.search_query {
-                self.search_query = q;
-                self.structure_dirty = true;
-                self.refresh_shell_children();
-            }
+        if let Some(q) = read_search(state, path)
+            && q != self.search_query
+        {
+            self.search_query = q;
+            self.structure_dirty = true;
+            self.refresh_shell_children();
         }
 
         if let Some(shell) = &mut self.shell {
@@ -336,7 +333,7 @@ impl Widget for SettingsApp {
         if self.shell.is_none() {
             self.shell = Some(self.build_shell());
         }
-        let shell = self.shell.as_mut().unwrap();
+        let shell = self.shell.as_mut().expect("just set above");
         let shell_node = shell.build_layout(taffy, theme, node_map);
 
         let style = taffy::Style {
@@ -348,7 +345,7 @@ impl Widget for SettingsApp {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[shell_node]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -360,16 +357,16 @@ impl Widget for SettingsApp {
     ) {
         let l = taffy.layout(node).unwrap();
         self.rect = vello::kurbo::Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
-        if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell) {
-            if let Some(&shell_node) = children.first() {
-                shell.apply_layout(taffy, shell_node, origin);
-            }
+        if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell)
+            && let Some(&shell_node) = children.first()
+        {
+            shell.apply_layout(taffy, shell_node, origin);
         }
     }
 
@@ -396,7 +393,14 @@ impl Widget for SettingsApp {
         permissions: &ui::permissions::PermissionContext,
     ) {
         if let Some(shell) = &mut self.shell {
-            shell.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            shell.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
     }
 
@@ -412,13 +416,20 @@ impl Widget for SettingsApp {
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
     ) {
-        if let (Ok(children), Some(shell)) = (taffy.children(node_id), &mut self.shell) {
-            if let Some(&shell_node) = children.first() {
-                shell.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, shell_node,
-                    taffy,
-                );
-            }
+        if let (Ok(children), Some(shell)) = (taffy.children(node_id), &mut self.shell)
+            && let Some(&shell_node) = children.first()
+        {
+            shell.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                shell_node,
+                taffy,
+            );
         }
     }
 
@@ -436,7 +447,7 @@ impl Widget for SettingsApp {
             .unwrap_or_default()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SettingsApp"
     }
 
@@ -451,21 +462,24 @@ impl Widget for SettingsApp {
         let child = self
             .shell
             .as_mut()
-            .map(|s| s.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(ui::Widget::take_structure_dirty);
         own || child
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.shell.as_ref().is_some_and(|s| s.needs_animation_frame())
+        self.shell
+            .as_ref()
+            .is_some_and(ui::Widget::needs_animation_frame)
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.shell.as_ref().is_some_and(|s| s.needs_idle_sync())
+        self.shell.as_ref().is_some_and(ui::Widget::needs_idle_sync)
     }
 
     fn layout_needs_measure(&self) -> bool {
-        self.shell.as_ref().is_some_and(|s| s.layout_needs_measure())
+        self.shell
+            .as_ref()
+            .is_some_and(ui::Widget::layout_needs_measure)
     }
 
     /// Publish the settings resource tree to the shell's one Ctrl+K palette,
@@ -487,8 +501,15 @@ impl Widget for SettingsApp {
     /// Navigate to the pane a chosen palette row identifies. Pane selection is
     /// app-local presentation (per-peer, never in the shared doc), so the doc
     /// args are unused.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut automerge::AutoCommit, _path: &automerge::ObjId) {
-        if let Some(category) = crate::search_provider::SettingsSearchProvider::parse_action_id(action_id) {
+    fn activate_search_result(
+        &mut self,
+        action_id: &str,
+        _doc: &mut automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) {
+        if let Some(category) =
+            crate::search_provider::SettingsSearchProvider::parse_action_id(action_id)
+        {
             self.select(category);
         }
     }
@@ -539,7 +560,7 @@ impl AppWidget for SettingsApp {
         AppKind::Settings
     }
 
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "Settings"
     }
 
@@ -655,7 +676,9 @@ mod tests {
     fn narrow_list_shot_shows_the_standalone_list_screen() {
         // The category list remains reachable (and capturable) as its own
         // full-screen screen — it is simply no longer the collapse default.
-        let mut app = SettingsApp::new().with_width_hint(440.0).with_narrow_list_shot();
+        let mut app = SettingsApp::new()
+            .with_width_hint(440.0)
+            .with_narrow_list_shot();
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.is_narrow(), "440px should resolve to the narrow layout");
         assert!(
@@ -689,15 +712,23 @@ mod tests {
     #[test]
     fn narrow_pick_navigates_list_to_content_and_back() {
         // Start on the list screen — the reachable back-tap state.
-        let mut app = SettingsApp::new().with_width_hint(440.0).with_narrow_list_shot();
+        let mut app = SettingsApp::new()
+            .with_width_hint(440.0)
+            .with_narrow_list_shot();
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.sidebar_open(), "starts on the list screen");
         // Picking a category drills into its content screen.
         app.select(Category::Users);
         assert!(app.take_structure_dirty(), "the pick requests a rebuild");
         layout_at(&mut app, 440.0, 820.0);
-        assert!(!app.sidebar_open(), "the pick navigated to the content screen");
-        assert!(app.back_button_rect().width() > 0.0, "a back arrow is present");
+        assert!(
+            !app.sidebar_open(),
+            "the pick navigated to the content screen"
+        );
+        assert!(
+            app.back_button_rect().width() > 0.0,
+            "a back arrow is present"
+        );
     }
 
     #[test]

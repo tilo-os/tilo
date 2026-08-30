@@ -1,14 +1,25 @@
 //! Thin binary entry point. All logic lives in the library.
 //!
 //! Collaboration: launched from the shell, the compositor's broker is
-//! reached through the descriptor the launcher injects — nothing to
-//! configure. Run outside a session, point two instances at one shell:
-//!
-//! ```bash
-//! QUICK_COLLAB_SOCK="$XDG_RUNTIME_DIR/qos/services/collab-json.sock"
-//! QUICK_APP_ID=alice notes &
-//! QUICK_APP_ID=bob   notes
-//! ```
+//! reached through the `QOS_SVC_COLLAB_FD` descriptor the launcher injects —
+//! nothing to configure. A raw process outside a session has no collaboration
+//! service; the descriptor is inherited rather than discovered by path.
+
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
 
 use notes::NotesApp;
 use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
@@ -29,11 +40,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // (mid-drag ghost + reflow), `menu` (row context menu), `slash`
         // (editor block menu).
         let scenario = parse_flag(&args, "--scenario");
-        shots::render_to_path(
-            viewport,
-            std::path::Path::new(&out),
-            scenario.as_deref(),
-        )?;
+        shots::render_to_path(viewport, std::path::Path::new(&out), scenario.as_deref())?;
         return Ok(());
     }
 
@@ -42,8 +49,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // attribution, and (c) the per-peer presence colour. A missing
     // QUICK_APP_ID falls back to a random id so two un-configured
     // instances still get distinct actors.
-    let app_id = std::env::var("QUICK_APP_ID")
-        .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let app_id = std::env::var("QUICK_APP_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
 
     let mut app_widget = NotesApp::spawn_default()?;
     // Attribute this instance's edits to `app_id` so peers can highlight

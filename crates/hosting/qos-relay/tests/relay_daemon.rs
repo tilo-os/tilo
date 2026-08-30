@@ -6,14 +6,214 @@
 //! Both subscribe to 42; A publishes a Delta envelope. Assert B
 //! receives the same delta bytes via the relay's fan-out.
 
-mod common;
-
 use std::time::Duration;
 
-use qos_relay::{Envelope, RelayClient};
+use qos_relay::{CoeditPayload, Envelope, Relay, RelayClient, RelayCoeditSession, RelayConfig};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay, wait_for};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_time_home_device_bootstraps_from_retained_checkpoint() {
+    let user = TestUser::fresh("Alice");
+    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("new-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = Relay::start(
+        RelayConfig {
+            state_root: state.path().to_path_buf(),
+            ..RelayConfig::default()
+        },
+        qos_relay::daemon::RelayIdentity {
+            user_public_key: user.user_pk,
+            device_signing_key: relay_dev.sk,
+            device_cert: relay_dev.cert,
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let addr = relay.node_addr();
+    let a_key = a.device_pubkey();
+    let a_client = RelayClient::connect(
+        client_endpoint().await,
+        addr.clone(),
+        user.user_pk,
+        a.cert,
+        a.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let a_session = RelayCoeditSession::join(a_client, 19, a_key).unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), a_session.recv()).await,
+        Ok(Some(qos_relay::Inbound::Ready { pending: 0 }))
+    ));
+    a_session
+        .publish_checkpoint([7u8; 32], b"baseline-before-phone".to_vec())
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // B was not a workspace member when A published, so no per-device
+    // pending queue could have existed. Its first subscribe must use retained
+    // state instead.
+    let b_client = RelayClient::connect(
+        client_endpoint().await,
+        addr,
+        user.user_pk,
+        b.cert,
+        b.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    b_client
+        .send(Envelope::Subscribe { workspace_id: 19 })
+        .unwrap();
+    let replay = tokio::time::timeout(Duration::from_secs(2), b_client.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let Envelope::Delta { delta, .. } = replay else {
+        panic!("expected retained checkpoint, got {replay:?}");
+    };
+    assert!(matches!(
+        CoeditPayload::decode(&delta),
+        Some(CoeditPayload::Checkpoint { body, .. }) if body == b"baseline-before-phone"
+    ));
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), b_client.recv()).await,
+        Ok(Some(Envelope::Ready {
+            workspace_id: 19,
+            pending_deltas: 1
+        }))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn home_host_remembers_authenticated_devices_for_offline_delivery() {
+    let user = TestUser::fresh("Alice");
+    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("phone", DeviceCapabilities::member());
+    let a_key = a.device_pubkey();
+    let state = tempfile::tempdir().unwrap();
+    let relay = Relay::start(
+        RelayConfig {
+            state_root: state.path().to_path_buf(),
+            ..RelayConfig::default()
+        },
+        qos_relay::daemon::RelayIdentity {
+            user_public_key: user.user_pk,
+            device_signing_key: relay_dev.sk,
+            device_cert: relay_dev.cert,
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let addr = relay.node_addr();
+    let a_client = RelayClient::connect(
+        client_endpoint().await,
+        addr.clone(),
+        user.user_pk,
+        a.cert,
+        a.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let b_client = RelayClient::connect(
+        client_endpoint().await,
+        addr.clone(),
+        user.user_pk,
+        b.cert.clone(),
+        b.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    for client in [&a_client, &b_client] {
+        client
+            .send(Envelope::Subscribe { workspace_id: 9 })
+            .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), client.recv())
+            .await
+            .unwrap();
+    }
+    drop(b_client);
+    let pending_dir = state
+        .path()
+        .join("workspaces/9/pending")
+        .join(hex::encode(b.device_pubkey()));
+    for authored_at_ns in 1..=80 {
+        a_client
+            .send(Envelope::Delta {
+                workspace_id: 9,
+                author_device_public_key: a_key,
+                authored_at_ns,
+                delta: b"offline-change".to_vec(),
+                signature: [0; 64],
+            })
+            .unwrap();
+        if pending_dir
+            .read_dir()
+            .is_ok_and(|mut files| files.next().is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        pending_dir
+            .read_dir()
+            .is_ok_and(|mut files| files.next().is_some()),
+        "relay noticed the closed session and queued an offline change"
+    );
+
+    let b_again = RelayClient::connect(
+        client_endpoint().await,
+        addr,
+        user.user_pk,
+        b.cert,
+        b.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    b_again
+        .send(Envelope::Subscribe { workspace_id: 9 })
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), b_again.recv()).await,
+        Ok(Some(Envelope::Delta { ref delta, .. })) if delta == b"offline-change"
+    ));
+    loop {
+        match tokio::time::timeout(Duration::from_secs(2), b_again.recv()).await {
+            Ok(Some(Envelope::Ready {
+                workspace_id: 9,
+                pending_deltas,
+            })) => {
+                assert!(pending_deltas >= 1);
+                break;
+            }
+            Ok(Some(Envelope::Delta { .. })) => {}
+            other => panic!("expected queued delta or Ready, got {other:?}"),
+        }
+    }
+
+    let members: Vec<String> = serde_json::from_slice(
+        &std::fs::read(state.path().join("workspaces/9/membership.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        members.len(),
+        2,
+        "both same-owner devices persist as members"
+    );
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_peers_fan_out_through_relay() {
@@ -97,7 +297,11 @@ async fn two_peers_fan_out_through_relay() {
         .expect("delta timeout")
         .expect("delta channel closed");
     match received {
-        Envelope::Delta { workspace_id, delta, .. } => {
+        Envelope::Delta {
+            workspace_id,
+            delta,
+            ..
+        } => {
             assert_eq!(workspace_id, 42);
             assert_eq!(delta, payload);
         }

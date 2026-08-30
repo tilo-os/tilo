@@ -1,27 +1,23 @@
-//! The shared **online-accounts** model + store, used by every qOS app that
-//! consumes external accounts (Mail, Calendar, and the Settings hub).
+//! The shared **online-accounts** model + store, used by every qOS app that consumes
+//! external accounts (Mail, Calendar, and the Settings hub).
 //!
 //! # Why one crate
 //!
 //! Before this crate, Mail, Calendar and Settings each re-declared their own
-//! `AccountStore` / `Account` structs and only agreed on a JSON path — and
-//! the shapes did not even match (Settings' calendar store used a different
-//! layout than Calendar's, so an account added in one was invisible to the
-//! other). This crate replaces those divergent copies with a single canonical
-//! model, a single persistence location, and a single encrypted vault for the
-//! credentials that never belong in the plaintext store.
+//! `AccountStore`/`Account` structs and only agreed on a JSON path — and the shapes didn't
+//! even match (an account added in Settings' calendar store was invisible to Calendar's).
+//! This crate replaces those divergent copies with one canonical model, one persistence
+//! location, and one encrypted vault for credentials that never belong in the plaintext store.
 //!
 //! # The pieces
 //!
-//! - [`Account`] — the type-agnostic envelope. Its `config` is opaque
-//!   type-specific JSON, (de)serialised by the owning type (Mail's IMAP/SMTP
-//!   settings, Calendar's CalDAV settings, …). **No secret fields live here.**
-//! - [`AccountStore`] — the canonical multi-account store, one pretty-JSON
-//!   document at `$XDG_CONFIG_HOME/qos/accounts/store.json`, holding every
-//!   account of every type plus the per-type active selection.
-//! - [`SecretVault`] — the encrypted-at-rest credential store keyed by
-//!   [`AccountId`] (see [`vault`]). Credentials go here, never into
-//!   [`AccountStore`].
+//! - [`Account`] — the type-agnostic envelope. `config` is opaque type-specific JSON,
+//!   (de)serialised by the owning type. **No secret fields live here.**
+//! - [`AccountStore`] — the canonical multi-account store, one pretty-JSON document at
+//!   `$XDG_CONFIG_HOME/qos/accounts/store.json`, holding every account plus the per-type
+//!   active selection.
+//! - [`SecretVault`] — the encrypted-at-rest credential store keyed by [`AccountId`] (see
+//!   [`vault`]). Credentials go here, never into [`AccountStore`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,8 +27,8 @@ use serde::{Deserialize, Serialize};
 pub mod vault;
 pub use vault::{Secret, SecretVault};
 
-/// The kind of an account — `"email"`, `"caldav"`, … Owned by the type that
-/// contributes it; the store treats it as an opaque tag it can group by.
+/// The kind of an account — `"email"`, `"caldav"`, … Owned by the type that contributes it;
+/// the store treats it as an opaque tag it can group by.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AccountTypeId(pub String);
@@ -62,9 +58,9 @@ impl std::fmt::Display for AccountTypeId {
     }
 }
 
-/// Stable identifier for one configured account. Natural keys (an email
-/// address, a CalDAV login) are fine, but an explicit id means a later rename
-/// does not reshuffle the store or strand the account's vault secret.
+/// Stable identifier for one configured account. Natural keys (an email address, a `CalDAV`
+/// login) are fine, but an explicit id means a rename doesn't reshuffle the store or strand
+/// the account's vault secret.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AccountId(pub String);
@@ -94,16 +90,15 @@ impl std::fmt::Display for AccountId {
     }
 }
 
-/// One configured external account. The `config` payload is opaque to the
-/// store — the owning type serialises its connection settings into it — and
-/// **carries no secrets**; credentials live only in the [`SecretVault`].
+/// One configured external account. `config` is opaque to the store — the owning type
+/// serialises its connection settings into it — and **carries no secrets**; credentials
+/// live only in the [`SecretVault`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     pub id: AccountId,
     pub type_id: AccountTypeId,
-    /// Human label for the account ("Work — Fastmail"). Usually mirrors a
-    /// field inside `config`, hoisted here so the store can list accounts
-    /// without understanding the type.
+    /// Human label for the account ("Work — Fastmail"). Usually mirrors a field inside
+    /// `config`, hoisted here so the store can list accounts without understanding the type.
     #[serde(default)]
     pub display_name: String,
     /// Type-specific connection settings. Opaque JSON; no secret fields.
@@ -112,19 +107,19 @@ pub struct Account {
     /// Whether the account is active (vs. temporarily disabled by the user).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// A short accent hint used to tint the account's avatar so multiple
-    /// accounts read as visually distinct.
+    /// A short accent hint used to tint the account's avatar so multiple accounts read as
+    /// visually distinct.
     #[serde(default)]
     pub tint: u8,
-    /// The collaborator that owns this account, when it was contributed in a
-    /// shared workspace. `None` for the local user's own accounts.
+    /// The collaborator that owns this account, when it was contributed in a shared workspace.
+    /// `None` for the local user's own accounts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
 }
 
 impl Account {
-    /// A minimal account of `type_id` with an empty config. Callers fill
-    /// `config` / `display_name` / `tint` before upserting.
+    /// A minimal account of `type_id` with an empty config. Callers fill `config` /
+    /// `display_name` / `tint` before upserting.
     pub fn new(id: impl Into<AccountId>, type_id: impl Into<AccountTypeId>) -> Self {
         Self {
             id: id.into(),
@@ -137,14 +132,14 @@ impl Account {
         }
     }
 
-    /// Decode the opaque `config` into a concrete type. `None` when the shape
-    /// does not match (a store written by an older/newer type version).
+    /// Decode the opaque `config` into a concrete type. `None` when the shape does not match (a
+    /// store written by an older/newer type version).
     pub fn config_as<T: serde::de::DeserializeOwned>(&self) -> Option<T> {
         serde_json::from_value(self.config.clone()).ok()
     }
 
-    /// Set `config` from a concrete type. Serialisation failures are dropped
-    /// (leaving the config untouched) — the config is always plain data.
+    /// Set `config` from a concrete type. Serialisation failures are dropped (leaving config
+    /// untouched) — the config is always plain data.
     pub fn set_config<T: Serialize>(&mut self, config: &T) {
         if let Ok(v) = serde_json::to_value(config) {
             self.config = v;
@@ -156,15 +151,13 @@ fn default_true() -> bool {
     true
 }
 
-/// The canonical multi-account store: every configured account of every type,
-/// plus which account is active per type. Persisted as one pretty-JSON
-/// document at [`store_path`].
+/// The canonical multi-account store: every configured account of every type, plus which
+/// account is active per type. Persisted as one pretty-JSON document at [`store_path`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountStore {
     #[serde(default)]
     accounts: Vec<Account>,
-    /// The active account id per type. A type with no entry uses its first
-    /// account.
+    /// The active account id per type. A type with no entry uses its first account.
     #[serde(default)]
     active: BTreeMap<AccountTypeId, AccountId>,
 }
@@ -175,8 +168,8 @@ impl AccountStore {
         Self::default()
     }
 
-    /// Load the canonical store from the default location, or an empty store
-    /// when it is missing / unreadable. Never an error to the caller.
+    /// Load the canonical store from the default location, or an empty store when it is missing
+    /// / unreadable. Never an error to the caller.
     pub fn load() -> Self {
         match config_root() {
             Some(root) => Self::load_in(&root),
@@ -215,7 +208,10 @@ impl AccountStore {
 
     /// Every account of `type_id`, in insertion order.
     pub fn list(&self, type_id: &AccountTypeId) -> Vec<&Account> {
-        self.accounts.iter().filter(|a| &a.type_id == type_id).collect()
+        self.accounts
+            .iter()
+            .filter(|a| &a.type_id == type_id)
+            .collect()
     }
 
     /// Look up an account by id, regardless of type.
@@ -223,8 +219,8 @@ impl AccountStore {
         self.accounts.iter().find(|a| &a.id == id)
     }
 
-    /// Add or replace (by id) an account, preserving insertion position on
-    /// replace. If this is the type's first account it becomes active.
+    /// Add or replace (by id) an account, preserving insertion position on replace. If this is
+    /// the type's first account it becomes active.
     pub fn upsert(&mut self, account: Account) {
         let type_id = account.type_id.clone();
         let is_first_of_type = !self.accounts.iter().any(|a| a.type_id == type_id);
@@ -239,8 +235,8 @@ impl AccountStore {
         }
     }
 
-    /// Remove an account by id. Clears the per-type active pointer if it named
-    /// the removed account, falling back to the type's first remaining one.
+    /// Remove an account by id. Clears the per-type active pointer if it named the removed
+    /// account, falling back to the type's first remaining one.
     pub fn remove(&mut self, id: &AccountId) -> bool {
         let Some(pos) = self.accounts.iter().position(|a| &a.id == id) else {
             return false;
@@ -259,19 +255,21 @@ impl AccountStore {
         true
     }
 
-    /// The active account for a type: the explicitly-selected one, else the
-    /// type's first account, else `None`.
+    /// The active account for a type: the explicitly-selected one, else the type's first
+    /// account, else `None`.
     pub fn active(&self, type_id: &AccountTypeId) -> Option<&Account> {
-        if let Some(id) = self.active.get(type_id) {
-            if let Some(a) = self.accounts.iter().find(|a| &a.id == id && &a.type_id == type_id) {
-                return Some(a);
-            }
+        if let Some(id) = self.active.get(type_id)
+            && let Some(a) = self
+                .accounts
+                .iter()
+                .find(|a| &a.id == id && &a.type_id == type_id)
+        {
+            return Some(a);
         }
         self.list(type_id).into_iter().next()
     }
 
-    /// Select the active account for a type. No-op if `id` is not an account
-    /// of `type_id`.
+    /// Select the active account for a type. No-op if `id` is not an account of `type_id`.
     pub fn set_active(&mut self, type_id: &AccountTypeId, id: &AccountId) {
         if self
             .accounts
@@ -296,9 +294,8 @@ impl AccountStore {
     }
 }
 
-/// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`.
-/// Deliberately identical to the Settings app's `config_root()` so every app
-/// resolves the same directory.
+/// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`. Deliberately
+/// identical to the Settings app's `config_root()` so every app resolves the same directory.
 pub fn config_root() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -312,8 +309,7 @@ pub fn accounts_dir_in(config_root: &Path) -> PathBuf {
     config_root.join("accounts")
 }
 
-/// The canonical store file under a config root
-/// (`root/accounts/store.json`).
+/// The canonical store file under a config root (`root/accounts/store.json`).
 pub fn store_path_in(config_root: &Path) -> PathBuf {
     accounts_dir_in(config_root).join("store.json")
 }
@@ -342,7 +338,10 @@ mod tests {
     fn email(id: &str, host: &str) -> Account {
         let mut a = Account::new(id, "email");
         a.display_name = format!("{id} inbox");
-        a.set_config(&DemoConfig { host: host.into(), port: 993 });
+        a.set_config(&DemoConfig {
+            host: host.into(),
+            port: 993,
+        });
         a
     }
 
@@ -366,7 +365,12 @@ mod tests {
         store.upsert(email("a@x.example", "imap.new"));
         assert_eq!(store.list(&"email".into()).len(), 2);
         assert_eq!(
-            store.get(&"a@x.example".into()).unwrap().config_as::<DemoConfig>().unwrap().host,
+            store
+                .get(&"a@x.example".into())
+                .unwrap()
+                .config_as::<DemoConfig>()
+                .unwrap()
+                .host,
             "imap.new"
         );
     }
@@ -406,8 +410,8 @@ mod tests {
 
     #[test]
     fn account_config_carries_no_secret_by_construction() {
-        // The envelope has no secret field; a type's config is plain data.
-        // Persisting a store therefore cannot leak a credential.
+        // The envelope has no secret field; a type's config is plain data, so persisting a store
+        // cannot leak a credential.
         let root = temp_root();
         let mut store = AccountStore::new();
         store.upsert(email("a@x.example", "imap.x"));

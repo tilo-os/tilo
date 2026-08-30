@@ -39,7 +39,7 @@
 //! # No systemd bus dep
 //!
 //! The service is `Type=notify` and reports readiness via the
-//! `NOTIFY_SOCKET` sd_notify(3) protocol directly — we don't pull in
+//! `NOTIFY_SOCKET` `sd_notify(3)` protocol directly — we don't pull in
 //! `systemd-sys` just for a one-line handshake.
 
 use std::fs;
@@ -98,7 +98,7 @@ fn main() {
     });
 
     let mut last_state: Option<PowerState> = None;
-    for _ in rx {
+    for () in rx {
         let state = read_ac_state();
         if last_state != Some(state) {
             apply_state(state);
@@ -108,9 +108,8 @@ fn main() {
 }
 
 fn sd_notify(msg: &str) -> std::io::Result<()> {
-    let sock_path = std::env::var("NOTIFY_SOCKET").map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "NOTIFY_SOCKET not set")
-    })?;
+    let sock_path = std::env::var("NOTIFY_SOCKET")
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "NOTIFY_SOCKET not set"))?;
     let sock = UnixDatagram::unbound()?;
     sock.send_to(msg.as_bytes(), sock_path)?;
     Ok(())
@@ -227,7 +226,9 @@ mod tests {
     #[test]
     fn cpu_enumeration_skips_non_cpu_dirs() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["cpu0", "cpu1", "cpu15", "cpuidle", "cpufreq", "power", "smt"] {
+        for name in [
+            "cpu0", "cpu1", "cpu15", "cpuidle", "cpufreq", "power", "smt",
+        ] {
             std::fs::create_dir(dir.path().join(name)).unwrap();
         }
         let root = dir.path();

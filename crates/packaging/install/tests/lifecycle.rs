@@ -208,7 +208,11 @@ fn install_list_verify_update_uninstall() {
         std::fs::read(env.payload_root().join("bin/app")).unwrap(),
         b"version one"
     );
-    assert!(env.registry_toml().contains("version = \"1.0.0\""), "{}", env.registry_toml());
+    assert!(
+        env.registry_toml().contains("version = \"1.0.0\""),
+        "{}",
+        env.registry_toml()
+    );
 
     // --- list --------------------------------------------------------
     let (ok, out, _) = env.cmd(&["list"]);
@@ -227,9 +231,17 @@ fn install_list_verify_update_uninstall() {
 
     // --- update ------------------------------------------------------
     let v2 = env.qpkg("1.1.0", b"version two", None);
-    let (ok, out, err) = env.cmd(&["update", "dev.qos.lifecycle", "--from", v2.to_str().unwrap()]);
+    let (ok, out, err) = env.cmd(&[
+        "update",
+        "dev.qos.lifecycle",
+        "--from",
+        v2.to_str().unwrap(),
+    ]);
     assert!(ok, "update failed: {out}{err}");
-    assert!(out.contains("updated: dev.qos.lifecycle 1.0.0 -> 1.1.0"), "{out}");
+    assert!(
+        out.contains("updated: dev.qos.lifecycle 1.0.0 -> 1.1.0"),
+        "{out}"
+    );
     assert_eq!(
         std::fs::read(env.payload_root().join("bin/app")).unwrap(),
         b"version two",
@@ -250,7 +262,10 @@ fn install_list_verify_update_uninstall() {
     // --- uninstall ---------------------------------------------------
     let (ok, out, err) = env.cmd(&["uninstall", "dev.qos.lifecycle", "--keep-state"]);
     assert!(ok, "uninstall failed: {out}{err}");
-    assert!(out.contains("uninstalled: dev.qos.lifecycle 1.1.0"), "{out}");
+    assert!(
+        out.contains("uninstalled: dev.qos.lifecycle 1.1.0"),
+        "{out}"
+    );
     assert!(!env.payload_root().exists(), "the payload must be gone");
     assert!(
         !env.registry_toml().contains("dev.qos.lifecycle"),
@@ -307,7 +322,10 @@ fn dry_run_reports_the_change_without_making_it() {
 
     let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap(), "--dry-run"]);
     assert!(ok, "{out}{err}");
-    assert!(out.contains("plan: install dev.qos.lifecycle 1.0.0"), "{out}");
+    assert!(
+        out.contains("plan: install dev.qos.lifecycle 1.0.0"),
+        "{out}"
+    );
     assert!(out.contains("signature : verified"), "{out}");
     assert!(out.contains("(nothing was written)"), "{out}");
     assert!(
@@ -331,7 +349,10 @@ fn dry_run_reports_the_change_without_making_it() {
         "--dry-run",
     ]);
     assert!(ok);
-    assert!(out.contains("plan: update dev.qos.lifecycle 1.0.0 -> 2.0.0"), "{out}");
+    assert!(
+        out.contains("plan: update dev.qos.lifecycle 1.0.0 -> 2.0.0"),
+        "{out}"
+    );
     assert!(out.contains("state     : KEPT"), "{out}");
     assert_eq!(
         std::fs::read(env.payload_root().join("bin/app")).unwrap(),
@@ -341,7 +362,10 @@ fn dry_run_reports_the_change_without_making_it() {
 
     let (ok, out, _) = env.cmd(&["uninstall", "dev.qos.lifecycle", "--dry-run"]);
     assert!(ok);
-    assert!(out.contains("plan: uninstall dev.qos.lifecycle 1.0.0"), "{out}");
+    assert!(
+        out.contains("plan: uninstall dev.qos.lifecycle 1.0.0"),
+        "{out}"
+    );
     assert!(out.contains("saved data: 2 room(s)"), "{out}");
     assert!(out.contains("(nothing was removed)"), "{out}");
     assert!(env.payload_root().exists());
@@ -374,7 +398,10 @@ fn a_missing_runtime_bundle_refuses_the_install_and_says_how_to_fix_it() {
 
     let (ok, out, err) = env.cmd(&["install", pkg.to_str().unwrap()]);
     assert!(!ok, "install must refuse: {out}{err}");
-    assert!(err.contains("declares runtime `qos-runtime/2025.06`"), "{err}");
+    assert!(
+        err.contains("declares runtime `qos-runtime/2025.06`"),
+        "{err}"
+    );
     assert!(
         err.contains("qos-install runtime install --version 2025.06"),
         "the refusal must name the command that fixes it: {err}"
@@ -416,7 +443,12 @@ fn update_refuses_a_downgrade_unless_told_to() {
     assert!(env.cmd(&["install", v2.to_str().unwrap()]).0);
 
     let v1 = env.qpkg("1.0.0", b"one", None);
-    let (ok, out, err) = env.cmd(&["update", "dev.qos.lifecycle", "--from", v1.to_str().unwrap()]);
+    let (ok, out, err) = env.cmd(&[
+        "update",
+        "dev.qos.lifecycle",
+        "--from",
+        v1.to_str().unwrap(),
+    ]);
     assert!(!ok, "{out}{err}");
     assert!(err.contains("is not newer"), "{err}");
     assert_eq!(
@@ -444,7 +476,12 @@ fn update_with_the_same_version_is_a_no_op() {
     let env = Env::new();
     let v1 = env.qpkg("1.0.0", b"one", None);
     assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
-    let (ok, out, err) = env.cmd(&["update", "dev.qos.lifecycle", "--from", v1.to_str().unwrap()]);
+    let (ok, out, err) = env.cmd(&[
+        "update",
+        "dev.qos.lifecycle",
+        "--from",
+        v1.to_str().unwrap(),
+    ]);
     assert!(ok, "{out}{err}");
     assert!(out.contains("is already current"), "{out}");
 }
@@ -461,8 +498,8 @@ fn update_refuses_a_qpkg_for_a_different_package() {
     let build = env.home.path().join("other");
     let payload = build.join("payload");
     write_payload(&payload, b"other app");
-    let src = manifest_src("9.0.0", &env.pub_hex, None)
-        .replace("dev.qos.lifecycle", "dev.qos.impostor");
+    let src =
+        manifest_src("9.0.0", &env.pub_hex, None).replace("dev.qos.lifecycle", "dev.qos.impostor");
     let manifest = Manifest::from_toml_str(&src).unwrap();
     let other = build.join("other.qpkg");
     build_qpkg(&other, &manifest, &env.sk, &payload);

@@ -135,11 +135,11 @@ impl Language {
             | Language::C
             | Language::Cpp
             | Language::Go => Some("//"),
-            Language::Python
-            | Language::Shell
-            | Language::Toml
-            | Language::Yaml => Some("#"),
-            Language::Markdown | Language::Html | Language::Css | Language::Json
+            Language::Python | Language::Shell | Language::Toml | Language::Yaml => Some("#"),
+            Language::Markdown
+            | Language::Html
+            | Language::Css
+            | Language::Json
             | Language::PlainText => None,
         }
     }
@@ -169,8 +169,15 @@ pub enum NodeKind {
     /// `loaded` is `false` for a disk-backed folder whose children have not yet
     /// been read from the filesystem; the first expansion reads them lazily
     /// (`Project::load_children`). In-memory folders are always `loaded`.
-    Folder { expanded: bool, loaded: bool, children: Vec<NodeId> },
-    File { language: Language, seed: String },
+    Folder {
+        expanded: bool,
+        loaded: bool,
+        children: Vec<NodeId>,
+    },
+    File {
+        language: Language,
+        seed: String,
+    },
 }
 
 impl TreeNode {
@@ -241,7 +248,7 @@ impl Project {
         if self.nodes.contains_key(&id) {
             return;
         }
-        let depth = self.nodes.get(&self.root).map(|n| n.depth + 1).unwrap_or(0);
+        let depth = self.nodes.get(&self.root).map_or(0, |n| n.depth + 1);
         let lang = Language::from_path(name);
         self.nodes.insert(
             id,
@@ -293,7 +300,7 @@ impl Project {
         disk_path: Option<PathBuf>,
         expanded: bool,
     ) -> NodeId {
-        let depth = self.nodes.get(&parent).map(|n| n.depth + 1).unwrap_or(0);
+        let depth = self.nodes.get(&parent).map_or(0, |n| n.depth + 1);
         let id = self.alloc();
         // A disk-backed folder starts unloaded (children read on expand); an
         // in-memory folder is fully known, so it is `loaded`.
@@ -324,7 +331,7 @@ impl Project {
         seed: &str,
         disk_path: Option<PathBuf>,
     ) -> NodeId {
-        let depth = self.nodes.get(&parent).map(|n| n.depth + 1).unwrap_or(0);
+        let depth = self.nodes.get(&parent).map_or(0, |n| n.depth + 1);
         let lang = Language::from_path(name);
         let id = self.alloc();
         self.nodes.insert(
@@ -395,8 +402,11 @@ impl Project {
         // Point the root at the real directory and mark it unloaded so
         // `load_children` reads it.
         if let Some(node) = p.nodes.get_mut(&root) {
-            node.disk_path = Some(path.clone());
-            if let NodeKind::Folder { loaded, expanded, .. } = &mut node.kind {
+            node.disk_path = Some(path);
+            if let NodeKind::Folder {
+                loaded, expanded, ..
+            } = &mut node.kind
+            {
                 *loaded = false;
                 *expanded = true;
             }
@@ -472,14 +482,13 @@ impl Project {
         // Surface an unreadable path up front (permission / not-found) rather
         // than silently opening an empty tab.
         let _ = std::fs::metadata(path)?;
-        let file_name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.display().to_string());
+        let file_name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |s| s.to_string_lossy().to_string(),
+        );
         let parent_name = path
             .parent()
-            .map(dir_display_name)
-            .unwrap_or_else(|| "/".to_string());
+            .map_or_else(|| "/".to_string(), dir_display_name);
         let mut p = Project::new(&parent_name);
         let root = p.root;
         let node = p.add_disk_file(root, &file_name, path);
@@ -535,8 +544,8 @@ impl Project {
                 files.push((name, child_path));
             }
         }
-        folders.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-        files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        folders.sort_by_key(|a| a.0.to_lowercase());
+        files.sort_by_key(|a| a.0.to_lowercase());
         for (name, p) in folders {
             self.add_disk_folder(id, &name, &p);
         }
@@ -561,7 +570,10 @@ impl Project {
     /// An unreadable file that opened as a silently-empty buffer would be saved
     /// back as an empty file the moment the user pressed Ctrl+S — the read
     /// error has to reach them before that.
-    pub fn file_seed(&self, id: NodeId) -> Result<(String, Option<crate::disk::Stamp>), crate::disk::LoadError> {
+    pub fn file_seed(
+        &self,
+        id: NodeId,
+    ) -> Result<(String, Option<crate::disk::Stamp>), crate::disk::LoadError> {
         match self.nodes.get(&id) {
             Some(TreeNode {
                 kind: NodeKind::File { seed, .. },
@@ -581,12 +593,12 @@ impl Project {
     /// Point a file node at a real path (used by Save As), updating its name
     /// and inferred language to match. No-op on folders / missing nodes.
     pub fn set_file_path(&mut self, id: NodeId, path: &Path, name: &str) {
-        if let Some(node) = self.nodes.get_mut(&id) {
-            if let NodeKind::File { language, .. } = &mut node.kind {
-                *language = Language::from_path(name);
-                node.name = name.to_string();
-                node.disk_path = Some(path.to_path_buf());
-            }
+        if let Some(node) = self.nodes.get_mut(&id)
+            && let NodeKind::File { language, .. } = &mut node.kind
+        {
+            *language = Language::from_path(name);
+            node.name = name.to_string();
+            node.disk_path = Some(path.to_path_buf());
         }
     }
 
@@ -608,7 +620,10 @@ impl Project {
         let Some(node) = self.nodes.get(&parent) else {
             return;
         };
-        let NodeKind::Folder { expanded, children, .. } = &node.kind else {
+        let NodeKind::Folder {
+            expanded, children, ..
+        } = &node.kind
+        else {
             return;
         };
         // Root's own children are the top-level rows; the root itself isn't
@@ -625,16 +640,18 @@ impl Project {
         });
         for kid in kids {
             out.push(kid);
-            if *expanded {
-                if let Some(TreeNode {
-                    kind: NodeKind::Folder { expanded: child_expanded, .. },
+            if *expanded
+                && let Some(TreeNode {
+                    kind:
+                        NodeKind::Folder {
+                            expanded: child_expanded,
+                            ..
+                        },
                     ..
                 }) = self.nodes.get(&kid)
-                {
-                    if *child_expanded {
-                        self.push_children(kid, out);
-                    }
-                }
+                && *child_expanded
+            {
+                self.push_children(kid, out);
             }
         }
     }
@@ -645,7 +662,9 @@ impl Project {
         let mut chain = Vec::new();
         let mut cur = Some(id);
         while let Some(c) = cur {
-            let Some(node) = self.nodes.get(&c) else { break };
+            let Some(node) = self.nodes.get(&c) else {
+                break;
+            };
             chain.push(node.name.clone());
             cur = node.parent;
         }
@@ -657,9 +676,10 @@ impl Project {
 /// A human-friendly name for a directory path — its last component, or the
 /// whole path for a root like `/`. Used to label a project opened from disk.
 fn dir_display_name(path: &Path) -> String {
-    path.file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |s| s.to_string_lossy().to_string(),
+    )
 }
 
 /// An open editor buffer: a file the user has opened into a tab. The actual
@@ -787,6 +807,27 @@ impl Session {
         }
     }
 
+    /// Move the open tab at `from` to `to` — a drag-reorder in the tab bar
+    /// must never change which buffer is showing, only where its tab sits.
+    pub fn reorder_tab(&mut self, from: usize, to: usize) {
+        if from >= self.open.len() || to >= self.open.len() || from == to {
+            return;
+        }
+        let buf = self.open.remove(from);
+        self.open.insert(to, buf);
+        self.active = self.active.map(|a| {
+            if a == from {
+                to
+            } else if from < to && a > from && a <= to {
+                a - 1
+            } else if to < from && a >= to && a < from {
+                a + 1
+            } else {
+                a
+            }
+        });
+    }
+
     pub fn active_buffer(&self) -> Option<&OpenBuffer> {
         self.active.and_then(|i| self.open.get(i))
     }
@@ -892,7 +933,10 @@ mod tests {
         assert!(top.contains(&"src".to_string()));
         assert!(top.contains(&"Cargo.toml".to_string()));
         // …build output and VCS internals are not…
-        assert!(!top.contains(&"target".to_string()), "target/ must be hidden");
+        assert!(
+            !top.contains(&"target".to_string()),
+            "target/ must be hidden"
+        );
         assert!(!top.contains(&".git".to_string()), ".git/ must be hidden");
         // …and the nested file has NOT been read: the tree is lazy, which is
         // what makes opening a large repository instant.
@@ -923,7 +967,11 @@ mod tests {
         p.load_children(src).unwrap();
         let after_first = p.nodes.len();
         p.load_children(src).unwrap();
-        assert_eq!(p.nodes.len(), after_first, "a second read adds no duplicates");
+        assert_eq!(
+            p.nodes.len(),
+            after_first,
+            "a second read adds no duplicates"
+        );
     }
 
     #[test]
@@ -1046,5 +1094,40 @@ mod tests {
         // Active shifts down by one to still point at "c".
         assert_eq!(s.active, Some(1));
         assert_eq!(s.open.len(), 2);
+    }
+
+    #[test]
+    fn reorder_tab_moves_the_buffer_and_keeps_active_pointed_at_it() {
+        let mut p = Project::new("proj");
+        let a = p.add_file(p.root, "a.rs", "");
+        let b = p.add_file(p.root, "b.rs", "");
+        let c = p.add_file(p.root, "c.rs", "");
+        let mut s = Session::new(p);
+        s.open_file(a);
+        s.open_file(b);
+        s.open_file(c);
+        s.active = Some(1); // "b" is active
+
+        s.reorder_tab(0, 2); // drag "a" to the end: [b, c, a]
+        let names: Vec<&str> = s.open.iter().map(|buf| buf.name.as_str()).collect();
+        assert_eq!(names, vec!["b.rs", "c.rs", "a.rs"]);
+        assert_eq!(
+            s.active,
+            Some(0),
+            "reordering a buffer other than the active one must still \
+             follow the active buffer to its new index"
+        );
+
+        s.reorder_tab(0, 2); // drag "b" (still active) to the end too.
+        assert_eq!(
+            s.active,
+            Some(2),
+            "reordering the active buffer itself must follow it exactly"
+        );
+
+        // Out-of-range and no-op reorders must not panic or move anything.
+        s.reorder_tab(0, 0);
+        s.reorder_tab(0, 99);
+        assert_eq!(s.open.len(), 3);
     }
 }

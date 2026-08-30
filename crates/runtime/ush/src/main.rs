@@ -54,13 +54,13 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         Some("serve") => cmd_serve(&args[1..]),
         Some("guest-init") => guest::init(&args[1..]),
         Some("dsh") => host(Profile::Dsh, &args[1..]),
-        Some("ush") | Some("run") => host(Profile::Ush, &args[1..]),
+        Some("ush" | "run") => host(Profile::Ush, &args[1..]),
         Some("pkg") => guest::pkg(&args[1..]),
         Some("perm") => guest::perm(&args[1..]),
         Some("scan") => guest::scan(&args[1..]),
         Some("guard") => guest::guard(&args[1..]),
         Some("quarantine") => guest::quarantine(&args[1..]),
-        Some("--help") | Some("-h") | None => {
+        Some("--help" | "-h") | None => {
             print!("{USAGE}");
             Ok(0)
         }
@@ -87,9 +87,7 @@ Inside a guest:
   restart
 ";
 
-// ---------------------------------------------------------------------------
 // host side
-// ---------------------------------------------------------------------------
 
 fn host(profile: Profile, args: &[String]) -> anyhow::Result<i32> {
     let mut opts = SessionOptions {
@@ -180,10 +178,10 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
 /// `$XDG_RUNTIME_DIR/qos/services/ush.sock` — the path `qos-launcher` looks in
 /// for a `[sandbox.services]` entry named `ush`.
 fn default_service_socket() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        // SAFETY: `geteuid` cannot fail.
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+        || PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })),
+        PathBuf::from,
+    );
     runtime.join("qos/services/ush.sock")
 }
 
@@ -200,18 +198,13 @@ fn init_tracing(verbose: bool) {
         .try_init();
 }
 
-// ---------------------------------------------------------------------------
-// guest side
-// ---------------------------------------------------------------------------
-
 mod guest {
-    use super::*;
+    use super::{Path, PathBuf, Request, Response};
     use ush::pkg::{InstalledPackage, Manifest};
 
     fn broker_socket() -> PathBuf {
         std::env::var_os("QOS_USH_BROKER")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(ush::GUEST_BROKER_SOCK))
+            .map_or_else(|| PathBuf::from(ush::GUEST_BROKER_SOCK), PathBuf::from)
     }
 
     fn ask(req: &Request) -> anyhow::Result<Response> {
@@ -242,9 +235,8 @@ mod guest {
         }
     }
 
-    /// The guest's first process. Installs Landlock inside the namespace, where
-    /// the rules name the paths the guest will actually use, and then becomes
-    /// the shell.
+    /// The guest's first process: installs Landlock inside the namespace, where
+    /// the rules name paths the guest will actually use, then becomes the shell.
     pub fn init(args: &[String]) -> anyhow::Result<i32> {
         use std::os::unix::process::CommandExt;
         let rest: Vec<String> = args
@@ -255,21 +247,17 @@ mod guest {
             .collect();
         anyhow::ensure!(!rest.is_empty(), "guest-init needs a command after `--`");
 
-        // Everything the guest may write, as it exists *in here*: the layered
-        // system directories, its own scratch, its home, and whatever the user
-        // trusted (already bound read-write, and named again so a later
-        // remount cannot widen it).
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/root"));
+        // Everything the guest may write, in here: layered system dirs, scratch,
+        // home, and whatever was trusted (named again so a later remount can't
+        // widen it).
+        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/root"), PathBuf::from);
         let mut rw: Vec<PathBuf> = ["/usr", "/etc", "/tmp", "/var", "/run", "/dev", "/proc"]
             .iter()
             .map(PathBuf::from)
             .collect();
         rw.push(home);
-        // The root itself is readable and not writable. Without a rule for it
-        // the ruleset denies `stat("/")`, and `ls /` fails in a way that reads
-        // as a broken system rather than as a policy.
+        // The root is readable, not writable — without a rule for it the ruleset
+        // denies `stat("/")`, and `ls /` fails looking like a broken system.
         let mut ro: Vec<PathBuf> = vec![PathBuf::from("/")];
         match ask(&Request::Status) {
             Ok(Response::Status { status }) => {
@@ -283,7 +271,10 @@ mod guest {
         let outcome = ush::guard::restrict_self(&rw, &ro);
         tracing::debug!("landlock: {}", outcome.describe());
 
-        Err(std::process::Command::new(&rest[0]).args(&rest[1..]).exec().into())
+        Err(std::process::Command::new(&rest[0])
+            .args(&rest[1..])
+            .exec()
+            .into())
     }
 
     pub fn pkg(args: &[String]) -> anyhow::Result<i32> {
@@ -318,12 +309,9 @@ mod guest {
             .collect();
         anyhow::ensure!(!packages.is_empty(), "pkg install needs a package name");
 
-        // What the base already provides is not something this layer installed,
-        // and recording it as one would be actively harmful: undoing a one-time
-        // install runs `dnf remove`, and removing a package that came from the
-        // image writes a whiteout into the layer — so a `--one-time` install of
-        // something already present would *delete* it from the guest's view at
-        // the end of the session. Ask rpm first.
+        // A base-provided package isn't something this layer installed; recording
+        // it as one-time would be harmful, since undoing it runs `dnf remove` and
+        // writes a whiteout, deleting a base file from the guest's view. Ask rpm first.
         let (already, wanted): (Vec<String>, Vec<String>) = packages
             .into_iter()
             .partition(|p| ush::pkg::is_installed(p));
@@ -556,7 +544,9 @@ mod guest {
         );
         println!(
             "  package    : {}",
-            r.owned_by.as_deref().unwrap_or("none — not installed by rpm")
+            r.owned_by
+                .as_deref()
+                .unwrap_or("none — not installed by rpm")
         );
         println!(
             "  unmodified : {}",
@@ -610,13 +600,10 @@ mod guest {
         }
     }
 
-    /// Report Landlock by testing it, not by repeating what was asked for.
-    ///
-    /// `guard status` exists to answer "is this actually confined". A line that
-    /// said "installed" because the install code ran would pass in exactly the
-    /// case where it should fail, so the answer comes from an operation the
-    /// ruleset forbids. `/proc/self/status` is reported alongside when the
-    /// kernel offers it, and its absence is not treated as an answer.
+    /// Report Landlock by testing it, not repeating what was asked for.
+    /// `guard status` answers "is this actually confined" — a line that said
+    /// "installed" because the install code ran would pass exactly when it
+    /// should fail, so the answer comes from an operation the ruleset forbids.
     fn landlock_now() -> String {
         let probed = ush::guard::landlock_probe().describe();
         let reported = std::fs::read_to_string("/proc/self/status")
@@ -677,14 +664,11 @@ mod guest {
         }
     }
 
-    /// Tear the guest down so the supervisor can build it again.
-    ///
-    /// There is no way to remount a namespace from inside it, so a restart is
-    /// literally a new guest: the broker records the request, this ends the
-    /// current one, and the supervisor loops. Signalling PID 1 is what ends it
-    /// — inside the guest's own pid namespace that is `bwrap`'s reaper, and
-    /// killing it takes every process in the namespace with it, which is the
-    /// same teardown as exiting the shell.
+    /// Tear the guest down so the supervisor can build it again. There is no
+    /// way to remount a namespace from inside it, so a restart is literally a
+    /// new guest: the broker records the request, this ends the current one,
+    /// and the supervisor loops — signalling PID 1 (the sandbox's own init
+    /// inside the guest's pid namespace) takes every process in it with it.
     pub fn restart() -> anyhow::Result<i32> {
         ask(&Request::Restart)?;
         println!("restarting the guest…");

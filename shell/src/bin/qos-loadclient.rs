@@ -1,23 +1,14 @@
-//! Continuously-painting Wayland client, used as the load generator for
-//! the compositor frame-loop benchmark (`scripts/perf/frame-loop-bench.py`).
-//!
-//! The compositor's presentation cost is very different for an idle
-//! desktop and for one hosting a client that produces a new buffer every
-//! frame: the latter forces a foreign-surface import, a full-viewport
-//! image into the scene, and a repaint on every tick. Measuring the loop
-//! without such a client only ever measures the idle path.
-//!
-//! Usage:
+//! Continuously-painting Wayland client, the load generator for the
+//! compositor frame-loop benchmark (`scripts/perf/frame-loop-bench.py`).
+//! Measuring the loop without such a client only measures the idle path.
 //!
 //! ```text
 //! qos-loadclient [--fullscreen] [--size WxH] [--app-id ID] [--seconds N]
 //! ```
 //!
-//! It attaches a fresh SHM buffer on every `wl_surface.frame` callback,
-//! with a moving gradient so no two frames are identical (a compositor
-//! that hashes buffers can't elide the work). On exit it prints the
-//! number of frames it committed and the wall time, so the harness can
-//! report the client-observed frame rate alongside the compositor's own.
+//! Attaches a fresh SHM buffer on every `wl_surface.frame` callback with a
+//! moving gradient, so a compositor that hashes buffers can't elide the
+//! work. Prints frame count and wall time on exit for the harness.
 
 use std::time::{Duration, Instant};
 
@@ -52,10 +43,9 @@ struct Opts {
 }
 
 impl Opts {
-    /// Parse `argv`. Unknown flags are ignored rather than fatal — this
-    /// is a bench fixture, not a user-facing tool, and a harness that
-    /// passes a flag a older binary doesn't know should still produce
-    /// load rather than exiting non-zero.
+    /// Parse `argv`. Unknown flags are ignored rather than fatal, so a
+    /// harness passing a flag an older binary doesn't know still produces
+    /// load instead of exiting non-zero.
     fn parse<I: IntoIterator<Item = String>>(args: I) -> Self {
         let mut o = Opts {
             fullscreen: false,
@@ -69,15 +59,14 @@ impl Opts {
             match a.as_str() {
                 "--fullscreen" => o.fullscreen = true,
                 "--size" => {
-                    if let Some(v) = it.next() {
-                        if let Some((w, h)) = v.split_once(|c| c == 'x' || c == 'X') {
-                            if let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse()) {
-                                if w > 0 && h > 0 {
-                                    o.width = w;
-                                    o.height = h;
-                                }
-                            }
-                        }
+                    if let Some(v) = it.next()
+                        && let Some((w, h)) = v.split_once(['x', 'X'])
+                        && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
+                        && w > 0
+                        && h > 0
+                    {
+                        o.width = w;
+                        o.height = h;
                     }
                 }
                 "--app-id" => {
@@ -86,12 +75,11 @@ impl Opts {
                     }
                 }
                 "--seconds" => {
-                    if let Some(v) = it.next() {
-                        if let Ok(s) = v.trim().parse::<f64>() {
-                            if s > 0.0 {
-                                o.seconds = s;
-                            }
-                        }
+                    if let Some(v) = it.next()
+                        && let Ok(s) = v.trim().parse::<f64>()
+                        && s > 0.0
+                    {
+                        o.seconds = s;
                     }
                 }
                 _ => {}
@@ -119,9 +107,8 @@ struct LoadApp {
 }
 
 impl LoadApp {
-    /// Attach a freshly-filled buffer, request the next frame callback,
-    /// and commit. This is the whole load: one buffer per frame, contents
-    /// derived from the frame counter so consecutive frames differ.
+    /// Attach a freshly-filled buffer, request the next frame callback, and
+    /// commit — one buffer per frame, contents keyed to the frame counter.
     fn draw(&mut self, qh: &QueueHandle<Self>) {
         let Some(window) = self.window.as_ref() else {
             return;
@@ -134,9 +121,8 @@ impl LoadApp {
         else {
             return;
         };
-        // Moving diagonal gradient: cheap to generate, different every
-        // frame, and visually obvious in a snapshot when something is
-        // wrong with the import path.
+        // Moving diagonal gradient: cheap, different every frame, and
+        // visually obvious in a snapshot when the import path is wrong.
         let phase = (self.frames % 256) as u32;
         for y in 0..h {
             let row = &mut canvas[(y * w * 4) as usize..((y + 1) * w * 4) as usize];
@@ -151,10 +137,9 @@ impl LoadApp {
         }
         let surface = window.wl_surface();
         surface.damage_buffer(0, 0, w as i32, h as i32);
-        // Ask for a frame callback *before* committing so the compositor
-        // sees the request with this commit. Without it the client would
-        // free-run and swamp the socket instead of pacing to the
-        // compositor's presentation.
+        // Request the frame callback *before* committing so the compositor
+        // sees it with this commit; otherwise the client free-runs and
+        // swamps the socket instead of pacing to presentation.
         surface.frame(qh, surface.clone());
         if buffer.attach_to(surface).is_err() {
             return;
@@ -328,7 +313,10 @@ fn main() {
         0.0
     };
     // Machine-readable so the harness can parse it out of stdout.
-    println!("LOADCLIENT frames={} seconds={elapsed:.3} fps={fps:.2}", app.frames);
+    println!(
+        "LOADCLIENT frames={} seconds={elapsed:.3} fps={fps:.2}",
+        app.frames
+    );
 }
 
 #[cfg(test)]
@@ -336,7 +324,7 @@ mod tests {
     use super::Opts;
 
     fn v(args: &[&str]) -> Vec<String> {
-        args.iter().map(|s| s.to_string()).collect()
+        args.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

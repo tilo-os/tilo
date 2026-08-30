@@ -2,7 +2,7 @@
 //! C-ABI shim (`csrc/swipe_ffi.cpp`).
 //!
 //! Real ML swipe-typing: the FUTO encoder (universal) + an optional paired
-//! decoder + an optional context LM run on ExecuTorch, scored against a
+//! decoder + an optional context LM run on `ExecuTorch`, scored against a
 //! dictionary trie. See [`FutoSwipe`].
 //!
 //! When the crate is built WITHOUT the FUTO static libs (env `QOS_SWIPE_LIB`
@@ -25,7 +25,7 @@ pub const fn available() -> bool {
 #[cfg(futo)]
 mod imp {
     use super::Candidate;
-    use std::ffi::{c_char, c_void, CString};
+    use std::ffi::{CString, c_char, c_void};
     use std::path::Path;
 
     unsafe extern "C" {
@@ -195,7 +195,9 @@ mod imp {
         let mut out = Vec::new();
         let mut off = 0usize;
         for i in 0..count.max(0) as usize {
-            let Some(rel) = bytes[off..].iter().position(|&b| b == 0) else { break };
+            let Some(rel) = bytes[off..].iter().position(|&b| b == 0) else {
+                break;
+            };
             let end = off + rel;
             if let Ok(s) = std::str::from_utf8(&bytes[off..end]) {
                 out.push(Candidate {

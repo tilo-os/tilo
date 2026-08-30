@@ -1,85 +1,53 @@
-//! Unit 9: Breadcrumb widget — a horizontal path indicator with clickable
-//! ancestor segments and a chevron (`>`) separator between them. Rendered
-//! using the standard five-pass widget contract (sync → build_layout →
-//! apply_layout → draw → handle_event).
+//! Breadcrumb widget — a horizontal path indicator with clickable ancestor
+//! segments and a chevron (`>`) separator between them.
 //!
-//! Visual contract (concept-parity with the design doc):
-//!
-//! - Segments are joined by a literal `>` chevron rendered in
-//!   `theme.tokens.colors.text_dim`, with `theme.tokens.spacing.s2`
-//!   horizontal padding on each side.
-//! - The active (rightmost) segment is rendered with
-//!   `theme.tokens.colors.text_primary`. Earlier segments use `text_dim`
-//!   when idle, and switch to `theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]`
-//!   while the cursor hovers them — that hover transition is also how the
-//!   user reads "this one is clickable, the active one is not".
-//! - All segment text is drawn at `theme.tokens.typography.scale.sm`.
-//! - When the total computed width exceeds the available rect width, the
-//!   widget truncates the middle of the path with a literal `...` segment:
-//!   it keeps the first segment, inserts `...`, and keeps the last two.
-//!   This matches the spec's `home / ... / project / readme.md` rule and
-//!   degrades gracefully (a 4-segment trail already short-circuits the
-//!   truncation because the truncated form would be the same length).
+//! When the total width exceeds the available rect, the widget truncates
+//! the middle with `...`: keeps the first segment, inserts `...`, keeps the
+//! last two. A trail of 4 or fewer segments never truncates (the truncated
+//! form wouldn't be shorter).
 use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Literal chevron used to visually join two segments. Spec pins the
-/// glyph to ASCII `>` so it always falls back to the system font even
-/// when no fancy chevron face is loaded.
+/// ASCII `>` so it always falls back to the system font even when no
+/// fancy chevron face is loaded.
 const SEPARATOR_GLYPH: &str = ">";
 
-/// Literal ellipsis used to collapse middle segments when the breadcrumb
-/// doesn't fit in its available width. Three ASCII dots (rather than the
-/// `…` codepoint) keep the truncation visible in plain-text dumps and
-/// match the spec's `["home", "...", ..., ...]` example exactly.
+/// Three ASCII dots (rather than the `…` codepoint) keep the truncation
+/// visible in plain-text dumps.
 const ELLIPSIS: &str = "...";
 
-/// Breadcrumb widget. Holds the original segment list, the click callback,
-/// and the per-segment rects populated during `apply_layout`. The visible
-/// segment list (after any middle-truncation) is computed lazily by
-/// `visible_segments`; the cached `segment_rects` mirrors *that* list so
-/// the click hit-test always matches what the user sees on screen.
+/// `segment_rects` and `visible_origin` mirror the truncated
+/// `cached_visible` list (not the original `segments`) so the click
+/// hit-test matches what's on screen.
 pub struct Breadcrumb {
     /// All segments, in path order. The rightmost is the active page.
     segments: Vec<String>,
-    /// Optional click callback. Receives the index *into the original
-    /// `segments` vector* of the clicked ancestor, so a caller that wired
-    /// `home / docs / project / readme.md` and saw a click on `docs`
-    /// always gets index `1` regardless of any visible-list truncation.
     on_navigate: Option<Box<dyn FnMut(usize)>>,
-    /// Per-visible-segment hit rects in screen coordinates, populated in
-    /// `apply_layout`. The Nth entry corresponds to the Nth entry in the
-    /// most recent `visible_segments()` output — the click handler maps
-    /// the visible index back to the original index before invoking the
-    /// callback.
+    /// Per-visible-segment hit rects, populated in `apply_layout`.
     segment_rects: Vec<Rect>,
-    /// Original-index mapping for each entry in `segment_rects`. Entries
-    /// are `Some(orig_idx)` for real segments and `None` for the ellipsis
-    /// placeholder (which is non-clickable). Length always matches
-    /// `segment_rects`.
+    /// Original-index mapping for each entry in `segment_rects`: `None` for
+    /// the (non-clickable) ellipsis placeholder.
     visible_origin: Vec<Option<usize>>,
     /// Cached visible-segment list as of the last `apply_layout`, so the
     /// draw pass and the click handler agree on labels without recomputing.
     cached_visible: Vec<String>,
-    /// Index (into `cached_visible`) the cursor is currently hovering, or
-    /// `None`. Ellipsis entries don't latch hover. Updated by
-    /// `handle_event` and consumed by `draw` for the accent recolour.
+    /// Index (into `cached_visible`) the cursor is hovering. Ellipsis
+    /// entries don't latch hover.
     hover_idx: Option<usize>,
-    /// Whole-widget bounding rect.
     rect: Rect,
 }
 
 impl Breadcrumb {
-    /// Construct a new breadcrumb from an ordered list of path segments.
-    /// The last segment is treated as the active (current) page and is
+    /// The last segment is treated as the active (current) page and
     /// rendered non-interactively; everything before it is clickable.
     pub fn new(segments: Vec<String>) -> Self {
         Self {
@@ -101,17 +69,12 @@ impl Breadcrumb {
         self
     }
 
-    /// Borrow the original segment list — primarily a test accessor, but
-    /// also handy for callers that want to render an aria-label or
-    /// debug-print the trail.
     pub fn segments(&self) -> &[String] {
         &self.segments
     }
 
-    /// Number of separator glyphs the widget will paint for the current
-    /// segment list. Always `segments.len() - 1` for two or more
-    /// segments, and zero for a single segment. The spec pins this
-    /// accessor explicitly so a future regression that paints a stray
+    /// `segments.len() - 1` for two or more segments, zero for a single
+    /// segment. Exposed explicitly so a regression that paints a stray
     /// chevron for one-segment trails flips the suite red.
     pub fn separator_count(&self) -> usize {
         self.segments.len().saturating_sub(1)
@@ -128,29 +91,20 @@ impl Breadcrumb {
         theme: &Theme,
         tr: &mut TextRenderer,
     ) -> Vec<String> {
-        // Empty trail trivially "fits" — nothing to render.
         if self.segments.is_empty() {
             return Vec::new();
         }
-        // Measure the full path. If it fits, no truncation is required.
         let full_width = self.measure_total_width(&self.segments, theme, tr);
         if full_width <= available_width {
-            return self.segments.iter().cloned().collect();
+            return self.segments.clone();
         }
 
-        // Truncation only makes sense when the keep-first / ellipsis /
-        // keep-last-two pattern actually drops at least one segment.
-        // With 4 or fewer segments the truncated form (`first, ...,
-        // last-1, last`) is the same length as the full form (or longer
-        // when the ellipsis takes more pixels than a real segment), so
-        // we'd produce a visually-worse render. Fall back to the
-        // un-truncated list in that degenerate case.
+        // The truncated form is no shorter than the full form here, so
+        // truncating would only make the render worse.
         if self.segments.len() <= 4 {
-            return self.segments.iter().cloned().collect();
+            return self.segments.clone();
         }
 
-        // Standard truncation: keep `segments[0]`, ellipsis,
-        // `segments[len-2]`, `segments[len-1]`.
         let n = self.segments.len();
         vec![
             self.segments[0].clone(),
@@ -163,20 +117,15 @@ impl Breadcrumb {
     /// Sum the widths of all segments + interleaved separators (with
     /// `s2` padding on each side of each separator). Used by
     /// `visible_segments` to decide whether the full path fits.
-    fn measure_total_width(
-        &self,
-        labels: &[String],
-        theme: &Theme,
-        tr: &mut TextRenderer,
-    ) -> f64 {
+    fn measure_total_width(&self, labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
         let size = theme.tokens.typography.scale.sm;
-        let sep_pad = theme.tokens.spacing.s2 as f64;
+        let sep_pad = f64::from(theme.tokens.spacing.s2);
         let (sep_w, _) = tr.measure(SEPARATOR_GLYPH, size, None);
-        let sep_block = sep_w as f64 + sep_pad * 2.0;
+        let sep_block = f64::from(sep_w) + sep_pad * 2.0;
         let mut total = 0.0_f64;
         for (i, label) in labels.iter().enumerate() {
             let (w, _) = tr.measure(label, size, None);
-            total += w as f64;
+            total += f64::from(w);
             if i + 1 < labels.len() {
                 total += sep_block;
             }
@@ -191,14 +140,11 @@ impl Breadcrumb {
     fn rebuild_rects(&mut self, theme: &Theme, tr: &mut TextRenderer) {
         let available = self.rect.width().max(0.0);
         let labels = self.visible_segments(available, theme, tr);
-        // Walk the visible labels to derive each one's origin-index. The
-        // mapping is unambiguous: when the truncation rule fires we know
-        // exactly which originals survive (first + last two), and when
-        // it doesn't fire each visible index equals the original index.
+        // Unambiguous: when truncation fires we know exactly which
+        // originals survive (first + last two); otherwise each visible
+        // index equals the original index.
         let n = self.segments.len();
-        let truncated = labels.len() == 4
-            && n > 4
-            && labels[1] == ELLIPSIS;
+        let truncated = labels.len() == 4 && n > 4 && labels[1] == ELLIPSIS;
         let mut origin = Vec::with_capacity(labels.len());
         if truncated {
             origin.push(Some(0));
@@ -211,21 +157,19 @@ impl Breadcrumb {
             }
         }
 
-        // Lay the labels out left-to-right inside `self.rect`, vertically
-        // centered. Each segment gets its own rect (used for hit testing);
-        // the chevron glyph between segments is painted by `draw` but
-        // doesn't need a stored rect — it's never clickable.
+        // Lay the labels out left-to-right; the chevron between segments is
+        // painted by `draw` but never needs its own rect (never clickable).
         let size = theme.tokens.typography.scale.sm;
-        let sep_pad = theme.tokens.spacing.s2 as f64;
+        let sep_pad = f64::from(theme.tokens.spacing.s2);
         let (sep_w, _sep_h) = tr.measure(SEPARATOR_GLYPH, size, None);
-        let sep_w = sep_w as f64;
+        let sep_w = f64::from(sep_w);
         let mut rects = Vec::with_capacity(labels.len());
         let mut cursor_x = self.rect.x0;
         let pill_y0 = self.rect.y0;
         let pill_y1 = self.rect.y1;
         for (i, label) in labels.iter().enumerate() {
             let (w, _h) = tr.measure(label, size, None);
-            let w = w as f64;
+            let w = f64::from(w);
             let r = Rect::new(cursor_x, pill_y0, cursor_x + w, pill_y1);
             rects.push(r);
             cursor_x += w;
@@ -261,40 +205,32 @@ impl Widget for Breadcrumb {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The breadcrumb stretches horizontally inside its parent and
-        // sizes vertically to a single line of `sm` text plus 1.5×
-        // line-height padding for comfortable click targets. We don't
-        // know the available width here (taffy hasn't run yet), so we
-        // expose `Dimension::auto()` and let the parent decide.
-        let line_h = (theme.tokens.typography.scale.sm * 1.5) as f32;
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::auto(),
-                    height: Dimension::length(line_h),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        // Width isn't known until taffy runs, so leave it auto; height is a
+        // single line of `sm` text plus 1.5x line-height for click comfort.
+        let line_h = theme.tokens.typography.scale.sm * 1.5;
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::auto(),
+                height: Dimension::length(line_h),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        // Real per-segment rects depend on text measurements, which
-        // need a `TextRenderer`. We don't have one in `apply_layout`,
-        // so we defer the actual rect computation to `draw` (which
-        // receives a `TextRenderer`). Until `draw` runs at least once,
-        // `segment_rects` will be stale — that's acceptable because
-        // `handle_event` won't see a hover before the first paint.
+        // Per-segment rects need text measurements, which need a
+        // `TextRenderer` we don't have here — deferred to `draw`. Stale
+        // rects until the first paint are fine: no hover happens before it.
     }
 
     fn draw(
@@ -310,9 +246,9 @@ impl Widget for Breadcrumb {
         self.rebuild_rects(theme, text_renderer);
 
         let size = theme.tokens.typography.scale.sm;
-        let sep_pad = theme.tokens.spacing.s2 as f64;
+        let sep_pad = f64::from(theme.tokens.spacing.s2);
         let (sep_w, _sep_h) = text_renderer.measure(SEPARATOR_GLYPH, size, None);
-        let sep_w = sep_w as f64;
+        let sep_w = f64::from(sep_w);
 
         let active_origin = self.segments.len().saturating_sub(1);
         let text_primary = theme.tokens.colors.text_primary;
@@ -324,16 +260,13 @@ impl Widget for Breadcrumb {
         for (i, label) in labels.iter().enumerate() {
             let r = self.segment_rects[i];
             let orig = self.visible_origin[i];
-            // Pick the colour based on whether this is the active segment,
-            // a hovered clickable segment, or an idle clickable segment.
             // Ellipsis (orig == None) is treated as dim/idle.
             let color = match orig {
                 Some(idx) if idx == active_origin => text_primary,
                 Some(_) if Some(i) == self.hover_idx => accent,
                 _ => text_dim,
             };
-            // Vertically centre the text inside the segment rect.
-            let text_y = r.y0 + (r.height() - size as f64) / 2.0;
+            let text_y = r.y0 + (r.height() - f64::from(size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -342,9 +275,7 @@ impl Widget for Breadcrumb {
                 transform * Affine::translate((r.x0, text_y)),
                 None,
             );
-            // Paint the chevron separator between this segment and the
-            // next, with `s2` padding on each side. The chevron is always
-            // dim — it's chrome, not content.
+            // Always dim — the chevron is chrome, not content.
             if i + 1 < n {
                 let sep_x = r.x1 + sep_pad;
                 let sep_y = text_y;
@@ -402,23 +333,20 @@ impl Widget for Breadcrumb {
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(hover_idx) = self.hover_idx {
-                    if let Some(Some(orig)) = self.visible_origin.get(hover_idx).copied() {
-                        // Resolve callback against the *original* index
-                        // so the caller never has to reason about the
-                        // visible-list truncation.
-                        if let Some(cb) = self.on_navigate.as_mut() {
-                            cb(orig);
-                        }
-                        *handled = true;
+                if let Some(hover_idx) = self.hover_idx
+                    && let Some(Some(orig)) = self.visible_origin.get(hover_idx).copied()
+                {
+                    if let Some(cb) = self.on_navigate.as_mut() {
+                        cb(orig);
                     }
+                    *handled = true;
                 }
             }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Breadcrumb"
     }
 
@@ -428,11 +356,8 @@ impl Widget for Breadcrumb {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The trail of clickable path segments is a list of links; the
-        // segments are drawn (not child widgets), so the container carries
-        // the semantics. The rightmost segment is the current/active page —
-        // surface it as the value. The breadcrumb is inert (default focus
-        // state) so no focus flags are set.
+        // Segments are drawn, not child widgets, so the container carries
+        // the list semantics; the rightmost segment is surfaced as the value.
         let value = self.segments.last().cloned();
         Some(
             AccessNode::new(Role::List)
@@ -443,28 +368,12 @@ impl Widget for Breadcrumb {
     }
 }
 
-// =====================================================================
-// Tests
-// =====================================================================
-
 #[cfg(test)]
 mod tests {
-    //! Coverage for the Unit 9 Breadcrumb widget. We exercise three
-    //! load-bearing properties without standing up a Vello scene:
-    //!
-    //!   1. A one-segment breadcrumb paints no `>` chevrons.
-    //!   2. Clicking a middle segment invokes the `on_navigate` callback
-    //!      with the original-list index (not the visible-list index).
-    //!   3. A breadcrumb whose full path can't fit collapses the middle
-    //!      with a literal `...` placeholder, preserving the first
-    //!      segment and the last two.
-    //!
-    //! All three use `Theme::dark()` so the spacing / colour tokens
-    //! match the production render path.
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::{DeviceId, ElementState, MouseButton, Modifiers};
+    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
 
     fn synth_device() -> DeviceId {
         // SAFETY: `DeviceId` is opaque; tests construct one via
@@ -491,7 +400,7 @@ mod tests {
     /// Mirrors `permission_prompt.rs::tests::dispatch`.
     fn dispatch(bc: &mut Breadcrumb, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -511,15 +420,9 @@ mod tests {
 
     #[test]
     fn breadcrumb_with_one_segment_paints_no_separator() {
-        // A trail with a single segment is just the current page —
-        // there's nothing to navigate to, so no `>` should be painted.
-        // `separator_count()` returns `segments.len() - 1`, saturating
-        // to zero on the empty / one-segment trail.
         let bc = Breadcrumb::new(vec!["home".to_string()]);
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
-        // Exercise the layout helper so a future regression that emits
-        // a stray chevron rect would also flip this assertion.
         let mut bc = bc;
         bc.rect = Rect::new(0.0, 0.0, 500.0, 24.0);
         bc.apply_layout_helper(&theme, &mut tr);
@@ -528,16 +431,11 @@ mod tests {
             0,
             "one-segment breadcrumb must report zero separators"
         );
-        // And the cached visible list should match the original single
-        // entry — no ellipsis, no surprise chevron.
         assert_eq!(bc.cached_visible, vec!["home".to_string()]);
     }
 
     #[test]
     fn breadcrumb_clicking_middle_segment_calls_on_navigate_with_that_index() {
-        // Wire a callback that records every navigation index it sees,
-        // then dispatch a hover + press to the middle segment's rect.
-        // We expect the callback to fire once with `Some(1)`.
         let received = Rc::new(RefCell::new(None::<usize>));
         let received_clone = received.clone();
         let mut bc = Breadcrumb::new(vec![
@@ -549,9 +447,6 @@ mod tests {
             *received_clone.borrow_mut() = Some(idx);
         });
 
-        // Synthesise a wide enough rect that all three segments fit
-        // without truncation — keeps the visible-index ↔ original-index
-        // mapping straightforward.
         bc.rect = Rect::new(0.0, 0.0, 800.0, 24.0);
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
@@ -575,21 +470,13 @@ mod tests {
 
     #[test]
     fn breadcrumb_with_long_path_truncates_middle_segments() {
-        // A 10-segment trail whose full width far exceeds the available
-        // rect must collapse to `[first, "...", last-1, last]`.
-        // Constructing the segments programmatically so the test stays
-        // legible even if the spec moves the keep-last-two count.
-        let segments: Vec<String> = (0..10)
-            .map(|i| format!("segment_{:02}", i))
-            .collect();
+        let segments: Vec<String> = (0..10).map(|i| format!("segment_{:02}", i)).collect();
         let bc = Breadcrumb::new(segments.clone());
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
 
-        // Pick an available width that's deliberately too small for the
-        // full path but comfortably wide for the truncated form — 200 px
-        // at `sm` (12 px text) holds the four-label fallback with room
-        // to spare while rejecting the ten-label full path.
+        // 200px at `sm` (12px text) fits the four-label fallback but
+        // rejects the ten-label full path.
         let visible = bc.visible_segments(200.0, &theme, &mut tr);
         assert_eq!(
             visible,

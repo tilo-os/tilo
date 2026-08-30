@@ -76,11 +76,9 @@ impl ReaderPalette {
                 dark: false,
             },
             ReadTheme::Dark => {
-                // A warm-*neutral* charcoal paper — deliberately NOT derived from
-                // the OS surface tokens (which skew cool/blue) and pulled back
-                // from the old brown/sepia cast. The channels sit close together
-                // so it reads as a true charcoal, with just a hair of warmth
-                // (R ≥ B) so long reading stays comfortable rather than clinical.
+                // A warm-neutral charcoal paper, deliberately not derived from
+                // the OS surface tokens (which skew cool/blue): channels sit
+                // close together with just a hair of warmth (R ≥ B).
                 ReaderPalette {
                     page: Color::from_rgb8(0x1E, 0x1D, 0x1C),
                     page_edge: Color::from_rgb8(0x33, 0x31, 0x2F),
@@ -93,10 +91,9 @@ impl ReaderPalette {
                 }
             }
             ReadTheme::HighContrast => {
-                // True black paper, pure-white ink, and a vivid amber accent —
-                // maximum legibility for low-vision reading. Secondary ink stays
-                // bright (a light grey) so captions/footers never fade out, and
-                // rules are a clear mid-grey rather than a whisper.
+                // True black paper, pure-white ink, vivid amber accent, for
+                // low-vision reading. Secondary ink stays bright so
+                // captions/footers never fade out.
                 ReaderPalette {
                     page: Color::from_rgb8(0x00, 0x00, 0x00),
                     page_edge: Color::from_rgb8(0x3A, 0x3A, 0x3A),

@@ -14,10 +14,8 @@ path = "src/main.rs"
 [dependencies]
 ui = { path = "../../ui" }
 automerge.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-tokio = { workspace = true, features = ["full"] }
 portable-pty = "0.9.0"
 # The application runtime the terminal hosts. Only its client half is used:
 # the service protocol and the descriptor-passing helper.
@@ -26,11 +24,8 @@ libc.workspace = true
 vte = "0.15.0"
 tracing.workspace = true
 tracing-subscriber.workspace = true
-futures = { workspace = true, default-features = true }
-tokio-util = { workspace = true, features = ["codec"] }
 unicode-width = "0.2.2"
 crossbeam-channel = "0.5.15"
-chrono = { workspace = true, default-features = true }
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -50,3 +45,6 @@ arboard.workspace = true
 # (selecting text sets the primary selection, which a middle-click paste test
 # then reads — they must not interleave).
 serial_test.workspace = true
+
+[lints]
+workspace = true

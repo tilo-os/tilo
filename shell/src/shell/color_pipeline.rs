@@ -1,74 +1,31 @@
 //! Output colour pipeline — the compositor's HDR/SDR composition maths.
 //!
-//! This module is the **output** counterpart to
-//! [`crate::shell::hdr_tonemap`]. Where `hdr_tonemap` decodes an HDR
-//! stream *down* to SDR sRGB (the receive/screen-share path), this
-//! module is the maths for driving a *real output* — deciding what
-//! colour space a monitor is scanned out in and how each surface's
-//! pixels are transformed into it.
+//! Counterpart to [`crate::shell::hdr_tonemap`], which only decodes HDR down
+//! to SDR; this module drives a real output: transfer functions in both
+//! directions, gamut matrices derived from CIE-1931 primaries via
+//! [`rgb_to_xyz`], SDR→HDR placement at the BT.2408 reference white, and the
+//! per-surface composition decision ([`plan_surface_op`]).
 //!
-//! Concretely it supplies the four pieces the compositor needs to
-//! composite mixed SDR + HDR content onto one output:
-//!
-//! 1. **Transfer functions, both directions.** `hdr_tonemap` only ever
-//!    needed PQ/HLG *decode* (electrical → linear). Driving an HDR
-//!    panel needs the *encode* direction too (linear nits → PQ signal),
-//!    so [`pq_inverse_eotf`] / [`hlg_oetf`] live here alongside the
-//!    forward [`pq_eotf`] / [`hlg_inverse_oetf`].
-//! 2. **Gamut matrices, both directions.** Derived from CIE-1931
-//!    primaries via [`rgb_to_xyz`] rather than hand-transcribed, so
-//!    BT.709→BT.2020 (map SDR into the HDR container) and
-//!    BT.2020→BT.709 (the tone-map path's gamut step) come from one
-//!    source of truth and are checked against the ITU reference
-//!    matrices in tests.
-//! 3. **SDR → HDR mapping.** An SDR surface composited onto an HDR
-//!    output must be *mapped*, not clipped: sRGB white lands at the
-//!    BT.2408 reference diffuse-white level ([`SDR_REFERENCE_WHITE_NITS`]
-//!    = 203 cd/m²), not at the panel peak, and the gamut is expanded
-//!    BT.709 → BT.2020. See [`map_sdr_pixel_to_pq_bt2020`].
-//! 4. **Per-surface composition decisions.** Given the output's colour
-//!    state and a surface's declared [`Colorimetry`],
-//!    [`plan_surface_op`] picks passthrough / tone-map / SDR-map /
-//!    HLG→PQ transcode.
-//!
-//! # What is testable here vs. what needs hardware
-//!
-//! Everything in this module is pure maths and is unit-tested against
-//! reference points (PQ/HLG round-trips, the ITU BT.2087/BT.2020
-//! matrices, the 203-nit white level). What it *cannot* verify headless
-//! is the last mile: putting a DRM connector into an HDR signalling
-//! mode (10-bit framebuffer + `HDR_OUTPUT_METADATA` connector property)
-//! and scanning out `Rgb10a2`/`Rgba16Float` to a real HDR panel. Those
-//! need a physical HDR display and a KMS/Vulkan HDR-capable stack; the
-//! selection logic ([`OutputColorState::from_display`],
-//! [`OutputColorState::preferred_swapchain_format`]) is wired and
-//! tested, but the pixels only leave the box correctly on real HDR
-//! hardware.
+//! Pure maths, unit-tested against reference points; what it cannot verify
+//! headless is driving a DRM connector in an HDR signalling mode, see
+//! [`OutputColorState::from_display`].
 
 use crate::collab::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 use crate::shell::hdr_display::DisplayCapabilities;
 use crate::shell::hdr_tonemap::HdrTonemapConfig;
 
-/// WGSL source for the SDR → HDR output-encode compute shader — the GPU
-/// mirror of [`map_sdr_pixel_to_pq_bt2020`]. Kept as a string so a
-/// backend with a wgpu device can dispatch it when an output is driven
-/// in HDR PQ mode; the tests validate it through `naga`.
+/// WGSL source for the SDR → HDR output-encode compute shader, the GPU
+/// mirror of [`map_sdr_pixel_to_pq_bt2020`]. Validated through `naga` in tests.
 pub const OUTPUT_ENCODE_SHADER_SOURCE: &str = include_str!("hdr_output_encode.wgsl");
 
-/// BT.2408 "HDR reference white" — the luminance a nominal SDR diffuse
-/// white (sRGB 1.0, "graphics white") should map to when composited
-/// into an HDR (PQ/HLG) signal. Mapping SDR white to the *panel peak*
-/// would make the desktop searingly bright next to HDR video; 203 cd/m²
-/// is the ITU-agreed diffuse-white level that keeps SDR UI looking
-/// "normal" beside HDR highlights.
+/// BT.2408 "HDR reference white": the luminance SDR diffuse white (sRGB 1.0)
+/// maps to in a PQ/HLG signal. 203 cd/m² is the ITU-agreed diffuse-white
+/// level — mapping to the panel peak instead would make the desktop
+/// searingly bright next to HDR video.
 pub const SDR_REFERENCE_WHITE_NITS: f32 = 203.0;
 
 /// PQ peak luminance — the absolute-luminance ceiling ST 2084 encodes.
 pub const PQ_MAX_NITS: f32 = 10_000.0;
-
-// ---------------------------------------------------------------------
-// 3×3 linear-algebra — just enough for colour-space matrices.
-// ---------------------------------------------------------------------
 
 /// A 3×3 matrix in row-major order. Small, `Copy`, and only carries the
 /// handful of operations colour-space conversion needs.
@@ -113,9 +70,8 @@ impl Mat3 {
             + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
     }
 
-    /// Matrix inverse, or `None` for a (near-)singular matrix. Colour
-    /// primary matrices are always well-conditioned, so `None` only
-    /// happens on a programming error.
+    /// Matrix inverse, or `None` when (near-)singular — colour primary
+    /// matrices are well-conditioned, so `None` means a programming error.
     pub fn inverse(&self) -> Option<Mat3> {
         let det = self.det();
         if det.abs() < 1e-12 {
@@ -123,7 +79,6 @@ impl Mat3 {
         }
         let inv_det = 1.0 / det;
         let m = &self.m;
-        // Cofactor / adjugate method.
         let c = [
             [
                 (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inv_det,
@@ -155,10 +110,6 @@ impl Mat3 {
         worst
     }
 }
-
-// ---------------------------------------------------------------------
-// Primaries → RGB↔XYZ, and the gamut conversion matrices.
-// ---------------------------------------------------------------------
 
 /// CIE-1931 xy chromaticities of an RGB colour space: the R/G/B primary
 /// points and the reference white.
@@ -194,11 +145,8 @@ pub const DISPLAY_P3_PRIMARIES: Chromaticities = Chromaticities {
     white: (0.3127, 0.3290),
 };
 
-/// Build the linear RGB → CIE-XYZ matrix for a set of primaries, using
-/// the standard construction (SMPTE RP 177): convert each chromaticity
-/// to XYZ with `Y = 1`, solve for the per-primary luminance scalars so
-/// the white point maps to `(Xw, 1, Zw)`, then scale the primary
-/// columns. The inverse of this matrix is XYZ → RGB.
+/// Linear RGB → CIE-XYZ matrix for a set of primaries (SMPTE RP 177
+/// construction).
 pub fn rgb_to_xyz(p: &Chromaticities) -> Mat3 {
     let xyz = |(x, y): (f32, f32)| -> [f32; 3] { [x / y, 1.0, (1.0 - x - y) / y] };
     let xr = xyz(p.red);
@@ -227,9 +175,8 @@ pub fn rgb_to_xyz(p: &Chromaticities) -> Mat3 {
     }
 }
 
-/// Linear gamut-conversion matrix from `src` primaries to `dst`
-/// primaries (no chromatic adaptation — both use the same D65 white in
-/// practice, so none is needed).
+/// Linear gamut-conversion matrix, `src` → `dst` primaries. No chromatic
+/// adaptation: both use D65 white in practice.
 pub fn gamut_matrix(src: &Chromaticities, dst: &Chromaticities) -> Mat3 {
     let src_to_xyz = rgb_to_xyz(src);
     let dst_to_xyz = rgb_to_xyz(dst);
@@ -251,14 +198,10 @@ pub fn bt2020_to_bt709_matrix() -> Mat3 {
     gamut_matrix(&BT2020_PRIMARIES, &BT709_PRIMARIES)
 }
 
-// ---------------------------------------------------------------------
-// Transfer functions — both directions.
-// ---------------------------------------------------------------------
-
-const PQ_M1: f32 = 0.1593017578125; // 2610/16384
+const PQ_M1: f32 = 0.159_301_76; // 2610/16384
 const PQ_M2: f32 = 78.84375; // 2523/32
 const PQ_C1: f32 = 0.8359375; // 3424/4096
-const PQ_C2: f32 = 18.8515625; // 2413/128
+const PQ_C2: f32 = 18.851_563; // 2413/128
 const PQ_C3: f32 = 18.6875; // 2392/128
 
 /// SMPTE ST 2084 EOTF: PQ electrical signal `[0,1]` → absolute
@@ -271,9 +214,8 @@ pub fn pq_eotf(e_prime: f32) -> f32 {
     (num / den).powf(1.0 / PQ_M1) * PQ_MAX_NITS
 }
 
-/// Inverse SMPTE ST 2084 EOTF (a.k.a. the PQ OETF): absolute luminance
-/// in cd/m² → PQ electrical signal `[0,1]`. This is the *encode*
-/// direction — what the compositor uses to drive a PQ output.
+/// Inverse SMPTE ST 2084 EOTF (the PQ OETF): absolute cd/m² → PQ signal
+/// `[0,1]`. The encode direction, used to drive a PQ output.
 pub fn pq_inverse_eotf(nits: f32) -> f32 {
     let y = (nits / PQ_MAX_NITS).clamp(0.0, 1.0);
     let ym = y.powf(PQ_M1);
@@ -284,7 +226,7 @@ pub fn pq_inverse_eotf(nits: f32) -> f32 {
 
 const HLG_A: f32 = 0.17883277;
 const HLG_B: f32 = 0.28466892;
-const HLG_C: f32 = 0.55991073;
+const HLG_C: f32 = 0.559_910_7;
 
 /// HLG OETF: scene-linear light `[0,1]` → HLG signal `[0,1]`. The
 /// *encode* direction for an HLG output.
@@ -297,10 +239,8 @@ pub fn hlg_oetf(e: f32) -> f32 {
     }
 }
 
-/// Inverse HLG OETF: HLG signal `[0,1]` → scene-linear light `[0,1]`.
-/// The *decode* direction (identical maths to
-/// [`crate::shell::hdr_tonemap`]'s HLG decode, minus the display-peak
-/// scale).
+/// Inverse HLG OETF: HLG signal `[0,1]` → scene-linear light `[0,1]`. Same
+/// maths as [`crate::shell::hdr_tonemap`]'s decode minus the display-peak scale.
 pub fn hlg_inverse_oetf(e_prime: f32) -> f32 {
     let e = e_prime.max(0.0);
     if e <= 0.5 {
@@ -330,14 +270,9 @@ pub fn srgb_oetf(v: f32) -> f32 {
     }
 }
 
-// ---------------------------------------------------------------------
-// SDR → HDR mapping.
-// ---------------------------------------------------------------------
-
-/// Map an sRGB SDR pixel (linear-light BT.709, `[0,1]`) into
-/// linear-light BT.2020 in absolute cd/m², placing SDR white at
-/// [`SDR_REFERENCE_WHITE_NITS`]. This is the "SDR content is not
-/// clipped, it is *placed* in the HDR volume" step.
+/// Map an sRGB SDR pixel (linear-light BT.709, `[0,1]`) into linear-light
+/// BT.2020 in absolute cd/m², placing SDR white at
+/// [`SDR_REFERENCE_WHITE_NITS`] rather than clipping it.
 pub fn map_sdr_linear_to_hdr_bt2020_nits(rgb_bt709_linear: [f32; 3]) -> [f32; 3] {
     let scaled = [
         rgb_bt709_linear[0] * SDR_REFERENCE_WHITE_NITS,
@@ -347,14 +282,13 @@ pub fn map_sdr_linear_to_hdr_bt2020_nits(rgb_bt709_linear: [f32; 3]) -> [f32; 3]
     bt709_to_bt2020_matrix().mul_vec(scaled)
 }
 
-/// Full SDR sRGB byte pixel → 10-bit PQ BT.2020 code values. This is
-/// the CPU reference the [`OUTPUT_ENCODE_SHADER_SOURCE`] WGSL kernel
-/// mirrors: `sRGB8 → linear709 → ×203 nits → BT.2020 → PQ → 10-bit`.
+/// SDR sRGB byte pixel → 10-bit PQ BT.2020 code values: the CPU reference
+/// [`OUTPUT_ENCODE_SHADER_SOURCE`] mirrors.
 pub fn map_sdr_pixel_to_pq_bt2020(srgb8: [u8; 3]) -> [u16; 3] {
     let linear = [
-        srgb_eotf(srgb8[0] as f32 / 255.0),
-        srgb_eotf(srgb8[1] as f32 / 255.0),
-        srgb_eotf(srgb8[2] as f32 / 255.0),
+        srgb_eotf(f32::from(srgb8[0]) / 255.0),
+        srgb_eotf(f32::from(srgb8[1]) / 255.0),
+        srgb_eotf(f32::from(srgb8[2]) / 255.0),
     ];
     let nits = map_sdr_linear_to_hdr_bt2020_nits(linear);
     [
@@ -366,12 +300,10 @@ pub fn map_sdr_pixel_to_pq_bt2020(srgb8: [u8; 3]) -> [u16; 3] {
 
 /// Absolute luminance (cd/m²) → 10-bit PQ code value `[0,1023]`.
 pub fn pq10_from_nits(nits: f32) -> u16 {
-    (pq_inverse_eotf(nits.max(0.0)) * 1023.0).round().clamp(0.0, 1023.0) as u16
+    (pq_inverse_eotf(nits.max(0.0)) * 1023.0)
+        .round()
+        .clamp(0.0, 1023.0) as u16
 }
-
-// ---------------------------------------------------------------------
-// Output colour state + per-surface composition decision.
-// ---------------------------------------------------------------------
 
 /// The colour space an output is being *scanned out* in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,8 +322,7 @@ impl OutputColorSpace {
         matches!(self, OutputColorSpace::HdrPq | OutputColorSpace::HdrHlg)
     }
 
-    /// The transfer characteristics an image description for this output
-    /// should advertise to `color-management-v1` clients.
+    /// Transfer characteristics to advertise to `color-management-v1` clients.
     pub fn transfer(self) -> TransferCharacteristics {
         match self {
             OutputColorSpace::SdrSrgb => TransferCharacteristics::Bt709,
@@ -400,8 +331,7 @@ impl OutputColorSpace {
         }
     }
 
-    /// The primaries an image description for this output should
-    /// advertise.
+    /// Primaries to advertise for this output.
     pub fn primaries(self) -> ColorPrimaries {
         match self {
             OutputColorSpace::SdrSrgb => ColorPrimaries::Bt709,
@@ -410,9 +340,8 @@ impl OutputColorSpace {
     }
 }
 
-/// The resolved colour configuration for one output: the space it is
-/// driven in plus the peak luminance the tone-mapper / SDR-mapper sizes
-/// against.
+/// Resolved colour configuration for one output: the space it is driven in
+/// plus the peak luminance the tone-mapper sizes against.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OutputColorState {
     pub space: OutputColorSpace,
@@ -422,9 +351,8 @@ pub struct OutputColorState {
 }
 
 impl OutputColorState {
-    /// The safe default: an SDR sRGB desktop at 100 cd/m². Every
-    /// uncertain path resolves here so we never scan PQ out to a panel
-    /// that can't show it.
+    /// Safe default: SDR sRGB at 100 cd/m². Every uncertain path resolves
+    /// here so PQ never reaches a panel that can't show it.
     pub const fn sdr_default() -> Self {
         Self {
             space: OutputColorSpace::SdrSrgb,
@@ -432,10 +360,8 @@ impl OutputColorState {
         }
     }
 
-    /// Resolve the output colour state from a wgpu/EDID display probe.
-    /// PQ is preferred over HLG when both are available (HDR10 is the
-    /// desktop-content baseline); HLG is only chosen when the panel
-    /// advertises HLG but not PQ.
+    /// Resolve from a wgpu/EDID display probe. PQ is preferred over HLG
+    /// when both are available (HDR10 is the desktop-content baseline).
     pub fn from_display(caps: &DisplayCapabilities) -> Self {
         if caps.supports_pq_output {
             Self {
@@ -452,10 +378,9 @@ impl OutputColorState {
         }
     }
 
-    /// The wgpu swapchain format this output should be configured with.
-    /// `None` means "use the ordinary SDR 8-bit sRGB swapchain"; a
-    /// `Some` is an HDR-carrying format the backend must configure the
-    /// surface with (and then drive with PQ/HLG-encoded pixels).
+    /// The wgpu swapchain format this output needs. `None` means the
+    /// ordinary SDR 8-bit sRGB swapchain; `Some` is an HDR-carrying format
+    /// driven with PQ/HLG-encoded pixels.
     pub fn preferred_swapchain_format(&self) -> Option<vello::wgpu::TextureFormat> {
         match self.space {
             OutputColorSpace::SdrSrgb => None,
@@ -488,13 +413,10 @@ pub enum SurfaceColorOp {
     TranscodeHdrTransfer,
 }
 
-/// Decide how to composite a surface with the given colorimetry onto an
-/// output in the given colour state. This is the compositor's central
-/// mixed-SDR/HDR composition decision.
+/// The compositor's central mixed-SDR/HDR composition decision.
 ///
-/// `source_hdr_peak_nits` is the surface's mastering/content peak when
-/// known (drives the tone-map target); pass `None` for the HDR10
-/// 1000-nit default.
+/// `source_hdr_peak_nits` is the surface's mastering/content peak when known
+/// (drives the tone-map target); `None` uses the HDR10 1000-nit default.
 pub fn plan_surface_op(
     surface: Colorimetry,
     output: &OutputColorState,
@@ -505,10 +427,11 @@ pub fn plan_surface_op(
         OutputColorSpace::SdrSrgb => {
             if surface_hdr {
                 let mut config = HdrTonemapConfig::default();
-                if let Some(peak) = source_hdr_peak_nits {
-                    if peak.is_finite() && peak > 0.0 {
-                        config.source_peak_nits = peak;
-                    }
+                if let Some(peak) = source_hdr_peak_nits
+                    && peak.is_finite()
+                    && peak > 0.0
+                {
+                    config.source_peak_nits = peak;
                 }
                 config.target_peak_nits = output.max_luminance_nits;
                 SurfaceColorOp::TonemapHdrToSdr { config }
@@ -520,7 +443,6 @@ pub fn plan_surface_op(
             if !surface_hdr {
                 SurfaceColorOp::MapSdrToHdr
             } else if surface.transfer == TransferCharacteristics::AribStdB67 {
-                // HLG surface on a PQ output — transcode transfers.
                 SurfaceColorOp::TranscodeHdrTransfer
             } else {
                 SurfaceColorOp::Passthrough
@@ -530,7 +452,6 @@ pub fn plan_surface_op(
             if !surface_hdr {
                 SurfaceColorOp::MapSdrToHdr
             } else if surface.transfer == TransferCharacteristics::SmpteSt2084 {
-                // PQ surface on an HLG output — transcode transfers.
                 SurfaceColorOp::TranscodeHdrTransfer
             } else {
                 SurfaceColorOp::Passthrough
@@ -547,8 +468,6 @@ mod tests {
     fn approx(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps
     }
-
-    // --- Matrix algebra -------------------------------------------------
 
     #[test]
     fn mat3_inverse_round_trips_to_identity() {
@@ -574,26 +493,25 @@ mod tests {
 
     #[test]
     fn white_maps_to_white_across_gamuts() {
-        // Equal-energy RGB white (1,1,1) in BT.709 is the D65 white
-        // point; because both spaces share D65 it must stay (1,1,1)
-        // (to rounding) in BT.2020 — the classic "white doesn't shift"
-        // sanity check.
+        // Both spaces share the D65 white point, so equal-energy RGB white
+        // must stay (1,1,1) (to rounding) across the gamut matrix.
         let w = bt709_to_bt2020_matrix().mul_vec([1.0, 1.0, 1.0]);
         for (i, c) in w.iter().enumerate() {
-            assert!(approx(*c, 1.0, 2e-3), "white channel {i} = {c}, expected 1.0");
+            assert!(
+                approx(*c, 1.0, 2e-3),
+                "white channel {i} = {c}, expected 1.0"
+            );
         }
     }
 
     #[test]
     fn bt2020_to_bt709_matches_itu_reference() {
-        // ITU-R BT.2087 / the widely-published linear BT.2020→709
-        // matrix. Our derived matrix must match within transcription
-        // tolerance (the published constants are rounded to 4dp).
+        // ITU-R BT.2087's published matrix, rounded to 4dp.
         let reference = Mat3 {
             m: [
                 [1.660491, -0.587641, -0.072850],
-                [-0.124550, 1.132900, -0.008349],
-                [-0.018151, -0.100579, 1.118730],
+                [-0.124550, 1.132_9, -0.008349],
+                [-0.018151, -0.100579, 1.118_73],
             ],
         };
         let derived = bt2020_to_bt709_matrix();
@@ -605,7 +523,7 @@ mod tests {
 
     #[test]
     fn bt709_to_bt2020_matches_itu_reference() {
-        // The published forward matrix (Y'CbCr colour conversion notes).
+        // Published forward matrix (Y'CbCr colour conversion notes).
         let reference = Mat3 {
             m: [
                 [0.627404, 0.329283, 0.043313],
@@ -622,15 +540,12 @@ mod tests {
 
     #[test]
     fn rgb_to_xyz_rows_of_bt709_give_known_luminance() {
-        // The middle (Y) row of the BT.709 RGB→XYZ matrix is the
-        // luma-coefficient vector (0.2126, 0.7152, 0.0722).
+        // Middle (Y) row is the luma-coefficient vector (0.2126, 0.7152, 0.0722).
         let m = rgb_to_xyz(&BT709_PRIMARIES);
         assert!(approx(m.m[1][0], 0.2126, 2e-3), "Yr = {}", m.m[1][0]);
         assert!(approx(m.m[1][1], 0.7152, 2e-3), "Yg = {}", m.m[1][1]);
         assert!(approx(m.m[1][2], 0.0722, 2e-3), "Yb = {}", m.m[1][2]);
     }
-
-    // --- Transfer functions --------------------------------------------
 
     #[test]
     fn pq_eotf_reference_points() {
@@ -650,13 +565,16 @@ mod tests {
 
     #[test]
     fn pq_forward_inverse_round_trip() {
-        // Encode a spread of luminances and decode them back.
-        for &nits in &[0.0, 0.1, 1.0, 10.0, 100.0, 203.0, 500.0, 1000.0, 4000.0, 10_000.0] {
+        for &nits in &[
+            0.0, 0.1, 1.0, 10.0, 100.0, 203.0, 500.0, 1000.0, 4000.0, 10_000.0,
+        ] {
             let e = pq_inverse_eotf(nits);
-            assert!((0.0..=1.0).contains(&e), "PQ signal out of range for {nits}: {e}");
+            assert!(
+                (0.0..=1.0).contains(&e),
+                "PQ signal out of range for {nits}: {e}"
+            );
             let back = pq_eotf(e);
-            // Relative tolerance — PQ is perceptual so absolute error
-            // grows with luminance.
+            // Relative tolerance: PQ is perceptual, error grows with luminance.
             let tol = (nits * 0.01).max(0.5);
             assert!(
                 approx(back, nits, tol),
@@ -693,7 +611,6 @@ mod tests {
 
     #[test]
     fn hlg_oetf_reference_points() {
-        // HLG maps scene 0 → 0 and scene 1.0 → 1.0 (peak).
         assert!(approx(hlg_oetf(0.0), 0.0, 1e-4));
         assert!(approx(hlg_oetf(1.0), 1.0, 1e-4));
         // The knee is at scene 1/12 → signal 0.5.
@@ -706,16 +623,15 @@ mod tests {
             let v = i as f32 / 255.0;
             let linear = srgb_eotf(v);
             let back = srgb_oetf(linear);
-            assert!(approx(back, v, 1e-3), "sRGB round-trip {v} → {linear} → {back}");
+            assert!(
+                approx(back, v, 1e-3),
+                "sRGB round-trip {v} → {linear} → {back}"
+            );
         }
     }
 
-    // --- SDR → HDR mapping ---------------------------------------------
-
     #[test]
     fn sdr_white_maps_to_reference_white_nits() {
-        // sRGB white (1,1,1) linear → BT.2020 nits should sit at ~203
-        // cd/m² on every channel (D65 neutral).
         let nits = map_sdr_linear_to_hdr_bt2020_nits([1.0, 1.0, 1.0]);
         for (i, c) in nits.iter().enumerate() {
             assert!(
@@ -727,20 +643,23 @@ mod tests {
 
     #[test]
     fn sdr_white_pq_code_round_trips_to_203_nits() {
-        // The full byte→PQ path: sRGB white → PQ 10-bit code whose EOTF
-        // is ~203 nits, and the channels stay neutral (grey).
         let code = map_sdr_pixel_to_pq_bt2020([255, 255, 255]);
-        let nits: Vec<f32> = code.iter().map(|c| pq_eotf(*c as f32 / 1023.0)).collect();
+        let nits: Vec<f32> = code
+            .iter()
+            .map(|c| pq_eotf(f32::from(*c) / 1023.0))
+            .collect();
         for (i, n) in nits.iter().enumerate() {
             assert!(
                 approx(*n, SDR_REFERENCE_WHITE_NITS, 6.0),
                 "white channel {i} decodes to {n} nits, expected ~203"
             );
         }
-        // Neutral: R ≈ G ≈ B in code space.
-        let max_delta = code.iter().copied().max().unwrap() as i32
-            - code.iter().copied().min().unwrap() as i32;
-        assert!(max_delta <= 3, "SDR white PQ codes should be neutral, got {code:?}");
+        let max_delta = i32::from(code.iter().copied().max().unwrap())
+            - i32::from(code.iter().copied().min().unwrap());
+        assert!(
+            max_delta <= 3,
+            "SDR white PQ codes should be neutral, got {code:?}"
+        );
     }
 
     #[test]
@@ -751,21 +670,14 @@ mod tests {
 
     #[test]
     fn sdr_map_expands_gamut_not_clips() {
-        // Pure sRGB red should keep most of its luminance in the red
-        // channel and gain a small positive contribution structure in
-        // BT.2020 (never negative — that would be clipping).
         let nits = map_sdr_linear_to_hdr_bt2020_nits([1.0, 0.0, 0.0]);
         assert!(nits[0] > 0.0, "red channel should be positive: {nits:?}");
-        // BT.709 red is inside BT.2020, so the mapped value has small
-        // non-negative green/blue leakage from the matrix — crucially
-        // the red primary is representable, so no channel is wildly
-        // out of range.
+        // Small non-negative green/blue leakage is expected; negative
+        // would mean clipping rather than mapping.
         for c in nits {
             assert!(c >= -1e-3, "no channel should go negative (clip): {nits:?}");
         }
     }
-
-    // --- Output colour state -------------------------------------------
 
     #[test]
     fn sdr_display_resolves_to_sdr_state() {
@@ -802,8 +714,6 @@ mod tests {
         );
     }
 
-    // --- Composition decision (the four quadrants) ---------------------
-
     fn sdr() -> Colorimetry {
         Colorimetry::sdr_bt709()
     }
@@ -817,7 +727,10 @@ mod tests {
     #[test]
     fn sdr_surface_on_sdr_output_is_passthrough() {
         let out = OutputColorState::sdr_default();
-        assert_eq!(plan_surface_op(sdr(), &out, None), SurfaceColorOp::Passthrough);
+        assert_eq!(
+            plan_surface_op(sdr(), &out, None),
+            SurfaceColorOp::Passthrough
+        );
     }
 
     #[test]
@@ -835,13 +748,19 @@ mod tests {
     #[test]
     fn sdr_surface_on_hdr_output_maps_into_hdr() {
         let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
-        assert_eq!(plan_surface_op(sdr(), &out, None), SurfaceColorOp::MapSdrToHdr);
+        assert_eq!(
+            plan_surface_op(sdr(), &out, None),
+            SurfaceColorOp::MapSdrToHdr
+        );
     }
 
     #[test]
     fn hdr_pq_surface_on_hdr_pq_output_is_passthrough() {
         let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
-        assert_eq!(plan_surface_op(hdr_pq(), &out, None), SurfaceColorOp::Passthrough);
+        assert_eq!(
+            plan_surface_op(hdr_pq(), &out, None),
+            SurfaceColorOp::Passthrough
+        );
     }
 
     #[test]
@@ -881,8 +800,7 @@ mod tests {
 
     #[test]
     fn surface_op_ignores_matrix_and_range_fields() {
-        // The decision keys on transfer only; a full-range HDR surface
-        // still tone-maps on an SDR output.
+        // Keys on transfer only; a full-range HDR surface still tone-maps.
         let full_range_hdr = Colorimetry {
             primaries: ColorPrimaries::Bt2020,
             transfer: TransferCharacteristics::SmpteSt2084,

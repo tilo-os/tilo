@@ -1,20 +1,13 @@
 //! Signed fixtures for tests that exercise the collaboration wire format.
 //!
-//! Minting a *valid* [`RoleAttestation`] or [`SignedOp`] means performing
-//! the same ceremony production does: build the struct with a placeholder
-//! signature, canonicalise it, sign the canonical bytes, write the
-//! signature back. Get any step wrong and the validator rejects the
-//! result for a reason that has nothing to do with what the test was
-//! trying to prove.
-//!
-//! That ceremony used to be copy-pasted into every integration test that
-//! needed it, and the copies drifted — different validity windows,
-//! different claim sets, some with the op class hard-coded. Divergence in
-//! a fixture is worse than divergence in production code, because it
-//! silently changes what a test is actually asserting rather than
-//! breaking the build. This crate is the single copy.
-//!
-//! Dev-dependency only.
+//! Minting a *valid* [`RoleAttestation`] or [`SignedOp`] means the same
+//! ceremony production uses: build with a placeholder signature,
+//! canonicalise, sign the canonical bytes, write the signature back — get
+//! any step wrong and the validator rejects the result for a reason
+//! unrelated to what the test was proving. Fixture divergence is worse
+//! than production divergence, since it silently changes what a test
+//! asserts rather than breaking the build — hence one copy, here,
+//! dev-dependency only.
 
 use std::time::{Duration, SystemTime};
 
@@ -25,17 +18,14 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 
 /// A year back — comfortably before any test's "now".
-const WIDE_PAST: Duration = Duration::from_secs(365 * 24 * 3600);
+const WIDE_PAST: Duration = Duration::from_hours(8760);
 /// A decade forward — comfortably after it.
-const WIDE_FUTURE: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
+const WIDE_FUTURE: Duration = Duration::from_hours(87600);
 
-/// Mint a signed [`RoleAttestation`] with an explicit validity window and
-/// claim set.
-///
-/// Use this when the window or the claims are what the test is about —
-/// expiry handling, clearance checks. When they are not, prefer
-/// [`role_attestation`], which picks a window wide enough that validity
-/// never becomes an accidental variable.
+/// Mints a signed [`RoleAttestation`] with an explicit validity window and
+/// claim set — use when the window/claims are what the test is about;
+/// otherwise prefer [`role_attestation`], whose window is wide enough that
+/// validity never becomes an accidental variable.
 pub fn role_attestation_windowed(
     issuer_sk: &SigningKey,
     issuer_pk: Ed25519PublicKey,
@@ -55,8 +45,7 @@ pub fn role_attestation_windowed(
         valid_until,
         signature: Signature::from_bytes([0u8; 64]),
     };
-    // Sign the canonical bytes of the attestation-minus-signature, which
-    // is what `validate_inbound_op` re-derives and checks against.
+    // Sign the canonical bytes of attestation-minus-signature — what `validate_inbound_op` re-derives and checks against.
     let sb = att
         .signing_bytes()
         .expect("attestation must canonicalise for signing");
@@ -68,12 +57,9 @@ pub fn role_attestation_windowed(
     }
 }
 
-/// Mint a signed [`RoleAttestation`] that is unambiguously in-window: valid
-/// from a year ago until a decade out, carrying no claims.
-///
-/// This is the right default for any test whose subject is *not* attestation
-/// validity — the window is wide enough that it can never be the reason a
-/// test fails.
+/// Mints a signed [`RoleAttestation`] unambiguously in-window (a year ago
+/// to a decade out, no claims) — the right default whenever the test's
+/// subject isn't attestation validity itself.
 pub fn role_attestation(
     issuer_sk: &SigningKey,
     issuer_pk: Ed25519PublicKey,
@@ -94,11 +80,9 @@ pub fn role_attestation(
     )
 }
 
-/// Mint a signed [`SignedOp`] carrying `payload`.
-///
-/// `seq` is the author's per-artifact sequence number — the validator
-/// rejects replays and gaps, so tests that send more than one op from the
-/// same author must advance it.
+/// Mints a signed [`SignedOp`] carrying `payload`. `seq` is the author's
+/// per-artifact sequence number — advance it for tests sending more than
+/// one op from the same author, since the validator rejects replays and gaps.
 #[allow(clippy::too_many_arguments)]
 pub fn signed_op(
     author_sk: &SigningKey,
@@ -122,8 +106,7 @@ pub fn signed_op(
     op
 }
 
-/// [`signed_op`] with encryption metadata attached, for tests that push an
-/// op through the MLS-wrapped path.
+/// [`signed_op`] with encryption metadata attached, for tests pushing an op through the MLS-wrapped path.
 #[allow(clippy::too_many_arguments)]
 pub fn signed_op_encrypted(
     author_sk: &SigningKey,

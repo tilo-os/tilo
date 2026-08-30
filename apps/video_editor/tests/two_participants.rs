@@ -134,8 +134,9 @@ impl Participant {
     fn press(&mut self, key: Key) {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = key;
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -235,7 +236,10 @@ fn one_participant_moves_and_the_other_can_say_where_they_are() {
 
     let mut room = PresenceCtx::empty();
     let sent = ada.relay(&mut room, "ada");
-    assert!(sent >= 2, "Ada had both a playhead and a selection to send, sent {sent}");
+    assert!(
+        sent >= 2,
+        "Ada had both a playhead and a selection to send, sent {sent}"
+    );
 
     // Where Bo now believes Ada is.
     let heads = vp::peer_playheads(&room);
@@ -276,7 +280,11 @@ fn the_other_participant_tracks_a_moving_playhead() {
     ada.relay(&mut room, "ada");
     let at_start = vp::peer_playheads(&room);
     assert_eq!(at_start.len(), 1);
-    assert!(at_start[0].at.abs() < 0.01, "at the start, got {}", at_start[0].at);
+    assert!(
+        at_start[0].at.abs() < 0.01,
+        "at the start, got {}",
+        at_start[0].at
+    );
 
     let mut seen = vec![at_start[0].at];
     for _ in 0..4 {
@@ -336,7 +344,8 @@ fn a_participant_is_visible_on_the_other_persons_screen() {
     ada.press(Key::Named(NamedKey::Home));
     ada.frame(&PresenceCtx::empty());
     let mut room = PresenceCtx::empty();
-    room.names.insert(UserId("ada".to_string()), "Ada".to_string());
+    room.names
+        .insert(UserId("ada".to_string()), "Ada".to_string());
     ada.relay(&mut room, "ada");
     assert_eq!(vp::peer_playheads(&room).len(), 1, "Ada is in the room");
 
@@ -398,7 +407,8 @@ fn a_participants_playhead_alone_reaches_the_screen() {
     ada.press(Key::Named(NamedKey::Escape));
     ada.frame(&PresenceCtx::empty());
     let mut room = PresenceCtx::empty();
-    room.names.insert(UserId("ada".to_string()), "Ada".to_string());
+    room.names
+        .insert(UserId("ada".to_string()), "Ada".to_string());
     ada.relay(&mut room, "ada");
     assert_eq!(vp::peer_playheads(&room).len(), 1, "she has a playhead");
     assert!(vp::peer_clips(&room).is_empty(), "and nothing selected");
@@ -430,7 +440,8 @@ fn a_participants_selected_clip_alone_reaches_the_screen() {
         .expect("the shared project has clips");
 
     let mut room = PresenceCtx::empty();
-    room.names.insert(UserId("ada".to_string()), "Ada".to_string());
+    room.names
+        .insert(UserId("ada".to_string()), "Ada".to_string());
     let (key, payload) = vp::range_frame(Some((clip.id, clip.start, clip.end())));
     room.apply_remote_presence("ada".to_string(), key, payload);
     assert_eq!(vp::peer_clips(&room).len(), 1, "she is holding a clip");

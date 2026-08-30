@@ -1,4 +1,4 @@
-//! ProgressBar — determinate / indeterminate horizontal progress indicator.
+//! `ProgressBar` — determinate / indeterminate horizontal progress indicator.
 //!
 //! Determinate mode paints a rounded track with a fill that scales from
 //! 0 to `track_width` proportional to `progress` (clamped to `[0, 1]`).
@@ -25,6 +25,7 @@ use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Default visible height of the track. Picked to match the concept's
@@ -119,7 +120,11 @@ impl ProgressBar {
     /// Current clamped progress value. `0.0` while the bar is in
     /// indeterminate mode, regardless of any prior `set_progress` call.
     pub fn progress(&self) -> f32 {
-        if self.indeterminate { 0.0 } else { self.progress }
+        if self.indeterminate {
+            0.0
+        } else {
+            self.progress
+        }
     }
 
     /// Whether the bar is in indeterminate mode.
@@ -145,26 +150,24 @@ impl Widget for ProgressBar {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(TRACK_HEIGHT as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(TRACK_HEIGHT as f32),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -179,7 +182,7 @@ impl Widget for ProgressBar {
         // The track is always painted: it provides the visual anchor
         // even at `progress == 0.0`. The fill is conditional — see
         // `progress_bar_at_zero_paints_no_fill` for the contract.
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let track_shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -193,11 +196,9 @@ impl Widget for ProgressBar {
         let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
 
         if self.indeterminate {
-            // Slide a fixed-width segment across the track. The phase
-            // [0, 1) drives the segment's left edge from
-            // `-segment_width` (just off-screen left) to `track_width`
-            // (just off-screen right), so the segment fully enters and
-            // exits the track every period.
+            // Slide a fixed-width segment across the track. Phase [0,1)
+            // drives its left edge from `-segment_width` (off-screen
+            // left) to `track_width` (off-screen right) each period.
             let segment_width = track_width * INDETERMINATE_SEGMENT_FRAC;
             let travel = track_width + segment_width;
             // With reduced motion the segment holds at a fixed position
@@ -206,7 +207,7 @@ impl Widget for ProgressBar {
             let phase = if theme.reduce_motion {
                 (segment_width / 2.0) / travel
             } else {
-                self.indeterminate_phase() as f64
+                f64::from(self.indeterminate_phase())
             };
             let segment_x0 = self.rect.x0 - segment_width + phase * travel;
             let segment_x1 = segment_x0 + segment_width;
@@ -215,8 +216,7 @@ impl Widget for ProgressBar {
             let clipped_x0 = segment_x0.max(self.rect.x0);
             let clipped_x1 = segment_x1.min(self.rect.x1);
             if clipped_x1 > clipped_x0 {
-                let segment_rect =
-                    Rect::new(clipped_x0, self.rect.y0, clipped_x1, self.rect.y1);
+                let segment_rect = Rect::new(clipped_x0, self.rect.y0, clipped_x1, self.rect.y1);
                 let segment_shape = RoundedRect::from_rect(segment_rect, radius);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -227,13 +227,11 @@ impl Widget for ProgressBar {
                 );
             }
         } else if self.progress > 0.0 {
-            // Determinate fill — width is `progress * track_width`.
-            // Crucially, we *skip the fill entirely* at `progress == 0.0`
-            // so the COLOR-draw-tag count distinguishes "empty" from
-            // "non-empty" bars at the encoding level (the visual would
-            // be identical, but the test contract requires zero fill
-            // draws).
-            let fill_width = self.progress as f64 * track_width;
+            // Determinate fill, width `progress * track_width`. Skipped
+            // entirely at `progress == 0.0` (rather than a zero-width
+            // rect) so the COLOR-draw-tag count can distinguish empty
+            // from non-empty bars at the encoding level in tests.
+            let fill_width = f64::from(self.progress) * track_width;
             let fill_rect = Rect::new(
                 self.rect.x0,
                 self.rect.y0,
@@ -265,9 +263,13 @@ impl Widget for ProgressBar {
     ) {
     }
 
-    fn name(&self) -> &str { "ProgressBar" }
+    fn name(&self) -> &'static str {
+        "ProgressBar"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Politeness, Role};
@@ -301,13 +303,17 @@ impl Widget for ProgressBar {
     /// change their segment fill every frame but keep the same
     /// outer rect. Either way, layout stays clean after the
     /// initial `apply_layout` writes a non-zero rect.
-    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
 
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -324,22 +330,29 @@ impl Widget for ProgressBar {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }
@@ -389,12 +402,9 @@ mod tests {
     }
 
     /// At `progress == 0.0` the bar must paint the track *only* — the
-    /// accent fill rect must be skipped entirely. Pinning this against
-    /// the encoding (rather than colour-sampling pixels) means a future
-    /// refactor that "draws a zero-width rect anyway" trips the test.
-    /// We compare against an indeterminate bar at the same phase as a
-    /// sanity baseline: indeterminate always emits an extra fill, so
-    /// the zero-progress bar must emit strictly fewer COLOR tags.
+    /// accent fill rect must be skipped entirely, pinned against the
+    /// encoding (not pixel colour) so a future "draws a zero-width rect
+    /// anyway" refactor trips the test.
     #[test]
     fn progress_bar_at_zero_paints_no_fill() {
         let mut zero = bar_at(0.0);
@@ -402,8 +412,7 @@ mod tests {
         let zero_fills = count_color_fills(&zero_scene);
 
         // The track alone is one COLOR fill — no accent fill should
-        // appear. Counting the track-only baseline by rendering a bar
-        // explicitly skips the fill branch.
+        // appear.
         assert_eq!(
             zero_fills, 1,
             "zero-progress bar must emit exactly the track COLOR fill \
@@ -421,12 +430,9 @@ mod tests {
         );
     }
 
-    /// At `progress == 1.0` the accent fill must span the *full* track
-    /// width. We can't inspect the encoded rect directly, so we drive
-    /// the contract through the public `progress()` accessor *and* via
-    /// a width-vs-half comparison: at full progress the bar produces a
-    /// fill of width `track_width`; at half progress it produces a fill
-    /// of width `track_width / 2`. The widths are exposed by computing
+    /// At `progress == 1.0` the accent fill must span the full track
+    /// width. Can't inspect the encoded rect directly, so this drives
+    /// the contract through the public `progress()` accessor, computing
     /// the fill rectangle the same way `draw` does.
     #[test]
     fn progress_bar_at_full_paints_track_width_fill() {
@@ -506,11 +512,10 @@ mod tests {
         );
     }
 
-    /// With reduced motion an indeterminate bar holds its segment at a fixed
-    /// position: a bar backdated by a full sweep paints the *same* segment
-    /// geometry as a fresh one, because `draw` ignores elapsed time. With
-    /// motion on, the same backdate lands the segment elsewhere — proving the
-    /// freeze is the reduced-motion path, not a no-op.
+    /// With reduced motion an indeterminate bar holds its segment fixed:
+    /// a bar backdated by a full sweep paints the same geometry as a
+    /// fresh one. With motion on, the same backdate lands elsewhere —
+    /// proving the freeze is the reduced-motion path, not a no-op.
     #[test]
     fn reduce_motion_freezes_the_indeterminate_segment() {
         use std::time::{Duration, Instant};

@@ -136,7 +136,7 @@ pub struct VoiceMember {
     /// Camera off / audio-only participant.
     pub audio_only: bool,
     /// True while this person is sharing their screen into the call (portal
-    /// ScreenCast → the shared `TrackKind::Screen`). Shared truth in the CRDT so
+    /// `ScreenCast` → the shared `TrackKind::Screen`). Shared truth in the CRDT so
     /// every peer reserves the featured screen tile and shows "N is sharing"
     /// the instant the share begins — before the first decoded frame arrives.
     pub sharing: bool,
@@ -194,6 +194,9 @@ pub struct User {
     pub initials: String,
     pub color_idx: usize,
     pub status: Presence,
+    /// An automated agent acting in the room rather than a person. The
+    /// roster draws the distinction; a mention carries it forward.
+    pub is_agent: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,16 +287,233 @@ pub struct Message {
     /// `Some(parent_id)` when this message is a threaded reply.
     pub parent: Option<Id>,
     pub reactions: Vec<Reaction>,
+    /// Who this message refers to, resolved at authoring time. Structure, not
+    /// prose: a consumer asks the message who it mentions instead of scanning
+    /// `text` for `@`. See [`crate::mention`].
+    pub mentions: Vec<crate::mention::Mention>,
+    /// What this message is *about*, when it was written by selecting
+    /// something rather than by typing into the composer.
+    ///
+    /// The address, not a description of it: a reader resolves the block or
+    /// the file the author had selected without reading `text` and without
+    /// ever needing a screen position. `None` for an ordinary message.
+    pub reference: Option<qos_reference::ResourceRef>,
     pub attachment: Option<Attachment>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
     pub pinned: bool,
+    /// An agent's record of what it did with the message this one replies to.
+    ///
+    /// Present only on a reply an agent authored when it took a summons, and
+    /// updated in place by that agent as the work proceeds. `None` on every
+    /// ordinary message, which is what keeps it honest as "an agent took this
+    /// on" rather than a field every message carries an empty version of.
+    pub work: Option<AgentWork>,
 }
 
 impl Message {
     pub fn is_top_level(&self) -> bool {
         self.parent.is_none()
     }
+
+    /// Whether this message refers to `user`. The question a notification, a
+    /// badge or an agent watching the room actually asks — answered from
+    /// structure, so it never depends on how the body happens to be spelled.
+    pub fn mentions_user(&self, user: &str) -> bool {
+        self.mentions.iter().any(|m| m.user == user)
+    }
+
+    /// Every participant this message refers to, in the order they appear.
+    /// Duplicates are kept: two mentions of one person are two references.
+    pub fn mentioned_ids(&self) -> impl Iterator<Item = &str> {
+        self.mentions.iter().map(|m| m.user.as_str())
+    }
+}
+
+/// What an agent in this room has done with a message addressed to it.
+///
+/// Written by the agent onto its own threaded reply, and updated in place as
+/// the work proceeds. It is deliberately **not** the reply's body: replacing a
+/// body four times would archive three revisions into the message's edit
+/// history and flag it `(edited)`, claiming somebody reworded a sentence
+/// nobody wrote yet, and burying the outcome under a trail of states.
+///
+/// Every variant is written at the moment the thing it names actually happens
+/// — a summons taken, an operation chosen, an action applied, a refusal
+/// written. None of them is a guess about what is about to happen, and none is
+/// produced by a timer. That is the whole property: a reader who sees
+/// [`AgentWorkState::Doing`] is reading a decision the agent has already made,
+/// not an animation covering the fact that it has not.
+///
+/// It says what happened and when, never that anything is happening *now*.
+/// Liveness is a different question with a different answer — whether the
+/// agent is still in the room, which presence answers — because a process that
+/// dies mid-instruction cannot retract a record, and a record that claimed to
+/// be live would go on claiming it forever.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWork {
+    pub state: AgentWorkState,
+    /// Epoch seconds at which the agent entered `state`.
+    pub since: i64,
+    /// How the agent came to choose what it chose, in the decider's own
+    /// words. `None` until something has actually decided — an empty
+    /// reasoning section would be a promise of an explanation that was never
+    /// given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<AgentReasoning>,
+    /// One row per operation the agent **dispatched**, in the order it
+    /// dispatched them.
+    ///
+    /// Appended by the code that performs an operation, at the moment it
+    /// hands the operation over, and rewritten in place when the app answers
+    /// — never from the plan, and never from anything the model said about
+    /// what it was going to do. That is the entire point of the field: a plan
+    /// is an intention and a model can narrate an operation it never ran,
+    /// while an entry here exists only because a dispatch happened. See
+    /// [`AgentStep`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<AgentStep>,
+}
+
+/// How the agent decided, for a person reading the thread.
+///
+/// Recorded from the decision the agent actually took, so `route` cannot say
+/// a model chose when the deterministic floor did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentReasoning {
+    /// Which path reached the decision — a model, or the agent's own keyword
+    /// vocabulary. Never cosmetic: a turn decided on the floor must be
+    /// findable as one afterwards.
+    pub route: AgentRoute,
+    /// The decider's own account of why. May be empty when the path that
+    /// decided had nothing to say beyond which path it was.
+    #[serde(default)]
+    pub why: String,
+}
+
+/// Which path chose the operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRoute {
+    /// A model was asked and its answer was in the room's exported catalogue.
+    Model,
+    /// No model decided — the agent matched the request against the words the
+    /// apps put on their own operations.
+    Floor,
+}
+
+/// One operation the agent dispatched, and what came of it.
+///
+/// Written from the dispatch path itself. Nothing constructs one of these
+/// from a plan, a model answer, or a sentence: a row is evidence that the
+/// agent tried to perform this operation on this resource, and its
+/// [`outcome`](Self::outcome) is what the attempt returned — or
+/// [`AgentStepOutcome::Asked`] while it has not returned anything.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentStep {
+    /// The resource the operation was addressed to, as the room addresses it.
+    pub resource: String,
+    /// The operation, in the owning app's own words. Falls back to the action
+    /// id when the app exports no label — machine vocabulary is worse to read
+    /// than a label, but better than showing nothing.
+    pub label: String,
+    pub outcome: AgentStepOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum AgentStepOutcome {
+    /// It has been handed to the app that owns it and has not answered.
+    ///
+    /// Written at the dispatch and rewritten with whatever comes back, so a
+    /// row resting here is an operation that went out and never answered —
+    /// true, and worth seeing. It is not a success:
+    /// [`succeeded`](Self::succeeded) says so.
+    Asked,
+    /// It went through and changed the document.
+    Applied,
+    /// It went through and changed nothing. Ordinary — a proposal that
+    /// already reads the way it was asked to writes nothing — and said out
+    /// loud rather than shown as success, which would claim an edit that
+    /// nobody would find.
+    NoChange,
+    /// It did not happen, for the stated reason.
+    Refused {
+        /// Why, in the words the agent used to say so.
+        why: String,
+    },
+}
+
+impl AgentStepOutcome {
+    /// Whether the operation was actually carried out.
+    pub fn succeeded(&self) -> bool {
+        matches!(self, AgentStepOutcome::Applied | AgentStepOutcome::NoChange)
+    }
+}
+
+impl AgentWork {
+    pub fn new(state: AgentWorkState, since: i64) -> Self {
+        Self {
+            state,
+            since,
+            reasoning: None,
+            trace: Vec::new(),
+        }
+    }
+
+    /// The same record with the decider's account attached.
+    pub fn because(mut self, reasoning: AgentReasoning) -> Self {
+        self.reasoning = Some(reasoning);
+        self
+    }
+
+    /// The same record carrying `trace`.
+    pub fn with_trace(mut self, trace: Vec<AgentStep>) -> Self {
+        self.trace = trace;
+        self
+    }
+
+    /// Whether the agent has stopped. A finished record is the end of the
+    /// story; an unfinished one is the agent's last word on it, which is not
+    /// the same as a promise that more is coming.
+    pub fn finished(&self) -> bool {
+        matches!(
+            self.state,
+            AgentWorkState::Done { .. } | AgentWorkState::Refused
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentWorkState {
+    /// The summons was taken. The agent has read it and nothing is decided.
+    Taken,
+    /// The agent cannot act on it yet: the request names something owned by an
+    /// app whose state has not reached this agent.
+    ///
+    /// A room arrives one document at a time, so this is a claim about timing
+    /// and is spelled as one — it used to be a log line and nothing else,
+    /// which made a wait indistinguishable from being ignored.
+    Waiting {
+        /// The app being waited on, as the room names it.
+        app: String,
+    },
+    /// What the agent decided the request was — in the app's own words, not
+    /// the address it dispatched by, because this line is read by a person.
+    Doing {
+        /// The operation, as the app labels it.
+        did: String,
+        /// What it is about, or empty when the request named no subject.
+        about: String,
+    },
+    /// The operation was applied.
+    Done {
+        /// The operation that was applied, as the app labels it.
+        did: String,
+    },
+    /// The agent will not act. The reply's body says why, in its own words.
+    Refused,
 }
 
 /// A run of consecutive top-level messages by one author shown as a single
@@ -411,10 +631,13 @@ mod tests {
             text: "x".into(),
             edited: false,
             history: vec![],
-            parent: parent.map(|s| s.to_string()),
+            parent: parent.map(std::string::ToString::to_string),
             reactions: vec![],
+            mentions: vec![],
+            reference: None,
             attachment: None,
             pinned: false,
+            work: None,
         }
     }
 
@@ -511,8 +734,14 @@ mod tests {
         // Small calls mesh peer-to-peer; past the threshold they switch to a
         // host relay so a growing call's upload bandwidth stays flat.
         assert_eq!(CallSession::select(1), CallSession::Peer);
-        assert_eq!(CallSession::select(CallSession::PEER_MAX), CallSession::Peer);
-        assert_eq!(CallSession::select(CallSession::PEER_MAX + 1), CallSession::Host);
+        assert_eq!(
+            CallSession::select(CallSession::PEER_MAX),
+            CallSession::Peer
+        );
+        assert_eq!(
+            CallSession::select(CallSession::PEER_MAX + 1),
+            CallSession::Host
+        );
         assert_eq!(CallSession::Peer.label(), "peer-to-peer");
         assert_eq!(CallSession::Host.label(), "host relay");
     }
@@ -524,5 +753,150 @@ mod tests {
         let members = vec![vm("u_charlie"), vm("u_alice"), vm("u_bob")];
         assert_eq!(call_host(&members), Some("u_alice".to_string()));
         assert_eq!(call_host(&[]), None);
+    }
+}
+
+#[cfg(test)]
+mod agent_record_tests {
+    use super::{
+        AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
+    };
+
+    fn step(resource: &str, label: &str, outcome: AgentStepOutcome) -> AgentStep {
+        AgentStep {
+            resource: resource.into(),
+            label: label.into(),
+            outcome,
+        }
+    }
+
+    /// A record written by an older agent — one with neither field — still
+    /// reads. The whole record travels as a single JSON scalar in the shared
+    /// document, and a record that will not parse is deliberately read as no
+    /// claim about the agent at all; adding a field must not be what causes
+    /// that.
+    #[test]
+    fn a_record_without_reasoning_or_a_trace_still_parses() {
+        let old = r#"{"state":{"state":"taken"},"since":1000}"#;
+        let work: AgentWork = serde_json::from_str(old).expect("an older record still reads");
+        assert_eq!(work.state, AgentWorkState::Taken);
+        assert_eq!(work.since, 1000);
+        assert_eq!(work.reasoning, None);
+        assert!(work.trace.is_empty());
+        // Pinned as a literal, not round-tripped from `to_string`: a test that
+        // generated the input with today's code would go on passing after a
+        // change that stopped yesterday's records from reading at all.
+        assert_eq!(
+            serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000)).unwrap(),
+            old,
+            "the wire shape of a plain record changed"
+        );
+    }
+
+    /// And a record with nothing to add serialises back to what it was, so an
+    /// agent that never decided anything does not start carrying an empty
+    /// explanation nobody wrote.
+    #[test]
+    fn an_empty_reasoning_and_trace_are_absent_from_the_wire() {
+        let json =
+            serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000)).expect("serialise");
+        assert!(
+            !json.contains("reasoning"),
+            "empty reasoning leaked: {json}"
+        );
+        assert!(!json.contains("trace"), "empty trace leaked: {json}");
+    }
+
+    #[test]
+    fn a_reasoning_and_a_trace_survive_a_round_trip() {
+        let work = AgentWork::new(AgentWorkState::Done { did: "crop".into() }, 42)
+            .because(AgentReasoning {
+                route: AgentRoute::Model,
+                why: "the request named the photograph".into(),
+            })
+            .with_trace(vec![
+                step("photo:1", "Crop", AgentStepOutcome::Applied),
+                step("photo:1", "Rename", AgentStepOutcome::NoChange),
+                step(
+                    "doc:2",
+                    "Insert table",
+                    AgentStepOutcome::Refused {
+                        why: "not allowed here".into(),
+                    },
+                ),
+            ]);
+        let json = serde_json::to_string(&work).expect("serialise");
+        let back: AgentWork = serde_json::from_str(&json).expect("parse");
+        assert_eq!(back, work);
+        // The route is not decoration: a turn decided on the floor has to be
+        // findable as one afterwards.
+        assert!(
+            json.contains("\"route\":\"model\""),
+            "route missing: {json}"
+        );
+    }
+
+    /// A refusal is never counted as work carried out — the difference
+    /// between "it did three things" and "it did two and was stopped once".
+    #[test]
+    fn only_an_applied_or_no_change_outcome_counts_as_carried_out() {
+        assert!(AgentStepOutcome::Applied.succeeded());
+        assert!(AgentStepOutcome::NoChange.succeeded());
+        assert!(!AgentStepOutcome::Refused { why: "no".into() }.succeeded());
+        // An operation that has been handed over and not answered has not
+        // been carried out. Counting it would make a row that exists to say
+        // "no answer yet" read as one of the things that went through.
+        assert!(!AgentStepOutcome::Asked.succeeded());
+    }
+
+    /// A row that is still in flight survives the wire, and says so — what
+    /// one peer wrote when it handed an operation over is what the next one
+    /// reads while it waits. A variant that did not round-trip would arrive
+    /// as whatever `Deserialize` fell back to, which is how "asked" becomes a
+    /// claim about an outcome.
+    #[test]
+    fn a_row_that_has_not_answered_yet_survives_the_wire() {
+        let work = AgentWork::new(
+            AgentWorkState::Waiting {
+                app: "Photos".into(),
+            },
+            42,
+        )
+        .with_trace(vec![step(
+            "photos:app",
+            "Open Photos",
+            AgentStepOutcome::Asked,
+        )]);
+        let json = serde_json::to_string(&work).expect("serialise");
+        assert!(json.contains("\"outcome\":\"asked\""), "wire shape: {json}");
+        let back: AgentWork = serde_json::from_str(&json).expect("parse");
+        assert_eq!(back, work);
+    }
+
+    /// Whether the agent has stopped is read off the state alone.
+    #[test]
+    fn finished_is_true_only_once_the_agent_has_stopped() {
+        assert!(!AgentWork::new(AgentWorkState::Taken, 0).finished());
+        assert!(
+            !AgentWork::new(
+                AgentWorkState::Waiting {
+                    app: "Photos".into()
+                },
+                0
+            )
+            .finished()
+        );
+        assert!(
+            !AgentWork::new(
+                AgentWorkState::Doing {
+                    did: "Crop".into(),
+                    about: String::new()
+                },
+                0
+            )
+            .finished()
+        );
+        assert!(AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, 0).finished());
+        assert!(AgentWork::new(AgentWorkState::Refused, 0).finished());
     }
 }

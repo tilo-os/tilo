@@ -1,25 +1,34 @@
 //! Books — qOS native EPUB reader (CRDT-native, built on the `ui` toolkit).
 //!
-//! The crate is layered so each piece is testable in isolation:
+//! Layered so each piece is testable in isolation: [`model`] (pure data +
+//! the shared annotation model reused by the PDF reader/word processor),
+//! [`doc`] (the Automerge document layer), [`xhtml`]/[`epub`]/[`content`]
+//! (EPUB parsing + library), [`paginate`] (text layout), [`reader_theme`]/
+//! [`paint`] (palettes + drawing), and [`app`] (the retained-mode
+//! [`Widget`](ui::widget::Widget) composing the shelf and reader).
 //!
-//! - [`model`] — pure data: parsed book content + the **shared annotation
-//!   model** (bookmarks / highlights / notes) the PDF reader and word
-//!   processor are meant to reuse.
-//! - [`doc`] — the Automerge document layer. Reading settings, per-book
-//!   progress, and every annotation live in the CRDT so undo/redo and live
-//!   collaboration work for free.
-//! - [`xhtml`] / [`epub`] / [`content`] — a real EPUB container reader plus the
-//!   bundled library.
-//! - [`paginate`] — reflowable, measurement-bound text layout + pagination.
-//! - [`reader_theme`] / [`paint`] — page palettes and vector drawing helpers.
-//! - [`app`] — the single retained-mode [`Widget`](ui::widget::Widget) that
-//!   composes the library shelf and the paginated reader.
-//!
-//! [`app_root`] is the one integration point used by both the live event loop
-//! and the `--shots` offscreen renderer.
+//! [`app_root`] is the one integration point used by both the live event
+//! loop and the `--shots` offscreen renderer.
+
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
 
 pub mod actions;
 pub mod app;
+mod comment_overlay;
 pub mod content;
 pub mod doc;
 pub mod epub;
@@ -45,12 +54,8 @@ pub fn app_root_for_path(path: &std::path::Path) -> Box<dyn ui::widget::Widget> 
 }
 
 /// Like [`app_root`] but staged with a named scenario for the headless
-/// `--shots` renderer (which captures one settled frame and can't drive live
-/// input). See [`BooksApp::seed_shot_scenario`]. An empty/unknown name yields
-/// the default frame.
-///
-/// Recognised scenarios: `narrow` — the contents rail summoned as an overlay
-/// flap over the page behind a scrim (the narrow-window layout).
+/// `--shots` renderer. See [`BooksApp::seed_shot_scenario`] for the
+/// recognised names; an empty/unknown name yields the default frame.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn ui::widget::Widget> {
     let mut app = BooksApp::new();
     app.seed_shot_scenario(scenario);

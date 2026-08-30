@@ -28,7 +28,6 @@ tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 
 # --- TOTP / 2FA code generation ---------------------------------------
 # RFC 6238 (TOTP) is implemented in-crate (src/totp.rs) directly on the
@@ -85,3 +84,6 @@ zeroize.workspace = true
 # real rqrr detect+decode path, not a mock. Already in the lockfile.
 qrcode.workspace = true
 image = { workspace = true, features = ["png", "jpeg"] }
+
+[lints]
+workspace = true

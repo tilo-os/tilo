@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use crate::num;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -89,11 +90,7 @@ impl Workspace {
     /// initial value should rename right after creation.
     pub fn create_page(&mut self, parent: Option<PageId>) -> PageId {
         let id = Uuid::new_v4();
-        let order = self
-            .children_of(parent)
-            .last()
-            .map(|p| p.order + 1)
-            .unwrap_or(0);
+        let order = self.children_of(parent).last().map_or(0, |p| p.order + 1);
         self.data.pages.push(PageMeta {
             id,
             title: "Untitled".to_string(),
@@ -128,8 +125,7 @@ impl Workspace {
                 stack.push(child.id);
             }
         }
-        let removed_set: std::collections::HashSet<PageId> =
-            to_remove.iter().copied().collect();
+        let removed_set: std::collections::HashSet<PageId> = to_remove.iter().copied().collect();
 
         // Record affected parents (so we know which sibling lists to
         // re-densify after the removal).
@@ -142,7 +138,7 @@ impl Workspace {
         }
 
         self.data.pages.retain(|p| !removed_set.contains(&p.id));
-        if self.data.selected.map(|s| removed_set.contains(&s)).unwrap_or(false) {
+        if self.data.selected.is_some_and(|s| removed_set.contains(&s)) {
             self.data.selected = None;
         }
 
@@ -169,17 +165,16 @@ impl Workspace {
             None => return false,
         };
         // Siblings sorted by order; find where `id` sits.
-        let siblings: Vec<PageId> =
-            self.children_of(parent).iter().map(|p| p.id).collect();
+        let siblings: Vec<PageId> = self.children_of(parent).iter().map(|p| p.id).collect();
         let pos = match siblings.iter().position(|s| *s == id) {
-            Some(p) => p as i32,
+            Some(p) => num::i32_of_usize(p),
             None => return false,
         };
         let target = pos + delta.signum();
-        if target < 0 || target as usize >= siblings.len() {
+        if target < 0 || num::usize_of_i32(target) >= siblings.len() {
             return false;
         }
-        let other = siblings[target as usize];
+        let other = siblings[num::usize_of_i32(target)];
         // Swap the two pages' order values, then re-densify to keep the
         // "contiguous from 0" invariant even if orders were sparse.
         let (id_order, other_order) = match (self.get(id), self.get(other)) {
@@ -235,10 +230,10 @@ impl Workspace {
         }
         // Cycle guard: a page can't become a child of itself or of one
         // of its own descendants.
-        if let Some(np) = new_parent {
-            if np == id || self.is_ancestor(id, np) {
-                return false;
-            }
+        if let Some(np) = new_parent
+            && (np == id || self.is_ancestor(id, np))
+        {
+            return false;
         }
         let old_parent = self.get(id).and_then(|p| p.parent);
         // Target sibling order (by id), with `id` removed so we can slot
@@ -250,9 +245,10 @@ impl Workspace {
             .filter(|s| *s != id)
             .collect();
         let insert_at = match before {
-            Some(b) if b != id => {
-                siblings.iter().position(|s| *s == b).unwrap_or(siblings.len())
-            }
+            Some(b) if b != id => siblings
+                .iter()
+                .position(|s| *s == b)
+                .unwrap_or(siblings.len()),
             _ => siblings.len(),
         };
         siblings.insert(insert_at, id);
@@ -262,7 +258,7 @@ impl Workspace {
         }
         for (i, sid) in siblings.iter().enumerate() {
             if let Some(p) = self.get_mut(*sid) {
-                p.order = i as u32;
+                p.order = num::u32_of_usize(i);
             }
         }
         // If the page left a different group, re-densify the one it left.
@@ -303,8 +299,7 @@ impl Workspace {
         // The sibling `id` currently sits before in its group — insert the
         // copy right after it (before the sibling that follows `id`).
         let after_sibling = {
-            let group: Vec<PageId> =
-                self.children_of(src.parent).iter().map(|p| p.id).collect();
+            let group: Vec<PageId> = self.children_of(src.parent).iter().map(|p| p.id).collect();
             group
                 .iter()
                 .position(|s| *s == id)
@@ -357,7 +352,7 @@ impl Workspace {
         let new_orders: HashMap<PageId, u32> = siblings
             .into_iter()
             .enumerate()
-            .map(|(i, (id, _))| (id, i as u32))
+            .map(|(i, (id, _))| (id, num::u32_of_usize(i)))
             .collect();
         for p in &mut self.data.pages {
             if let Some(new) = new_orders.get(&p.id) {
@@ -371,16 +366,15 @@ impl Workspace {
     /// from 0. Used by tests + the storage layer post-load to detect
     /// corruption.
     pub fn check_invariants(&self) -> Result<(), String> {
-        let ids: std::collections::HashSet<PageId> =
-            self.data.pages.iter().map(|p| p.id).collect();
+        let ids: std::collections::HashSet<PageId> = self.data.pages.iter().map(|p| p.id).collect();
         for p in &self.data.pages {
-            if let Some(parent) = p.parent {
-                if !ids.contains(&parent) {
-                    return Err(format!(
-                        "page {} has parent {} which does not exist",
-                        p.id, parent,
-                    ));
-                }
+            if let Some(parent) = p.parent
+                && !ids.contains(&parent)
+            {
+                return Err(format!(
+                    "page {} has parent {} which does not exist",
+                    p.id, parent,
+                ));
             }
         }
 
@@ -390,21 +384,20 @@ impl Workspace {
             groups.entry(p.parent).or_default().push(p.order);
         }
         for (parent, mut orders) in groups {
-            orders.sort();
+            orders.sort_unstable();
             for (i, o) in orders.iter().enumerate() {
                 if (i as u32) != *o {
                     return Err(format!(
-                        "siblings of {:?} have non-contiguous order: {:?}",
-                        parent, orders,
+                        "siblings of {parent:?} have non-contiguous order: {orders:?}",
                     ));
                 }
             }
         }
 
-        if let Some(sel) = self.data.selected {
-            if !ids.contains(&sel) {
-                return Err(format!("selected {} does not exist", sel));
-            }
+        if let Some(sel) = self.data.selected
+            && !ids.contains(&sel)
+        {
+            return Err(format!("selected {sel} does not exist"));
         }
         Ok(())
     }

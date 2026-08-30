@@ -29,26 +29,22 @@
 pub const SHEET_SCHEMA_ID: &str = "qos.sheet";
 pub const SHEET_SCHEMA_VERSION: i64 = 1;
 
-// Root keys
 pub const KEY_SHEET_SCHEMA: &str = "schema";
 pub const KEY_SHEET_SCHEMA_VERSION: &str = "schema_version";
-pub const KEY_SHEETS: &str = "sheets"; // Map<sheet_id, sheet>
-pub const KEY_SHEET_META: &str = "meta"; // Map (document properties, …)
-pub const KEY_SHEET_PRESERVED: &str = "preserved"; // Map<part_name, Bytes>
-pub const KEY_SHEET_PROPS: &str = "props"; // Map<prop_name, Str> (under meta)
+pub const KEY_SHEETS: &str = "sheets";
+pub const KEY_SHEET_META: &str = "meta";
+pub const KEY_SHEET_PRESERVED: &str = "preserved";
+pub const KEY_SHEET_PROPS: &str = "props";
 
-// Sheet fields
-pub const SHEET_ORDER: &str = "order"; // Bytes (fractional tab-order key)
-pub const SHEET_NAME: &str = "name"; // Str
-pub const SHEET_CELLS: &str = "cells"; // Map<cell_ref, cell>
+pub const SHEET_ORDER: &str = "order";
+pub const SHEET_NAME: &str = "name";
+pub const SHEET_CELLS: &str = "cells";
 
-// Cell fields
-pub const CELL_VALUE: &str = "value"; // Str (literal / cached value)
-pub const CELL_TYPE: &str = "type"; // Str (see CellType)
-pub const CELL_FORMULA: &str = "formula"; // Str (formula source, no leading '='), optional
-pub const CELL_STYLE: &str = "style"; // Str (opaque style ref), optional
+pub const CELL_VALUE: &str = "value";
+pub const CELL_TYPE: &str = "type";
+pub const CELL_FORMULA: &str = "formula";
+pub const CELL_STYLE: &str = "style";
 
-// Cell type scalars.
 pub const CELL_TYPE_EMPTY: &str = "empty";
 pub const CELL_TYPE_NUMBER: &str = "number";
 pub const CELL_TYPE_TEXT: &str = "text";

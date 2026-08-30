@@ -26,7 +26,6 @@ serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde"] }
-thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -34,3 +33,6 @@ tempfile.workspace = true
 # ceremony wrote, so the loader's refusal is tested against the real
 # historical shape rather than an invented one.
 sha2.workspace = true
+
+[lints]
+workspace = true

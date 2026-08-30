@@ -1,63 +1,31 @@
 //! Cold-start warmup for expensive first-frame work.
 //!
-//! Two things dominate the compositor's time-to-first-paint on a cold
-//! process:
+//! Two things dominate time-to-first-paint on a cold process:
+//! `cosmic_text::FontSystem::new()` mmaps every installed font face (up to
+//! ~1s on release builds), and `vello::Renderer::new()` compiles ~30 WGSL
+//! pipelines against the live wgpu device, stalling whichever thread runs
+//! it. Only the fonts side ships enabled by default:
 //!
-//! 1. `cosmic_text::FontSystem::new()` walks fontconfig and mmaps every
-//!    installed face. Its own docstring warns it can take up to a
-//!    second on release builds.
-//! 2. `vello::Renderer::new()` compiles ~30 WGSL pipelines against the
-//!    live wgpu device. Whichever thread does this stalls until the
-//!    driver is done.
+//! | Configuration          | median first-paint | notes                 |
+//! |-------------------------|--------------------|-----------------------|
+//! | no warmup               | 406 ms             | reference              |
+//! | fonts + vello warmup    | 483 ms             | slower than no warmup |
+//! | fonts warmup only       | **316 ms**         | **-90 ms / -22 %**    |
 //!
-//! Only the fonts side of the warmup ships enabled by default —
-//! measurement below.
+//! Vello regresses because it holds the process-wide `SHARED_RENDER_CONTEXT`
+//! mutex through its scratch render, blocking main's `OffscreenRenderer::new`
+//! on the same lock — left opt-in behind `QOS_STARTUP_WARM_VELLO`. Fonts
+//! wins because it never touches the GPU: it shapes strings on a background
+//! thread, warming the OS page cache so the compositor's own
+//! `FontSystem::new` hits already-resident pages.
 //!
-//! # Measured impact (release build, shots harness, `desktop` scene)
+//! `QOS_STARTUP_WARM=off` (also `0`/`false`/`no`) disables warmup for A/B
+//! measurement. Stages mark through [`qos_startup_metrics::span`]:
+//! `warmup-spawn`, `warmup-fonts`(-end), `warmup-vello`(-end).
 //!
-//! | Configuration                | median first-paint | notes                 |
-//! |------------------------------|--------------------|-----------------------|
-//! | no warmup                    | 406 ms             | reference              |
-//! | fonts + vello warmup         | 483 ms             | slower than no warmup |
-//! | fonts warmup only            | **316 ms**         | **-90 ms / -22 %**    |
-//!
-//! The Vello warmup regresses because it holds the process-wide
-//! `SHARED_RENDER_CONTEXT` mutex through its scratch render, blocking
-//! the main thread's own `OffscreenRenderer::new` for the same lock.
-//! Fixing that would take a separate wgpu Device — but a separate
-//! Device has its own pipeline cache, so the compositor's real Renderer
-//! wouldn't benefit anyway. Left as opt-in behind `QOS_STARTUP_WARM_VELLO`
-//! for when someone lands a shared-cache strategy.
-//!
-//! The FontSystem warmup wins because it doesn't touch the GPU: it
-//! shapes strings on a background thread, warming the OS page cache
-//! for every mmap'd .ttf/.otf. The compositor's own `FontSystem::new`
-//! later hits those already-resident pages instead of paying the
-//! disk-read cost.
-//!
-//! # Behaviour
-//! Warmup is enabled by default. Set `QOS_STARTUP_WARM=off` (also
-//! accepts `0` / `false` / `no`) to disable — used for A/B measurement.
-//!
-//! # Metrics
-//! Every stage records marks through [`qos_startup_metrics::span`], so a
-//! process launched with `QOS_STARTUP_METRICS_PATH` set gets:
-//!
-//! ```text
-//! warmup-spawn        (main thread, before the join handle is stored)
-//! warmup-fonts        (worker thread, before FontSystem::new)
-//! warmup-fonts-end    (worker thread, after shape loop)
-//! warmup-vello        (worker thread, before scratch renderer)
-//! warmup-vello-end    (worker thread, after scratch render)
-//! ```
-//!
-//! # Not persistence
-//! This is a *hot* warmup — no bytes are written to disk. A persistent
-//! `wgpu::PipelineCache` would extend the win across process restarts,
-//! but it requires driver support (`PIPELINE_CACHE` feature) that isn't
-//! ubiquitous on the Mesa releases qOS ships against and doesn't help
-//! the first-boot case at all. The scratch-render path lands the
-//! measurable win with no new device features.
+//! Not persistence — a persistent `wgpu::PipelineCache` would extend the
+//! win across restarts, but needs driver support not ubiquitous on the
+//! Mesa releases qOS ships against, and wouldn't help first boot at all.
 
 use std::thread;
 
@@ -67,40 +35,32 @@ use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 // pulling `cosmic-text` in as a direct dev-dep.
 pub use cosmic_text as _cosmic_text;
 
-/// Canonical strings the warmup shapes through cosmic-text so the
-/// per-face shaping caches are populated before the compositor's first
-/// real widget draw. Kept small so the warmup thread stays under
-/// ~50 ms wall time even on a cold fontconfig cache.
+/// Canonical strings the warmup shapes through cosmic-text so the per-face
+/// shaping caches are populated before the compositor's first real widget
+/// draw. Kept small so the warmup thread stays under ~50ms wall time even
+/// on a cold fontconfig cache.
 ///
-/// The set covers Latin-1, common CJK (JP+CN+KR overlap), and a
-/// four-emoji fallback probe — enough to force the fallback iterator
-/// to touch every fallback family the shell chrome hits on first
-/// paint (workspace name pill, tab titles, clock, notification body).
+/// Covers Latin-1, common CJK (JP+CN+KR overlap), and a four-emoji fallback
+/// probe — enough to force every fallback family the shell chrome hits on
+/// first paint (workspace name pill, tab titles, clock, notification body).
 pub const CANONICAL_STRINGS: &[&str] = &[
     "The quick brown fox jumps over the lazy dog.",
-    // Latin-1 extended: covers accented Western European chrome (menu
-    // labels for German / French locale settings).
+    // Latin-1 extended: accented Western European locale menu labels.
     "Voix ambiguë d'un cœur qui, au zéphyr, préfère les jattes de kiwis.",
-    // CJK: Simplified Chinese sample sentence + Japanese kana + Korean
-    // hangul. Forces cosmic-text to hit the CJK fallback fonts (Noto
-    // Sans CJK, if installed) so the first `Shaping::Advanced` call
-    // against those faces is warm.
+    // Forces the CJK fallback fonts (Noto Sans CJK, if installed).
     "我能吞下玻璃而不伤身体。",
     "いろはにほへとちりぬるを",
     "다람쥐 헌 쳇바퀴에 타고파.",
-    // Common emoji: hits the color-emoji fallback face. If no emoji
-    // font is installed the shaper reports `.notdef` for all four,
-    // which is cheap — no per-face load happens.
+    // If no emoji font is installed the shaper reports `.notdef` for all
+    // four, which is cheap — no per-face load happens.
     "\u{1F600}\u{1F44D}\u{2764}\u{FE0F}\u{1F4A1}",
 ];
 
 /// Whether warmup should run in the current process.
 ///
-/// Reads `QOS_STARTUP_WARM`; the check is done once per process
-/// through a `OnceLock` so the return value is stable across calls.
-/// Disabled if the env var is one of `off`, `0`, `false`, `no`
-/// (case-insensitive) — every other value, and an unset var, enables
-/// warmup.
+/// Reads `QOS_STARTUP_WARM` once per process (cached in a `OnceLock`).
+/// Disabled if the value is `off`/`0`/`false`/`no` (case-insensitive);
+/// every other value, and an unset var, enables warmup.
 pub fn is_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
@@ -114,25 +74,22 @@ pub fn is_enabled() -> bool {
 }
 
 /// Shape every entry of [`CANONICAL_STRINGS`] through the supplied
-/// FontSystem. Populates the internal shape / fallback caches so the
-/// first real draw against the same FontSystem short-circuits at those
+/// `FontSystem`. Populates the internal shape / fallback caches so the
+/// first real draw against the same `FontSystem` short-circuits at those
 /// cache lookups.
 ///
 /// Returns the number of glyph runs emitted across every buffer —
 /// tests assert `> 0` to prove shaping actually happened rather than
 /// silently no-op'ing on a stripped fallback font set.
 pub fn shape_canonical_strings(fs: &mut FontSystem) -> usize {
-    // 14pt at 1.4× line-height covers every chrome text size the shell
-    // renders on the first frame (workspace-name pill, tab titles,
-    // clock, tooltips). Larger sizes reuse the same shaped runs since
-    // cosmic-text scales after shaping.
+    // 14pt at 1.4x line-height; larger sizes reuse the same shaped runs
+    // since cosmic-text scales after shaping.
     let metrics = Metrics::new(14.0, 20.0);
     let mut total_glyphs = 0usize;
     for s in CANONICAL_STRINGS {
         let mut buffer = Buffer::new(fs, metrics);
-        // A generous max-width so wrapping doesn't trigger during
-        // warmup — we want to warm the per-face shaper, not exercise
-        // the line-breaker.
+        // Generous max-width so wrapping doesn't trigger — warm the
+        // per-face shaper, not the line-breaker.
         buffer.set_size(Some(2048.0), Some(2048.0));
         buffer.set_text(s, &Attrs::new(), Shaping::Advanced, None);
         buffer.shape_until_scroll(fs, false);
@@ -145,15 +102,12 @@ pub fn shape_canonical_strings(fs: &mut FontSystem) -> usize {
 
 /// Spawn a detached background worker that constructs a throw-away
 /// `FontSystem`, shapes [`CANONICAL_STRINGS`] against it, then — unless
-/// `no_vello` is set — builds a 4×4 scratch [`crate::offscreen::OffscreenRenderer`]
-/// and renders one solid-colour scene.
+/// `no_vello` is set — builds a 4×4 scratch
+/// [`crate::offscreen::OffscreenRenderer`] and renders one solid-colour
+/// scene.
 ///
-/// The returned `JoinHandle` should be kept alive on the caller's
-/// stack (typically the `App` or the compositor's frame builder). If
-/// the handle is dropped before the worker finishes, the process still
-/// benefits from whatever warmup work already completed — dropping does
-/// not signal cancellation.
-///
+/// Dropping the returned `JoinHandle` before the worker finishes doesn't
+/// cancel anything — the process keeps whatever warmup already completed.
 /// Returns `None` when warmup is disabled via `QOS_STARTUP_WARM=off`.
 pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
     if !is_enabled() {
@@ -163,10 +117,6 @@ pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
     let handle = thread::Builder::new()
         .name("qos-startup-warmup".into())
         .spawn(move || {
-            // Fonts first. Even a throw-away FontSystem warms the OS
-            // page cache for every .ttf/.otf under /usr/share/fonts —
-            // the compositor's own FontSystem::new hits those already-
-            // resident pages and avoids the disk round-trip.
             qos_startup_metrics::span("warmup-fonts", || {
                 let mut fs = FontSystem::new();
                 let _ = shape_canonical_strings(&mut fs);
@@ -174,26 +124,13 @@ pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
             if no_vello {
                 return;
             }
-            // Vello: build a 4×4 offscreen renderer through the
-            // process-wide `SHARED_RENDER_CONTEXT` and paint one
-            // trivial scene. The wgpu Device the compositor's own
-            // Renderer will build against is the same Device (both
-            // OffscreenRenderer paths call `RenderContext::device(None)`
-            // which caches per-adapter DeviceHandles inside vello). At
-            // that point the ~30 pipelines are already resident on the
-            // device — the second `Renderer::new` returns much sooner.
+            // Builds against the process-wide `SHARED_RENDER_CONTEXT` device
+            // — the same one the compositor's real Renderer uses — so its
+            // ~30 pipelines are already resident when the real one starts.
             //
-            // Built through `try_new`, not `new`. A missing adapter
-            // isn't fatal to the shell — the compositor's real backend
-            // surfaces its own adapter error later — so the warmup
-            // drops it silently and the thread exits.
-            //
-            // This used to be `new` inside a `catch_unwind`, which is a
-            // guarantee that only holds in dev builds: the release
-            // profile is `panic = "abort"`, so the panic would have
-            // taken the whole compositor down at startup on any machine
-            // where adapter enumeration fails. Asking for a `Result`
-            // makes the soft-fail real under both panic strategies.
+            // `try_new`, not `new`: under `panic = "abort"` a `new()` panic
+            // on a missing adapter would take the whole compositor down at
+            // startup, and `catch_unwind` doesn't help under abort.
             qos_startup_metrics::span("warmup-vello", || {
                 use vello::Scene;
                 use vello::kurbo::{Affine, Rect};
@@ -221,14 +158,9 @@ pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
 mod tests {
     use super::*;
 
-    /// The default is on. An unset env var must enable warmup — we
-    /// don't want a fresh container image, which sets nothing, to
-    /// silently skip the win.
-    ///
-    /// Uses the `OnceLock`-cached value, so this test must run before
-    /// any other test that toggles the env var. It's a `#[test]` under
-    /// `#[serial]` (via the OnceLock) — the first test to observe the
-    /// flag wins for the whole process.
+    /// The default is on — an unset env var must not silently skip the
+    /// win. Relies on the `OnceLock`-cached value, so this must be the
+    /// first test to read `QOS_STARTUP_WARM` in the process.
     #[test]
     fn enabled_by_default_when_env_unset() {
         // SAFETY: single-threaded test binary invocation; the harness

@@ -84,7 +84,9 @@ impl std::fmt::Debug for FramePayload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FramePayload::Rgba(b) => write!(f, "Rgba({} bytes)", b.len()),
-            FramePayload::Planar(p) => write!(f, "Planar({:?}, {} planes)", p.format, p.planes.len()),
+            FramePayload::Planar(p) => {
+                write!(f, "Planar({:?}, {} planes)", p.format, p.planes.len())
+            }
             FramePayload::Dmabuf(d) => write!(f, "Dmabuf({})", d.describe()),
         }
     }
@@ -267,7 +269,10 @@ mod tests {
                     height: height / 2,
                 },
             ],
-            colorimetry: Colorimetry { matrix: YuvMatrix::Bt709, range },
+            colorimetry: Colorimetry {
+                matrix: YuvMatrix::Bt709,
+                range,
+            },
         }
     }
 
@@ -347,7 +352,12 @@ mod tests {
         let img = PlanarImage {
             format: PlanarFormat::Nv12,
             planes: vec![
-                PlaneData { bytes: Arc::new(luma), stride, width, height },
+                PlaneData {
+                    bytes: Arc::new(luma),
+                    stride,
+                    width,
+                    height,
+                },
                 PlaneData {
                     bytes: Arc::new(vec![128u8; (stride * height / 2) as usize]),
                     stride,
@@ -355,14 +365,22 @@ mod tests {
                     height: height / 2,
                 },
             ],
-            colorimetry: Colorimetry { matrix: YuvMatrix::Bt709, range: ColorRange::Limited },
+            colorimetry: Colorimetry {
+                matrix: YuvMatrix::Bt709,
+                range: ColorRange::Limited,
+            },
         };
         let rgba = planar_to_rgba(&img, width, height);
         // Every pixel of row 0 is white, every pixel of row 1 is black. If the
         // stride were ignored, row 0's tail would pick up the padding zeros.
         for x in 0..width as usize {
             assert_near(rgba[x * 4], 255, 2, &format!("row 0 col {x} is white"));
-            assert_near(rgba[(width as usize + x) * 4], 0, 2, &format!("row 1 col {x} is black"));
+            assert_near(
+                rgba[(width as usize + x) * 4],
+                0,
+                2,
+                &format!("row 1 col {x} is black"),
+            );
         }
     }
 

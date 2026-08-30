@@ -83,9 +83,15 @@ pub fn parse_lsblk(json: &Value) -> Vec<Drive> {
             continue; // skip empty loop / nbd shells
         }
         let name = str_field(dev, "name").unwrap_or_default();
-        let rota = dev.get("rota").and_then(|v| v.as_bool()).unwrap_or(false);
+        let rota = dev
+            .get("rota")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let tran = str_field(dev, "tran");
-        let removable = dev.get("rm").and_then(|v| v.as_bool()).unwrap_or(false);
+        let removable = dev
+            .get("rm")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let kind = DriveKind::from_lsblk(&name, rota, tran.as_deref());
 
         let mut partitions = Vec::new();
@@ -97,19 +103,19 @@ pub fn parse_lsblk(json: &Value) -> Vec<Drive> {
         // lsblk reports its fstype/mountpoint on the disk row itself, so
         // represent it as a single full-span "partition" instead of showing
         // the whole device as blank/unallocated.
-        if partitions.is_empty() {
-            if let Some(fstype) = str_field(dev, "fstype") {
-                let used = dev.get("fsused").and_then(as_u64).filter(|&u| u <= size);
-                partitions.push(Partition {
-                    name: name.clone(),
-                    size,
-                    fstype: Some(fstype),
-                    label: str_field(dev, "label"),
-                    mountpoint: str_field(dev, "mountpoint"),
-                    used,
-                    uuid: str_field(dev, "uuid"),
-                });
-            }
+        if partitions.is_empty()
+            && let Some(fstype) = str_field(dev, "fstype")
+        {
+            let used = dev.get("fsused").and_then(as_u64).filter(|&u| u <= size);
+            partitions.push(Partition {
+                name: name.clone(),
+                size,
+                fstype: Some(fstype),
+                label: str_field(dev, "label"),
+                mountpoint: str_field(dev, "mountpoint"),
+                used,
+                uuid: str_field(dev, "uuid"),
+            });
         }
 
         drives.push(Drive {
@@ -194,15 +200,19 @@ fn smart_for(name: &str, kind: DriveKind) -> Option<SmartInfo> {
 pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
     let passed = json
         .pointer("/smart_status/passed")
-        .and_then(|v| v.as_bool());
-    let temp = json.pointer("/temperature/current").and_then(|v| v.as_i64());
+        .and_then(serde_json::Value::as_bool);
+    let temp = json
+        .pointer("/temperature/current")
+        .and_then(serde_json::Value::as_i64);
     let poh = json
         .pointer("/power_on_time/hours")
-        .and_then(|v| v.as_i64());
-    let cycles = json.pointer("/power_cycle_count").and_then(|v| v.as_i64());
+        .and_then(serde_json::Value::as_i64);
+    let cycles = json
+        .pointer("/power_cycle_count")
+        .and_then(serde_json::Value::as_i64);
     let pct_used = json
         .pointer("/nvme_smart_health_information_log/percentage_used")
-        .and_then(|v| v.as_i64());
+        .and_then(serde_json::Value::as_i64);
 
     let mut attrs = Vec::new();
     let mut reallocated = None;
@@ -213,7 +223,7 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
         .and_then(|v| v.as_array())
     {
         for a in table {
-            let id = a.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            let id = a.get("id").and_then(serde_json::Value::as_u64).unwrap_or(0) as u16;
             let aname = a
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -222,13 +232,24 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
             let raw = a
                 .pointer("/raw/string")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| a.pointer("/raw/value").and_then(|v| v.as_i64()).map(|n| n.to_string()))
+                .map(std::string::ToString::to_string)
+                .or_else(|| {
+                    a.pointer("/raw/value")
+                        .and_then(serde_json::Value::as_i64)
+                        .map(|n| n.to_string())
+                })
                 .unwrap_or_default();
             let when_failed = a.get("when_failed").and_then(|v| v.as_str()).unwrap_or("-");
             let sev = if when_failed != "-" && !when_failed.is_empty() {
                 AttrSeverity::Crit
-            } else if (id == 5 || id == 197) && raw.split_whitespace().next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) > 0 {
+            } else if (id == 5 || id == 197)
+                && raw
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0)
+                    > 0
+            {
                 AttrSeverity::Warn
             } else {
                 AttrSeverity::Ok
@@ -250,12 +271,19 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
 
     // NVMe health log → a few synthetic attribute rows.
     if let Some(log) = json.pointer("/nvme_smart_health_information_log") {
-        if let Some(spare) = log.get("available_spare").and_then(|v| v.as_i64()) {
+        if let Some(spare) = log
+            .get("available_spare")
+            .and_then(serde_json::Value::as_i64)
+        {
             attrs.push(SmartAttr {
                 id: 5,
                 name: "Available Spare".into(),
                 value: format!("{spare} %"),
-                severity: if spare < 10 { AttrSeverity::Warn } else { AttrSeverity::Ok },
+                severity: if spare < 10 {
+                    AttrSeverity::Warn
+                } else {
+                    AttrSeverity::Ok
+                },
             });
         }
         if let Some(pu) = pct_used {
@@ -263,22 +291,30 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
                 id: 9,
                 name: "Percentage Used".into(),
                 value: format!("{pu} %"),
-                severity: if pu > 90 { AttrSeverity::Warn } else { AttrSeverity::Ok },
+                severity: if pu > 90 {
+                    AttrSeverity::Warn
+                } else {
+                    AttrSeverity::Ok
+                },
             });
         }
-        if let Some(me) = log.get("media_errors").and_then(|v| v.as_i64()) {
+        if let Some(me) = log.get("media_errors").and_then(serde_json::Value::as_i64) {
             attrs.push(SmartAttr {
                 id: 1,
                 name: "Media Errors".into(),
                 value: me.to_string(),
-                severity: if me > 0 { AttrSeverity::Warn } else { AttrSeverity::Ok },
+                severity: if me > 0 {
+                    AttrSeverity::Warn
+                } else {
+                    AttrSeverity::Ok
+                },
             });
         }
     }
 
     let written_gb = json
         .pointer("/nvme_smart_health_information_log/data_units_written")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         // NVMe data units are 512000-byte blocks → GB.
         .map(|u| u * 512_000 / 1_000_000_000);
 
@@ -350,9 +386,9 @@ fn smart_unavailable_reason(json: &Value, kind: DriveKind) -> String {
 fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key)
         .and_then(|x| x.as_str())
-        .map(|s| s.trim())
+        .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// lsblk emits sizes as JSON numbers with `-b`, but older versions emit
@@ -415,7 +451,10 @@ mod tests {
         let d = &parse_lsblk(&j)[0];
         let p = &d.partitions[0];
         assert_eq!(p.fstype.as_deref(), Some("btrfs"));
-        assert_eq!(p.used, None, "pool-wide usage over the partition size is dropped, not clamped to 100%");
+        assert_eq!(
+            p.used, None,
+            "pool-wide usage over the partition size is dropped, not clamped to 100%"
+        );
         assert_eq!(p.used_frac(), None);
     }
 
@@ -450,7 +489,11 @@ mod tests {
         });
         let d = &parse_lsblk(&j)[0];
         assert_eq!(d.kind, DriveKind::Usb);
-        assert_eq!(d.partitions.len(), 1, "the whole-disk filesystem is one span");
+        assert_eq!(
+            d.partitions.len(),
+            1,
+            "the whole-disk filesystem is one span"
+        );
         let p = &d.partitions[0];
         assert_eq!(p.fstype.as_deref(), Some("exfat"));
         assert_eq!(p.mountpoint.as_deref(), Some("/run/media/u/ULTRA"));
@@ -481,7 +524,10 @@ mod tests {
         let s = parse_smart(&j, DriveKind::Nvme);
         assert_eq!(s.status.0, SmartStatus::Unknown);
         let detail = s.detail.expect("permission failure carries an explanation");
-        assert!(detail.contains("administrator access"), "explains it is a privilege issue, not absent SMART: {detail}");
+        assert!(
+            detail.contains("administrator access"),
+            "explains it is a privilege issue, not absent SMART: {detail}"
+        );
     }
 
     #[test]
@@ -503,7 +549,10 @@ mod tests {
         assert_eq!(s.temp_c, Some(41));
         assert_eq!(s.power_on_hours, Some(2196));
         assert_eq!(s.pct_used, Some(3));
-        assert!(s.detail.is_none(), "real data carries no 'unavailable' note");
+        assert!(
+            s.detail.is_none(),
+            "real data carries no 'unavailable' note"
+        );
         assert!(s.attrs.iter().any(|a| a.name == "Percentage Used"));
     }
 
@@ -522,7 +571,11 @@ mod tests {
         // Passing overall, but non-zero reallocations pull it to Warning.
         assert_eq!(s.status.0, SmartStatus::Warning);
         assert_eq!(s.reallocated, Some(8));
-        assert!(s.attrs.iter().any(|a| a.id == 5 && a.severity == AttrSeverity::Warn));
+        assert!(
+            s.attrs
+                .iter()
+                .any(|a| a.id == 5 && a.severity == AttrSeverity::Warn)
+        );
     }
 
     #[test]

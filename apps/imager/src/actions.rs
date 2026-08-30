@@ -133,8 +133,7 @@ pub fn register(registry: &mut ActionRegistry) {
 /// affordances both dispatch — the single point that turns an imager action into
 /// a replayable envelope.
 pub fn encode(action: &ImagerAction) -> EncodedAction {
-    EncodedAction::encode(IMAGER_ACTION_TYPE, action)
-        .expect("ImagerAction is always serializable")
+    EncodedAction::encode(IMAGER_ACTION_TYPE, action).expect("ImagerAction is always serializable")
 }
 
 /// The install mode the on-screen "persistent" toggle flips to from `current`:
@@ -182,7 +181,9 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
                 _ => "Switch to a live / installer stick",
             },
             IMAGER_ACTION_TYPE,
-            &ImagerAction::SetInstallMode { mode: next_mode.key().to_string() },
+            &ImagerAction::SetInstallMode {
+                mode: next_mode.key().to_string(),
+            },
         )
         .expect("encode install-mode action"),
     );
@@ -191,9 +192,15 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
     res = res.with_action(
         ActionSpec::immediate(
             "encrypt",
-            if profile.encrypt { "Disable disk encryption" } else { "Enable disk encryption" },
+            if profile.encrypt {
+                "Disable disk encryption"
+            } else {
+                "Enable disk encryption"
+            },
             IMAGER_ACTION_TYPE,
-            &ImagerAction::SetEncrypt { on: !profile.encrypt },
+            &ImagerAction::SetEncrypt {
+                on: !profile.encrypt,
+            },
         )
         .expect("encode encrypt action"),
     );
@@ -202,9 +209,15 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
     res = res.with_action(
         ActionSpec::immediate(
             "autologin",
-            if profile.user.autologin { "Turn off autologin" } else { "Turn on autologin" },
+            if profile.user.autologin {
+                "Turn off autologin"
+            } else {
+                "Turn on autologin"
+            },
             IMAGER_ACTION_TYPE,
-            &ImagerAction::SetAutologin { on: !profile.user.autologin },
+            &ImagerAction::SetAutologin {
+                on: !profile.user.autologin,
+            },
         )
         .expect("encode autologin action"),
     );
@@ -218,7 +231,11 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
         "Hostname",
         "qos",
         ExecutionLocus::ClientLocal,
-        |text| encode(&ImagerAction::SetHostname { value: text.to_string() }),
+        |text| {
+            encode(&ImagerAction::SetHostname {
+                value: text.to_string(),
+            })
+        },
     ));
     res = res.with_action(ActionSpec::prompted(
         "full-name",
@@ -226,7 +243,11 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
         "Full name",
         "qOS User",
         ExecutionLocus::ClientLocal,
-        |text| encode(&ImagerAction::SetFullName { value: text.to_string() }),
+        |text| {
+            encode(&ImagerAction::SetFullName {
+                value: text.to_string(),
+            })
+        },
     ));
     res = res.with_action(ActionSpec::prompted(
         "username",
@@ -234,7 +255,11 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
         "Username",
         "quser",
         ExecutionLocus::ClientLocal,
-        |text| encode(&ImagerAction::SetUsername { value: text.to_string() }),
+        |text| {
+            encode(&ImagerAction::SetUsername {
+                value: text.to_string(),
+            })
+        },
     ));
     res = res.with_action(ActionSpec::prompted(
         "timezone",
@@ -242,7 +267,11 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
         "Timezone",
         "UTC",
         ExecutionLocus::ClientLocal,
-        |text| encode(&ImagerAction::SetTimezone { value: text.to_string() }),
+        |text| {
+            encode(&ImagerAction::SetTimezone {
+                value: text.to_string(),
+            })
+        },
     ));
     res = res.with_action(ActionSpec::prompted(
         "keyboard",
@@ -250,7 +279,11 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
         "Keyboard",
         "us",
         ExecutionLocus::ClientLocal,
-        |text| encode(&ImagerAction::SetKeyboard { value: text.to_string() }),
+        |text| {
+            encode(&ImagerAction::SetKeyboard {
+                value: text.to_string(),
+            })
+        },
     ));
 
     vec![res]
@@ -270,7 +303,7 @@ impl ResourceProvider for crate::app::ImagerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{sample_targets, Source, SourceKind};
+    use crate::model::{Source, SourceKind, sample_targets};
     use qos_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
@@ -314,14 +347,44 @@ mod tests {
         assert_eq!(ImagerDoc::profile(&doc).mode, InstallMode::Live);
         assert!(!ImagerDoc::profile(&doc).encrypt);
 
-        dispatch(&mut doc, &ImagerAction::SetInstallMode { mode: "persistent".into() });
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetInstallMode {
+                mode: "persistent".into(),
+            },
+        );
         dispatch(&mut doc, &ImagerAction::SetEncrypt { on: true });
         dispatch(&mut doc, &ImagerAction::SetAutologin { on: true });
-        dispatch(&mut doc, &ImagerAction::SetHostname { value: "lab01".into() });
-        dispatch(&mut doc, &ImagerAction::SetFullName { value: "Ada Lovelace".into() });
-        dispatch(&mut doc, &ImagerAction::SetUsername { value: "ada".into() });
-        dispatch(&mut doc, &ImagerAction::SetPassword { value: "s3cret".into() });
-        dispatch(&mut doc, &ImagerAction::SetTimezone { value: "Europe/Amsterdam".into() });
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetHostname {
+                value: "lab01".into(),
+            },
+        );
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetFullName {
+                value: "Ada Lovelace".into(),
+            },
+        );
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetUsername {
+                value: "ada".into(),
+            },
+        );
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetPassword {
+                value: "s3cret".into(),
+            },
+        );
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetTimezone {
+                value: "Europe/Amsterdam".into(),
+            },
+        );
         dispatch(&mut doc, &ImagerAction::SetKeyboard { value: "nl".into() });
 
         let p = ImagerDoc::profile(&doc);
@@ -342,7 +405,12 @@ mod tests {
     fn field_set_preserves_the_other_fields() {
         let mut doc = seeded();
         let before = ImagerDoc::profile(&doc);
-        dispatch(&mut doc, &ImagerAction::SetHostname { value: "only-host".into() });
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetHostname {
+                value: "only-host".into(),
+            },
+        );
         let after = ImagerDoc::profile(&doc);
         assert_eq!(after.hostname, "only-host");
         assert_eq!(after.user.username, before.user.username);
@@ -356,7 +424,12 @@ mod tests {
     #[test]
     fn malformed_install_mode_normalises_instead_of_wedging() {
         let mut doc = seeded();
-        dispatch(&mut doc, &ImagerAction::SetInstallMode { mode: "nonsense".into() });
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetInstallMode {
+                mode: "nonsense".into(),
+            },
+        );
         assert_eq!(
             ImagerDoc::profile(&doc).mode,
             InstallMode::Live,
@@ -391,13 +464,19 @@ mod tests {
             ],
         );
         // The password is deliberately never a palette row.
-        assert!(!ids.contains(&"password"), "the secret is not exposed via Ctrl+K");
+        assert!(
+            !ids.contains(&"password"),
+            "the secret is not exposed via Ctrl+K"
+        );
 
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("encryption")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("encryption")),
+            "{labels:?}"
+        );
         assert!(labels.iter().any(|l| l.contains("hostname")), "{labels:?}");
     }
 
@@ -441,13 +520,23 @@ mod tests {
         profile.encrypt = true;
         let resources = provide_resources("qOS 1.0", &profile);
 
-        let mode = resources[0].actions.iter().find(|a| a.id == "install-mode").unwrap();
+        let mode = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "install-mode")
+            .unwrap();
         // Currently persistent → the exported action flips back to live.
         assert_eq!(
             immediate_encode(mode),
-            encode(&ImagerAction::SetInstallMode { mode: "live".into() }),
+            encode(&ImagerAction::SetInstallMode {
+                mode: "live".into()
+            }),
         );
-        let enc = resources[0].actions.iter().find(|a| a.id == "encrypt").unwrap();
+        let enc = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "encrypt")
+            .unwrap();
         assert_eq!(
             immediate_encode(enc),
             encode(&ImagerAction::SetEncrypt { on: false }),
@@ -459,12 +548,21 @@ mod tests {
     #[test]
     fn prompted_field_builds_the_expected_action() {
         let resources = provide_resources("qOS 1.0", &InstallProfile::default());
-        let hostname = resources[0].actions.iter().find(|a| a.id == "hostname").unwrap();
+        let hostname = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "hostname")
+            .unwrap();
         let built = match &hostname.input {
             ActionInput::Prompted { build, .. } => build("lab01"),
             _ => panic!("hostname is a prompted action"),
         };
-        assert_eq!(built, encode(&ImagerAction::SetHostname { value: "lab01".into() }));
+        assert_eq!(
+            built,
+            encode(&ImagerAction::SetHostname {
+                value: "lab01".into()
+            })
+        );
     }
 
     /// The full undo covenant on the real executor path: dispatched through the
@@ -482,23 +580,18 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
+        state.record_committed_action(before_heads, None, None);
+
+        assert!(
+            ImagerDoc::profile(&state.doc).encrypt,
+            "the action enabled encryption"
+        );
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
         );
 
-        assert!(ImagerDoc::profile(&state.doc).encrypt, "the action enabled encryption");
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
-
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert!(
             !ImagerDoc::profile(&state.doc).encrypt,
             "undo reverted the encryption change and nothing else"
@@ -513,14 +606,24 @@ mod tests {
         let mut a = seeded();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
-        let action = ImagerAction::SetHostname { value: "lab01".into() };
+        let action = ImagerAction::SetHostname {
+            value: "lab01".into(),
+        };
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(ImagerDoc::profile(&b).hostname, "lab01");
     }
 
@@ -531,11 +634,18 @@ mod tests {
     fn palette_and_toggle_encode_identically() {
         // Default profile (encrypt off) → the exported toggle targets `on: true`.
         let resources = provide_resources("qOS 1.0", &InstallProfile::default());
-        let spec = resources[0].actions.iter().find(|a| a.id == "encrypt").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "encrypt")
+            .unwrap();
 
         let from_spec = immediate_encode(spec);
         let from_toggle = encode(&ImagerAction::SetEncrypt { on: true });
         assert_eq!(from_spec.type_id, from_toggle.type_id);
-        assert_eq!(from_spec.payload, from_toggle.payload, "encrypt is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_toggle.payload,
+            "encrypt is one source of truth"
+        );
     }
 }

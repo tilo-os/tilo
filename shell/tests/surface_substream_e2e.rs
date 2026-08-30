@@ -1,19 +1,13 @@
 //! End-to-end substream + backpressure test.
 //!
-//! Host A opens a share. Host B subscribes as a viewer. Video frames
-//! flow through the dedicated substream — not `NeighbourMsg::SurfaceFrame`
-//! gossipsub. Under paint-side stall the sender's bounded queue drops
-//! old frames and increments the drop counter. Gossipsub still carries
-//! the `SurfaceStreamStart` / `SurfaceStreamEnd` announcements so peers
-//! can discover shares.
+//! Host A opens a share, host B subscribes as a viewer. Video frames flow
+//! through the dedicated substream, not `NeighbourMsg::SurfaceFrame`
+//! gossip — under paint-side stall the sender's bounded queue drops old
+//! frames and increments the drop counter, while gossip still carries
+//! the `SurfaceStreamStart`/`SurfaceStreamEnd` announcements.
 //!
-//! In-process: A single test process, no real libp2p transport. The
-//! substream's framing + backpressure semantics are transport-agnostic;
-//! the physical wire (QUIC vs. tokio channel vs. loopback socket) is
-//! an adapter concern.
-//!
-//! A two-netns test that exercises the real QUIC transport lives in
-//! `two_netns_share.rs` and is gated on `unshare` privileges.
+//! In-process, no real Iroh: substream framing + backpressure is
+//! transport-agnostic. Real QUIC lives in `two_netns_share.rs`.
 
 use std::time::Instant;
 
@@ -49,18 +43,15 @@ fn gradient(width: u32, height: u32) -> Vec<u8> {
     out
 }
 
-/// Every encoded frame lands in the substream. A viewer's poll drains
-/// them in order with monotonic sequence numbers. Gossipsub carries
-/// only the announcement bracket.
+/// Frames drain in order with monotonic sequence numbers.
 #[test]
-fn substream_carries_frames_gossipsub_carries_announcements() {
+fn substream_carries_frames_gossip_carries_announcements() {
     const W: u32 = 128;
     const H: u32 = 128;
     let session =
         SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
 
-    // Gossipsub still carries the announcement bracket.
     match session.stream_start_msg() {
         NeighbourMsg::SurfaceStreamStart {
             surface,
@@ -73,8 +64,7 @@ fn substream_carries_frames_gossipsub_carries_announcements() {
         other => panic!("expected SurfaceStreamStart, got {other:?}"),
     }
 
-    // Encode 3 frames. Advance the throttle clock past the 33ms
-    // 30 fps interval per tick so all three encode ticks accept.
+    // Advance past the 33ms (30fps) throttle each tick so every encode accepts.
     let base = Instant::now();
     for i in 0..3 {
         session.deposit_captured_rgba(gradient(W, H));
@@ -83,21 +73,17 @@ fn substream_carries_frames_gossipsub_carries_announcements() {
         assert!(frame.is_some(), "encoder should accept tick {i}");
     }
 
-    // The substream carries frames with monotonic sequences. Poll
-    // them out (production pathway would ride a QUIC substream).
+    // Poll frames out — production would ride a QUIC substream instead.
     let f0 = session.poll_stream_frame(VIEWER_A).expect("frame 0");
     let f1 = session.poll_stream_frame(VIEWER_A).expect("frame 1");
     let f2 = session.poll_stream_frame(VIEWER_A).expect("frame 2");
     assert_eq!(f0.sequence, 0);
     assert_eq!(f1.sequence, 1);
     assert_eq!(f2.sequence, 2);
-    // Sender's per-subscriber queue is drained.
     assert!(session.poll_stream_frame(VIEWER_A).is_none());
     assert_eq!(session.stream_drops_for(VIEWER_A), 0);
 
-    // Wire the frames through the receive-side framer end-to-end.
-    // A production QUIC substream binding would `write_all(f.encode())`
-    // on the wire; the receiver's `push_bytes` matches that shape.
+    // Production would write_all(f.encode()) on the wire; push_bytes matches.
     let mut rx = SurfaceStreamReceiver::new();
     for f in [&f0, &f1, &f2] {
         rx.push_bytes(&f.encode());
@@ -111,7 +97,6 @@ fn substream_carries_frames_gossipsub_carries_announcements() {
         }
     }
 
-    // End-of-stream announcement is still on gossipsub.
     match session.stream_end_msg() {
         NeighbourMsg::SurfaceStreamEnd {
             surface,
@@ -125,8 +110,6 @@ fn substream_carries_frames_gossipsub_carries_announcements() {
     }
 }
 
-/// Under sustained encode with a stalled viewer, the sender's bounded
-/// queue drops old frames and the drop counter reports each drop.
 #[test]
 fn stalled_viewer_drops_old_frames_via_bounded_queue() {
     const W: u32 = 64;
@@ -135,8 +118,7 @@ fn stalled_viewer_drops_old_frames_via_bounded_queue() {
         SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
 
-    // Deposit + encode 6 frames without polling — the substream's
-    // default cap is 3, so we expect 3 drops.
+    // Deposit + encode 6 frames without polling — cap is 3, so 3 drops expected.
     let base = Instant::now();
     for i in 0..6 {
         session.deposit_captured_rgba(gradient(W, H));
@@ -144,12 +126,10 @@ fn stalled_viewer_drops_old_frames_via_bounded_queue() {
         session.encode_next_frame(now);
     }
 
-    // Cap is 3 → the last 3 frames stay pending, the first 3 dropped.
     assert_eq!(session.stream_pending_for(VIEWER_A), 3);
     assert_eq!(session.stream_drops_for(VIEWER_A), 3);
 
-    // The retained frames are the newest 3 — drop-oldest keeps recent
-    // motion, discards stale.
+    // Retained frames are the newest 3 — drop-oldest keeps recent motion.
     let mut seq = Vec::new();
     while let Some(f) = session.poll_stream_frame(VIEWER_A) {
         seq.push(f.sequence);
@@ -157,9 +137,7 @@ fn stalled_viewer_drops_old_frames_via_bounded_queue() {
     assert_eq!(seq, vec![3, 4, 5]);
 }
 
-/// Two subscribers get independent queues. Draining one doesn't
-/// affect the other; a slow subscriber's drop counter increments
-/// independently of a fast one.
+/// Draining one subscriber's queue must not affect the other's.
 #[test]
 fn per_subscriber_independent_backpressure() {
     const W: u32 = 64;
@@ -180,8 +158,6 @@ fn per_subscriber_independent_backpressure() {
     // Viewer A drains fully; viewer B doesn't touch its queue.
     while session.poll_stream_frame(VIEWER_A).is_some() {}
 
-    // Viewer B still has 3 pending. Both had the same drop pattern
-    // during publish — 6 pushed with cap 3 → 3 drops each.
     assert_eq!(session.stream_pending_for(VIEWER_A), 0);
     assert_eq!(session.stream_pending_for(VIEWER_B), 3);
     assert_eq!(session.stream_drops_for(VIEWER_A), 3);
@@ -190,7 +166,6 @@ fn per_subscriber_independent_backpressure() {
     assert_eq!(session.stream_total_drops(), 6);
 }
 
-/// Dropping a viewer stops delivery.
 #[test]
 fn drop_viewer_closes_substream_subscription() {
     const W: u32 = 32;

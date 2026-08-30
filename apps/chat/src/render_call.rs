@@ -1,4 +1,4 @@
-//! Rendering for the conferencing layers: the docked call "huddle" PiP, the
+//! Rendering for the conferencing layers: the docked call "huddle" `PiP`, the
 //! expanded call overlay (a responsive participant grid, or — while someone is
 //! screen-sharing — a featured screen tile above a participant filmstrip), and
 //! the two floating popovers (emoji picker + edit history). The host tile is a
@@ -19,7 +19,9 @@ use ui::theme::Theme;
 use crate::app::{ChatApp, Hit};
 use crate::emoji;
 use crate::model::{self, Presence, VoiceMember};
-use crate::paint::*;
+use crate::paint::{
+    fill_circle, fill_rect, fill_round, hline, label, stroke_circle, stroke_round, text,
+};
 use crate::render_chat::draw_avatar;
 
 /// One person to render in the call, derived from the shared CRDT voice
@@ -104,22 +106,44 @@ impl ChatApp {
         fill_round(scene, tf, rect, radius, c.neutral[2]);
         let (initials, cidx) = self
             .user(&self.me.id)
-            .map(|u| (u.initials.clone(), u.color_idx))
-            .unwrap_or_else(|| ("Y".into(), 0));
+            .map_or_else(|| ("Y".into(), 0), |u| (u.initials.clone(), u.color_idx));
         let r = (rect.height() * 0.20).clamp(22.0, 52.0);
         let cx = rect.center().x;
         let cy = rect.center().y - r * 0.35;
-        draw_avatar(scene, tf, tr, theme, Point::new(cx, cy), r, &initials, cidx, None);
+        draw_avatar(
+            scene,
+            tf,
+            tr,
+            theme,
+            Point::new(cx, cy),
+            r,
+            &initials,
+            cidx,
+            None,
+        );
         let s = "Camera off";
         let (sw, _) = tr.measure(s, 12.0, None);
-        label(scene, tr, tf, s, 12.0, c.text_dim, cx - sw as f64 / 2.0, cy + r + 8.0);
+        label(
+            scene,
+            tr,
+            tf,
+            s,
+            12.0,
+            c.text_dim,
+            cx - f64::from(sw) / 2.0,
+            cy + r + 8.0,
+        );
     }
 
     fn huddle_panel(&self) -> Rect {
         let v = self.huddle_video();
         // Panel grows with the participant roster so the chip strip fits.
         let n = self.call_participants().len();
-        let extra = if self.participants_shown(n) { 60.0 } else { 20.0 };
+        let extra = if self.participants_shown(n) {
+            60.0
+        } else {
+            20.0
+        };
         Rect::new(v.x0 - 12.0, v.y0 - 40.0, v.x1 + 12.0, v.y1 + 96.0 + extra)
     }
 
@@ -135,18 +159,59 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let panel = self.huddle_panel();
         // drop shadow
-        fill_round(scene, tf, panel.inflate(6.0, 6.0), 20.0, Color::from_rgba8(0, 0, 0, 70));
+        fill_round(
+            scene,
+            tf,
+            panel.inflate(6.0, 6.0),
+            20.0,
+            Color::from_rgba8(0, 0, 0, 70),
+        );
         fill_round(scene, tf, panel, 16.0, c.neutral[1]);
         stroke_round(scene, tf, panel, 16.0, c.border_white_10, 1.0);
 
         // Title bar doubles as the DRAG HANDLE — grab it to move the overlay.
         let title_bar = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 30.0);
-        let name = self.channel(&self.call.channel).map(|c| c.name.clone()).unwrap_or_else(|| "Call".into());
-        label(scene, tr, tf, "⠿", 12.0, c.text_dim, panel.x0 + 12.0, panel.y0 + 9.0);
-        label(scene, tr, tf, &name, 13.0, c.text_primary, panel.x0 + 28.0, panel.y0 + 10.0);
-        fill_circle(scene, tf, Point::new(panel.x1 - 58.0, panel.y0 + 17.0), 3.5, c.semantic.success);
+        let name = self
+            .channel(&self.call.channel)
+            .map_or_else(|| "Call".into(), |c| c.name.clone());
+        label(
+            scene,
+            tr,
+            tf,
+            "⠿",
+            12.0,
+            c.text_dim,
+            panel.x0 + 12.0,
+            panel.y0 + 9.0,
+        );
+        label(
+            scene,
+            tr,
+            tf,
+            &name,
+            13.0,
+            c.text_primary,
+            panel.x0 + 28.0,
+            panel.y0 + 10.0,
+        );
+        fill_circle(
+            scene,
+            tf,
+            Point::new(panel.x1 - 58.0, panel.y0 + 17.0),
+            3.5,
+            c.semantic.success,
+        );
         let n = self.voice_in(&self.call.channel).len().max(1);
-        label(scene, tr, tf, &format!("{n}"), 11.5, c.text_dim, panel.x1 - 48.0, panel.y0 + 10.0);
+        label(
+            scene,
+            tr,
+            tf,
+            &format!("{n}"),
+            11.5,
+            c.text_dim,
+            panel.x1 - 48.0,
+            panel.y0 + 10.0,
+        );
         ChatApp::push_hit(hits, title_bar, Hit::CallDragHandle);
     }
 
@@ -175,12 +240,34 @@ impl ChatApp {
         let others = parts.len().saturating_sub(1);
         let strip_y = v.y1 + 10.0;
         let toggle = Rect::new(panel.x1 - 84.0, strip_y, panel.x1 - 14.0, strip_y + 20.0);
-        let caret = if self.call.participants_expanded { "▾" } else { "▸" };
+        let caret = if self.call.participants_expanded {
+            "▾"
+        } else {
+            "▸"
+        };
         // Surface the real media routing decision (P2P vs host relay), chosen
         // from the live headcount — the call promotes as people join.
-        label(scene, tr, tf, &format!("{caret} {} in call · {}", parts.len(), self.call_session().label()), 11.0, c.text_dim, panel.x0 + 14.0, strip_y + 3.0);
+        label(
+            scene,
+            tr,
+            tf,
+            &format!(
+                "{caret} {} in call · {}",
+                parts.len(),
+                self.call_session().label()
+            ),
+            11.0,
+            c.text_dim,
+            panel.x0 + 14.0,
+            strip_y + 3.0,
+        );
         let _ = toggle;
-        let toggle_hit = Rect::new(panel.x0 + 12.0, strip_y - 2.0, panel.x1 - 12.0, strip_y + 20.0);
+        let toggle_hit = Rect::new(
+            panel.x0 + 12.0,
+            strip_y - 2.0,
+            panel.x1 - 12.0,
+            strip_y + 20.0,
+        );
         ChatApp::push_hit(hits, toggle_hit, Hit::CallParticipantsToggle);
 
         // Adaptive participant chips: shown when expanded, wrapping to the
@@ -194,16 +281,31 @@ impl ChatApp {
                 if let Some(u) = self.user(&p.user) {
                     let col = i % per_row;
                     let row = i / per_row;
-                    let cc = Point::new(panel.x0 + 14.0 + r + col as f64 * step, chips_y + r + row as f64 * step);
+                    let cc = Point::new(
+                        panel.x0 + 14.0 + r + col as f64 * step,
+                        chips_y + r + row as f64 * step,
+                    );
                     // Speaking ring on whoever is talking.
                     if p.talking {
                         stroke_circle(scene, tf, cc, r + 3.0, c.semantic.success, 2.0);
                     }
                     draw_avatar(scene, tf, tr, theme, cc, r, &u.initials, u.color_idx, None);
                     if p.muted {
-                        fill_circle(scene, tf, Point::new(cc.x + r * 0.72, cc.y + r * 0.72), 6.5, c.semantic.danger);
+                        fill_circle(
+                            scene,
+                            tf,
+                            Point::new(cc.x + r * 0.72, cc.y + r * 0.72),
+                            6.5,
+                            c.semantic.danger,
+                        );
                     } else if p.audio_only {
-                        fill_circle(scene, tf, Point::new(cc.x + r * 0.72, cc.y + r * 0.72), 6.5, c.neutral[3]);
+                        fill_circle(
+                            scene,
+                            tf,
+                            Point::new(cc.x + r * 0.72, cc.y + r * 0.72),
+                            6.5,
+                            c.neutral[3],
+                        );
                     }
                 }
             }
@@ -219,8 +321,20 @@ impl ChatApp {
         let muted = self.call.muted;
         let deaf = self.call.deafened;
         let mut ctrls: Vec<(&str, &str, bool, bool, Hit)> = vec![
-            (if muted { "Unmute" } else { "Mute" }, if muted { "🔇" } else { "🎤" }, muted, false, Hit::CallMute),
-            (if deaf { "Undeafen" } else { "Deafen" }, if deaf { "🔕" } else { "🎧" }, deaf, false, Hit::CallDeafen),
+            (
+                if muted { "Unmute" } else { "Mute" },
+                if muted { "🔇" } else { "🎤" },
+                muted,
+                false,
+                Hit::CallMute,
+            ),
+            (
+                if deaf { "Undeafen" } else { "Deafen" },
+                if deaf { "🔕" } else { "🎧" },
+                deaf,
+                false,
+                Hit::CallDeafen,
+            ),
             ("Expand", "⤢", false, false, Hit::CallExpand),
             ("Leave", "✕", false, true, Hit::CallLeave),
         ];
@@ -233,7 +347,16 @@ impl ChatApp {
         let mut x = panel.x0 + pad;
         for (txt, icon, on, danger, hit) in ctrls {
             let r = Rect::new(x, cy, x + cw, cy + 28.0);
-            self.ctl(scene, tf, tr, theme, r, if use_text { txt } else { icon }, on, danger);
+            self.ctl(
+                scene,
+                tf,
+                tr,
+                theme,
+                r,
+                if use_text { txt } else { icon },
+                on,
+                danger,
+            );
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;
         }
@@ -256,9 +379,22 @@ impl ChatApp {
         fill_rect(scene, tf, self.rect, c.surfaces.overlay);
 
         // title + participant count
-        let title = self.channel(&self.call.channel).map(|c| c.name.clone()).unwrap_or_else(|| "Call".into());
+        let title = self
+            .channel(&self.call.channel)
+            .map_or_else(|| "Call".into(), |c| c.name.clone());
         let (tw, _) = tr.measure(&title, 20.0, None);
-        text(scene, tr, tf, &title, 20.0, c.text_primary, self.rect.center().x - tw as f64 / 2.0, self.rect.y0 + 28.0, TextWeight::Bold, None);
+        text(
+            scene,
+            tr,
+            tf,
+            &title,
+            20.0,
+            c.text_primary,
+            self.rect.center().x - f64::from(tw) / 2.0,
+            self.rect.y0 + 28.0,
+            TextWeight::Bold,
+            None,
+        );
         let parts = self.call_participants();
         let sharer = self.screen_sharer();
         // Subtitle carries the headcount and, when someone is presenting, whose
@@ -266,20 +402,33 @@ impl ChatApp {
         // membership records a share, before any frame arrives.
         let sub = match &sharer {
             Some(id) => {
-                let who = if *id == self.me.id { "You are".to_string() } else { format!("{} is", self.user_name(id)) };
+                let who = if *id == self.me.id {
+                    "You are".to_string()
+                } else {
+                    format!("{} is", self.user_name(id))
+                };
                 format!("{} in the call · {who} sharing a screen", parts.len())
             }
             None => format!("{} in the call", parts.len()),
         };
         let (sw, _) = tr.measure(&sub, 12.0, None);
-        label(scene, tr, tf, &sub, 12.0, c.text_dim, self.rect.center().x - sw as f64 / 2.0, self.rect.y0 + 56.0);
+        label(
+            scene,
+            tr,
+            tf,
+            &sub,
+            12.0,
+            c.text_dim,
+            self.rect.center().x - f64::from(sw) / 2.0,
+            self.rect.y0 + 56.0,
+        );
 
         // The host active-speaker treatment is shared by both layouts: a bright
         // ring while transmitting, a hairline otherwise.
-        let (ring_col, ring_w) = if !self.call.muted {
-            (c.semantic.success, 2.5)
-        } else {
+        let (ring_col, ring_w) = if self.call.muted {
             (c.border_white_20, 1.5)
+        } else {
+            (c.semantic.success, 2.5)
         };
         match self.overlay_stage() {
             // No share: host + remotes share one responsive grid that fills the
@@ -326,7 +475,9 @@ impl ChatApp {
         sharer: &str,
     ) {
         let c = &theme.tokens.colors;
-        let name = self.user(sharer).map(|u| u.name.clone()).unwrap_or_else(|| sharer.to_string());
+        let name = self
+            .user(sharer)
+            .map_or_else(|| sharer.to_string(), |u| u.name.clone());
         let is_me = sharer == self.me.id;
         let radius = 16.0;
 
@@ -356,25 +507,68 @@ impl ChatApp {
         let gh = gw * 0.62;
         let gcx = rect.center().x;
         let gcy = rect.center().y - gh * 0.5;
-        let screen_r = Rect::new(gcx - gw / 2.0, gcy - gh / 2.0, gcx + gw / 2.0, gcy + gh / 2.0);
+        let screen_r = Rect::new(
+            gcx - gw / 2.0,
+            gcy - gh / 2.0,
+            gcx + gw / 2.0,
+            gcy + gh / 2.0,
+        );
         fill_round(scene, tf, screen_r, 8.0, c.neutral[3]);
         stroke_round(scene, tf, screen_r, 8.0, c.accent[5], 2.0);
         // Stand: a small neck + base bar beneath the screen.
-        let neck = Rect::new(gcx - gw * 0.06, screen_r.y1, gcx + gw * 0.06, screen_r.y1 + gh * 0.16);
+        let neck = Rect::new(
+            gcx - gw * 0.06,
+            screen_r.y1,
+            gcx + gw * 0.06,
+            screen_r.y1 + gh * 0.16,
+        );
         fill_round(scene, tf, neck, 2.0, c.neutral[3]);
-        let base = Rect::new(gcx - gw * 0.22, neck.y1, gcx + gw * 0.22, neck.y1 + gh * 0.09);
+        let base = Rect::new(
+            gcx - gw * 0.22,
+            neck.y1,
+            gcx + gw * 0.22,
+            neck.y1 + gh * 0.09,
+        );
         fill_round(scene, tf, base, 3.0, c.neutral[3]);
 
         // Status text below the glyph.
-        let head = if is_me { "You're sharing your screen".to_string() } else { format!("{name} is sharing a screen") };
+        let head = if is_me {
+            "You're sharing your screen".to_string()
+        } else {
+            format!("{name} is sharing a screen")
+        };
         let (hw, _) = tr.measure(&head, 15.0, None);
-        text(scene, tr, tf, &head, 15.0, c.text_primary, gcx - hw as f64 / 2.0, base.y1 + 18.0, TextWeight::Bold, None);
+        text(
+            scene,
+            tr,
+            tf,
+            &head,
+            15.0,
+            c.text_primary,
+            gcx - f64::from(hw) / 2.0,
+            base.y1 + 18.0,
+            TextWeight::Bold,
+            None,
+        );
         // Honest status: the local sharer is the source; a remote tile is
         // waiting on the first decoded frame (this branch only runs with no
         // frame present, so it never claims to be showing video it lacks).
-        let sub = if is_me { "Everyone in the call sees your screen" } else { "Connecting to the shared screen…" };
+        let sub = if is_me {
+            "Everyone in the call sees your screen"
+        } else {
+            "Connecting to the shared screen…"
+        };
         let (subw, _) = tr.measure(sub, 12.0, None);
-        label(scene, tr, tf, sub, 12.0, c.text_dim, gcx - subw as f64 / 2.0, base.y1 + 40.0);
+        label(
+            scene,
+            tr,
+            tf,
+            sub,
+            12.0,
+            c.text_dim,
+            gcx - f64::from(subw) / 2.0,
+            base.y1 + 40.0,
+        );
 
         self.screen_live_pill(scene, tf, tr, theme, rect, &name, is_me);
         stroke_round(scene, tf, rect, radius, c.accent[5], 2.0);
@@ -393,13 +587,37 @@ impl ChatApp {
         is_me: bool,
     ) {
         let c = &theme.tokens.colors;
-        let who = if is_me { "Your screen".to_string() } else { format!("{name}'s screen") };
+        let who = if is_me {
+            "Your screen".to_string()
+        } else {
+            format!("{name}'s screen")
+        };
         let txt = format!("Live · {who}");
         let (lw, _) = tr.measure(&txt, 11.5, None);
-        let pill = Rect::new(rect.x0 + 12.0, rect.y0 + 12.0, rect.x0 + 12.0 + lw as f64 + 34.0, rect.y0 + 12.0 + 24.0);
+        let pill = Rect::new(
+            rect.x0 + 12.0,
+            rect.y0 + 12.0,
+            rect.x0 + 12.0 + f64::from(lw) + 34.0,
+            rect.y0 + 12.0 + 24.0,
+        );
         fill_round(scene, tf, pill, 12.0, Color::from_rgba8(0, 0, 0, 150));
-        fill_circle(scene, tf, Point::new(pill.x0 + 14.0, pill.center().y), 4.0, c.semantic.danger);
-        label(scene, tr, tf, &txt, 11.5, Color::WHITE, pill.x0 + 24.0, pill.center().y - 8.0);
+        fill_circle(
+            scene,
+            tf,
+            Point::new(pill.x0 + 14.0, pill.center().y),
+            4.0,
+            c.semantic.danger,
+        );
+        label(
+            scene,
+            tr,
+            tf,
+            &txt,
+            11.5,
+            Color::WHITE,
+            pill.x0 + 24.0,
+            pill.center().y - 8.0,
+        );
     }
 
     pub(crate) fn draw_call_overlay_fg(
@@ -478,11 +696,16 @@ impl ChatApp {
             // height eases up a little with the headcount but stays a minority
             // of the surface. Clamped so a short window still leaves a usable
             // strip and a tall one doesn't over-grow it.
-            let strip_h = (region.height() * 0.24).clamp(88.0, 190.0).min(region.height() * 0.4);
+            let strip_h = (region.height() * 0.24)
+                .clamp(88.0, 190.0)
+                .min(region.height() * 0.4);
             let screen_bottom = (region.y1 - strip_h - gap).max(region.y0 + 1.0);
             let screen = Rect::new(region.x0, region.y0, region.x1, screen_bottom);
             let strip_region = Rect::new(region.x0, screen.y1 + gap, region.x1, region.y1);
-            CallStage::Share { screen, strip: filmstrip_rects(strip_region, n) }
+            CallStage::Share {
+                screen,
+                strip: filmstrip_rects(strip_region, n),
+            }
         } else {
             CallStage::Grid(self.overlay_tiles())
         }
@@ -493,9 +716,10 @@ impl ChatApp {
     /// source of truth the host [`VideoPlayer`] surface tracks in both modes.
     pub(crate) fn overlay_host_rect(&self) -> Rect {
         match self.overlay_stage() {
-            CallStage::Grid(tiles) => {
-                tiles.into_iter().next().unwrap_or_else(|| self.overlay_content_region())
-            }
+            CallStage::Grid(tiles) => tiles
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| self.overlay_content_region()),
             CallStage::Share { strip, screen } => strip.into_iter().next().unwrap_or(screen),
         }
     }
@@ -508,13 +732,43 @@ impl ChatApp {
     /// tile band) — so all three agree without a `TextRenderer`. Button widths
     /// are derived from the fixed label lengths rather than measured, which
     /// keeps the whole call layout resolvable on a single headless frame.
-    pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<(&'static str, bool, bool, Hit, Rect)>) {
+    pub(crate) fn overlay_controls_layout(
+        &self,
+    ) -> (Rect, Vec<(&'static str, bool, bool, Hit, Rect)>) {
         let sharing = self.sharing_screen();
         let specs: [(&'static str, bool, bool, Hit); 6] = [
-            (if self.call.muted { "Unmute" } else { "Mute" }, self.call.muted, false, Hit::CallMute),
-            (if self.call.deafened { "Undeafen" } else { "Deafen" }, self.call.deafened, false, Hit::CallDeafen),
-            ("Audio only", self.call.audio_only, false, Hit::CallAudioOnly),
-            (if sharing { "Stop share" } else { "Share screen" }, sharing, false, Hit::CallShareScreen),
+            (
+                if self.call.muted { "Unmute" } else { "Mute" },
+                self.call.muted,
+                false,
+                Hit::CallMute,
+            ),
+            (
+                if self.call.deafened {
+                    "Undeafen"
+                } else {
+                    "Deafen"
+                },
+                self.call.deafened,
+                false,
+                Hit::CallDeafen,
+            ),
+            (
+                "Audio only",
+                self.call.audio_only,
+                false,
+                Hit::CallAudioOnly,
+            ),
+            (
+                if sharing {
+                    "Stop share"
+                } else {
+                    "Share screen"
+                },
+                sharing,
+                false,
+                Hit::CallShareScreen,
+            ),
             ("Collapse", false, false, Hit::CallExpand),
             ("Leave", false, true, Hit::CallLeave),
         ];
@@ -530,12 +784,20 @@ impl ChatApp {
         let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
         let mut cur = 0.0;
         for (i, w) in widths.iter().enumerate() {
-            let extra = if rows.last().unwrap().is_empty() { 0.0 } else { gap } + w;
+            let extra = if rows.last().unwrap().is_empty() {
+                0.0
+            } else {
+                gap
+            } + w;
             if !rows.last().unwrap().is_empty() && cur + extra > max_row_w {
                 rows.push(Vec::new());
                 cur = 0.0;
             }
-            let extra = if rows.last().unwrap().is_empty() { 0.0 } else { gap } + w;
+            let extra = if rows.last().unwrap().is_empty() {
+                0.0
+            } else {
+                gap
+            } + w;
             rows.last_mut().unwrap().push(i);
             cur += extra;
         }
@@ -553,7 +815,12 @@ impl ChatApp {
         let cx = self.rect.center().x;
         let bar_bottom = self.rect.y1 - 18.0;
         let bar_top = bar_bottom - bar_h;
-        let bar = Rect::new(cx - widest / 2.0 - inner_pad, bar_top, cx + widest / 2.0 + inner_pad, bar_bottom);
+        let bar = Rect::new(
+            cx - widest / 2.0 - inner_pad,
+            bar_top,
+            cx + widest / 2.0 + inner_pad,
+            bar_bottom,
+        );
 
         let mut out: Vec<(&'static str, bool, bool, Hit, Rect)> = Vec::with_capacity(specs.len());
         let mut ry = bar_top + inner_pad;
@@ -610,7 +877,17 @@ impl ChatApp {
             let r = (rect.height() * 0.22).clamp(16.0, 46.0);
             let cx = rect.center().x;
             let cy = rect.center().y - r * 0.3;
-            draw_avatar(scene, tf, tr, theme, Point::new(cx, cy), r, &u.initials, u.color_idx, None);
+            draw_avatar(
+                scene,
+                tf,
+                tr,
+                theme,
+                Point::new(cx, cy),
+                r,
+                &u.initials,
+                u.color_idx,
+                None,
+            );
             // Honest state under the avatar — the same treatment the host tile
             // gets. There is no remote camera capture in this environment, so
             // the tile never fabricates a picture: an audio-only peer reads
@@ -619,7 +896,16 @@ impl ChatApp {
             // doesn't have.
             let s = member_tile_caption(p);
             let (sw, _) = tr.measure(s, 11.5, None);
-            label(scene, tr, tf, s, 11.5, c.text_dim, cx - sw as f64 / 2.0, cy + r + 8.0);
+            label(
+                scene,
+                tr,
+                tf,
+                s,
+                11.5,
+                c.text_dim,
+                cx - f64::from(sw) / 2.0,
+                cy + r + 8.0,
+            );
         }
         if p.talking {
             stroke_round(scene, tf, rect, 14.0, c.semantic.success, 2.5);
@@ -639,7 +925,12 @@ impl ChatApp {
         let s = 12.0;
         let cx = rect.x1 - 8.0 - s / 2.0;
         let cy = rect.y0 + 8.0 + s / 2.0;
-        let chip = Rect::new(cx - s / 2.0 - 4.0, cy - s / 2.0 - 4.0, cx + s / 2.0 + 4.0, cy + s / 2.0 + 4.0);
+        let chip = Rect::new(
+            cx - s / 2.0 - 4.0,
+            cy - s / 2.0 - 4.0,
+            cx + s / 2.0 + 4.0,
+            cy + s / 2.0 + 4.0,
+        );
         fill_round(scene, tf, chip, 6.0, c.accent[5]);
         // A tiny drawn monitor: screen rect + base bar.
         let screen = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0 - 3.0);
@@ -663,10 +954,28 @@ impl ChatApp {
         let mic = if muted { "🔇" } else { "🎤" };
         let label_txt = format!("{mic}  {name}");
         let (lw, _) = tr.measure(&label_txt, 12.0, None);
-        let plate = Rect::new(tile.x0 + 8.0, tile.y1 - 30.0, tile.x0 + 8.0 + lw as f64 + 20.0, tile.y1 - 8.0);
+        let plate = Rect::new(
+            tile.x0 + 8.0,
+            tile.y1 - 30.0,
+            tile.x0 + 8.0 + f64::from(lw) + 20.0,
+            tile.y1 - 8.0,
+        );
         fill_round(scene, tf, plate, 8.0, Color::from_rgba8(0, 0, 0, 150));
-        let col = if muted { c.semantic.danger } else { Color::WHITE };
-        label(scene, tr, tf, &label_txt, 12.0, col, plate.x0 + 10.0, plate.center().y - 8.0);
+        let col = if muted {
+            c.semantic.danger
+        } else {
+            Color::WHITE
+        };
+        label(
+            scene,
+            tr,
+            tf,
+            &label_txt,
+            12.0,
+            col,
+            plate.x0 + 10.0,
+            plate.center().y - 8.0,
+        );
     }
 
     /// A pill control button. `on` = active/highlighted, `danger` = red.
@@ -692,7 +1001,16 @@ impl ChatApp {
         };
         fill_round(scene, tf, rect, 9.0, bg);
         let (lw, _) = tr.measure(label_txt, 13.0, None);
-        label(scene, tr, tf, label_txt, 13.0, fg, rect.center().x - lw as f64 / 2.0, rect.center().y - 8.0);
+        label(
+            scene,
+            tr,
+            tf,
+            label_txt,
+            13.0,
+            fg,
+            rect.center().x - f64::from(lw) / 2.0,
+            rect.center().y - 8.0,
+        );
     }
 
     // -------------------------------------------------------- emoji picker
@@ -714,30 +1032,92 @@ impl ChatApp {
         // height: quick row + categories
         let mut rows_total = 1; // quick row
         for cat in emoji::CATEGORIES {
-            rows_total += 1 + (cat.emoji.len() + cols - 1) / cols; // label + grid rows
+            rows_total += 1 + cat.emoji.len().div_ceil(cols); // label + grid rows
         }
         let h = 56.0 + rows_total as f64 * cell + 12.0;
         let mut x0 = self.emoji_anchor.x;
         let mut y0 = self.emoji_anchor.y;
         x0 = x0.clamp(self.rect.x0 + 8.0, self.rect.x1 - w - 8.0);
-        y0 = y0.clamp(self.rect.y0 + 8.0, (self.rect.y1 - h - 8.0).max(self.rect.y0 + 8.0));
+        y0 = y0.clamp(
+            self.rect.y0 + 8.0,
+            (self.rect.y1 - h - 8.0).max(self.rect.y0 + 8.0),
+        );
         let panel = Rect::new(x0, y0, x0 + w, y0 + h);
-        fill_round(scene, tf, panel.inflate(5.0, 5.0), 18.0, Color::from_rgba8(0, 0, 0, 70));
+        fill_round(
+            scene,
+            tf,
+            panel.inflate(5.0, 5.0),
+            18.0,
+            Color::from_rgba8(0, 0, 0, 70),
+        );
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
         stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
 
-        let title = if self.emoji_target.is_some() { "Add reaction" } else { "Emoji" };
-        label(scene, tr, tf, title, 13.0, c.text_primary, panel.x0 + 14.0, panel.y0 + 12.0);
+        let title = if self.emoji_target.is_some() {
+            "Add reaction"
+        } else {
+            "Emoji"
+        };
+        label(
+            scene,
+            tr,
+            tf,
+            title,
+            13.0,
+            c.text_primary,
+            panel.x0 + 14.0,
+            panel.y0 + 12.0,
+        );
 
         let mut y = panel.y0 + 36.0;
         // quick row
-        label(scene, tr, tf, "Frequent", 10.5, c.text_dim, panel.x0 + 14.0, y);
+        label(
+            scene,
+            tr,
+            tf,
+            "Frequent",
+            10.5,
+            c.text_dim,
+            panel.x0 + 14.0,
+            y,
+        );
         y += 16.0;
-        self.emoji_grid(scene, tf, tr, theme, &emoji::QUICK, panel.x0 + 12.0, &mut y, cols, cell, hits);
+        self.emoji_grid(
+            scene,
+            tf,
+            tr,
+            theme,
+            &emoji::QUICK,
+            panel.x0 + 12.0,
+            &mut y,
+            cols,
+            cell,
+            hits,
+        );
         for cat in emoji::CATEGORIES {
-            label(scene, tr, tf, cat.name, 10.5, c.text_dim, panel.x0 + 14.0, y);
+            label(
+                scene,
+                tr,
+                tf,
+                cat.name,
+                10.5,
+                c.text_dim,
+                panel.x0 + 14.0,
+                y,
+            );
             y += 16.0;
-            self.emoji_grid(scene, tf, tr, theme, cat.emoji, panel.x0 + 12.0, &mut y, cols, cell, hits);
+            self.emoji_grid(
+                scene,
+                tf,
+                tr,
+                theme,
+                cat.emoji,
+                panel.x0 + 12.0,
+                &mut y,
+                cols,
+                cell,
+                hits,
+            );
         }
     }
 
@@ -763,10 +1143,21 @@ impl ChatApp {
             let cyy = *y + row as f64 * cell;
             let cellr = Rect::new(cx, cyy, cx + cell - 4.0, cyy + cell - 4.0);
             let (ew, eh) = tr.measure(e, 19.0, None);
-            text(scene, tr, tf, e, 19.0, c.text_primary, cellr.center().x - ew as f64 / 2.0, cellr.center().y - eh as f64 / 2.0, TextWeight::Regular, None);
+            text(
+                scene,
+                tr,
+                tf,
+                e,
+                19.0,
+                c.text_primary,
+                cellr.center().x - f64::from(ew) / 2.0,
+                cellr.center().y - f64::from(eh) / 2.0,
+                TextWeight::Regular,
+                None,
+            );
             ChatApp::push_hit(hits, cellr, Hit::EmojiChoice((*e).to_string()));
         }
-        let rows = (set.len() + cols - 1) / cols;
+        let rows = set.len().div_ceil(cols);
         *y += rows as f64 * cell + 6.0;
     }
 
@@ -781,42 +1172,95 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
-        let Some(mid) = self.history_open.clone() else { return };
-        let Some(m) = self.message(&mid).cloned() else { return };
+        let Some(mid) = self.history_open.clone() else {
+            return;
+        };
+        let Some(m) = self.message(&mid).cloned() else {
+            return;
+        };
 
         let w = 380.0;
         let tw = (w - 28.0) as f32;
         // measure
-        let mut entries: Vec<(String, String)> = vec![(format!("Now · {}", model::clock(m.ts)), m.text.clone())];
+        let mut entries: Vec<(String, String)> =
+            vec![(format!("Now · {}", model::clock(m.ts)), m.text.clone())];
         for rec in m.history.iter().rev() {
-            entries.push((format!("Edited · {}", model::clock(rec.ts)), rec.text.clone()));
+            entries.push((
+                format!("Edited · {}", model::clock(rec.ts)),
+                rec.text.clone(),
+            ));
         }
         let mut total = 44.0;
         let mut heights = Vec::new();
         for (_, body) in &entries {
-            let bh = tr.measure(body, 13.0, Some(tw)).1 as f64 + 22.0 + 14.0;
+            let bh = f64::from(tr.measure(body, 13.0, Some(tw)).1) + 22.0 + 14.0;
             heights.push(bh);
             total += bh;
         }
         let mut x0 = self.history_anchor.x;
         let mut y0 = self.history_anchor.y;
         x0 = x0.clamp(self.rect.x0 + 8.0, self.rect.x1 - w - 8.0);
-        y0 = y0.clamp(self.rect.y0 + 8.0, (self.rect.y1 - total - 8.0).max(self.rect.y0 + 8.0));
+        y0 = y0.clamp(
+            self.rect.y0 + 8.0,
+            (self.rect.y1 - total - 8.0).max(self.rect.y0 + 8.0),
+        );
         let panel = Rect::new(x0, y0, x0 + w, y0 + total);
-        fill_round(scene, tf, panel.inflate(5.0, 5.0), 18.0, Color::from_rgba8(0, 0, 0, 70));
+        fill_round(
+            scene,
+            tf,
+            panel.inflate(5.0, 5.0),
+            18.0,
+            Color::from_rgba8(0, 0, 0, 70),
+        );
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
         stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
-        label(scene, tr, tf, "Edit history", 13.0, c.text_primary, panel.x0 + 14.0, panel.y0 + 12.0);
+        label(
+            scene,
+            tr,
+            tf,
+            "Edit history",
+            13.0,
+            c.text_primary,
+            panel.x0 + 14.0,
+            panel.y0 + 12.0,
+        );
 
         let mut y = panel.y0 + 38.0;
         for (i, (head, body)) in entries.iter().enumerate() {
             let accent = i == 0;
-            label(scene, tr, tf, head, 11.0, if accent { c.accent[6] } else { c.text_dim }, panel.x0 + 14.0, y);
+            label(
+                scene,
+                tr,
+                tf,
+                head,
+                11.0,
+                if accent { c.accent[6] } else { c.text_dim },
+                panel.x0 + 14.0,
+                y,
+            );
             y += 18.0;
-            text(scene, tr, tf, body, 13.0, if accent { c.text_primary } else { c.text_dim }, panel.x0 + 14.0, y, TextWeight::Regular, Some(tw));
+            text(
+                scene,
+                tr,
+                tf,
+                body,
+                13.0,
+                if accent { c.text_primary } else { c.text_dim },
+                panel.x0 + 14.0,
+                y,
+                TextWeight::Regular,
+                Some(tw),
+            );
             y += heights[i] - 22.0 - 14.0 + 8.0;
             if i + 1 < entries.len() {
-                hline(scene, tf, panel.x0 + 12.0, panel.x1 - 12.0, y, c.border_standard);
+                hline(
+                    scene,
+                    tf,
+                    panel.x0 + 12.0,
+                    panel.x1 - 12.0,
+                    y,
+                    c.border_standard,
+                );
             }
             y += 6.0;
         }
@@ -918,7 +1362,11 @@ fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
         let row = i / cols;
         let col = i % cols;
         // Centre the final row when it holds fewer than `cols` tiles.
-        let in_row = if row == rows - 1 { n - row * cols } else { cols };
+        let in_row = if row == rows - 1 {
+            n - row * cols
+        } else {
+            cols
+        };
         let row_w = in_row as f64 * tw + (in_row as f64 - 1.0) * gap;
         let row_x0 = region.x0 + (region.width() - row_w) / 2.0;
         let x0 = row_x0 + col as f64 * (tw + gap);
@@ -930,7 +1378,7 @@ fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
 
 #[cfg(test)]
 mod tests {
-    use super::{filmstrip_rects, grid_rects, member_tile_caption, Participant};
+    use super::{Participant, filmstrip_rects, grid_rects, member_tile_caption};
     use vello::kurbo::Rect;
 
     /// The presentation-stage filmstrip must lay every participant in a single
@@ -949,14 +1397,19 @@ mod tests {
                         "n={n} w={w}: tile escaped the strip horizontally"
                     );
                     // One row: every tile spans the full strip height.
-                    assert!((t.y0 - region.y0).abs() < 0.5 && (t.y1 - region.y1).abs() < 0.5,
-                        "n={n}: strip tiles are not a single full-height row");
+                    assert!(
+                        (t.y0 - region.y0).abs() < 0.5 && (t.y1 - region.y1).abs() < 0.5,
+                        "n={n}: strip tiles are not a single full-height row"
+                    );
                     assert!(t.width() > 0.0, "n={n}: degenerate strip tile");
                 }
                 // Centred: equal slack on both sides of the row.
                 let left = tiles.first().unwrap().x0 - region.x0;
                 let right = region.x1 - tiles.last().unwrap().x1;
-                assert!((left - right).abs() < 1.0, "n={n} w={w}: strip is not centred");
+                assert!(
+                    (left - right).abs() < 1.0,
+                    "n={n} w={w}: strip is not centred"
+                );
             }
         }
     }
@@ -967,7 +1420,13 @@ mod tests {
     }
 
     fn participant(audio_only: bool) -> Participant {
-        Participant { user: "u_x".into(), talking: false, muted: false, audio_only, sharing: false }
+        Participant {
+            user: "u_x".into(),
+            talking: false,
+            muted: false,
+            audio_only,
+            sharing: false,
+        }
     }
 
     /// Defect regression: remote tiles must be honest — never present a
@@ -1002,14 +1461,23 @@ mod tests {
                     assert!(
                         r.x0 >= region.x0 - 0.5 && r.x1 <= region.x1 + 0.5,
                         "n={n} w={w}: tile x [{:.1},{:.1}] escaped region x [{:.1},{:.1}]",
-                        r.x0, r.x1, region.x0, region.x1
+                        r.x0,
+                        r.x1,
+                        region.x0,
+                        region.x1
                     );
                     assert!(
                         r.y0 >= region.y0 - 0.5 && r.y1 <= region.y1 + 0.5,
                         "n={n} w={w}: tile y [{:.1},{:.1}] escaped region y [{:.1},{:.1}]",
-                        r.y0, r.y1, region.y0, region.y1
+                        r.y0,
+                        r.y1,
+                        region.y0,
+                        region.y1
                     );
-                    assert!(r.width() > 0.0 && r.height() > 0.0, "n={n}: degenerate tile");
+                    assert!(
+                        r.width() > 0.0 && r.height() > 0.0,
+                        "n={n}: degenerate tile"
+                    );
                 }
             }
         }
@@ -1034,10 +1502,17 @@ mod tests {
             // A host + three remotes: the demo huddle, the exact case that
             // exposed the void.
             let tiles = grid_rects(region, 4);
-            let bbox = tiles.iter().fold(
-                Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN),
-                |b, r| Rect::new(b.x0.min(r.x0), b.y0.min(r.y0), b.x1.max(r.x1), b.y1.max(r.y1)),
-            );
+            let bbox =
+                tiles
+                    .iter()
+                    .fold(Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, r| {
+                        Rect::new(
+                            b.x0.min(r.x0),
+                            b.y0.min(r.y0),
+                            b.x1.max(r.x1),
+                            b.y1.max(r.y1),
+                        )
+                    });
             // One inter-tile gap is the largest legitimate slack (a centred row
             // or column can sit a gap in from an edge).
             let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
@@ -1045,19 +1520,27 @@ mod tests {
             assert!(
                 bbox.x0 - region.x0 <= slack && region.x1 - bbox.x1 <= slack,
                 "w={w}: tiles leave a horizontal void (bbox x [{:.1},{:.1}] vs region [{:.1},{:.1}])",
-                bbox.x0, bbox.x1, region.x0, region.x1
+                bbox.x0,
+                bbox.x1,
+                region.x0,
+                region.x1
             );
             assert!(
                 bbox.y0 - region.y0 <= slack && region.y1 - bbox.y1 <= slack,
                 "w={w}: tiles leave a vertical void (bbox y [{:.1},{:.1}] vs region [{:.1},{:.1}])",
-                bbox.y0, bbox.y1, region.y0, region.y1
+                bbox.y0,
+                bbox.y1,
+                region.y0,
+                region.y1
             );
             // And a tile actually occupies the lower-left quadrant — the exact
             // corner the old layout left black.
             let midx = region.x0 + region.width() * 0.5;
             let midy = region.y0 + region.height() * 0.5;
             assert!(
-                tiles.iter().any(|r| r.center().x < midx && r.center().y > midy),
+                tiles
+                    .iter()
+                    .any(|r| r.center().x < midx && r.center().y > midy),
                 "w={w}: nothing fills the lower-left of the call surface"
             );
         }

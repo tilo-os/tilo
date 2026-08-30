@@ -32,7 +32,10 @@ fn run() -> Result<(), String> {
     let paired = bluez::paired_devices()?;
     println!("paired     {} devices", paired.len());
     for d in &paired {
-        println!("  {:<24} {} connected={} trusted={}", d.name, d.address, d.connected, d.trusted);
+        println!(
+            "  {:<24} {} connected={} trusted={}",
+            d.name, d.address, d.connected, d.trusted
+        );
     }
 
     if bluez::is_scanning()? {
@@ -56,9 +59,16 @@ fn run() -> Result<(), String> {
         return Err("stop_scan left the adapter scanning".into());
     }
     println!("scan       stopped cleanly");
-    println!("scan       {} known, {} reporting a signal", found.len(), in_range.len());
+    println!(
+        "scan       {} known, {} reporting a signal",
+        found.len(),
+        in_range.len()
+    );
     for d in in_range.iter().take(8) {
-        println!("  {:<24} {} rssi={:?} paired={}", d.name, d.address, d.rssi, d.paired);
+        println!(
+            "  {:<24} {} rssi={:?} paired={}",
+            d.name, d.address, d.rssi, d.paired
+        );
     }
 
     // Prove the unpaired devices a scan turns up are exactly the ones that
@@ -68,6 +78,11 @@ fn run() -> Result<(), String> {
     if unpaired + paired.len() != found.len() {
         return Err("the paired and unpaired lists do not partition the device list".into());
     }
-    println!("lists      {} paired + {} unpaired = {} total", paired.len(), unpaired, found.len());
+    println!(
+        "lists      {} paired + {} unpaired = {} total",
+        paired.len(),
+        unpaired,
+        found.len()
+    );
     Ok(())
 }

@@ -72,7 +72,7 @@ pub fn decode_uleb128(bytes: &[u8], offset: usize) -> Option<(u64, usize)> {
     let mut consumed = 0usize;
     for &b in &bytes[offset..] {
         consumed += 1;
-        let low = (b & 0x7F) as u64;
+        let low = u64::from(b & 0x7F);
         // Guard against shifting past the width of u64.
         if shift >= 64 {
             return None;
@@ -96,7 +96,7 @@ pub fn decode_sleb128(bytes: &[u8], offset: usize) -> Option<(i64, usize)> {
         if shift >= 64 {
             return None;
         }
-        let low = (b & 0x7F) as i64;
+        let low = i64::from(b & 0x7F);
         result |= low << shift;
         shift += 7;
         if b & 0x80 == 0 {
@@ -129,12 +129,12 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
             });
             rows.push(Interpretation {
                 label: "bin",
-                value: format!("{:08b}", b),
+                value: format!("{b:08b}"),
                 width: 1,
             });
             rows.push(Interpretation {
                 label: "oct",
-                value: format!("0o{:o}", b),
+                value: format!("0o{b:o}"),
                 width: 1,
             });
             rows.push(Interpretation {
@@ -155,12 +155,60 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
     }
 
     // Multi-byte integers (endianness-aware).
-    rows.push(int_row!("i16", bytes, offset, endian, 2, i16, i16::from_le_bytes));
-    rows.push(int_row!("u16", bytes, offset, endian, 2, u16, u16::from_le_bytes));
-    rows.push(int_row!("i32", bytes, offset, endian, 4, i32, i32::from_le_bytes));
-    rows.push(int_row!("u32", bytes, offset, endian, 4, u32, u32::from_le_bytes));
-    rows.push(int_row!("i64", bytes, offset, endian, 8, i64, i64::from_le_bytes));
-    rows.push(int_row!("u64", bytes, offset, endian, 8, u64, u64::from_le_bytes));
+    rows.push(int_row!(
+        "i16",
+        bytes,
+        offset,
+        endian,
+        2,
+        i16,
+        i16::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "u16",
+        bytes,
+        offset,
+        endian,
+        2,
+        u16,
+        u16::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "i32",
+        bytes,
+        offset,
+        endian,
+        4,
+        i32,
+        i32::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "u32",
+        bytes,
+        offset,
+        endian,
+        4,
+        u32,
+        u32::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "i64",
+        bytes,
+        offset,
+        endian,
+        8,
+        i64,
+        i64::from_le_bytes
+    ));
+    rows.push(int_row!(
+        "u64",
+        bytes,
+        offset,
+        endian,
+        8,
+        u64,
+        u64::from_le_bytes
+    ));
 
     // Floats.
     rows.push(match read_n(bytes, offset, 4) {
@@ -170,7 +218,7 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
             arr.copy_from_slice(&ord);
             Interpretation {
                 label: "f32",
-                value: format_float(f32::from_le_bytes(arr) as f64),
+                value: format_float(f64::from(f32::from_le_bytes(arr))),
                 width: 4,
             }
         }
@@ -227,14 +275,18 @@ fn format_float(v: f64) -> String {
     } else if v.is_nan() {
         "NaN".to_string()
     } else if v.is_infinite() {
-        if v > 0.0 { "+inf".to_string() } else { "-inf".to_string() }
+        if v > 0.0 {
+            "+inf".to_string()
+        } else {
+            "-inf".to_string()
+        }
     } else if v.abs() >= 1e-4 && v.abs() < 1e9 {
         // Plain decimal with up to 6 significant fractional digits.
-        let s = format!("{:.6}", v);
+        let s = format!("{v:.6}");
         let trimmed = s.trim_end_matches('0').trim_end_matches('.');
         trimmed.to_string()
     } else {
-        format!("{:e}", v)
+        format!("{v:e}")
     }
 }
 
@@ -247,7 +299,7 @@ fn printable_char(b: u8) -> String {
         b'\r' => "'\\r'".to_string(),
         b'\t' => "'\\t'".to_string(),
         0 => "'\\0'".to_string(),
-        _ => format!("\\x{:02x}", b),
+        _ => format!("\\x{b:02x}"),
     }
 }
 
@@ -280,8 +332,14 @@ mod tests {
     fn binary_and_octal_of_byte() {
         let bytes = [0b1010_0101];
         let rows = inspect(&bytes, 0, Endian::Little);
-        assert_eq!(rows.iter().find(|r| r.label == "bin").unwrap().value, "10100101");
-        assert_eq!(rows.iter().find(|r| r.label == "oct").unwrap().value, "0o245");
+        assert_eq!(
+            rows.iter().find(|r| r.label == "bin").unwrap().value,
+            "10100101"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r.label == "oct").unwrap().value,
+            "0o245"
+        );
     }
 
     #[test]

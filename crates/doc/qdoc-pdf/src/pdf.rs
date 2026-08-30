@@ -3,7 +3,7 @@
 //! Just enough of the format to emit text (base-14 Helvetica / Helvetica-Bold
 //! via `BT`/`ET` + `Tf`/`Td`/`Tj`), vector graphics (lines/rectangles for table
 //! grids and image placeholders), and embedded raster images as `/DeviceRGB`
-//! `Image` XObjects with `FlateDecode`-compressed pixel data.
+//! `Image` `XObjects` with `FlateDecode`-compressed pixel data.
 //!
 //! Objects are allocated lazily and serialized with a classic cross-reference
 //! table, so the result is a self-contained file that opens in any conformant
@@ -26,7 +26,9 @@ pub struct ObjId(pub usize);
 
 impl PdfWriter {
     pub fn new() -> Self {
-        Self { objects: Vec::new() }
+        Self {
+            objects: Vec::new(),
+        }
     }
 
     /// Reserve an object slot, returning its id. Body is filled later via
@@ -69,7 +71,7 @@ impl PdfWriter {
         let mut offsets = Vec::with_capacity(self.objects.len());
         for (i, body) in self.objects.iter().enumerate() {
             offsets.push(out.len());
-            let _ = write!(out, "{} 0 obj\n", i + 1);
+            let _ = writeln!(out, "{} 0 obj", i + 1);
             out.extend_from_slice(body);
             out.extend_from_slice(b"\nendobj\n");
         }
@@ -79,7 +81,7 @@ impl PdfWriter {
         let _ = write!(out, "xref\n0 {count}\n");
         out.extend_from_slice(b"0000000000 65535 f \n");
         for off in &offsets {
-            let _ = write!(out, "{:010} 00000 n \n", off);
+            let _ = writeln!(out, "{off:010} 00000 n ");
         }
         let _ = write!(
             out,
@@ -99,7 +101,7 @@ pub fn flate(data: &[u8]) -> Vec<u8> {
 
 /// Escape a string for inclusion inside a PDF literal string `( ... )`.
 ///
-/// WinAnsiEncoding is the font encoding we declare; characters outside it are
+/// `WinAnsiEncoding` is the font encoding we declare; characters outside it are
 /// replaced with `?` so the content stream stays well-formed (see
 /// [`to_winansi`]). Backslash and parentheses are escaped per the spec.
 pub fn escape_pdf_text(s: &str) -> Vec<u8> {
@@ -117,12 +119,12 @@ pub fn escape_pdf_text(s: &str) -> Vec<u8> {
     out
 }
 
-/// Map a `&str` to WinAnsiEncoding (CP-1252) bytes. ASCII passes through; a
+/// Map a `&str` to `WinAnsiEncoding` (CP-1252) bytes. ASCII passes through; a
 /// handful of common typographic characters are mapped to their CP-1252 code
 /// points; everything else outside the byte range becomes `?`.
 ///
 /// This is the font-coverage limit of the base-14 export: glyphs absent from
-/// WinAnsi (CJK, most non-Latin scripts, many symbols) render as `?`.
+/// `WinAnsi` (CJK, most non-Latin scripts, many symbols) render as `?`.
 pub fn to_winansi(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len());
     for ch in s.chars() {
