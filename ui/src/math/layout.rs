@@ -30,6 +30,10 @@ pub enum BoxKind {
     /// stroke and, more importantly, makes its optical centre depend on the
     /// font glyph's baseline rather than on the enclosed expression.
     Paren { open: bool, size: f32 },
+    /// A scalable TeX delimiter (`[]`, `{}`, `|`, `‖`, `⌊⌋`, `⌈⌉`, `⟨⟩`).
+    Delimiter { ch: char, size: f32 },
+    /// Close-fitting accent path spanning `w` (`¯`, `ˆ`, `˜`, arrows, dots).
+    Accent { mark: char, size: f32 },
 }
 
 /// One positioned, paintable box.
@@ -103,6 +107,17 @@ fn metrics(size: f32) -> (f64, f64) {
 
 fn delimiter_width(size: f32) -> f64 {
     (f64::from(size) * 0.34).max(6.0)
+}
+
+fn delimiter_width_for(ch: char, size: f32) -> f64 {
+    let em = f64::from(size);
+    match ch {
+        '|' | '‖' => (em * 0.20).max(4.0),
+        '[' | ']' | '⌊' | '⌋' | '⌈' | '⌉' => (em * 0.28).max(5.0),
+        '{' | '}' => (em * 0.42).max(8.0),
+        '⟨' | '⟩' | '<' | '>' => (em * 0.38).max(7.0),
+        _ => delimiter_width(size),
+    }
 }
 
 fn delimiter_padding(size: f32) -> f64 {
@@ -317,6 +332,60 @@ fn layout_node(
                     },
                 }],
                 gaps: vec![],
+                width,
+                ascent,
+                descent,
+            }
+        }
+        Node::Accent { base, mark, over } => {
+            let base_steps = child_steps(steps, idx, Slot::Base);
+            let inner = layout_row(base, &base_steps, tr, size);
+            let accent_height = match mark {
+                '˙' | '¨' => f64::from(size) * 0.18,
+                _ => f64::from(size) * 0.24,
+            }
+            .max(3.0);
+            let gap = (f64::from(size) * 0.045).max(1.0);
+            let width = inner.width.max(f64::from(size) * 0.45);
+            let inner_x = (width - inner.width) * 0.5;
+            let (ascent, descent, inner_y, accent_y) = if *over {
+                (
+                    inner.ascent + accent_height + gap,
+                    inner.descent,
+                    accent_height + gap,
+                    0.0,
+                )
+            } else {
+                (
+                    inner.ascent,
+                    inner.descent + accent_height + gap,
+                    0.0,
+                    inner.height() + gap,
+                )
+            };
+            let mut boxes = vec![Box2d {
+                x: 0.0,
+                y: accent_y,
+                w: width,
+                h: accent_height,
+                baseline: accent_height,
+                kind: BoxKind::Accent { mark: *mark, size },
+            }];
+            let mut gaps = Vec::new();
+            for mut math_box in inner.boxes {
+                math_box.x += inner_x;
+                math_box.y += inner_y;
+                boxes.push(math_box);
+            }
+            for mut insertion in inner.gaps {
+                insertion.x += inner_x;
+                insertion.top += inner_y;
+                insertion.bottom += inner_y;
+                gaps.push(insertion);
+            }
+            NodeFrag {
+                boxes,
+                gaps,
                 width,
                 ascent,
                 descent,
@@ -542,56 +611,10 @@ fn layout_node(
             }
         }
         Node::Paren { body } => {
-            let (gascent, gdescent) = metrics(size);
-            let body_steps = child_steps(steps, idx, Slot::Body);
-            let inner = layout_row(body, &body_steps, tr, size);
-            let padding = delimiter_padding(size);
-            let row_ascent = gascent.max(inner.ascent + padding);
-            let row_descent = gdescent.max(inner.descent + padding);
-            let body_h = row_ascent + row_descent;
-            let open = delimiter_width(size);
-            let close = open;
-            let mut boxes = Vec::new();
-            let mut gaps = Vec::new();
-            let mut pen = 0.0;
-            boxes.push(Box2d {
-                x: pen,
-                y: 0.0,
-                w: open,
-                h: body_h,
-                baseline: row_ascent,
-                kind: BoxKind::Paren { open: true, size },
-            });
-            pen += open;
-            let dy = row_ascent - inner.ascent;
-            for mut b in inner.boxes {
-                b.x += pen;
-                b.y += dy;
-                boxes.push(b);
-            }
-            for mut g in inner.gaps {
-                g.x += pen;
-                g.top += dy;
-                g.bottom += dy;
-                gaps.push(g);
-            }
-            pen += inner.width;
-            boxes.push(Box2d {
-                x: pen,
-                y: 0.0,
-                w: close,
-                h: body_h,
-                baseline: row_ascent,
-                kind: BoxKind::Paren { open: false, size },
-            });
-            pen += close;
-            NodeFrag {
-                boxes,
-                gaps,
-                width: pen,
-                ascent: row_ascent,
-                descent: row_descent,
-            }
+            layout_delimited(body, Some('('), Some(')'), idx, steps, tr, size, true)
+        }
+        Node::Delimited { open, close, body } => {
+            layout_delimited(body, *open, *close, idx, steps, tr, size, false)
         }
         Node::Sup { exp } => {
             // Exponent is raised and smaller, sitting above the row baseline.
@@ -652,9 +675,9 @@ fn layout_node(
         Node::SubSup { sub, sup } => {
             let script_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
             let sub_steps = child_steps(steps, idx, Slot::Sub);
-            let sup_steps = child_steps(steps, idx, Slot::Sup);
+            let superscript_steps = child_steps(steps, idx, Slot::Sup);
             let lower = layout_row(sub, &sub_steps, tr, script_size);
-            let upper = layout_row(sup, &sup_steps, tr, script_size);
+            let upper = layout_row(sup, &superscript_steps, tr, script_size);
             let (base_ascent, base_descent) = metrics(size);
             let raise = base_ascent * 0.55;
             let ascent = (upper.height() + raise).max(base_ascent);
@@ -834,6 +857,81 @@ fn layout_node(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn layout_delimited(
+    body: &Row,
+    open: Option<char>,
+    close: Option<char>,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+    legacy_parens: bool,
+) -> NodeFrag {
+    let (gascent, gdescent) = metrics(size);
+    let body_steps = child_steps(steps, idx, Slot::Body);
+    let inner = layout_row(body, &body_steps, tr, size);
+    let padding = delimiter_padding(size);
+    let row_ascent = gascent.max(inner.ascent + padding);
+    let row_descent = gdescent.max(inner.descent + padding);
+    let body_h = row_ascent + row_descent;
+    let open_width = open.map_or(0.0, |ch| delimiter_width_for(ch, size));
+    let close_width = close.map_or(0.0, |ch| delimiter_width_for(ch, size));
+    let mut boxes = Vec::new();
+    let mut gaps = Vec::new();
+    let mut pen = 0.0;
+    if let Some(ch) = open {
+        boxes.push(Box2d {
+            x: pen,
+            y: 0.0,
+            w: open_width,
+            h: body_h,
+            baseline: row_ascent,
+            kind: if legacy_parens {
+                BoxKind::Paren { open: true, size }
+            } else {
+                BoxKind::Delimiter { ch, size }
+            },
+        });
+        pen += open_width;
+    }
+    let dy = row_ascent - inner.ascent;
+    for mut math_box in inner.boxes {
+        math_box.x += pen;
+        math_box.y += dy;
+        boxes.push(math_box);
+    }
+    for mut gap in inner.gaps {
+        gap.x += pen;
+        gap.top += dy;
+        gap.bottom += dy;
+        gaps.push(gap);
+    }
+    pen += inner.width;
+    if let Some(ch) = close {
+        boxes.push(Box2d {
+            x: pen,
+            y: 0.0,
+            w: close_width,
+            h: body_h,
+            baseline: row_ascent,
+            kind: if legacy_parens {
+                BoxKind::Paren { open: false, size }
+            } else {
+                BoxKind::Delimiter { ch, size }
+            },
+        });
+        pen += close_width;
+    }
+    NodeFrag {
+        boxes,
+        gaps,
+        width: pen,
+        ascent: row_ascent,
+        descent: row_descent,
+    }
+}
+
 fn child_steps(steps: &[(usize, Slot)], idx: usize, slot: Slot) -> Vec<(usize, Slot)> {
     let mut s = steps.to_vec();
     s.push((idx, slot));
@@ -842,7 +940,7 @@ fn child_steps(steps: &[(usize, Slot)], idx: usize, slot: Slot) -> Vec<(usize, S
 
 #[cfg(test)]
 mod layout_tests {
-    use super::super::model::parse;
+    use super::super::{model::parse, tex::parse_tex};
     use super::*;
 
     fn box_size(kind: &BoxKind) -> Option<f32> {
@@ -850,6 +948,8 @@ mod layout_tests {
             BoxKind::Name { size, .. }
             | BoxKind::Glyph { size, .. }
             | BoxKind::Paren { size, .. }
+            | BoxKind::Delimiter { size, .. }
+            | BoxKind::Accent { size, .. }
             | BoxKind::SqrtSign { size, .. } => Some(*size),
             BoxKind::FracBar => None,
         }
@@ -1046,6 +1146,44 @@ mod layout_tests {
             (delimiter_center - matrix_center).abs() < f64::from(22.0 * 0.2),
             "delimiter and matrix must share an optical centre"
         );
+    }
+
+    #[test]
+    fn tex_delimiters_enclose_tall_content_and_accents_fit_their_base() {
+        let mut tr = TextRenderer::new();
+        let parsed = parse_tex(r"\left[\frac{\hat{x}}{y}\right]");
+        let laid = layout(&parsed.expr.root, &mut tr, 22.0);
+        let delimiters: Vec<_> = laid
+            .boxes
+            .iter()
+            .filter(|math_box| matches!(math_box.kind, BoxKind::Delimiter { .. }))
+            .collect();
+        assert_eq!(delimiters.len(), 2);
+        assert!((delimiters[0].y - delimiters[1].y).abs() < 0.01);
+        assert!((delimiters[0].h - delimiters[1].h).abs() < 0.01);
+
+        let accent = laid
+            .boxes
+            .iter()
+            .find(|math_box| matches!(math_box.kind, BoxKind::Accent { .. }))
+            .expect("hat geometry");
+        let base = laid
+            .boxes
+            .iter()
+            .filter(|math_box| matches!(math_box.kind, BoxKind::Glyph { .. }))
+            .filter(|math_box| {
+                math_box.y >= accent.y + accent.h
+                    && math_box.x < accent.x + accent.w
+                    && math_box.x + math_box.w > accent.x
+            })
+            .min_by(|left, right| left.y.total_cmp(&right.y))
+            .expect("accented base glyph");
+        assert!(
+            accent.y + accent.h <= base.y,
+            "the hat stays above its base"
+        );
+        assert!(accent.x <= base.x + base.w * 0.25);
+        assert!(accent.x + accent.w >= base.x + base.w * 0.75);
     }
 }
 
