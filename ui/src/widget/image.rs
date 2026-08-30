@@ -88,7 +88,7 @@ pub struct Image {
     intrinsic_size: (u32, u32),
     fit: ImageFit,
     rect: Rect,
-    cached_image: Option<PenikoImage>,
+    cached: Option<PenikoImage>,
     /// Optional alternative text describing the image's content. Surfaced as
     /// the accessible name in [`Widget::accessibility`]; `None` leaves the
     /// image unnamed (decorative).
@@ -105,7 +105,7 @@ impl Image {
             intrinsic_size: (0, 0),
             fit: ImageFit::Contain,
             rect: Rect::ZERO,
-            cached_image: None,
+            cached: None,
             alt: None,
         }
     }
@@ -123,7 +123,7 @@ impl Image {
             intrinsic_size: (width, height),
             fit: ImageFit::Contain,
             rect: Rect::ZERO,
-            cached_image: None,
+            cached: None,
             alt: None,
         }
     }
@@ -132,12 +132,17 @@ impl Image {
     /// see decode errors immediately. JPEG bytes will be rejected
     /// here; decode them yourself and use [`Image::from_rgba`] until
     /// the multi-format decoder lands.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageDecodeError`] if `bytes` isn't a decodable PNG.
     pub fn from_encoded(bytes: &[u8]) -> Result<Self, ImageDecodeError> {
         let (rgba, width, height) = decode_png(bytes)?;
         Ok(Self::from_rgba(Arc::from(rgba), width, height))
     }
 
     /// Set the fit mode. See [`ImageFit`].
+    #[must_use]
     pub fn with_fit(mut self, fit: ImageFit) -> Self {
         self.fit = fit;
         self
@@ -146,6 +151,7 @@ impl Image {
     /// Set the alternative text describing the image. Surfaced as the
     /// accessible name in [`Widget::accessibility`]. Omitting it leaves the
     /// image unnamed (treated as decorative by assistive technology).
+    #[must_use]
     pub fn with_alt(mut self, alt: impl Into<String>) -> Self {
         self.alt = Some(alt.into());
         self
@@ -173,7 +179,7 @@ impl Image {
 
     /// Test-only helper: paint the widget into `scene` at `rect` with
     /// no surrounding layout pass. Mirrors the path the real `App`
-    /// frame loop takes (apply_layout → draw) but skips taffy.
+    /// frame loop takes (`apply_layout` → `draw`) but skips taffy.
     #[cfg(test)]
     pub fn draw_for_test(&mut self, scene: &mut Scene, rect: Rect) {
         self.rect = rect;
@@ -186,7 +192,7 @@ impl Image {
     /// flips to [`Source::Failed`] so the error state paints
     /// deterministically.
     fn ensure_cached(&mut self) {
-        if self.cached_image.is_some() {
+        if self.cached.is_some() {
             return;
         }
         match &self.source {
@@ -195,8 +201,16 @@ impl Image {
                 width,
                 height,
             } => {
-                let expected = (*width as usize) * (*height as usize) * 4;
-                if rgba.len() != expected {
+                // `width`/`height` came in through `from_rgba`, potentially
+                // from decoded data of unknown provenance; a crafted huge
+                // pair could overflow the multiplication, so this treats
+                // overflow as "can't possibly match" rather than wrapping.
+                let expected = usize::try_from(*width)
+                    .ok()
+                    .zip(usize::try_from(*height).ok())
+                    .and_then(|(w, h)| w.checked_mul(h))
+                    .and_then(|wh| wh.checked_mul(4));
+                if Some(rgba.len()) != expected {
                     self.source = Source::Failed;
                     return;
                 }
@@ -209,18 +223,14 @@ impl Image {
                     height: *height,
                 };
                 self.intrinsic_size = (*width, *height);
-                self.cached_image = Some(img);
+                self.cached = Some(img);
             }
             Source::Path(path) => {
-                let bytes = if let Ok(b) = std::fs::read(path) {
-                    b
-                } else {
+                let Ok(bytes) = std::fs::read(path) else {
                     self.source = Source::Failed;
                     return;
                 };
-                let (rgba, width, height) = if let Ok(t) = decode_png(&bytes) {
-                    t
-                } else {
+                let Ok((rgba, width, height)) = decode_png(&bytes) else {
                     self.source = Source::Failed;
                     return;
                 };
@@ -233,7 +243,7 @@ impl Image {
                     height,
                 };
                 self.intrinsic_size = (width, height);
-                self.cached_image = Some(img);
+                self.cached = Some(img);
             }
             Source::Failed => {}
         }
@@ -241,10 +251,18 @@ impl Image {
 
     /// Paint the cached image into `scene` honouring the fit mode, or
     /// paint the error state if decoding has failed.
+    #[allow(
+        clippy::similar_names,
+        reason = "iw_f/ih_f (image width/height as f64) and rw/rh (rect width/height) are the clearest short names for this fit-mode geometry"
+    )]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the `Affine::translate(..) * Affine::scale_non_uniform(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+    )]
     fn paint(&mut self, scene: &mut Scene, transform: Affine) {
         self.ensure_cached();
 
-        let Some(img) = self.cached_image.clone() else {
+        let Some(img) = self.cached.clone() else {
             self.paint_error(scene, transform);
             return;
         };
@@ -324,9 +342,9 @@ impl Image {
     }
 
     /// Paint the failure state: a red border and a "Image failed"
-    /// label. Drawn whenever `cached_image` is `None` after
+    /// label. Drawn whenever `cached` is `None` after
     /// `ensure_cached`.
-    fn paint_error(&mut self, scene: &mut Scene, transform: Affine) {
+    fn paint_error(&self, scene: &mut Scene, transform: Affine) {
         let red = Color::from_rgba8(220, 38, 38, 255);
         let stroke = Stroke::new(2.0);
         scene.stroke(&stroke, transform, red, None, &self.rect);
@@ -372,13 +390,15 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), ImageDecodeError> {
     let info = reader
         .next_frame(&mut buf)
         .map_err(|e| ImageDecodeError::Decode(e.to_string()))?;
-    let bytes = &buf[..info.buffer_size()];
+    let bytes = buf.get(..info.buffer_size()).ok_or_else(|| {
+        ImageDecodeError::Decode("png buffer_size exceeds the decoded output buffer".into())
+    })?;
 
     let (width, height) = (info.width, info.height);
     let rgba = match info.color_type {
         png::ColorType::Rgba => bytes.to_vec(),
         png::ColorType::Rgb => {
-            let mut out = Vec::with_capacity((width * height * 4) as usize);
+            let mut out = Vec::with_capacity(rgba_capacity_hint(width, height));
             for chunk in bytes.chunks_exact(3) {
                 out.extend_from_slice(chunk);
                 out.push(0xFF);
@@ -386,14 +406,17 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), ImageDecodeError> {
             out
         }
         png::ColorType::GrayscaleAlpha => {
-            let mut out = Vec::with_capacity((width * height * 4) as usize);
+            let mut out = Vec::with_capacity(rgba_capacity_hint(width, height));
             for chunk in bytes.chunks_exact(2) {
-                out.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
+                let Some(&[gray, alpha]) = chunk.first_chunk::<2>() else {
+                    continue;
+                };
+                out.extend_from_slice(&[gray, gray, gray, alpha]);
             }
             out
         }
         png::ColorType::Grayscale => {
-            let mut out = Vec::with_capacity((width * height * 4) as usize);
+            let mut out = Vec::with_capacity(rgba_capacity_hint(width, height));
             for &v in bytes {
                 out.extend_from_slice(&[v, v, v, 0xFF]);
             }
@@ -407,6 +430,21 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), ImageDecodeError> {
     };
 
     Ok((rgba, width, height))
+}
+
+/// Best-effort `width * height * 4` as a `Vec` capacity hint. `width`
+/// and `height` come straight from the decoded PNG header, so a
+/// crafted file could claim dimensions that overflow the
+/// multiplication; overflow is treated as "no hint" (falls back to an
+/// empty capacity, which just means the `Vec` grows via reallocation)
+/// rather than wrapping or panicking.
+fn rgba_capacity_hint(width: u32, height: u32) -> usize {
+    usize::try_from(width)
+        .ok()
+        .zip(usize::try_from(height).ok())
+        .and_then(|(w, h)| w.checked_mul(h))
+        .and_then(|wh| wh.checked_mul(4))
+        .unwrap_or(0)
 }
 
 impl Widget for Image {
