@@ -16,10 +16,11 @@
 //! rules, expressed for sound. A track that is muted contributes nothing; a
 //! soloed track silences its unsoloed siblings.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cmp::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
-use crate::model::{ClipId, MediaId, Project, TrackKind};
+use crate::model::{ClipId, MediaId, Project, TrackId, TrackKind};
 
 /// Everything mixes at one rate, so summing never has to resample.
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -45,10 +46,26 @@ pub trait PcmSource {
 pub struct AudioLayer {
     pub clip: ClipId,
     pub media: MediaId,
+    /// The lane it sits on — which is what the meter attributes its level to,
+    /// so "the mix is clipping" can be narrowed to "on A1".
+    pub track: TrackId,
     /// Seconds into the source this clip is playing.
     pub source_time: f64,
-    /// Clip volume times the fade envelope, 0..1.
+    /// **Clip volume × fade envelope × the lane's fader.**
+    ///
+    /// The first two are a 0..1 *trim*: they can only ever take away from what
+    /// the source recorded, which is why a quiet clip could not be fixed at
+    /// all before the lane had a fader. The third is
+    /// [`Track::gain`](crate::model::Track::gain), which reaches
+    /// [`MAX_GAIN_DB`](crate::model::MAX_GAIN_DB) — so this product runs
+    /// `0.0 ..= 4.0` and a single loud layer can be over full scale on its
+    /// own. That is deliberate and it is what the meter is for.
     pub gain: f64,
+    /// The lane's pan, `-1`..`1`. Applied as
+    /// [`Track::pan_gains`](crate::model::Track::pan_gains) when the block is
+    /// summed, rather than folded into `gain`, because it is per channel and
+    /// `gain` is not.
+    pub pan: f64,
     /// Signed playback rate: how many source seconds pass per timeline
     /// second, negative when the clip is reversed. 1.0 at normal speed, and
     /// then the mixer reads the source one-for-one.
@@ -129,12 +146,21 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
         // Volume goes through the animation door, so a keyframed level is
         // just a different number here.
         let level = clip.param_at(crate::param::Param::Volume, t);
-        let gain = (level * clip.envelope(t)).clamp(0.0, 1.0);
+        // How the two levels compose, in one line: the clip's own volume and
+        // its fade envelope are a **trim** — 0..1, never more than the source
+        // gave — and the track's fader then scales whatever the clips on it
+        // are doing. So turning a clip down is never undone by the lane, and
+        // all the make-up gain lives in one place. The upper clamp that used
+        // to be here is gone with the fader that replaces it: capping the
+        // product at 1.0 is exactly what made a quiet clip unfixable.
+        let gain = (level * clip.envelope(t)).clamp(0.0, 1.0) * track.gain();
         out.push(AudioLayer {
             clip: clip.id,
             media: clip.media,
+            track: track.id,
             source_time: crate::preview::source_time_for(clip, t),
             gain,
+            pan: track.pan,
             rate: clip.speed.signed(),
         });
     }
@@ -156,6 +182,60 @@ pub fn peak(block: &[f32]) -> f32 {
     block.iter().fold(0.0f32, |m, s| m.max(s.abs()))
 }
 
+/// The peak of one channel of an interleaved block. [`peak`] over both
+/// together answers "how loud", this answers "how loud on which side", which
+/// is what a stereo meter draws and what makes a pan visible on it.
+pub fn channel_peak(block: &[f32], channel: usize) -> f32 {
+    block
+        .iter()
+        .skip(channel.min(CHANNELS - 1))
+        .step_by(CHANNELS)
+        .fold(0.0f32, |m, s| m.max(s.abs()))
+}
+
+/// What one mixed block measured, per channel.
+///
+/// **Before the clamp**, always. After it every overloaded block reads exactly
+/// `1.0` and "just touched full scale" is indistinguishable from "three times
+/// over" — which is the difference between a mix that is fine and one that is
+/// ruined, and the number a person needs in order to know how far to come
+/// down.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlockMeter {
+    /// Peak absolute sample, left then right. `1.0` is full scale.
+    pub peak: [f32; 2],
+}
+
+impl BlockMeter {
+    fn measure(block: &[f32]) -> Self {
+        Self {
+            peak: [channel_peak(block, 0), channel_peak(block, 1)],
+        }
+    }
+
+    /// The louder channel.
+    pub fn loudest(&self) -> f32 {
+        self.peak[0].max(self.peak[1])
+    }
+
+    /// Whether this block asked for more than the format can carry, and so
+    /// came out of the mixer distorted.
+    pub fn over(&self) -> bool {
+        self.loudest() > 1.0
+    }
+}
+
+/// What a metered mix measured: the master, and each lane's own contribution
+/// to it.
+///
+/// The per-track numbers are what let the warning say *which* lane, rather
+/// than leaving a person to solo their way down the timeline looking for it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MixReport {
+    pub master: BlockMeter,
+    pub tracks: Vec<(TrackId, BlockMeter)>,
+}
+
 /// Mix `frames` interleaved stereo frames starting at timeline second
 /// `start`.
 ///
@@ -168,11 +248,70 @@ pub fn peak(block: &[f32]) -> f32 {
 /// export uses (a video frame's worth, ~20ms) a fade moves by well under a
 /// decibel across one, and per-sample evaluation would mean re-walking the
 /// clip list 48,000 times a second for no audible difference.
+///
+/// The clamp is still here and still silent — see [`mix_block_metered`],
+/// which is the same mix with the measurement kept. Everything a person
+/// *sees* about level goes through that one; this is the plain path an
+/// encoder wants, and it allocates nothing extra to serve a meter nobody is
+/// watching.
 pub fn mix_block(
     project: &Project,
     start: f64,
     frames: usize,
     source: &mut dyn PcmSource,
+) -> Vec<f32> {
+    let mut out = mix_core(project, start, frames, source, None);
+    clamp_block(&mut out);
+    out
+}
+
+/// [`mix_block`], with what it measured on the way past.
+///
+/// This is the mix the *monitor* runs, because a meter that is fed by a
+/// second, parallel analysis is a meter that can disagree with what you are
+/// hearing. The measurement is taken from the summed block before the clamp,
+/// so it costs one pass over samples that are already in cache and no decode
+/// at all — the number is carried to the UI rather than recomputed there.
+pub fn mix_block_metered(
+    project: &Project,
+    start: f64,
+    frames: usize,
+    source: &mut dyn PcmSource,
+) -> (Vec<f32>, MixReport) {
+    let mut per_track: Vec<(TrackId, Vec<f32>)> = Vec::new();
+    let mut out = mix_core(project, start, frames, source, Some(&mut per_track));
+    let report = MixReport {
+        master: BlockMeter::measure(&out),
+        tracks: per_track
+            .iter()
+            .map(|(id, block)| (*id, BlockMeter::measure(block)))
+            .collect(),
+    };
+    clamp_block(&mut out);
+    (out, report)
+}
+
+/// Saturate a summed block into the representable range. Split out so the
+/// metered path can read the true peak *first* — the whole point of the
+/// measurement is that it survives this.
+fn clamp_block(out: &mut [f32]) {
+    for s in out.iter_mut() {
+        *s = s.clamp(-1.0, 1.0);
+    }
+}
+
+/// The summed, **unclamped** block, and — when `per_track` is given — each
+/// lane's own contribution to it.
+///
+/// One core so the plain and the metered mix can never drift apart about what
+/// is audible. `per_track` is `None` for the encoder's path, which wants no
+/// buffer it is not going to read.
+fn mix_core(
+    project: &Project,
+    start: f64,
+    frames: usize,
+    source: &mut dyn PcmSource,
+    mut per_track: Option<&mut Vec<(TrackId, Vec<f32>)>>,
 ) -> Vec<f32> {
     let mut out = vec![0.0f32; frames * CHANNELS];
     if frames == 0 {
@@ -195,15 +334,31 @@ pub fn mix_block(
         let Some(samples) = fetch_at_rate(source, &layer, frames) else {
             continue;
         };
-        let g = layer.gain as f32;
+        // Pan is per channel, so the per-sample multiplier alternates. At the
+        // default centre both are the lane's plain gain and this is the same
+        // arithmetic it always was.
+        let (pl, pr) = project
+            .track(layer.track)
+            .map_or((1.0, 1.0), crate::model::Track::pan_gains);
+        let g = [(layer.gain * pl) as f32, (layer.gain * pr) as f32];
+        let bucket = per_track.as_deref_mut().map(|buckets| {
+            match buckets.iter().position(|(t, _)| *t == layer.track) {
+                Some(i) => i,
+                None => {
+                    buckets.push((layer.track, vec![0.0f32; frames * CHANNELS]));
+                    buckets.len() - 1
+                }
+            }
+        });
         // A short read means the source ran out; the rest of the block stays
         // silent rather than repeating whatever was last there.
-        for (o, s) in out.iter_mut().zip(samples.iter()) {
-            *o += s * g;
+        for (i, s) in samples.iter().enumerate().take(out.len()) {
+            let v = s * g[i % CHANNELS];
+            out[i] += v;
+            if let (Some(idx), Some(buckets)) = (bucket, per_track.as_deref_mut()) {
+                buckets[idx].1[i] += v;
+            }
         }
-    }
-    for s in out.iter_mut() {
-        *s = s.clamp(-1.0, 1.0);
     }
     out
 }
@@ -520,6 +675,290 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
 }
 
 // ---------------------------------------------------------------------------
+// Metering — what the mix measured, kept where the UI can read it.
+// ---------------------------------------------------------------------------
+
+/// How fast a meter falls, in decibels per second.
+///
+/// A peak meter rises instantly and falls slowly: the rise is the event you
+/// are trying to see and the fall is only there so the next one is legible.
+/// 24 dB/s is between the broadcast PPM (about 12) and the near-instant fall
+/// of a DAW meter — slow enough that a transient is still on screen when your
+/// eye gets to it, fast enough that the bar tracks a phrase rather than
+/// smearing into a ceiling.
+const METER_RELEASE_DB_PER_SEC: f64 = 24.0;
+
+/// Two overloads closer together than this are one event.
+///
+/// Without it a second of sustained clipping is 47 separate entries, a list
+/// nobody can use and a count that says "47 places" about one place.
+const OVER_MERGE_SECS: f64 = 0.5;
+
+/// How many distinct overloads are remembered. Past this the list stops
+/// growing rather than the oldest being dropped: the *first* place the mix
+/// went over is the one to fix, and a list that forgot it in favour of the
+/// sixty-fifth would be worse than no list.
+const MAX_OVERS: usize = 64;
+
+/// One lane's measured level, as the UI draws it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TrackLevel {
+    pub track: TrackId,
+    /// Falling peak per channel — what the bar shows.
+    pub level: [f32; 2],
+    /// The loudest this lane has been since the meter was last cleared.
+    pub hold: f32,
+    /// **Latched.** True from the moment this lane's own contribution went
+    /// past full scale until the meter is cleared, which is what turns a
+    /// one-frame flash into something a person who was looking at the
+    /// timeline can still find afterwards.
+    pub clipped: bool,
+}
+
+/// Everything the UI needs from the meter, in one cheap copy.
+///
+/// Taken once per `sync` and read from plain fields during `draw`, so the
+/// paint path never takes the mixing thread's lock and never allocates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MixSnapshot {
+    /// Falling master peak per channel.
+    pub master: [f32; 2],
+    /// The loudest the master has been since the last clear.
+    pub master_hold: f32,
+    pub tracks: Vec<TrackLevel>,
+    /// The worst pre-clamp peak seen while over full scale, `0.0` when the
+    /// mix has never gone over. `1.6` here means the mix asked for 60% more
+    /// than the format can carry.
+    pub worst: f32,
+    /// Timeline seconds where the mix went over, in the order they happened.
+    /// This is the answer to "where", and it is why the warning is worth
+    /// having rather than merely alarming.
+    pub overs: Vec<f64>,
+    /// Whether anything has been measured at all since the last clear. A
+    /// quiet meter and a meter nobody has fed look identical, and telling a
+    /// person their levels are fine when nothing has played would be a lie.
+    pub monitored: bool,
+}
+
+impl MixSnapshot {
+    /// Whether the mix has gone over since the meter was last cleared.
+    pub fn clipped(&self) -> bool {
+        !self.overs.is_empty()
+    }
+
+    /// How far over, in decibels. `0.0` when it never went over.
+    pub fn worst_over_db(&self) -> f64 {
+        if self.worst <= 1.0 {
+            return 0.0;
+        }
+        20.0 * f64::from(self.worst).log10()
+    }
+
+    /// The master peak-hold in decibels relative to full scale, or `None`
+    /// when nothing has been measured.
+    pub fn hold_db(&self) -> Option<f64> {
+        self.monitored
+            .then(|| crate::model::linear_to_db(f64::from(self.master_hold)))
+    }
+
+    /// The first overload strictly after `t`, wrapping to the first one when
+    /// there is none — so pressing the warning repeatedly walks the list and
+    /// then starts again, rather than parking on the last one.
+    pub fn next_over_after(&self, t: f64) -> Option<f64> {
+        self.overs
+            .iter()
+            .copied()
+            .find(|o| *o > t + 1e-6)
+            .or_else(|| self.overs.first().copied())
+    }
+
+    pub fn track(&self, id: TrackId) -> Option<&TrackLevel> {
+        self.tracks.iter().find(|t| t.track == id)
+    }
+
+    /// The lanes that have clipped, loudest first — what a warning names.
+    pub fn clipped_tracks(&self) -> Vec<TrackId> {
+        let mut hot: Vec<&TrackLevel> = self.tracks.iter().filter(|t| t.clipped).collect();
+        hot.sort_by(|a, b| b.hold.partial_cmp(&a.hold).unwrap_or(Ordering::Equal));
+        hot.iter().map(|t| t.track).collect()
+    }
+}
+
+#[derive(Default)]
+struct MeterState {
+    master: [f32; 2],
+    master_hold: f32,
+    tracks: Vec<TrackLevel>,
+    worst: f32,
+    overs: Vec<f64>,
+    monitored: bool,
+}
+
+/// The level the mix is running at, shared between the thread that mixes and
+/// the one that draws.
+///
+/// It exists because [`peak`] was written "for a level meter" and had no
+/// caller: the measurement was already being thrown away every block, and a
+/// mix that clamped in silence was the result. Nothing here re-analyses
+/// anything — the mixer hands over what it already computed.
+#[derive(Default)]
+pub struct MixMeters {
+    state: Mutex<MeterState>,
+}
+
+impl MixMeters {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take in what one block measured, at timeline second `at`.
+    ///
+    /// Levels only ever *rise* here; the fall is [`Self::decay`]'s job, driven
+    /// by the frame clock. Splitting them is what keeps the meter's fall rate
+    /// a property of time rather than of how often the mixer happened to run.
+    pub fn record(&self, at: f64, report: &MixReport) {
+        let Ok(mut s) = self.state.lock() else {
+            return;
+        };
+        s.monitored = true;
+        for ch in 0..CHANNELS {
+            s.master[ch] = s.master[ch].max(report.master.peak[ch]);
+        }
+        s.master_hold = s.master_hold.max(report.master.loudest());
+        for (id, m) in &report.tracks {
+            let i = match s.tracks.iter().position(|t| t.track == *id) {
+                Some(i) => i,
+                None => {
+                    s.tracks.push(TrackLevel {
+                        track: *id,
+                        ..Default::default()
+                    });
+                    s.tracks.len() - 1
+                }
+            };
+            let t = &mut s.tracks[i];
+            for ch in 0..CHANNELS {
+                t.level[ch] = t.level[ch].max(m.peak[ch]);
+            }
+            t.hold = t.hold.max(m.loudest());
+            // Latched, never cleared by a quieter block: the point of the
+            // indicator is that it outlives the moment.
+            t.clipped |= m.over();
+        }
+        if !report.master.over() {
+            return;
+        }
+        s.worst = s.worst.max(report.master.loudest());
+        let fresh = s
+            .overs
+            .last()
+            .is_none_or(|last| (at - last).abs() > OVER_MERGE_SECS);
+        if fresh && s.overs.len() < MAX_OVERS {
+            s.overs.push(at);
+            s.overs
+                .sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        }
+    }
+
+    /// Let the meters fall by `dt` seconds' worth. Called from the frame
+    /// clock, so the bar falls at the same rate whether the mixer is running
+    /// at 1024-sample blocks or not running at all.
+    pub fn decay(&self, dt: f64) {
+        if dt <= 0.0 {
+            return;
+        }
+        let factor = crate::model::db_to_linear(-METER_RELEASE_DB_PER_SEC * dt.min(1.0)) as f32;
+        let Ok(mut s) = self.state.lock() else {
+            return;
+        };
+        for ch in 0..CHANNELS {
+            s.master[ch] *= factor;
+        }
+        for t in &mut s.tracks {
+            for ch in 0..CHANNELS {
+                t.level[ch] *= factor;
+            }
+        }
+    }
+
+    /// Forget what was measured: the latched overs, the holds and the worst
+    /// overshoot.
+    ///
+    /// Called when the mix itself changes (see [`mix_signature`]), because a
+    /// warning about levels the user has since altered is a warning about a
+    /// mix that no longer exists — and one that never went away would train
+    /// people to ignore the one that matters.
+    pub fn clear(&self) {
+        let Ok(mut s) = self.state.lock() else {
+            return;
+        };
+        *s = MeterState::default();
+    }
+
+    pub fn snapshot(&self) -> MixSnapshot {
+        let Ok(s) = self.state.lock() else {
+            return MixSnapshot::default();
+        };
+        MixSnapshot {
+            master: s.master,
+            master_hold: s.master_hold,
+            tracks: s.tracks.clone(),
+            worst: s.worst,
+            overs: s.overs.clone(),
+            monitored: s.monitored,
+        }
+    }
+}
+
+/// A hash of everything that decides what the mix sounds like.
+///
+/// Used to tell "the warning still describes this timeline" from "the user has
+/// changed the levels since". Deliberately narrow: renaming a track or
+/// recolouring a clip must not throw away a clipping report, and moving an
+/// audible clip must.
+pub fn mix_signature(project: &Project) -> u64 {
+    // FNV-1a: no dependency, stable across runs and machines, and this is a
+    // change detector rather than a security boundary.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+    };
+    for t in &project.tracks {
+        eat(t.id.as_bytes());
+        eat(&t.gain_db.to_bits().to_le_bytes());
+        eat(&t.pan.to_bits().to_le_bytes());
+        eat(&[u8::from(t.muted), u8::from(t.solo), t.kind as u8]);
+    }
+    for c in &project.clips {
+        eat(c.id.as_bytes());
+        eat(c.track.as_bytes());
+        eat(c.media.as_bytes());
+        for v in [
+            c.start,
+            c.in_point,
+            c.out_point,
+            c.volume,
+            c.fade_in,
+            c.fade_out,
+            c.speed.signed(),
+        ] {
+            eat(&v.to_bits().to_le_bytes());
+        }
+        eat(&[u8::from(c.sound_split)]);
+        if let Some(track) = c.anim.track(crate::param::Param::Volume) {
+            for k in &track.keys {
+                eat(&k.t.to_bits().to_le_bytes());
+                eat(&k.v.to_bits().to_le_bytes());
+            }
+        }
+    }
+    h
+}
+
+// ---------------------------------------------------------------------------
 // Monitoring — hearing the timeline while it plays.
 // ---------------------------------------------------------------------------
 
@@ -602,11 +1041,15 @@ impl AudioMonitor {
     /// Start a monitor feeding `sink`, initially paused.
     ///
     /// `source` supplies the samples; it lives on the monitor thread, so a
-    /// decode it does cannot stall the UI.
+    /// decode it does cannot stall the UI. `meters` receives what every block
+    /// measured — the monitor is the one place in the editor where real
+    /// samples and the user's attention are in the same room, so it is the
+    /// one place a level meter can honestly be fed from.
     pub fn new(
         project: &Project,
         mut sink: Box<dyn MonitorSink>,
         mut source: Box<dyn PcmSource + Send>,
+        meters: Arc<MixMeters>,
     ) -> Self {
         let shared = Arc::new(MonitorState {
             project: Mutex::new(project.clone()),
@@ -619,18 +1062,22 @@ impl AudioMonitor {
             .name("video-editor-monitor".into())
             .spawn(move || {
                 let block_secs = MONITOR_BLOCK as f64 / SAMPLE_RATE as f64;
-                while !state.stop.load(Ordering::Relaxed) {
-                    if !state.playing.load(Ordering::Relaxed) {
+                while !state.stop.load(AtomicOrdering::Relaxed) {
+                    if !state.playing.load(AtomicOrdering::Relaxed) {
                         // Idle cheaply. Nothing is pushed while paused, so a
                         // paused editor makes no sound at all.
                         std::thread::sleep(std::time::Duration::from_millis(10));
                         continue;
                     }
                     let at = *state.position.lock().unwrap();
-                    let block = {
+                    let (block, report) = {
                         let project = state.project.lock().unwrap();
-                        mix_block(&project, at, MONITOR_BLOCK, source.as_mut())
+                        mix_block_metered(&project, at, MONITOR_BLOCK, source.as_mut())
                     };
+                    // Recorded before the push, so a device that goes away
+                    // mid-block still leaves behind what the last one measured
+                    // rather than swallowing the overload that killed it.
+                    meters.record(at, &report);
                     if !sink.push(&block) {
                         break;
                     }
@@ -655,12 +1102,12 @@ impl AudioMonitor {
     /// Start playing from `secs`.
     pub fn play(&self, secs: f64) {
         self.seek(secs);
-        self.shared.playing.store(true, Ordering::Relaxed);
+        self.shared.playing.store(true, AtomicOrdering::Relaxed);
     }
 
     /// Stop playing, leaving the position where it is.
     pub fn pause(&self) {
-        self.shared.playing.store(false, Ordering::Relaxed);
+        self.shared.playing.store(false, AtomicOrdering::Relaxed);
     }
 
     /// Move the playhead. Safe while playing — the next block comes from the
@@ -672,7 +1119,7 @@ impl AudioMonitor {
     }
 
     pub fn is_playing(&self) -> bool {
-        self.shared.playing.load(Ordering::Relaxed)
+        self.shared.playing.load(AtomicOrdering::Relaxed)
     }
 
     /// Where the monitor has mixed up to, in timeline seconds.
@@ -683,8 +1130,8 @@ impl AudioMonitor {
 
 impl Drop for AudioMonitor {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
-        self.shared.playing.store(false, Ordering::Relaxed);
+        self.shared.stop.store(true, AtomicOrdering::Relaxed);
+        self.shared.playing.store(false, AtomicOrdering::Relaxed);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -1230,6 +1677,8 @@ mod tests {
                 muted: false,
                 locked: false,
                 solo: false,
+                gain_db: 0.0,
+                pan: 0.0,
             });
             id
         };
@@ -1283,6 +1732,7 @@ mod tests {
             &p,
             Box::new(rec),
             Box::new(constant(&[(m1, 0.3), (m2, 0.0)])),
+            Arc::new(MixMeters::new()),
         );
 
         assert!(!monitor.is_playing());
@@ -1325,6 +1775,7 @@ mod tests {
             &p,
             Box::new(Recorder::default()),
             Box::new(constant(&[(m1, 0.1), (m2, 0.1)])),
+            Arc::new(MixMeters::new()),
         );
         monitor.play(2.0);
         let block_secs = MONITOR_BLOCK as f64 / SAMPLE_RATE as f64;
@@ -1362,6 +1813,7 @@ mod tests {
             &p,
             Box::new(rec),
             Box::new(constant(&[(m1, 0.2), (m2, 0.9)])),
+            Arc::new(MixMeters::new()),
         );
 
         monitor.play(1.0);
@@ -1390,6 +1842,7 @@ mod tests {
             &p,
             Box::new(rec),
             Box::new(constant(&[(m1, 0.4), (m2, 0.0)])),
+            Arc::new(MixMeters::new()),
         );
         monitor.play(1.0);
         assert!(eventually(|| tap.lock().unwrap().iter().any(|s| *s > 0.3)));
@@ -1429,6 +1882,7 @@ mod tests {
                 &p,
                 Box::new(rec),
                 Box::new(constant(&[(m1, 0.5), (m2, 0.0)])),
+                Arc::new(MixMeters::new()),
             );
             monitor.play(1.0);
             assert!(eventually(|| !tap.lock().unwrap().is_empty()));
@@ -1916,6 +2370,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         assert!(!has_audio(&p));
     }
