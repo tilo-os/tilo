@@ -67,11 +67,9 @@ verify() {
     local vello_ref winit_ref
     vello_ref=$(resolve_ref "$vello_branch" "$vello_tip")
     winit_ref=$(resolve_ref "$winit_branch" "$winit_tip")
-    if test "${QOS_VENDOR_REFS_ONLY:-0}" != 1; then
-        python3 "$script_root/tools/verify-vendor-trees.py" \
-            --vello-ref "$vello_ref" \
-            --winit-ref "$winit_ref"
-    fi
+    python3 "$script_root/tools/verify-vendor-trees.py" \
+        --vello-ref "$vello_ref" \
+        --winit-ref "$winit_ref"
     echo "vendor histories match their recorded roots, tips, and checked-in sources"
 }
 
