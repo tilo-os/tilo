@@ -18,6 +18,10 @@ env:
   CARGO_HOME: /cargo-home
   CARGO_BUILD_JOBS: "4"
   CARGO_INCREMENTAL: "0"
+  # Match the test profile below. Cargo keeps dev/test artifacts in the same
+  # target tree, but a different debuginfo setting gives them different
+  # fingerprints and recompiles the dependency graph for the all-target pass.
+  CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
   # Cache availability changes speed, never correctness or mergeability.

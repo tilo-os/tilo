@@ -43,6 +43,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -56,75 +57,45 @@ use vello::peniko::Color;
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-    let args: Vec<String> = std::env::args().collect();
-    let open = parse_value_arg(&args, "--open")
-        .map(PathBuf::from)
-        .or_else(|| {
-            args.get(1)
-                .filter(|a| args.len() == 2 && !a.starts_with('-'))
-                .map(PathBuf::from)
-        });
-
-    if let Some(out) = parse_value_arg(&args, "--shots").map(PathBuf::from) {
-        let viewport = parse_value_arg(&args, "--viewport")
-            .and_then(|s| parse_viewport(&s))
-            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        // Build the staged player and warm it up: real decode prerolls its first
-        // frame asynchronously, so pump `sync` until a picture is on the surface
-        // (the synthesized fallback produces one on the first pump). This makes a
-        // `--features decode --open <file>` capture a genuine decoded frame.
-        let scenario = parse_value_arg(&args, "--scenario");
-        let mut app = video_player::PlayerApp::for_shot(open, scenario.as_deref());
-        {
-            let mut warm = ui::State::new();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                app.sync(&mut warm.doc, &warm.root);
-                if app.has_media_frame() || std::time::Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(40));
-            }
-        }
-        render_shot_to_png(Box::new(app), viewport, &out)?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            video_player::app_root(open),
-            "dev.qos.video-player",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.video-player");
-    let app = ui::App::new(state, video_player::app_root(open)).with_autosave(autosave);
-    app.run();
+    ui::launch::run(
+        &LaunchSpec::new_with_args("dev.qos.video-player", live_root)
+            .shot_handler(render_shot)
+            .allowed_live_options(&["--open"])
+            .max_positionals(1)
+            .scenarios(&["settings", "fullscreen"]),
+    )?;
     Ok(())
 }
 
-fn parse_value_arg(args: &[String], flag: &str) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    let eq = format!("{flag}=");
-    while let Some(arg) = iter.next() {
-        if arg == flag {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(&eq) {
-            return Some(rest.to_string());
-        }
-    }
-    None
+fn requested_path(args: &LaunchArgs) -> Option<PathBuf> {
+    args.value("--open")
+        .map(PathBuf::from)
+        .or_else(|| args.positionals().first().map(PathBuf::from))
 }
 
-fn parse_viewport(s: &str) -> Option<(u32, u32)> {
-    let (w, h) = s.split_once(['x', 'X'])?;
-    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(video_player::app_root(requested_path(args)))
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or_else(|| {
+        LaunchError::Operation("video-player screenshot handler called without --shots".into())
+    })?;
+    let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let mut app = video_player::PlayerApp::for_shot(requested_path(args), args.scenario.as_deref());
+    // Real decode prerolls asynchronously; pump until its first picture is
+    // ready. The synthesized fallback produces one on the first pass.
+    let mut warm = ui::State::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        app.sync(&mut warm.doc, &warm.root);
+        if app.has_media_frame() || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    render_shot_to_png(Box::new(app), viewport, out)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Render one offscreen frame of `widget` and write it as a PNG. Mirrors

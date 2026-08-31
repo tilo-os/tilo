@@ -39,6 +39,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -52,102 +53,54 @@ use vello::peniko::Color;
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-    let args: Vec<String> = std::env::args().collect();
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.photos", photos::app_root)
+            .open_state_with_args(open_state)
+            .shot_handler(render_shot)
+            .allowed_options(&["--size"])
+            .allowed_live_options(&["--open"])
+            .max_positionals(1)
+            .scenarios(photos::SHOT_SCENARIOS)
+            .configure_app(configure_app),
+    )?;
+    Ok(())
+}
 
-    if let Some(out) = flag_value(&args, "--shots") {
-        let scenario = flag_value(&args, "--scenario").unwrap_or_else(|| "opened".into());
-        let viewport = flag_value(&args, "--size")
-            .and_then(|s| parse_size(&s))
-            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        return render_shot(&scenario, viewport, std::path::Path::new(&out));
+fn requested_path(args: &LaunchArgs) -> Option<&str> {
+    args.value("--open")
+        .or_else(|| args.positionals().first().map(String::as_str))
+}
+
+fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    let (mut state, autosave) = ui::persist::open(app_id);
+    if let Some(path) = requested_path(args) {
+        let mut opener = photos::PhotosApp::new();
+        photos::strings::install();
+        opener.open_path(&mut state.doc, path);
     }
+    (state, autosave)
+}
 
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            photos::app_root(),
-            "dev.qos.photos",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.photos");
-    let mut app = photos::PhotosApp::new();
-    photos::strings::install();
-
-    // The photograph this was started on, however it was named. Same entry as
-    // the file chooser's, so a path from a command line, from the portal, and
-    // from a sandboxed launch all reach the document identically.
-    let mut state = state;
-    if let Some(path) = document_argument(&args) {
-        app.open_path(&mut state.doc, &path);
-    }
-
-    #[allow(unused_mut)]
-    let mut app = ui::App::new(state, Box::new(app)).with_autosave(autosave);
+fn configure_app(app: &mut ui::App) {
     photos::actions::register(app.action_registry_mut());
-    // Debug overlays are a development aid; a shipped build is always clean
-    // regardless of an inherited QUICK_UI_DEBUG.
     #[cfg(not(debug_assertions))]
     {
         app.debug_mode = false;
     }
-    app.run();
-    Ok(())
 }
 
-/// The document this was asked to open, in either spelling it arrives in.
-///
-/// `--open PATH` is what a person types and what the portal hands over. A
-/// **bare first argument** is what a sandboxed launch delivers: `qos-launcher`
-/// forwards the document as the app's `argv[1..]`, because after the
-/// entrypoint token everything is opaque bytes to bwrap and there is nowhere
-/// for a flag name to survive.
-///
-/// Reading only the flag was a silent failure with no error anywhere in it.
-/// The session staged the picture, granted the app read on it, launched the
-/// app with it and logged all three; the app started, ignored its own
-/// argument, and came up empty — so a request to crop that photograph reached
-/// a window that did not have it, which from outside looks exactly like an
-/// agent that did nothing.
-fn document_argument(args: &[String]) -> Option<String> {
-    if let Some(path) = flag_value(args, "--open") {
-        return Some(path);
-    }
-    // The first token that is not a flag and not a flag's value. A GUI launch
-    // carries exactly one argument and nothing else, so this is that argument
-    // — the walk is what keeps `--size 1280x800` from being mistaken for a
-    // filename on the paths that do carry flags.
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if let Some(name) = arg.strip_prefix("--") {
-            if !name.contains('=') {
-                // `--flag value`: step over the value too.
-                iter.next();
-            }
-            continue;
-        }
-        if arg.starts_with('-') {
-            continue;
-        }
-        return Some(arg.clone());
-    }
-    None
-}
-
-/// Value of `--flag VALUE` or `--flag=VALUE`.
-fn flag_value(args: &[String], flag: &str) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    let eq = format!("{flag}=");
-    while let Some(arg) = iter.next() {
-        if arg == flag {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(&eq) {
-            return Some(rest.to_string());
-        }
-    }
-    None
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or_else(|| {
+        LaunchError::Operation("Photos screenshot handler called without --shots".into())
+    })?;
+    let scenario = args.scenario.as_deref().unwrap_or("opened");
+    let viewport = args
+        .value("--size")
+        .and_then(parse_size)
+        .or(args.viewport)
+        .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    render_scenario(scenario, viewport, out)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Parse `WxH`.
@@ -158,7 +111,7 @@ fn parse_size(s: &str) -> Option<(u32, u32)> {
 
 /// Render one scenario offscreen. Mirrors `ui::App`'s frame exactly:
 /// sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
-fn render_shot(
+fn render_scenario(
     scenario: &str,
     viewport: (u32, u32),
     out: &std::path::Path,
@@ -229,9 +182,6 @@ fn render_shot(
         }
         widget.apply_layout(&taffy, child, Point::ORIGIN);
 
-        // The viewer now has a rect, so a zoom means something. Framing the
-        // crop before the second pass is what makes the `cropping` shot show
-        // a photograph being framed rather than merely turned.
         if pass == 0 && scenario == "cropping" {
             widget.set_zoom(photos::CROPPING_SCENARIO_ZOOM);
         }
@@ -247,8 +197,6 @@ fn render_shot(
         );
     }
 
-    // The top layer, exactly as `App` runs it: anything that floats above the
-    // ordinary tree paints here so nothing drawn later can occlude it.
     widget.draw_overlay(
         &mut scene,
         Affine::IDENTITY,

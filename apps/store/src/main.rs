@@ -38,10 +38,9 @@
 use store::app::RemoteIntent;
 use store::worker::{Request, StoreWorker};
 use store::{FlatpakRef, StoreApp};
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
+fn main() {
     // rustls needs an explicit provider: the tree carries both ring and
     // aws-lc-rs, and 0.23 will not pick one on its own. The dependency
     // was already declared for this — the call was not there, so every
@@ -50,35 +49,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // maps app and `qos-catalogue` run.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_flag(&args, "--shots") {
-        let viewport = parse_flag(&args, "--viewport")
-            .and_then(|v| store::shots::parse_viewport(&v))
-            .unwrap_or(store::shots::DEFAULT_SHOTS_VIEWPORT);
-        store::shots::render_to_path(viewport, std::path::Path::new(&out))?;
-        return Ok(());
-    }
+    ui::launch::run_or_exit(
+        LaunchSpec::new_with_args("dev.qos.store", live_root)
+            .max_positionals(1)
+            .shot_handler(shot_handler),
+    );
+}
 
-    // Opening a reference only stages a regular Store card. Installation is
-    // still gated on the card's explicit Install action; file association is
-    // never permission to mutate the host by itself.
-    let opened_ref = store::flatpakref::path_from_args(&args)
-        .map(|path| FlatpakRef::from_path(&path))
-        .transpose()?
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
+    // Opening a reference only stages a regular Store card. Installation stays
+    // gated on the card's explicit Install action.
+    let opened_ref = args
+        .positionals()
+        .first()
+        .map(std::path::Path::new)
+        .filter(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("flatpakref"))
+        })
+        .map(FlatpakRef::from_path)
+        .transpose()
+        .map_err(|error| LaunchError::Operation(error.to_string()))?
         .flatten();
+    Ok(Box::new(LiveStore::new(StoreWorker::spawn(opened_ref))))
+}
 
-    let widget = LiveStore::new(StoreWorker::spawn(opened_ref));
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(&spec, Box::new(widget), "dev.qos.store"));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.store");
-    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
-    app.run();
-    Ok(())
+fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args
+        .shots
+        .as_deref()
+        .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
+    store::shots::render_to_path(
+        args.viewport
+            .unwrap_or(store::shots::DEFAULT_SHOTS_VIEWPORT),
+        out,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// The Widget the main event loop owns. Wraps a `StoreApp` and
@@ -239,19 +246,4 @@ impl ui::widget::Widget for LiveStore {
     fn needs_animation_frame(&self) -> bool {
         self.worker.has_pending() || self.inner.needs_animation_frame()
     }
-}
-
-/// Read `--name value` or `--name=value` out of `args`.
-fn parse_flag(args: &[String], name: &str) -> Option<String> {
-    let prefix = format!("{name}=");
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == name {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(&prefix) {
-            return Some(rest.to_string());
-        }
-    }
-    None
 }

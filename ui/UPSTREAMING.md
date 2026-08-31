@@ -103,11 +103,13 @@ word-processor, music, video-player.
 `map_uris`, and `inject_for_test` compile without the feature so headless tests
 drive the exact per-frame drain path.
 
-**Proof migration.** **feeds** deleted its 158-line `portal.rs` and its `ashpd`
-+ `url` deps; its portal-drain tests pass against `ui::portal::inject_for_test`.
-**Remaining sweep:** migrate the other 8 apps onto `ui::portal` and delete their
-copies (~1600 LOC). (video-player still carries its own `portal.rs` — a candidate
-for this sweep.)
+**Completed migration.** Every app-local `portal.rs` has been removed. Dialog
+configuration now lives beside the action that consumes it while worker
+threading, URI validation, single/multi channels, save-name seeding, and test
+injection all come from `ui::portal`. The sweep includes the original nine
+apps plus the later adopters (ebook, hex_editor, sheets, typst_editor,
+video_editor, and vpn); vpn's older direct `ashpd` client and its private
+`ashpd`/`tokio`/`url` dependencies were removed as part of the convergence.
 
 ### 3. Chrome consistency — the OS owns window chrome (HIG §"OS owns window chrome" + §1e)  ✅ DONE
 **Problem.** The compositor draws the window title / app-name / logo, yet many

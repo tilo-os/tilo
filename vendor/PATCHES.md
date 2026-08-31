@@ -8,7 +8,19 @@ sources; every following commit is a reviewable topic change:
 
 - `vendor-upstream/vello-0.9` contains `vello` and `vello_encoding` together,
   because the adaptive allocator API crosses the crate boundary. Its baseline
-  is crates.io `vello` 0.9.0 plus `vello_encoding` 0.9.0.
+  is crates.io `vello` 0.9.0 plus `vello_encoding` 0.9.0. The series is split
+  into eight dependency-ordered review commits rather than one qOS-sized patch:
+  encoding budget/accounting, renderer measurement, atlas diagnostics, the
+  clipped-image PTCL floor, the viewport-scaled line floor, and compatibility
+  lint cleanup, separation of budget readback from debug-buffer capture, and
+  the upstream lint-format cleanup found by the feature-matrix CI.
+  The code is now ported onto current upstream `main` as three
+  independently reviewable draft pull requests:
+  [adaptive bump budgets and safety floors](https://github.com/linebender/vello/pull/1861),
+  [atlas-drop diagnostics](https://github.com/linebender/vello/pull/1862), and
+  [toolchain-compatible lint attributes](https://github.com/linebender/vello/pull/1863).
+  This keeps diagnostics and compatibility cleanup out of the performance PR
+  while retaining the dependency-ordered 0.9 history used by qOS.
 - `vendor-upstream/winit-0.30.13` contains winit alone, based on crates.io
   `winit` 0.30.13. It retains the registry metadata and updates
   `Cargo.toml.orig` alongside Cargo's normalized manifest, making the topic
@@ -37,7 +49,7 @@ changes are accepted and the vendoring can be removed.
 ## Vello changes
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
-`vello_encoding` 0.9.0 from crates.io, verbatim, except for the eight files
+`vello_encoding` 0.9.0 from crates.io, verbatim, except for the ten files
 below. Everything else in both trees — including `Cargo.toml`, `Cargo.lock`,
 the licenses and every other `.rs` file — is the unmodified crates.io release;
 diff either tree against the published crate to confirm.

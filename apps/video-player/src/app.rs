@@ -21,13 +21,13 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, VideoPlayer, Widget};
 
 use crate::collab::{CollabPlayback, Role};
-use crate::portal::{self, OpenChannel, OpenOutcome};
 
 /// Inset (logical px) of the floating top overlay (media title + Open) from the
 /// video edges.
@@ -46,6 +46,24 @@ const OPEN_BTN_W: f64 = 84.0;
 )]
 fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
     taffy.new_with_children(style, children).unwrap()
+}
+
+fn video_open_request() -> PickRequest {
+    PickRequest::open("Open a video", "Play")
+        .thread_name("video-player-portal")
+        .filter(
+            FileFilter::new("Video")
+                .mimetype("video/mp4")
+                .mimetype("video/webm")
+                .mimetype("video/x-matroska")
+                .mimetype("video/quicktime")
+                .glob("*.mp4")
+                .glob("*.webm")
+                .glob("*.mkv")
+                .glob("*.mov")
+                .glob("*.avi"),
+        )
+        .all_files()
 }
 
 /// Build a [`media::Source`] for a filesystem path: a path under the FUSE
@@ -69,7 +87,7 @@ pub struct PlayerApp {
     open_button_rect: Rect,
     last_cursor: Point,
     /// A file-open portal request in flight, drained each `sync`.
-    portal_rx: Option<OpenChannel>,
+    portal_rx: Option<PortalChannel>,
     /// Collaborative playback state (host/follower). `None` for a local-only
     /// session or the headless `--shots` path.
     collab: Option<CollabPlayback>,
@@ -227,7 +245,7 @@ impl PlayerApp {
     /// Kick off a portal file-open (or the immediate "no portal" outcome in the
     /// hermetic build).
     fn trigger_open(&mut self) {
-        self.portal_rx = Some(portal::request_open());
+        self.portal_rx = Some(video_open_request().send());
     }
 
     /// Drain a pending portal outcome, opening the chosen file.
@@ -236,11 +254,11 @@ impl PlayerApp {
         let mut chosen: Option<PathBuf> = None;
         if let Some(rx) = self.portal_rx.as_ref() {
             match rx.try_recv() {
-                Ok(OpenOutcome::Opened(p)) => {
+                Ok(PortalOutcome::Opened(p)) => {
                     chosen = Some(p);
                     clear = true;
                 }
-                Ok(OpenOutcome::Cancelled | OpenOutcome::Failed(_)) => clear = true,
+                Ok(PortalOutcome::Cancelled | PortalOutcome::Failed(_)) => clear = true,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
             }
@@ -569,9 +587,9 @@ mod tests {
     #[test]
     fn portal_outcome_opens_the_chosen_file() {
         let mut app = PlayerApp::new();
-        app.portal_rx = Some(portal::inject_for_test(OpenOutcome::Opened(PathBuf::from(
-            "/tmp/Chosen.webm",
-        ))));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            PathBuf::from("/tmp/Chosen.webm"),
+        )));
         app.drain_portal();
         assert_eq!(app.title, "Chosen.webm");
         assert!(app.portal_rx.is_none(), "channel cleared after the outcome");

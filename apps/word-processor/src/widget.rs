@@ -36,8 +36,14 @@ use crate::WpFormat;
 use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
+#[cfg(test)]
+use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
+use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
 use crate::style_color_picker::StyleColorPicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
+#[cfg(test)]
+use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN};
+use crate::zoom_control::{STEP as ZOOM_STEP, ZoomControl};
 use ui::portal;
 
 /// Convert the model's `(block, start, end)` ranges into serializable
@@ -357,22 +363,9 @@ enum ToolAction {
     NewMenu,
 }
 
-/// A clickable zoom control (the toolbar's right-aligned zoom stepper).
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum StatusAction {
-    Out,
-    In,
-    Reset,
-}
-
-/// Zoom bounds + step for the page/content scale.
-const ZOOM_MIN: f64 = 0.5;
-const ZOOM_MAX: f64 = 3.0;
-const ZOOM_STEP: f64 = 0.1;
 /// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
 /// (= `bw + gap + val_w + gap + bw` in `draw_zoom_control`). Reserved on the
 /// toolbar's last row, right of the colour swatches, so buttons never pack under it.
-const ZOOM_CLUSTER_W: f64 = 88.0;
 /// Gap between the zoom stepper cluster and the colour-swatch strips on the
 /// toolbar's last row.
 const ZOOM_SWATCH_GAP: f64 = 16.0;
@@ -1729,16 +1722,8 @@ pub struct WordProcessorWidget {
     edit_buf: String,
     /// An active drag-to-scrub on a numeric field, if any.
     scrub: Option<ScrubState>,
-    /// Page+content zoom factor (1.0 = 100%). Applied to the page transform and
-    /// accounted for in hit-testing + scroll. Lives in widget state (a view
-    /// preference), not the document. Clamped to `[ZOOM_MIN, ZOOM_MAX]`.
-    zoom: f64,
-    /// The screen-space anchor used for the content zoom transform this frame
-    /// (top-center of the canvas). Cached so the event handler can map pointer
-    /// positions from screen space back into unscaled content space.
-    zoom_anchor: Point,
-    /// Clickable zoom-stepper controls (now in the toolbar): `(action, rect)`.
-    status_buttons: Vec<(StatusAction, Rect)>,
+    /// Local page scale plus its toolbar drawing and hit-testing.
+    zoom: ZoomControl,
     /// Transient floating status readout (word/char count + modified dot,
     /// filename and format), in place of a permanent bottom status strip. Pokes
     /// on a label change, reveals while the pointer hovers the bottom-right
@@ -1808,20 +1793,8 @@ pub struct WordProcessorWidget {
     /// hard-coded colours, so the editor honours light/dark mode + the OS
     /// palette. Initialised to the dark theme's mapping for off-frame use.
     chrome: ChromeColors,
-    /// OS-theme-driven chrome palette, resolved at the top of every `draw` so
-    /// chrome helpers honour light/dark mode instead of hard-coding colours.
-    /// is available in the headless test path, so the trigger is edit-count based).
-    edits_since_autosave: u32,
-    /// A pending crash-recovery offer: a newer recovery copy was found on disk for
-    /// the open document. Surfaced as a banner with Restore / Discard. `None` when
-    /// there is nothing to recover (the common case).
-    recovery: Option<RecoveryOffer>,
-    /// Clickable recovery-banner controls this frame: `(action, rect)`.
-    recovery_buttons: Vec<(RecoveryAction, Rect)>,
-    /// Test/override base directory for recovery copies. When set it takes
-    /// precedence over the `$QOS_WP_RECOVERY_DIR` / `$XDG_STATE_HOME` resolution so
-    /// a test can point recovery at a temp dir without touching the real home.
-    recovery_base: Option<PathBuf>,
+    /// Crash-recovery persistence and its Restore/Discard surface.
+    recovery: RecoveryBanner,
     // ---- new-from-template picker -----------------------------------------
     /// The "New ▾" template picker menu (reuses the shared [`ContextMenu`]). Open
     /// only while the user is choosing a template; a selection replaces the open
@@ -1850,35 +1823,6 @@ pub struct WordProcessorWidget {
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
 }
-
-/// A crash-recovery offer: a recovery copy exists on disk for the open document
-/// and is newer than (or present without) a clean save. Holds the recovery
-/// file's path + the Markdown to restore so Restore is a pure in-memory re-import.
-#[derive(Clone, Debug)]
-struct RecoveryOffer {
-    /// The on-disk recovery file (deleted on Discard / a successful real save).
-    path: PathBuf,
-    /// The recovered document's Markdown bytes (re-imported in place on Restore).
-    markdown: Vec<u8>,
-}
-
-/// A clickable control in the crash-recovery banner.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum RecoveryAction {
-    /// Re-import the recovery copy over the current (just-opened) document.
-    Restore,
-    /// Dismiss the banner and delete the recovery copy.
-    Discard,
-}
-
-/// Write a recovery copy after this many document-modifying edits. Small enough
-/// that little work is lost on a crash, large enough that the codec export isn't
-/// run on literally every keystroke.
-const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
-
-/// Height of the crash-recovery banner (drawn just under the toolbar, like the
-/// Find bar).
-const RECOVERY_BANNER_H: f64 = 40.0;
 
 /// One process-wide built-in dictionary, shared across every word-processor
 /// widget so the ~75k-word list is parsed at most once per process.
@@ -1944,9 +1888,7 @@ impl WordProcessorWidget {
             editing_field: None,
             edit_buf: String::new(),
             scrub: None,
-            zoom: 1.0,
-            zoom_anchor: Point::ZERO,
-            status_buttons: Vec::new(),
+            zoom: ZoomControl::new(),
             status_bubble: ui::StatusBubble::new(),
             last_status: String::new(),
             shots_status: false,
@@ -1967,10 +1909,7 @@ impl WordProcessorWidget {
             history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
-            edits_since_autosave: 0,
-            recovery: None,
-            recovery_buttons: Vec::new(),
-            recovery_base: None,
+            recovery: RecoveryBanner::default(),
             new_menu: ContextMenu::new(),
             new_menu_templates: Vec::new(),
             portal_rx: None,
@@ -2542,9 +2481,7 @@ impl WordProcessorWidget {
     /// Set the zoom factor (clamped) and request a repaint. Returns whether it
     /// changed.
     fn set_zoom(&mut self, z: f64) -> bool {
-        let z = z.clamp(ZOOM_MIN, ZOOM_MAX);
-        if (z - self.zoom).abs() > 1e-6 {
-            self.zoom = z;
+        if self.zoom.set(z) {
             self.dirty = true;
             true
         } else {
@@ -2553,24 +2490,22 @@ impl WordProcessorWidget {
     }
 
     fn zoom_by(&mut self, delta: f64) -> bool {
-        // Round to the nearest step so the displayed percentage stays tidy.
-        let raw = self.zoom + delta;
-        let snapped = (raw / ZOOM_STEP).round() * ZOOM_STEP;
-        self.set_zoom(snapped)
+        let changed = self.zoom.step(delta);
+        self.dirty |= changed;
+        changed
     }
 
     /// The content (page) transform for this frame: a scale about the cached
     /// top-center anchor. Everything inside the page clip draws through this so
     /// the toolbar / find-bar / status bar stay unscaled.
     fn content_transform(&self, base: Affine) -> Affine {
-        base * Affine::scale_about(self.zoom, self.zoom_anchor)
+        self.zoom.transform(base)
     }
 
     /// Map a screen-space pointer into the unscaled content coordinate space the
     /// `Laid` rects live in (the inverse of `content_transform`'s scale-about).
     fn pointer_to_content(&self, p: Point) -> Point {
-        let a = self.zoom_anchor;
-        Point::new(a.x + (p.x - a.x) / self.zoom, a.y + (p.y - a.y) / self.zoom)
+        self.zoom.screen_to_content(p)
     }
 
     /// Select (so it highlights) + scroll to the active match.
@@ -3218,12 +3153,12 @@ impl WordProcessorWidget {
     /// Map an unscaled content x (the page coordinate space) to screen x using the
     /// cached zoom + anchor — the same scale-about the page content draws through.
     fn content_x_to_screen(&self, cx: f64) -> f64 {
-        self.zoom_anchor.x + (cx - self.zoom_anchor.x) * self.zoom
+        self.zoom.content_x_to_screen(cx)
     }
 
     /// Inverse of [`Self::content_x_to_screen`].
     fn screen_x_to_content(&self, sx: f64) -> f64 {
-        self.zoom_anchor.x + (sx - self.zoom_anchor.x) / self.zoom
+        self.zoom.screen_x_to_content(sx)
     }
 
     /// The screen-space x of every ruler marker for the current margins + caret
@@ -5223,7 +5158,8 @@ impl WordProcessorWidget {
         // top of the (scrolled) content stays pinned to the canvas top as zoom
         // changes. The toolbar/find-bar/status bar are drawn with the unscaled
         // `transform` and are unaffected.
-        self.zoom_anchor = Point::new(f64::midpoint(canvas.x0, canvas.x1), canvas.y0);
+        self.zoom
+            .set_anchor(Point::new(f64::midpoint(canvas.x0, canvas.x1), canvas.y0));
         let ctf = self.content_transform(transform);
 
         // Per-side page geometry — every margin is independently customizable.
@@ -5295,16 +5231,24 @@ impl WordProcessorWidget {
         canvas_right: f64,
         tb_bottom: f64,
     ) -> (f64, f64) {
-        let recovery_h = if self.recovery.is_some() {
-            RECOVERY_BANNER_H
-        } else {
-            0.0
-        };
+        let recovery_h = self.recovery.height();
         if recovery_h > 0.0 {
             let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
-            self.draw_recovery_banner(scene, transform, text_renderer, theme, rbar);
-        } else {
-            self.recovery_buttons.clear();
+            let cc = self.chrome;
+            self.recovery.draw(
+                scene,
+                transform,
+                text_renderer,
+                RecoveryPalette {
+                    border: cc.border,
+                    chip: cc.chip,
+                    text: cc.text,
+                    on_accent: cc.on_accent,
+                    accent: theme.accent_primary,
+                    notice: with_alpha(theme.accent_primary, 0x22),
+                },
+                rbar,
+            );
         }
         let find_h = self.find.height();
         if find_h > 0.0 {
@@ -6087,7 +6031,8 @@ impl WordProcessorWidget {
         // is magnified by `zoom`, so the visible window covers `fg.canvas.height() /
         // zoom` of content — divide by zoom so the overflow (and thus max scroll)
         // grows when zoomed in and shrinks when zoomed out.
-        self.max_scroll = (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom).max(0.0);
+        self.max_scroll =
+            (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom.factor()).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
         let sy = self.scroll_y;
         if sy != 0.0 {
@@ -7653,16 +7598,15 @@ impl WordProcessorWidget {
     ) -> bool {
         // Crash-recovery banner (just under the toolbar): a click on
         // Restore / Discard resolves the offer before any other hit-test.
-        if self.recovery.is_some()
-            && let Some(action) = self
-                .recovery_buttons
-                .iter()
-                .find(|(_, r)| r.contains(self.pointer))
-                .map(|(a, _)| *a)
-        {
-            match action {
-                RecoveryAction::Restore => self.restore_recovery(state),
-                RecoveryAction::Discard => self.discard_recovery(),
+        if let Some(decision) = self.recovery.handle_click(self.pointer) {
+            if let RecoveryDecision::Restore(markdown) = decision
+                && self.inner.replace_with_markdown(state, &markdown)
+            {
+                self.refresh_blocks(state);
+                self.layout_cache.clear();
+                self.spell_cache.clear();
+                self.modified = true;
+                self.needs_commit = true;
             }
             self.dirty = true;
             *handled = true;
@@ -7718,11 +7662,7 @@ impl WordProcessorWidget {
         // The recovery banner (when shown) sits above the find bar, so the
         // find band starts below it.
         if self.find.is_open() {
-            let recovery_h = if self.recovery.is_some() {
-                RECOVERY_BANNER_H
-            } else {
-                0.0
-            };
+            let recovery_h = self.recovery.height();
             let fbar_top = self.rect.y0 + tb_h + recovery_h;
             let fbar_bot = fbar_top + crate::find_bar::HEIGHT;
             if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
@@ -7742,20 +7682,8 @@ impl WordProcessorWidget {
             return true;
         }
         if self.pointer.y < self.rect.y0 + tb_h {
-            // The zoom stepper lives in the toolbar (right-aligned); its
-            // buttons are tracked in `self.status_buttons`, separate from
-            // the chrome toolbar buttons — check them first.
-            if let Some(action) = self
-                .status_buttons
-                .iter()
-                .find(|(_, r)| r.contains(self.pointer))
-                .map(|(a, _)| *a)
-            {
-                match action {
-                    StatusAction::Out => self.zoom_by(-ZOOM_STEP),
-                    StatusAction::In => self.zoom_by(ZOOM_STEP),
-                    StatusAction::Reset => self.set_zoom(1.0),
-                };
+            // The right-aligned zoom component owns its hit targets and scale.
+            if self.zoom.click(self.pointer) {
                 self.dirty = true;
                 *handled = true;
                 return true;
@@ -9857,185 +9785,43 @@ impl WordProcessorWidget {
 
     // ---- autosave / crash-recovery ----------------------------------------
 
-    /// The recovery base directory this widget uses: the per-instance override if
-    /// set (tests), else the library default ([`crate::recovery::base_dir`]).
-    fn recovery_dir(&self) -> PathBuf {
-        self.recovery_base
-            .clone()
-            .unwrap_or_else(crate::recovery::base_dir)
-    }
-
-    /// The recovery file path for the open document (stable per document path; a
-    /// single shared slot for an untitled doc). Honours the per-instance override.
+    /// Recovery path for the currently open document (exposed for focused tests).
+    #[cfg(test)]
     fn recovery_path(&self) -> PathBuf {
-        let name = crate::recovery::recovery_path_for(self.path.as_deref());
-        // Re-root onto this widget's base dir so the override applies even though
-        // `recovery_path_for` only consults the env/default.
-        match name.file_name() {
-            Some(f) => self.recovery_dir().join(f),
-            None => name,
-        }
+        self.recovery.path_for(self.path.as_deref())
     }
 
-    /// Point this widget's recovery store at `dir` (used by tests + callers that
-    /// want to relocate the store). Takes effect immediately for the next write.
+    /// Point this widget's recovery store at `dir`.
     pub fn set_recovery_dir(&mut self, dir: PathBuf) {
-        self.recovery_base = Some(dir);
+        self.recovery.set_base_dir(dir);
     }
 
-    /// Count one document-modifying edit toward the autosave debounce; when the
-    /// running count crosses [`AUTOSAVE_EDIT_THRESHOLD`], write a recovery copy and
-    /// reset. Best-effort — a failed write never disturbs editing.
+    /// Export one Markdown snapshot and hand it to the recovery component when
+    /// the edit debounce reaches its threshold.
     fn note_edit_for_autosave(&mut self, state: &AutoCommit) {
-        self.edits_since_autosave = self.edits_since_autosave.saturating_add(1);
-        if self.edits_since_autosave >= AUTOSAVE_EDIT_THRESHOLD {
-            self.write_recovery(state);
-        }
+        let inner = &self.inner;
+        let document_path = self.path.clone();
+        self.recovery.note_edit(document_path.as_deref(), || {
+            inner.containers.as_ref().and_then(|c| {
+                WpFormat::Markdown
+                    .export(qdoc::DocRef { doc: state, c })
+                    .ok()
+            })
+        });
     }
 
-    /// Write a recovery copy of the current document (Markdown) to the stable
-    /// recovery path and reset the edit counter. Best-effort: no panic if the
-    /// directory is unwritable or the document has no schema yet.
-    fn write_recovery(&mut self, state: &AutoCommit) {
-        self.edits_since_autosave = 0;
-        let Some(c) = self.inner.containers.as_ref() else {
-            return;
-        };
-        let dr = qdoc::DocRef { doc: state, c };
-        let Ok(bytes) = WpFormat::Markdown.export(dr) else {
-            return;
-        };
-        let path = self.recovery_path();
-        if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err()
-        {
-            return;
-        }
-        let _ = std::fs::write(&path, bytes);
-    }
-
-    /// Delete the recovery copy for the open document (called after a successful
-    /// real save — the on-disk file is now authoritative). Resets the autosave
-    /// counter so the next edit starts a fresh debounce window.
+    /// Delete a recovery copy superseded by a successful open/save.
     fn clear_recovery(&mut self) {
-        let _ = std::fs::remove_file(self.recovery_path());
-        self.edits_since_autosave = 0;
+        self.recovery.clear(self.path.as_deref());
     }
 
-    /// Check for an existing recovery copy of the open document and, if one is
-    /// present (a previous session crashed before saving), stage a recovery offer
-    /// so the banner surfaces with Restore / Discard. Idempotent and best-effort.
-    /// Call after binding a freshly-opened document. Returns whether an offer was
-    /// staged.
+    /// Stage a recovery offer for the currently open document, if one exists.
     pub fn check_for_recovery(&mut self) -> bool {
-        let path = self.recovery_path();
-        match std::fs::read(&path) {
-            Ok(markdown) if !markdown.is_empty() => {
-                self.recovery = Some(RecoveryOffer { path, markdown });
-                self.dirty = true;
-                true
-            }
-            _ => false,
+        let staged = self.recovery.check(self.path.as_deref());
+        if staged {
+            self.dirty = true;
         }
-    }
-
-    /// Restore the staged recovery copy: re-import its Markdown over the open
-    /// document in place, mark the document modified (the restored content is not
-    /// yet on disk), dismiss the banner, and delete the recovery file (the live
-    /// document now holds its content).
-    fn restore_recovery(&mut self, state: &mut AutoCommit) {
-        let Some(offer) = self.recovery.take() else {
-            return;
-        };
-        if self.inner.replace_with_markdown(state, &offer.markdown) {
-            self.refresh_blocks(state);
-            self.layout_cache.clear();
-            self.spell_cache.clear();
-            self.modified = true;
-            self.needs_commit = true;
-        }
-        let _ = std::fs::remove_file(&offer.path);
-        self.dirty = true;
-    }
-
-    /// Discard the staged recovery copy: dismiss the banner and delete the file
-    /// (the user prefers the on-disk document as opened).
-    fn discard_recovery(&mut self) {
-        if let Some(offer) = self.recovery.take() {
-            let _ = std::fs::remove_file(&offer.path);
-        }
-        self.dirty = true;
-    }
-
-    /// Draw the crash-recovery banner (a prominent strip under the toolbar with
-    /// Restore / Discard buttons), registering its controls for hit-testing.
-    fn draw_recovery_banner(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        bar: Rect,
-    ) {
-        self.recovery_buttons.clear();
-        let cc = self.chrome;
-        let accent = theme.accent_primary;
-        // A tinted strip so it reads as a transient notice, not chrome.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            with_alpha(accent, 0x22),
-            None,
-            &bar,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
-        );
-        let cy = f64::midpoint(bar.y0, bar.y1);
-        tr.draw_text(
-            scene,
-            &t("recovery-banner"),
-            13.0,
-            cc.text,
-            transform * Affine::translate((bar.x0 + 14.0, cy - 8.0)),
-            None,
-        );
-        // Right-aligned Restore / Discard buttons.
-        let mut x = bar.x1 - 12.0;
-        for (action, label, w, primary) in [
-            (RecoveryAction::Discard, t("recovery-discard"), 80.0, false),
-            (RecoveryAction::Restore, t("recovery-restore"), 80.0, true),
-        ] {
-            x -= w;
-            let r = Rect::new(x, cy - 13.0, x + w, cy + 13.0);
-            let (bg, fg) = if primary {
-                (accent, cc.on_accent)
-            } else {
-                (cc.chip, cc.text)
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                bg,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 6.0),
-            );
-            let tx = r.x0 + (w - num::f64_of_usize(label.chars().count()) * 7.4).max(6.0) / 2.0;
-            tr.draw_text(
-                scene,
-                &label,
-                13.0,
-                fg,
-                transform * Affine::translate((tx, cy - 8.0)),
-                None,
-            );
-            self.recovery_buttons.push((action, r));
-            x -= 8.0;
-        }
+        staged
     }
 
     /// Act on a tracked-change / comment review affordance (from a margin-card
@@ -10174,10 +9960,7 @@ impl WordProcessorWidget {
         self.status_bubble.poke(std::time::Instant::now());
     }
 
-    /// Draw the toolbar's zoom control: a − button, the current percentage, a +
-    /// button, right-aligned within `row` (the toolbar's last row). The
-    /// percentage chip doubles as a click-to-reset-to-100% target. Each control
-    /// is registered in `self.status_buttons` for click hit-testing.
+    /// Draw the zoom component in the toolbar's last row.
     fn draw_zoom_control(
         &mut self,
         scene: &mut Scene,
@@ -10185,60 +9968,14 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         row: Rect,
     ) {
-        let cc = self.chrome;
-        self.status_buttons.clear();
-        let cy = f64::midpoint(row.y0, row.y1);
-        let bw = 18.0;
-        let bh = 18.0;
-        let y0 = cy - bh / 2.0;
-        let pct = format!("{}%", num::i32_of_f64((self.zoom * 100.0).round()));
-        // Layout: [−] [ 100% ] [+]  — right-aligned in the row (its width is
-        // `ZOOM_CLUSTER_W`), matching the swatch strip's edge margin.
-        let val_w = 44.0;
-        let total = bw + 4.0 + val_w + 4.0 + bw;
-        let mut x = row.x1 - 14.0 - total;
-
-        let btn = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str| -> Rect {
-            let r = Rect::new(x, y0, x + bw, y0 + bh);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                cc.chip,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 4.0),
-            );
-            let tx = r.x0 + (bw - num::f64_of_usize(label.chars().count()) * 6.5).max(2.0) / 2.0;
-            tr.draw_text(
-                scene,
-                label,
-                13.0,
-                cc.text,
-                transform * Affine::translate((tx, cy - 8.0)),
-                None,
-            );
-            r
-        };
-
-        let minus = btn(scene, tr, x, "−");
-        self.status_buttons.push((StatusAction::Out, minus));
-        x += bw + 4.0;
-
-        // The percentage chip doubles as a reset target (click to return to 100%).
-        let vr = Rect::new(x, y0, x + val_w, y0 + bh);
-        let pw = num::f64_of_usize(pct.chars().count()) * 6.8;
-        tr.draw_text(
+        self.zoom.draw(
             scene,
-            &pct,
-            12.5,
-            cc.text,
-            transform * Affine::translate((x + (val_w - pw) / 2.0, cy - 8.0)),
-            None,
+            transform,
+            tr,
+            row,
+            self.chrome.chip,
+            self.chrome.text,
         );
-        self.status_buttons.push((StatusAction::Reset, vr));
-        x += val_w + 4.0;
-
-        let plus = btn(scene, tr, x, "+");
-        self.status_buttons.push((StatusAction::In, plus));
     }
 
     /// Build the toolbar's button spec list (action, label, width,
@@ -10378,7 +10115,7 @@ impl WordProcessorWidget {
         // Reserve the right-aligned swatch strips + zoom stepper (drawn directly,
         // not as chrome buttons) as a trailing phantom item so no button row
         // extends under them; `toolbar_item_widths` mirrors this exactly.
-        widths.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
+        widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
         starts.push(true);
         let rows = pack_toolbar_rows(&widths, &starts, tb.width());
         self.toolbar_rows = rows.len();
@@ -10436,7 +10173,7 @@ impl WordProcessorWidget {
         // it). The colour/highlight swatch strips pack to its left.
         let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
         self.draw_zoom_control(scene, transform, tr, last_row);
-        let swatch_x1 = (tb.x1 - ZOOM_CLUSTER_W - ZOOM_SWATCH_GAP).max(tb.x0);
+        let swatch_x1 = (tb.x1 - ZoomControl::WIDTH - ZOOM_SWATCH_GAP).max(tb.x0);
         let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
         let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
         // Highlight swatch strip, packed just left of the text-colour strip.
@@ -10498,7 +10235,7 @@ impl WordProcessorWidget {
         w.push(48.0); // TOC
         // right-aligned colour + highlight swatches, plus the zoom stepper cluster
         // (mirrors the reservation in `draw_toolbar`).
-        w.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
+        w.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
         w
     }
 
@@ -12085,7 +11822,7 @@ mod tests {
         let centre_content = Point::new(f64::midpoint(hb.x0, hb.x1), f64::midpoint(hb.y0, hb.y1));
         let screen = Point::new(
             wp.content_x_to_screen(centre_content.x),
-            wp.zoom_anchor.y + (centre_content.y - wp.zoom_anchor.y) * wp.zoom,
+            wp.zoom.anchor().y + (centre_content.y - wp.zoom.anchor().y) * wp.zoom.factor(),
         );
 
         left_click(&mut wp, &mut state, screen);
@@ -12578,7 +12315,7 @@ mod tests {
             "zoom doubles the scale"
         );
         // The anchor maps to itself.
-        let a = wp.zoom_anchor;
+        let a = wp.zoom.anchor();
         let mapped_anchor = ctf * a;
         assert!(
             (mapped_anchor.x - a.x).abs() < 1e-6 && (mapped_anchor.y - a.y).abs() < 1e-6,
@@ -12648,29 +12385,35 @@ mod tests {
     #[test]
     fn zoom_clamps_and_resets() {
         let mut wp = WordProcessorWidget::new();
-        assert!((wp.zoom - 1.0).abs() < 1e-9, "default zoom is 100%");
+        assert!(
+            (wp.zoom.factor() - 1.0).abs() < 1e-9,
+            "default zoom is 100%"
+        );
         // Clamp at the bounds.
         for _ in 0..100 {
             wp.zoom_by(-ZOOM_STEP);
         }
         assert!(
-            (wp.zoom - ZOOM_MIN).abs() < 1e-6,
+            (wp.zoom.factor() - ZOOM_MIN).abs() < 1e-6,
             "zoom clamps to the minimum"
         );
         for _ in 0..100 {
             wp.zoom_by(ZOOM_STEP);
         }
         assert!(
-            (wp.zoom - ZOOM_MAX).abs() < 1e-6,
+            (wp.zoom.factor() - ZOOM_MAX).abs() < 1e-6,
             "zoom clamps to the maximum"
         );
         wp.set_zoom(1.0);
-        assert!((wp.zoom - 1.0).abs() < 1e-9, "reset returns to 100%");
+        assert!(
+            (wp.zoom.factor() - 1.0).abs() < 1e-9,
+            "reset returns to 100%"
+        );
     }
 
     /// The zoom stepper lives right-aligned in the toolbar. Driving its buttons
     /// through the real event handler must zoom out/in/reset, proving
-    /// `status_buttons` hit-testing fires correctly from the toolbar band.
+    /// the component's hit-testing fires correctly from the toolbar band.
     #[test]
     fn toolbar_zoom_stepper_drives_zoom_from_its_new_home() {
         let mut state = ui::State::new();
@@ -12680,12 +12423,9 @@ mod tests {
 
         // Every zoom button sits inside the toolbar band, not a bottom strip.
         let tb_h = wp.toolbar_height(1000.0);
-        assert_eq!(
-            wp.status_buttons.len(),
-            3,
-            "the −/%/+ stepper registered three targets"
-        );
-        for (_, r) in &wp.status_buttons {
+        let rects = wp.zoom.hit_rects();
+        assert_eq!(rects.len(), 3, "the −/%/+ stepper registered three targets");
+        for r in &rects {
             assert!(
                 r.y1 <= tb_h + 1.0,
                 "zoom button is in the toolbar (rect={r:?}, toolbar_h={tb_h})"
@@ -12696,43 +12436,41 @@ mod tests {
             );
         }
 
-        let center = |wp: &WordProcessorWidget, want: StatusAction| -> Point {
-            let (_, r) = wp
-                .status_buttons
-                .iter()
-                .find(|(a, _)| *a == want)
-                .expect("zoom button present");
+        // Component order is −, percentage/reset, +.
+        let center = |wp: &WordProcessorWidget, index: usize| -> Point {
+            let rects = wp.zoom.hit_rects();
+            let r = &rects[index];
             Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
         };
 
         // Click + : zoom in one step.
-        let p = center(&wp, StatusAction::In);
+        let p = center(&wp, 2);
         left_click(&mut wp, &mut state, p);
         assert!(
-            (wp.zoom - (1.0 + ZOOM_STEP)).abs() < 1e-6,
+            (wp.zoom.factor() - (1.0 + ZOOM_STEP)).abs() < 1e-6,
             "clicking + zooms in one step: {}",
-            wp.zoom
+            wp.zoom.factor()
         );
 
         // Click − : back to 100%.
         pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, StatusAction::Out);
+        let p = center(&wp, 0);
         left_click(&mut wp, &mut state, p);
         assert!(
-            (wp.zoom - 1.0).abs() < 1e-6,
+            (wp.zoom.factor() - 1.0).abs() < 1e-6,
             "clicking − zooms out one step: {}",
-            wp.zoom
+            wp.zoom.factor()
         );
 
         // Click the percentage chip: reset to 100% from any zoom.
         wp.set_zoom(1.6);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, StatusAction::Reset);
+        let p = center(&wp, 1);
         left_click(&mut wp, &mut state, p);
         assert!(
-            (wp.zoom - 1.0).abs() < 1e-9,
+            (wp.zoom.factor() - 1.0).abs() < 1e-9,
             "clicking the % chip resets to 100%: {}",
-            wp.zoom
+            wp.zoom.factor()
         );
     }
 
@@ -14213,15 +13951,14 @@ mod tests {
             wp.check_for_recovery(),
             "a present recovery copy stages an offer"
         );
-        assert!(wp.recovery.is_some(), "the recovery banner is now active");
+        assert!(wp.recovery.is_active(), "the recovery banner is now active");
 
         // Draw so the banner's Restore/Discard buttons are registered, then click
         // Restore through the production handler.
         pipeline_draw(&mut wp, &mut state, 1200, 700);
-        let (_, rrect) = *wp
-            .recovery_buttons
-            .iter()
-            .find(|(a, _)| *a == RecoveryAction::Restore)
+        let rrect = wp
+            .recovery
+            .restore_button_rect()
             .expect("Restore button is drawn");
         left_click(
             &mut wp,
@@ -14233,7 +13970,7 @@ mod tests {
         );
 
         assert!(
-            wp.recovery.is_none(),
+            !wp.recovery.is_active(),
             "the banner is dismissed after Restore"
         );
         assert_eq!(
@@ -14263,10 +14000,9 @@ mod tests {
         assert!(wp.check_for_recovery());
 
         pipeline_draw(&mut wp, &mut state, 1200, 700);
-        let (_, drect) = *wp
-            .recovery_buttons
-            .iter()
-            .find(|(a, _)| *a == RecoveryAction::Discard)
+        let drect = wp
+            .recovery
+            .discard_button_rect()
             .expect("Discard button is drawn");
         left_click(
             &mut wp,
@@ -14277,7 +14013,7 @@ mod tests {
             ),
         );
 
-        assert!(wp.recovery.is_none(), "Discard dismisses the banner");
+        assert!(!wp.recovery.is_active(), "Discard dismisses the banner");
         assert!(!rp.exists(), "Discard deletes the recovery file");
         assert_eq!(
             first_block(&wp, &state).map(|b| b.text),
@@ -14381,7 +14117,7 @@ mod tests {
         );
 
         // At zoom 1.0 content-x == screen-x (anchor scale is identity).
-        assert!((wp.zoom - 1.0).abs() < 1e-6, "default zoom");
+        assert!((wp.zoom.factor() - 1.0).abs() < 1e-6, "default zoom");
         let markers = wp.ruler_markers(page_x, page_w);
         let mx = |m: RulerMarker| {
             markers
@@ -14412,7 +14148,7 @@ mod tests {
         // Zooming in moves the markers further from the anchor by the zoom factor.
         wp.set_zoom(2.0);
         pipeline_draw(&mut wp, &mut state, 1200, 760);
-        let anchor = wp.zoom_anchor.x;
+        let anchor = wp.zoom.anchor().x;
         let zoomed = wp.ruler_markers(wp.page_rect.x0, wp.page_rect.width());
         let zx = |m: RulerMarker| {
             zoomed

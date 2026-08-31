@@ -48,6 +48,7 @@ pub mod draw;
 pub mod geo;
 pub mod livetest;
 pub mod location;
+mod map_controls;
 pub mod model;
 pub mod net;
 mod offline_panel;

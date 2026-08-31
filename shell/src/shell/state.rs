@@ -2,6 +2,9 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+mod shared_surfaces;
+pub use shared_surfaces::SharedSurfaces;
+
 pub use collab_types::caps::{
     Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
     decide_capability,
@@ -850,7 +853,7 @@ pub struct Workspace {
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
     #[serde(default)]
-    pub shared_surfaces: HashMap<u64, std::collections::HashSet<u64>>,
+    pub shared_surfaces: SharedSurfaces,
 }
 
 /// Stable identifier for a person. The compositor's collaborator table
@@ -1497,7 +1500,7 @@ impl Workspace {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            shared_surfaces: HashMap::new(),
+            shared_surfaces: SharedSurfaces::default(),
         }
     }
 
@@ -1518,45 +1521,28 @@ impl Workspace {
     /// Mark `surface_id` as being streamed to `peer_id`. Additive — two
     /// calls record both peers in the per-surface set.
     pub fn share_surface(&mut self, surface_id: u64, peer_id: u64) {
-        self.shared_surfaces
-            .entry(surface_id)
-            .or_default()
-            .insert(peer_id);
+        self.shared_surfaces.share(surface_id, peer_id);
     }
 
     /// Drop the share entry for `surface_id` (no-op if unshared).
     /// Returns the peers it was shared with, so callers can fire
     /// `StopShare` for each without a second lookup.
     pub fn unshare_surface(&mut self, surface_id: u64) -> Option<std::collections::HashSet<u64>> {
-        self.shared_surfaces.remove(&surface_id)
+        self.shared_surfaces.unshare(surface_id)
     }
 
     /// Stop streaming `surface_id` to one peer, leaving others intact.
     /// Drops the surface key entirely once the last peer is removed, so
     /// [`Self::is_surface_shared`] reports `false` again.
     pub fn unshare_surface_from_peer(&mut self, surface_id: u64, peer_id: u64) -> bool {
-        let removed = match self.shared_surfaces.get_mut(&surface_id) {
-            Some(peers) => peers.remove(&peer_id),
-            None => false,
-        };
-        if removed
-            && self
-                .shared_surfaces
-                .get(&surface_id)
-                .is_some_and(std::collections::HashSet::is_empty)
-        {
-            self.shared_surfaces.remove(&surface_id);
-        }
-        removed
+        self.shared_surfaces.unshare_peer(surface_id, peer_id)
     }
 
     /// Whether `surface_id` is currently streamed somewhere. Used by
     /// the compositor's commit hook to short-circuit the readback for
     /// unshared surfaces (~all of them in steady state).
     pub fn is_surface_shared(&self, surface_id: u64) -> bool {
-        self.shared_surfaces
-            .get(&surface_id)
-            .is_some_and(|peers| !peers.is_empty())
+        self.shared_surfaces.contains(surface_id)
     }
 }
 
@@ -1574,7 +1560,7 @@ impl Default for Workspace {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            shared_surfaces: HashMap::new(),
+            shared_surfaces: SharedSurfaces::default(),
         }
     }
 }
@@ -4885,7 +4871,7 @@ impl WorkspaceTree {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            shared_surfaces: HashMap::new(),
+            shared_surfaces: SharedSurfaces::default(),
         };
 
         let mut active_strip = HashMap::new();
@@ -4976,7 +4962,7 @@ impl WorkspaceTree {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            shared_surfaces: HashMap::new(),
+            shared_surfaces: SharedSurfaces::default(),
         };
 
         let mut active_strip = HashMap::new();
@@ -5037,7 +5023,7 @@ impl WorkspaceTree {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            shared_surfaces: HashMap::new(),
+            shared_surfaces: SharedSurfaces::default(),
         };
         self.active_strip.insert(ws_id, strip_id);
         self.workspaces.push(ws);
@@ -7538,7 +7524,7 @@ mod active_group_tests {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            shared_surfaces: HashMap::new(),
+            shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -7880,7 +7866,7 @@ mod active_workspace_peer_count_tests {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            shared_surfaces: HashMap::new(),
+            shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -8106,101 +8092,6 @@ mod capability_tests {
         let json = serde_json::to_string(&caps).expect("serialize caps");
         let round: Vec<Capability> = serde_json::from_str(&json).expect("deserialize caps");
         assert_eq!(round, caps);
-    }
-
-    #[test]
-    fn empty_workspace_has_empty_shared_surfaces_map() {
-        // Parallel guarantee to `grants` — both constructors seed an
-        // empty map so reads don't special-case `None`.
-        let ws = Workspace::default();
-        assert!(ws.shared_surfaces.is_empty());
-        let ws_new = Workspace::new(WorkspaceId::from(1), "Demo");
-        assert!(ws_new.shared_surfaces.is_empty());
-    }
-
-    #[test]
-    fn share_surface_records_peer_target() {
-        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
-        assert!(!ws.is_surface_shared(7));
-        ws.share_surface(7, 42);
-        assert!(ws.is_surface_shared(7));
-        let peers = ws.shared_surfaces.get(&7).expect("peer set present");
-        assert_eq!(peers.len(), 1);
-        assert!(peers.contains(&42));
-    }
-
-    /// `share_surface(s, peer_a)` followed by `share_surface(s, peer_b)`
-    /// must record BOTH peers.
-    #[test]
-    fn shared_surfaces_supports_multiple_peers() {
-        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
-        ws.share_surface(7, 42);
-        ws.share_surface(7, 99);
-
-        // BOTH peers must persist; neither has been silently dropped.
-        let peers = ws.shared_surfaces.get(&7).expect("peer set present");
-        assert_eq!(
-            peers.len(),
-            2,
-            "D-7 regression: two share_surface() calls on the same \
-             surface must record BOTH peers, got {peers:?}"
-        );
-        assert!(peers.contains(&42), "peer 42 (first share) missing");
-        assert!(peers.contains(&99), "peer 99 (second share) missing");
-        assert!(ws.is_surface_shared(7));
-
-        // Idempotent re-share is also handled.
-        ws.share_surface(7, 42);
-        assert_eq!(
-            ws.shared_surfaces
-                .get(&7)
-                .map_or(0, std::collections::HashSet::len),
-            2,
-            "re-sharing with an already-recorded peer must be idempotent"
-        );
-
-        // Per-peer unshare narrows the set without nuking the entry.
-        assert!(ws.unshare_surface_from_peer(7, 42));
-        let peers_after = ws.shared_surfaces.get(&7).expect("entry remains");
-        assert_eq!(peers_after.len(), 1);
-        assert!(peers_after.contains(&99));
-        assert!(ws.is_surface_shared(7), "still shared with peer 99");
-    }
-
-    #[test]
-    fn unshare_surface_returns_prior_peers_and_clears_entry() {
-        // Returning the prior peer set matters: the actor fires one
-        // `StopShare` per peer, and looking them up after removal
-        // would be racy.
-        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
-        ws.share_surface(7, 42);
-        ws.share_surface(7, 99);
-        let removed = ws.unshare_surface(7).expect("share was present");
-        assert_eq!(removed.len(), 2);
-        assert!(removed.contains(&42));
-        assert!(removed.contains(&99));
-        assert!(!ws.is_surface_shared(7));
-        // Idempotent: second call returns `None` cleanly.
-        assert!(ws.unshare_surface(7).is_none());
-    }
-
-    #[test]
-    fn shared_surfaces_round_trip_via_serde_json() {
-        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
-        ws.share_surface(11, 100);
-        ws.share_surface(22, 200);
-        ws.share_surface(22, 201);
-
-        let json = serde_json::to_string(&ws).expect("serialize");
-        let round: Workspace = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(round.shared_surfaces.len(), 2);
-        let peers_11 = round.shared_surfaces.get(&11).expect("11 present");
-        assert_eq!(peers_11.len(), 1);
-        assert!(peers_11.contains(&100));
-        let peers_22 = round.shared_surfaces.get(&22).expect("22 present");
-        assert_eq!(peers_22.len(), 2);
-        assert!(peers_22.contains(&200));
-        assert!(peers_22.contains(&201));
     }
 
     #[test]
