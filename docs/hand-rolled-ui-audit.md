@@ -107,8 +107,10 @@ inputs for find and annotation text; **disks**, **vpn**, **remote**, and all six
 **imager** customization fields are migrated. Imager's destructive confirmation
 is now a peer-local shared input and no longer replicates consent. **db_client**'s
 seven connection fields are shared inputs and its password is protected secret
-input. **chat** composers are shared multiline inputs; only inline edit/rename
-remain. The rows below record those narrowed boundaries.
+input. **chat** composers, sent-message editing, and structural rename now use
+shared inputs. The composers retain their distinct per-keystroke CRDT draft
+binding; message edits and renames stay local until Save/Enter so peers never
+observe an incomplete revision. The rows below record the narrowed boundaries.
 
 ### Pure non-adoption — a fitting widget already exists (do these first)
 
@@ -130,7 +132,7 @@ remain. The rows below record those narrowed boundaries.
 | `apps/vpn/src/app.rs` add form | vpn ✅ | **DONE** — shared Name/Endpoint inputs with IME, selection, clipboard, and focus cycling | `TextInput` | M | HIGH |
 | `apps/remote/src/app.rs` search + connection form | remote ✅ | **DONE** — six shared inputs; connection and validation policy stays local | `TextInput`/`NumberInput`/`SearchField` | L | HIGH |
 | `apps/store/src/app.rs` search input | store | **DONE** — shared `TextInput`, bound to the store search document | `TextInput` | M | HIGH |
-| `apps/chat/src/events.rs` inline message edit + rename | chat | composers are **DONE**; these two residual local Strings still splice by hand | multiline `TextInput` / `EditableLabel` | M | HIGH |
+| `apps/chat/src/events.rs` inline message edit + rename | chat ✅ | **DONE** — shared local single/multiline `TextInput`s own caret, selection, clipboard, pointer placement, and IME; Chat retains ownership checks and explicit CRDT commit policy | `TextInput` | M | HIGH |
 | `apps/containers/src/panels.rs` transient prompts | containers ✅ | **DONE** — `ModalDialog<PromptBody>`; the separate six-field create form remains below | `TextInput` | S | HIGH |
 
 ### Forced by a missing widget capability (extend `ui` first — see [ui gaps](#ui-gaps))
@@ -140,7 +142,7 @@ remain. The rows below record those narrowed boundaries.
 | `apps/db_client/src/connect_modal.rs` `ConnectModal` | db_client ✅ | **DONE** — seven shared local inputs; password uses protected secret mode; dynamic engine field set and validation remain local | `TextInput` secret mode | M | HIGH |
 | `apps/imager/src/customize.rs`, `app.rs` confirmation | imager ✅ | **DONE** — all six customization fields plus peer-local destructive confirmation use shared inputs; password is protected | `TextInput` secret mode | L | HIGH |
 | `apps/mail/src/compose.rs` `plain_body`, `wysiwyg.rs:740` | mail | **plain body DONE** — the hand-rolled multiline `String` is now a multiline `TextInput`. `Wysiwyg` (HTML mode) is still a forked rich editor (own `caret`, insert/backspace/split/select) | multiline `TextInput` (gap 1) done; rich editor = gap 3 | M/L | HIGH |
-| `apps/chat/src/app.rs` composers | chat ✅ | **DONE** — shared multiline inputs; residual inline message edit/rename are tracked above | multiline `TextInput` | L | HIGH |
+| `apps/chat/src/app.rs` composers | chat ✅ | **DONE** — shared CRDT-aware multiline inputs; their live collaborative-draft semantics intentionally remain separate from local-until-save edit/rename inputs | multiline `TextInput` | L | HIGH |
 | `apps/slides/src/app.rs` speaker notes + canvas text | slides | title rename is **DONE**; speaker notes fit shared multiline input, while transformed canvas text needs a geometry-aware editor | multiline input / canvas editor | M/L | HIGH |
 | `apps/sheets/src/grid.rs:48` `EditState{chars,caret,sel}` | sheets | cell/formula body editor fully reimplements caret+selection; formula bar is a 2nd view | formula-aware single-line editor | L | HIGH |
 | `apps/code_editor/src/editor_view.rs` (1999 LOC) | code_editor | full multiline editor (caret/selection/completion). **Palette DONE** — the app-specific painter was replaced by a thin typed adapter over `ui::CommandPalette`, including shared IME/selection/clipboard and direct go-to-line arguments | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
@@ -552,18 +554,15 @@ queue is safer than old app counts:
 
 1. **Containers create form:** six existing Automerge text objects can host six
    shared inputs. Preserve image completion, dynamic fields, and validation.
-2. **Chat inline edit and rename:** use multiline `TextInput` and
-   `EditableLabel`; preserve ownership checks, emoji insertion, and one undo
-   boundary. The composers are already shared.
-3. **Slides speaker notes:** adopt a shared multiline input independently of
+2. **Slides speaker notes:** adopt a shared multiline input independently of
    transformed on-canvas text, which needs a geometry-aware editor.
-4. **Exact button faces:** containers Create/Cancel and backups Restore/Cancel
+3. **Exact button faces:** containers Create/Cancel and backups Restore/Cancel
    fit `ButtonFace` without semantic loss. Do not fold progress, ghost, keypad,
    canvas, or media controls into an ordinary button merely to lower a count.
-5. **Component boundaries:** continue extracting cohesive surfaces from large
+4. **Component boundaries:** continue extracting cohesive surfaces from large
    app modules. The component must own its state, layout/drawing, hit-testing,
    event routing, and focused tests; domain persistence stays in the host.
-6. **Domain editors:** design formula-aware Sheets and transformed-canvas Slides
+5. **Domain editors:** design formula-aware Sheets and transformed-canvas Slides
    adapters around the shared editor core. These are not plain `TextInput`
    migrations.
 
