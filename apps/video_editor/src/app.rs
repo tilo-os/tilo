@@ -3077,7 +3077,17 @@ impl VideoEditorApp {
     /// back after an unlink, and the way to tie a sound to a picture it was
     /// never imported with.
     fn link_selected(&mut self, doc: &mut AutoCommit) {
-        let ids = self.editable_selection();
+        let mut ids = self.editable_selection();
+        // Re-linking a shot to the sound it was split from: the sound half is
+        // not selected — the user picked the picture and asked for the link
+        // back — so bring its own detached partner along. Without this,
+        // `link_clips` refuses a group of one and the button does nothing.
+        if ids.len() == 1
+            && let Some(id) = ids.first().copied()
+            && let Some(sound) = self.project.detached_sound(id)
+        {
+            ids.push(sound);
+        }
         if self.project.link_clips(&ids).is_none() {
             return;
         }
@@ -3112,6 +3122,16 @@ impl VideoEditorApp {
             return Some(LinkAffordance::Unlink);
         }
         if ids.len() > 1 {
+            return Some(LinkAffordance::Link);
+        }
+        // One picture clip whose sound is already on the timeline, unlinked.
+        // Offering the split here would make a second copy of a sound clip
+        // the user can see; offering to tie them back together is what is
+        // actually true, and it is the only way back without a manual
+        // multi-select.
+        if let Some(id) = ids.first()
+            && self.project.detached_sound(*id).is_some()
+        {
             return Some(LinkAffordance::Link);
         }
         // One picture clip still carrying its own sound: offer to move that
@@ -26128,13 +26148,7 @@ mod tests {
 
         assert!(app.a11y_activate_pick(PickField::LinkToggle, &mut doc));
         assert!(!app.project.is_linked(vid), "the pair came apart");
-        assert!(
-            VideoDoc::load_project(&doc)
-                .clip(aid)
-                .expect("sound")
-                .link
-                .is_none()
-        );
+        assert!(!VideoDoc::load_project(&doc).is_linked(aid));
 
         // …and the same control ties them back together.
         app.selection.set(vec![vid, aid]);
@@ -26199,13 +26213,7 @@ mod tests {
             .unwrap_or_else(|| panic!("the clip menu offers the unlink: {labels:?}"));
         app.bin_menu_choose(&mut doc, idx);
         assert!(!app.project.is_linked(vid));
-        assert!(
-            VideoDoc::load_project(&doc)
-                .clip(aid)
-                .expect("sound")
-                .link
-                .is_none()
-        );
+        assert!(!VideoDoc::load_project(&doc).is_linked(aid));
 
         // An unlinked single clip with no sound to split has nothing to offer,
         // so the row is absent rather than present and inert.
