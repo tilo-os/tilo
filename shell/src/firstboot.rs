@@ -247,27 +247,6 @@ pub fn ensure_collaboration_identity(
     let outcome = if primary_path.exists() {
         protect_identity_record(identity_dir)?;
         ProvisionOutcome::Existing
-    } else if paths.user_privkey.exists() {
-        // One-time migration for installations created before the brokered
-        // identity store. Import the legacy root, then leave the legacy file
-        // untouched so older system services remain operable until their
-        // administrator explicitly retires it.
-        let root = persist::read_signing_key(&paths.user_privkey)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        let identity = ThresholdIdentity::from_single_device_seed(&root.to_bytes());
-        let record = IdentityRecord::from_threshold_identity(
-            &identity,
-            "",
-            [128, 128, 128],
-            std::time::SystemTime::now(),
-        )
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        let bytes = record
-            .to_json_bytes()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        import_primary_identity(identity_dir, &bytes)?;
-        let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
-        ProvisionOutcome::Created { pubkey_hex }
     } else {
         ensure_primary_identity(identity_dir)?
     };
@@ -283,30 +262,17 @@ pub fn ensure_collaboration_identity(
     paths.ensure_directories()?;
 
     let root_public = signer.group_public_key();
-    // Validate, but never create, the pre-broker duplicate private key.
-    if paths.user_privkey.exists() {
-        let stored = persist::read_signing_key(&paths.user_privkey)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        if stored.verifying_key().to_bytes() != root_public {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "primary identity does not match the persisted user root",
-            ));
-        }
-    }
-
-    if paths.user_pubkey.exists() {
+    // The first identity to claim the machine owns its legacy system-facing
+    // certificate. Later OS users keep their own root and receive a separate
+    // identity-keyed certificate for the same device key.
+    let device_owner = if paths.user_pubkey.exists() {
         let stored = persist::read_public_key(&paths.user_pubkey)
             .map_err(|e| io::Error::other(e.to_string()))?;
-        if stored != root_public {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "primary identity does not match the persisted user public key",
-            ));
-        }
+        stored == root_public
     } else {
         persist::write_public_key(&paths.user_pubkey, &root_public)?;
-    }
+        true
+    };
 
     let (device, _) =
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
@@ -352,8 +318,8 @@ pub fn ensure_collaboration_identity(
     // Keep an identity-keyed copy as well. A device has one keypair, but it
     // needs a separate root-signed certificate for every identity it may
     // present in a workspace.
-    ensure_device_certificate_for_root(
-        &root,
+    ensure_device_certificate_for_identity(
+        &signer,
         paths,
         if device_owner {
             "Primary device"
@@ -384,30 +350,19 @@ pub fn ensure_device_certificate_for_record(
     record_path: &Path,
     paths: &IdentityPaths,
 ) -> Result<PathBuf, io::Error> {
-    let bytes = fs::read(record_path)?;
-    let record = IdentityRecord::from_json_bytes(&bytes)
+    let identity = runtime_identity::load_from_path(record_path.to_path_buf())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    let identity = record
-        .into_threshold_identity()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    let root_seed = identity.single_device_seed().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "identity cannot issue a device certificate from this record",
-        )
-    })?;
-    let root = ed25519_dalek::SigningKey::from_bytes(&root_seed);
-    ensure_device_certificate_for_root(&root, paths, "This device")
+    ensure_device_certificate_for_identity(&identity, paths, "This device")
 }
 
-fn ensure_device_certificate_for_root(
-    root: &ed25519_dalek::SigningKey,
+fn ensure_device_certificate_for_identity(
+    identity: &runtime_identity::SigningIdentity,
     paths: &IdentityPaths,
     device_label: &str,
 ) -> Result<PathBuf, io::Error> {
     let (device, _) =
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
-    let user_public_key = root.verifying_key().to_bytes();
+    let user_public_key = identity.group_public_key();
     let cert_path = paths.device_cert_for_user(&user_public_key);
     if cert_path.exists() {
         let cert =
@@ -439,7 +394,12 @@ fn ensure_device_certificate_for_root(
         expires_at_ns: None,
         signature: [0; 64],
     };
-    sign_device_cert(&mut cert, root).map_err(|e| io::Error::other(e.to_string()))?;
+    let digest = qos_user_identity::device_cert_signing_digest(&cert)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    cert.signature = identity
+        .sign(&digest)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    qos_user_identity::verify_device_cert(&cert).map_err(|e| io::Error::other(e.to_string()))?;
     persist::write_device_cert(&cert_path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(cert_path)
 }

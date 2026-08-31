@@ -97,7 +97,7 @@ pub use persist::{
 };
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
-    sign_revocation_entry, verify_revocation_entry,
+    revocation_signing_digest, sign_revocation_entry, verify_revocation_entry,
 };
 
 use serde::{Deserialize, Serialize};
