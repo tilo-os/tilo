@@ -40,7 +40,6 @@ pub enum NeighbourMsg {
     /// receiver infers; empty falls back to showing the session handle.
     PresenceMoved {
         peer: PeerId,
-        #[serde(default)]
         user: String,
         key: PresenceKey,
         point: (f64, f64),
@@ -83,24 +82,18 @@ pub enum NeighbourMsg {
         /// real cross-host motion-to-photon numbers despite unrelated monotonic
         /// origins.
         ///
-        /// `#[serde(default)]` keeps this wire-compatible with pre-handshake peers,
-        /// who send `0`; [`crate::diagnostics::PeerSurfaceMetrics::set_clock_offset`]
-        /// treats that as "skip cross-host latency" rather than a bogus offset — the
-        /// OSD shows "—" instead.
-        #[serde(default)]
+        /// A value of `0` means the sender cannot provide a clock offset;
+        /// [`crate::diagnostics::PeerSurfaceMetrics::set_clock_offset`] then skips
+        /// cross-host latency instead of reporting a bogus value.
         sender_monotonic_ns_at_send: u64,
-        /// Colorimetry tag; `None` on pre-HDR peers means the receiver assumes SDR
-        /// BT.709 (matches v1 behaviour, so the field stays wire-compatible).
-        #[serde(default)]
+        /// Colorimetry tag; `None` means the receiver assumes SDR BT.709.
         colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
         /// HDR10 static metadata (SMPTE ST 2086 + CTA-861.3) for HDR pipelines;
-        /// `None` on SDR streams and pre-HDR peers. Used by the receiver's
-        /// tone-mapper to size compression correctly on SDR displays.
-        #[serde(default)]
+        /// `None` on SDR streams. Used by the receiver's tone-mapper to size
+        /// compression correctly on SDR displays.
         hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
-        /// Codec target bit depth; `0` (serde-default) means unspecified — receivers
-        /// infer 8-bit from `codec = "h264"`, else 8 or 10 (HEVC Main10).
-        #[serde(default)]
+        /// Codec target bit depth; `0` means unspecified — receivers infer 8-bit
+        /// from `codec = "h264"`, else 8 or 10 (HEVC Main10).
         bit_depth: u8,
     },
     /// Explicit end-of-stream (owner tore down the share, or the surface
@@ -151,9 +144,7 @@ pub enum NeighbourMsg {
         cluster_id: String,
         /// Record id from the originating Hello — which document these changes
         /// belong to (empty = single document per `(app, cluster)`). Carried so the
-        /// receiving shell can route per-document; `#[serde(default)]` keeps frames
-        /// from pre-record peers parsing.
-        #[serde(default)]
+        /// receiving shell can route per-document.
         record_id: String,
         /// Opaque Automerge incremental change blob, passed through
         /// untouched.
@@ -171,17 +162,12 @@ pub enum NeighbourMsg {
         /// gossip echoes.
         peer: PeerId,
         /// App-id of the originating app, same routing key as
-        /// [`NeighbourMsg::AppCrdtIncremental`]. `#[serde(default)]` so envelopes
-        /// from peers that predate routing arrive unaddressed and get dropped
-        /// rather than shown to every local app.
-        #[serde(default)]
+        /// [`NeighbourMsg::AppCrdtIncremental`].
         app_id: String,
-        /// Cluster id — second half of the routing key, same backward-compat default.
-        #[serde(default)]
+        /// Cluster id — second half of the routing key.
         cluster_id: String,
         /// Record id of the originating document — third routing-key component;
         /// empty means the sender announced no record.
-        #[serde(default)]
         record_id: String,
         /// The signed-op envelope; the receiving shell's validator decides whether
         /// to fan it to local apps or drop it with an audit-log entry.
@@ -191,9 +177,7 @@ pub enum NeighbourMsg {
     /// so a participant remains visible while moving between apps in one room.
     AppPresenceV2 {
         peer: PeerId,
-        #[serde(default)]
         app_id: String,
-        #[serde(default)]
         cluster_id: String,
         presence: collab_types::PeerPresence,
     },
@@ -219,16 +203,13 @@ pub enum NeighbourMsg {
         /// gossip echoes on it, as on every App* variant.
         peer: PeerId,
         /// App-id of the originating app — first routing-key component.
-        #[serde(default)]
         app_id: String,
         /// Cluster id (room, as uuid string); the receiving shell refuses a room it
         /// isn't in before the frame reaches any app.
-        #[serde(default)]
         cluster_id: String,
         /// Record id — which document this is the state of. Getting this wrong is
         /// unrecoverable (a merged snapshot can't be un-merged), so an unaddressed
         /// snapshot is dropped rather than guessed at.
-        #[serde(default)]
         record_id: String,
         /// `automerge::Automerge::save()` output for that record, opaque to every hop.
         data: Vec<u8>,
@@ -277,212 +258,6 @@ pub enum NeighbourMsg {
 mod tests {
     use super::*;
 
-    fn round_trip(msg: NeighbourMsg) {
-        let json = serde_json::to_string(&msg).expect("serialize");
-        let parsed: NeighbourMsg = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(msg, parsed);
-    }
-
-    #[test]
-    fn sync_req_round_trips() {
-        round_trip(NeighbourMsg::SyncReq {
-            since: vec![1, 2, 3],
-            room: "6b3f9a10-0000-4000-8000-00000000000c".to_string(),
-        });
-    }
-
-    #[test]
-    fn sync_resp_round_trips() {
-        round_trip(NeighbourMsg::SyncResp {
-            changes: vec![vec![0xAA, 0xBB], vec![0xCC]],
-            room: "6b3f9a10-0000-4000-8000-00000000000c".to_string(),
-        });
-    }
-
-    #[test]
-    fn presence_moved_round_trips() {
-        round_trip(NeighbourMsg::PresenceMoved {
-            peer: 42,
-            user: "bob".to_string(),
-            key: "cursor".to_string(),
-            point: (12.5, -3.25),
-            ts: 1_700_000_000,
-        });
-    }
-
-    #[test]
-    fn presence_cleared_round_trips() {
-        round_trip(NeighbourMsg::PresenceCleared {
-            peer: 42,
-            key: "cursor".to_string(),
-        });
-    }
-
-    #[test]
-    fn surface_frame_round_trips() {
-        round_trip(NeighbourMsg::SurfaceFrame {
-            surface: 7,
-            encoded_h264: vec![0x00, 0x00, 0x00, 0x01, 0x67],
-            ts: 1_700_000_001,
-        });
-    }
-
-    #[test]
-    fn surface_stream_start_round_trips() {
-        round_trip(NeighbourMsg::SurfaceStreamStart {
-            surface: 7,
-            source_peer: 0xABCD,
-            width: 1280,
-            height: 720,
-            codec: "h264".to_string(),
-            ts: 1_700_000_002,
-            sender_monotonic_ns_at_send: 1_700_000_002,
-            colorimetry: None,
-            hdr_static_metadata: None,
-            bit_depth: 0,
-        });
-    }
-
-    #[test]
-    fn surface_stream_start_backfill_when_field_missing() {
-        // Legacy JSON lacks the extended fields; `#[serde(default)]` backfills them
-        // for old peers.
-        let legacy = r#"{"SurfaceStreamStart":{"surface":9,"source_peer":123,"width":320,"height":240,"codec":"h264","ts":1234567}}"#;
-        let parsed: NeighbourMsg = serde_json::from_str(legacy).expect("legacy parses");
-        match parsed {
-            NeighbourMsg::SurfaceStreamStart {
-                sender_monotonic_ns_at_send,
-                colorimetry,
-                hdr_static_metadata,
-                bit_depth,
-                ..
-            } => {
-                assert_eq!(sender_monotonic_ns_at_send, 0);
-                assert!(colorimetry.is_none(), "legacy has no colorimetry");
-                assert!(hdr_static_metadata.is_none(), "legacy has no HDR metadata");
-                assert_eq!(bit_depth, 0, "legacy defaults bit_depth to 0 (unspecified)");
-            }
-            other => panic!("expected SurfaceStreamStart, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn surface_stream_start_hdr_round_trips() {
-        use crate::collab::colorimetry::Colorimetry;
-        use crate::collab::hdr_metadata::Hdr10Metadata;
-        round_trip(NeighbourMsg::SurfaceStreamStart {
-            surface: 7,
-            source_peer: 0xABCD,
-            width: 1920,
-            height: 1080,
-            codec: "hevc-main10".to_string(),
-            ts: 1_700_000_002,
-            sender_monotonic_ns_at_send: 1_700_000_002,
-            colorimetry: Some(Colorimetry::hdr10()),
-            hdr_static_metadata: Some(Hdr10Metadata::reference_bt2020()),
-            bit_depth: 10,
-        });
-    }
-
-    #[test]
-    fn surface_stream_end_round_trips() {
-        round_trip(NeighbourMsg::SurfaceStreamEnd {
-            surface: 7,
-            source_peer: 0xABCD,
-            ts: 1_700_000_003,
-        });
-    }
-
-    #[test]
-    fn surface_stream_start_round_trips_postcard() {
-        let msg = NeighbourMsg::SurfaceStreamStart {
-            surface: 42,
-            source_peer: 0x1234,
-            width: 1920,
-            height: 1080,
-            codec: "h264".to_string(),
-            ts: 1_700_000_004,
-            sender_monotonic_ns_at_send: 1_700_000_004,
-            colorimetry: None,
-            hdr_static_metadata: None,
-            bit_depth: 0,
-        };
-        let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
-        let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
-        assert_eq!(msg, back);
-    }
-
-    #[test]
-    fn remote_input_round_trips() {
-        round_trip(NeighbourMsg::RemoteInput {
-            peer: 3,
-            surface: 7,
-            event: vec![0xDE, 0xAD, 0xBE, 0xEF],
-        });
-    }
-
-    #[test]
-    fn permission_request_round_trips() {
-        round_trip(NeighbourMsg::PermissionRequest {
-            peer: 5,
-            capability: "share-screen".to_string(),
-        });
-    }
-
-    #[test]
-    fn permission_grant_round_trips() {
-        round_trip(NeighbourMsg::PermissionGrant {
-            peer: 5,
-            capability: "share-screen".to_string(),
-        });
-    }
-
-    #[test]
-    fn heartbeat_round_trips() {
-        round_trip(NeighbourMsg::Heartbeat {
-            peer: 0xDEADBEEF,
-            ts: 1_700_000_002,
-        });
-    }
-
-    #[test]
-    fn identity_hello_round_trips() {
-        round_trip(NeighbourMsg::IdentityHello {
-            cert: Box::new(qos_user_identity::DeviceCert {
-                user_public_key: [1; 32],
-                device_public_key: [2; 32],
-                device_label: "Laptop".into(),
-                capabilities: qos_user_identity::DeviceCapabilities::member(),
-                issued_at_ns: 10,
-                expires_at_ns: None,
-                signature: [3; 64],
-            }),
-            revocations: Vec::new(),
-        });
-    }
-
-    #[test]
-    fn app_crdt_incremental_round_trips() {
-        round_trip(NeighbourMsg::AppCrdtIncremental {
-            peer: 0xABCDEF,
-            app_id: "terminal".into(),
-            cluster_id: "00000000-0000-0000-0000-000000000000".into(),
-            record_id: "file:/work/report.odt".into(),
-            data: vec![0x01, 0x02, 0x03, 0x04],
-        });
-    }
-
-    #[test]
-    fn app_crdt_snapshot_round_trips() {
-        round_trip(NeighbourMsg::AppCrdtSnapshot {
-            peer: 0xABCDEF,
-            app_id: "dev.qos.word-processor".into(),
-            cluster_id: "00000000-0000-0000-0000-000000000000".into(),
-            record_id: "file:/work/report.odt".into(),
-            data: vec![0x85, 0x6F, 0x4A, 0x83],
-        });
-    }
-
     /// Syntactically valid but unsigned; only the postcard framing needs to
     /// round-trip.
     fn dummy_envelope() -> Box<collab_types::SignedOp> {
@@ -499,80 +274,204 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn app_crdt_incremental_signed_round_trips_serde_json() {
-        // The actor still encodes `NeighbourMsg` with `serde_json`; postcard is
-        // covered separately below.
-        round_trip(NeighbourMsg::AppCrdtIncrementalSigned {
-            peer: 0xABCDEF,
-            app_id: "notes".to_string(),
-            cluster_id: "11111111-2222-3333-4444-555555555555".to_string(),
-            record_id: "uuid:1c2f".to_string(),
-            envelope: dummy_envelope(),
-        });
+    fn fixtures() -> Vec<(&'static str, NeighbourMsg)> {
+        use crate::collab::colorimetry::Colorimetry;
+        use crate::collab::hdr_metadata::Hdr10Metadata;
+        use collab_types::{ArtifactId, PeerPresence, PeerPresencePayload};
+
+        let room = "6b3f9a10-0000-4000-8000-00000000000c";
+        vec![
+            (
+                "sync request",
+                NeighbourMsg::SyncReq {
+                    since: vec![1, 2, 3],
+                    room: room.into(),
+                },
+            ),
+            (
+                "sync response",
+                NeighbourMsg::SyncResp {
+                    changes: vec![vec![0xAA, 0xBB], vec![0xCC]],
+                    room: room.into(),
+                },
+            ),
+            (
+                "presence moved",
+                NeighbourMsg::PresenceMoved {
+                    peer: 42,
+                    user: "bob".into(),
+                    key: "cursor".into(),
+                    point: (12.5, -3.25),
+                    ts: 1_700_000_000,
+                },
+            ),
+            (
+                "presence cleared",
+                NeighbourMsg::PresenceCleared {
+                    peer: 42,
+                    key: "cursor".into(),
+                },
+            ),
+            (
+                "surface frame",
+                NeighbourMsg::SurfaceFrame {
+                    surface: 7,
+                    encoded_h264: vec![0, 0, 0, 1, 0x67],
+                    ts: 1_700_000_001,
+                },
+            ),
+            (
+                "SDR stream start",
+                NeighbourMsg::SurfaceStreamStart {
+                    surface: 7,
+                    source_peer: 0xABCD,
+                    width: 1280,
+                    height: 720,
+                    codec: "h264".into(),
+                    ts: 1_700_000_002,
+                    sender_monotonic_ns_at_send: 1_700_000_002,
+                    colorimetry: None,
+                    hdr_static_metadata: None,
+                    bit_depth: 0,
+                },
+            ),
+            (
+                "HDR stream start",
+                NeighbourMsg::SurfaceStreamStart {
+                    surface: 8,
+                    source_peer: 0xABCD,
+                    width: 1920,
+                    height: 1080,
+                    codec: "hevc-main10".into(),
+                    ts: 1_700_000_003,
+                    sender_monotonic_ns_at_send: 1_700_000_003,
+                    colorimetry: Some(Colorimetry::hdr10()),
+                    hdr_static_metadata: Some(Hdr10Metadata::reference_bt2020()),
+                    bit_depth: 10,
+                },
+            ),
+            (
+                "stream end",
+                NeighbourMsg::SurfaceStreamEnd {
+                    surface: 7,
+                    source_peer: 0xABCD,
+                    ts: 1_700_000_004,
+                },
+            ),
+            (
+                "remote input",
+                NeighbourMsg::RemoteInput {
+                    peer: 3,
+                    surface: 7,
+                    event: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                },
+            ),
+            (
+                "permission request",
+                NeighbourMsg::PermissionRequest {
+                    peer: 5,
+                    capability: "share-screen".into(),
+                },
+            ),
+            (
+                "permission grant",
+                NeighbourMsg::PermissionGrant {
+                    peer: 5,
+                    capability: "share-screen".into(),
+                },
+            ),
+            (
+                "heartbeat",
+                NeighbourMsg::Heartbeat {
+                    peer: 0xDEADBEEF,
+                    ts: 1_700_000_005,
+                },
+            ),
+            (
+                "identity hello",
+                NeighbourMsg::IdentityHello {
+                    cert: Box::new(qos_user_identity::DeviceCert {
+                        user_public_key: [1; 32],
+                        device_public_key: [2; 32],
+                        device_label: "Laptop".into(),
+                        capabilities: qos_user_identity::DeviceCapabilities::member(),
+                        issued_at_ns: 10,
+                        expires_at_ns: None,
+                        signature: [3; 64],
+                    }),
+                    revocations: Vec::new(),
+                },
+            ),
+            (
+                "app incremental",
+                NeighbourMsg::AppCrdtIncremental {
+                    peer: 0xABCDEF,
+                    app_id: "terminal".into(),
+                    cluster_id: room.into(),
+                    record_id: "file:/work/report.odt".into(),
+                    data: vec![1, 2, 3, 4],
+                },
+            ),
+            (
+                "signed app incremental",
+                NeighbourMsg::AppCrdtIncrementalSigned {
+                    peer: 0xABCDEF,
+                    app_id: "notes".into(),
+                    cluster_id: room.into(),
+                    record_id: "uuid:1c2f".into(),
+                    envelope: dummy_envelope(),
+                },
+            ),
+            (
+                "app presence",
+                NeighbourMsg::AppPresenceV2 {
+                    peer: 0xABCDEF,
+                    app_id: "notes".into(),
+                    cluster_id: room.into(),
+                    presence: PeerPresence {
+                        key: vec![4, 5],
+                        payload: PeerPresencePayload::Selection { start: 3, end: 8 },
+                    },
+                },
+            ),
+            (
+                "app snapshot",
+                NeighbourMsg::AppCrdtSnapshot {
+                    peer: 0xABCDEF,
+                    app_id: "dev.qos.word-processor".into(),
+                    cluster_id: room.into(),
+                    record_id: "file:/work/report.odt".into(),
+                    data: vec![0x85, 0x6F, 0x4A, 0x83],
+                },
+            ),
+            (
+                "scrollback request",
+                NeighbourMsg::ScrollbackRequest {
+                    artifact: ArtifactId::new(),
+                    before_seq: 42,
+                    max: 50,
+                    requester: 0xABCDEF,
+                },
+            ),
+            (
+                "scrollback response",
+                NeighbourMsg::ScrollbackResponse {
+                    artifact: ArtifactId::new(),
+                    ops: vec![dummy_envelope(), dummy_envelope()],
+                    responder: 0x123_456,
+                },
+            ),
+        ]
     }
 
     #[test]
-    fn app_crdt_incremental_signed_round_trips_postcard() {
-        // Postcard is the canonical signing format; this guards against a
-        // wire-format change silently dropping the new variant.
-        let msg = NeighbourMsg::AppCrdtIncrementalSigned {
-            peer: 0x1234,
-            app_id: "notes".to_string(),
-            cluster_id: "11111111-2222-3333-4444-555555555555".to_string(),
-            record_id: "uuid:1c2f".to_string(),
-            envelope: dummy_envelope(),
-        };
-        let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
-        let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
-        assert_eq!(msg, back);
-    }
-
-    #[test]
-    fn scrollback_request_round_trips_serde_json() {
-        use collab_types::ArtifactId;
-        round_trip(NeighbourMsg::ScrollbackRequest {
-            artifact: ArtifactId::new(),
-            before_seq: 42,
-            max: 50,
-            requester: 0xABCDEF,
-        });
-    }
-
-    #[test]
-    fn scrollback_request_round_trips_postcard() {
-        use collab_types::ArtifactId;
-        let msg = NeighbourMsg::ScrollbackRequest {
-            artifact: ArtifactId::new(),
-            before_seq: 42,
-            max: 50,
-            requester: 0xABCDEF,
-        };
-        let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
-        let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
-        assert_eq!(msg, back);
-    }
-
-    #[test]
-    fn scrollback_response_round_trips_serde_json() {
-        use collab_types::ArtifactId;
-        round_trip(NeighbourMsg::ScrollbackResponse {
-            artifact: ArtifactId::new(),
-            ops: vec![dummy_envelope(), dummy_envelope()],
-            responder: 0x123_456,
-        });
-    }
-
-    #[test]
-    fn scrollback_response_round_trips_postcard() {
-        use collab_types::ArtifactId;
-        let msg = NeighbourMsg::ScrollbackResponse {
-            artifact: ArtifactId::new(),
-            ops: vec![dummy_envelope()],
-            responder: 0x123_456,
-        };
-        let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
-        let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
-        assert_eq!(msg, back);
+    fn every_message_round_trips_over_the_production_codec() {
+        for (case, message) in fixtures() {
+            let bytes = postcard::to_allocvec(&message)
+                .unwrap_or_else(|error| panic!("{case} failed to encode: {error}"));
+            let decoded: NeighbourMsg = postcard::from_bytes(&bytes)
+                .unwrap_or_else(|error| panic!("{case} failed to decode: {error}"));
+            assert_eq!(message, decoded, "{case} changed in transit");
+        }
     }
 }
