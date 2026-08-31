@@ -976,6 +976,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         // Clip placed at timeline 5s, sourcing in_point=3s.
         let cid = p.add_clip(tid, mid, 5.0).unwrap();
@@ -1018,6 +1020,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 20.0;
@@ -1084,6 +1088,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         p.add_clip(tid, mid, 0.0);
         let mut dec = PreviewDecoder::new_synthesized();
@@ -1213,6 +1219,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         p.tracks.push(Track {
             id: v2,
@@ -1222,6 +1230,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         // V1: two abutting clips, cut at 5s.
         let a = p.add_clip(v1, m1, 0.0).unwrap();
