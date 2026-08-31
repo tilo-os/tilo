@@ -40,6 +40,7 @@ pub mod app;
 pub mod assets;
 pub mod chrome;
 pub mod doc;
+mod help_overlay;
 pub mod model;
 pub mod odp;
 mod presentation;
