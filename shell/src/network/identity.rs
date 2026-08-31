@@ -123,7 +123,12 @@ impl PeerIdentityStore {
     /// Merge a user's revocation list — additive, see [`RevocationList::insert`].
     pub fn set_revocations(&self, user_pubkey: [u8; 32], list: RevocationList) {
         let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
-        inner.revocations.insert(user_pubkey, list);
+        let current = inner.revocations.entry(user_pubkey).or_default();
+        for entry in list.iter().cloned() {
+            // Never let a later handshake erase or postpone a revocation that
+            // this device has already verified.
+            let _ = current.insert(entry);
+        }
     }
 
     /// True if `device_pubkey` has been revoked under `user_pubkey` at or before `at_ns`.
@@ -380,6 +385,9 @@ mod tests {
         let mut list = RevocationList::new();
         list.insert(rev).unwrap();
         store.set_revocations(user_pk, list);
+        // A later peer advertising an empty/stale set cannot erase what we
+        // already learned.
+        store.set_revocations(user_pk, RevocationList::new());
 
         // Signed AT the cut-off — rejected.
         let msg = b"at";

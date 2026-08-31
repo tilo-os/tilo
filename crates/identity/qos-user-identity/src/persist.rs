@@ -9,7 +9,8 @@
 //! │   └── privkey.bin     # 32-byte Ed25519 secret seed (ONLY on primary devices)
 //! └── device/
 //!     ├── keypair.bin     # 32-byte Ed25519 secret seed (per-device, always present)
-//!     └── cert.bin        # postcard-encoded `DeviceCert` (present after enrollment)
+//!     ├── cert.bin        # legacy/default postcard-encoded `DeviceCert`
+//!     └── certs/          # one certificate per user identity trusted by this device
 //! ```
 //!
 //! All files are raw byte blobs; the on-disk format is deliberately
@@ -82,6 +83,21 @@ impl IdentityPaths {
             fs::create_dir_all(parent)?;
         }
         Ok(())
+    }
+
+    /// Certificate issued to this device by `user_public_key`.
+    ///
+    /// A device has one keypair but may act for different local identities in
+    /// different workspaces. Keying certificates by their issuing user root
+    /// preserves that one-device invariant without crossing identities.
+    pub fn device_cert_for_user(&self, user_public_key: &[u8; 32]) -> std::path::PathBuf {
+        let device_dir = self
+            .device_privkey
+            .parent()
+            .unwrap_or_else(|| Path::new("device"));
+        device_dir
+            .join("certs")
+            .join(format!("{}.bin", hex_encode(user_public_key)))
     }
 }
 
@@ -332,8 +348,22 @@ pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
 /// fails.
 pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistError> {
     let bytes = crate::canonical::canonical_bytes(cert)?;
-    fs::write(path, bytes)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    atomic_file::write(path, &bytes)?;
     Ok(())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 #[cfg(unix)]
@@ -448,6 +478,15 @@ mod tests {
         write_device_cert(&path, &cert).unwrap();
         let back = read_device_cert(&path).unwrap();
         assert_eq!(cert, back);
+    }
+
+    #[test]
+    fn identity_specific_cert_paths_do_not_collide() {
+        let paths = IdentityPaths::under("/var/lib/qos");
+        let alice = paths.device_cert_for_user(&[1; 32]);
+        let bob = paths.device_cert_for_user(&[2; 32]);
+        assert_ne!(alice, bob);
+        assert!(alice.starts_with("/var/lib/qos/device/certs"));
     }
 
     /// The device key is deliberately group-readable — two components

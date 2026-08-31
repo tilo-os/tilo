@@ -1,0 +1,50 @@
+# CI performance and cache budget
+
+CI has two distinct feedback paths:
+
+- `check.yml` selects affected packages (including reverse dependencies) and
+  balances them across two shards. It is the required per-change path.
+- `nightly.yml` runs the complete workspace, all targets, examples, and live
+  integration coverage. It is the coverage backstop rather than duplicated on
+  every push.
+
+Two affected shards are intentional. A third, permanently dedicated "heavy
+apps" shard was measured as the wrong trade-off for this workspace: it repeats
+large shared dependency graphs and adds runner CPU even when a change does not
+touch those apps. `tools/ci_select.py` already weights costly packages while
+preserving dependency-correct selection, so heavy packages receive their own
+capacity when they are affected without creating an always-on third compile.
+
+## Cache layers
+
+- sccache stores compiler outputs in the repository-scoped S3 prefix
+  `forgejo-runners/v1/`. This is the main cross-runner Rust cache.
+- The immutable Cargo target archive is a fallback for artifacts sccache cannot
+  represent. Only shard 1 writes a missing key, avoiding duplicate uploads.
+- The OS image build uses a registry-backed BuildKit cache because its
+  intermediate container layers are not compiler outputs.
+
+The layers solve different problems; replacing all three with a single cache
+would either omit non-compiler artifacts or upload entire target directories on
+every shard.
+
+## Measurements
+
+Numbers below come from Forgejo's `/usr/bin/time` output and sccache counters.
+They include all 11.5k workspace tests, not a synthetic microbenchmark.
+
+| Run | Date | Wall | User + system CPU | sccache hit rate |
+| --- | --- | ---: | ---: | ---: |
+| nightly 1279 | 2026-08-31 | 573.00 s | 1,708.26 s | 20.61% |
+| nightly 1298 | 2026-08-31 | 436.71 s | 1,731.32 s | 93.35% |
+
+The effective remote cache reduced end-to-end wall time by 23.8% while total
+process CPU stayed within 1.4%. Run 1298 recorded 3,883 compile requests, 2,806
+hits and 200 misses among 3,015 executed requests (Rust 90.60%, C/C++ 99.86%).
+Older fully warm runs reached 100% and completed compilation in roughly two
+minutes; cold run 944 was effectively uncached at 0.07%.
+
+These are operational baselines, not permanent targets. Keep `ci-measure.sh`
+around the test/check commands and compare wall time *and* total CPU before
+adding shards or caches; a faster wall clock that doubles runner CPU is a
+regression for this installation.

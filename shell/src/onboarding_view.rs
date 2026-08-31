@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Banner, Button, Card, Checkbox, Column, Row, Spacer, Text, Widget};
+use ui::widget::{Banner, Button, Card, Checkbox, Column, Row, Spacer, Text, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -30,15 +30,20 @@ use crate::onboarding::{
 const CONTENT_WIDTH: f32 = 620.0;
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
+pub const KEY_CONNECT: &str = "onboarding.connect";
+pub const KEY_CONNECT_PATH: &str = "onboarding.connect.path";
+pub const KEY_IMPORT: &str = "onboarding.import";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
 pub const KEY_FINISH: &str = "onboarding.finish";
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
+type Importer = Box<dyn Fn(&PathBuf) -> Result<MintedIdentity, String> + Send>;
 
 pub struct OnboardingView {
     flow: Onboarding,
     minter: Minter,
+    importer: Importer,
     /// Set when minting failed, shown in place of the success screen — loud,
     /// since booting on into a desktop that silently has no identity is what this flow replaces.
     error: Option<String>,
@@ -52,16 +57,45 @@ pub struct OnboardingView {
 impl OnboardingView {
     /// Build a ceremony that mints into `identity_dir`.
     pub fn new(identity_dir: PathBuf) -> Self {
-        Self::with_minter(Box::new(move || {
-            crate::onboarding::mint_into(&identity_dir).map_err(|e| e.to_string())
-        }))
+        let mint_dir = identity_dir.clone();
+        let import_dir = identity_dir;
+        Self::with_handlers(
+            Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string())),
+            Box::new(move |source| {
+                let store = crate::identity_registry::IdentityRegistryStore::at(&import_dir);
+                let profile = store.import(source).map_err(|error| error.to_string())?;
+                crate::firstboot::ensure_device_certificate_for_record(
+                    &profile.record_path,
+                    &crate::firstboot::collaboration_identity_paths(),
+                )
+                .map_err(|error| error.to_string())?;
+                crate::device_fleet::DeviceFleetStore::at(
+                    &import_dir,
+                    crate::firstboot::collaboration_identity_paths(),
+                )
+                .register_current_device(&profile.id)
+                .map_err(|error| error.to_string())?;
+                Ok(MintedIdentity {
+                    fingerprint: profile.id,
+                    path: profile.record_path,
+                })
+            }),
+        )
     }
 
     /// Build with an injected minter, so tests drive the whole widget without writing a key to disk.
     pub fn with_minter(minter: Minter) -> Self {
+        Self::with_handlers(
+            minter,
+            Box::new(|_| Err("identity import is unavailable in this test".to_string())),
+        )
+    }
+
+    fn with_handlers(minter: Minter, importer: Importer) -> Self {
         Self {
             flow: Onboarding::new(),
             minter,
+            importer,
             error: None,
             finished: false,
             structure_dirty: false,
@@ -86,6 +120,7 @@ impl OnboardingView {
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let body: Box<dyn Widget> = match self.flow.screen() {
             Screen::Intro => self.intro(theme),
+            Screen::Connect => self.connect(theme),
             Screen::NoRecovery => self.no_recovery(theme),
             Screen::Done => self.done(theme),
         };
@@ -104,9 +139,52 @@ impl OnboardingView {
                 .push(heading(INTRO_TITLE))
                 .push(paragraph(INTRO_BODY, theme))
                 .push(Box::new(Card::titled("What it is for", Box::new(list))))
-                .push(actions(vec![Box::new(
-                    Button::new("onboarding.begin.button", "Continue", Some(KEY_BEGIN))
+                .push(actions(vec![
+                    Box::new(Button::new(
+                        "onboarding.connect.button",
+                        "Connect existing identity",
+                        Some(KEY_CONNECT),
+                    )),
+                    Box::new(
+                        Button::new(
+                            "onboarding.begin.button",
+                            "Create new identity",
+                            Some(KEY_BEGIN),
+                        )
                         .with_style(ui::widget::ButtonStyle::Primary),
+                    ),
+                ])),
+        )
+    }
+
+    fn connect(&self, theme: &Theme) -> Box<dyn Widget> {
+        let path = TextInput::new(Vec::new())
+            .with_id("onboarding.connect.path.field")
+            .with_on_change_path(KEY_CONNECT_PATH)
+            .with_placeholder("/path/to/primary.json")
+            .with_font_size(13.0);
+        let mut body = Column::new()
+                .with_no_padding()
+                .with_gap(20.0)
+                .push(heading("Connect an existing identity"))
+                .push(paragraph(
+                    "Choose a qOS identity record exported from another device. It is validated and copied into this user's private identity store before use.",
+                    theme,
+                ));
+        if let Some(error) = &self.error {
+            body = body.push(Box::new(
+                Banner::error("That identity could not be connected").with_message(error.clone()),
+            ));
+        }
+        Box::new(
+            body.push(Box::new(Card::titled("Identity record", Box::new(path))))
+                .push(actions(vec![Box::new(
+                    Button::new(
+                        "onboarding.import.button",
+                        "Connect identity",
+                        Some(KEY_IMPORT),
+                    )
+                    .with_style(ui::widget::ButtonStyle::Primary),
                 )])),
         )
     }
@@ -248,6 +326,16 @@ fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
     )
 }
 
+fn read_string(state: &AutoCommit, root: &ObjId, key: &str) -> String {
+    match state.get(root, key) {
+        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+            ScalarValue::Str(text) => text.to_string(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    }
+}
+
 impl Widget for OnboardingView {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let before = self.flow.screen();
@@ -255,6 +343,28 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_BEGIN) {
             let _ = state.put(root, KEY_BEGIN, ScalarValue::Boolean(false));
             self.flow.begin();
+        }
+
+        if read_bool(state, root, KEY_CONNECT) {
+            let _ = state.put(root, KEY_CONNECT, ScalarValue::Boolean(false));
+            self.flow.begin_connect();
+        }
+
+        if read_bool(state, root, KEY_IMPORT) {
+            let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
+            let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
+            if self.flow.screen() == Screen::Connect {
+                match (self.importer)(&source) {
+                    Ok(identity) => {
+                        self.error = None;
+                        self.flow.complete_connected(identity);
+                    }
+                    Err(error) => {
+                        tracing::error!(target: "qos::onboarding", %error, "identity import failed");
+                        self.error = Some(error);
+                    }
+                }
+            }
         }
 
         // The checkbox drives the gate directly rather than being latched, so unticking really does close it again.
@@ -534,6 +644,52 @@ mod tests {
         press(&mut doc, KEY_FINISH);
         v.sync(&mut doc, &automerge::ROOT);
         assert!(v.finished());
+    }
+
+    #[test]
+    fn connect_existing_imports_without_minting() {
+        let imported = Arc::new(AtomicUsize::new(0));
+        let imported_for_handler = imported.clone();
+        let mut view = OnboardingView::with_handlers(
+            Box::new(|| Err("create should not run".to_string())),
+            Box::new(move |path| {
+                imported_for_handler.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(path, &PathBuf::from("/media/backup/primary.json"));
+                Ok(MintedIdentity {
+                    fingerprint: "cd".repeat(32),
+                    path: PathBuf::from("/home/user/.config/qos/identity/cd.json"),
+                })
+            }),
+        );
+        let mut doc = AutoCommit::new();
+        press(&mut doc, KEY_CONNECT);
+        let _ = doc.put(
+            &automerge::ROOT,
+            KEY_CONNECT_PATH,
+            ScalarValue::Str("/media/backup/primary.json".into()),
+        );
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.flow().screen(), Screen::Connect);
+        press(&mut doc, KEY_IMPORT);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(imported.load(Ordering::SeqCst), 1);
+        assert_eq!(view.flow().screen(), Screen::Done);
+        assert!(view.flow().is_done());
+    }
+
+    #[test]
+    fn failed_connect_stays_on_connect_screen_and_shows_error() {
+        let mut view = OnboardingView::with_handlers(
+            Box::new(|| Err("create should not run".to_string())),
+            Box::new(|_| Err("not a qOS identity".to_string())),
+        );
+        let mut doc = AutoCommit::new();
+        press(&mut doc, KEY_CONNECT);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_IMPORT);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.flow().screen(), Screen::Connect);
+        assert_eq!(view.error(), Some("not a qOS identity"));
     }
 
     /// Every screen must lay out — a ceremony that panics on the screen after the one under test is worse than no ceremony.

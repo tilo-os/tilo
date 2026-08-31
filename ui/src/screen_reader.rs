@@ -44,7 +44,6 @@ mod phrase {
             Role::Window => ("sr-role-window", "window"),
             Role::Dialog => ("sr-role-dialog", "dialog"),
             Role::Group => ("sr-role-group", "group"),
-            Role::Generic => ("", ""),
             Role::Toolbar => ("sr-role-toolbar", "toolbar"),
             Role::TabBar => ("sr-role-tab-bar", "tab bar"),
             Role::Tab => ("sr-role-tab", "tab"),
@@ -75,14 +74,15 @@ mod phrase {
             Role::Tooltip => ("sr-role-tooltip", "tooltip"),
 
             Role::Image => ("sr-role-image", "image"),
-            Role::Label => ("", ""),
-            Role::StaticText => ("", ""),
-            Role::Paragraph => ("", ""),
             // Heading word is produced specially (carries a level); see `describe`.
-            Role::Heading { .. } => ("", ""),
+            Role::Generic
+            | Role::Label
+            | Role::StaticText
+            | Role::Paragraph
+            | Role::Heading { .. }
+            | Role::Unknown => ("", ""),
             Role::Document => ("sr-role-document", "document"),
             Role::Canvas => ("sr-role-canvas", "canvas"),
-            Role::Unknown => ("", ""),
         };
         if key.is_empty() {
             String::new()
@@ -153,9 +153,15 @@ mod phrase {
 
     /// "N of M" — an item's position within its collection.
     pub fn position_word(pos: usize, size: usize) -> String {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "pos/size are a list position and length, always far below where \
+                      f64 loses integer precision"
+        )]
+        let (pos_f, size_f) = (pos as f64, size as f64);
         let resolved = crate::i18n::I18nManager::format(
             "sr-position",
-            &[("pos", (pos as f64).into()), ("size", (size as f64).into())],
+            &[("pos", pos_f.into()), ("size", size_f.into())],
         );
         if resolved == "sr-position" {
             format!("{pos} of {size}")
@@ -166,8 +172,13 @@ mod phrase {
 
     /// "level N" — hierarchy depth for nested structures (tree rows).
     pub fn level_word(level: usize) -> String {
-        let resolved =
-            crate::i18n::I18nManager::format("sr-level", &[("level", (level as f64).into())]);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "level is a hierarchy depth, always far below where f64 loses \
+                      integer precision"
+        )]
+        let level_f = level as f64;
+        let resolved = crate::i18n::I18nManager::format("sr-level", &[("level", level_f.into())]);
         if resolved == "sr-level" {
             format!("level {level}")
         } else {
@@ -441,7 +452,6 @@ impl ScreenReader {
     /// just "deleted".
     pub fn echo_deletion(&mut self, deleted: &str) {
         let text = match deleted.chars().count() {
-            0 => phrase::deleted(),
             1 => format!("{deleted} {}", phrase::deleted()),
             _ => phrase::deleted(),
         };
@@ -508,13 +518,18 @@ impl ScreenReader {
         let next = match self.cursor {
             None => 0,
             Some(i) => {
-                if i + 1 >= self.reading_order.len() {
+                if i.saturating_add(1) >= self.reading_order.len() {
                     return None;
                 }
-                i + 1
+                i.saturating_add(1)
             }
         };
         self.cursor = Some(next);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "next is freshly bounds-checked against self.reading_order.len() \
+                      immediately above"
+        )]
         let node = self.reading_order[next].clone();
         let text = describe(&node);
         if !text.is_empty() {
@@ -531,11 +546,18 @@ impl ScreenReader {
             return None;
         }
         let prev = match self.cursor {
-            None => self.reading_order.len() - 1,
+            // `self.reading_order` is non-empty here (checked above), so len() >= 1.
+            None => self.reading_order.len().saturating_sub(1),
             Some(0) => return None,
-            Some(i) => i - 1,
+            // The `Some(0)` arm above already took the i == 0 case.
+            Some(i) => i.saturating_sub(1),
         };
         self.cursor = Some(prev);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "prev is freshly bounds-checked against self.reading_order.len() \
+                      immediately above"
+        )]
         let node = self.reading_order[prev].clone();
         let text = describe(&node);
         if !text.is_empty() {
@@ -560,10 +582,19 @@ impl ScreenReader {
             self.cursor = None;
             return None;
         }
-        let start = self.cursor.map_or(0, |i| i + 1);
+        let start = self.cursor.map_or(0, |i| i.saturating_add(1));
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "i is drawn from the start..len() range, so it always indexes \
+                      within self.reading_order"
+        )]
         let found = (start..self.reading_order.len()).find(|&i| pred(&self.reading_order[i]));
         if let Some(i) = found {
             self.cursor = Some(i);
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "i is the index `find` just matched inside self.reading_order"
+            )]
             let node = self.reading_order[i].clone();
             let text = describe(&node);
             if !text.is_empty() {
@@ -589,9 +620,18 @@ impl ScreenReader {
         // Search strictly before the cursor; from an unset cursor, scan from the
         // end so the first jump lands on the last matching element.
         let end = self.cursor.unwrap_or(self.reading_order.len());
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "i is drawn from the 0..end range, so it always indexes within \
+                      self.reading_order"
+        )]
         let found = (0..end).rev().find(|&i| pred(&self.reading_order[i]));
         if let Some(i) = found {
             self.cursor = Some(i);
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "i is the index `find` just matched inside self.reading_order"
+            )]
             let node = self.reading_order[i].clone();
             let text = describe(&node);
             if !text.is_empty() {
@@ -654,7 +694,6 @@ pub fn is_form_field(node: &AccessNode) -> bool {
 /// DFS, collapsing presentational widgets (`accessibility() == None`)
 /// exactly as [`crate::accesskit_bridge::build_tree_update`] does.
 pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
-    let mut out = Vec::new();
     fn visit(w: &dyn Widget, out: &mut Vec<AccessNode>) {
         if let Some(node) = w.accessibility() {
             out.push(node);
@@ -663,6 +702,7 @@ pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
             visit(child, out);
         }
     }
+    let mut out = Vec::new();
     visit(root, &mut out);
     out
 }
@@ -925,6 +965,11 @@ mod tests {
     // SAFETY-ish: Speaker requires Send; SharedRecorder is only used in
     // single-threaded tests. We satisfy the bound with an unsafe impl scoped to
     // the test module.
+    #[allow(
+        clippy::non_send_fields_in_send_ty,
+        reason = "the Rc<RefCell<_>> is deliberately asserted Send above — this test \
+                  double never actually crosses a thread"
+    )]
     unsafe impl Send for SharedRecorder {}
 
     fn recording_reader() -> (ScreenReader, SharedRecorder) {

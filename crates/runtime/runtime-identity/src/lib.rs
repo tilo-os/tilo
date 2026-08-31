@@ -22,8 +22,9 @@
 //!
 //! ```ignore
 //! let identity = runtime_identity::load()?;
-//! let sig = identity.sign(b"hello")?;
-//! let pk = identity.group_public_key();
+//! let sig = identity.sign_for("document.save", b"hello")?;
+//! let pk = identity.signing_public_key();
+//! let cert = identity.device_certificate();
 //! ```
 //!
 //! Missing env var / missing file / bad JSON all surface as
@@ -45,7 +46,8 @@
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,6 +69,44 @@ pub use runtime_portal::NotAvailable;
 /// Legacy unsandboxed-development path. The qOS launcher uses
 /// [`broker::BROKER_ENV_VAR`] and never sets this for packaged apps.
 pub const IDENTITY_ENV_VAR: &str = "QOS_USER_IDENTITY";
+pub const IDENTITY_SERVICE: &str = "identity";
+
+/// Small synchronous wire protocol used over the launcher-inherited identity
+/// service fd. The launcher writes `Handshake` before the sandbox starts, so
+/// an app cannot claim another package or workspace.
+pub mod wire {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct Handshake {
+        pub workspace_id: String,
+        pub app_id: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub enum Request {
+        Metadata,
+        Sign { action: String, message: Vec<u8> },
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub enum Response {
+        Metadata {
+            display_name: String,
+            avatar_color: [u8; 3],
+            group_public_key: [u8; 32],
+            signing_public_key: [u8; 32],
+            /// JSON-encoded root-signed `qos_user_identity::DeviceCert`.
+            device_certificate: Option<Vec<u8>>,
+            threshold: u16,
+            total_shares: u16,
+            share_index: u16,
+        },
+        Signature(Vec<u8>),
+        Denied(String),
+        Error(String),
+    }
+}
 
 /// How a record's private share is protected on this device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -773,6 +813,11 @@ pub struct SigningIdentity {
     display_name: String,
     avatar_color: [u8; 3],
     group_public_key: [u8; 32],
+    /// Key that verifies [`Self::sign_for`]. A broker supplies the enrolled
+    /// device key rather than exposing or using the account/root key.
+    signing_public_key: [u8; 32],
+    /// Opaque JSON-encoded root-signed device certificate on the broker path.
+    device_certificate: Option<Vec<u8>>,
     threshold: u16,
     total_shares: u16,
     share_index: u16,
@@ -783,6 +828,7 @@ pub struct SigningIdentity {
 enum SigningSource {
     Local(Option<SigningKey>),
     Broker(Mutex<std::os::unix::net::UnixStream>),
+    ActionBroker(Mutex<UnixStream>),
 }
 
 impl std::fmt::Debug for SigningIdentity {
@@ -791,6 +837,11 @@ impl std::fmt::Debug for SigningIdentity {
             .field("display_name", &self.display_name)
             .field("avatar_color", &self.avatar_color)
             .field("group_public_key", &"<32 bytes>")
+            .field("signing_public_key", &"<32 bytes>")
+            .field(
+                "device_certificate",
+                &self.device_certificate.as_ref().map(|_| "<present>"),
+            )
             .field("threshold", &self.threshold)
             .field("total_shares", &self.total_shares)
             .field("share_index", &self.share_index)
@@ -815,6 +866,18 @@ impl SigningIdentity {
     /// verifier, stable across threshold enrolments until the next DKG rotation.
     pub fn group_public_key(&self) -> [u8; 32] {
         self.group_public_key
+    }
+
+    /// Public key that verifies signatures returned by [`Self::sign_for`].
+    pub fn signing_public_key(&self) -> [u8; 32] {
+        self.signing_public_key
+    }
+
+    /// Root-signed certificate binding [`Self::signing_public_key`] to
+    /// [`Self::group_public_key`], encoded as JSON. Direct legacy record
+    /// loading has no brokered device chain and returns `None`.
+    pub fn device_certificate(&self) -> Option<&[u8]> {
+        self.device_certificate.as_deref()
     }
 
     /// `t` in t-of-n; `1` while the user is still in single-device bootstrap mode.
@@ -855,6 +918,19 @@ impl SigningIdentity {
                  use qos-threshold-identity + the multi-device orchestrator instead",
             ))),
             SigningSource::Broker(stream) => broker::sign(stream, message),
+            SigningSource::ActionBroker(stream) => {
+                sign_via_action_broker(stream, "generic", message)
+            }
+        }
+    }
+
+    /// Ask the workspace identity broker to sign one named app action. The
+    /// shell binds the package and workspace before the app inherits this
+    /// connection, then evaluates the exact action capability.
+    pub fn sign_for(&self, action: &str, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
+        match &self.source {
+            SigningSource::ActionBroker(stream) => sign_via_action_broker(stream, action, message),
+            _ => self.sign(message),
         }
     }
 
@@ -866,6 +942,10 @@ impl SigningIdentity {
                 "threshold signing requires the multi-device orchestrator",
             )),
             SigningSource::Broker(_) => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "refusing to chain identity brokers",
+            )),
+            SigningSource::ActionBroker(_) => Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "refusing to chain identity brokers",
             )),
@@ -885,6 +965,8 @@ impl SigningIdentity {
             display_name,
             avatar_color,
             group_public_key,
+            signing_public_key: group_public_key,
+            device_certificate: None,
             threshold,
             total_shares,
             share_index,
@@ -906,6 +988,9 @@ impl SigningIdentity {
 /// [`IDENTITY_ENV_VAR`] is present, or [`NotAvailable::ConnectionFailed`]
 /// when the identity file is missing, unreadable, or malformed.
 pub fn load() -> Result<SigningIdentity, NotAvailable> {
+    if let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) {
+        return load_from_service(fd);
+    }
     if std::env::var_os(broker::BROKER_ENV_VAR).is_some() {
         return broker::connect_from_env();
     }
@@ -914,6 +999,113 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
         return Err(NotAvailable::ServiceFdMissing);
     }
     load_from_path(PathBuf::from(path_str))
+}
+
+fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
+    // The launcher gives this process exclusive ownership of the inherited fd.
+    let mut stream = unsafe { UnixStream::from_raw_fd(fd) };
+    write_frame(&mut stream, &wire::Request::Metadata)?;
+    match read_frame::<wire::Response>(&mut stream)? {
+        wire::Response::Metadata {
+            display_name,
+            avatar_color,
+            group_public_key,
+            signing_public_key,
+            device_certificate,
+            threshold,
+            total_shares,
+            share_index,
+        } => Ok(SigningIdentity {
+            display_name,
+            avatar_color,
+            group_public_key,
+            signing_public_key,
+            device_certificate,
+            threshold,
+            total_shares,
+            share_index,
+            source: SigningSource::ActionBroker(Mutex::new(stream)),
+            single_device: threshold == 1 && total_shares == 1,
+        }),
+        wire::Response::Denied(reason) | wire::Response::Error(reason) => Err(
+            NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::PermissionDenied, reason)),
+        ),
+        _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity broker returned an invalid metadata response",
+        ))),
+    }
+}
+
+fn sign_via_action_broker(
+    stream: &Mutex<UnixStream>,
+    action: &str,
+    message: &[u8],
+) -> Result<[u8; 64], NotAvailable> {
+    let mut stream = stream.lock().map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
+    })?;
+    write_frame(
+        &mut stream,
+        &wire::Request::Sign {
+            action: action.to_string(),
+            message: message.to_vec(),
+        },
+    )?;
+    match read_frame::<wire::Response>(&mut stream)? {
+        wire::Response::Signature(bytes) if bytes.len() == 64 => {
+            let mut signature = [0_u8; 64];
+            signature.copy_from_slice(&bytes);
+            Ok(signature)
+        }
+        wire::Response::Denied(reason) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            reason,
+        ))),
+        wire::Response::Error(reason) => {
+            Err(NotAvailable::ConnectionFailed(io::Error::other(reason)))
+        }
+        _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity broker returned an invalid signature response",
+        ))),
+    }
+}
+
+fn write_frame<T: serde::Serialize>(
+    stream: &mut UnixStream,
+    value: &T,
+) -> Result<(), NotAvailable> {
+    let bytes = serde_json::to_vec(value).map_err(|error| {
+        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
+    })?;
+    let len = u32::try_from(bytes.len()).map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "frame too large",
+        ))
+    })?;
+    stream.write_all(&len.to_le_bytes())?;
+    stream.write_all(&bytes)?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> Result<T, NotAvailable> {
+    let mut len = [0_u8; 4];
+    stream.read_exact(&mut len)?;
+    let len = u32::from_le_bytes(len) as usize;
+    if len > 1024 * 1024 {
+        return Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity frame exceeds 1 MiB",
+        )));
+    }
+    let mut bytes = vec![0_u8; len];
+    stream.read_exact(&mut bytes)?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
+    })
 }
 
 /// Same as [`load`] but reads from a caller-specified path — for tests, or
@@ -1065,11 +1257,11 @@ fn identity_from_record(
     let ti = record.threshold_identity;
     let secret = external_secret.unwrap_or(&ti.secret_bytes);
 
-    if secret.len() != 32 {
+    if !secret.is_empty() && secret.len() != 32 {
         return Err(LoadFailure::SecretSizeMismatch { got: secret.len() }.into_not_available());
     }
 
-    let signing_key = if ti.single_device {
+    let signing_key = if ti.single_device && !secret.is_empty() {
         let mut scalar = [0u8; 32];
         scalar.copy_from_slice(secret);
         // SigningKey::from_bytes is infallible today; if a future dalek revision
@@ -1259,6 +1451,8 @@ mod tests {
         assert_eq!(ident.display_name(), "Alice");
         assert_eq!(ident.avatar_color(), [200, 100, 50]);
         assert_eq!(ident.group_public_key(), vk.to_bytes());
+        assert_eq!(ident.signing_public_key(), vk.to_bytes());
+        assert!(ident.device_certificate().is_none());
         assert_eq!(ident.threshold(), 1);
         assert_eq!(ident.total_shares(), 1);
         assert_eq!(ident.share_index(), 1);
@@ -1271,6 +1465,31 @@ mod tests {
         verifier
             .verify(msg, &sig)
             .expect("verification should succeed");
+    }
+
+    #[test]
+    fn public_projection_loads_metadata_but_cannot_sign() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "display_name": "Alice",
+            "avatar_color": [2, 4, 6],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": vec![8_u8; 32],
+                "threshold": 1_u16,
+                "total_shares": 1_u16,
+                "share_index": 1_u16,
+                "secret_bytes": Vec::<u8>::new(),
+            },
+            "schema_version": 1,
+        }))
+        .expect("encode");
+        let identity = load_from_bytes(&bytes).expect("metadata loads");
+        assert_eq!(identity.display_name(), "Alice");
+        assert_eq!(identity.group_public_key(), [8; 32]);
+        assert_eq!(identity.signing_public_key(), [8; 32]);
+        assert!(identity.device_certificate().is_none());
+        assert!(!identity.is_single_device());
+        assert!(identity.sign(b"forbidden").is_err());
     }
 
     /// A record whose secret does not derive its recorded public key must not

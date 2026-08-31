@@ -118,14 +118,25 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = vec![tmp.path().to_path_buf()];
         let before = fingerprint(&dirs);
-        // Sleep-free: create a subdirectory, which bumps the parent's
-        // mtime on every filesystem qOS runs on. If the granularity
-        // were too coarse to see it, the fingerprint would compare
-        // equal and the TTL would still catch the change — so this
-        // asserts the cheap path works, not that it is the only one.
-        std::fs::create_dir(tmp.path().join("sub")).unwrap();
-        let after = fingerprint(&dirs);
-        assert_ne!(before, after);
+        // Some CI filesystems expose directory mtimes at coarse granularity.
+        // Keep mutating the directory until its timestamp advances, but put a
+        // firm bound on the retry: production deliberately remains one cheap
+        // `stat` per application directory and the TTL is its fallback.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut attempt = 0u32;
+        loop {
+            std::fs::write(tmp.path().join(format!("entry-{attempt}.desktop")), []).unwrap();
+            let after = fingerprint(&dirs);
+            if after != before {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "directory mtime did not advance before the retry deadline"
+            );
+            attempt += 1;
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
