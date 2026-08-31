@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -42,6 +43,99 @@ use crate::shell::collab_broker::{
     apply_redaction_from_envelope,
 };
 use crate::shell::collab_outbound::PeerPublisher;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerifiedJoinIdentity {
+    user_public_key: [u8; 32],
+    device_public_key: [u8; 32],
+}
+
+fn verify_join_presentation(
+    route: &CrdtRoute,
+    presentation: &runtime_collab::CertifiedJoinIdentity,
+    expected_user_public_key: &[u8; 32],
+    now_ns: u64,
+    revoked: bool,
+    enrolled: bool,
+) -> Result<VerifiedJoinIdentity, String> {
+    if presentation.workspace_id != route.cluster_id {
+        return Err("certified join is scoped to a different workspace".into());
+    }
+    let cert: qos_user_identity::DeviceCert =
+        serde_json::from_slice(&presentation.device_certificate)
+            .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
+    qos_user_identity::verify_device_cert_at(&cert, now_ns)
+        .map_err(|error| format!("device certificate was rejected: {error}"))?;
+    if &cert.user_public_key != expected_user_public_key {
+        return Err("device certificate belongs to another workspace identity".into());
+    }
+    if revoked {
+        return Err("certified collaboration device has been revoked".into());
+    }
+    if !enrolled {
+        return Err("certified collaboration device is not enrolled".into());
+    }
+    let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
+        .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
+    VerifyingKey::from_bytes(&cert.device_public_key)
+        .map_err(|_| "device certificate contains an invalid device key".to_string())?
+        .verify(
+            &runtime_identity::collaboration_join_signing_bytes(&presentation.workspace_id),
+            &Signature::from_bytes(&proof),
+        )
+        .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())?;
+    Ok(VerifiedJoinIdentity {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+    })
+}
+
+fn verify_join_identity(
+    route: &CrdtRoute,
+    identity_bytes: &[u8],
+) -> Result<Option<VerifiedJoinIdentity>, String> {
+    let Some(presentation) = runtime_collab::CertifiedJoinIdentity::decode(identity_bytes)
+        .map_err(|error| format!("certified join presentation is malformed: {error}"))?
+    else {
+        // Transitional compatibility: unprefixed callers keep editing until
+        // every snapshot/incremental producer can use signed envelopes.
+        return Ok(None);
+    };
+    let profile = crate::identity_registry::selected_identity_profile(&route.cluster_id)
+        .map_err(|error| format!("workspace identity lookup failed: {error}"))?
+        .ok_or_else(|| "no identity is selected for this workspace".to_string())?;
+    let cert: qos_user_identity::DeviceCert =
+        serde_json::from_slice(&presentation.device_certificate)
+            .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
+    let fleet = crate::device_fleet::DeviceFleetStore::from_env()
+        .and_then(|store| store.load(&profile.id))
+        .map_err(|error| format!("device fleet lookup failed: {error}"))?;
+    let revoked = fleet.is_revoked(&cert.device_public_key);
+    // Enrollment follows the fleet authority's existing device-key model.
+    // Requiring byte-for-byte certificate equality would incorrectly reject a
+    // renewed root-signed certificate for an already enrolled device.
+    let enrolled = fleet
+        .certificates
+        .iter()
+        .any(|known| known.device_public_key == cert.device_public_key);
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration
+                .as_secs()
+                .saturating_mul(1_000_000_000)
+                .saturating_add(u64::from(duration.subsec_nanos()))
+        });
+    verify_join_presentation(
+        route,
+        &presentation,
+        &profile.user_public_key,
+        now_ns,
+        revoked,
+        enrolled,
+    )
+    .map(Some)
+}
 
 /// Envelope pushed onto an [`OpStreamServer`]'s queue. `kind` is what
 /// makes the queue readable: signed, delta and whole-document share
@@ -428,9 +522,11 @@ impl collab_service::Server for CapnpCollabService {
                 .to_str()
                 .map_err(|e| capnp::Error::failed(format!("channelId not utf8: {e}")))?
                 .to_owned();
-            // The broker doesn't dispatch on identity today; bytes are read
-            // only to enforce the field is present and decodable.
-            let _identity = reader.get_identity()?;
+            let identity = reader.get_identity()?;
+            let route = CrdtRoute::from_channel_key(&channel_id);
+            let verified_identity = verify_join_identity(&route, identity).map_err(|error| {
+                capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
+            })?;
             let announced_handle = reader
                 .get_participant_handle()?
                 .to_str()
@@ -442,6 +538,7 @@ impl collab_service::Server for CapnpCollabService {
                 target: "qos_collab_probe",
                 channel = %channel_id,
                 peer_id,
+                certified = verified_identity.is_some(),
                 "PROBE join_channel",
             );
             state.ensure_channel(&channel_id);
@@ -1333,7 +1430,140 @@ mod tests {
         ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Ed25519PublicKey, Role,
         RoleAttestation, Signature, generate_keypair, sign_event, sign_op,
     };
+    use ed25519_dalek::Signer as _;
     use ed25519_dalek::SigningKey;
+
+    fn certified_join(
+        workspace: &str,
+        root: &SigningKey,
+        device: &SigningKey,
+    ) -> runtime_collab::CertifiedJoinIdentity {
+        let mut cert = qos_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Test device".into(),
+            capabilities: qos_user_identity::DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_device_cert(&mut cert, root).expect("root signs device cert");
+        runtime_collab::CertifiedJoinIdentity {
+            workspace_id: workspace.into(),
+            device_certificate: serde_json::to_vec(&cert).expect("certificate JSON"),
+            proof: device
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    workspace,
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+    }
+
+    #[test]
+    fn certified_join_verifies_root_device_and_workspace_chain() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let device = SigningKey::from_bytes(&[2; 32]);
+        let route = CrdtRoute::cluster("workspace-a");
+        let presentation = certified_join("workspace-a", &root, &device);
+        let verified = verify_join_presentation(
+            &route,
+            &presentation,
+            &root.verifying_key().to_bytes(),
+            2,
+            false,
+            true,
+        )
+        .expect("valid certified join");
+        assert_eq!(verified.user_public_key, root.verifying_key().to_bytes());
+        assert_eq!(
+            verified.device_public_key,
+            device.verifying_key().to_bytes()
+        );
+    }
+
+    #[test]
+    fn certified_join_rejects_unknown_proof_signer_and_tampered_cert() {
+        let root = SigningKey::from_bytes(&[3; 32]);
+        let device = SigningKey::from_bytes(&[4; 32]);
+        let stranger = SigningKey::from_bytes(&[5; 32]);
+        let route = CrdtRoute::cluster("workspace-a");
+        let mut presentation = certified_join("workspace-a", &root, &device);
+        presentation.proof = stranger
+            .sign(&runtime_identity::collaboration_join_signing_bytes(
+                "workspace-a",
+            ))
+            .to_bytes()
+            .to_vec();
+        assert!(
+            verify_join_presentation(
+                &route,
+                &presentation,
+                &root.verifying_key().to_bytes(),
+                2,
+                false,
+                true,
+            )
+            .is_err()
+        );
+
+        let mut presentation = certified_join("workspace-a", &root, &device);
+        let mut cert: qos_user_identity::DeviceCert =
+            serde_json::from_slice(&presentation.device_certificate).expect("certificate");
+        cert.device_label.push_str(" (tampered)");
+        presentation.device_certificate = serde_json::to_vec(&cert).expect("certificate JSON");
+        assert!(
+            verify_join_presentation(
+                &route,
+                &presentation,
+                &root.verifying_key().to_bytes(),
+                2,
+                false,
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn certified_join_rejects_other_workspace_revoked_and_unenrolled_device() {
+        let root = SigningKey::from_bytes(&[6; 32]);
+        let device = SigningKey::from_bytes(&[7; 32]);
+        let presentation = certified_join("workspace-b", &root, &device);
+        let expected_root = root.verifying_key().to_bytes();
+        assert!(
+            verify_join_presentation(
+                &CrdtRoute::cluster("workspace-a"),
+                &presentation,
+                &expected_root,
+                2,
+                false,
+                true,
+            )
+            .is_err()
+        );
+        let route = CrdtRoute::cluster("workspace-b");
+        let other_root = SigningKey::from_bytes(&[8; 32]);
+        assert!(
+            verify_join_presentation(
+                &route,
+                &presentation,
+                &other_root.verifying_key().to_bytes(),
+                2,
+                false,
+                true,
+            )
+            .is_err(),
+            "a certificate selected for another workspace identity is rejected"
+        );
+        assert!(
+            verify_join_presentation(&route, &presentation, &expected_root, 2, true, true).is_err()
+        );
+        assert!(
+            verify_join_presentation(&route, &presentation, &expected_root, 2, false, false)
+                .is_err()
+        );
+    }
 
     fn unique_path(label: &str) -> PathBuf {
         let pid = std::process::id();

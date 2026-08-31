@@ -50,7 +50,13 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 // references its own module path absolutely as `crate::collab_capnp`
 // — must be included at the crate root with that exact name (the
 // same pattern capnp's own samples use).
-#[allow(clippy::all)]
+#[allow(
+    clippy::all,
+    clippy::nursery,
+    clippy::pedantic,
+    clippy::restriction,
+    reason = "generated Cap'n Proto bindings do not follow repository lint policy"
+)]
 #[allow(unused)]
 #[allow(dead_code)]
 pub mod collab_capnp {
@@ -66,6 +72,55 @@ pub use collab_capnp::context_stream::Client as ContextStreamClient;
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
+
+/// Prefix distinguishing the production certified join presentation from
+/// legacy opaque identity bytes. A payload carrying this prefix must decode
+/// and verify; the broker never falls back to legacy after seeing it.
+pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"qos-collab-certified-join-v1\0";
+
+/// Peer-verifiable proof that an enrolled device joined one workspace.
+/// `device_certificate` is the JSON form supplied by `runtime-identity`; the
+/// proof is an Ed25519 device-key signature over
+/// `runtime_identity::collaboration_join_signing_bytes(workspace_id)`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertifiedJoinIdentity {
+    pub workspace_id: String,
+    pub device_certificate: Vec<u8>,
+    pub proof: Vec<u8>,
+}
+
+impl CertifiedJoinIdentity {
+    /// Encode with the reserved prefix so old opaque identities remain
+    /// distinguishable during the transport migration.
+    ///
+    /// # Errors
+    ///
+    /// Returns postcard's serialization error if the presentation cannot be
+    /// encoded.
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        let encoded = postcard::to_stdvec(self)?;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(CERTIFIED_JOIN_PREFIX);
+        bytes.extend_from_slice(&encoded);
+        Ok(bytes)
+    }
+
+    /// Decode a certified presentation. `Ok(None)` means the bytes are a
+    /// legacy identity; malformed prefixed bytes are an error, never a
+    /// downgrade.
+    ///
+    /// # Errors
+    ///
+    /// Returns postcard's deserialization error for malformed certified
+    /// payloads.
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, postcard::Error> {
+        let Some(encoded) = bytes.strip_prefix(CERTIFIED_JOIN_PREFIX) else {
+            return Ok(None);
+        };
+        postcard::from_bytes(encoded).map(Some)
+    }
+}
 
 /// Try to dial the qOS collab broker via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (likely: app
@@ -1121,6 +1176,32 @@ pub struct ScrollbackBatch {
 /// reach below the idiomatic wrappers (server impls, tests).
 pub mod raw {
     pub use super::collab_capnp::*;
+}
+
+#[cfg(test)]
+mod certified_join_tests {
+    use super::*;
+
+    #[test]
+    fn certified_join_round_trips_and_prefixed_garbage_never_downgrades() {
+        let identity = CertifiedJoinIdentity {
+            workspace_id: "workspace-a".into(),
+            device_certificate: vec![1, 2, 3],
+            proof: vec![4; 64],
+        };
+        let encoded = identity.encode().expect("encode");
+        assert_eq!(
+            CertifiedJoinIdentity::decode(&encoded).expect("decode"),
+            Some(identity)
+        );
+        assert_eq!(
+            CertifiedJoinIdentity::decode(b"legacy identity").expect("legacy"),
+            None
+        );
+        let mut malformed = CERTIFIED_JOIN_PREFIX.to_vec();
+        malformed.extend_from_slice(b"not postcard");
+        assert!(CertifiedJoinIdentity::decode(&malformed).is_err());
+    }
 }
 
 #[cfg(test)]

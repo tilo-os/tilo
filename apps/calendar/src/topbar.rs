@@ -12,10 +12,8 @@ use vello::peniko::{Color, Fill};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-use crate::app::{
-    center_text, draw_chevron, draw_hamburger, draw_icon_button, draw_plus, fill_rect, fill_round,
-    stroke_line, stroke_round,
-};
+use crate::app::{center_text, draw_chevron, draw_hamburger, draw_icon_button, draw_plus};
+use crate::draw_util::{fill_rect, fill_round, stroke_line, stroke_round};
 use crate::{date, model::View};
 
 pub(crate) const HEIGHT: f64 = 60.0;
