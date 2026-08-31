@@ -19,7 +19,7 @@
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
 //! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.
-//! - [`editor`]    — the syntax-highlighting SQL editor widget.
+//! - [`ui::CodeEditor`] — the shared CRDT-backed SQL editing surface.
 //! - [`grid`]      — the sortable, paginated, horizontally-scrollable results grid.
 //! - [`schema_tree`] — the database → schema → table → column browser.
 //! - [`structure`] — the columns/keys/indexes inspector.
@@ -61,7 +61,6 @@ pub mod actions;
 pub mod app;
 pub mod connect_modal;
 pub mod doc;
-pub mod editor;
 pub mod engine;
 pub mod engine_mysql;
 pub mod engine_pg;
@@ -71,7 +70,6 @@ pub mod sample;
 pub mod schema_tree;
 pub mod session;
 pub mod structure;
-pub mod syntax;
 pub mod theme_ext;
 pub mod worker;
 
