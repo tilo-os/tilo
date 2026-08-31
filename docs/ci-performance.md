@@ -8,6 +8,19 @@ CI has two distinct feedback paths:
   integration coverage. It is the coverage backstop rather than duplicated on
   every push.
 
+Software-Vulkan golden tests are omitted from the two affected-package shards
+and run once at the end of the nightly test job. A nextest test group can
+serialize goldens with each other, but it cannot make them exclusive of the
+thousands of ordinary tests in the same invocation (or of the other shard).
+Loaded llvmpipe/lavapipe runs have produced stable false pixel deltas; the
+isolated tail reuses the nightly job's compiled artifacts, so it preserves full
+daily visual coverage without another workspace build or additional test CPU.
+The check, nightly, and baseline-refresh workflows also pin Vulkan's ICD to
+Mesa lavapipe and require wgpu's `llvmpipe` adapter. Runner nodes can expose
+different physical GPUs, and `WGPU_BACKEND=vulkan` alone selects the API rather
+than a particular adapter; a golden produced on one node is not canonical
+unless both the driver and adapter are fixed.
+
 Two affected shards are intentional. A third, permanently dedicated "heavy
 apps" shard was measured as the wrong trade-off for this workspace: it repeats
 large shared dependency graphs and adds runner CPU even when a change does not
