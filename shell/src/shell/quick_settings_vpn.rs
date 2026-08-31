@@ -11,19 +11,10 @@ use vello::peniko::Fill;
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, ButtonStyle, Toggle, ToggleFace};
+use ui::widget::{Toggle, ToggleFace};
 
 use crate::shell::qs_actions::{QsActions, log_qs_result};
-
-const HEADER_HEIGHT: f64 = 48.0;
-const LIST_TOP: f64 = 56.0;
-const ROW_HEIGHT: f64 = 56.0;
-const ROW_INSET: f64 = 12.0;
-
-#[allow(clippy::cast_precision_loss, reason = "VPN profile counts are tiny")]
-fn usize_to_f64_lossy(value: usize) -> f64 {
-    value as f64
-}
+use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
 
 #[allow(
     clippy::cast_possible_truncation,
@@ -33,56 +24,28 @@ fn f64_to_f32_lossy(value: f64) -> f32 {
     value as f32
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum VpnPaneOutcome {
-    #[default]
-    None,
-    Back,
-    Changed,
-}
-
 #[derive(Default)]
 pub struct QuickSettingsVpnPane {
-    back_rect: Rect,
-    row_rects: Vec<Rect>,
+    list: DrillInList,
 }
 
 impl QuickSettingsVpnPane {
-    fn layout(&mut self, panel: Rect, row_count: usize) {
-        self.back_rect = Rect::new(
-            panel.x0 + 8.0,
-            panel.y0 + 8.0,
-            panel.x0 + 40.0,
-            panel.y0 + 40.0,
-        );
-        self.row_rects.clear();
-        self.row_rects.extend((0..row_count).map(|index| {
-            let y = panel.y0 + LIST_TOP + usize_to_f64_lossy(index) * ROW_HEIGHT;
-            Rect::new(
-                panel.x0 + ROW_INSET,
-                y,
-                panel.x1 - ROW_INSET,
-                y + ROW_HEIGHT - 4.0,
-            )
-        }));
-    }
-
     pub fn handle_click(
         &mut self,
         point: Point,
         panel: Rect,
         profiles: &mut [os_actions::VpnConnectionInfo],
         actions: &dyn QsActions,
-    ) -> VpnPaneOutcome {
-        self.layout(panel, profiles.len());
-        if self.back_rect.contains(point) {
-            return VpnPaneOutcome::Back;
+    ) -> DrillInOutcome {
+        self.list.layout(panel, profiles.len());
+        if self.list.back_contains(point) {
+            return DrillInOutcome::Back;
         }
-        let Some(index) = self.row_rects.iter().position(|row| row.contains(point)) else {
-            return VpnPaneOutcome::None;
+        let Some(index) = self.list.row_at(point) else {
+            return DrillInOutcome::None;
         };
         let Some(profile) = profiles.get_mut(index) else {
-            return VpnPaneOutcome::None;
+            return DrillInOutcome::None;
         };
         let next = !profile.active;
         log_qs_result(
@@ -92,7 +55,7 @@ impl QuickSettingsVpnPane {
         // Preserve the existing optimistic UI contract: the asynchronous OS
         // refresh reconciles a rejected transition on its next reading.
         profile.active = next;
-        VpnPaneOutcome::Changed
+        DrillInOutcome::Changed
     }
 
     pub fn draw(
@@ -105,60 +68,23 @@ impl QuickSettingsVpnPane {
         cursor: Option<Point>,
         profiles: &[os_actions::VpnConnectionInfo],
     ) {
-        self.layout(panel, profiles.len());
+        self.list.layout(panel, profiles.len());
         let colors = &theme.tokens.colors;
-        let back_hovered = cursor.is_some_and(|point| self.back_rect.contains(point));
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::new(self.back_rect, "")
-                .style(ButtonStyle::Ghost)
-                .icon(ui::icons::Icon::ChevronLeft)
-                .hovered(back_hovered)
-                .accessible_name("Back"),
-        );
-
-        let title = "VPN";
-        let (title_w, title_h) = text.measure(title, theme.tokens.typography.scale.sm, None);
-        text.draw_text_weighted(
-            scene,
-            title,
-            theme.tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    panel.center().x - f64::from(title_w) / 2.0,
-                    panel.y0 + (HEADER_HEIGHT - f64::from(title_h)) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            TextWeight::Semibold,
-        );
-
+        self.list
+            .draw_header(scene, transform, text, theme, panel, cursor, "VPN");
         if profiles.is_empty() {
-            let message = "No VPN profiles yet · add one in Settings";
-            let (w, h) = text.measure(message, theme.tokens.typography.scale.sm, None);
-            text.draw_text(
+            DrillInList::draw_empty(
                 scene,
-                message,
-                theme.tokens.typography.scale.sm,
-                colors.text_dim,
-                transform.pre_translate(
-                    (
-                        panel.center().x - f64::from(w) / 2.0,
-                        panel.y0 + LIST_TOP + 24.0 - f64::from(h) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
+                transform,
+                text,
+                theme,
+                panel,
+                "No VPN profiles yet · add one in Settings",
             );
             return;
         }
 
-        for (profile, row) in profiles.iter().zip(&self.row_rects) {
+        for (profile, row) in profiles.iter().zip(self.list.rows()) {
             let hovered = cursor.is_some_and(|point| row.contains(point));
             let fill = if profile.active {
                 colors.accent[5].with_alpha_factor(if hovered { 0.24 } else { 0.18 })
@@ -276,9 +202,10 @@ mod tests {
         let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
         let mut profiles = vec![profile(false)];
         let actions = RecordingActions::default();
-        pane.layout(panel, profiles.len());
-        let outcome = pane.handle_click(pane.row_rects[0].center(), panel, &mut profiles, &actions);
-        assert_eq!(outcome, VpnPaneOutcome::Changed);
+        pane.list.layout(panel, profiles.len());
+        let outcome =
+            pane.handle_click(pane.list.rows()[0].center(), panel, &mut profiles, &actions);
+        assert_eq!(outcome, DrillInOutcome::Changed);
         assert!(profiles[0].active);
         assert_eq!(actions.0.borrow().as_slice(), [("Work".into(), true)]);
     }
@@ -289,14 +216,14 @@ mod tests {
         let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
         let mut profiles = vec![profile(true)];
         let actions = RecordingActions::default();
-        pane.layout(panel, profiles.len());
+        pane.list.layout(panel, profiles.len());
         assert_eq!(
-            pane.handle_click(pane.back_rect.center(), panel, &mut profiles, &actions),
-            VpnPaneOutcome::Back
+            pane.handle_click(pane.list.back_center(), panel, &mut profiles, &actions),
+            DrillInOutcome::Back
         );
         assert_eq!(
             pane.handle_click(panel.center(), panel, &mut profiles, &actions),
-            VpnPaneOutcome::None
+            DrillInOutcome::None
         );
         assert!(actions.0.borrow().is_empty());
         assert!(profiles[0].active);

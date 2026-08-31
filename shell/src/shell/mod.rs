@@ -62,6 +62,8 @@ mod projection_overlay;
 pub mod qs_actions;
 pub mod qs_refresh;
 pub mod quick_settings;
+mod quick_settings_bluetooth;
+mod quick_settings_drill_in;
 mod quick_settings_vpn;
 mod quick_settings_wifi;
 pub mod remote_cursors;

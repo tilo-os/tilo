@@ -30,8 +30,8 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget,
-    WindowGroup as UiWindowGroup,
+    Button, ButtonFace, CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt,
+    PromptChoice, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
@@ -43,8 +43,10 @@ use crate::shell::peer_sync_overlay::{EventOutcome as PeerSyncEventOutcome, Peer
 pub use crate::shell::peer_sync_overlay::{PeerSyncRequest, PeerSyncSnapshot};
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
-use crate::shell::quick_settings_vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
-use crate::shell::quick_settings_wifi::{QuickSettingsWifiPane, WifiPaneOutcome};
+use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
+use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
+use crate::shell::quick_settings_wifi::QuickSettingsWifiPane;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
@@ -282,6 +284,10 @@ pub struct ShellOverlayHost {
     /// Wi-Fi network-list layout, painting and join hit-testing. The
     /// specialised ephemeral password editor remains host-owned.
     qs_wifi_pane: QuickSettingsWifiPane,
+    /// Bluetooth discovery list layout, painting and back hit-testing.
+    qs_bluetooth_pane: QuickSettingsBluetoothPane,
+    /// Shared drill-in chrome for host-owned notification/password panes.
+    qs_aux_drill_in: DrillInList,
     /// VPN drill-in geometry, shared toggle painting, click routing and OS
     /// dispatch. Chrome remains the source of the profile snapshot.
     qs_vpn_pane: QuickSettingsVpnPane,
@@ -922,6 +928,8 @@ impl ShellOverlayHost {
             tab_tiles: std::collections::HashMap::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             qs_wifi_pane: QuickSettingsWifiPane::default(),
+            qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
+            qs_aux_drill_in: DrillInList::default(),
             qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
             session_audio_policy: None,
@@ -5749,6 +5757,7 @@ impl ShellOverlayHost {
             && !matches!(
                 current_level,
                 crate::shell::quick_settings::QsLevel::Wifi
+                    | crate::shell::quick_settings::QsLevel::Bluetooth
                     | crate::shell::quick_settings::QsLevel::Vpn
             )
         {
@@ -5769,9 +5778,27 @@ impl ShellOverlayHost {
                     self.qs_actions.as_ref(),
                 );
                 match outcome {
-                    WifiPaneOutcome::Back => st.quick_settings.pop_level(),
-                    WifiPaneOutcome::Changed => {}
-                    WifiPaneOutcome::None => return,
+                    DrillInOutcome::Back => st.quick_settings.pop_level(),
+                    DrillInOutcome::Changed => {}
+                    DrillInOutcome::None => return,
+                }
+                st.bump();
+            }
+        } else if matches!(
+            current_level,
+            crate::shell::quick_settings::QsLevel::Bluetooth
+        ) {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                let outcome = self.qs_bluetooth_pane.handle_click(
+                    p,
+                    self.quick_settings_rect(),
+                    &st.quick_settings.bt_devices,
+                );
+                match outcome {
+                    DrillInOutcome::Back => st.quick_settings.pop_level(),
+                    DrillInOutcome::Changed => {}
+                    DrillInOutcome::None => return,
                 }
                 st.bump();
             }
@@ -5785,9 +5812,9 @@ impl ShellOverlayHost {
                     self.qs_actions.as_ref(),
                 );
                 match outcome {
-                    VpnPaneOutcome::Back => st.quick_settings.pop_level(),
-                    VpnPaneOutcome::Changed => {}
-                    VpnPaneOutcome::None => return,
+                    DrillInOutcome::Back => st.quick_settings.pop_level(),
+                    DrillInOutcome::Changed => {}
+                    DrillInOutcome::None => return,
                 }
                 st.bump();
             }
@@ -10221,7 +10248,17 @@ impl ShellOverlayHost {
             }
             crate::shell::quick_settings::QsLevel::Bluetooth
             | crate::shell::quick_settings::QsLevel::BluetoothDetails(_) => {
-                self.draw_qs_bt_list(scene, transform, text_renderer, theme, qs);
+                let panel = self.quick_settings_rect();
+                let cursor = self.last_cursor;
+                self.qs_bluetooth_pane.draw(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    panel,
+                    cursor,
+                    &qs.bt_devices,
+                );
                 true
             }
             crate::shell::quick_settings::QsLevel::Vpn => {
@@ -10674,38 +10711,23 @@ impl ShellOverlayHost {
     /// and a centred title. Used for both `WiFi` and Bluetooth panes; the
     /// back-chevron's hit rect is exposed via [`Self::qs_back_chevron_rect`].
     fn draw_qs_drill_in_header(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         title: &str,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.quick_settings_rect();
-        let header_h = 48.0_f64;
-        let chev_rect = self.qs_back_chevron_rect();
-        ui::icons::draw_icon(
+        let panel = self.quick_settings_rect();
+        self.qs_aux_drill_in.layout(panel, 0);
+        self.qs_aux_drill_in.draw_header(
             scene,
             transform,
-            chev_rect,
-            ui::icons::Icon::ChevronLeft,
-            colors.text_primary,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-
-        let (tw, th) = text_renderer.measure(title, tokens.typography.scale.sm, None);
-        let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-        let ty = rect.y0 + (header_h - f64::from(th)) / 2.0;
-        text_renderer.draw_text_weighted(
-            scene,
+            text_renderer,
+            theme,
+            panel,
+            self.last_cursor,
             title,
-            tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate((tx, ty).into()),
-            None,
-            TextWeight::Semibold,
         );
     }
 
@@ -10719,18 +10741,13 @@ impl ShellOverlayHost {
         theme: &Theme,
         message: &str,
     ) {
-        let tokens = &theme.tokens;
-        let rect = self.quick_settings_rect();
-        let (tw, th) = text_renderer.measure(message, tokens.typography.scale.sm, None);
-        let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-        let ty = rect.y0 + 56.0 + 24.0 - f64::from(th) / 2.0;
-        text_renderer.draw_text(
+        DrillInList::draw_empty(
             scene,
+            transform,
+            text_renderer,
+            theme,
+            self.quick_settings_rect(),
             message,
-            tokens.typography.scale.sm,
-            tokens.colors.text_dim,
-            transform.pre_translate((tx, ty).into()),
-            None,
         );
     }
 
@@ -10744,7 +10761,7 @@ impl ShellOverlayHost {
     /// while the shell is the only authority that actually received and
     /// retired these notifications.
     fn draw_qs_notification_history(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -11008,7 +11025,7 @@ impl ShellOverlayHost {
 
     /// The "join this protected network" prompt.
     fn draw_qs_wifi_password(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -11194,184 +11211,37 @@ impl ShellOverlayHost {
         theme: &Theme,
         prompt: &crate::shell::quick_settings::WifiPasswordPrompt,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let text_size = tokens.typography.scale.sm;
         let (cancel, connect) = self.qs_password_button_rects();
-        let cancel_shape = RoundedRect::from_rect(cancel, 10.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surface_white_5,
-            None,
-            &cancel_shape,
-        );
-        Self::draw_centred_label(
+        Button::paint(
             scene,
             transform,
             text_renderer,
-            cancel,
-            "Cancel",
-            text_size,
-            colors.text_dim,
+            theme,
+            &ButtonFace::new(cancel, "Cancel")
+                .radius(10.0)
+                .hovered(self.last_cursor.is_some_and(|point| cancel.contains(point))),
         );
-
-        let live = prompt.can_submit();
-        let connect_shape = RoundedRect::from_rect(connect, 10.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if live {
-                colors.accent[5]
-            } else {
-                // Not merely dim: a disabled primary button that still
-                // looks primary invites the click it will ignore.
-                colors.accent[5].with_alpha_factor(0.28)
-            },
-            None,
-            &connect_shape,
-        );
-        Self::draw_centred_label(
+        Button::paint(
             scene,
             transform,
             text_renderer,
-            connect,
-            if prompt.connecting {
-                "Connecting…"
-            } else {
-                "Connect"
-            },
-            text_size,
-            if live {
-                colors.text_primary
-            } else {
-                colors.text_primary.with_alpha_factor(0.5)
-            },
-        );
-    }
-
-    /// Centres a label inside `rect` (factored out to stop copies drifting).
-    fn draw_centred_label(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        rect: Rect,
-        label: &str,
-        size: f32,
-        color: vello::peniko::Color,
-    ) {
-        let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
-            scene,
-            label,
-            size,
-            color,
-            transform.pre_translate(
-                (
-                    rect.center().x - f64::from(w) / 2.0,
-                    rect.center().y - f64::from(h) / 2.0,
-                )
-                    .into(),
+            theme,
+            &ButtonFace::new(
+                connect,
+                if prompt.connecting {
+                    "Connecting…"
+                } else {
+                    "Connect"
+                },
+            )
+            .primary()
+            .radius(10.0)
+            .disabled(!prompt.can_submit())
+            .hovered(
+                self.last_cursor
+                    .is_some_and(|point| connect.contains(point)),
             ),
-            None,
-            TextWeight::Semibold,
         );
-    }
-
-    /// Renders the Bluetooth drill-in pane: header + `bt_devices` rows
-    /// (name + battery-icon + active-radio dot).
-    fn draw_qs_bt_list(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.quick_settings_rect();
-
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Bluetooth");
-
-        if qs.bt_devices.is_empty() {
-            self.draw_qs_drill_in_empty(scene, transform, text_renderer, theme, "No devices found");
-            return;
-        }
-
-        let row_h = 56.0_f64;
-        let list_y0 = rect.y0 + 56.0;
-        for (i, dev) in qs.bt_devices.iter().enumerate() {
-            let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
-            let row_rect = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
-            if i == 0 {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.neutral[2].with_alpha_factor(0.50),
-                    None,
-                    &RoundedRect::from_rect(row_rect, 12.0),
-                );
-            }
-
-            // Placeholder ring — no lucide Bluetooth glyph yet.
-            let glyph_box = Rect::new(
-                row_rect.x0 + 12.0,
-                row_rect.y0 + (row_rect.height() - 20.0) / 2.0,
-                row_rect.x0 + 12.0 + 20.0,
-                row_rect.y0 + f64::midpoint(row_rect.height(), 20.0),
-            );
-            let cx = f64::midpoint(glyph_box.x0, glyph_box.x1);
-            let cy = f64::midpoint(glyph_box.y0, glyph_box.y1);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                transform,
-                colors.text_primary,
-                None,
-                &vello::kurbo::Circle::new(Point::new(cx, cy), 7.0),
-            );
-
-            let label_x = glyph_box.x1 + 12.0;
-            let label_y = row_rect.y0 + (row_rect.height() - 14.0) / 2.0;
-            text_renderer.draw_text_weighted(
-                scene,
-                &dev.name,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform.pre_translate((label_x, label_y).into()),
-                None,
-                TextWeight::Medium,
-            );
-
-            let bat_box = Rect::new(
-                row_rect.x1 - 64.0,
-                row_rect.y0 + (row_rect.height() - 18.0) / 2.0,
-                row_rect.x1 - 64.0 + 22.0,
-                row_rect.y0 + f64::midpoint(row_rect.height(), 18.0),
-            );
-            let bat_color = if dev.battery > 50 {
-                colors.semantic.success
-            } else if dev.battery > 20 {
-                colors.text_primary
-            } else {
-                colors.semantic.danger
-            };
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                bat_box,
-                ui::icons::Icon::Battery,
-                bat_color,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-
-            if dev.connected {
-                let cx = row_rect.x1 - 14.0;
-                let cy = row_rect.y0 + row_rect.height() / 2.0;
-                let dot = vello::kurbo::Circle::new(Point::new(cx, cy), 5.0);
-                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
-            }
-        }
     }
 
     /// Collaborators dropdown: a peer-roster popover anchored under the
