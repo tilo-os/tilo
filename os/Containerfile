@@ -546,6 +546,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     gstreamer1-plugin-libav \
     gstreamer1-plugin-openh264 \
     ffmpeg-free \
+    yt-dlp \
     python3 \
     python3-dbus-next \
     python3-gobject \
@@ -554,7 +555,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && gst-inspect-1.0 h264parse >/dev/null \
     && gst-inspect-1.0 rtph264pay >/dev/null \
     && gst-inspect-1.0 rtponviftimestamp >/dev/null \
-    && gst-inspect-1.0 rtpstreampay >/dev/null
+    && gst-inspect-1.0 rtpstreampay >/dev/null \
+    && yt-dlp --version >/dev/null
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
 # greeter's PAM stack references it via a tolerant `-auth` line).
