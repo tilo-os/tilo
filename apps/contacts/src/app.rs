@@ -29,8 +29,10 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use ui::widget::{
-    Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Link, TextInput, Widget,
+    Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Chip, ChipLead, ChipStyle,
+    Link, TextInput, Widget,
 };
 
 use crate::date;
@@ -2994,33 +2996,32 @@ fn chip(
     label: &str,
     active: bool,
 ) {
-    if rect.width() <= 0.0 {
-        return;
-    }
-    let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-    let bg = if active {
-        theme.accent_primary.with_alpha_factor(0.16)
-    } else {
-        c.surfaces.raised
-    };
-    scene.fill(Fill::NonZero, t, bg, None, &shape);
-    scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-    let col = if active {
-        theme.accent_primary
-    } else {
-        c.text_primary
-    };
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
-    tr.draw_text(
+    Chip::draw_at(
         scene,
+        t,
+        rect,
         label,
-        12.0,
-        col,
-        t * Affine::translate((rect.x0 + 10.0, rect.center().y - 7.0)),
-        Some((rect.width() - 16.0) as f32),
+        ChipLead::None,
+        contact_chip_style(theme, active),
+        theme,
+        tr,
     );
-    scene.pop_layer();
+}
+
+/// Contacts owns chip hit-testing, while the toolkit owns their presentation.
+/// Resolve selected-chip colours on the pane they are actually composited over
+/// so light, dark and high-contrast themes all keep readable labels and edges.
+fn contact_chip_style(theme: &Theme, active: bool) -> ChipStyle {
+    if active {
+        ChipStyle::measured(
+            theme
+                .tokens
+                .colors
+                .accent_chip_on(theme.tokens.colors.surfaces.base, ON_FILL_MIN_CONTRAST),
+        )
+    } else {
+        ChipStyle::quiet()
+    }
 }
 
 fn menu_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
@@ -4734,6 +4735,35 @@ mod tests {
     use automerge::ReadDoc;
     use taffy::{AvailableSpace, Dimension, Size, Style};
     use vello::kurbo::Point;
+
+    #[test]
+    fn shared_chip_style_keeps_selected_chips_legible_in_every_app_theme() {
+        let quiet = contact_chip_style(&Theme::dark(), false);
+        assert!(
+            quiet.tint.is_none(),
+            "inactive chips use the shared quiet state"
+        );
+        assert!(
+            quiet.resolved.is_none(),
+            "inactive chips do not accidentally inherit the selected tint"
+        );
+
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.base;
+            let selected = contact_chip_style(&theme, true)
+                .resolved
+                .expect("selected contacts chips resolve their shared accent treatment");
+            assert!(
+                ui::a11y::contrast_ratio(selected.ink, selected.fill) >= ON_FILL_MIN_CONTRAST,
+                "selected chip label must remain readable on its resolved fill"
+            );
+            assert!(
+                ui::a11y::contrast_ratio(selected.border, ground)
+                    >= ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "selected chip edge must remain distinguishable from its pane"
+            );
+        }
+    }
 
     /// Contacts folds its address book into the unified Ctrl+K palette: the
     /// provider surfaces a real contact, and activating that row navigates the
