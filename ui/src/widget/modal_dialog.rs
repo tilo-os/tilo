@@ -173,6 +173,14 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
+    /// Updates the dialog's size cap after construction. Detached hosts use
+    /// this when their responsive dialog width depends on the live viewport.
+    pub fn set_max_size(&mut self, max_w: f64, max_h: f64) {
+        self.max_w = max_w.max(1.0);
+        self.max_h = max_h.max(1.0);
+        self.recompute_layout();
+    }
+
     pub fn content(&self) -> &C {
         &self.content
     }
@@ -937,6 +945,14 @@ mod tests {
 
         assert_eq!(dialog.get_rect(), Rect::new(180.0, 170.0, 660.0, 490.0));
         assert_ne!(dialog.content().get_rect(), Rect::ZERO);
+
+        dialog.set_max_size(400.0, 200.0);
+        dialog.layout_in(
+            Rect::new(20.0, 30.0, 820.0, 630.0),
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert_eq!(dialog.get_rect(), Rect::new(220.0, 230.0, 620.0, 430.0));
     }
 
     #[test]

@@ -63,6 +63,7 @@ pub mod actions;
 pub mod app;
 pub mod customize;
 pub mod doc;
+mod export_dialog;
 pub mod model;
 pub mod probe;
 pub mod write;
@@ -87,6 +88,8 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = ImagerApp::new();
     if scenario == "confirm" {
         app.seed_confirmation_for_shot("sdb");
+    } else if scenario == "export" {
+        app.seed_export_for_shot();
     }
     Box::new(app)
 }
@@ -100,6 +103,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "drive-empty",
     "drive-internal",
     "customize",
+    "export",
     "confirm",
     "progress",
     "done",
@@ -220,7 +224,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Drive);
             ImagerDoc::set_status(doc, "1 removable, 2 total");
         }
-        "customize" => {
+        "customize" | "export" => {
             ImagerDoc::set_selected(doc, Some(0));
             ImagerDoc::set_action(doc, Action::Flash);
             ImagerDoc::set_step(doc, Step::Customize);
