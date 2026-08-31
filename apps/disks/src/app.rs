@@ -23,11 +23,12 @@ use ui::winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Wi
 use ui::winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SegmentedFace, SplitLayout, ToggleGroup, Widget};
+use ui::widget::{Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, ToggleGroup, Widget};
 
 use crate::doc::DisksDoc;
 use crate::model::{
@@ -839,25 +840,16 @@ impl DisksApp {
         // It nudges the title rightward so the two never collide.
         let title_x = if let Some(hb) = lay.hamburger {
             let hov = self.hover_toggle.menu;
-            Self::fill_rr(
+            Button::paint(
                 scene,
                 t,
-                hb,
-                8.0,
-                if hov { c.neutral[3] } else { c.neutral[2] },
+                tr,
+                theme,
+                &ButtonFace::new(hb, "")
+                    .icon(Icon::Menu)
+                    .accessible_name("Show drives")
+                    .hovered(hov),
             );
-            Self::stroke_rr(scene, t, hb, 8.0, c.border_standard, 1.0);
-            let lx = hb.x0 + 11.0;
-            for i in 0..3 {
-                let ly = hb.y0 + 10.0 + f64::from(i) * 5.0;
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    t,
-                    c.text_primary,
-                    None,
-                    &Line::new(Point::new(lx, ly), Point::new(hb.x1 - 11.0, ly)),
-                );
-            }
             hb.x1 + 12.0
         } else {
             PAD
@@ -885,23 +877,15 @@ impl DisksApp {
         // Refresh button.
         let r = lay.refresh;
         let hov = r.contains(self.last_mouse);
-        Self::fill_rr(
+        Button::paint(
             scene,
             t,
-            r,
-            8.0,
-            if hov { c.neutral[3] } else { c.neutral[2] },
-        );
-        Self::stroke_rr(scene, t, r, 8.0, c.border_standard, 1.0);
-        Self::txt_center(
-            scene,
             tr,
-            "↻ Rescan",
-            13.0,
-            c.text_primary,
-            f64::midpoint(r.x0, r.x1),
-            r.y0 + 8.0,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(r, "Rescan")
+                .icon(Icon::Refresh)
+                .text_size(13.0)
+                .hovered(hov),
         );
     }
 
@@ -2703,62 +2687,35 @@ impl DisksApp {
         danger: bool,
         ready: bool,
     ) {
-        let c = &theme.tokens.colors;
-        // Cancel.
         let cancel_hov = ml.cancel.contains(self.last_mouse);
-        Self::fill_rr(
+        Button::paint(
             scene,
             t,
-            ml.cancel,
-            9.0,
-            if cancel_hov {
-                c.neutral[3]
-            } else {
-                c.neutral[2]
-            },
-        );
-        Self::stroke_rr(scene, t, ml.cancel, 9.0, c.border_standard, 1.0);
-        Self::txt_center(
-            scene,
             tr,
-            "Cancel",
-            14.0,
-            c.text_primary,
-            f64::midpoint(ml.cancel.x0, ml.cancel.x1),
-            ml.cancel.y0 + 9.0,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(ml.cancel, "Cancel")
+                .radius(9.0)
+                .hovered(cancel_hov),
         );
 
         // Confirm — locked (dimmed, inert) until the typed name matches.
         let confirm_hov = ready && ml.confirm.contains(self.last_mouse);
-        let cc = if danger {
-            c.semantic.danger
-        } else {
-            c.accent[5]
-        };
-        let fill = if !ready {
-            with_alpha(cc, 70)
-        } else if confirm_hov {
-            cc
-        } else {
-            with_alpha(cc, 220)
-        };
-        Self::fill_rr(scene, t, ml.confirm, 9.0, fill);
         let label = if danger { "Erase" } else { "Confirm" };
-        let label_c = if ready {
-            Color::WHITE
+        let face = if danger {
+            ButtonFace::new(ml.confirm, label).danger()
         } else {
-            with_alpha(Color::WHITE, 140)
+            ButtonFace::new(ml.confirm, label).primary()
         };
-        Self::txt_center(
+        Button::paint(
             scene,
+            t,
             tr,
-            label,
-            14.0,
-            label_c,
-            f64::midpoint(ml.confirm.x0, ml.confirm.x1),
-            ml.confirm.y0 + 9.0,
-            TextWeight::Semibold,
+            theme,
+            &face
+                .radius(9.0)
+                .weight(TextWeight::Semibold)
+                .hovered(confirm_hov)
+                .disabled(!ready),
         );
     }
 
@@ -2831,23 +2788,16 @@ impl DisksApp {
 
         // Rescan — re-runs the live probe (same path as the top-bar button).
         let hov = btn.contains(self.last_mouse);
-        Self::fill_rr(
+        Button::paint(
             scene,
             t,
-            btn,
-            9.0,
-            if hov { c.accent[4] } else { c.neutral[2] },
-        );
-        Self::stroke_rr(scene, t, btn, 9.0, c.border_standard, 1.0);
-        Self::txt_center(
-            scene,
             tr,
-            "↻ Rescan",
-            13.0,
-            c.text_primary,
-            cx,
-            btn.y0 + 8.0,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(btn, "Rescan")
+                .icon(Icon::Refresh)
+                .radius(9.0)
+                .text_size(13.0)
+                .hovered(hov),
         );
     }
 
@@ -4382,6 +4332,42 @@ mod tests {
             "a disabled button reports nothing"
         );
         assert!(h.app.pending.is_none());
+    }
+
+    #[test]
+    fn modal_confirm_face_and_hit_target_share_the_type_gate() {
+        let mut h = Harness::new(1280.0, 800.0);
+        h.app.trigger_action(&mut h.doc, ActionKind::Format);
+        h.relayout();
+        let confirm = h.lay().modal.unwrap().confirm;
+
+        assert!(h.click(center(confirm)), "the modal consumes the click");
+        assert!(
+            h.app.pending.is_some(),
+            "the disabled shared face remains inert until the name matches"
+        );
+
+        h.app.confirm_input = h.app.pending_target_leaf(h.app.pending.unwrap());
+        assert!(h.app.confirm_ready());
+        assert!(h.click(center(confirm)));
+        assert!(
+            h.app.pending.is_none(),
+            "the same rect activates once the shared face is enabled"
+        );
+    }
+
+    #[test]
+    fn icon_only_hamburger_face_has_a_spoken_name() {
+        let face = ButtonFace::new(Rect::ZERO, "")
+            .icon(Icon::Menu)
+            .accessible_name("Show drives");
+        assert_eq!(face.spoken_name(), "Show drives");
+        assert_eq!(
+            ButtonFace::new(Rect::ZERO, "Rescan")
+                .icon(Icon::Refresh)
+                .spoken_name(),
+            "Rescan"
+        );
     }
 
     /// Seed a harness with whatever the *real* probe returns (falling back to
