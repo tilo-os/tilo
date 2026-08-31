@@ -380,6 +380,10 @@ impl NotificationService {
 
     /// `GetCapabilities` — advertise the optional features we honour:
     /// `body` (multi-line text), `actions` (default-action activate), `persistence` (critical toasts stay until closed).
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus's #[interface] macro dispatches D-Bus methods as instance methods, even though this fixed capability list doesn't depend on self"
+    )]
     fn get_capabilities(&self) -> Vec<String> {
         vec![
             "body".to_string(),
@@ -389,6 +393,10 @@ impl NotificationService {
     }
 
     /// `GetServerInformation` — `(name, vendor, version, spec_version)`.
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus's #[interface] macro dispatches D-Bus methods as instance methods, even though this fixed server info doesn't depend on self"
+    )]
     fn get_server_information(&self) -> (String, String, String, String) {
         (
             "qOS Notifications".to_string(),

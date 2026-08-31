@@ -264,6 +264,13 @@ pub const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
 #[cfg(feature = "mpris")]
 mod imp {
+    #![allow(
+        clippy::used_underscore_binding,
+        reason = "zbus's #[interface] macro re-binds set_position's _track_id and open_uri's \
+                  _uri by their literal names in generated dispatch code that lands in this \
+                  module but outside the annotated impl/fn, so neither an impl- nor fn-level \
+                  allow reaches it; the method bodies never read either parameter"
+    )]
     use std::collections::HashMap;
     use std::sync::mpsc::{Receiver, Sender};
 
@@ -406,23 +413,10 @@ mod imp {
         fn seek(&self, offset: i64) {
             let _ = self.cmd.send(MprisCommand::Seek(offset));
         }
-        #[allow(
-            clippy::used_underscore_binding,
-            reason = "zbus's #[interface] macro re-binds this parameter by its literal name in \
-                      generated dispatch code, which trips the lint even though this method \
-                      body never reads it; dropping the underscore would instead warn as an \
-                      unused variable here"
-        )]
         fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
             let _ = self.cmd.send(MprisCommand::SetPosition(position));
         }
-        #[allow(
-            clippy::unused_self,
-            clippy::used_underscore_binding,
-            reason = "see the comment above this impl; zbus's #[interface] macro also re-binds \
-                      `_uri` by name in generated dispatch code, which trips \
-                      used_underscore_binding even though this body never reads it"
-        )]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn open_uri(&self, _uri: String) {}
 
         /// Emitted after a seek not caused by normal playback.

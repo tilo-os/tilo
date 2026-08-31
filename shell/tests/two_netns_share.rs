@@ -92,11 +92,25 @@ fn gradient() -> Vec<u8> {
     let mut v = Vec::with_capacity(FRAME_W.saturating_mul(FRAME_H).saturating_mul(4) as usize);
     for y in 0..FRAME_H {
         for x in 0..FRAME_W {
+            // `checked_div`, not `saturating_div`: saturation only covers
+            // overflow, not the zero-divisor case, and `saturating_div`
+            // still panics on that — `FRAME_W`/`FRAME_H` are floored to 1
+            // below, so the `None` branch never triggers.
             v.push(
-                u8::try_from(x.saturating_mul(255).saturating_div(FRAME_W.max(1))).unwrap_or(255),
+                u8::try_from(
+                    x.saturating_mul(255)
+                        .checked_div(FRAME_W.max(1))
+                        .unwrap_or(0),
+                )
+                .unwrap_or(255),
             );
             v.push(
-                u8::try_from(y.saturating_mul(255).saturating_div(FRAME_H.max(1))).unwrap_or(255),
+                u8::try_from(
+                    y.saturating_mul(255)
+                        .checked_div(FRAME_H.max(1))
+                        .unwrap_or(0),
+                )
+                .unwrap_or(255),
             );
             v.push(0x80);
             v.push(0xFF);
@@ -380,7 +394,9 @@ fn netns_host_process() {
         .set_nonblocking(true)
         .expect("nonblocking input-recv");
 
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(4))
+        .expect("4s from now must not overflow Instant");
     let mut recorder = HostInputRecorder {
         received_ns: Arc::new(std::sync::Mutex::new(Vec::new())),
         origin: session.origin(),
@@ -432,8 +448,12 @@ fn netns_viewer_process() {
     let mut decoder = H264Decoder::new();
     let mut buf = [0u8; 2048];
     let mut frames_decoded = 0u32;
-    let deadline = Instant::now() + Duration::from_secs(4);
-    let mut next_input_at = Instant::now() + Duration::from_millis(200);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(4))
+        .expect("4s from now must not overflow Instant");
+    let mut next_input_at = Instant::now()
+        .checked_add(Duration::from_millis(200))
+        .expect("200ms from now must not overflow Instant");
 
     while Instant::now() < deadline {
         while let Ok((n, _)) = video_in.recv_from(&mut buf) {
@@ -443,7 +463,7 @@ fn netns_viewer_process() {
             for ev in events {
                 if let ReceiverEvent::Frame(f) = ev {
                     let _ = decoder.decode(&f.payload);
-                    frames_decoded += 1;
+                    frames_decoded = frames_decoded.saturating_add(1);
                 }
             }
         }
@@ -454,7 +474,9 @@ fn netns_viewer_process() {
             };
             let bytes = serde_json::to_vec(&ev).expect("serde");
             let _ = input_send.send_to(&bytes, &input_addr);
-            next_input_at = Instant::now() + Duration::from_millis(200);
+            next_input_at = Instant::now()
+                .checked_add(Duration::from_millis(200))
+                .expect("200ms from now must not overflow Instant");
         }
         thread::sleep(Duration::from_millis(5));
     }
@@ -498,7 +520,9 @@ fn udp_smoke_frame_round_trips_via_framer_and_decoder() {
     let mut rx = SurfaceStreamReceiver::new();
     let mut buf = [0u8; 2048];
     let mut received_frame: Option<StreamFrame> = None;
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(1))
+        .expect("1s from now must not overflow Instant");
     while Instant::now() < deadline && received_frame.is_none() {
         if let Ok((n, _)) = viewer_sock.recv_from(&mut buf) {
             rx.push_bytes(&buf[..n]);

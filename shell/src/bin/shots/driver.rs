@@ -253,8 +253,8 @@ impl ShellDriver {
     }
 
     /// Synthesise a `KeyboardInput { state: Pressed }` for `key`.
-    pub fn press_key(&mut self, key: Key) {
-        let event = key_press_event(&key);
+    pub fn press_key(&mut self, key: &Key) {
+        let event = key_press_event(key);
         self.dispatch(&event);
     }
 
@@ -1253,7 +1253,7 @@ mod tests {
         let _ = d.paint();
         assert!(!d.chrome().overlays.overview);
         d.set_modifiers(ModifiersState::SUPER);
-        d.press_key(Key::Named(NamedKey::Tab));
+        d.press_key(&Key::Named(NamedKey::Tab));
         assert!(
             d.chrome().overlays.overview,
             "Cmd+Tab should toggle the overview overlay on through driver dispatch"
@@ -1512,7 +1512,7 @@ mod tests {
             .expect("singleton (detached) group");
         // Exactly two groups are asserted above, so the other index is
         // whichever of {0, 1} `files_group_idx` isn't — no arithmetic needed.
-        let notes_group_idx = if files_group_idx == 0 { 1 } else { 0 };
+        let notes_group_idx = usize::from(files_group_idx == 0);
         let files_tab_id = strip.1[files_group_idx].1[0];
         let files_rect = d
             .host_mut()
@@ -1568,7 +1568,7 @@ mod tests {
         );
 
         d.set_modifiers(ModifiersState::CONTROL);
-        d.press_key(Key::Character(winit::keyboard::SmolStr::new("k")));
+        d.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
         d.set_modifiers(ModifiersState::empty());
         let _ = d.paint();
         d.relayout();

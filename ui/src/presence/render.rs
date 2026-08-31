@@ -1197,6 +1197,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::many_single_char_names,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "conventional short names for a color/angle sample; x/y are always in-bounds by construction"
+    )]
     fn a_peer_dot_reads_on_a_white_page_and_on_a_dark_desktop() {
         let theme = Theme::default();
         let mut tr = TextRenderer::new();
@@ -1231,12 +1237,6 @@ mod tests {
             // polar-coordinate abbreviations; renaming them would only add
             // width. `x`/`y` are sampled on a fixed 6.8px ring around
             // (60, 60) on a 120x120 canvas, always in u32 range.
-            #[allow(
-                clippy::many_single_char_names,
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "conventional short names for a color/angle sample; x/y are always in-bounds by construction"
-            )]
             let edge = (0..360).step_by(15).any(|deg| {
                 let a = f64::from(deg).to_radians();
                 let x = (60.0 + 6.8 * a.cos()).round() as u32;

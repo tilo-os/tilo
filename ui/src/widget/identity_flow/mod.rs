@@ -495,7 +495,7 @@ impl InviteExpiry {
         let duration = match self {
             InviteExpiry::OneHour => Duration::from_secs(3600),
             InviteExpiry::OneDay => Duration::from_secs(86400),
-            InviteExpiry::OneWeek => Duration::from_secs(604800),
+            InviteExpiry::OneWeek => Duration::from_secs(604_800),
             // `Never` is encoded as +100 years; downstream verifiers
             // treat that as "no practical expiry".
             InviteExpiry::Never => Duration::from_secs(3_153_600_000),
@@ -688,7 +688,7 @@ pub fn build_attestation_from_invite(
     // `checked_add` with a same-value fallback keeps the function
     // panic-free without changing observable behaviour.
     let valid_until = now
-        .checked_add(Duration::from_secs(31536000))
+        .checked_add(Duration::from_secs(31_536_000))
         .unwrap_or(now);
     let mut attestation = Attestation {
         id: AttestationId::new(),
@@ -1086,6 +1086,10 @@ impl LineEditState {
     clippy::arithmetic_side_effects,
     reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
 )]
+#[allow(
+    clippy::similar_names,
+    reason = "cx/cy is the standard center-x/center-y coordinate naming convention; distinguishing them further would reduce clarity"
+)]
 fn draw_done_card(
     store: &dyn IdentityStore,
     scene: &mut Scene,
@@ -1125,10 +1129,6 @@ fn draw_done_card(
     };
     let avatar_d = 56.0;
     let avatar_cx = card.x0 + pad + avatar_d / 2.0;
-    #[allow(
-        clippy::similar_names,
-        reason = "cx/cy is the standard center-x/center-y coordinate naming convention; distinguishing them further would reduce clarity"
-    )]
     let avatar_cy = card.y0 + pad + avatar_d / 2.0;
     let avatar_color = Color::from_rgb8(avatar[0], avatar[1], avatar[2]);
     scene.fill(

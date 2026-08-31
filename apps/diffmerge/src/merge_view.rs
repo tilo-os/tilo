@@ -384,6 +384,12 @@ impl MergeView {
         clippy::too_many_arguments,
         reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
     )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "r is the hunk rect, y/h are its position/height, c is the theme's colour \
+                  set, and w is a chip's measured width — conventional short names for this \
+                  draw step"
+    )]
     fn draw_hunk_action_chips(
         scene: &mut Scene,
         transform: Affine,

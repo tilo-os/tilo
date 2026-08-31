@@ -311,36 +311,46 @@ impl Scope {
         match (self, resource) {
             (Scope::Workspace, _) => true,
 
-            (Scope::App(a), ResourceRef::App(b))
-            | (Scope::App(a), ResourceRef::Artifact { app: Some(b), .. })
-            | (Scope::App(a), ResourceRef::Action { app: b, .. }) => a == b,
-            (Scope::App(_), _) => false,
+            (
+                Scope::App(a),
+                ResourceRef::App(b)
+                | ResourceRef::Artifact { app: Some(b), .. }
+                | ResourceRef::Action { app: b, .. },
+            ) => a == b,
 
             (Scope::ResourceType(k), ResourceRef::Artifact { kind, .. }) => k == kind,
-            (Scope::ResourceType(_), _) => false,
 
             (Scope::ResourceInstance(i), ResourceRef::Artifact { instance, .. }) => i == instance,
-            (Scope::ResourceInstance(_), _) => false,
 
             (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
-            (Scope::FsPath(_), _) => false,
 
             (Scope::Device(d), ResourceRef::Device(e)) => d == e,
-            (Scope::Device(_), _) => false,
 
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
-            (Scope::NetHost(_), _) => false,
 
             (Scope::Action { app, action }, ResourceRef::Action { app: b, action: c }) => {
                 app == b && action == c
             }
-            (Scope::Action { .. }, _) => false,
 
             // Room membership is converted into an actor role by `Workspace`
             // before an action is checked. Direct scope matching remains narrow:
             // a room grant cannot masquerade as a filesystem/app/action grant.
             (Scope::Room(r), ResourceRef::Room(s)) => r == s,
-            (Scope::Room(_), _) => false,
+
+            // Every scope variant is paired with its own condition above; a
+            // resource shape that doesn't match the scope's own kind is never
+            // covered by it.
+            (
+                Scope::App(_)
+                | Scope::ResourceType(_)
+                | Scope::ResourceInstance(_)
+                | Scope::FsPath(_)
+                | Scope::Device(_)
+                | Scope::NetHost(_)
+                | Scope::Action { .. }
+                | Scope::Room(_),
+                _,
+            ) => false,
         }
     }
 }

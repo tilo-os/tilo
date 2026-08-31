@@ -545,7 +545,7 @@ struct DragCtx<'a> {
 }
 
 impl DragCtx<'_> {
-    fn pump_event(&mut self, event: WindowEvent) {
+    fn pump_event(&mut self, event: &WindowEvent) {
         pump(
             self.group,
             self.taffy,
@@ -554,19 +554,19 @@ impl DragCtx<'_> {
             self.doc_root,
             *self.modifiers,
             self.focus,
-            &event,
+            event,
         );
     }
 
     fn move_to(&mut self, p: Point) {
-        self.pump_event(WindowEvent::CursorMoved {
+        self.pump_event(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(p.x, p.y),
         });
     }
 
     fn button(&mut self, state: ElementState) {
-        self.pump_event(WindowEvent::MouseInput {
+        self.pump_event(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state,
             button: MouseButton::Left,

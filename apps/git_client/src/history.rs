@@ -113,6 +113,10 @@ impl HistoryView {
 
     /// The graph dot for a commit row — filled lane-coloured circle, hollow
     /// centre for a merge (part of [`Self::draw_commit_row`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "see the comment above draw_commit_row"
+    )]
     fn draw_commit_dot(
         scene: &mut Scene,
         t: Affine,

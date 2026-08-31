@@ -794,7 +794,7 @@ impl Widget for NoteTreeView {
             state,
             path,
             handled,
-            focus_target,
+            focus_target.as_ref(),
             node_id,
             taffy,
         ) {
@@ -1221,7 +1221,7 @@ impl NoteTreeView {
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        focus_target: &Option<NodeId>,
+        focus_target: Option<&NodeId>,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
@@ -1236,7 +1236,7 @@ impl NoteTreeView {
                 ));
             }
             let mut menu_handled = false;
-            let mut ft = *focus_target;
+            let mut ft = focus_target.copied();
             self.menu.handle_event(
                 event,
                 scale_factor,

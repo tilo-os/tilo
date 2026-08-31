@@ -1361,13 +1361,54 @@ impl Pane {
         // messages and plain-text mail render as text cards.
         let head_id = head.id;
         let head_html = head.html_body.clone();
+        let webview_rect = self.draw_reader_thread_messages(
+            scene,
+            t,
+            tr,
+            theme,
+            rr,
+            &msgs,
+            content_x,
+            content_w,
+            y,
+            head_html.is_some(),
+            &mut chip_hits,
+        );
+        self.reader_attachment_hits = chip_hits;
+        drop(st);
+        Some((head_id, head_html, webview_rect))
+    }
+
+    /// Draw each message card in the thread, starting at `y`: the head
+    /// message reserves the rest of the reader for the sandboxed HTML view
+    /// when it carries an HTML body, everything else draws as a text card.
+    /// Returns the reserved HTML webview rect, if any. Part of
+    /// [`Self::draw_reader_thread`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_reader_thread_messages(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rr: Rect,
+        msgs: &[&Message],
+        content_x: f64,
+        content_w: f32,
+        mut y: f64,
+        head_has_html: bool,
+        chip_hits: &mut Vec<(Rect, MessageId, usize)>,
+    ) -> Option<Rect> {
         let mut webview_rect: Option<Rect> = None;
         for (i, m) in msgs.iter().enumerate() {
             if y > rr.y1 - 40.0 {
                 break;
             }
             let is_head = i == msgs.len() - 1;
-            if is_head && head_html.is_some() {
+            if is_head && head_has_html {
                 // Head card: draw the header, then reserve the rest of the
                 // reader for the sandboxed HTML body (painted once the shared
                 // borrow is released, since the view needs `&mut self`).
@@ -1395,23 +1436,12 @@ impl Pane {
                 }
             } else {
                 y = self.draw_message_card(
-                    scene,
-                    t,
-                    tr,
-                    theme,
-                    m,
-                    content_x,
-                    y,
-                    content_w,
-                    is_head,
-                    &mut chip_hits,
+                    scene, t, tr, theme, m, content_x, y, content_w, is_head, chip_hits,
                 );
                 y += 14.0;
             }
         }
-        self.reader_attachment_hits = chip_hits;
-        drop(st);
-        Some((head_id, head_html, webview_rect))
+        webview_rect
     }
 
     /// Draw the "remote content blocked / loaded" pill under an HTML body and

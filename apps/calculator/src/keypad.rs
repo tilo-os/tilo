@@ -320,7 +320,7 @@ impl CalcScreen {
 
         // ---- Display panel -------------------------------------------------
         let display = Rect::new(left.x0, display_top, left.x1, display_top + 124.0);
-        self.draw_display(scene, t, tr, theme, model, display);
+        Self::draw_display(scene, t, tr, theme, model, display);
 
         // ---- Memory bar ----------------------------------------------------
         self.draw_memory_bar(scene, t, tr, theme, model, left);
@@ -345,7 +345,6 @@ impl CalcScreen {
     /// The display panel: status line (angle mode + Ans), the expression
     /// line, and the result/preview line.
     fn draw_display(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,

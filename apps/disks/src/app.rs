@@ -1081,7 +1081,6 @@ impl DisksApp {
 
     // ---- detail header -------------------------------------------------
     fn draw_header(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -2460,6 +2459,7 @@ impl DisksApp {
 
     /// The row's selection/hover/zebra background plus the role swatch (part
     /// of [`Self::draw_partitions_row`]).
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_partitions_row_bg(
         scene: &mut Scene,
         theme: &Theme,
@@ -3399,7 +3399,7 @@ impl Widget for DisksApp {
 
         // Detail pane (drawn first; in overlay mode the flap sits on top).
         if let Some(drive) = self.drive() {
-            self.draw_header(scene, tr, theme, transform, &lay, drive);
+            Self::draw_header(scene, tr, theme, transform, &lay, drive);
             self.draw_action_bar(scene, tr, theme, transform, &lay, drive);
             self.draw_tabs(scene, tr, theme, transform, &lay);
             // Content scrolls within its own clip so it stays usable when the

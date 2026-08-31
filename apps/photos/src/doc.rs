@@ -270,6 +270,12 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::useless_vec,
+        reason = "see the comment on the loop below: a fixed-size array of two full \
+                  AutoCommit replicas would put this stack frame over clippy's own \
+                  large-array threshold"
+    )]
     fn run_the_empty_replica_against_the_open_one(
         open_actor: u8,
         empty_actor: u8,

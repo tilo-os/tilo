@@ -50,9 +50,18 @@ fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4) as usize);
     for y in 0..height {
         for x in 0..width {
-            let r = u8::try_from(x.saturating_mul(255).saturating_div(width.max(1))).unwrap_or(255);
-            let g =
-                u8::try_from(y.saturating_mul(255).saturating_div(height.max(1))).unwrap_or(255);
+            // `checked_div`, not `saturating_div`: saturation only covers
+            // overflow, not the zero-divisor case, and `saturating_div`
+            // still panics on that — `width`/`height` are floored to 1
+            // below, so the `None` branch never triggers.
+            let r = u8::try_from(x.saturating_mul(255).checked_div(width.max(1)).unwrap_or(0))
+                .unwrap_or(255);
+            let g = u8::try_from(
+                y.saturating_mul(255)
+                    .checked_div(height.max(1))
+                    .unwrap_or(0),
+            )
+            .unwrap_or(255);
             out.push(r);
             out.push(g);
             out.push(128);
@@ -192,7 +201,9 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
 
     // `mark_drawn` per accepted frame keeps this on the happy path; the
     // backpressure test below drives the drop-oldest path.
-    let deadline = origin + Duration::from_secs(3);
+    let deadline = origin
+        .checked_add(Duration::from_secs(3))
+        .expect("3s from origin must not overflow Instant");
     let (sent, received) = pump_frames_until(&session, &mut view, &frame_bytes, origin, deadline);
 
     let snap = metrics.snapshot();
@@ -257,7 +268,9 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
     let mut encoded_frames = Vec::new();
     for _ in 0..10 {
         session.deposit_captured_rgba(frame_bytes.clone());
-        fake_now += Duration::from_millis(40);
+        fake_now = fake_now
+            .checked_add(Duration::from_millis(40))
+            .expect("40ms increments must not overflow Instant");
         if let Some(frame) = session.encode_next_frame(fake_now) {
             encoded_frames.push(frame);
         }

@@ -419,7 +419,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
                 sink.capture(driver, name);
             }
         }
-        Action::Key(k) => driver.press_key(k.clone()),
+        Action::Key(k) => driver.press_key(k),
         Action::Type(s) => driver.type_str(s),
         Action::Modifiers(m) => driver.set_modifiers(*m),
         Action::Wait(n) => driver.step_frames(*n),
@@ -442,7 +442,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             // actions would fall through because the palette ignores
             // characters when `!is_focused`.
             driver.set_modifiers(ModifiersState::CONTROL);
-            driver.press_key(Key::Character(winit::keyboard::SmolStr::new("k")));
+            driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
             driver.set_modifiers(ModifiersState::empty());
         }
         _ => {}

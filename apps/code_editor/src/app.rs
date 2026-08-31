@@ -2773,7 +2773,7 @@ impl CodeApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
@@ -3554,7 +3554,7 @@ impl Widget for CodeApp {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if self.handle_palette_and_prompt_cursor(event, scale_factor, modifiers, state, handled) {
+        if self.handle_palette_and_prompt_cursor(event, scale_factor, *modifiers, state, handled) {
             return;
         }
 
