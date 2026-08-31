@@ -16,7 +16,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::widgets::{caption, card, card_with_action, rows, value_row};
+use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
 
 const CLEAN_KEY: &str = "storage.cleanup.confirmed";
 const DISKS_KEY: &str = "storage.open.disks";
@@ -79,8 +79,18 @@ impl StoragePane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        crate::widgets::cards(vec![
+            self.overview_card(),
+            self.synced_card(),
+            self.apps_card(),
+            self.cleanup_card(),
+            Self::tools_card(),
+        ])
+    }
+
+    fn overview_card(&self) -> El {
         let totals = self.snapshot.totals();
-        let overview = card(
+        card(
             "Storage use",
             rows(
                 [
@@ -92,14 +102,14 @@ impl StoragePane {
                 .into_iter()
                 .map(|category| {
                     let value = if category == StorageCategory::SyncedFiles {
-                        self.sync_snapshot
-                            .as_ref()
-                            .map(|snapshot| {
+                        self.sync_snapshot.as_ref().map_or_else(
+                            || "Not available".into(),
+                            |snapshot| {
                                 human_bytes(
                                     snapshot.workspaces.iter().map(|w| w.logical_bytes).sum(),
                                 )
-                            })
-                            .unwrap_or_else(|| "Not available".into())
+                            },
+                        )
                     } else if self.snapshot.unavailable.contains(&category) {
                         "Not available".into()
                     } else {
@@ -109,9 +119,11 @@ impl StoragePane {
                 })
                 .collect(),
             ),
-        );
+        )
+    }
 
-        let synced = match &self.sync_snapshot {
+    fn synced_card(&self) -> El {
+        match &self.sync_snapshot {
             Some(snapshot) => {
                 let local: u64 = snapshot.workspaces.iter().map(|w| w.local_bytes).sum();
                 let remote: u64 = snapshot
@@ -169,10 +181,12 @@ impl StoragePane {
                         .unwrap_or("Sync storage accounting is not available."),
                 )]),
             ),
-        };
+        }
+    }
 
+    fn apps_card(&self) -> El {
         let mut largest = self.snapshot.entries.clone();
-        largest.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        largest.sort_by_key(|e| std::cmp::Reverse(e.bytes));
         let largest_rows = largest
             .into_iter()
             .take(8)
@@ -183,7 +197,7 @@ impl StoragePane {
                 )
             })
             .collect();
-        let apps = card(
+        card(
             "Largest items",
             if self.snapshot.entries.is_empty() {
                 rows(vec![caption(
@@ -192,9 +206,11 @@ impl StoragePane {
             } else {
                 rows(largest_rows)
             },
-        );
+        )
+    }
 
-        let cleanup = match &self.cleanup {
+    fn cleanup_card(&self) -> El {
+        match &self.cleanup {
             Some(preview) if !preview.items.is_empty() => {
                 let action = Box::new(Button::new(
                     "storage.clean",
@@ -219,9 +235,11 @@ impl StoragePane {
                 "Cache cleanup",
                 rows(vec![caption("There is no application cache to clean.")]),
             ),
-        };
+        }
+    }
 
-        let tools = card(
+    fn tools_card() -> El {
+        card(
             "Storage tools",
             rows(vec![
                 crate::widgets::setting_row_described(
@@ -242,8 +260,7 @@ impl StoragePane {
                     "These open the exact specialist workspace through the shell. Settings does not duplicate destructive disk or restore workflows.",
                 ),
             ]),
-        );
-        crate::widgets::cards(vec![overview, synced, apps, cleanup, tools])
+        )
     }
 
     fn pressed(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
@@ -386,6 +403,9 @@ impl Widget for StoragePane {
         let mut composed = self.build_composition();
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
+        // `child` was just created in this same tree, so this call is not
+        // reachable to fail; if it (impossibly) did, wrap it in itself
+        // rather than panic this panic=abort process.
         let node = taffy
             .new_with_children(
                 taffy::Style {
@@ -399,12 +419,12 @@ impl Widget for StoragePane {
                 },
                 &[child],
             )
-            .unwrap();
+            .unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

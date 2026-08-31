@@ -34,6 +34,12 @@ pub const UNAVAILABLE_MSG: &str = "Password verification is unavailable";
 /// unit-tested with a fake and run against real PAM in production. `Send + Sync` so a verifier can be shared (`Arc`) and later moved onto a worker thread.
 pub trait PasswordVerifier: Send + Sync {
     /// `Ok(())` iff the credential is valid. `Err` carries the *user-facing* one-liner for the lock screen — it must never leak which field was wrong or any raw PAM text.
+    ///
+    /// # Errors
+    ///
+    /// Returns the non-leaky rejection or unavailability message ([`INCORRECT_MSG`] /
+    /// [`UNAVAILABLE_MSG`]) when `password` is wrong for `username`, or verification could not be
+    /// carried out at all.
     fn verify(&self, username: &str, password: &str) -> Result<(), String>;
 }
 
@@ -121,6 +127,7 @@ impl HelperVerifier {
     }
 
     /// Override the per-attempt timeout (tests use a short one).
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -146,21 +153,20 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<std::proces
 
 impl PasswordVerifier for HelperVerifier {
     fn verify(&self, username: &str, password: &str) -> Result<(), String> {
-        if self.program.is_empty() {
+        let Some((program, args)) = self.program.split_first() else {
             return Err(UNAVAILABLE_MSG.to_string());
-        }
-        let mut cmd = Command::new(&self.program[0]);
-        cmd.args(&self.program[1..]);
+        };
+        let mut cmd = Command::new(program);
+        cmd.args(args);
         cmd.arg(username);
         cmd.stdin(Stdio::piped());
         // Discard the helper's output so no raw PAM/diagnostic text can leak.
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
 
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            // Could not even launch the helper — fail closed, non-leaky.
-            Err(_) => return Err(UNAVAILABLE_MSG.to_string()),
+        // Could not even launch the helper — fail closed, non-leaky.
+        let Ok(mut child) = cmd.spawn() else {
+            return Err(UNAVAILABLE_MSG.to_string());
         };
 
         // Hand the password over on stdin (newline-terminated), then close the pipe so the helper sees EOF — the payload is tiny (< pipe buffer), so this write never blocks.
@@ -398,8 +404,10 @@ mod tests {
 
     static FAKE_SEQ: AtomicU32 = AtomicU32::new(0);
 
-    /// Write a `/bin/sh` script with `body` and return a [`HelperVerifier`] that runs it via `sh
-    /// <script>` (username on argv, password on stdin — exactly like the real helper); invoked through `/bin/sh` so the freshly-written file is *read*, not directly `exec`'d, avoiding an `ETXTBSY` race with a concurrent fork.
+    /// Write a `/bin/sh` script with `body` and return a [`HelperVerifier`] that runs it via
+    /// `sh <script>` (username on argv, password on stdin — exactly like the real helper);
+    /// invoked through `/bin/sh` so the freshly-written file is *read*, not directly `exec`'d,
+    /// avoiding an `ETXTBSY` race with a concurrent fork.
     fn fake_helper(body: &str) -> (HelperVerifier, PathBuf) {
         let n = FAKE_SEQ.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(

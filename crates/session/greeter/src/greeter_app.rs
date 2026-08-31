@@ -168,6 +168,12 @@ impl Widget for VStack {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; every entry in `child_nodes` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "every child node was just created in this same tree"
+        )]
         let node = taffy
             .new_with_children(
                 Style {
@@ -213,7 +219,7 @@ impl Widget for VStack {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -278,8 +284,10 @@ impl Widget for VStack {
             return;
         };
         if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            if let Some(&cnode) = child_nodes.get(idx) {
-                self.children[idx].handle_event(
+            if let Some(&cnode) = child_nodes.get(idx)
+                && let Some(child) = self.children.get_mut(idx)
+            {
+                child.handle_event(
                     event,
                     scale_factor,
                     modifiers,
@@ -330,10 +338,14 @@ impl Widget for VStack {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.children
-            .iter_mut()
-            .map(|c| c.take_structure_dirty())
-            .fold(false, |acc, d| acc || d)
+        // Not `.any()`: `take_structure_dirty` drains each child's flag as a
+        // side effect, and `.any()` short-circuits on the first `true`,
+        // leaving later children's flags un-drained.
+        let mut any = false;
+        for child in &mut self.children {
+            any |= child.take_structure_dirty();
+        }
+        any
     }
 
     fn needs_commit(&self) -> bool {
@@ -515,6 +527,7 @@ impl GreeterApp {
     /// Wire the shared event-loop proxy slot. `main.rs` constructs the slot,
     /// hands a clone here, and populates it inside `App::run_with_setup`.
     /// The submit handler reads it to spawn the background auth worker.
+    #[must_use]
     pub fn with_proxy_slot(mut self, slot: Arc<OnceLock<EventLoopProxy<UserEvent>>>) -> Self {
         self.proxy = slot;
         self
@@ -538,7 +551,7 @@ impl GreeterApp {
         let mut app =
             Self::with_sessions(crate::sessions::read_sessions(std::path::Path::new(&dir)));
         match scenario {
-            AuthScenario::Form => {}
+            AuthScenario::Form | AuthScenario::LongName => {}
             AuthScenario::Error => {
                 app.status = "Incorrect username or password".to_string();
                 app.status_kind = StatusKind::Error;
@@ -561,7 +574,6 @@ impl GreeterApp {
             AuthScenario::Starting => {
                 app.phase = AuthPhase::Starting;
             }
-            AuthScenario::LongName => {}
         }
         app
     }
@@ -842,7 +854,7 @@ impl GreeterApp {
         Box::new(VStack::card(CARD_GAP, children))
     }
 
-    fn bootstrap_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
         if state.get(root, USERNAME_PATH).ok().flatten().is_none() {
             let _ = state.put_object(root, USERNAME_PATH, ObjType::Text);
         }
@@ -920,7 +932,7 @@ impl GreeterApp {
 
     /// Environment handed to greetd's `StartSession`. Mirrors the
     /// `DesktopNames=nirios` advertised by the session `.desktop` files.
-    fn session_env(&self) -> Vec<String> {
+    fn session_env() -> Vec<String> {
         vec![
             "XDG_SESSION_TYPE=wayland".to_string(),
             "XDG_SESSION_DESKTOP=nirios".to_string(),
@@ -966,7 +978,7 @@ impl GreeterApp {
         };
 
         let argv = session.argv.clone();
-        let env = self.session_env();
+        let env = Self::session_env();
 
         self.begin_authenticating();
 
@@ -1039,7 +1051,8 @@ impl GreeterApp {
         {
             let chars = text.chars().count();
             if chars > 0 {
-                let _ = state.splice_text(&obj, 0, chars as isize, "");
+                let delete = isize::try_from(chars).unwrap_or(isize::MAX);
+                let _ = state.splice_text(&obj, 0, delete, "");
             }
         }
     }
@@ -1451,7 +1464,7 @@ mod tests {
     fn count_named(w: &dyn Widget, name: &str) -> usize {
         w.children()
             .iter()
-            .map(|c| usize::from(c.name() == name) + count_named(*c, name))
+            .map(|c| usize::from(c.name() == name).saturating_add(count_named(*c, name)))
             .sum()
     }
 
@@ -1460,7 +1473,6 @@ mod tests {
     /// out, so asserting on it is asserting on what the screen says rather
     /// than on some parallel bookkeeping.
     fn spoken(w: &dyn Widget) -> Vec<String> {
-        let mut out = Vec::new();
         fn walk(w: &dyn Widget, out: &mut Vec<String>) {
             for c in w.children() {
                 if let Some(name) = Widget::accessibility(c).and_then(|n| n.name) {
@@ -1469,6 +1481,7 @@ mod tests {
                 walk(c, out);
             }
         }
+        let mut out = Vec::new();
         walk(w, &mut out);
         out
     }
@@ -1535,7 +1548,8 @@ mod tests {
     fn choose_session(doc: &mut AutoCommit, root: &ObjId, name: &str) {
         let (_, obj) = doc.get(root, SESSION_PATH).unwrap().unwrap();
         let old = doc.text(&obj).unwrap_or_default().chars().count();
-        let _ = doc.splice_text(&obj, 0, old as isize, name);
+        let old = isize::try_from(old).expect("count fits isize");
+        let _ = doc.splice_text(&obj, 0, old, name);
     }
 
     /// The picker owns the choice: it writes a label into the document and

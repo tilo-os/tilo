@@ -27,21 +27,21 @@ pub(super) fn import_comments_part(xml: &[u8], doc: &mut DocMut) -> BTreeMap<Str
     // Per-comment capture: (docx id, author, date, raw-XML start byte, open depth).
     let mut capture: Option<(String, String, String, usize, i32)> = None;
     loop {
-        let pos_before = reader.buffer_position() as usize;
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
+        let pos_before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let Ok(ev) = reader.read_event() else {
+            break;
         };
         if let Some((id, author, date, start, depth)) = capture.as_mut() {
             match &ev {
-                Event::Start(_) => *depth += 1,
+                Event::Start(_) => *depth = depth.saturating_add(1),
                 Event::End(_) => {
-                    *depth -= 1;
+                    *depth = depth.saturating_sub(1);
                     if *depth == 0 {
-                        let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        if let Some(cid) = import_one_comment(&raw, author, date, doc) {
-                            map.insert(id.clone(), cid);
-                        }
+                        let pos_after =
+                            usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+                        let raw = s.get(*start..pos_after).unwrap_or_default().to_string();
+                        let cid = import_one_comment(&raw, author, date, doc);
+                        map.insert(id.clone(), cid);
                         capture = None;
                     }
                 }
@@ -66,7 +66,7 @@ pub(super) fn import_comments_part(xml: &[u8], doc: &mut DocMut) -> BTreeMap<Str
 
 /// Parse one verbatim `<w:comment>` element into a fresh comment (author/date from the
 /// open tag) and return its qdoc id: each `w:p` becomes a paragraph block.
-fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> Option<String> {
+fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> String {
     let comment_id = doc.insert_comment(author, date);
     let mut reader = Reader::from_str(raw);
     let mut prev: Option<String> = None;
@@ -89,15 +89,11 @@ fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> 
             && !txt.is_empty()
         {
             doc.splice_comment_text(&comment_id, b, *cur_len, 0, txt);
-            *cur_len += txt.chars().count();
+            *cur_len = cur_len.saturating_add(txt.chars().count());
         }
     };
 
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"w:p" => open_block(doc, &mut prev, &mut cur, &mut cur_len),
@@ -125,14 +121,14 @@ fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> 
             _ => {}
         }
     }
-    Some(comment_id)
+    comment_id
 }
 
 fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
+        .and_then(|a| crate::codecs::unescape_attr(&a))
 }
 
 fn push_escaped(out: &mut String, c: char) {
@@ -213,7 +209,7 @@ pub(super) fn export_comments(doc: &DocRef) -> ExportedComments {
     }
     let mut inner = String::new();
     for (i, c) in comments.iter().enumerate() {
-        let docx_id = i as i64;
+        let docx_id = i64::try_from(i).unwrap_or(i64::MAX);
         id_map.insert(c.id.clone(), docx_id);
         let date = if c.date.is_empty() {
             String::new()

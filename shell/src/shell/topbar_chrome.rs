@@ -58,6 +58,7 @@ pub enum MetricKind {
 }
 
 impl CenterWidget {
+    #[must_use]
     pub fn next(self) -> Self {
         match self {
             CenterWidget::Clock => CenterWidget::SystemMonitor,
@@ -65,6 +66,7 @@ impl CenterWidget {
             CenterWidget::Calendar => CenterWidget::Clock,
         }
     }
+    #[must_use]
     pub fn prev(self) -> Self {
         match self {
             CenterWidget::Clock => CenterWidget::Calendar,
@@ -110,6 +112,7 @@ struct CacheFingerprint {
     media_key: Vec<(u32, u8, String)>,
     media_expanded: bool,
     notification_badge: u32,
+    workspace_lens_open: bool,
 }
 
 /// No calendar source is wired to the shell, so this paints what's
@@ -120,6 +123,68 @@ fn calendar_strip_parts(now: chrono::DateTime<Local>) -> (String, String, &'stat
         now.format("%-d %B").to_string(),
         "No calendar connected",
     )
+}
+
+/// Rounds a screen-space coordinate into a cache-fingerprint key.
+fn fingerprint_i64(v: f64) -> i64 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "screen-space geometry is always far inside i64::MAX; a truncated fingerprint just causes an extra redraw, never unsafety"
+    )]
+    {
+        v.round() as i64
+    }
+}
+
+/// Rounds a screen-space width/height into a cache-fingerprint key.
+fn fingerprint_u64(v: f64) -> u64 {
+    let clamped = v.round().max(0.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to non-negative above; screen-space dimensions are always far inside u64 range"
+    )]
+    {
+        clamped as u64
+    }
+}
+
+/// Buckets a `chrono` timestamp into a cache-fingerprint key.
+fn timestamp_bucket(t: i64) -> u64 {
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "wall-clock timestamps are positive on any real clock; this key only feeds cache-fingerprint equality"
+    )]
+    {
+        t as u64
+    }
+}
+
+/// Widens a small loop index/count to `f64` for draw-time geometry math.
+/// Every call site is a draw-loop counter or a collaborator/slot count
+/// bounded well under 2^53, so the integer is exactly representable.
+fn small_count_to_f64(n: usize) -> f64 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "bounded well under 2^53 by every caller (loop index or small on-screen count)"
+    )]
+    {
+        n as f64
+    }
+}
+
+/// `transform * Affine::translate(xy)`, used at every glyph draw site
+/// below. Vello's `Affine::mul` is plain matrix composition with no
+/// side effects, but it is a custom `Mul` impl rather than primitive
+/// integer arithmetic, which is what trips the lint at each call site.
+fn at(transform: Affine, xy: (f64, f64)) -> Affine {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine::mul is pure matrix composition (translate here), not primitive integer arithmetic that can silently wrap"
+    )]
+    {
+        transform * Affine::translate(xy)
+    }
 }
 
 /// Free function so [`TopBarChrome::needs_redraw`] can key on the
@@ -138,14 +203,26 @@ fn status_key_of(s: &crate::shell::status::SystemStatus) -> StatusKey {
             };
             (kind, crate::shell::status::link_bars(l))
         }),
-        volume_pct: s
-            .volume
-            .map(|v| (v.level * 100.0).round().clamp(0.0, 100.0) as u8),
+        volume_pct: s.volume.map(|v| {
+            let pct = (v.level * 100.0).round().clamp(0.0, 100.0);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to [0.0, 100.0] immediately above, so the cast to u8 cannot truncate or lose sign"
+            )]
+            {
+                pct as u8
+            }
+        }),
         muted: s.audio_is_silent(),
     }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent draw-cache invalidation bit, always built via the named `status_key_of` constructor rather than a confusing call-site of positional bools"
+)]
 struct StatusKey {
     battery_percent: Option<u8>,
     battery_charging: bool,
@@ -199,8 +276,10 @@ pub struct TopBarChrome {
     center_widget: CenterWidget,
     center_rect: Rect,
     center_dot_rects: [Rect; 3],
-    /// Matches the sidebar-wheel's scroll contract.
-    center_scroll_accum: f32,
+    /// Matches the sidebar-wheel's scroll contract. `f64` so pixel-delta
+    /// scroll events (`f64` in `winit`) accumulate without a truncating
+    /// `f64 -> f32` cast.
+    center_scroll_accum: f64,
     /// winit delivers position with `CursorMoved` but not `MouseInput`,
     /// so it's cached here for click hit-testing.
     last_cursor: Option<Point>,
@@ -214,6 +293,49 @@ fn bar_selector_body(
     state: ui::chrome::SelectionState,
 ) -> ui::chrome::SelectionTier {
     ui::chrome::selection_tier(theme, state)
+}
+
+/// Parameter object for [`TopBarChrome::draw_metric_label`] — bundled
+/// so the call keeps under clippy's argument-count budget.
+struct MetricLabelSpec<'a> {
+    center_y: f64,
+    label_x: f64,
+    value_x: f64,
+    label: &'a str,
+    value_str: &'a str,
+    kind: MetricKind,
+}
+
+/// Per-frame sizing + palette snapshot for the tray pill, computed once
+/// in [`TopBarChrome::draw_tray_pill_body`] and reused by the icon
+/// helpers so [`Widget::draw`] stays under the line budget.
+struct TrayLayout {
+    tray_w: f64,
+    tray_slot: f64,
+    tray_pad: f64,
+    tray_gap: f64,
+    icon_px: f64,
+    pct_size: f32,
+    pct_label: Option<String>,
+    slots: usize,
+    center_y: f64,
+    dim: Color,
+    bright: Color,
+    warning: Color,
+    danger: Color,
+    success: Color,
+}
+
+impl TrayLayout {
+    /// The hit/draw rect for the `n`th 18px tray slot starting at `x`.
+    fn slot_rect(&self, x: f64) -> Rect {
+        Rect::new(
+            x + (self.tray_slot - self.icon_px) / 2.0,
+            self.center_y - self.icon_px / 2.0,
+            x + f64::midpoint(self.tray_slot, self.icon_px),
+            self.center_y + self.icon_px / 2.0,
+        )
+    }
 }
 
 impl TopBarChrome {
@@ -255,23 +377,23 @@ impl TopBarChrome {
     fn current_fingerprint(&self) -> CacheFingerprint {
         // Rounded to integer keys so the fingerprint stays stable
         // against benign float noise from fractional-DPI taffy layout.
-        let x0 = self.rect.x0.round() as i64;
-        let y0 = self.rect.y0.round() as i64;
-        let w = self.rect.width().round() as u64;
-        let h = self.rect.height().round() as u64;
+        let x0 = fingerprint_i64(self.rect.x0);
+        let y0 = fingerprint_i64(self.rect.y0);
+        let w = fingerprint_u64(self.rect.width());
+        let h = fingerprint_u64(self.rect.height());
         let time_bucket = match self.center_widget {
             CenterWidget::Clock => {
                 // Minute granularity: Clock paints `HH:MM`.
                 let t = chrono::Local::now();
-                t.timestamp() as u64 / 60
+                timestamp_bucket(t.timestamp()) / 60
             }
             CenterWidget::SystemMonitor => {
                 // Second granularity: sparkline derives from `seconds % N`.
-                chrono::Local::now().timestamp() as u64
+                timestamp_bucket(chrono::Local::now().timestamp())
             }
             CenterWidget::Calendar => {
                 // Day granularity: cache must drop at midnight.
-                chrono::Local::now().timestamp() as u64 / 86_400
+                timestamp_bucket(chrono::Local::now().timestamp()) / 86_400
             }
         };
         CacheFingerprint {
@@ -287,6 +409,10 @@ impl TopBarChrome {
             media_key: self.media_signature.clone(),
             media_expanded: self.media_expanded,
             notification_badge: self.notification_badge,
+            workspace_lens_open: self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().overlays.ws_settings),
         }
     }
 
@@ -307,6 +433,7 @@ impl TopBarChrome {
         }
     }
 
+    #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         let rev = chrome.borrow().revision;
         // Declares this widget synced at the current revision, so
@@ -326,7 +453,10 @@ impl TopBarChrome {
             .iter()
             .enumerate()
             .find(|(_, w)| w.id == tree.active)
-            .map_or((0, String::from("Workspace")), |(i, w)| (i, w.name.clone()));
+            .map_or_else(
+                || (0, String::from("Workspace")),
+                |(i, w)| (i, w.name.clone()),
+            );
         self.workspace_index = idx;
         self.workspace_name = name;
         // Prefer the workspace's own collaborators, falling back to the
@@ -384,7 +514,7 @@ impl TopBarChrome {
     }
 
     pub fn can_switch_down(&self) -> bool {
-        self.workspace_index + 1 < self.workspace_total
+        self.workspace_index < self.workspace_total.saturating_sub(1)
     }
 
     pub fn collaborator_colors(&self) -> &[Color] {
@@ -564,135 +694,14 @@ impl TopBarChrome {
             );
         }
     }
-}
 
-impl Widget for TopBarChrome {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    // The following `draw_*` helpers exist only to keep `Widget::draw`
+    // under the line budget; none is meaningful on its own.
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
-        if let Some(chrome) = self.chrome.clone() {
-            let rev = chrome.borrow().revision;
-            if rev != self.synced_revision {
-                // Clone the tree to avoid re-borrowing chrome while
-                // `sync_from_tree` borrows &self mut.
-                let tree_snap = chrome.borrow().tree().clone();
-                self.sync_from_tree(&tree_snap);
-                // The status poller bumps the same revision.
-                self.status = chrome.borrow().status.clone();
-                self.synced_revision = rev;
-                return true;
-            }
-        }
-        false
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // While any group holds fullscreen, collapse to zero height.
-        let fullscreen = self
-            .chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().is_fullscreen());
-        let node = taffy
-            .new_leaf(Style {
-                display: if fullscreen {
-                    Display::None
-                } else {
-                    Display::Flex
-                },
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: if fullscreen {
-                        Dimension::length(0.0)
-                    } else {
-                        Dimension::length(TOPBAR_HEIGHT_PX)
-                    },
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        out_scene: &mut Scene,
-        out_transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        // Zero-height (fullscreen) paints nothing; without this guard
-        // the encode below still runs at intrinsic size, overflowing
-        // into a stray fragment over the fullscreen window.
-        if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
-            return;
-        }
-        // Pulled here, not pushed by update, so a just-dropped battery
-        // percent is drawn and counted as a change in the same pass.
-        self.status = self.live_status();
-        self.notification_badge = self
-            .chrome
-            .as_ref()
-            .map_or(0, |chrome| chrome.borrow().notification_badge_total());
-        let signature: Vec<(u32, u8, String)> = self
-            .status
-            .media
-            .iter()
-            .map(|use_| {
-                (
-                    use_.client_id,
-                    match use_.kind {
-                        os_actions::MediaKind::Microphone => 0,
-                        os_actions::MediaKind::Camera => 1,
-                    },
-                    use_.label.clone(),
-                )
-            })
-            .collect();
-        if signature != self.media_signature {
-            self.media_signature = signature;
-            self.media_started = (!self.media_signature.is_empty()).then(Instant::now);
-        }
-        let media_hovered = self
-            .last_cursor
-            .is_some_and(|p| self.media_indicator_rect.contains(p));
-        self.media_expanded = !self.media_signature.is_empty()
-            && (media_hovered
-                || self
-                    .media_started
-                    .is_some_and(|at| at.elapsed() < Duration::from_secs(4)));
-        let fp = self.current_fingerprint();
-        if fp == self.cache_fp && fp.rect_px.2 > 0 {
-            out_scene.append(&self.cached, Some(out_transform));
-            return;
-        }
-
-        // Cache miss — encode at IDENTITY, then splice with `out_transform`.
-        let mut local = std::mem::take(&mut self.cached);
-        local.reset();
-        let scene = &mut local;
-        let transform = Affine::IDENTITY;
-
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-
+    /// Bar surface fill, bottom border hairline, and the soft drop-shadow
+    /// band beneath the bar.
+    fn draw_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let colors = &theme.tokens.colors;
         scene.fill(
             Fill::NonZero,
             transform,
@@ -742,12 +751,23 @@ impl Widget for TopBarChrome {
             None,
             &shadow_rect,
         );
+    }
 
+    /// Overview icon, divider, and up/down workspace chevrons. Returns
+    /// the x cursor position immediately after the down chevron, where
+    /// the workspace name pill begins.
+    fn draw_workspace_nav(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        center_y: f64,
+    ) -> f64 {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
         let pad_x = f64::from(tokens.spacing.s3);
-        let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
         let icon_size = 14.0_f64;
 
-        // --- Left cluster: overview icon + chevrons + workspace name ---
         let mut x = self.rect.x0 + pad_x;
 
         self.overview_btn_rect = Rect::new(
@@ -824,13 +844,27 @@ impl Widget for TopBarChrome {
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x += chev + f64::from(tokens.spacing.s3);
+        x + chev + f64::from(tokens.spacing.s3)
+    }
 
+    /// Workspace-name pill (click toggles workspace settings) and its
+    /// trailing gear glyph, starting at `x`.
+    fn draw_workspace_pill(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        x: f64,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
         let ws_text_size = tokens.typography.scale.sm;
         let ws_label = format!(
             "{}  {}/{}",
             self.workspace_name,
-            self.workspace_index + 1,
+            self.workspace_index.saturating_add(1),
             self.workspace_total
         );
         // Measured at the same weight it's drawn at (Semibold), so the
@@ -845,6 +879,9 @@ impl Widget for TopBarChrome {
             center_y + 12.0,
         );
         self.ws_pill_rect = ws_pill_outer;
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().workspace_settings_anchor = ws_pill_outer;
+        }
         // A thing you choose between is a capsule (HIG §9.1, Selector).
         let pill = RoundedRect::from_rect(
             ws_pill_outer,
@@ -861,12 +898,34 @@ impl Widget for TopBarChrome {
                 &pill,
             );
         }
+        let workspace_lens_open = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().overlays.ws_settings);
+        if workspace_lens_open {
+            let context_rule = RoundedRect::from_rect(
+                Rect::new(
+                    ws_pill_outer.x0 + 8.0,
+                    ws_pill_outer.y1 - 2.5,
+                    ws_pill_outer.x1 - 8.0,
+                    ws_pill_outer.y1 - 0.5,
+                ),
+                1.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5],
+                None,
+                &context_rule,
+            );
+        }
         text_renderer.draw_text_weighted(
             scene,
             &ws_label,
             ws_text_size,
             colors.text_primary,
-            transform * Affine::translate((x, ws_y)),
+            at(transform, (x, ws_y)),
             None,
             ws_weight,
         );
@@ -877,11 +936,26 @@ impl Widget for TopBarChrome {
             transform,
             gear_rect,
             ui::icons::Icon::Settings2,
-            colors.text_dim,
+            if workspace_lens_open {
+                colors.accent[5]
+            } else {
+                colors.text_dim
+            },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
+    }
 
-        // --- Center cluster: carousel band with 3 dots + active widget ---
+    /// Carousel band background + the 3 position dots. Returns
+    /// `(content_x0, content_x1, content_cx)` — the bounds the active
+    /// center widget draws into, to the right of the dots.
+    fn draw_center_band(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        center_y: f64,
+    ) -> (f64, f64, f64) {
+        let colors = &theme.tokens.colors;
         let band_w = 360.0_f64;
         let band_h = 28.0_f64;
         let band_cx = f64::midpoint(self.rect.x0, self.rect.x1);
@@ -914,9 +988,10 @@ impl Widget for TopBarChrome {
         let dot_gap = 4.0_f64;
         let dot_col_h = 3.0 * dot_size + 2.0 * dot_gap;
         let dot_top = center_y - dot_col_h / 2.0;
-        for i in 0..3 {
-            let cy = dot_top + i as f64 * (dot_size + dot_gap) + dot_size / 2.0;
-            let active = self.center_widget.index() == i;
+        let active_dot = self.center_widget.index();
+        for (i, slot) in self.center_dot_rects.iter_mut().enumerate() {
+            let cy = dot_top + small_count_to_f64(i) * (dot_size + dot_gap) + dot_size / 2.0;
+            let active = active_dot == i;
             let r = if active {
                 Self::DOT_ACTIVE_RADIUS
             } else {
@@ -928,7 +1003,7 @@ impl Widget for TopBarChrome {
                 colors.neutral[7]
             };
             // Generous 10 px square hit region for clickability.
-            self.center_dot_rects[i] = Rect::new(dot_x - 10.0, cy - 10.0, dot_x + 10.0, cy + 10.0);
+            *slot = Rect::new(dot_x - 10.0, cy - 10.0, dot_x + 10.0, cy + 10.0);
             let c = vello::kurbo::Circle::new(Point::new(dot_x, cy), r);
             scene.fill(Fill::NonZero, transform, color, None, &c);
         }
@@ -937,169 +1012,245 @@ impl Widget for TopBarChrome {
         let content_x0 = dot_x + 24.0;
         let content_x1 = band.x1 - 12.0;
         let content_cx = f64::midpoint(content_x0, content_x1);
-        match self.center_widget {
-            CenterWidget::Clock => {
-                let s = Self::current_clock_string();
-                let size = tokens.typography.scale.base;
-                // Measured at the draw weight — Bold advances wider
-                // than Regular, so centering would drift otherwise.
-                let weight = self.clock_text_weight();
-                let (tw, th) = text_renderer.measure_weighted(&s, size, None, weight);
-                let tx = content_cx - f64::from(tw) / 2.0;
-                let ty = center_y - f64::from(th) / 2.0;
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &s,
-                    size,
-                    colors.text_primary,
-                    transform * Affine::translate((tx, ty)),
-                    None,
-                    weight,
-                );
-            }
-            CenterWidget::SystemMonitor => {
-                // Values derive from clock seconds, so nothing repaints
-                // every frame yet values change over time.
-                let t = Local::now();
-                let secs = t.format("%S").to_string().parse::<u32>().unwrap_or(0);
-                let cpu = 12 + (secs % 20);
-                let ram = 45 + (secs % 8);
-                let tmp = 40 + (secs % 11);
-                let sm_size = tokens.typography.scale.xs;
-                let cpu_str = format!("{cpu}%");
-                let ram_str = format!("{ram}%");
-                let tmp_str = format!("{tmp}°");
-                text_renderer.draw_text_weighted(
-                    scene,
-                    "CPU",
-                    sm_size,
-                    self.metric_label_color(theme, MetricKind::Cpu),
-                    transform * Affine::translate((content_x0, center_y - 6.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &cpu_str,
-                    tokens.typography.scale.sm,
-                    colors.text_primary,
-                    transform * Affine::translate((content_x0 + 26.0, center_y - 7.0)),
-                    None,
-                    TextWeight::Bold,
-                );
-                let spark_x0 = content_x0 + 70.0;
-                let spark_x1 = content_x1 - 100.0;
-                let spark_w = (spark_x1 - spark_x0).max(40.0);
-                let bars = 20usize;
-                let bar_gap = 1.0;
-                let bar_w = (spark_w - (bars as f64 - 1.0) * bar_gap) / bars as f64;
-                for i in 0..bars {
-                    // Deterministic but varied so the strip looks "live".
-                    let seed = (secs as usize + i * 7) % 100;
-                    let h = 4.0 + (seed as f64) * 0.08;
-                    let bx = spark_x0 + i as f64 * (bar_w + bar_gap);
-                    let b = Rect::new(bx, center_y + 6.0 - h, bx + bar_w, center_y + 6.0);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        self.sparkline_fill(theme, MetricKind::Cpu),
-                        None,
-                        &b,
-                    );
-                }
-                text_renderer.draw_text_weighted(
-                    scene,
-                    "RAM",
-                    sm_size,
-                    self.metric_label_color(theme, MetricKind::Ram),
-                    transform * Affine::translate((content_x1 - 96.0, center_y - 6.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &ram_str,
-                    tokens.typography.scale.sm,
-                    colors.text_primary,
-                    transform * Affine::translate((content_x1 - 70.0, center_y - 7.0)),
-                    None,
-                    TextWeight::Bold,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    "TMP",
-                    sm_size,
-                    self.metric_label_color(theme, MetricKind::Tmp),
-                    transform * Affine::translate((content_x1 - 40.0, center_y - 6.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &tmp_str,
-                    tokens.typography.scale.sm,
-                    colors.text_primary,
-                    transform * Affine::translate((content_x1 - 18.0, center_y - 7.0)),
-                    None,
-                    TextWeight::Bold,
-                );
-            }
-            CenterWidget::Calendar => {
-                let (weekday, date, note) = calendar_strip_parts(Local::now());
-                let prefix = weekday.as_str();
-                let event = date.as_str();
-                let time = note;
-                let size = tokens.typography.scale.sm;
-                // prefix/time dim Medium, event a Semibold primary anchor.
-                let prefix_weight = TextWeight::Medium;
-                let event_weight = TextWeight::Semibold;
-                let time_weight = TextWeight::Medium;
-                let (pw, ph) = text_renderer.measure_weighted(prefix, size, None, prefix_weight);
-                let (ew, _) = text_renderer.measure_weighted(event, size, None, event_weight);
-                let (tw, _) = text_renderer.measure_weighted(
-                    time,
-                    tokens.typography.scale.xs,
-                    None,
-                    time_weight,
-                );
-                let gap = 8.0;
-                let total = f64::from(pw) + gap + f64::from(ew) + gap + f64::from(tw);
-                let mut tx = content_cx - total / 2.0;
-                let ty = center_y - f64::from(ph) / 2.0;
-                text_renderer.draw_text_weighted(
-                    scene,
-                    prefix,
-                    size,
-                    colors.text_dim,
-                    transform * Affine::translate((tx, ty)),
-                    None,
-                    prefix_weight,
-                );
-                tx += f64::from(pw) + gap;
-                text_renderer.draw_text_weighted(
-                    scene,
-                    event,
-                    size,
-                    colors.text_primary,
-                    transform * Affine::translate((tx, ty)),
-                    None,
-                    event_weight,
-                );
-                tx += f64::from(ew) + gap;
-                text_renderer.draw_text_weighted(
-                    scene,
-                    time,
-                    tokens.typography.scale.xs,
-                    colors.text_dim,
-                    transform * Affine::translate((tx, ty + 1.0)),
-                    None,
-                    time_weight,
-                );
-            }
-        }
+        (content_x0, content_x1, content_cx)
+    }
 
-        // --- Right cluster: avatar stack + tray pill ---
-        let mut rx = self.rect.x1 - pad_x;
+    fn draw_clock_widget(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        content_cx: f64,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let s = Self::current_clock_string();
+        let size = tokens.typography.scale.base;
+        // Measured at the draw weight — Bold advances wider
+        // than Regular, so centering would drift otherwise.
+        let weight = self.clock_text_weight();
+        let (tw, th) = text_renderer.measure_weighted(&s, size, None, weight);
+        let tx = content_cx - f64::from(tw) / 2.0;
+        let ty = center_y - f64::from(th) / 2.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            &s,
+            size,
+            colors.text_primary,
+            at(transform, (tx, ty)),
+            None,
+            weight,
+        );
+    }
+
+    /// One `LABEL` + value-string pair, e.g. `CPU` at `label_x` and
+    /// `12%` at `value_x`. Kept as explicit positions rather than a
+    /// fixed offset: TMP's value sits 22px right of its label while
+    /// CPU/RAM's sits 26px right of theirs.
+    fn draw_metric_label(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        spec: &MetricLabelSpec<'_>,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        text_renderer.draw_text_weighted(
+            scene,
+            spec.label,
+            tokens.typography.scale.xs,
+            self.metric_label_color(theme, spec.kind),
+            at(transform, (spec.label_x, spec.center_y - 6.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            spec.value_str,
+            tokens.typography.scale.sm,
+            colors.text_primary,
+            at(transform, (spec.value_x, spec.center_y - 7.0)),
+            None,
+            TextWeight::Bold,
+        );
+    }
+
+    /// The deterministic-but-varied CPU sparkline bars between
+    /// `content_x0 + 70` and `content_x1 - 100`.
+    fn draw_cpu_sparkline(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        center_y: f64,
+        content_x: (f64, f64),
+        secs: u32,
+    ) {
+        let (content_x0, content_x1) = content_x;
+        let spark_x0 = content_x0 + 70.0;
+        let spark_x1 = content_x1 - 100.0;
+        let spark_w = (spark_x1 - spark_x0).max(40.0);
+        let bars = 20usize;
+        let bar_gap = 1.0;
+        let bar_w =
+            (spark_w - (small_count_to_f64(bars) - 1.0) * bar_gap) / small_count_to_f64(bars);
+        for i in 0..bars {
+            // Deterministic but varied so the strip looks "live".
+            let seed = (secs as usize).saturating_add(i.saturating_mul(7)) % 100;
+            let h = 4.0 + small_count_to_f64(seed) * 0.08;
+            let bx = spark_x0 + small_count_to_f64(i) * (bar_w + bar_gap);
+            let b = Rect::new(bx, center_y + 6.0 - h, bx + bar_w, center_y + 6.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                self.sparkline_fill(theme, MetricKind::Cpu),
+                None,
+                &b,
+            );
+        }
+    }
+
+    fn draw_system_monitor_widget(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        content_x: (f64, f64),
+    ) {
+        let (content_x0, content_x1) = content_x;
+        // Values derive from clock seconds, so nothing repaints
+        // every frame yet values change over time.
+        let t = Local::now();
+        let secs = t.format("%S").to_string().parse::<u32>().unwrap_or(0);
+        let cpu = 12u32.saturating_add(secs % 20);
+        let ram = 45u32.saturating_add(secs % 8);
+        let tmp = 40u32.saturating_add(secs % 11);
+        let cpu_str = format!("{cpu}%");
+        let ram_str = format!("{ram}%");
+        let tmp_str = format!("{tmp}°");
+        self.draw_metric_label(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            &MetricLabelSpec {
+                center_y,
+                label_x: content_x0,
+                value_x: content_x0 + 26.0,
+                label: "CPU",
+                value_str: &cpu_str,
+                kind: MetricKind::Cpu,
+            },
+        );
+        self.draw_cpu_sparkline(scene, transform, theme, center_y, content_x, secs);
+        self.draw_metric_label(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            &MetricLabelSpec {
+                center_y,
+                label_x: content_x1 - 96.0,
+                value_x: content_x1 - 70.0,
+                label: "RAM",
+                value_str: &ram_str,
+                kind: MetricKind::Ram,
+            },
+        );
+        self.draw_metric_label(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            &MetricLabelSpec {
+                center_y,
+                label_x: content_x1 - 40.0,
+                value_x: content_x1 - 18.0,
+                label: "TMP",
+                value_str: &tmp_str,
+                kind: MetricKind::Tmp,
+            },
+        );
+    }
+
+    fn draw_calendar_widget(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        content_cx: f64,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let (weekday, date, note) = calendar_strip_parts(Local::now());
+        let prefix = weekday.as_str();
+        let event = date.as_str();
+        let time = note;
+        let size = tokens.typography.scale.sm;
+        // prefix/time dim Medium, event a Semibold primary anchor.
+        let prefix_weight = TextWeight::Medium;
+        let event_weight = TextWeight::Semibold;
+        let time_weight = TextWeight::Medium;
+        let (pw, ph) = text_renderer.measure_weighted(prefix, size, None, prefix_weight);
+        let (ew, _) = text_renderer.measure_weighted(event, size, None, event_weight);
+        let (tw, _) =
+            text_renderer.measure_weighted(time, tokens.typography.scale.xs, None, time_weight);
+        let gap = 8.0;
+        let total = f64::from(pw) + gap + f64::from(ew) + gap + f64::from(tw);
+        let mut tx = content_cx - total / 2.0;
+        let ty = center_y - f64::from(ph) / 2.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            prefix,
+            size,
+            colors.text_dim,
+            at(transform, (tx, ty)),
+            None,
+            prefix_weight,
+        );
+        tx += f64::from(pw) + gap;
+        text_renderer.draw_text_weighted(
+            scene,
+            event,
+            size,
+            colors.text_primary,
+            at(transform, (tx, ty)),
+            None,
+            event_weight,
+        );
+        tx += f64::from(ew) + gap;
+        text_renderer.draw_text_weighted(
+            scene,
+            time,
+            tokens.typography.scale.xs,
+            colors.text_dim,
+            at(transform, (tx, ty + 1.0)),
+            None,
+            time_weight,
+        );
+    }
+
+    /// Sizes the tray pill, paints its body + the critical-battery
+    /// highlight, and returns the layout the icon helpers reuse.
+    fn draw_tray_pill_body(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+    ) -> TrayLayout {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let pad_x = f64::from(tokens.spacing.s3);
+        let rx = self.rect.x1 - pad_x;
 
         // Sizes itself to what's actually knowable; an unarrived
         // reading contributes nothing rather than a plausible default.
@@ -1123,23 +1274,25 @@ impl Widget for TopBarChrome {
         });
         let mut slots = 0usize;
         if has_volume {
-            slots += 1;
+            slots = slots.saturating_add(1);
         }
         if has_link {
-            slots += 1;
+            slots = slots.saturating_add(1);
         }
         if battery_pct.is_some() {
-            slots += 1;
+            slots = slots.saturating_add(1);
         }
         if self.notification_badge > 0 {
-            slots += 1;
+            slots = slots.saturating_add(1);
         }
         let mut tray_w = if slots == 0 {
             // Still the quick-settings trigger, so keep one slot for
             // the settings glyph.
             tray_pad * 2.0 + tray_slot
         } else {
-            tray_pad * 2.0 + slots as f64 * tray_slot + (slots.saturating_sub(1)) as f64 * tray_gap
+            tray_pad * 2.0
+                + small_count_to_f64(slots) * tray_slot
+                + small_count_to_f64(slots.saturating_sub(1)) * tray_gap
         };
         if pct_w > 0.0 {
             tray_w += 3.0 + pct_w;
@@ -1174,294 +1327,405 @@ impl Widget for TopBarChrome {
             );
         }
 
-        let dim = colors.text_dim;
-        let bright = colors.text_primary;
-        let mut sx = self.tray_pill_rect.x0 + tray_pad;
-        let slot_rect = |x: f64| {
-            Rect::new(
-                x + (tray_slot - icon_px) / 2.0,
-                center_y - icon_px / 2.0,
-                x + f64::midpoint(tray_slot, icon_px),
-                center_y + icon_px / 2.0,
-            )
-        };
+        TrayLayout {
+            tray_w,
+            tray_slot,
+            tray_pad,
+            tray_gap,
+            icon_px,
+            pct_size,
+            pct_label,
+            slots,
+            center_y,
+            dim: colors.text_dim,
+            bright: colors.text_primary,
+            warning: colors.semantic.warning,
+            danger: colors.semantic.danger,
+            success: colors.semantic.success,
+        }
+    }
 
-        if slots == 0 {
-            ui::icons::draw_icon(
-                scene,
+    fn draw_tray_settings_icon(scene: &mut Scene, transform: Affine, layout: &TrayLayout, sx: f64) {
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            layout.slot_rect(sx),
+            ui::icons::Icon::Settings2,
+            layout.dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
+
+    /// Draws the bell + compact unread count if there are unread
+    /// notifications. Returns the x cursor position for the next slot
+    /// (unchanged if not drawn).
+    fn draw_tray_notification_badge(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        layout: &TrayLayout,
+        sx: f64,
+    ) -> f64 {
+        if self.notification_badge == 0 {
+            return sx;
+        }
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            layout.slot_rect(sx),
+            ui::icons::Icon::Bell,
+            layout.bright,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let label = if self.notification_badge > 99 {
+            "99+".to_string()
+        } else {
+            self.notification_badge.to_string()
+        };
+        let label_size = 9.0;
+        let (label_w, label_h) = text_renderer.measure(&label, label_size, None);
+        let badge = Rect::new(
+            sx + layout.tray_slot - 1.0,
+            layout.center_y - 8.0,
+            sx + layout.tray_slot + f64::from(label_w) + 9.0,
+            layout.center_y + 8.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            layout.danger,
+            None,
+            &RoundedRect::from_rect(badge, 8.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            &label,
+            label_size,
+            Color::WHITE,
+            at(
                 transform,
-                slot_rect(sx),
-                ui::icons::Icon::Settings2,
-                dim,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                (
+                    badge.x0 + (badge.width() - f64::from(label_w)) / 2.0,
+                    badge.y0 + (badge.height() - f64::from(label_h)) / 2.0,
+                ),
+            ),
+            None,
+        );
+        sx + layout.tray_slot + 20.0 + layout.tray_gap
+    }
+
+    /// Draws the volume glyph if the status has a reading. Returns the
+    /// x cursor position for the next slot (unchanged if not drawn).
+    fn draw_tray_volume_icon(
+        scene: &mut Scene,
+        transform: Affine,
+        status: &crate::shell::status::SystemStatus,
+        layout: &TrayLayout,
+        sx: f64,
+    ) -> f64 {
+        if status.volume.is_none() {
+            return sx;
+        }
+        let silent = status.audio_is_silent();
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            layout.slot_rect(sx),
+            if silent {
+                ui::icons::Icon::VolumeX
+            } else {
+                ui::icons::Icon::Volume2
+            },
+            // Silence is chosen and may want undoing, so it reads
+            // full strength; a normal level stays dim.
+            if silent { layout.bright } else { layout.dim },
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        sx + layout.tray_slot + layout.tray_gap
+    }
+
+    /// Draws the network glyph if the status has a reading. Returns the
+    /// x cursor position for the next slot (unchanged if not drawn).
+    fn draw_tray_network_icon(
+        scene: &mut Scene,
+        transform: Affine,
+        status: &crate::shell::status::SystemStatus,
+        layout: &TrayLayout,
+        sx: f64,
+    ) -> f64 {
+        let Some(link) = status.link.clone() else {
+            return sx;
+        };
+        let r = layout.slot_rect(sx);
+        match link.kind {
+            os_actions::LinkKind::Wired => {
+                ui::icons::draw_icon(
+                    scene,
+                    transform,
+                    r,
+                    ui::icons::Icon::EthernetPort,
+                    layout.dim,
+                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+            os_actions::LinkKind::Offline => {
+                // Warning hue answers "why is nothing loading" at
+                // a glance.
+                ui::icons::draw_icon(
+                    scene,
+                    transform,
+                    r,
+                    ui::icons::Icon::WifiOff,
+                    layout.warning,
+                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+            os_actions::LinkKind::Wifi => {
+                // `icon_subpaths(Wifi)` yields [dot, outer, middle,
+                // inner], so a weak signal lights fewer arcs — the
+                // same glyph, read as a meter.
+                let bars = crate::shell::status::link_bars(&link);
+                let dim = layout.dim;
+                let faint = dim.with_alpha_factor(0.25);
+                ui::icons::draw_icon_layered(
+                    scene,
+                    transform,
+                    r,
+                    ui::icons::Icon::Wifi,
+                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    |i| {
+                        // 0 = base dot (always lit), 1 = outer
+                        // (needs 4 bars), 2 = middle (3), 3 = inner (2).
+                        let needed = match i {
+                            0 => 1,
+                            1 => 4,
+                            2 => 3,
+                            _ => 2,
+                        };
+                        if bars >= needed { dim } else { faint }
+                    },
+                );
+            }
+        }
+        sx + layout.tray_slot + layout.tray_gap
+    }
+
+    /// Draws the battery gauge + percent label if the status has a
+    /// reading.
+    fn draw_tray_battery_icon(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        status: &crate::shell::status::SystemStatus,
+        layout: &TrayLayout,
+        sx: f64,
+        colors: &ui::tokens::colors::Colors,
+    ) {
+        let Some(pct) = status.battery_percent() else {
+            return;
+        };
+        let charging = status.battery_is_charging();
+        let hue = if status.battery_is_critical() {
+            layout.danger
+        } else if status.battery_is_low() {
+            layout.warning
+        } else if charging {
+            layout.success
+        } else {
+            layout.dim
+        };
+        Self::draw_battery_gauge(
+            scene,
+            transform,
+            layout.slot_rect(sx),
+            pct,
+            charging,
+            hue,
+            colors,
+        );
+        let label_x = sx + layout.tray_slot;
+        if let Some(label) = layout.pct_label.as_ref() {
+            // The gauge is the at-a-glance read; the number is
+            // what you check when the gauge worries you.
+            let (_, lh) =
+                text_renderer.measure_weighted(label, layout.pct_size, None, TextWeight::Semibold);
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                layout.pct_size,
+                if status.battery_is_low() {
+                    hue
+                } else {
+                    layout.bright
+                },
+                at(
+                    transform,
+                    (label_x + 3.0, layout.center_y - f64::from(lh) / 2.0),
+                ),
+                None,
+                TextWeight::Semibold,
             );
         }
+    }
 
-        // --- Notification badge --------------------------------------
-        if self.notification_badge > 0 {
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                slot_rect(sx),
-                ui::icons::Icon::Bell,
-                bright,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            let label = if self.notification_badge > 99 {
-                "99+".to_string()
+    /// Settings/volume/network/battery glyphs in the already-sized and
+    /// already-painted tray pill from [`Self::draw_tray_pill_body`].
+    fn draw_tray_icons(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        layout: &TrayLayout,
+    ) {
+        let colors = &theme.tokens.colors;
+        let mut sx = self.tray_pill_rect.x0 + layout.tray_pad;
+        if layout.slots == 0 {
+            Self::draw_tray_settings_icon(scene, transform, layout, sx);
+        }
+        sx = self.draw_tray_notification_badge(scene, transform, text_renderer, layout, sx);
+        sx = Self::draw_tray_volume_icon(scene, transform, &self.status, layout, sx);
+        sx = Self::draw_tray_network_icon(scene, transform, &self.status, layout, sx);
+        Self::draw_tray_battery_icon(
+            scene,
+            transform,
+            text_renderer,
+            &self.status,
+            layout,
+            sx,
+            colors,
+        );
+    }
+
+    /// Active microphone/camera use, drawn leftward from `rx`. New use is
+    /// announced as a named pill for four seconds, then settles into a
+    /// quiet dot; hovering that exact dot expands the same verified app
+    /// label again. Clicking opens Quick Settings, whose privacy action
+    /// can disconnect the active `PipeWire` clients. Returns the x cursor
+    /// position the avatar stack should grow leftward from.
+    fn draw_media_indicator(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        rx: f64,
+    ) -> f64 {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        if self.status.media.is_empty() {
+            self.media_indicator_rect = Rect::ZERO;
+            return rx;
+        }
+        let mut labels: Vec<&str> = self.status.media.iter().map(|u| u.label.as_str()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        let has_mic = self
+            .status
+            .media
+            .iter()
+            .any(|u| u.kind == os_actions::MediaKind::Microphone);
+        let has_camera = self
+            .status
+            .media
+            .iter()
+            .any(|u| u.kind == os_actions::MediaKind::Camera);
+        let media_color = colors.semantic.success;
+        let indicator_h = 22.0;
+        if self.media_expanded {
+            let suffix = if labels.len() > 1 {
+                format!(" +{}", labels.len().saturating_sub(1))
             } else {
-                self.notification_badge.to_string()
+                String::new()
             };
-            let label_size = 9.0;
-            let (label_w, label_h) = text_renderer.measure(&label, label_size, None);
-            let badge = Rect::new(
-                sx + tray_slot - 1.0,
-                center_y - 8.0,
-                sx + tray_slot + f64::from(label_w) + 9.0,
-                center_y + 8.0,
+            let label = format!("{}{suffix}", labels.first().copied().unwrap_or_default());
+            let size = tokens.typography.scale.xs;
+            let (label_w, label_h) =
+                text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
+            let icon_count = usize::from(has_mic).saturating_add(usize::from(has_camera));
+            let width = 16.0 + small_count_to_f64(icon_count) * 15.0 + f64::from(label_w);
+            self.media_indicator_rect = Rect::new(
+                rx - width,
+                center_y - indicator_h / 2.0,
+                rx,
+                center_y + indicator_h / 2.0,
+            );
+            let rr = RoundedRect::from_rect(
+                self.media_indicator_rect,
+                ui::chrome::ChromeRole::Selector.radius(theme, indicator_h),
             );
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.semantic.danger,
+                media_color.with_alpha_factor(0.18),
                 None,
-                &RoundedRect::from_rect(badge, 8.0),
+                &rr,
             );
-            text_renderer.draw_text(
+            let mut ix = self.media_indicator_rect.x0 + 7.0;
+            for icon in [
+                has_mic.then_some(ui::icons::Icon::Mic),
+                has_camera.then_some(ui::icons::Icon::Camera),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                ui::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(ix, center_y - 6.0, ix + 12.0, center_y + 6.0),
+                    icon,
+                    media_color,
+                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+                ix += 15.0;
+            }
+            text_renderer.draw_text_weighted(
                 scene,
                 &label,
-                label_size,
-                Color::WHITE,
-                transform
-                    * Affine::translate((
-                        badge.x0 + (badge.width() - f64::from(label_w)) / 2.0,
-                        badge.y0 + (badge.height() - f64::from(label_h)) / 2.0,
-                    )),
+                size,
+                colors.text_primary,
+                at(transform, (ix + 2.0, center_y - f64::from(label_h) / 2.0)),
                 None,
+                TextWeight::Semibold,
             );
-            sx += tray_slot + 20.0 + tray_gap;
-        }
-
-        // --- Volume ---------------------------------------------------
-        if let Some(vol) = self.status.volume {
-            let silent = self.status.audio_is_silent();
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                slot_rect(sx),
-                if silent {
-                    ui::icons::Icon::VolumeX
-                } else {
-                    ui::icons::Icon::Volume2
-                },
-                // Silence is chosen and may want undoing, so it reads
-                // full strength; a normal level stays dim.
-                if silent { bright } else { dim },
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            let _ = vol;
-            sx += tray_slot + tray_gap;
-        }
-
-        // --- Network --------------------------------------------------
-        if let Some(link) = self.status.link.clone() {
-            let r = slot_rect(sx);
-            match link.kind {
-                os_actions::LinkKind::Wired => {
-                    ui::icons::draw_icon(
-                        scene,
-                        transform,
-                        r,
-                        ui::icons::Icon::EthernetPort,
-                        dim,
-                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
-                os_actions::LinkKind::Offline => {
-                    // Warning hue answers "why is nothing loading" at
-                    // a glance.
-                    ui::icons::draw_icon(
-                        scene,
-                        transform,
-                        r,
-                        ui::icons::Icon::WifiOff,
-                        colors.semantic.warning,
-                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
-                os_actions::LinkKind::Wifi => {
-                    // `icon_subpaths(Wifi)` yields [dot, outer, middle,
-                    // inner], so a weak signal lights fewer arcs — the
-                    // same glyph, read as a meter.
-                    let bars = crate::shell::status::link_bars(&link);
-                    let faint = dim.with_alpha_factor(0.25);
-                    ui::icons::draw_icon_layered(
-                        scene,
-                        transform,
-                        r,
-                        ui::icons::Icon::Wifi,
-                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                        |i| {
-                            // 0 = base dot (always lit), 1 = outer
-                            // (needs 4 bars), 2 = middle (3), 3 = inner (2).
-                            let needed = match i {
-                                0 => 1,
-                                1 => 4,
-                                2 => 3,
-                                _ => 2,
-                            };
-                            if bars >= needed { dim } else { faint }
-                        },
-                    );
-                }
-            }
-            sx += tray_slot + tray_gap;
-        }
-
-        // --- Battery --------------------------------------------------
-        if let Some(pct) = battery_pct {
-            let charging = self.status.battery_is_charging();
-            let hue = if self.status.battery_is_critical() {
-                colors.semantic.danger
-            } else if self.status.battery_is_low() {
-                colors.semantic.warning
-            } else if charging {
-                colors.semantic.success
-            } else {
-                dim
-            };
-            Self::draw_battery_gauge(scene, transform, slot_rect(sx), pct, charging, hue, colors);
-            sx += tray_slot;
-            if let Some(label) = pct_label.as_ref() {
-                // The gauge is the at-a-glance read; the number is
-                // what you check when the gauge worries you.
-                let (_, lh) =
-                    text_renderer.measure_weighted(label, pct_size, None, TextWeight::Semibold);
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    pct_size,
-                    if self.status.battery_is_low() {
-                        hue
-                    } else {
-                        bright
-                    },
-                    transform * Affine::translate((sx + 3.0, center_y - f64::from(lh) / 2.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-            }
-        }
-
-        rx -= tray_w + f64::from(tokens.spacing.s4); // s4 = 16, ≥ 8 px after avatar radius
-
-        // --- Active microphone/camera use ----------------------------
-        // New use is announced as a named pill for four seconds. It then
-        // settles into a quiet dot; hovering that exact dot expands the same
-        // verified app label again. Clicking opens Quick Settings, whose
-        // privacy action can disconnect the active PipeWire clients.
-        if !self.status.media.is_empty() {
-            let mut labels: Vec<&str> =
-                self.status.media.iter().map(|u| u.label.as_str()).collect();
-            labels.sort_unstable();
-            labels.dedup();
-            let has_mic = self
-                .status
-                .media
-                .iter()
-                .any(|u| u.kind == os_actions::MediaKind::Microphone);
-            let has_camera = self
-                .status
-                .media
-                .iter()
-                .any(|u| u.kind == os_actions::MediaKind::Camera);
-            let media_color = colors.semantic.success;
-            let indicator_h = 22.0;
-            if self.media_expanded {
-                let suffix = if labels.len() > 1 {
-                    format!(" +{}", labels.len() - 1)
-                } else {
-                    String::new()
-                };
-                let label = format!("{}{suffix}", labels[0]);
-                let size = tokens.typography.scale.xs;
-                let (label_w, label_h) =
-                    text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
-                let icon_count = usize::from(has_mic) + usize::from(has_camera);
-                let width = 16.0 + icon_count as f64 * 15.0 + f64::from(label_w);
-                self.media_indicator_rect = Rect::new(
-                    rx - width,
-                    center_y - indicator_h / 2.0,
-                    rx,
-                    center_y + indicator_h / 2.0,
-                );
-                let rr = RoundedRect::from_rect(
-                    self.media_indicator_rect,
-                    ui::chrome::ChromeRole::Selector.radius(theme, indicator_h),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    media_color.with_alpha_factor(0.18),
-                    None,
-                    &rr,
-                );
-                let mut ix = self.media_indicator_rect.x0 + 7.0;
-                for icon in [
-                    has_mic.then_some(ui::icons::Icon::Mic),
-                    has_camera.then_some(ui::icons::Icon::Camera),
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    ui::icons::draw_icon(
-                        scene,
-                        transform,
-                        Rect::new(ix, center_y - 6.0, ix + 12.0, center_y + 6.0),
-                        icon,
-                        media_color,
-                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                    ix += 15.0;
-                }
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &label,
-                    size,
-                    colors.text_primary,
-                    transform * Affine::translate((ix + 2.0, center_y - f64::from(label_h) / 2.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-            } else {
-                self.media_indicator_rect = Rect::new(
-                    rx - indicator_h,
-                    center_y - indicator_h / 2.0,
-                    rx,
-                    center_y + indicator_h / 2.0,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    media_color,
-                    None,
-                    &vello::kurbo::Circle::new(self.media_indicator_rect.center(), 4.5),
-                );
-            }
-            rx = self.media_indicator_rect.x0 - f64::from(tokens.spacing.s3);
         } else {
-            self.media_indicator_rect = Rect::ZERO;
+            self.media_indicator_rect = Rect::new(
+                rx - indicator_h,
+                center_y - indicator_h / 2.0,
+                rx,
+                center_y + indicator_h / 2.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                media_color,
+                None,
+                &vello::kurbo::Circle::new(self.media_indicator_rect.center(), 4.5),
+            );
         }
+        self.media_indicator_rect.x0 - f64::from(tokens.spacing.s3)
+    }
 
-        // Snapshotted before drawing, so `avatar_stack_rect` can be
-        // populated once the drawn circle count (incl. overflow) is known.
-        let stack_right_x = rx;
-
+    /// Up to 3 collaborator chips plus an overflow "+N" chip, growing
+    /// leftward from `stack_right_x`. Returns how many circles were
+    /// actually drawn (chips + the overflow chip, if any).
+    fn draw_avatar_chips(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        stack_right_x: f64,
+    ) -> usize {
+        let colors = &theme.tokens.colors;
         // Up to 3 chips, overlapping by 4px, newest on top. Routed
         // through `ui::Avatar` so the roster stays pixel-identical to
         // app rosters.
         for (i, initial) in self.collaborator_initials.iter().enumerate() {
-            let cx = rx - i as f64 * (14.0 - 4.0);
+            let cx = stack_right_x - small_count_to_f64(i) * (14.0 - 4.0);
             let center = Point::new(cx - 7.0, center_y);
             // 15 px chip (r = 7.5); ring adds 1.5 px, outer disc r = 9.
             let rect = Rect::new(
@@ -1492,7 +1756,7 @@ impl Widget for TopBarChrome {
 
         if self.collaborator_overflow > 0 {
             let i = self.collaborator_initials.len();
-            let cx = rx - i as f64 * (14.0 - 4.0);
+            let cx = stack_right_x - small_count_to_f64(i) * (14.0 - 4.0);
             let center = Point::new(cx - 7.0, center_y);
             let rect = Rect::new(
                 center.x - 7.5,
@@ -1513,65 +1777,397 @@ impl Widget for TopBarChrome {
             );
         }
 
-        let slot_count =
-            self.collaborator_initials.len() + usize::from(self.collaborator_overflow > 0);
+        self.collaborator_initials
+            .len()
+            .saturating_add(usize::from(self.collaborator_overflow > 0))
+    }
+
+    /// Sets [`Self::avatar_stack_rect`] to either the drawn chip stack's
+    /// bounds, or — when the roster is empty — draws and bounds the
+    /// dashed "Invite" affordance instead. `pos` is `(center_y,
+    /// stack_right_x)`.
+    fn draw_avatar_stack_bounds(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        pos: (f64, f64),
+        slot_count: usize,
+    ) {
+        let (center_y, stack_right_x) = pos;
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
         if slot_count > 0 {
             // Stack grows leftward from `stack_right_x`; each circle is
             // 18 px wide with 4 px overlap, so step = 14 px.
             let step = 14.0_f64;
-            let leftmost_cx = stack_right_x - (slot_count as f64 - 1.0) * step;
+            let leftmost_cx = stack_right_x - (small_count_to_f64(slot_count) - 1.0) * step;
             let y_mid = center_y;
             self.avatar_stack_rect =
                 Rect::new(leftmost_cx - 9.0, y_mid - 11.0, stack_right_x, y_mid + 11.0);
-        } else {
-            // An empty roster is when inviting the first collaborator
-            // matters most. Dashed ring + unfilled chip: an empty seat
-            // isn't a person, so "Invite" is spelled out rather than `+`.
-            let label = "Invite";
-            let label_size = tokens.typography.scale.xs;
-            let (label_w, label_h) =
-                text_renderer.measure_weighted(label, label_size, None, TextWeight::Medium);
-            let chip_r = 7.5_f64;
-            let pill_x1 = stack_right_x + 2.0;
-            let chip_cx = pill_x1 - 6.0 - chip_r;
-            let label_x = chip_cx - chip_r - 6.0 - f64::from(label_w);
-            let pill = Rect::new(label_x - 10.0, center_y - 12.0, pill_x1, center_y + 12.0);
-            let pill_rr = RoundedRect::from_rect(pill, f64::from(tokens.radii.sm));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surfaces.raised,
-                None,
-                &pill_rr,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                label_size,
-                colors.text_dim,
-                transform * Affine::translate((label_x, center_y - f64::from(label_h) / 2.0)),
-                None,
-                TextWeight::Medium,
-            );
-            let chip = vello::kurbo::Circle::new(Point::new(chip_cx, center_y), chip_r);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-                transform,
-                colors.border_standard,
-                None,
-                &chip,
-            );
-            let plus = Rect::new(chip_cx - 5.0, center_y - 5.0, chip_cx + 5.0, center_y + 5.0);
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                plus,
-                ui::icons::Icon::Plus,
-                colors.text_dim,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            self.avatar_stack_rect = pill;
+            return;
         }
+        // An empty roster is when inviting the first collaborator
+        // matters most. Dashed ring + unfilled chip: an empty seat
+        // isn't a person, so "Invite" is spelled out rather than `+`.
+        let label = "Invite";
+        let label_size = tokens.typography.scale.xs;
+        let (label_w, label_h) =
+            text_renderer.measure_weighted(label, label_size, None, TextWeight::Medium);
+        let chip_r = 7.5_f64;
+        let pill_x1 = stack_right_x + 2.0;
+        let chip_cx = pill_x1 - 6.0 - chip_r;
+        let label_x = chip_cx - chip_r - 6.0 - f64::from(label_w);
+        let pill = Rect::new(label_x - 10.0, center_y - 12.0, pill_x1, center_y + 12.0);
+        let pill_rr = RoundedRect::from_rect(pill, f64::from(tokens.radii.sm));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &pill_rr,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            label,
+            label_size,
+            colors.text_dim,
+            at(transform, (label_x, center_y - f64::from(label_h) / 2.0)),
+            None,
+            TextWeight::Medium,
+        );
+        let chip = vello::kurbo::Circle::new(Point::new(chip_cx, center_y), chip_r);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
+            transform,
+            colors.border_standard,
+            None,
+            &chip,
+        );
+        let plus = Rect::new(chip_cx - 5.0, center_y - 5.0, chip_cx + 5.0, center_y + 5.0);
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            plus,
+            ui::icons::Icon::Plus,
+            colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        self.avatar_stack_rect = pill;
+    }
+
+    /// The click half of [`Widget::handle_event`]'s `MouseInput`
+    /// branch, split out to keep that function under the line budget.
+    fn handle_left_click(&mut self, handled: &mut bool) {
+        // Dot clicks jump directly — local widget state, no chrome needed.
+        if let Some(p) = self.last_cursor {
+            for (i, rect) in self.center_dot_rects.iter().enumerate() {
+                if rect.contains(p) {
+                    self.center_widget = CenterWidget::from_index(i);
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // MouseInput has no position; rely on the last CursorMoved.
+        let Some(p) = self.last_cursor else {
+            return;
+        };
+        let mut state = chrome.borrow_mut();
+        if self.overview_btn_rect.contains(p) {
+            state.overlays.overview = !state.overlays.overview;
+            state.bump();
+            *handled = true;
+            return;
+        }
+        if self.up_btn_rect.contains(p) {
+            if state.switch_workspace(-1) {
+                *handled = true;
+            }
+            return;
+        }
+        if self.down_btn_rect.contains(p) {
+            if state.switch_workspace(1) {
+                *handled = true;
+            }
+            return;
+        }
+        if self.ws_pill_rect.contains(p) {
+            state.toggle_workspace_settings();
+            *handled = true;
+            return;
+        }
+        if self.tray_pill_rect.contains(p) {
+            state.overlays.quick_settings = !state.overlays.quick_settings;
+            state.bump();
+            *handled = true;
+            return;
+        }
+        if self.media_indicator_rect.contains(p) {
+            state.overlays.quick_settings = true;
+            state.bump();
+            *handled = true;
+            return;
+        }
+        if self.avatar_stack_rect.contains(p) {
+            state.overlays.collaborators = !state.overlays.collaborators;
+            state.bump();
+            *handled = true;
+        }
+    }
+
+    /// Pulled at the top of [`Widget::draw`], not pushed by `update`, so a
+    /// just-dropped battery percent is drawn and counted as a change in the
+    /// same pass. Also tracks the media-use signature so a newly-started
+    /// capture announces itself as a named pill before settling into a dot.
+    fn refresh_status_and_media_state(&mut self) {
+        self.status = self.live_status();
+        self.notification_badge = self
+            .chrome
+            .as_ref()
+            .map_or(0, |chrome| chrome.borrow().notification_badge_total());
+        let signature: Vec<(u32, u8, String)> = self
+            .status
+            .media
+            .iter()
+            .map(|use_| {
+                (
+                    use_.client_id,
+                    match use_.kind {
+                        os_actions::MediaKind::Microphone => 0,
+                        os_actions::MediaKind::Camera => 1,
+                    },
+                    use_.label.clone(),
+                )
+            })
+            .collect();
+        if signature != self.media_signature {
+            self.media_signature = signature;
+            self.media_started = (!self.media_signature.is_empty()).then(Instant::now);
+        }
+        let media_hovered = self
+            .last_cursor
+            .is_some_and(|p| self.media_indicator_rect.contains(p));
+        self.media_expanded = !self.media_signature.is_empty()
+            && (media_hovered
+                || self
+                    .media_started
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(4)));
+    }
+
+    /// Sizes the center band, then dispatches to whichever center widget
+    /// is currently selected. Split out of [`Widget::draw`] to stay under
+    /// clippy's line budget — the three arms don't share state beyond the
+    /// band's geometry, which none of them need after this call returns.
+    fn draw_center_widget(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+    ) {
+        let (content_x0, content_x1, content_cx) =
+            self.draw_center_band(scene, transform, theme, center_y);
+        match self.center_widget {
+            CenterWidget::Clock => {
+                self.draw_clock_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    content_cx,
+                );
+            }
+            CenterWidget::SystemMonitor => {
+                self.draw_system_monitor_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    (content_x0, content_x1),
+                );
+            }
+            CenterWidget::Calendar => {
+                Self::draw_calendar_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    content_cx,
+                );
+            }
+        }
+    }
+}
+
+impl Widget for TopBarChrome {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        if let Some(chrome) = self.chrome.clone() {
+            let rev = chrome.borrow().revision;
+            if rev != self.synced_revision {
+                // Clone the tree to avoid re-borrowing chrome while
+                // `sync_from_tree` borrows &self mut.
+                let tree_snap = chrome.borrow().tree().clone();
+                self.sync_from_tree(&tree_snap);
+                // The status poller bumps the same revision.
+                self.status = chrome.borrow().status.clone();
+                self.synced_revision = rev;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // While any group holds fullscreen, collapse to zero height.
+        let fullscreen = self
+            .chrome
+            .as_ref()
+            .is_some_and(|c| c.borrow().is_fullscreen());
+        let style = Style {
+            display: if fullscreen {
+                Display::None
+            } else {
+                Display::Flex
+            },
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: if fullscreen {
+                    Dimension::length(0.0)
+                } else {
+                    Dimension::length(TOPBAR_HEIGHT_PX)
+                },
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        let node = match taffy.new_leaf(style) {
+            Ok(node) => node,
+            Err(err) => {
+                // `TaffyTree::new_leaf` only ever returns `Ok` for a
+                // fresh, unattached leaf (see upstream `new_leaf`); this
+                // arm exists so a future upstream change degrades the
+                // bar's layout instead of aborting the whole session
+                // (this crate builds with `panic = "abort"`).
+                tracing::error!("topbar: leaf allocation failed: {err}");
+                NodeId::from(0u64)
+            }
+        };
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let Ok(l) = taffy.layout(node) else {
+            // A missing layout means this node fell out of the tree
+            // between `build_layout` and this pass; keep the last known
+            // rect rather than crash the session over a stale node.
+            tracing::warn!("topbar: layout lookup failed for node {node:?}");
+            return;
+        };
+        self.rect = Rect::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        );
+    }
+
+    fn draw(
+        &mut self,
+        out_scene: &mut Scene,
+        out_transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        // Zero-height (fullscreen) paints nothing; without this guard
+        // the encode below still runs at intrinsic size, overflowing
+        // into a stray fragment over the fullscreen window.
+        if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
+            return;
+        }
+        // Pulled here, not pushed by update, so a just-dropped battery
+        // percent is drawn and counted as a change in the same pass.
+        self.refresh_status_and_media_state();
+        let fp = self.current_fingerprint();
+        if fp == self.cache_fp && fp.rect_px.2 > 0 {
+            out_scene.append(&self.cached, Some(out_transform));
+            return;
+        }
+
+        // Cache miss — encode at IDENTITY, then splice with `out_transform`.
+        let mut local = std::mem::take(&mut self.cached);
+        local.reset();
+        let scene = &mut local;
+        let transform = Affine::IDENTITY;
+        let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
+
+        self.draw_backdrop(scene, transform, theme);
+
+        let after_chevrons = self.draw_workspace_nav(scene, transform, theme, center_y);
+        self.draw_workspace_pill(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            after_chevrons,
+        );
+
+        self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
+
+        let layout = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
+        self.draw_tray_icons(scene, transform, theme, text_renderer, &layout);
+        // s3/s4 match the pad_x/gap used when this pill was sized and
+        // placed in `draw_tray_pill_body` (s4 = 16, ≥ 8 px after avatar
+        // radius).
+        let stack_right_x = self.rect.x1
+            - f64::from(theme.tokens.spacing.s3)
+            - layout.tray_w
+            - f64::from(theme.tokens.spacing.s4);
+        // Snapshotted before drawing, so `avatar_stack_rect` can be
+        // populated once the drawn circle count (incl. overflow) is known.
+        let stack_right_x = self.draw_media_indicator(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
+
+        let slot_count = self.draw_avatar_chips(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
+        self.draw_avatar_stack_bounds(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            (center_y, stack_right_x),
+            slot_count,
+        );
 
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
@@ -1605,15 +2201,25 @@ impl Widget for TopBarChrome {
                 return;
             }
             let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
-                winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.y as f32) / 40.0,
+                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
             };
             self.center_scroll_accum += dy;
-            while self.center_scroll_accum >= 1.0 {
+            // Bounded rather than `while` on a float comparison: a
+            // single scroll event can only carry so much delta, and a
+            // fixed cap means a pathological float value can never spin
+            // this forever.
+            for _ in 0..16 {
+                if self.center_scroll_accum < 1.0 {
+                    break;
+                }
                 self.center_widget = self.center_widget.next();
                 self.center_scroll_accum -= 1.0;
             }
-            while self.center_scroll_accum <= -1.0 {
+            for _ in 0..16 {
+                if self.center_scroll_accum > -1.0 {
+                    break;
+                }
                 self.center_widget = self.center_widget.prev();
                 self.center_scroll_accum += 1.0;
             }
@@ -1628,68 +2234,7 @@ impl Widget for TopBarChrome {
         else {
             return;
         };
-        // Dot clicks jump directly — local widget state, no chrome needed.
-        if let Some(p) = self.last_cursor {
-            for (i, rect) in self.center_dot_rects.iter().enumerate() {
-                if rect.contains(p) {
-                    self.center_widget = CenterWidget::from_index(i);
-                    *handled = true;
-                    return;
-                }
-            }
-        }
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        // MouseInput has no position; rely on the last CursorMoved.
-        let pos = match self.last_cursor {
-            Some(p) => p,
-            None => return,
-        };
-        let _ = scale_factor;
-        let p = pos;
-        let mut state = chrome.borrow_mut();
-        if self.overview_btn_rect.contains(p) {
-            state.overlays.overview = !state.overlays.overview;
-            state.bump();
-            *handled = true;
-            return;
-        }
-        if self.up_btn_rect.contains(p) {
-            if state.switch_workspace(-1) {
-                *handled = true;
-            }
-            return;
-        }
-        if self.down_btn_rect.contains(p) {
-            if state.switch_workspace(1) {
-                *handled = true;
-            }
-            return;
-        }
-        if self.ws_pill_rect.contains(p) {
-            state.overlays.ws_settings = !state.overlays.ws_settings;
-            state.bump();
-            *handled = true;
-            return;
-        }
-        if self.tray_pill_rect.contains(p) {
-            state.overlays.quick_settings = !state.overlays.quick_settings;
-            state.bump();
-            *handled = true;
-            return;
-        }
-        if self.media_indicator_rect.contains(p) {
-            state.overlays.quick_settings = true;
-            state.bump();
-            *handled = true;
-            return;
-        }
-        if self.avatar_stack_rect.contains(p) {
-            state.overlays.collaborators = !state.overlays.collaborators;
-            state.bump();
-            *handled = true;
-        }
+        self.handle_left_click(handled);
     }
 
     fn name(&self) -> &'static str {
@@ -1820,8 +2365,8 @@ mod tests {
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
             collaborators: Vec::new(),
             ..Default::default()
         };
@@ -1945,8 +2490,8 @@ mod tests {
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
             collaborators: vec![crate::shell::state::Collaborator::new("alice", "Alice")],
             ..Default::default()
         };
@@ -2005,8 +2550,8 @@ mod tests {
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
             collaborators: Vec::new(),
             ..Default::default()
         };
@@ -2114,8 +2659,8 @@ mod tests {
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
             collaborators: Vec::new(),
             ..Default::default()
         };
@@ -2182,8 +2727,8 @@ mod tests {
         let empty = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
             collaborators: Vec::new(),
             ..Default::default()
         };

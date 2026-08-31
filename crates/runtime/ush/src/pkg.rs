@@ -70,6 +70,10 @@ impl Manifest {
         serde_json::from_slice(&bytes).unwrap_or_default()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `path`'s parent can't be created, or the
+    /// manifest can't be serialized or written.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

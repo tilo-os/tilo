@@ -118,6 +118,11 @@ impl TopBar {
     /// Only `dir`'s sign matters. Wraps modulo 3 across
     /// `Clock → SystemMonitor → Calendar → Clock`.
     pub fn on_center_wheel(&mut self, dir: i32, now: Duration) {
+        const VARIANTS: [CenterWidget; 3] = [
+            CenterWidget::Clock,
+            CenterWidget::SystemMonitor,
+            CenterWidget::Calendar,
+        ];
         let step = dir.signum();
         if step == 0 {
             return;
@@ -131,16 +136,24 @@ impl TopBar {
         if !allowed {
             return;
         }
-        const VARIANTS: [CenterWidget; 3] = [
-            CenterWidget::Clock,
-            CenterWidget::SystemMonitor,
-            CenterWidget::Calendar,
-        ];
-        let cur = VARIANTS.iter().position(|v| *v == self.center).unwrap_or(0) as i32;
-        let len = VARIANTS.len() as i32;
-        // Euclidean rem so a negative `cur + step` wraps positive.
-        let next = ((cur + step) % len + len) % len;
-        self.center = VARIANTS[next as usize];
+        let cur = VARIANTS.iter().position(|v| *v == self.center).unwrap_or(0);
+        // `step` is always +-1 and VARIANTS has a fixed length, so
+        // wrapping one step forward/back around the ring never needs
+        // arithmetic wider than usize.
+        let next = if step < 0 {
+            cur.checked_sub(1)
+                .unwrap_or(VARIANTS.len().saturating_sub(1))
+        } else {
+            let advanced = cur.saturating_add(1);
+            if advanced >= VARIANTS.len() {
+                0
+            } else {
+                advanced
+            }
+        };
+        if let Some(&widget) = VARIANTS.get(next) {
+            self.center = widget;
+        }
         self.last_wheel = Some(now);
     }
 

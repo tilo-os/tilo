@@ -38,6 +38,19 @@
 //! `total_token_wait_ns` (cumulative latency + throttle wait, for a
 //! mean). `stats()` returns a snapshot.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -53,6 +66,30 @@ pub const DEFAULT_JITTER_MS: u32 = 5;
 /// (~8 MiB), so the encoder can burst-emit a keyframe without the
 /// throttle chunking it into subframe pieces.
 pub const TOKEN_BUCKET_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Lossy but harmless `u64 -> f64`, used throughout this module for
+/// token-bucket and stats math. The values that flow through it — frame
+/// sizes, byte counters, kbps configs — are bounded by realistic
+/// encoded-video sizes and session-lifetime totals, many orders of
+/// magnitude below 2^53 (where `f64` stops exactly representing
+/// integers), so the conversion loses no precision that matters here.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "values converted here are bounded far below 2^53 in every realistic configuration; see doc comment"
+)]
+fn u64_as_f64(n: u64) -> f64 {
+    n as f64
+}
+
+/// As [`u64_as_f64`], for the nanosecond-scale cumulative delay counters
+/// (`u128`), which feed the display-only `mean_delay_ms` stat.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "cumulative nanosecond counters are bounded by realistic session lengths, far below 2^53"
+)]
+fn u128_as_f64(n: u128) -> f64 {
+    n as f64
+}
 
 /// Snapshot of the shim's counters. All monotonic — no field ever
 /// decreases across the shim's lifetime.
@@ -82,8 +119,8 @@ impl LinkStats {
         if self.frames_delivered == 0 {
             return 0.0;
         }
-        let total = self.total_delay_ns + self.total_token_wait_ns;
-        (total as f64) / (self.frames_delivered as f64) / 1_000_000.0
+        let total = self.total_delay_ns.saturating_add(self.total_token_wait_ns);
+        u128_as_f64(total) / u64_as_f64(self.frames_delivered) / 1_000_000.0
     }
 
     /// Effective throughput across the observed window (bits per second),
@@ -95,7 +132,7 @@ impl LinkStats {
         if secs <= 0.0 {
             return 0.0;
         }
-        (self.bytes_delivered as f64) * 8.0 / secs
+        u64_as_f64(self.bytes_delivered) * 8.0 / secs
     }
 }
 
@@ -129,7 +166,7 @@ impl Default for LinkConfig {
             jitter_ms: 0,
             throughput_kbps: 0,
             queue_capacity: DEFAULT_QUEUE_CAPACITY,
-            jitter_seed: 0xC0FFEE,
+            jitter_seed: 0xC0_FFEE,
             token_bucket_bytes: TOKEN_BUCKET_BYTES,
         }
     }
@@ -173,7 +210,7 @@ impl<T> FrameLink<T> {
     /// milliseconds, throughput in kilobits per second. Everything else
     /// defaults (5 ms jitter, 8-slot queue, deterministic seed).
     pub fn new(latency_ms: u32, throughput_kbps: u64) -> Self {
-        Self::with_config(LinkConfig {
+        Self::with_config(&LinkConfig {
             latency_ms,
             jitter_ms: DEFAULT_JITTER_MS,
             throughput_kbps,
@@ -182,13 +219,19 @@ impl<T> FrameLink<T> {
     }
 
     /// Full-configuration constructor. See [`LinkConfig`] for the fields.
-    pub fn with_config(cfg: LinkConfig) -> Self {
+    pub fn with_config(cfg: &LinkConfig) -> Self {
         // Convert kbps → bytes/second once. `0` (unlimited) sentinel is
         // preserved so the drain path can short-circuit the token math.
+        //
+        // `saturating_mul` rather than `*`: `throughput_kbps` is a config
+        // value, not a wire-format length, so a value large enough to
+        // overflow here (billions of terabits/sec) saturating to "as fast
+        // as representable" is a sane degenerate reading of "unbounded",
+        // not a correctness hazard.
         let bytes_per_sec = if cfg.throughput_kbps == 0 {
             0
         } else {
-            cfg.throughput_kbps * 1000 / 8
+            cfg.throughput_kbps.saturating_mul(1000) / 8
         };
         let token_bucket_bytes = cfg.token_bucket_bytes.max(1);
         Self {
@@ -198,7 +241,7 @@ impl<T> FrameLink<T> {
             token_bucket_bytes,
             queue_capacity: cfg.queue_capacity.max(1),
             queue: VecDeque::with_capacity(cfg.queue_capacity.max(1)),
-            tokens: token_bucket_bytes as f64,
+            tokens: u64_as_f64(token_bucket_bytes),
             last_refill: Instant::now(),
             stats: LinkStats::default(),
             first_push_at: None,
@@ -226,8 +269,12 @@ impl<T> FrameLink<T> {
         }
 
         let jitter_offset = self.sample_jitter();
-        let delay = self.latency + jitter_offset;
-        let deliver_at = now + delay;
+        let delay = self.latency.saturating_add(jitter_offset);
+        // `latency + jitter` is bounded by two u32-millisecond config values,
+        // nowhere near where `Instant` arithmetic would overflow — but
+        // `checked_add` + a same-`now` fallback keeps this side of a panic
+        // entirely rather than leaning on that bound forever.
+        let deliver_at = now.checked_add(delay).unwrap_or(now);
         self.queue.push_back(Envelope {
             payload,
             size,
@@ -249,19 +296,24 @@ impl<T> FrameLink<T> {
         // throttle — skip the math and keep tokens saturated.
         if self.bytes_per_sec > 0 {
             let elapsed = now.saturating_duration_since(self.last_refill);
-            let earned = elapsed.as_secs_f64() * self.bytes_per_sec as f64;
-            self.tokens = (self.tokens + earned).min(self.token_bucket_bytes as f64);
+            let earned = elapsed.as_secs_f64() * u64_as_f64(self.bytes_per_sec);
+            self.tokens = (self.tokens + earned).min(u64_as_f64(self.token_bucket_bytes));
             self.last_refill = now;
         } else {
-            self.tokens = self.token_bucket_bytes as f64;
+            self.tokens = u64_as_f64(self.token_bucket_bytes);
         }
 
         let mut delivered = Vec::new();
-        while let Some(front) = self.queue.front() {
-            if front.deliver_at > now {
+        // Pop the head unconditionally, then push it back on either "not due
+        // yet" or "throttled". This (rather than peeking via `front()` and
+        // then `pop_front()`ing what we already know is there) is what lets
+        // every exit path avoid an `unwrap()` clippy can't see is safe.
+        while let Some(mut env) = self.queue.pop_front() {
+            if env.deliver_at > now {
+                self.queue.push_front(env);
                 break;
             }
-            let size_bytes = front.size;
+            let size_bytes = env.size;
             // Two throttle regimes coexist: normal frames (`size <= bucket_size`)
             // need tokens ≥ size to leave, else wait for refill. Oversize frames
             // (bigger than the bucket, e.g. IDR keyframes) can never fit under a
@@ -275,29 +327,36 @@ impl<T> FrameLink<T> {
             } else if oversize {
                 // Oversize frame: only send when the bucket is full, otherwise wait
                 // so we don't burn all future budget early.
-                self.tokens >= self.token_bucket_bytes as f64 - 0.5
+                self.tokens >= u64_as_f64(self.token_bucket_bytes) - 0.5
             } else {
-                (size_bytes as f64) <= self.tokens
+                u64_as_f64(size_bytes) <= self.tokens
             };
             if !can_send {
                 // Head-of-queue is throttled. Compute the wait we're adding (for
                 // stats) then leave the queue as-is until the next `drain_ready`.
                 let need = if oversize {
-                    self.token_bucket_bytes as f64 - self.tokens
+                    u64_as_f64(self.token_bucket_bytes) - self.tokens
                 } else {
-                    size_bytes as f64 - self.tokens
+                    u64_as_f64(size_bytes) - self.tokens
                 };
                 let need = need.max(0.0);
-                let wait_secs = need / self.bytes_per_sec as f64;
-                let wait_ns = (wait_secs * 1_000_000_000.0) as u128;
-                let mut env = self.queue.pop_front().unwrap();
+                let wait_secs = need / u64_as_f64(self.bytes_per_sec);
+                let wait_ns_f = wait_secs * 1_000_000_000.0;
+                // `wait_ns_f` is >= 0.0 by construction (`need.max(0.0)`
+                // above, divided by a positive rate); this only drops
+                // sub-nanosecond precision from a cumulative stats counter.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "wait_ns_f is provably >= 0.0 here; only sub-nanosecond precision is lost"
+                )]
+                let wait_ns = wait_ns_f as u128;
                 env.token_wait_ns = env.token_wait_ns.saturating_add(wait_ns);
                 self.queue.push_front(env);
                 break;
             }
-            let env = self.queue.pop_front().unwrap();
             if self.bytes_per_sec > 0 {
-                self.tokens -= env.size as f64;
+                self.tokens -= u64_as_f64(env.size);
                 // Non-oversize frames stay at tokens >= 0 by construction; oversize
                 // frames legitimately overdraw — no clamp here, refill accounting handles it.
             }
@@ -337,22 +396,42 @@ impl<T> FrameLink<T> {
         x ^= x >> 7;
         x ^= x << 17;
         self.rng_state = x;
-        // Map into [-jitter_ns, +jitter_ns].
-        let range = self.jitter.as_nanos() as i128 * 2 + 1;
-        let raw = i128::from(x % range as u64) - self.jitter.as_nanos() as i128;
+        // Map into [-jitter_ns, +jitter_ns]. `jitter_ns` is bounded by the
+        // u32-millisecond `jitter_ms` config field, nowhere near i128's
+        // range — but it's still a config input, not a proof, so a value
+        // that would overflow this math falls back to "no jitter" instead
+        // of panicking or wrapping.
+        let Ok(jitter_ns) = i128::try_from(self.jitter.as_nanos()) else {
+            return Duration::ZERO;
+        };
+        let Some(range) = jitter_ns.checked_mul(2).and_then(|r| r.checked_add(1)) else {
+            return Duration::ZERO;
+        };
+        let Ok(range_u64) = u64::try_from(range) else {
+            return Duration::ZERO;
+        };
+        // `range_u64 >= 1` always (it's `jitter_ns * 2 + 1` and `jitter_ns >=
+        // 0`), so the `%` can't actually panic; `checked_rem` + a 0 fallback
+        // says so without relying on that proof at the call site.
+        let raw = i128::from(x.checked_rem(range_u64).unwrap_or(0)).saturating_sub(jitter_ns);
         if raw >= 0 {
-            Duration::from_nanos(raw as u64)
+            // `raw < range == jitter_ns * 2 + 1`, so this always fits `u64`
+            // for any jitter configuration that reached this point.
+            let Ok(raw_ns) = u64::try_from(raw) else {
+                return Duration::ZERO;
+            };
+            Duration::from_nanos(raw_ns)
         } else {
             // Latency + negative jitter — clamp at zero to avoid a deliver_at in
             // the past (which would still work but reads as "0 delay" downstream).
-            let neg = (-raw) as u64;
-            if neg >= self.latency.as_nanos() as u64 {
-                Duration::ZERO
-            } else {
-                // Return the *offset* — the caller adds latency + this. Saturates to
-                // zero on underflow rather than needing signed math outside.
-                Duration::ZERO
-            }
+            //
+            // Both outcomes below are `Duration::ZERO`: this always returns
+            // the offset as zero on the negative side, regardless of how
+            // close `raw` is to zero. That looks like it under-applies
+            // negative jitter relative to the "Return the *offset*"
+            // contract this was meant to satisfy — flagged, not changed,
+            // since fixing the distribution would be a behaviour change.
+            Duration::ZERO
         }
     }
 }
@@ -376,7 +455,7 @@ pub fn spawn_channel<T: Send + 'static>(
     let stats = Arc::new(Mutex::new(LinkStats::default()));
     let stats_writer = Arc::clone(&stats);
     std::thread::spawn(move || {
-        let mut link: FrameLink<T> = FrameLink::with_config(cfg);
+        let mut link: FrameLink<T> = FrameLink::with_config(&cfg);
         loop {
             // Non-blocking pull to keep the drain path warm.
             match input.try_recv() {
@@ -384,7 +463,14 @@ pub fn spawn_channel<T: Send + 'static>(
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     // Flush anything the shim still holds, then exit.
-                    let now = Instant::now() + Duration::from_hours(1);
+                    // `checked_add` + a same-instant fallback: this can only
+                    // fail if `Instant` arithmetic is already at its
+                    // representable limit, in which case flushing "now"
+                    // instead of "one hour from now" is a harmless fallback,
+                    // not a panic.
+                    let now = Instant::now()
+                        .checked_add(Duration::from_secs(3600))
+                        .unwrap_or_else(Instant::now);
                     for payload in link.drain_ready(now) {
                         if out_tx.send(payload).is_err() {
                             break;
@@ -398,7 +484,12 @@ pub fn spawn_channel<T: Send + 'static>(
                     return;
                 }
             }
-            *stats_writer.lock().expect("stats") = link.stats();
+            // A poisoned mutex means the stats reader panicked while
+            // holding the lock; skip this tick's stats update rather than
+            // propagating that panic into the forwarder thread too.
+            if let Ok(mut guard) = stats_writer.lock() {
+                *guard = link.stats();
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
     });
@@ -415,7 +506,7 @@ mod tests {
         // Simple constructor default-enables 5 ms jitter; use
         // `with_config` here to pin jitter to zero for a strict
         // passthrough assertion.
-        let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
+        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
             latency_ms: 0,
             jitter_ms: 0,
             throughput_kbps: 0,
@@ -435,7 +526,7 @@ mod tests {
 
     #[test]
     fn eighty_ms_latency_delays_delivery() {
-        let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
+        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
             latency_ms: 80,
             jitter_ms: 0,
             throughput_kbps: 0,
@@ -456,7 +547,7 @@ mod tests {
 
     #[test]
     fn jitter_stays_within_bounds() {
-        let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
+        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
             latency_ms: 100,
             jitter_ms: 5,
             throughput_kbps: 0,
@@ -481,7 +572,7 @@ mod tests {
     fn throttle_at_2mbps_paces_delivery() {
         // 2 Mbps throughput = 250_000 bytes/sec. A single 100_000-byte frame
         // drains ~400 ms of tokens even from a full bucket.
-        let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
+        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
             latency_ms: 0,
             jitter_ms: 0,
             throughput_kbps: 2000,
@@ -510,7 +601,10 @@ mod tests {
             stats.bytes_delivered > 0,
             "expected some bytes delivered under throttle"
         );
-        assert_eq!(delivered.len(), stats.frames_delivered as usize);
+        assert_eq!(
+            delivered.len(),
+            usize::try_from(stats.frames_delivered).unwrap()
+        );
     }
 
     #[test]
@@ -519,7 +613,7 @@ mod tests {
         // 100 kbps = 12_500 bytes/sec; push 500 × 1_000-byte frames with a
         // bucket permitting ~1 s of burst, drain over 20 s, and check the
         // effective rate is near the cap.
-        let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
+        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
             latency_ms: 0,
             jitter_ms: 0,
             throughput_kbps: 100,
@@ -548,7 +642,7 @@ mod tests {
 
     #[test]
     fn drop_oldest_when_queue_overflows() {
-        let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig {
+        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig {
             latency_ms: 1000, // stall the queue so drains don't drain
             jitter_ms: 0,
             throughput_kbps: 0,
@@ -569,7 +663,7 @@ mod tests {
 
     #[test]
     fn stats_effective_bps_reasonable() {
-        let mut link: FrameLink<u32> = FrameLink::with_config(LinkConfig::default());
+        let mut link: FrameLink<u32> = FrameLink::with_config(&LinkConfig::default());
         let t0 = Instant::now();
         link.push(t0, 1_000_000, 1); // 8 Mbit
         let _ = link.drain_ready(t0);
@@ -594,7 +688,7 @@ mod prop_tests {
             throughput_kbps in 1u64..100_000,
             drain_delays_ms in prop::collection::vec(0u64..500, 0..64),
         ) {
-            let mut link: FrameLink<()> = FrameLink::with_config(LinkConfig {
+            let mut link: FrameLink<()> = FrameLink::with_config(&LinkConfig {
                 latency_ms: 0,
                 jitter_ms: 0,
                 throughput_kbps,
@@ -603,21 +697,26 @@ mod prop_tests {
                 token_bucket_bytes: TOKEN_BUCKET_BYTES,
             });
             let max_size = *sizes.iter().max().unwrap();
-            let bucket = link.token_bucket_bytes as f64;
+            let bucket = u64_as_f64(link.token_bucket_bytes);
             let t0 = Instant::now();
             for size in &sizes {
                 link.push(t0, *size, ());
                 // push doesn't touch tokens directly; asserts run at
                 // steady state.
-                prop_assert!(link.tokens >= -(bucket + max_size as f64));
+                prop_assert!(link.tokens >= -(bucket + u64_as_f64(max_size)));
             }
             let mut now = t0;
             for d in drain_delays_ms {
-                now += std::time::Duration::from_millis(d);
+                // Proptest-generated `d`, so unlike the fixed-literal waits
+                // in `mod tests` this isn't provably overflow-free; fall
+                // back to not advancing the clock rather than panicking.
+                now = now
+                    .checked_add(std::time::Duration::from_millis(d))
+                    .unwrap_or(now);
                 let _ = link.drain_ready(now);
                 // Bound: never worse than one bucket's-worth of debt (oversize frame
                 // just left with tokens fresh from capacity).
-                prop_assert!(link.tokens >= -(max_size as f64));
+                prop_assert!(link.tokens >= -(u64_as_f64(max_size)));
             }
         }
 
@@ -629,7 +728,7 @@ mod prop_tests {
             throughput_kbps in 100u64..10_000,
             elapsed_ms in 10u64..1000,
         ) {
-            let mut link: FrameLink<()> = FrameLink::with_config(LinkConfig {
+            let mut link: FrameLink<()> = FrameLink::with_config(&LinkConfig {
                 latency_ms: 0,
                 jitter_ms: 0,
                 throughput_kbps,
@@ -646,11 +745,15 @@ mod prop_tests {
             prop_assert!(link.tokens < 1.0, "tokens should be near 0, got {}", link.tokens);
             // Wait `elapsed_ms` and drain; tokens should be ~ elapsed * bps /
             // 1000, capped at bucket.
-            let later = t0 + std::time::Duration::from_millis(elapsed_ms);
+            // As above: `elapsed_ms` is proptest-generated, so use a
+            // checked add with a same-instant fallback instead of `+`.
+            let later = t0
+                .checked_add(std::time::Duration::from_millis(elapsed_ms))
+                .unwrap_or(t0);
             let _ = link.drain_ready(later);
             let expected =
-                ((throughput_kbps as f64) * 1000.0 / 8.0) * (elapsed_ms as f64 / 1000.0);
-            let expected = expected.min(TOKEN_BUCKET_BYTES as f64);
+                (u64_as_f64(throughput_kbps) * 1000.0 / 8.0) * (u64_as_f64(elapsed_ms) / 1000.0);
+            let expected = expected.min(u64_as_f64(TOKEN_BUCKET_BYTES));
             let delta = (link.tokens - expected).abs();
             // Loose tolerance — floating-point plus the way drain
             // consumes the head of an empty queue.

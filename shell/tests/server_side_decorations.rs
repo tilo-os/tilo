@@ -7,6 +7,16 @@
 //! it commits 670x633 and never commits again, leaving a 35px dead band
 //! of empty tab and stranding the presentation gate.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 

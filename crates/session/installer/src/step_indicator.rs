@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -54,9 +54,9 @@ impl StepIndicator {
 
     /// Centre x of the `i`th step's circle within the current rect.
     fn column_center_x(&self, i: usize) -> f64 {
-        let n = self.steps.len().max(1) as f64;
+        let n = ui::num::f64_of_usize(self.steps.len().max(1));
         let w = self.rect.width();
-        self.rect.x0 + (i as f64 + 0.5) * (w / n)
+        self.rect.x0 + (ui::num::f64_of_usize(i) + 0.5) * (w / n)
     }
 }
 
@@ -69,6 +69,11 @@ impl Widget for StepIndicator {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
+        // returns a bare `NodeId` across every implementor, so surfacing a
+        // theoretical error here would mean threading a `Result` through the
+        // whole toolkit for a branch that can't be taken.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -84,6 +89,10 @@ impl Widget for StepIndicator {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `layout` only errors for a `NodeId` from a different tree, which
+        // never happens here since `node` is always the id this same widget
+        // received from its own `build_layout` call.
+        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -110,9 +119,9 @@ impl Widget for StepIndicator {
 
         // 1. Connectors (drawn first, behind the circles). A segment is
         //    "done" if the step to its left is completed.
-        for i in 0..self.steps.len() - 1 {
+        for i in 0..self.steps.len().saturating_sub(1) {
             let x0 = self.column_center_x(i) + RADIUS;
-            let x1 = self.column_center_x(i + 1) - RADIUS;
+            let x1 = self.column_center_x(i.saturating_add(1)) - RADIUS;
             let color = if i < self.current {
                 accent
             } else {
@@ -156,7 +165,7 @@ impl Widget for StepIndicator {
             }
 
             // Step number, centred in the circle.
-            let num = format!("{}", i + 1);
+            let num = format!("{}", i.saturating_add(1));
             let num_color = if done_or_active {
                 Color::WHITE
             } else {
@@ -168,7 +177,10 @@ impl Widget for StepIndicator {
                 &num,
                 NUMBER_SIZE,
                 num_color,
-                transform * Affine::translate((cx - f64::from(nw) / 2.0, cy - f64::from(nh) / 2.0)),
+                transform.pre_translate(Vec2::new(
+                    cx - f64::from(nw) / 2.0,
+                    cy - f64::from(nh) / 2.0,
+                )),
                 None,
             );
 
@@ -184,7 +196,10 @@ impl Widget for StepIndicator {
                 label,
                 LABEL_SIZE,
                 label_color,
-                transform * Affine::translate((cx - f64::from(lw) / 2.0, self.rect.y0 + LABEL_TOP)),
+                transform.pre_translate(Vec2::new(
+                    cx - f64::from(lw) / 2.0,
+                    self.rect.y0 + LABEL_TOP,
+                )),
                 None,
             );
         }

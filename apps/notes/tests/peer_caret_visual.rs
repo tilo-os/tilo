@@ -8,6 +8,16 @@
 //! Run with `NOTES_CRITIQUE_DIR=/tmp/notes-peer-caret cargo test
 //! -p notes --test peer_caret_visual -- --nocapture --ignored`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use notes::NotesApp;
@@ -24,7 +34,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-fn render(app: &mut NotesApp, presence: &PresenceCtx, out: &str, w: u32, h: u32) {
+fn render(
+    app: &mut NotesApp,
+    presence: &PresenceCtx,
+    out: &str,
+    w: u16,
+    h: u16,
+) -> Result<(), String> {
     let theme = Theme::dark();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -37,14 +53,14 @@ fn render(app: &mut NotesApp, presence: &PresenceCtx, out: &str, w: u32, h: u32)
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
+                    width: Dimension::length(f32::from(w)),
+                    height: Dimension::length(f32::from(h)),
                 },
                 ..Default::default()
             },
             &[child],
         )
-        .unwrap();
+        .map_err(|e| e.to_string())?;
     {
         let measure_map = node_map.clone();
         let tr = &mut text_renderer;
@@ -52,8 +68,8 @@ fn render(app: &mut NotesApp, presence: &PresenceCtx, out: &str, w: u32, h: u32)
             .compute_layout_with_measure(
                 root,
                 taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
+                    width: AvailableSpace::Definite(f32::from(w)),
+                    height: AvailableSpace::Definite(f32::from(h)),
                 },
                 |known, avail, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {
@@ -63,7 +79,7 @@ fn render(app: &mut NotesApp, presence: &PresenceCtx, out: &str, w: u32, h: u32)
                     }
                 },
             )
-            .unwrap();
+            .map_err(|e| e.to_string())?;
     }
     (app as &mut dyn Widget).apply_layout(&taffy, child, Point::ORIGIN);
 
@@ -76,9 +92,10 @@ fn render(app: &mut NotesApp, presence: &PresenceCtx, out: &str, w: u32, h: u32)
         presence,
         &permission,
     );
-    let mut renderer = OffscreenRenderer::new(w, h);
+    let mut renderer = OffscreenRenderer::new(u32::from(w), u32::from(h));
     renderer.render_png(&scene, Color::TRANSPARENT, std::path::Path::new(out));
     eprintln!("notes: snapshot written to {out}");
+    Ok(())
 }
 
 #[test]
@@ -101,7 +118,8 @@ fn ghost_caret_repro() {
         &format!("{dir}/01-baseline.png"),
         1280,
         800,
-    );
+    )
+    .unwrap();
 
     // 2) Local user focused, no remote peer at all.
     {
@@ -123,7 +141,8 @@ fn ghost_caret_repro() {
         &format!("{dir}/02-local-focused.png"),
         1280,
         800,
-    );
+    )
+    .unwrap();
 
     // 3) Add a remote peer caret on block 0 byte 10 in Bob's colour.
     let mut presence_with_peer = PresenceCtx::empty();
@@ -136,7 +155,8 @@ fn ghost_caret_repro() {
         &format!("{dir}/03-with-peer.png"),
         1280,
         800,
-    );
+    )
+    .unwrap();
 
     // 4) Add the LOCAL user as a peer too (the suspected bug — the
     //    local user appearing in the remote-presence map).
@@ -148,7 +168,8 @@ fn ghost_caret_repro() {
         &format!("{dir}/04-with-both.png"),
         1280,
         800,
-    );
+    )
+    .unwrap();
 
     eprintln!("INSPECT: ls -la {dir}");
 }

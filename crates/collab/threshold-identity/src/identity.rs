@@ -162,6 +162,12 @@ impl ThresholdIdentity {
     /// First-device bootstrap: 1-of-1 mode. Generates a fresh Ed25519
     /// keypair and stores the secret in seed form so
     /// [`Self::single_device_seed`] can hand it back for persistence.
+    ///
+    /// # Errors
+    ///
+    /// Infallible today (returns `Result` for symmetry with the
+    /// threshold-mode constructors); reserved for a future RNG
+    /// failure path.
     pub fn bootstrap_single_device<R: CryptoRng + RngCore>(
         rng: &mut R,
     ) -> Result<Self, ThresholdError> {
@@ -208,6 +214,11 @@ impl ThresholdIdentity {
     /// threshold-signing flow. In threshold mode (`t > 1`) this alone never
     /// suffices — the orchestrator must drive multiple devices; see
     /// [`Self::sign_round1`]/[`Self::sign_round2`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `message` cannot be canonically encoded,
+    /// or anything [`Self::sign_raw`] can return.
     pub fn sign<V: serde::Serialize, R: CryptoRng + RngCore>(
         &self,
         message: &V,
@@ -220,6 +231,12 @@ impl ThresholdIdentity {
     /// Single-device or raw-bytes signing: the single-device variant signs
     /// directly via `SigningKey::sign`; threshold mode errors, pointing the
     /// caller at round-1/round-2.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::DkgStateMisuse`] if this identity is
+    /// in threshold mode — use [`Self::sign_round1`]/
+    /// [`Self::sign_round2`] instead.
     pub fn sign_raw<R: CryptoRng + RngCore>(
         &self,
         bytes: &[u8],
@@ -243,6 +260,12 @@ impl ThresholdIdentity {
     /// [`DkgSession`] handle plus this device's round-1 broadcast; the
     /// orchestrator drives the rest and calls [`Self::adopt_dkg_outcome`]
     /// when done. The old key is unchanged until adoption.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `DkgSession::start` rejects the requested
+    /// `(new_threshold, new_total_devices, this_share_index_in_new_group)`
+    /// parameters (e.g. a threshold greater than the device count).
     pub fn begin_enrolment<R: CryptoRng + RngCore>(
         &mut self,
         this_share_index_in_new_group: u16,
@@ -260,6 +283,11 @@ impl ThresholdIdentity {
 
     /// Commit a completed DKG run into this identity. Replaces
     /// the previous key material.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `session` has not reached a completed
+    /// state (`session.into_inner_complete()` fails).
     pub fn adopt_dkg_outcome(&mut self, session: DkgSession) -> Result<(), ThresholdError> {
         let (kp, pkp, threshold, total, share_index, group_pk) = session.into_inner_complete()?;
         self.inner = InnerKey::Threshold {
@@ -275,6 +303,11 @@ impl ThresholdIdentity {
 
     /// Round-1 of threshold signing. Errors if the identity is
     /// still in single-device mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::DkgStateMisuse`] if this identity is
+    /// in single-device mode.
     pub fn sign_round1<R: CryptoRng + RngCore>(
         &self,
         rng: &mut R,
@@ -286,6 +319,11 @@ impl ThresholdIdentity {
     /// Round-2 of threshold signing. The message is signed in
     /// its **canonical** byte form. Errors if the identity is
     /// in single-device mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `message` cannot be canonically encoded,
+    /// or anything [`Self::sign_round2_raw`] can return.
     pub fn sign_round2<V: serde::Serialize>(
         &self,
         nonces: SigningSessionNonces,
@@ -298,6 +336,13 @@ impl ThresholdIdentity {
 
     /// Round-2 over already-canonical bytes (e.g. the output of
     /// `SignedOp::signing_bytes`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::DkgStateMisuse`] if this identity is
+    /// in single-device mode, or an error if combining `nonces` with
+    /// `commitments` fails (e.g. a mismatched or malformed commitment
+    /// set).
     pub fn sign_round2_raw(
         &self,
         nonces: SigningSessionNonces,
@@ -311,6 +356,13 @@ impl ThresholdIdentity {
     /// Aggregate partial signatures into a single Ed25519
     /// signature. Errors if the identity is in single-device
     /// mode — there are no partials to combine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::DkgStateMisuse`] if this identity is
+    /// in single-device mode, or an error if `partials` do not
+    /// combine into a valid signature (too few, malformed, or
+    /// inconsistent with the group key).
     pub fn aggregate_signature(
         &self,
         partials: &[SigningRound2Partial],
@@ -326,6 +378,12 @@ impl ThresholdIdentity {
     /// Static aggregator. Useful in coordinator processes that
     /// hold the group public key but not a full
     /// `ThresholdIdentity`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::DkgStateMisuse`] if `partials`
+    /// disagree with `message`, or an error if `partials` do not
+    /// combine into a valid signature.
     pub fn aggregate_signature_static(
         message: &[u8],
         group_pk: &Ed25519PublicKey,
@@ -345,6 +403,11 @@ impl ThresholdIdentity {
     /// Generate the paper-recovery share. **Only valid in threshold mode** —
     /// in 1-of-1 mode the "recovery share" would be the device's full key,
     /// defeating the purpose. Caller must enrol a second share first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::DkgStateMisuse`] if this identity is
+    /// still in single-device mode.
     pub fn export_recovery_share(&self) -> Result<RecoveryShare, ThresholdError> {
         match &self.inner {
             InnerKey::Threshold { secret_share, .. } => {
@@ -361,6 +424,11 @@ impl ThresholdIdentity {
     /// alone lacks the metadata (identifier, verifying share, group VK,
     /// threshold) to rebuild a `KeyPackage` — surfaces a clear error
     /// pointing at [`Self::import_recovery_share_full`].
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`ThresholdError::BadRecoveryMnemonic`] — see
+    /// [`Self::import_recovery_share_full`].
     pub fn import_recovery_share(words: &str) -> Result<SecretShare, ThresholdError> {
         let _ = words;
         Err(ThresholdError::BadRecoveryMnemonic(
@@ -372,6 +440,12 @@ impl ThresholdIdentity {
 
     /// Decode a `RecoveryShare` (mnemonic + public metadata)
     /// back into a `SecretShare`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `rs`'s mnemonic or metadata do not decode
+    /// into a valid `KeyPackage` (bad checksum, malformed words, or
+    /// inconsistent group/threshold metadata).
     pub fn import_recovery_share_full(rs: RecoveryShare) -> Result<SecretShare, ThresholdError> {
         rs.into_secret_share()
     }
@@ -381,7 +455,15 @@ impl ThresholdIdentity {
     /// surviving device remain. Requires threshold mode (an existing
     /// `PublicKeyPackage` to extend); the recovery share must belong to the
     /// same group.
-    pub fn adopt_recovery_share(&mut self, share: SecretShare) -> Result<(), ThresholdError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::RecoveryMismatch`] if `share` belongs
+    /// to a different group or carries a different threshold,
+    /// [`ThresholdError::DkgStateMisuse`] if this identity is still in
+    /// single-device mode, or a FROST-internal error if `share`'s
+    /// group verifying key does not deserialize.
+    pub fn adopt_recovery_share(&mut self, share: &SecretShare) -> Result<(), ThresholdError> {
         let kp = share.key_package();
         let kp_group_vec = kp.verifying_key().serialize()?;
         let kp_group: [u8; 32] = kp_group_vec.as_slice().try_into().map_err(|_| {

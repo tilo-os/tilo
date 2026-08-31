@@ -231,10 +231,10 @@ pub fn multi_click_interval() -> Duration {
 
 /// Set the multi-click window for this session.
 pub fn set_multi_click_interval(d: Duration) {
-    MULTI_CLICK_MS.store(
-        d.as_millis().min(u128::from(u64::MAX)) as u64,
-        Ordering::Relaxed,
-    );
+    // Clamped to `u64::MAX` just above, so this conversion never fails;
+    // `try_from` spells that out instead of an unchecked `as`.
+    let millis = u64::try_from(d.as_millis().min(u128::from(u64::MAX))).unwrap_or(u64::MAX);
+    MULTI_CLICK_MS.store(millis, Ordering::Relaxed);
 }
 
 /// Tracks a text-selection drag gesture across press → move → release, including
@@ -264,7 +264,7 @@ impl DragSelect {
                 .is_some_and(|t| now.duration_since(t) < multi_click_interval())
             && self.last_pos.distance(pos) < MULTI_CLICK_DIST;
         self.click_count = if multi {
-            (self.click_count + 1).min(3)
+            self.click_count.saturating_add(1).min(3)
         } else {
             1
         };
@@ -347,6 +347,11 @@ mod tests {
     /// Drive a two-finger swipe as a sequence of precise scroll samples
     /// within one gesture (single `Begin`), returning the first direction
     /// the recogniser commits to.
+    #[allow(
+        clippy::similar_names,
+        reason = "total_dx/total_dy is the standard delta-x/delta-y naming convention; \
+                  distinguishing them further would reduce clarity"
+    )]
     fn swipe(
         recognizer: &mut NavGestureRecognizer,
         total_dx: f64,
@@ -356,8 +361,8 @@ mod tests {
         let (mut fired, mut phase) = (None, GesturePhase::Begin);
         for i in 0..steps {
             let d = recognizer.on_scroll(
-                total_dx / steps as f64,
-                total_dy / steps as f64,
+                total_dx / f64::from(steps),
+                total_dy / f64::from(steps),
                 phase,
                 true,
             );

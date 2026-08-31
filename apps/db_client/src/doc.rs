@@ -37,6 +37,10 @@ pub struct EditorDoc;
 
 impl EditorDoc {
     /// Get-or-create the `editor` Map under the root.
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     fn editor_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "editor") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -47,6 +51,15 @@ impl EditorDoc {
     }
 
     /// Get-or-create the `sql` Text object holding the query buffer.
+    ///
+    /// # Panics
+    /// Never in practice: `editor` is either freshly created by this call or
+    /// already a live Map, so `put_object` on it only fails for an
+    /// already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "editor is either freshly created by this call or already a live Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn sql_text(doc: &mut AutoCommit) -> ObjId {
         let editor = Self::editor_map(doc);
         match doc.get(&editor, "sql") {
@@ -59,9 +72,8 @@ impl EditorDoc {
 
     /// Read the current buffer contents (empty if not yet seeded).
     pub fn read_sql(doc: &AutoCommit) -> String {
-        let editor = match doc.get(&ROOT, "editor") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return String::new(),
+        let Ok(Some((Value::Object(ObjType::Map), editor))) = doc.get(&ROOT, "editor") else {
+            return String::new();
         };
         match doc.get(&editor, "sql") {
             Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).unwrap_or_default(),
@@ -75,34 +87,6 @@ impl EditorDoc {
     pub fn set_sql(doc: &mut AutoCommit, sql: &str) {
         let tid = Self::sql_text(doc);
         ui::doc::splice_text_diffed(doc, &tid, sql);
-    }
-
-    /// Insert `s` at char position `at`. Returns the new caret position
-    /// (just past the inserted text).
-    pub fn insert(doc: &mut AutoCommit, at: usize, s: &str) -> usize {
-        let tid = Self::sql_text(doc);
-        let len = doc.text(&tid).unwrap_or_default().chars().count();
-        let at = at.min(len);
-        let _ = doc.splice_text(&tid, at, 0, s);
-        at + s.chars().count()
-    }
-
-    /// Delete `count` chars starting at `at`. Returns the new caret
-    /// position. Clamps so out-of-range requests are harmless.
-    pub fn delete(doc: &mut AutoCommit, at: usize, count: usize) -> usize {
-        let tid = Self::sql_text(doc);
-        let len = doc.text(&tid).unwrap_or_default().chars().count();
-        if at >= len || count == 0 {
-            return at.min(len);
-        }
-        let count = count.min(len - at);
-        let _ = doc.splice_text(&tid, at, count as isize, "");
-        at
-    }
-
-    /// Current buffer length in chars.
-    pub fn len(doc: &AutoCommit) -> usize {
-        Self::read_sql(doc).chars().count()
     }
 }
 
@@ -217,29 +201,12 @@ mod tests {
     }
 
     #[test]
-    fn insert_returns_advanced_caret() {
-        let mut doc = AutoCommit::new();
-        EditorDoc::set_sql(&mut doc, "AC");
-        let caret = EditorDoc::insert(&mut doc, 1, "B");
-        assert_eq!(EditorDoc::read_sql(&doc), "ABC");
-        assert_eq!(caret, 2);
-    }
-
-    #[test]
-    fn delete_clamps_out_of_range() {
-        let mut doc = AutoCommit::new();
-        EditorDoc::set_sql(&mut doc, "ABC");
-        let caret = EditorDoc::delete(&mut doc, 1, 99);
-        assert_eq!(EditorDoc::read_sql(&doc), "A");
-        assert_eq!(caret, 1);
-    }
-
-    #[test]
     fn merges_between_peers() {
         let mut a = AutoCommit::new();
         EditorDoc::set_sql(&mut a, "SELECT");
         let mut b = AutoCommit::load(&a.save()).unwrap();
-        EditorDoc::insert(&mut b, 6, " 1");
+        let sql = EditorDoc::sql_text(&mut b);
+        b.splice_text(&sql, 6, 0, " 1").unwrap();
         let mut b2 = AutoCommit::load(&b.save()).unwrap();
         a.merge(&mut b2).unwrap();
         assert_eq!(EditorDoc::read_sql(&a), "SELECT 1");

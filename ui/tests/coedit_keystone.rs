@@ -14,6 +14,16 @@
 //! through the real `collab_types::validate_inbound_op` pipeline by role
 //! (`signed_edit_is_permission_gated`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::thread;
 use std::time::Duration;
 
@@ -126,8 +136,8 @@ fn drawn_of(scene: &Scene) -> Drawn {
         push_f32(&mut b, run.font_size);
         push_u32(&mut b, run.font.index);
         push_u32(&mut b, u32::from(run.hint));
-        push_u32(&mut b, run.glyphs.start as u32);
-        push_u32(&mut b, run.glyphs.end as u32);
+        push_u32(&mut b, u32::try_from(run.glyphs.start).unwrap());
+        push_u32(&mut b, u32::try_from(run.glyphs.end).unwrap());
         for v in run.transform.matrix {
             push_f32(&mut b, v);
         }
@@ -150,6 +160,10 @@ fn drawn_of(scene: &Scene) -> Drawn {
 /// Render `input` against `doc` **locally**: real `sync` (pulls converged
 /// text out of the Automerge doc), layout, and rasterise — a pure
 /// function of local state, never a frame consumed from a peer.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "W and H are the fixed small test-canvas dimensions (480x120), exactly representable in f32"
+)]
 fn render_widget(
     mut input: TextInput,
     doc: &mut AutoCommit,
@@ -250,7 +264,13 @@ fn assert_same_frame(a: &LocalRender, b: &LocalRender, what: &str) {
 
 fn non_background_pixels(rgba: &[u8]) -> usize {
     rgba.chunks_exact(4)
-        .filter(|px| u32::from(px[0]) + u32::from(px[1]) + u32::from(px[2]) > 16 && px[3] > 16)
+        .filter(|px| {
+            u32::from(px[0])
+                .saturating_add(u32::from(px[1]))
+                .saturating_add(u32::from(px[2]))
+                > 16
+                && px[3] > 16
+        })
         .count()
 }
 
@@ -442,18 +462,20 @@ use std::time::{Duration as StdDuration, SystemTime};
 
 fn make_attestation(
     issuer_sk: &SigningKey,
-    issuer_pk: Ed25519PublicKey,
+    issuer_pub: Ed25519PublicKey,
     subject: Ed25519PublicKey,
     channel: ChannelId,
     role: Role,
 ) -> RoleAttestation {
     let mut att = Attestation {
         id: AttestationId::new(),
-        issued_by: issuer_pk,
+        issued_by: issuer_pub,
         subject,
         claims: Vec::<Claim>::new(),
         valid_from: SystemTime::UNIX_EPOCH,
-        valid_until: SystemTime::UNIX_EPOCH + StdDuration::from_secs(1_000_000),
+        valid_until: SystemTime::UNIX_EPOCH
+            .checked_add(StdDuration::from_secs(1_000_000))
+            .unwrap(),
         signature: Signature::from_bytes([0u8; 64]),
     };
     let sb = att.signing_bytes().unwrap();
@@ -469,7 +491,7 @@ fn make_attestation(
 /// (the same shape the App carries in `SignedOp::payload`).
 fn sign_delta(
     author_sk: &SigningKey,
-    author_pk: Ed25519PublicKey,
+    author_pub: Ed25519PublicKey,
     attestation_id: AttestationId,
     artifact: ArtifactId,
     delta: Vec<u8>,
@@ -478,10 +500,12 @@ fn sign_delta(
     let mut op = SignedOp::new_unsigned(
         delta,
         artifact,
-        author_pk,
+        author_pub,
         attestation_id,
         OpClass::Splice,
-        SystemTime::UNIX_EPOCH + StdDuration::from_secs(10),
+        SystemTime::UNIX_EPOCH
+            .checked_add(StdDuration::from_secs(10))
+            .unwrap(),
         seq,
     );
     sign_op(&mut op, author_sk).unwrap();
@@ -493,19 +517,19 @@ fn signed_edit_is_permission_gated() {
     // One channel owner underwrites two members: a writer (Editor) and a
     // viewer (Viewer, no write capability). Both target the same Note
     // artifact.
-    let (owner_sk, owner_pk) = generate_keypair();
-    let (writer_sk, writer_pk) = generate_keypair();
-    let (viewer_sk, viewer_pk) = generate_keypair();
+    let (owner_sk, owner_pub) = generate_keypair();
+    let (writer_sk, writer_pub) = generate_keypair();
+    let (viewer_sk, viewer_pub) = generate_keypair();
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
 
-    let writer_att = make_attestation(&owner_sk, owner_pk, writer_pk, channel, Role::Editor);
-    let viewer_att = make_attestation(&owner_sk, owner_pk, viewer_pk, channel, Role::Viewer);
+    let writer_att = make_attestation(&owner_sk, owner_pub, writer_pub, channel, Role::Editor);
+    let viewer_att = make_attestation(&owner_sk, owner_pub, viewer_pub, channel, Role::Viewer);
     let writer_att_id = writer_att.attestation.id;
     let viewer_att_id = viewer_att.attestation.id;
 
     let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pk);
+    state.authorised_signers.push(owner_pub);
     state.artifacts.insert(artifact, ArtifactKind::Note);
     state.register_attestation(writer_att);
     state.register_attestation(viewer_att);
@@ -523,7 +547,7 @@ fn signed_edit_is_permission_gated() {
     let writer_delta = writer_doc.save_incremental();
     let writer_op = sign_delta(
         &writer_sk,
-        writer_pk,
+        writer_pub,
         writer_att_id,
         artifact,
         writer_delta,
@@ -538,7 +562,7 @@ fn signed_edit_is_permission_gated() {
     let viewer_delta = viewer_doc.save_incremental();
     let viewer_op = sign_delta(
         &viewer_sk,
-        viewer_pk,
+        viewer_pub,
         viewer_att_id,
         artifact,
         viewer_delta,

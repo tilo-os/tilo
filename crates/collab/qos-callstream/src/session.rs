@@ -2,9 +2,10 @@
 //!
 //! [`VideoStreamSender`] composes [`crate::throttle::StreamingThrottle`] +
 //! [`crate::encoder::H264Encoder`] and emits [`crate::stream::SurfaceFrame`]
-//! bytes. [`VideoStreamReceiver`] composes [`crate::stream::SurfaceStreamReceiver`]
-//! + [`crate::decoder::H264Decoder`] and turns wire bytes back into
-//! [`crate::decoder::DecodedFrame`]s for a call tile.
+//! bytes. [`VideoStreamReceiver`] composes
+//! [`crate::stream::SurfaceStreamReceiver`] + [`crate::decoder::H264Decoder`]
+//! and turns wire bytes back into [`crate::decoder::DecodedFrame`]s for a
+//! call tile.
 //!
 //! This is the exact composition the compositor's
 //! `collab::flatpak_share::SharedFlatpakSession` uses for a shared Wayland
@@ -25,27 +26,31 @@ use crate::throttle::StreamingThrottle;
 /// late-joining viewer then waits for the next detectable IDR. Same probe
 /// the compositor's share session uses to set the `SurfaceFrame` flag.
 pub fn is_h264_keyframe(nalus: &[u8]) -> bool {
-    let mut i = 0usize;
-    // The loop bound (`i + 3 < len`) guarantees `i..=i+3` is in range for the
-    // 3-byte start code; the 4-byte case's header byte (`i+4`) is guarded separately.
-    while i + 3 < nalus.len() {
+    let mut i: usize = 0;
+    // Loop while at least 4 bytes remain from `i` — enough for either
+    // start-code shape and its follow-on NAL header byte to be checked below
+    // without any raw indexing.
+    while let Some(&[b0, b1, b2, b3]) = nalus.get(i..).and_then(|s| s.first_chunk::<4>()) {
         // 4-byte start code `00 00 00 01`, NAL header at `i+4`.
-        if nalus[i] == 0 && nalus[i + 1] == 0 && nalus[i + 2] == 0 && nalus[i + 3] == 1 {
-            if i + 4 < nalus.len() && (nalus[i + 4] & 0x1f) == 5 {
+        if b0 == 0 && b1 == 0 && b2 == 0 && b3 == 1 {
+            if nalus
+                .get(i.saturating_add(4))
+                .is_some_and(|h| (h & 0x1f) == 5)
+            {
                 return true;
             }
-            i += 4;
+            i = i.saturating_add(4);
             continue;
         }
         // 3-byte start code `00 00 01`, NAL header at `i+3`.
-        if nalus[i] == 0 && nalus[i + 1] == 0 && nalus[i + 2] == 1 {
-            if (nalus[i + 3] & 0x1f) == 5 {
+        if b0 == 0 && b1 == 0 && b2 == 1 {
+            if (b3 & 0x1f) == 5 {
                 return true;
             }
-            i += 3;
+            i = i.saturating_add(3);
             continue;
         }
-        i += 1;
+        i = i.saturating_add(1);
     }
     false
 }
@@ -64,8 +69,16 @@ pub struct VideoStreamSender {
 
 impl VideoStreamSender {
     /// Builds a sender encoding `width × height` at up to `fps` frames per second (the throttle enforces the real cadence).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncodeError`] if the underlying H.264 encoder fails to
+    /// initialise for `width`/`height`/`fps`.
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
-        let interval = std::time::Duration::from_micros((1_000_000 / u64::from(fps.max(1))).max(1));
+        let per_second = u64::from(fps.max(1));
+        let interval = std::time::Duration::from_micros(
+            1_000_000u64.checked_div(per_second).unwrap_or(1).max(1),
+        );
         Ok(Self {
             encoder: H264Encoder::new(width, height, fps)?,
             throttle: StreamingThrottle::with_interval(interval),
@@ -136,10 +149,9 @@ impl VideoStreamReceiver {
     /// became available; a not-yet-decodable NALU simply yields no output.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<DecodedFrame> {
         self.framer.push_bytes(bytes);
-        let events = match self.framer.drain() {
-            Ok(ev) => ev,
-            // A corrupt length header can't be recovered mid-stream; yield nothing and let the next bytes reframe.
-            Err(_) => return Vec::new(),
+        // A corrupt length header can't be recovered mid-stream; yield nothing and let the next bytes reframe.
+        let Ok(events) = self.framer.drain() else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         for ev in events {
@@ -170,11 +182,19 @@ mod tests {
     use std::time::Duration;
 
     fn gradient(width: u32, height: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        let capacity = width.saturating_mul(height).saturating_mul(4) as usize;
+        let mut out = Vec::with_capacity(capacity);
+        let channel = |numerator: u32, denominator: u32| -> u8 {
+            let scaled = numerator
+                .saturating_mul(255)
+                .checked_div(denominator.max(1))
+                .unwrap_or(0);
+            u8::try_from(scaled).unwrap_or(u8::MAX)
+        };
         for y in 0..height {
             for x in 0..width {
-                out.push(((x * 255) / width.max(1)) as u8);
-                out.push(((y * 255) / height.max(1)) as u8);
+                out.push(channel(x, width));
+                out.push(channel(y, height));
                 out.push(128);
                 out.push(255);
             }

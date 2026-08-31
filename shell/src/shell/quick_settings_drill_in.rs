@@ -1,0 +1,193 @@
+//! Shared geometry and paint scaffolding for quick-settings drill-in lists.
+//!
+//! This deliberately stops at structure common to Wi-Fi, Bluetooth and VPN:
+//! header/back, empty state and row placement. Device-specific glyphs, state
+//! and actions stay in their owning panes.
+
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::Fill;
+
+use ui::ColorCompat;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace};
+
+const HEADER_HEIGHT: f64 = 48.0;
+const LIST_TOP: f64 = 56.0;
+const ROW_HEIGHT: f64 = 56.0;
+const ROW_INSET: f64 = 12.0;
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "quick-settings row counts are tiny"
+)]
+fn usize_to_f64_lossy(value: usize) -> f64 {
+    value as f64
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DrillInOutcome {
+    #[default]
+    None,
+    Back,
+    Changed,
+}
+
+#[derive(Default)]
+pub struct DrillInList {
+    back: Rect,
+    rows: Vec<Rect>,
+}
+
+impl DrillInList {
+    pub fn layout(&mut self, panel: Rect, row_count: usize) {
+        self.back = Rect::new(
+            panel.x0 + 8.0,
+            panel.y0 + 8.0,
+            panel.x0 + 40.0,
+            panel.y0 + 40.0,
+        );
+        self.rows.clear();
+        self.rows.extend((0..row_count).map(|index| {
+            let y = panel.y0 + LIST_TOP + usize_to_f64_lossy(index) * ROW_HEIGHT;
+            Rect::new(
+                panel.x0 + ROW_INSET,
+                y,
+                panel.x1 - ROW_INSET,
+                y + ROW_HEIGHT - 4.0,
+            )
+        }));
+    }
+
+    pub fn back_contains(&self, point: Point) -> bool {
+        self.back.contains(point)
+    }
+
+    pub fn row_at(&self, point: Point) -> Option<usize> {
+        self.rows.iter().position(|row| row.contains(point))
+    }
+
+    pub fn rows(&self) -> &[Rect] {
+        &self.rows
+    }
+
+    #[cfg(test)]
+    pub fn back_center(&self) -> Point {
+        self.back.center()
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, shared verbatim by every \
+                  drill-in pane (wifi/bluetooth/vpn) that opens with this header"
+    )]
+    pub fn draw_header(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        cursor: Option<Point>,
+        title: &str,
+    ) {
+        Button::paint(
+            scene,
+            transform,
+            text,
+            theme,
+            &ButtonFace::new(self.back, "")
+                .ghost()
+                .icon(ui::icons::Icon::ChevronLeft)
+                .hovered(cursor.is_some_and(|point| self.back.contains(point)))
+                .accessible_name("Back"),
+        );
+        let (width, height) = text.measure(title, theme.tokens.typography.scale.sm, None);
+        text.draw_text_weighted(
+            scene,
+            title,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            transform.pre_translate(
+                (
+                    panel.center().x - f64::from(width) / 2.0,
+                    panel.y0 + (HEADER_HEIGHT - f64::from(height)) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
+    }
+
+    pub fn draw_empty(
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        message: &str,
+    ) {
+        let (width, height) = text.measure(message, theme.tokens.typography.scale.sm, None);
+        text.draw_text(
+            scene,
+            message,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate(
+                (
+                    panel.center().x - f64::from(width) / 2.0,
+                    panel.y0 + LIST_TOP + 24.0 - f64::from(height) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+        );
+    }
+
+    /// Shared first-row/hover treatment and label placement for discovery
+    /// lists. Returns the leading glyph box for the owning pane to paint.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, shared verbatim by every \
+                  drill-in pane (wifi/bluetooth/vpn) that paints rows with it"
+    )]
+    pub fn draw_discovery_row(
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        index: usize,
+        cursor: Option<Point>,
+        label: &str,
+    ) -> Rect {
+        let hovered = cursor.is_some_and(|point| row.contains(point));
+        if index == 0 || hovered {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.neutral[2].with_alpha_factor(if hovered { 0.75 } else { 0.50 }),
+                None,
+                &RoundedRect::from_rect(row, 12.0),
+            );
+        }
+        let glyph = Rect::new(
+            row.x0 + 12.0,
+            row.y0 + (row.height() - 20.0) / 2.0,
+            row.x0 + 32.0,
+            row.y0 + f64::midpoint(row.height(), 20.0),
+        );
+        text.draw_text_weighted(
+            scene,
+            label,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            transform.pre_translate((glyph.x1 + 12.0, row.y0 + (row.height() - 14.0) / 2.0).into()),
+            None,
+            TextWeight::Medium,
+        );
+        glyph
+    }
+}

@@ -2,6 +2,19 @@
 //! packages (.qpkg) locally, verifying the package signature and trust
 //! chain before installing.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::fs;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -731,14 +744,14 @@ fn install(
     qpkg: &Path,
     pinned: bool,
     force: bool,
-    trust: TrustFlags,
-    runtime: RuntimeFlags,
+    trust: &TrustFlags,
+    runtime: &RuntimeFlags,
     dry_run: bool,
 ) -> Result<(), Error> {
     // 1. Read + verify, before the registry check, so a --dry-run plan
     //    describes a package we've actually seen and checked.
     let bytes = fs::read(qpkg)?;
-    let ingested = ingest(&bytes, &trust)?;
+    let ingested = ingest(&bytes, trust)?;
     let id_field = ingested.id().to_string();
     let version_field = ingested.version().to_string();
 
@@ -757,7 +770,7 @@ fn install(
 
     // 3. Dependencies, before any file is written: a half-succeeded install
     //    that then refuses is worse than one that refuses upfront.
-    satisfy_runtime(&ingested, &runtime)?;
+    satisfy_runtime(&ingested, runtime)?;
 
     reg.entry.retain(|e| e.id != id_field);
 
@@ -871,8 +884,8 @@ fn update(
     version_req: Option<&str>,
     allow_downgrade: bool,
     dry_run: bool,
-    trust: TrustFlags,
-    runtime: RuntimeFlags,
+    trust: &TrustFlags,
+    runtime: &RuntimeFlags,
 ) -> Result<(), Error> {
     let reg = load_registry()?;
     let targets: Vec<RegistryEntry> = if let Some(id) = pkg_id {
@@ -896,8 +909,8 @@ fn update(
         return Ok(());
     }
 
-    let mut updated = 0;
-    let mut current = 0;
+    let mut updated: u32 = 0;
+    let mut current: u32 = 0;
     for entry in &targets {
         match update_one(
             entry,
@@ -905,11 +918,11 @@ fn update(
             version_req,
             allow_downgrade,
             dry_run,
-            &trust,
-            &runtime,
+            trust,
+            runtime,
         )? {
-            UpdateOutcome::Swapped => updated += 1,
-            UpdateOutcome::AlreadyCurrent => current += 1,
+            UpdateOutcome::Swapped => updated = updated.saturating_add(1),
+            UpdateOutcome::AlreadyCurrent => current = current.saturating_add(1),
             UpdateOutcome::Planned => {}
         }
     }
@@ -1021,12 +1034,13 @@ fn update_one(
     if let Some(slot) = reg.entry.iter_mut().find(|e| e.id == entry.id) {
         slot.version = ingested.version().to_string();
         slot.package_id_hex = hex_of(ingested.pkg_id.as_bytes());
-        slot.publisher_key_hex = ingested.publisher_key_hex.clone();
-        slot.attested_by = ingested.attested_by.clone();
+        slot.publisher_key_hex
+            .clone_from(&ingested.publisher_key_hex);
+        slot.attested_by.clone_from(&ingested.attested_by);
         slot.installed_at = now();
         slot.cli_commands = cli_commands;
         slot.runtime = ingested.runtime_ref().unwrap_or_default().to_string();
-        slot.source = source.clone();
+        slot.source.clone_from(&source);
     }
     save_registry(&reg)?;
 
@@ -1205,7 +1219,12 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
     let data_root = data_root()?;
 
     if dry_run {
-        let entry = &reg.entry[idx];
+        // `idx` was just found via `.position()` above and nothing has
+        // touched `reg.entry` since, so this is always `Some` — `.get()`
+        // avoids indexing without changing behaviour.
+        let Some(entry) = reg.entry.get(idx) else {
+            return Err(Error::NotInstalled(pkg_id.into()));
+        };
         println!("plan: uninstall {} {}", entry.id, entry.version);
         println!("  payload   : remove {}", entry.payload_root.display());
         println!("  registry  : drop the entry");
@@ -1360,7 +1379,7 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
     }
     let data_root = data_root()?;
     let checked = targets.len();
-    let mut bad = 0;
+    let mut bad: usize = 0;
     for entry in targets {
         match install::integrity::verify(
             &data_root,
@@ -1378,7 +1397,7 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
                 }
             }
             Ok(report) => {
-                bad += 1;
+                bad = bad.saturating_add(1);
                 println!(
                     "FAILED   {} {}  ({} of {} file(s) do not match)",
                     entry.id,
@@ -1391,7 +1410,7 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
                 }
             }
             Err(e) => {
-                bad += 1;
+                bad = bad.saturating_add(1);
                 println!("FAILED   {} {}  {e}", entry.id, entry.version);
             }
         }
@@ -1435,13 +1454,20 @@ fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
     Ok(())
 }
 
+// One CLI flag per bool, mirroring `Cmd::Run`'s own fields one-for-one;
+// grouping them into a struct would only move the list, not shorten it.
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "each bool is an independent `qos-install run` flag forwarded to the launcher; \
+              see the comment above"
+)]
 fn run(
     pkg_id: &str,
     no_services: bool,
     minimal_libs: bool,
     allow_missing_runtime: bool,
     no_landlock: bool,
-    trust: TrustFlags,
+    trust: &TrustFlags,
 ) -> Result<(), Error> {
     let reg = load_registry()?;
     let entry = reg
@@ -1552,7 +1578,10 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
             &entry.attested_by
         }
     );
-    println!("installed     : {} seconds ago", now() - entry.installed_at);
+    println!(
+        "installed     : {} seconds ago",
+        now().saturating_sub(entry.installed_at)
+    );
     if entry.runtime.is_empty() {
         println!("runtime       : (none declared)");
     } else {
@@ -1799,7 +1828,7 @@ fn main() {
             trust,
             runtime,
             dry_run,
-        } => install(&qpkg, pinned, force, trust, runtime, dry_run),
+        } => install(&qpkg, pinned, force, &trust, &runtime, dry_run),
         Cmd::Update {
             pkg_id,
             from,
@@ -1814,8 +1843,8 @@ fn main() {
             version.as_deref(),
             allow_downgrade,
             dry_run,
-            trust,
-            runtime,
+            &trust,
+            &runtime,
         ),
         Cmd::List => list(),
         Cmd::Uninstall {
@@ -1840,7 +1869,7 @@ fn main() {
             minimal_libs,
             allow_missing_runtime,
             no_landlock,
-            trust,
+            &trust,
         ),
         Cmd::Inspect { pkg_id } => inspect(&pkg_id),
         Cmd::Trust { cmd } => match cmd {
@@ -1945,9 +1974,11 @@ fn extract_publisher_key(id: &PackageId, store: &MemoryBlobStore) -> Option<[u8;
 }
 
 fn hex_of(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
-        out.push_str(&format!("{b:02x}"));
+        // String's `Write` impl never actually fails.
+        let _ = write!(out, "{b:02x}");
     }
     out
 }

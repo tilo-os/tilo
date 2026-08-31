@@ -12,6 +12,16 @@
 //! cargo test -p quick-desktop --test headless_examples_smoke -- --ignored --test-threads 1
 //! ```
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -30,8 +40,9 @@ fn assert_binary_exists() {
         .join("quick-desktop");
     assert!(
         bin.exists(),
-        "expected compositor binary at {bin:?} — run \
-         `cargo build -p quick-desktop --bin quick-desktop` before this test"
+        "expected compositor binary at {} — run \
+         `cargo build -p quick-desktop --bin quick-desktop` before this test",
+        bin.display()
     );
 }
 

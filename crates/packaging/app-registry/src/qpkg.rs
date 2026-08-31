@@ -42,6 +42,12 @@ pub struct QpkgMeta {
 
 /// Parse a `.qpkg` tar into its blobs + manifest. Does NOT verify the
 /// signature — call [`verify_bytes`] for that.
+///
+/// # Errors
+///
+/// Returns an error if the tar can't be read, `qpkg.toml` is missing
+/// or malformed, or the signed-root / manifest blobs are missing or
+/// fail to decode.
 pub fn load(bytes: &[u8]) -> Result<QpkgMeta> {
     let mut store = MemoryBlobStore::new();
     let mut header: Option<QpkgHeader> = None;
@@ -100,6 +106,11 @@ pub fn load(bytes: &[u8]) -> Result<QpkgMeta> {
 /// Serialise the blobs of a packed bundle into `.qpkg` tar bytes —
 /// the inverse of [`load`], matching the layout `qos-pkg pack` writes.
 /// Used by publish tooling + tests that build a bundle in memory.
+///
+/// # Errors
+///
+/// Returns an error if the signed-root, manifest, or collection blobs
+/// are missing from `store`, or writing the tar fails.
 pub fn write_bytes(id: PackageId, store: &MemoryBlobStore) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     {
@@ -154,6 +165,12 @@ fn append<W: std::io::Write>(tar: &mut tar::Builder<W>, name: &str, bytes: &[u8]
 ///
 /// Any other outcome (missing/tampered blob, bad signature, publisher
 /// mismatch) is a hard error — the bytes are never accepted.
+///
+/// # Errors
+///
+/// Returns an error if `bytes` fails to load, the header package-id
+/// doesn't match `expected_id`, or verification against
+/// `expected_publisher` doesn't come back `Trusted`/`AttestedBy`.
 pub fn verify_bytes(
     bytes: &[u8],
     expected_id: PackageId,
@@ -168,8 +185,7 @@ pub fn verify_bytes(
         );
     }
     match verify(meta.package_id, &meta.store, &[expected_publisher]) {
-        Verification::Trusted { .. } => Ok(meta.package_id),
-        Verification::AttestedBy { .. } => Ok(meta.package_id),
+        Verification::Trusted { .. } | Verification::AttestedBy { .. } => Ok(meta.package_id),
         Verification::UntrustedPublisher { identity, .. } => bail!(
             "qpkg publisher ed25519:{} does not match the registry entry's publisher",
             hex::encode(identity)

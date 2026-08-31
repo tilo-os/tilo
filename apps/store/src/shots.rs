@@ -143,6 +143,11 @@ pub fn seeded_app() -> StoreApp {
 }
 
 /// Public entry point the binary's `--shots` path calls.
+///
+/// # Errors
+///
+/// Propagates a `taffy` layout error from [`render_widget`] — building or
+/// computing the widget tree's layout at `viewport` size.
 pub fn render_to_path(viewport: (u32, u32), out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = seeded_app();
     // Force the floating status chip fully visible so this single
@@ -154,6 +159,11 @@ pub fn render_to_path(viewport: (u32, u32), out: &Path) -> Result<(), Box<dyn st
 
 /// Guts of the render pass — mirrors what `ui::App` does for a
 /// single redraw. Extracted so tests can render into a temp dir.
+///
+/// # Errors
+///
+/// Returns a `taffy` layout error if constructing the root layout node or
+/// computing the layout at `viewport` size fails.
 pub fn render_widget(
     viewport: (u32, u32),
     out: &Path,

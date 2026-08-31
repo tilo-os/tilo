@@ -32,14 +32,22 @@ pub fn blobs_dir(dir: &Path) -> PathBuf {
 }
 
 /// Read the index; error if the directory has none.
+///
+/// # Errors
+///
+/// Returns an error if `index.json` can't be read or fails to decode.
 pub fn read_index(dir: &Path) -> Result<RegistryIndex> {
     let p = index_path(dir);
-    let bytes = std::fs::read(&p).with_context(|| format!("read {p:?}"))?;
-    RegistryIndex::from_json(&bytes).with_context(|| format!("decode {p:?}"))
+    let bytes = std::fs::read(&p).with_context(|| format!("read {}", p.display()))?;
+    RegistryIndex::from_json(&bytes).with_context(|| format!("decode {}", p.display()))
 }
 
 /// Load the index, or start a fresh one titled `registry_id` if the
 /// directory has none yet.
+///
+/// # Errors
+///
+/// Returns an error if `index.json` exists but fails to read or decode.
 pub fn load_or_new_index(dir: &Path, registry_id: &str) -> Result<RegistryIndex> {
     match std::fs::read(index_path(dir)) {
         Ok(bytes) => RegistryIndex::from_json(&bytes).context("decode existing index.json"),
@@ -49,10 +57,15 @@ pub fn load_or_new_index(dir: &Path, registry_id: &str) -> Result<RegistryIndex>
 }
 
 /// Write the index atomically (tmp + rename).
+///
+/// # Errors
+///
+/// Returns an error if `dir` can't be created, the index fails to
+/// encode, or the atomic write fails.
 pub fn write_index(dir: &Path, index: &RegistryIndex) -> Result<()> {
-    std::fs::create_dir_all(dir).with_context(|| format!("create {dir:?}"))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let bytes = index.to_json().context("encode index.json")?;
     let target = index_path(dir);
-    atomic_file::write(&target, &bytes).with_context(|| format!("write {target:?}"))?;
+    atomic_file::write(&target, &bytes).with_context(|| format!("write {}", target.display()))?;
     Ok(())
 }

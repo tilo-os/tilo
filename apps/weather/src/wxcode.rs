@@ -30,18 +30,17 @@ impl Sky {
         match code {
             0 => Sky::Clear,
             1 => Sky::MainlyClear,
-            2 => Sky::PartlyCloudy,
             3 => Sky::Overcast,
             45 | 48 => Sky::Fog,
             51 | 53 | 55 => Sky::Drizzle,
-            56 | 57 => Sky::FreezingRain,
+            56 | 57 | 66 | 67 => Sky::FreezingRain,
             61 | 63 | 65 => Sky::Rain,
-            66 | 67 => Sky::FreezingRain,
             71 | 73 | 75 | 77 => Sky::Snow,
             80..=82 => Sky::Showers,
             85 | 86 => Sky::SnowShowers,
             95 => Sky::Thunder,
             96 | 99 => Sky::ThunderHail,
+            // 2 ("partly cloudy") and any unrecognised code both default here.
             _ => Sky::PartlyCloudy,
         }
     }

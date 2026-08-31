@@ -58,6 +58,9 @@ fn message(
     }
 }
 
+/// One hour, in minutes — the unit the sample timestamps are expressed in.
+const HOUR_MIN: i64 = 60;
+
 /// Build the bundled mailbox. The account is a plausible self-host config so
 /// the account-setup screen has real values to display.
 pub fn sample_mailbox() -> Mailbox {
@@ -85,8 +88,43 @@ pub fn sample_mailbox() -> Mailbox {
     let ci = Addr::new("qOS CI", "ci@qos.example");
     let calendar = Addr::new("Calendar", "noreply@cal.qos.example");
 
+    insert_launch_plan_thread(&mut mb, &me, &ada, &grace);
+    insert_standalone_inbox_items(&mut mb, &me, ci, &katherine, alan, linus, calendar);
+
+    insert_sent_archive_and_junk(&mut mb, me, ada, grace, katherine);
+
+    // ---- Two messages hydrated through the REAL mail-parser path ----
+    // (one plain, one multipart/mixed with a PDF attachment). This proves
+    // the offline screenshot is running the same parse code the live IMAP
+    // fetch would.
+    if let Some(mut m) = parse_eml(RAW_PLAIN.as_bytes(), SAMPLE_NOW_MIN - 30, Folder::Inbox) {
+        m.read = false;
+        m.starred = false;
+        mb.insert(m);
+    }
+    if let Some(mut m) = parse_eml(
+        RAW_WITH_PDF.as_bytes(),
+        SAMPLE_NOW_MIN - 7 * 60,
+        Folder::Inbox,
+    ) {
+        m.read = true;
+        mb.insert(m);
+    }
+    // A rich HTML newsletter (with a remote tracking image) parsed live, so the
+    // reader exercises the sandboxed WebView path and the remote-content block.
+    if let Some(mut m) = parse_eml(RAW_HTML.as_bytes(), SAMPLE_NOW_MIN - 52, Folder::Inbox) {
+        m.read = false;
+        m.starred = true;
+        mb.insert(m);
+    }
+
+    mb
+}
+
+/// Thread 1 of the bundled corpus: the only multi-message conversation, so
+/// the list's threading and unread-head rendering have something to group.
+fn insert_launch_plan_thread(mb: &mut Mailbox, me: &Addr, ada: &Addr, grace: &Addr) {
     // ---- Thread 1: "Launch plan for the spatial shell" (3 msgs, unread head)
-    let h = 60; // an hour
     mb.insert(message(
         ada.clone(),
         vec![me.clone()],
@@ -94,7 +132,7 @@ pub fn sample_mailbox() -> Mailbox {
         "Hi team,\n\nI sketched the rollout for the 2D-cluster window model. \
 First milestone is the tiling engine, then per-cluster sandboxing, then the \
 collaboration buffer streaming. Thoughts on sequencing?\n\n— Ada",
-        2 * h + 23,
+        2 * HOUR_MIN + 23,
         true,
         true,
         Folder::Inbox,
@@ -107,7 +145,7 @@ collaboration buffer streaming. Thoughts on sequencing?\n\n— Ada",
         "Sequencing looks right. I'd pull sandboxing forward — it's the \
 security boundary everything else leans on. Let's not ship streaming before \
 the bubblewrap policy is solid.\n\nGrace",
-        h + 47,
+        HOUR_MIN + 47,
         true,
         false,
         Folder::Inbox,
@@ -125,7 +163,23 @@ revised gantt. Can you review the collaboration section before Friday?",
         Folder::Inbox,
         vec![att("rollout-gantt.pdf", "application/pdf", 184_320)],
     ));
+}
 
+/// The one-off inbox items: a CI failure, two short replies, a mailing-list
+/// post and a calendar invite. Each stands alone rather than threading.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one correspondent per message; bundling them into a struct would only move the same list somewhere else"
+)]
+fn insert_standalone_inbox_items(
+    mb: &mut Mailbox,
+    me: &Addr,
+    ci: Addr,
+    katherine: &Addr,
+    alan: Addr,
+    linus: Addr,
+    calendar: Addr,
+) {
     // ---- Thread 2: CI failure (unread, attachment: log)
     mb.insert(message(
         ci,
@@ -148,7 +202,7 @@ contention?)\n\nFull log attached. Re-run threshold was 4 OK / 8 SIGSEGV.",
         "Re-check the trajectory math",
         "I ran the re-entry numbers by hand and they line up with the \
 solver. Margins are tight on the third burn — want me to widen the window?",
-        5 * h,
+        5 * HOUR_MIN,
         true,
         true,
         Folder::Inbox,
@@ -177,7 +231,7 @@ I have thoughts on the focus model.",
         "On Tue, the patch looks mostly fine, but the readahead window is \
 hard-coded to 1MB. Make it a mount option. Also your error path leaks the \
 moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
-        26 * h,
+        26 * HOUR_MIN,
         true,
         false,
         Folder::Inbox,
@@ -191,13 +245,23 @@ moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
         "Invitation: Compositor sync @ Thu 11:00",
         "You have been invited to \"Compositor sync\".\nWhen: Thursday 11:00–\
 11:45\nWhere: cluster://review-room\n\nAccept · Decline · Tentative",
-        9 * h,
+        9 * HOUR_MIN,
         false,
         false,
         Folder::Inbox,
         vec![att("invite.ics", "text/calendar", 1_842)],
     ));
+}
 
+/// The Sent, Archive and Junk folders of the bundled corpus. Split out of
+/// [`sample_mailbox`] so neither half runs past the line budget.
+fn insert_sent_archive_and_junk(
+    mb: &mut Mailbox,
+    me: Addr,
+    ada: Addr,
+    grace: Addr,
+    katherine: Addr,
+) {
     // ---- Sent items
     mb.insert(message(
         me.clone(),
@@ -217,7 +281,7 @@ Wednesday. Pushing the sandbox policy doc to the shared cluster now.",
         "Re: Re-check the trajectory math",
         "Widen it — better a longer window than a missed burn. I'll update \
 the solver bounds and re-run tonight.",
-        4 * h + 30,
+        4 * HOUR_MIN + 30,
         true,
         false,
         Folder::Sent,
@@ -245,39 +309,12 @@ rota. Ping me if the FUSE mount misbehaves.",
         "\u{1F389} You have WON a free spatial monitor!!!",
         "Dear winner, click here within 24 hours to claim your prize. This \
 is definitely not a scam.",
-        7 * h,
+        7 * HOUR_MIN,
         false,
         false,
         Folder::Junk,
         vec![],
     ));
-
-    // ---- Two messages hydrated through the REAL mail-parser path ----
-    // (one plain, one multipart/mixed with a PDF attachment). This proves
-    // the offline screenshot is running the same parse code the live IMAP
-    // fetch would.
-    if let Some(mut m) = parse_eml(RAW_PLAIN.as_bytes(), SAMPLE_NOW_MIN - 30, Folder::Inbox) {
-        m.read = false;
-        m.starred = false;
-        mb.insert(m);
-    }
-    if let Some(mut m) = parse_eml(
-        RAW_WITH_PDF.as_bytes(),
-        SAMPLE_NOW_MIN - 7 * 60,
-        Folder::Inbox,
-    ) {
-        m.read = true;
-        mb.insert(m);
-    }
-    // A rich HTML newsletter (with a remote tracking image) parsed live, so the
-    // reader exercises the sandboxed WebView path and the remote-content block.
-    if let Some(mut m) = parse_eml(RAW_HTML.as_bytes(), SAMPLE_NOW_MIN - 52, Folder::Inbox) {
-        m.read = false;
-        m.starred = true;
-        mb.insert(m);
-    }
-
-    mb
 }
 
 /// A bundled multi-account store so the sidebar shows more than one account

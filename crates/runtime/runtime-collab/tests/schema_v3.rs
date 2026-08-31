@@ -15,16 +15,22 @@
 // return; nothing outside this file constructs these servers, so the
 // refinement stays where it is written.
 #![allow(refining_impl_trait_internal)]
-// `unwrap` in a test-support helper: clippy.toml sets `allow-unwrap-in-tests`,
-// but that only recognises code inside a `#[test]` function, and the fixtures
-// below are free functions. A fixture that cannot stand up has nothing to
-// assert, so failing loudly there is the same decision the config already made.
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::cell::RefCell;
 use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use capnp::capability::Promise;
+use capnp::message::ReaderOptions;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::net::UnixStream;
 use tokio::task::LocalSet;
@@ -74,10 +80,18 @@ enum PublishedInput {
 
 type SharedCaptures = Rc<RefCell<Captures>>;
 
+/// Pre-seeded `(hash, bytes)` pairs shared between a `FakeChannel` and the
+/// `FakeBlobStream` it hands out.
+type BlobBacklog = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
+
+/// Pre-seeded `(type_id, payload, from_user_id)` triples shared between a
+/// `FakeChannel` and the `FakeActionStream` it hands out.
+type ActionBacklog = Rc<RefCell<Vec<(String, Vec<u8>, String)>>>;
+
 // fake streams
 
 struct FakeBlobStream {
-    backlog: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
+    backlog: BlobBacklog,
 }
 
 impl blob_stream::Server for FakeBlobStream {
@@ -99,7 +113,7 @@ impl blob_stream::Server for FakeBlobStream {
 }
 
 struct FakeActionStream {
-    backlog: Rc<RefCell<Vec<(String, Vec<u8>, String)>>>,
+    backlog: ActionBacklog,
 }
 
 impl action_stream::Server for FakeActionStream {
@@ -167,8 +181,8 @@ impl invocation_stream::Server for FakeInvocationStream {
 
 struct FakeChannel {
     captures: SharedCaptures,
-    blob_backlog: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
-    action_backlog: Rc<RefCell<Vec<(String, Vec<u8>, String)>>>,
+    blob_backlog: BlobBacklog,
+    action_backlog: ActionBacklog,
     invocation_backlog: Rc<RefCell<Vec<SeedInvocation>>>,
 }
 
@@ -350,9 +364,6 @@ impl collab_service::Server for FakeBroker {
     }
 }
 
-// Not `async`: it awaits nothing. `spawn_local` needs the surrounding `LocalSet`
-// context, which every caller already has from `run_until`, not an async fn of
-// its own.
 fn stand_up_client(broker: FakeBroker) -> CollabClient {
     let (server_side, client_side) = UnixStream::pair().unwrap();
 
@@ -362,7 +373,7 @@ fn stand_up_client(broker: FakeBroker) -> CollabClient {
         server_read.compat(),
         server_write.compat_write(),
         rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
+        ReaderOptions::default(),
     ));
     let server_rpc = RpcSystem::new(server_network, Some(broker_client.client));
     tokio::task::spawn_local(async move {

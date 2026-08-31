@@ -55,17 +55,20 @@ impl IconWidget {
         }
     }
 
+    #[must_use]
     pub fn with_color(mut self, color: Color) -> Self {
         self.tint = Tint::Fixed(color);
         self
     }
 
     /// For secondary icons that should recede next to their label.
+    #[must_use]
     pub fn dim(mut self) -> Self {
         self.tint = Tint::Dim;
         self
     }
 
+    #[must_use]
     pub fn with_stroke(mut self, stroke_px: f64) -> Self {
         self.stroke_px = stroke_px;
         self
@@ -170,7 +173,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        w.rect = Rect::new(0.0, 0.0, w.size as f64, w.size as f64);
+        w.rect = Rect::new(0.0, 0.0, f64::from(w.size), f64::from(w.size));
         w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         scene
     }

@@ -8,6 +8,16 @@
 //! **document content** rather than on a return value — a revert that reported
 //! success while leaving the text alone fails these tests.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
@@ -432,7 +442,7 @@ fn crop(doc: &AutoCommit) -> (i64, i64) {
     let read = |k: &str| match doc.get(&img, k) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::Int(n) => *n,
-            ScalarValue::Uint(n) => *n as i64,
+            ScalarValue::Uint(n) => i64::try_from(*n).unwrap_or(-1),
             _ => -1,
         },
         _ => -1,

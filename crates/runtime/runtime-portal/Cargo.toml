@@ -2,6 +2,8 @@
 name = "runtime-portal"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 # qOS runtime — portal foundation: env-driven service discovery and a
 # thin wrapper that lifts a connected Unix-socket file descriptor into
@@ -26,7 +28,6 @@ tokio-util.workspace = true
 # workspace's lock file (transitive via shell).
 nix = { version = "0.30", features = ["fs"] }
 thiserror.workspace = true
-futures = { workspace = true, default-features = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }

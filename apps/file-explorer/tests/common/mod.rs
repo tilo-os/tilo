@@ -4,6 +4,15 @@
 //! production input + layout paths rather than a mock.
 
 #![allow(dead_code)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -47,7 +56,7 @@ impl Harness {
         // more than the real 450 ms — at which point a deliberate double-click
         // reads as two singles and the test fails for a reason it is not
         // about. Nothing here asserts on the window itself.
-        ui::gesture::set_multi_click_interval(std::time::Duration::from_mins(1));
+        ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(60));
         // Two frames: the first lets the responsive `nav` learn its width and
         // settle to its docked (wide) mode; the second is the steady-state
         // geometry the user actually interacts with.
@@ -102,12 +111,12 @@ impl Harness {
         self.child = child;
     }
 
-    pub fn dispatch(&mut self, ev: WindowEvent) {
+    pub fn dispatch(&mut self, ev: &WindowEvent) {
         let mut handled = false;
         let mut focus = None;
         let mods = winit::event::Modifiers::default();
         self.w.handle_event(
-            &ev,
+            ev,
             1.0,
             &mods,
             &mut self.state.doc,
@@ -120,20 +129,20 @@ impl Harness {
     }
 
     pub fn move_cursor(&mut self, p: Point) {
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: (p.x, p.y).into(),
         });
     }
     pub fn press(&mut self) {
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
     }
     pub fn release(&mut self) {
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -149,8 +158,9 @@ pub fn row_center(dir: &Path, index: usize) -> Point {
     let content = Harness::new(dir).w.debug_content_rect();
     let x = content.center().x;
     let mut hits: Vec<f64> = Vec::new();
-    let mut y = content.y0 + 2.0;
-    while y < content.y1 {
+    let ys = std::iter::successors(Some(content.y0 + 2.0), |&y| Some(y + 3.0))
+        .take_while(|&y| y < content.y1);
+    for y in ys {
         let mut h = Harness::new(dir);
         h.move_cursor(Point::new(x, y));
         h.press();
@@ -160,7 +170,6 @@ pub fn row_center(dir: &Path, index: usize) -> Point {
         } else if !hits.is_empty() {
             break;
         }
-        y += 3.0;
     }
     assert!(
         !hits.is_empty(),

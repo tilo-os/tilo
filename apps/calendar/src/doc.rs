@@ -37,6 +37,10 @@ const DT_FMT: &str = "%Y-%m-%dT%H:%M";
 pub struct CalDoc;
 
 impl CalDoc {
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     fn map_at(doc: &mut AutoCommit, key: &str) -> ObjId {
         match doc.get(&ROOT, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -160,6 +164,10 @@ impl CalDoc {
         let _ = doc.delete(&tasks, id.to_string().as_str());
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "parent is caller-supplied but always a live Map fetched-or-created just above, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     fn ensure_child(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         match doc.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -169,6 +177,10 @@ impl CalDoc {
         }
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "item is caller-supplied but always a live Map fetched-or-created just above, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     fn ensure_notes_list(doc: &mut AutoCommit, item: &ObjId) -> ObjId {
         match doc.get(item, "notes") {
             Ok(Some((Value::Object(ObjType::List), id))) => id,
@@ -182,9 +194,9 @@ impl CalDoc {
     /// only if the event was never seeded.
     pub fn event_notes(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
         let events = Self::map_at(doc, "events");
-        let m = match doc.get(&events, id.to_string().as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&events, id.to_string().as_str())
+        else {
+            return None;
         };
         Some(Self::ensure_notes_list(doc, &m))
     }
@@ -192,9 +204,9 @@ impl CalDoc {
     /// The `notes` block list for a task, get-or-create.
     pub fn task_notes(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
         let tasks = Self::map_at(doc, "tasks");
-        let m = match doc.get(&tasks, id.to_string().as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&tasks, id.to_string().as_str())
+        else {
+            return None;
         };
         Some(Self::ensure_notes_list(doc, &m))
     }
@@ -202,6 +214,15 @@ impl CalDoc {
     /// Seed an item's notes list with markdown-ish lines if it is still
     /// empty. Each line becomes a `paragraph` block. Lets the demo show
     /// real rich-text notes on first paint without a user typing.
+    ///
+    /// # Panics
+    /// Never in practice: `list` is caller-supplied but always a live List,
+    /// and each block map is inserted by this call itself, so the object
+    /// creation below only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "list is caller-supplied but always a live List, and the block map was just inserted by this call, so these cannot fail short of a corrupted document — there is no meaningful value to fall back to"
+    )]
     pub fn seed_notes_if_empty(doc: &mut AutoCommit, list: &ObjId, lines: &[&str]) {
         if doc.length(list) > 0 {
             return;
@@ -235,6 +256,10 @@ impl CalDoc {
     // `outbox` List of event-id strings, so it persists with the document and
     // a pending push survives a restart.
 
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     fn outbox_list(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "outbox") {
             Ok(Some((Value::Object(ObjType::List), id))) => id,
@@ -282,9 +307,8 @@ impl CalDoc {
 
     /// The event ids currently queued for remote upload, in insertion order.
     pub fn outbox(doc: &AutoCommit) -> Vec<Id> {
-        let list = match doc.get(&ROOT, "outbox") {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "outbox") else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
@@ -308,6 +332,10 @@ impl CalDoc {
     // `"<calendar_id>\t<uid>"` strings, so a pending delete survives a restart
     // and drains through the same live push worker as uploads.
 
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     fn del_outbox_list(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "del_outbox") {
             Ok(Some((Value::Object(ObjType::List), id))) => id,
@@ -358,9 +386,8 @@ impl CalDoc {
 
     /// The queued deletions as `(calendar_id, uid)` pairs, in insertion order.
     pub fn delete_outbox(doc: &AutoCommit) -> Vec<(String, Id)> {
-        let list = match doc.get(&ROOT, "del_outbox") {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "del_outbox") else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {

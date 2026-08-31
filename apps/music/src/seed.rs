@@ -50,8 +50,16 @@ fn track(
 /// Build the full seeded library: catalog + playlists + cache state.
 pub fn sample_library() -> Library {
     let mut lib = Library::default();
+    seed_artists(&mut lib);
+    seed_albums(&mut lib);
+    seed_tracks(&mut lib);
+    seed_playlists(&mut lib);
+    seed_cache(&mut lib);
+    seed_liked_and_saved(&mut lib);
+    lib
+}
 
-    // ---- Artists -------------------------------------------------------
+fn seed_artists(lib: &mut Library) {
     for a in [
         artist("ar_aurora", "Aurora Skies", "Dream Pop", 2_140_553),
         artist("ar_midnight", "Midnight Transit", "Synthwave", 884_201),
@@ -62,8 +70,9 @@ pub fn sample_library() -> Library {
     ] {
         lib.artists.insert(a.id.clone(), a);
     }
+}
 
-    // ---- Albums --------------------------------------------------------
+fn seed_albums(lib: &mut Library) {
     for al in [
         album("al_glasslight", "Glasslight", "ar_aurora", 2023),
         album("al_paperboats", "Paper Boats", "ar_aurora", 2021),
@@ -77,10 +86,24 @@ pub fn sample_library() -> Library {
     ] {
         lib.albums.insert(al.id.clone(), al);
     }
+}
 
-    // ---- Tracks --------------------------------------------------------
-    let tracks = [
-        // Aurora Skies — Glasslight
+fn seed_tracks(lib: &mut Library) {
+    for t in aurora_skies_tracks()
+        .into_iter()
+        .chain(midnight_transit_tracks())
+        .chain(kavi_tracks())
+        .chain(lumen_theory_tracks())
+        .chain(sable_quartet_tracks())
+        .chain(neon_harbor_tracks())
+    {
+        lib.tracks.insert(t.id.clone(), t);
+    }
+}
+
+/// Aurora Skies — Glasslight + Paper Boats.
+fn aurora_skies_tracks() -> Vec<Track> {
+    vec![
         track(
             "tk_g1",
             "Glasslight",
@@ -126,7 +149,6 @@ pub fn sample_library() -> Library {
             263,
             4_110_900,
         ),
-        // Aurora Skies — Paper Boats
         track(
             "tk_p1",
             "Paper Boats",
@@ -154,7 +176,12 @@ pub fn sample_library() -> Library {
             234,
             2_220_005,
         ),
-        // Midnight Transit — After Hours Drive
+    ]
+}
+
+/// Midnight Transit — After Hours Drive + VHS Sunsets.
+fn midnight_transit_tracks() -> Vec<Track> {
+    vec![
         track(
             "tk_a1",
             "Neon Mileage",
@@ -191,7 +218,6 @@ pub fn sample_library() -> Library {
             301,
             4_550_900,
         ),
-        // Midnight Transit — VHS Sunsets
         track(
             "tk_v1",
             "Tracking Error",
@@ -211,7 +237,12 @@ pub fn sample_library() -> Library {
             245,
             1_330_005,
         ),
-        // Kavi & The Tide — Riverstone
+    ]
+}
+
+/// Kavi & The Tide — Riverstone.
+fn kavi_tracks() -> Vec<Track> {
+    vec![
         track(
             "tk_r1",
             "Riverstone",
@@ -248,7 +279,12 @@ pub fn sample_library() -> Library {
             287,
             2_220_900,
         ),
-        // Lumen Theory — Pulsewidth
+    ]
+}
+
+/// Lumen Theory — Pulsewidth + Strata.
+fn lumen_theory_tracks() -> Vec<Track> {
+    vec![
         track(
             "tk_u1",
             "Pulsewidth",
@@ -273,7 +309,6 @@ pub fn sample_library() -> Library {
         track(
             "tk_u4", "Resonant", "al_pulse", "ar_lumen", 4, 256, 2_990_120,
         ),
-        // Lumen Theory — Strata
         track(
             "tk_s1",
             "Bedrock",
@@ -301,7 +336,12 @@ pub fn sample_library() -> Library {
             241,
             2_010_004,
         ),
-        // Sable Quartet — Nocturnes for Strings
+    ]
+}
+
+/// Sable Quartet — Nocturnes for Strings.
+fn sable_quartet_tracks() -> Vec<Track> {
+    vec![
         track(
             "tk_n1",
             "Nocturne I",
@@ -329,7 +369,12 @@ pub fn sample_library() -> Library {
             298,
             990_005,
         ),
-        // Neon Harbor — Harbor Lights
+    ]
+}
+
+/// Neon Harbor — Harbor Lights.
+fn neon_harbor_tracks() -> Vec<Track> {
+    vec![
         track(
             "tk_h1",
             "Harbor Lights",
@@ -366,12 +411,10 @@ pub fn sample_library() -> Library {
             271,
             2_550_900,
         ),
-    ];
-    for t in tracks {
-        lib.tracks.insert(t.id.clone(), t);
-    }
+    ]
+}
 
-    // ---- Playlists -----------------------------------------------------
+fn seed_playlists(lib: &mut Library) {
     lib.playlists = vec![
         Playlist {
             id: "pl_focus".into(),
@@ -414,28 +457,28 @@ pub fn sample_library() -> Library {
             cover: String::new(),
         },
     ];
+}
 
-    // ---- Cache / download state ---------------------------------------
-    // A handful of tracks are marked to keep offline so the Downloads view has
-    // content. (No fabricated in-progress download — a `Downloading` state is
-    // only ever set by a real, advancing fetch.)
+/// A handful of tracks are marked to keep offline so the Downloads view has
+/// content. (No fabricated in-progress download — a `Downloading` state is
+/// only ever set by a real, advancing fetch.)
+fn seed_cache(lib: &mut Library) {
     for id in [
         "tk_g1", "tk_p1", "tk_u1", "tk_a1", "tk_h1", "tk_r1", "tk_n1",
     ] {
         lib.cache.insert(id.into(), CacheState::Cached);
     }
+}
 
-    // ---- Liked songs + saved albums -----------------------------------
-    // A populated "Liked Songs" + a couple saved albums so the screenshots
-    // show the like/heart affordances in their active state.
+/// A populated "Liked Songs" + a couple saved albums so the screenshots show
+/// the like/heart affordances in their active state.
+fn seed_liked_and_saved(lib: &mut Library) {
     for id in ["tk_g1", "tk_p1", "tk_u1", "tk_h1", "tk_r3", "tk_a4"] {
         lib.liked.insert(id.into());
     }
     for id in ["al_glasslight", "al_pulse"] {
         lib.saved_albums.insert(id.into());
     }
-
-    lib
 }
 
 /// Default playback used when seeding a fresh document: **idle**.

@@ -4,6 +4,8 @@ autotests = false
 name = "collab-types"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 [lib]
 name = "collab_types"
 path = "src/lib.rs"

@@ -72,6 +72,11 @@ pub struct CapabilityFile {
 impl CapabilityFile {
     /// Read `path` and bind its capabilities for `identity`. Fail-closed: a
     /// missing, unreadable or malformed file is an error the caller must refuse the mount on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CapsError::Read`] when `path` cannot be opened or stat'd, or
+    /// [`CapsError::Parse`] when its contents are not a JSON array of capabilities.
     pub fn load(
         path: impl Into<PathBuf>,
         identity: IdentityKey,
@@ -112,7 +117,10 @@ impl CapabilityFile {
         let meta = match std::fs::metadata(&self.path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut seen = self.seen.lock().expect("capability stamp poisoned");
+                let mut seen = self
+                    .seen
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if seen.is_none() {
                     // Already observed missing and already denying.
                     return Refresh::Unchanged;
@@ -128,7 +136,10 @@ impl CapabilityFile {
 
         let stamp = Stamp::of(&meta);
         {
-            let seen = self.seen.lock().expect("capability stamp poisoned");
+            let seen = self
+                .seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *seen == Some(stamp) {
                 return Refresh::Unchanged;
             }
@@ -139,7 +150,10 @@ impl CapabilityFile {
                 let n = caps.len();
                 self.handle
                     .replace(build(self.identity, &caps, &self.principals));
-                *self.seen.lock().expect("capability stamp poisoned") = Some(stamp);
+                *self
+                    .seen
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stamp);
                 Refresh::Reloaded(n)
             }
             // Deliberately doesn't update `seen`, so the next tick retries rather than treating a half-written file as current.

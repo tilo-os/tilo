@@ -136,21 +136,21 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
 
     for dir in dirs {
         for (id, path) in entry_files(dir) {
-            stats.files_seen += 1;
+            stats.files_seen = stats.files_seen.saturating_add(1);
             if claimed.contains_key(&id) || tombstoned.contains(&id) {
-                stats.shadowed += 1;
+                stats.shadowed = stats.shadowed.saturating_add(1);
                 continue;
             }
             let Ok(contents) = std::fs::read_to_string(&path) else {
-                stats.unparseable += 1;
+                stats.unparseable = stats.unparseable.saturating_add(1);
                 continue;
             };
             let Some(entry) = parse(&contents, &id, &path, &locales) else {
-                stats.unparseable += 1;
+                stats.unparseable = stats.unparseable.saturating_add(1);
                 continue;
             };
             if entry.hidden {
-                stats.tombstoned += 1;
+                stats.tombstoned = stats.tombstoned.saturating_add(1);
                 tombstoned.push(id);
                 continue;
             }
@@ -161,25 +161,25 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
     let mut entries: Vec<DesktopEntry> = Vec::with_capacity(claimed.len());
     for entry in claimed.into_values() {
         if entry.entry_type != EntryType::Application {
-            stats.not_an_application += 1;
+            stats.not_an_application = stats.not_an_application.saturating_add(1);
             continue;
         }
         if entry.exec.is_none() {
-            stats.no_exec += 1;
+            stats.no_exec = stats.no_exec.saturating_add(1);
             continue;
         }
         if entry.no_display {
-            stats.no_display += 1;
+            stats.no_display = stats.no_display.saturating_add(1);
             continue;
         }
         if !entry.shows_in(desktop) {
-            stats.other_desktop += 1;
+            stats.other_desktop = stats.other_desktop.saturating_add(1);
             continue;
         }
         if let Some(try_exec) = entry.try_exec.as_deref()
             && !program_exists(try_exec)
         {
-            stats.try_exec_missing += 1;
+            stats.try_exec_missing = stats.try_exec_missing.saturating_add(1);
             continue;
         }
         entries.push(entry);
@@ -230,7 +230,7 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>)
             file_type.is_dir()
         };
         if is_dir {
-            walk(root, &path, depth + 1, out);
+            walk(root, &path, depth.saturating_add(1), out);
             continue;
         }
         if path.extension().and_then(OsStr::to_str) != Some("desktop") {

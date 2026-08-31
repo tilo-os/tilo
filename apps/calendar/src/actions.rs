@@ -30,8 +30,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 use crate::doc::CalDoc;
@@ -270,9 +270,15 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`CalendarAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a calendar action into
 /// a replayable envelope.
+///
+/// # Panics
+/// Never panics: falls back to an empty-payload envelope rather than crashing
+/// the caller if `action` somehow fails to serialize.
 pub fn encode(action: &CalendarAction) -> EncodedAction {
-    EncodedAction::encode(CALENDAR_ACTION_TYPE, action)
-        .expect("CalendarAction is always serializable")
+    EncodedAction::encode(CALENDAR_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: CALENDAR_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -376,7 +382,13 @@ fn task_label(data: &TaskData) -> String {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &CalendarAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, CALENDAR_ACTION_TYPE, action).expect("encode calendar action")
+    ActionSpec::immediate(id, label, CALENDAR_ACTION_TYPE, action)
+        // `ActionSpec`'s fields are private now that it carries typed
+        // parameters; build the fallback through the constructor that
+        // takes an already-encoded action.
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
+        })
 }
 
 /// Build the resource tree the calendar currently has open: the calendar itself
@@ -484,14 +496,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

@@ -54,6 +54,12 @@ pub enum CanonicalError {
 /// Every signature in the crate flows through this function. Two
 /// peers running the same crate version will produce identical
 /// bytes for the same input.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError::Serialize`] if `value` cannot be
+/// postcard-encoded (effectively unreachable for the types this
+/// crate defines).
 pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CanonicalError> {
     postcard::to_allocvec(value).map_err(|e| CanonicalError::Serialize(e.to_string()))
 }
@@ -66,6 +72,11 @@ pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CanonicalErro
 /// blob without invalidating the signature (which was computed
 /// over the exact-length preimage). To close that hole we use
 /// `take_from_bytes` and reject any non-empty remainder.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError::Deserialize`] if `bytes` does not decode
+/// as a `T`, or if any bytes remain after decoding one value.
 pub fn from_canonical_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CanonicalError> {
     let (value, rest) =
         postcard::take_from_bytes(bytes).map_err(|e| CanonicalError::Deserialize(e.to_string()))?;
@@ -88,6 +99,12 @@ pub fn from_canonical_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Cano
 /// gives us domain separation: a signature made under
 /// `qos-devcert-v1\0` cannot be reinterpreted as a signature made
 /// under any other tag.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError::Serialize`] if `view` cannot be
+/// postcard-encoded (effectively unreachable for the types this
+/// crate defines).
 pub fn signing_digest<T: Serialize>(
     domain_tag: &[u8],
     view: &T,

@@ -27,7 +27,7 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{Button, FlapState, SplitLayout, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -41,7 +41,6 @@ use crate::gallery::Gallery;
 use crate::model::{FONTS, ThemeSpec, TokenId, default_catalog, demo_catalog};
 use crate::preview::PreviewPane;
 use crate::store;
-use crate::widgets::{Btn, BtnVariant};
 
 const TOPBAR_H: f32 = 56.0;
 const GALLERY_W: f32 = 272.0;
@@ -63,9 +62,26 @@ const BREAKPOINT: f64 = 840.0;
 /// Lives at the left of the top bar; only shown when the gallery is collapsed.
 const TOGGLE_SIZE: f64 = 34.0;
 
+/// Panic-free node construction for [`Widget::build_layout`].
+/// `TaffyTree::new_with_children` is typed `-> TaffyResult<NodeId>` for API
+/// generality, but only fails for a child `NodeId` belonging to a
+/// *different* tree — never the case here, since every child passed in was
+/// just built in this same `taffy` tree by the call immediately above each
+/// call site. `Widget::build_layout` returns a bare `NodeId` (not a
+/// `Result`) across every implementor, so surfacing a theoretical error here
+/// would mean threading a `Result` through the whole toolkit for a branch
+/// that can't be taken.
+#[allow(
+    clippy::unwrap_used,
+    reason = "new_with_children cannot fail for children built in this same tree; see doc comment"
+)]
+fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
+    taffy.new_with_children(style, children).unwrap()
+}
+
 pub struct ThemesApp {
     catalog: Vec<ThemeSpec>,
-    topbar_buttons: Vec<Btn>,
+    topbar_buttons: Vec<Button>,
     gallery: Gallery,
     preview: PreviewPane,
     customizer: Customizer,
@@ -118,17 +134,26 @@ pub struct ThemesApp {
     /// top bar), in the narrow layout.
     content_rect: Rect,
 
-    // --- `--shots` scenario seeds (headless single-frame capture) ---
+    /// `--shots` / demo-walkthrough scenario seeds, grouped so the struct
+    /// doesn't collect a pile of same-shaped bools that are only ever
+    /// meaningful together (see [`ShotSeed`]).
+    shot: ShotSeed,
+}
+
+/// `--shots` scenario seeds (headless single-frame capture) and the
+/// demo-walkthrough catalog switch. Never touched on the live path.
+#[derive(Default)]
+struct ShotSeed {
     /// Force a selection (e.g. a preset with a distinctive font) for a shot.
-    shot_select: Option<String>,
+    select: Option<String>,
     /// Open the sidebar actions menu on the selected row for a shot.
-    shot_menu: bool,
+    menu: bool,
     /// Scroll the narrow stack partway so the shot proves it scrolls.
-    shot_scroll: bool,
+    scroll: bool,
     /// When set, first-run seeding uses the demo catalog (presets + one
     /// editable custom theme) instead of the live presets-only default — for
     /// `--shots` and "try it" walkthroughs, never the live path.
-    seed_demo: bool,
+    demo: bool,
 }
 
 impl Default for ThemesApp {
@@ -142,9 +167,16 @@ impl ThemesApp {
         Self {
             catalog: default_catalog(),
             topbar_buttons: vec![
-                Btn::new("new", "New", BtnVariant::Ghost),
-                Btn::new("export", "Export JSON", BtnVariant::Ghost),
-                Btn::new("apply", "Apply theme", BtnVariant::Primary),
+                Button::new("themes.new", "New", Some(doc::KEY_COMMAND))
+                    .with_click_value("new")
+                    .fit_content(34.0),
+                Button::new("themes.export", "Export JSON", Some(doc::KEY_COMMAND))
+                    .with_click_value("export")
+                    .fit_content(34.0),
+                Button::new("themes.apply", "Apply theme", Some(doc::KEY_COMMAND))
+                    .with_click_value("apply")
+                    .fit_content(34.0)
+                    .primary(),
             ],
             gallery: Gallery::new(),
             preview: PreviewPane::new(),
@@ -175,10 +207,7 @@ impl ThemesApp {
             scroll_content_h: 0.0,
             scroll_viewport_h: 0.0,
             content_rect: Rect::ZERO,
-            shot_select: None,
-            shot_menu: false,
-            shot_scroll: false,
-            seed_demo: false,
+            shot: ShotSeed::default(),
         }
     }
 
@@ -188,7 +217,7 @@ impl ThemesApp {
     /// first-run path.
     pub fn new_demo() -> Self {
         let mut app = Self::new();
-        app.seed_demo = true;
+        app.shot.demo = true;
         app.catalog = demo_catalog();
         app
     }
@@ -215,7 +244,7 @@ impl ThemesApp {
     /// * `"menu"`  — open the sidebar actions menu on the selected custom row.
     /// * `"scroll"`— narrow, flap closed, scrolled partway to prove the stack scrolls.
     /// * `"font"`  — select a preset with a distinctive (monospace) font so the
-    ///               preview specimen visibly renders in it.
+    ///   preview specimen visibly renders in it.
     pub fn seed_shot(&mut self, width: f64, scenario: &str) {
         self.build_width = width;
         let layout = SplitLayout::from_width(width, BREAKPOINT);
@@ -223,16 +252,16 @@ impl ThemesApp {
         match scenario {
             "scroll" => {
                 self.gallery_flap.snap(false);
-                self.shot_scroll = true;
+                self.shot.scroll = true;
             }
             "menu" => {
                 self.gallery_flap.snap(true);
-                self.shot_menu = true;
-                self.shot_select = Some("sunset".to_string());
+                self.shot.menu = true;
+                self.shot.select = Some("sunset".to_string());
             }
             "font" => {
                 self.gallery_flap.snap(true);
-                self.shot_select = Some("dracula".to_string());
+                self.shot.select = Some("dracula".to_string());
             }
             _ => self.gallery_flap.snap(true),
         }
@@ -357,9 +386,9 @@ impl ThemesApp {
     /// document heads captured just before the first action of the batch are
     /// stashed so the host records **one** undo boundary bracketing it
     /// ([`Widget::take_committed_action`]); Ctrl+Z then reverts it.
-    fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::ThemesAction) {
+    fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::ThemesAction) {
         self.actions
-            .dispatch(state, crate::actions::THEMES_ACTION_TYPE, &action);
+            .dispatch(state, crate::actions::THEMES_ACTION_TYPE, action);
     }
 
     /// Route one command-bus signal. Presentation-only commands (selection, the
@@ -426,7 +455,7 @@ impl ThemesApp {
         let id = Self::new_id();
         let order = crate::actions::max_order(&catalog) + 1;
         let spec = crate::actions::new_theme_spec(&id, "New theme", order);
-        self.perform_action(state, crate::actions::upsert_custom_theme_action(&spec));
+        self.perform_action(state, &crate::actions::upsert_custom_theme_action(&spec));
         doc::put_str(state, path, doc::KEY_SELECTED, &id);
         self.status = "Created a new theme".to_string();
         self.structure_dirty = true;
@@ -440,7 +469,7 @@ impl ThemesApp {
             let new_id = Self::new_id();
             let order = crate::actions::max_order(&catalog) + 1;
             let spec = crate::actions::duplicate_spec(&src, &new_id, order);
-            self.perform_action(state, crate::actions::upsert_custom_theme_action(&spec));
+            self.perform_action(state, &crate::actions::upsert_custom_theme_action(&spec));
             doc::put_str(state, path, doc::KEY_SELECTED, &new_id);
             self.status = format!("Duplicated “{}”", src.name);
             self.structure_dirty = true;
@@ -455,27 +484,31 @@ impl ThemesApp {
     /// safe no-op).
     fn delete_theme(&mut self, id: &str, state: &mut AutoCommit, path: &ObjId) {
         let catalog = doc::load_catalog(state, path).unwrap_or_default();
-        if let Some(idx) = catalog.iter().position(|s| s.id == id)
-            && !catalog[idx].builtin
-            && catalog.len() > 1
-        {
-            let name = catalog[idx].name.clone();
-            self.perform_action(state, crate::actions::delete_custom_theme_action(id));
-            // Move the selection onto a surviving theme: the row that slides
-            // into `idx`, or the new last row when `idx` was the tail.
-            let survivors: Vec<String> = catalog
-                .iter()
-                .filter(|s| s.id != id)
-                .map(|s| s.id.clone())
-                .collect();
-            let next = survivors
-                .get(idx.min(survivors.len().saturating_sub(1)))
-                .cloned()
-                .unwrap_or_default();
-            doc::put_str(state, path, doc::KEY_SELECTED, &next);
-            self.status = format!("Deleted “{name}”");
-            self.structure_dirty = true;
+        let Some(idx) = catalog.iter().position(|s| s.id == id) else {
+            return;
+        };
+        let Some(entry) = catalog.get(idx) else {
+            return;
+        };
+        if entry.builtin || catalog.len() <= 1 {
+            return;
         }
+        let name = entry.name.clone();
+        self.perform_action(state, &crate::actions::delete_custom_theme_action(id));
+        // Move the selection onto a surviving theme: the row that slides
+        // into `idx`, or the new last row when `idx` was the tail.
+        let survivors: Vec<String> = catalog
+            .iter()
+            .filter(|s| s.id != id)
+            .map(|s| s.id.clone())
+            .collect();
+        let next = survivors
+            .get(idx.min(survivors.len().saturating_sub(1)))
+            .cloned()
+            .unwrap_or_default();
+        doc::put_str(state, path, doc::KEY_SELECTED, &next);
+        self.status = format!("Deleted “{name}”");
+        self.structure_dirty = true;
     }
 
     /// The last action an affordance dispatched through [`Self::perform_action`],
@@ -497,7 +530,7 @@ impl ThemesApp {
         if let Some(src) = catalog.iter().find(|s| s.id == id).cloned() {
             match store::save(&src) {
                 Ok(_) => {
-                    self.perform_action(state, crate::actions::set_active_theme_action(&src.id));
+                    self.perform_action(state, &crate::actions::set_active_theme_action(&src.id));
                     self.status = format!("Applied “{}” as the system theme", src.name);
                 }
                 Err(e) => self.status = format!("Couldn't apply theme: {e}"),
@@ -511,81 +544,61 @@ impl ThemesApp {
         let catalog = doc::load_catalog(state, &automerge::ROOT).unwrap_or_default();
         if let Some(current) = catalog.iter().find(|s| s.id == id && !s.builtin).cloned() {
             let spec = crate::actions::reset_spec(&current);
-            self.perform_action(state, crate::actions::upsert_custom_theme_action(&spec));
+            self.perform_action(state, &crate::actions::upsert_custom_theme_action(&spec));
             self.status = "Reset to defaults".to_string();
             // Force a control reload next frame.
             self.bound_key = None;
         }
     }
-}
 
-impl Widget for ThemesApp {
-    /// Publish the open theme library + its themes so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    /// Step 1 of [`Widget::sync`]: seed the document on first run. Live seeds
+    /// the presets-only default (the OS's shipped themes, never a
+    /// fabricated "your theme"); a demo/`--shots` app seeds the demo catalog
+    /// with its editable custom theme. The demo focuses its editable custom
+    /// theme (so a capture shows real editing); the live install focuses the
+    /// first preset.
+    fn seed_document_if_needed(&self, state: &mut AutoCommit, path: &ObjId) {
+        if doc::load_catalog(state, path).is_some() {
+            return;
+        }
+        let cat = if self.shot.demo {
+            demo_catalog()
+        } else {
+            default_catalog()
+        };
+        doc::save_catalog(state, path, &cat);
+        let sel = if self.shot.demo {
+            cat.last().map(|s| s.id.clone()).unwrap_or_default()
+        } else {
+            cat.first().map(|s| s.id.clone()).unwrap_or_default()
+        };
+        doc::put_str(state, path, doc::KEY_SELECTED, &sel);
+        doc::put_str(state, path, doc::KEY_EDIT_TOKEN, "accent");
+        if let Some(s) = cat.iter().find(|s| s.id == sel) {
+            doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(s.radius_norm));
+            doc::put_f64(state, path, doc::KEY_ED_SPACING, f64::from(s.spacing_norm));
+            doc::put_str(state, path, doc::KEY_ED_FONT, &s.font);
+            doc::put_str(state, path, doc::KEY_ED_NAME, &s.name);
+        }
+        // The applied OS theme: adopt whatever is already persisted in the
+        // shared store, else default to the seeded selection.
+        let active = store::load_active_id().unwrap_or_else(|| sel.clone());
+        doc::put_str(state, path, doc::KEY_ACTIVE, &active);
+        doc::put_str(state, path, doc::KEY_COMMAND, "");
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its Themes action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // 1. Seed the document on first run. Live seeds the presets-only
-        // default (the OS's shipped themes, never a fabricated "your theme"); a
-        // demo/`--shots` app seeds the demo catalog with its editable custom
-        // theme. The demo focuses its editable custom theme (so a capture shows
-        // real editing); the live install focuses the first preset.
-        if doc::load_catalog(state, path).is_none() {
-            let cat = if self.seed_demo {
-                demo_catalog()
-            } else {
-                default_catalog()
-            };
-            doc::save_catalog(state, path, &cat);
-            let sel = if self.seed_demo {
-                cat.last().map(|s| s.id.clone()).unwrap_or_default()
-            } else {
-                cat.first().map(|s| s.id.clone()).unwrap_or_default()
-            };
-            doc::put_str(state, path, doc::KEY_SELECTED, &sel);
-            doc::put_str(state, path, doc::KEY_EDIT_TOKEN, "accent");
-            if let Some(s) = cat.iter().find(|s| s.id == sel) {
-                doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(s.radius_norm));
-                doc::put_f64(state, path, doc::KEY_ED_SPACING, f64::from(s.spacing_norm));
-                doc::put_str(state, path, doc::KEY_ED_FONT, &s.font);
-                doc::put_str(state, path, doc::KEY_ED_NAME, &s.name);
-            }
-            // The applied OS theme: adopt whatever is already persisted in the
-            // shared store, else default to the seeded selection.
-            let active = store::load_active_id().unwrap_or_else(|| sel.clone());
-            doc::put_str(state, path, doc::KEY_ACTIVE, &active);
-            doc::put_str(state, path, doc::KEY_COMMAND, "");
-        }
-
-        // `--shots` scenario: force a specific selection for the capture.
-        if let Some(id) = self.shot_select.take() {
-            doc::put_str(state, path, doc::KEY_SELECTED, &id);
-        }
-
-        // 2. Drain and dispatch any pending command. A mutating command
-        // dispatches its ThemesAction straight into the document (via the
-        // executor), so the catalog is loaded *after* it, below, to observe the
-        // change.
-        let cmd = doc::take_command(state, path);
-        if !cmd.is_empty() {
-            self.process_command(&cmd, state, path);
-        }
-
-        // 3. Load the persisted catalog (now reflecting any dispatched action).
+    /// Steps 3-5 of [`Widget::sync`]: load the persisted catalog, resolve the
+    /// selection + edit token, and two-way reconcile the editor controls
+    /// against the selected theme. Returns `None` only if the catalog is
+    /// unexpectedly empty, so the caller can skip the frame instead of
+    /// indexing into it.
+    fn reconcile_catalog(
+        &mut self,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Option<(Vec<ThemeSpec>, usize, String, TokenId, bool)> {
         let mut catalog = doc::load_catalog(state, path).unwrap_or_else(default_catalog);
 
-        // 4. Resolve selection + edit token.
         let mut selected = doc::get_str(state, path, doc::KEY_SELECTED).unwrap_or_default();
         if !catalog.iter().any(|s| s.id == selected) {
             selected = catalog.first().map(|s| s.id.clone()).unwrap_or_default();
@@ -595,14 +608,14 @@ impl Widget for ThemesApp {
             .and_then(|k| TokenId::from_key(&k))
             .unwrap_or(TokenId::Accent);
         let idx = catalog.iter().position(|s| s.id == selected).unwrap_or(0);
-        let editable = !catalog[idx].builtin;
+        let editable = !catalog.get(idx)?.builtin;
 
-        // 5. Two-way reconcile the editor controls.
+        // Two-way reconcile the editor controls.
         let bound_key = (selected.clone(), edit_token);
         let changed = self.bound_key.as_ref() != Some(&bound_key);
         if changed {
             // LOAD: spec → controls; rebuild the colour picker.
-            let spec = catalog[idx].clone();
+            let spec = catalog.get(idx)?.clone();
             doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(spec.radius_norm));
             doc::put_f64(
                 state,
@@ -617,29 +630,29 @@ impl Widget for ThemesApp {
         } else if editable {
             // SAVE: controls → spec.
             if let Some(r) = doc::get_f64(state, path, doc::KEY_ED_RADIUS) {
-                catalog[idx].radius_norm = (r as f32).clamp(0.0, 1.0);
+                catalog.get_mut(idx)?.radius_norm = (r as f32).clamp(0.0, 1.0);
             }
             if let Some(s) = doc::get_f64(state, path, doc::KEY_ED_SPACING) {
-                catalog[idx].spacing_norm = (s as f32).clamp(0.0, 1.0);
+                catalog.get_mut(idx)?.spacing_norm = (s as f32).clamp(0.0, 1.0);
             }
             if let Some(f) = doc::get_str(state, path, doc::KEY_ED_FONT)
                 && FONTS.contains(&f.as_str())
             {
-                catalog[idx].font = f;
+                catalog.get_mut(idx)?.font = f;
             }
             // Inline sidebar rename: a non-empty edited name replaces the
             // theme's name (empty is ignored so a mid-edit clear can't wipe it).
             if let Some(n) = doc::get_str(state, path, doc::KEY_ED_NAME) {
                 let n = n.trim();
                 if !n.is_empty() {
-                    catalog[idx].name = n.to_string();
+                    catalog.get_mut(idx)?.name = n.to_string();
                 }
             }
             let pc = self.customizer.picker_color();
-            catalog[idx].set_token(edit_token, pc);
+            catalog.get_mut(idx)?.set_token(edit_token, pc);
         } else {
             // Built-in preset: pin the controls to the read-only values.
-            let spec = catalog[idx].clone();
+            let spec = catalog.get(idx)?.clone();
             doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(spec.radius_norm));
             doc::put_f64(
                 state,
@@ -651,19 +664,32 @@ impl Widget for ThemesApp {
             doc::put_str(state, path, doc::KEY_ED_NAME, &spec.name);
         }
 
-        // 6. Persist + cache.
-        doc::save_catalog(state, path, &catalog);
-        self.catalog = catalog;
+        Some((catalog, idx, selected, edit_token, editable))
+    }
 
-        // 7. Push view state into the panels.
-        let sel_spec = self.catalog[idx].clone();
+    /// Steps 7-8 of [`Widget::sync`]: push the resolved selection into the
+    /// panels and forward `sync` to the embedded controls that read their own
+    /// scratch fields from the document. No-op if `idx` no longer indexes
+    /// `self.catalog` (defensive; catalog was just written from the same
+    /// vector this index was resolved against).
+    fn push_view_state(
+        &mut self,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        idx: usize,
+        selected: &str,
+        edit_token: TokenId,
+        editable: bool,
+    ) {
+        let Some(sel_spec) = self.catalog.get(idx).cloned() else {
+            return;
+        };
         let active_id = doc::get_str(state, path, doc::KEY_ACTIVE).unwrap_or_default();
         self.gallery
-            .set_view(&self.catalog, &selected, &active_id, editable);
+            .set_view(&self.catalog, selected, &active_id, editable);
         self.preview.set_spec(&sel_spec);
         self.customizer.set_view(sel_spec, edit_token, editable);
 
-        // 8. Forward sync so embedded controls read their scratch fields.
         self.customizer.sync(state, path);
         self.gallery.sync(state, path);
         for b in &mut self.topbar_buttons {
@@ -671,65 +697,72 @@ impl Widget for ThemesApp {
         }
     }
 
-    fn build_layout(
+    /// Lay out the top bar's right-aligned action button row (part of
+    /// [`Widget::build_layout`]). Records `topbar_actions_node` /
+    /// `topbar_node` and returns the top bar's node.
+    fn build_topbar_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Top bar actions (right-aligned row of buttons).
         let btn_nodes: Vec<NodeId> = self
             .topbar_buttons
             .iter_mut()
             .map(|b| b.build_layout(taffy, theme, node_map))
             .collect();
-        let actions = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    align_items: Some(taffy::AlignItems::Center),
-                    gap: Size {
-                        width: length(8.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
+        let actions = parent_node(
+            taffy,
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Row,
+                align_items: Some(taffy::AlignItems::Center),
+                gap: Size {
+                    width: length(8.0_f32),
+                    height: length(0.0_f32),
                 },
-                &btn_nodes,
-            )
-            .unwrap();
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            &btn_nodes,
+        );
         self.topbar_actions_node = Some(actions);
-        let topbar = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    justify_content: Some(taffy::JustifyContent::FlexEnd),
-                    align_items: Some(taffy::AlignItems::Center),
-                    padding: taffy::Rect {
-                        left: length(18.0_f32),
-                        right: length(18.0_f32),
-                        top: length(0.0_f32),
-                        bottom: length(0.0_f32),
-                    },
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(TOPBAR_H),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
+        let topbar = parent_node(
+            taffy,
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Row,
+                justify_content: Some(taffy::JustifyContent::FlexEnd),
+                align_items: Some(taffy::AlignItems::Center),
+                padding: taffy::Rect {
+                    left: length(18.0_f32),
+                    right: length(18.0_f32),
+                    top: length(0.0_f32),
+                    bottom: length(0.0_f32),
                 },
-                &[actions],
-            )
-            .unwrap();
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(TOPBAR_H),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            &[actions],
+        );
         self.topbar_node = Some(topbar);
+        topbar
+    }
 
-        // Panes. The gallery is the primary sidebar: docked in the content row
-        // on a wide window, or pulled out into a fixed-width overlay subtree on
-        // a narrow one so the preview + customizer can take the full width.
-        let overlay = SplitLayout::from_width(self.build_width, BREAKPOINT) == SplitLayout::Overlay;
-
+    /// Lay out the gallery / preview / customizer panes and size each for
+    /// the current layout class (part of [`Widget::build_layout`]). Records
+    /// the three `*_node` fields and returns their nodes.
+    fn build_panes_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        overlay: bool,
+    ) -> (NodeId, NodeId, NodeId) {
         let gallery = self.gallery.build_layout(taffy, theme, node_map);
         let _ = taffy.set_style(
             gallery,
@@ -792,54 +825,72 @@ impl Widget for ThemesApp {
         let _ = taffy.set_style(customizer, cust_style);
         self.customizer_node = Some(customizer);
 
-        // Docked: [gallery | preview | customizer] in a row. Collapsed
-        // (overlay): [preview / customizer] stacked in a column that the app
-        // scrolls vertically, with the gallery pulled out as an overlay flap.
-        let content = if overlay {
-            taffy
-                .new_with_children(
-                    Style {
-                        display: taffy::Display::Flex,
-                        flex_direction: taffy::FlexDirection::Column,
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::auto(),
-                        },
-                        flex_grow: 1.0,
-                        flex_basis: length(0.0_f32),
-                        overflow: taffy::Point {
-                            x: taffy::Overflow::Hidden,
-                            y: taffy::Overflow::Hidden,
-                        },
-                        ..Default::default()
-                    },
-                    &[preview, customizer],
-                )
-                .unwrap()
-        } else {
-            taffy
-                .new_with_children(
-                    Style {
-                        display: taffy::Display::Flex,
-                        flex_direction: taffy::FlexDirection::Row,
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::auto(),
-                        },
-                        flex_grow: 1.0,
-                        flex_basis: length(0.0_f32),
-                        ..Default::default()
-                    },
-                    &[gallery, preview, customizer],
-                )
-                .unwrap()
-        };
-        self.content_node = Some(content);
+        (gallery, preview, customizer)
+    }
 
+    /// Assemble the content row (part of [`Widget::build_layout`]). Docked
+    /// is `[gallery | preview | customizer]` in a row; collapsed (overlay) is
+    /// `[preview / customizer]` stacked in a column the app scrolls
+    /// vertically, with the gallery pulled out as an overlay flap.
+    fn build_content_layout(
+        taffy: &mut TaffyTree<()>,
+        overlay: bool,
+        gallery: NodeId,
+        preview: NodeId,
+        customizer: NodeId,
+    ) -> NodeId {
+        if overlay {
+            parent_node(
+                taffy,
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: length(0.0_f32),
+                    overflow: taffy::Point {
+                        x: taffy::Overflow::Hidden,
+                        y: taffy::Overflow::Hidden,
+                    },
+                    ..Default::default()
+                },
+                &[preview, customizer],
+            )
+        } else {
+            parent_node(
+                taffy,
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Row,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: length(0.0_f32),
+                    ..Default::default()
+                },
+                &[gallery, preview, customizer],
+            )
+        }
+    }
+
+    /// Assemble the root (part of [`Widget::build_layout`]): the top bar over
+    /// the content row, with the overlay gallery pulled out as a root
+    /// sibling (fixed-width, absolutely positioned) so it isn't constrained
+    /// by the content row — [`Self::apply_gallery_overlay`] slides it on/off
+    /// the left edge.
+    fn build_root_layout(
+        taffy: &mut TaffyTree<()>,
+        overlay: bool,
+        topbar: NodeId,
+        content: NodeId,
+        gallery: NodeId,
+    ) -> NodeId {
         let root_children: Vec<NodeId> = if overlay {
-            // The overlay gallery is a root sibling so it isn't constrained by
-            // the content row; it's a fixed-width full-height strip that
-            // `apply_layout` slides on/off the left edge.
             let _ = taffy.set_style(
                 gallery,
                 Style {
@@ -856,38 +907,27 @@ impl Widget for ThemesApp {
         } else {
             vec![topbar, content]
         };
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
+        parent_node(
+            taffy,
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
                 },
-                &root_children,
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+                ..Default::default()
+            },
+            &root_children,
+        )
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        let o = Point::new(self.rect.x0, self.rect.y0);
-
-        // Resolve this frame's layout class and reconcile the flap. A
-        // breakpoint crossing drops a stale user toggle (back to the natural
-        // default) and rebuilds the taffy tree next frame so the gallery moves
-        // between the docked column and the overlay subtree.
+    /// Resolve this frame's layout class and reconcile the flap (part of
+    /// [`Widget::apply_layout`]). A breakpoint crossing drops a stale user
+    /// toggle (back to the natural default) and rebuilds the taffy tree next
+    /// frame so the gallery moves between the docked column and the overlay
+    /// subtree.
+    fn reconcile_layout_class(&mut self) -> SplitLayout {
         let layout = self.layout_class();
         self.gallery_flap.reconcile(layout);
         let new_build_width = self.rect.width();
@@ -900,100 +940,395 @@ impl Widget for ThemesApp {
             self.build_width = new_build_width;
         }
         self.last_layout = Some(layout);
+        layout
+    }
 
-        if let (Some(tb), Some(actions)) = (self.topbar_node, self.topbar_actions_node) {
-            let tbl = taffy.layout(tb).unwrap();
-            let tb_o = Point::new(
-                o.x + f64::from(tbl.location.x),
-                o.y + f64::from(tbl.location.y),
-            );
-            let al = taffy.layout(actions).unwrap();
-            let a_o = Point::new(
-                tb_o.x + f64::from(al.location.x),
-                tb_o.y + f64::from(al.location.y),
-            );
-            if let Ok(children) = taffy.children(actions) {
-                for (b, c) in self.topbar_buttons.iter_mut().zip(children.iter()) {
-                    b.apply_layout(taffy, *c, a_o);
-                }
+    /// Place the top bar's action buttons (part of [`Widget::apply_layout`]).
+    fn apply_topbar_layout(&mut self, taffy: &TaffyTree<()>, origin: Point) {
+        let Some(tb) = self.topbar_node else { return };
+        let Some(actions) = self.topbar_actions_node else {
+            return;
+        };
+        let Ok(tbl) = taffy.layout(tb) else { return };
+        let tb_o = Point::new(
+            origin.x + f64::from(tbl.location.x),
+            origin.y + f64::from(tbl.location.y),
+        );
+        let Ok(al) = taffy.layout(actions) else {
+            return;
+        };
+        let a_o = Point::new(
+            tb_o.x + f64::from(al.location.x),
+            tb_o.y + f64::from(al.location.y),
+        );
+        if let Ok(children) = taffy.children(actions) {
+            for (b, c) in self.topbar_buttons.iter_mut().zip(children.iter()) {
+                b.apply_layout(taffy, *c, a_o);
             }
         }
+    }
 
-        if let Some(content) = self.content_node {
-            let cl = taffy.layout(content).unwrap();
-            let c_o = Point::new(
-                o.x + f64::from(cl.location.x),
-                o.y + f64::from(cl.location.y),
-            );
-            if layout == SplitLayout::Overlay {
-                // Collapsed: preview stacked above customizer, both offset up
-                // by the scroll so the taller-than-viewport content is fully
-                // reachable. `content_rect` is the clip/viewport the wheel and
-                // scrollbar work against.
-                let vp = Rect::new(
-                    c_o.x,
-                    c_o.y,
-                    c_o.x + f64::from(cl.size.width),
-                    c_o.y + f64::from(cl.size.height),
-                );
-                self.content_rect = vp;
-                self.scroll_viewport_h = vp.height();
-                let ph = self
-                    .preview_node
-                    .map_or(0.0, |n| f64::from(taffy.layout(n).unwrap().size.height));
-                let ch = self
-                    .customizer_node
-                    .map_or(0.0, |n| f64::from(taffy.layout(n).unwrap().size.height));
-                self.scroll_content_h = ph + ch;
-                if self.shot_scroll {
-                    self.scroll = 260.0;
-                }
-                let max_scroll = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
-                self.scroll = self.scroll.clamp(0.0, max_scroll);
-                let scrolled = Point::new(c_o.x, c_o.y - self.scroll);
-                if let Some(n) = self.preview_node {
-                    self.preview.apply_layout(taffy, n, scrolled);
-                }
-                if let Some(n) = self.customizer_node {
-                    self.customizer.apply_layout(taffy, n, scrolled);
-                }
-            } else {
-                if let Some(n) = self.gallery_node {
-                    self.gallery.apply_layout(taffy, n, c_o);
-                }
-                if let Some(n) = self.preview_node {
-                    self.preview.apply_layout(taffy, n, c_o);
-                }
-                if let Some(n) = self.customizer_node {
-                    self.customizer.apply_layout(taffy, n, c_o);
-                }
-            }
-        }
-
-        // Overlay: place the gallery flap sliding in from the left edge by the
-        // eased reveal (fully off-screen at reveal 0). Its origin is below the
-        // top bar so the hamburger stays reachable.
+    /// Place the preview + customizer (and, when docked, the gallery) inside
+    /// the content row (part of [`Widget::apply_layout`]).
+    fn apply_content_layout(&mut self, taffy: &TaffyTree<()>, origin: Point, layout: SplitLayout) {
+        let Some(content) = self.content_node else {
+            return;
+        };
+        let Ok(cl) = taffy.layout(content) else {
+            return;
+        };
+        let c_o = Point::new(
+            origin.x + f64::from(cl.location.x),
+            origin.y + f64::from(cl.location.y),
+        );
         if layout == SplitLayout::Overlay {
-            let slide = self.gallery_flap.slide();
-            let gw = f64::from(GALLERY_W);
-            let x0 = self.rect.x0 - gw * (1.0 - slide);
-            let y0 = self.rect.y0 + f64::from(TOPBAR_H);
-            self.gallery_overlay_rect = Rect::new(x0, y0, x0 + gw, self.rect.y1);
-            if let Some(n) = self.gallery_node {
-                self.gallery.apply_layout(
-                    taffy,
-                    n,
-                    Point::new(self.gallery_overlay_rect.x0, self.gallery_overlay_rect.y0),
-                );
-            }
+            self.apply_narrow_stack_layout(taffy, c_o, cl.size.width, cl.size.height);
         } else {
-            self.gallery_overlay_rect = Rect::ZERO;
+            if let Some(n) = self.gallery_node {
+                self.gallery.apply_layout(taffy, n, c_o);
+            }
+            if let Some(n) = self.preview_node {
+                self.preview.apply_layout(taffy, n, c_o);
+            }
+            if let Some(n) = self.customizer_node {
+                self.customizer.apply_layout(taffy, n, c_o);
+            }
         }
+    }
+
+    /// Collapsed (overlay) layout: preview stacked above customizer, both
+    /// offset up by the scroll so taller-than-viewport content is fully
+    /// reachable (part of [`Widget::apply_layout`], via
+    /// [`Self::apply_content_layout`]). `content_rect` is the clip/viewport
+    /// the wheel and scrollbar work against.
+    fn apply_narrow_stack_layout(
+        &mut self,
+        taffy: &TaffyTree<()>,
+        c_o: Point,
+        width: f32,
+        height: f32,
+    ) {
+        let vp = Rect::new(
+            c_o.x,
+            c_o.y,
+            c_o.x + f64::from(width),
+            c_o.y + f64::from(height),
+        );
+        self.content_rect = vp;
+        self.scroll_viewport_h = vp.height();
+        let ph = self
+            .preview_node
+            .and_then(|n| taffy.layout(n).ok())
+            .map_or(0.0, |l| f64::from(l.size.height));
+        let ch = self
+            .customizer_node
+            .and_then(|n| taffy.layout(n).ok())
+            .map_or(0.0, |l| f64::from(l.size.height));
+        self.scroll_content_h = ph + ch;
+        if self.shot.scroll {
+            self.scroll = 260.0;
+        }
+        let max_scroll = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, max_scroll);
+        let scrolled = Point::new(c_o.x, c_o.y - self.scroll);
+        if let Some(n) = self.preview_node {
+            self.preview.apply_layout(taffy, n, scrolled);
+        }
+        if let Some(n) = self.customizer_node {
+            self.customizer.apply_layout(taffy, n, scrolled);
+        }
+    }
+
+    /// Slide the overlay gallery flap in from the left edge by the eased
+    /// reveal (part of [`Widget::apply_layout`]; fully off-screen at reveal
+    /// 0). Its origin sits below the top bar so the hamburger stays
+    /// reachable.
+    fn apply_gallery_overlay(&mut self, taffy: &TaffyTree<()>, layout: SplitLayout) {
+        if layout != SplitLayout::Overlay {
+            self.gallery_overlay_rect = Rect::ZERO;
+            return;
+        }
+        let slide = self.gallery_flap.slide();
+        let gw = f64::from(GALLERY_W);
+        let x0 = self.rect.x0 - gw * (1.0 - slide);
+        let y0 = self.rect.y0 + f64::from(TOPBAR_H);
+        self.gallery_overlay_rect = Rect::new(x0, y0, x0 + gw, self.rect.y1);
+        if let Some(n) = self.gallery_node {
+            self.gallery.apply_layout(
+                taffy,
+                n,
+                Point::new(self.gallery_overlay_rect.x0, self.gallery_overlay_rect.y0),
+            );
+        }
+    }
+
+    /// Overlay-only global shortcuts checked before any child widget sees
+    /// the event (part of [`Widget::handle_event`]): the wheel scrolls the
+    /// collapsed stack, Esc dismisses the open flap, and the hamburger
+    /// toggle / scrim tap summons or dismisses it. Returns `true` if the
+    /// event was consumed (the caller should stop dispatching).
+    fn handle_overlay_shortcuts(
+        &mut self,
+        event: &WindowEvent,
+        overlay: bool,
+        gallery_open: bool,
+        handled: &mut bool,
+    ) -> bool {
+        // Collapsed layout: the wheel scrolls the preview+customizer stack
+        // (unless the overlay gallery is open, which owns input while up).
+        if overlay
+            && !gallery_open
+            && let WindowEvent::MouseWheel { delta, .. } = event
+        {
+            let dy = match delta {
+                MouseScrollDelta::LineDelta(_, y) => -*y * 60.0,
+                MouseScrollDelta::PixelDelta(pp) => -pp.y as f32,
+            };
+            let max = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
+            self.scroll = (self.scroll + f64::from(dy)).clamp(0.0, max);
+            *handled = true;
+            return true;
+        }
+
+        // Esc dismisses an open overlay gallery before anything else sees it.
+        if overlay
+            && gallery_open
+            && let WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } = event
+            && key_event.state == ElementState::Pressed
+            && key_event.logical_key == Key::Named(NamedKey::Escape)
+        {
+            self.gallery_flap.close();
+            *handled = true;
+            return true;
+        }
+
+        // The hamburger toggle (overlay only) summons / dismisses the gallery.
+        if overlay
+            && let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+        {
+            if self.toggle_rect.contains(self.last_cursor) {
+                self.gallery_flap.toggle(SplitLayout::Overlay);
+                *handled = true;
+                return true;
+            }
+            // Tapping the scrim (content, outside the flap) dismisses it.
+            if gallery_open && !self.gallery_overlay_rect.contains(self.last_cursor) {
+                self.gallery_flap.close();
+                *handled = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Forward the event into each top-bar button (part of
+    /// [`Widget::handle_event`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
+    )]
+    fn handle_topbar_buttons(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        m: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) {
+        for (b, c) in self.topbar_buttons.iter_mut().zip(
+            self.topbar_actions_node
+                .and_then(|n| taffy.children(n).ok())
+                .unwrap_or_default()
+                .iter(),
+        ) {
+            b.handle_event(
+                event,
+                scale,
+                &m,
+                state,
+                path,
+                handled,
+                focus_target,
+                *c,
+                taffy,
+            );
+            if *handled {
+                return;
+            }
+        }
+    }
+
+    /// Forward the event into the gallery when it's docked, or when its
+    /// overlay flap is open (part of [`Widget::handle_event`]). Returns
+    /// `true` if the caller should stop dispatching — either the gallery
+    /// consumed the event, or a pointer press inside the open flap is
+    /// swallowed so it can't fall through to the content beneath.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
+    )]
+    fn handle_gallery_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        m: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+        overlay: bool,
+        gallery_open: bool,
+    ) -> bool {
+        // The gallery only receives events when docked, or when its overlay
+        // flap is open. While open, any pointer press landing inside the flap
+        // is consumed so it can't fall through to the content beneath.
+        if overlay && !gallery_open {
+            return false;
+        }
+        let Some(n) = self.gallery_node else {
+            return false;
+        };
+        self.gallery.handle_event(
+            event,
+            scale,
+            &m,
+            state,
+            path,
+            handled,
+            focus_target,
+            n,
+            taffy,
+        );
+        if *handled {
+            // Selecting a theme from the open flap dismisses it so the
+            // narrow window returns to the preview + customizer (the
+            // master→detail return).
+            if overlay {
+                self.gallery_flap.close();
+            }
+            return true;
+        }
+        if overlay
+            && let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+            && self.gallery_overlay_rect.contains(self.last_cursor)
+        {
+            *handled = true;
+            return true;
+        }
+        false
+    }
+}
+
+impl Widget for ThemesApp {
+    /// Publish the open theme library + its themes so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Themes action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        // 1. Seed the document on first run.
+        self.seed_document_if_needed(state, path);
+
+        // `--shots` scenario: force a specific selection for the capture.
+        if let Some(id) = self.shot.select.take() {
+            doc::put_str(state, path, doc::KEY_SELECTED, &id);
+        }
+
+        // 2. Drain and dispatch any pending command. A mutating command
+        // dispatches its ThemesAction straight into the document (via the
+        // executor), so the catalog is loaded *after* it, below, to observe the
+        // change.
+        let cmd = doc::take_command(state, path);
+        if !cmd.is_empty() {
+            self.process_command(&cmd, state, path);
+        }
+
+        // 3-5. Load the persisted catalog, resolve the selection + edit
+        // token, and two-way reconcile the editor controls. `None` only if
+        // the catalog is unexpectedly empty (never happens on the live or
+        // demo seed path, but `sync` must not panic on any document a peer
+        // could hand us) — skip this frame's sync rather than panic.
+        let Some((catalog, idx, selected, edit_token, editable)) =
+            self.reconcile_catalog(state, path)
+        else {
+            return;
+        };
+
+        // 6. Persist + cache.
+        doc::save_catalog(state, path, &catalog);
+        self.catalog = catalog;
+
+        // 7-8. Push the resolved selection into the panels and forward sync
+        // to the embedded controls that read their own scratch fields.
+        self.push_view_state(state, path, idx, &selected, edit_token, editable);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let topbar = self.build_topbar_layout(taffy, theme, node_map);
+
+        // Panes. The gallery is the primary sidebar: docked in the content row
+        // on a wide window, or pulled out into a fixed-width overlay subtree on
+        // a narrow one so the preview + customizer can take the full width.
+        let overlay = SplitLayout::from_width(self.build_width, BREAKPOINT) == SplitLayout::Overlay;
+        let (gallery, preview, customizer) =
+            self.build_panes_layout(taffy, theme, node_map, overlay);
+
+        let content = Self::build_content_layout(taffy, overlay, gallery, preview, customizer);
+        self.content_node = Some(content);
+
+        let root = Self::build_root_layout(taffy, overlay, topbar, content, gallery);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
+        root
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let Ok(l) = taffy.layout(node) else { return };
+        self.rect = Rect::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        );
+        let o = Point::new(self.rect.x0, self.rect.y0);
+
+        let layout = self.reconcile_layout_class();
+        self.apply_topbar_layout(taffy, o);
+        self.apply_content_layout(taffy, o, layout);
+        self.apply_gallery_overlay(taffy, layout);
 
         // `--shots` menu scenario: open the sidebar actions menu now that the
         // rows have real rects to anchor it to.
-        if self.shot_menu {
-            self.shot_menu = false;
+        if self.shot.menu {
+            self.shot.menu = false;
             self.gallery.open_menu_for_shot();
         }
     }
@@ -1152,117 +1487,30 @@ impl Widget for ThemesApp {
         let overlay = self.layout_class() == SplitLayout::Overlay;
         let gallery_open = overlay && self.gallery_flap.is_open(SplitLayout::Overlay);
 
-        // Collapsed layout: the wheel scrolls the preview+customizer stack
-        // (unless the overlay gallery is open, which owns input while up).
-        if overlay
-            && !gallery_open
-            && let WindowEvent::MouseWheel { delta, .. } = event
-        {
-            let dy = match delta {
-                MouseScrollDelta::LineDelta(_, y) => -*y * 60.0,
-                MouseScrollDelta::PixelDelta(pp) => -pp.y as f32,
-            };
-            let max = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
-            self.scroll = (self.scroll + f64::from(dy)).clamp(0.0, max);
-            *handled = true;
+        if self.handle_overlay_shortcuts(event, overlay, gallery_open, handled) {
             return;
         }
 
-        // Esc dismisses an open overlay gallery before anything else sees it.
-        if overlay
-            && gallery_open
-            && let WindowEvent::KeyboardInput {
-                event: key_event, ..
-            } = event
-            && key_event.state == ElementState::Pressed
-            && key_event.logical_key == Key::Named(NamedKey::Escape)
-        {
-            self.gallery_flap.close();
-            *handled = true;
+        self.handle_topbar_buttons(event, scale, *m, state, path, handled, focus_target, taffy);
+        if *handled {
             return;
         }
 
-        // The hamburger toggle (overlay only) summons / dismisses the gallery.
-        if overlay
-            && let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-        {
-            if self.toggle_rect.contains(self.last_cursor) {
-                self.gallery_flap.toggle(SplitLayout::Overlay);
-                *handled = true;
-                return;
-            }
-            // Tapping the scrim (content, outside the flap) dismisses it.
-            if gallery_open && !self.gallery_overlay_rect.contains(self.last_cursor) {
-                self.gallery_flap.close();
-                *handled = true;
-                return;
-            }
-        }
-
-        for (b, c) in self.topbar_buttons.iter_mut().zip(
-            self.topbar_actions_node
-                .and_then(|n| taffy.children(n).ok())
-                .unwrap_or_default()
-                .iter(),
+        if self.handle_gallery_event(
+            event,
+            scale,
+            *m,
+            state,
+            path,
+            handled,
+            focus_target,
+            taffy,
+            overlay,
+            gallery_open,
         ) {
-            b.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                *c,
-                taffy,
-            );
-            if *handled {
-                return;
-            }
+            return;
         }
 
-        // The gallery only receives events when docked, or when its overlay
-        // flap is open. While open, any pointer press landing inside the flap
-        // is consumed so it can't fall through to the content beneath.
-        if (!overlay || gallery_open)
-            && let Some(n) = self.gallery_node
-        {
-            self.gallery.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
-                // Selecting a theme from the open flap dismisses it so the
-                // narrow window returns to the preview + customizer (the
-                // master→detail return).
-                if overlay {
-                    self.gallery_flap.close();
-                }
-                return;
-            }
-            if overlay
-                && let WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } = event
-                && self.gallery_overlay_rect.contains(self.last_cursor)
-            {
-                *handled = true;
-                return;
-            }
-        }
         if let Some(n) = self.customizer_node {
             self.customizer.handle_event(
                 event,
@@ -1531,7 +1779,7 @@ mod tests {
             .expect("delete spec");
         let from_spec = match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("delete is an immediate action"),
+            ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
         };
 
         assert_eq!(from_affordance.type_id, from_spec.type_id);

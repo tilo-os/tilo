@@ -28,7 +28,6 @@ use ui::theme::Theme;
 use ui::ColorCompat;
 use ui::icons::Icon;
 use ui::permissions::UserId;
-use ui::widget::ColorPicker;
 use ui::widget::Widget;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{PathSegment, PresenceCtx, PresenceKey};
@@ -37,7 +36,18 @@ use crate::WpFormat;
 use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
+use crate::outline_pane::{OutlinePalette, OutlinePane};
+#[cfg(test)]
+use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
+use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
+#[cfg(test)]
+use crate::ruler::RulerMarker;
+use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
+use crate::style_color_picker::StyleColorPicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
+#[cfg(test)]
+use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN};
+use crate::zoom_control::{STEP as ZOOM_STEP, ZoomControl};
 use ui::portal;
 
 /// Convert the model's `(block, start, end)` ranges into serializable
@@ -207,14 +217,9 @@ fn with_alpha(base: Color, alpha: u8) -> Color {
 
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
-/// Pixels per inch — the page is a fixed `MAX_PAGE_W` px wide ≙ 8.5in (US-Letter),
-/// so one inch is this many px. Drives the ruler's tick spacing + labels.
-const PX_PER_INCH: f64 = MAX_PAGE_W / 8.5;
 /// Height of the horizontal ruler band carved out of the canvas top (below the
 /// toolbar / recovery banner / find bar, above the page).
 const RULER_H: f64 = 24.0;
-/// Pointer pick radius (px, screen space) for grabbing a ruler marker.
-const RULER_GRAB: f64 = 8.0;
 /// Vertical gap between consecutive discrete pages (the canvas shows through it),
 /// à la Google Docs. Together with `LETTER_RATIO` this drives true pagination.
 const PAGE_GAP: f64 = 22.0;
@@ -308,10 +313,6 @@ const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
 /// How close (px) the pointer must be to a guide line to grab it.
 const GUIDE_GRAB: f64 = 7.0;
 
-/// Colour-picker popover size (a compact instance of the shared `ColorPicker`).
-const CP_W: f64 = 236.0;
-const CP_H: f64 = 176.0;
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ToolAction {
     Bold,
@@ -361,42 +362,12 @@ enum ToolAction {
     NewMenu,
 }
 
-/// A clickable zoom control (the toolbar's right-aligned zoom stepper).
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum StatusAction {
-    Out,
-    In,
-    Reset,
-}
-
-/// Zoom bounds + step for the page/content scale.
-const ZOOM_MIN: f64 = 0.5;
-const ZOOM_MAX: f64 = 3.0;
-const ZOOM_STEP: f64 = 0.1;
 /// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
 /// (= `bw + gap + val_w + gap + bw` in `draw_zoom_control`). Reserved on the
 /// toolbar's last row, right of the colour swatches, so buttons never pack under it.
-const ZOOM_CLUSTER_W: f64 = 88.0;
 /// Gap between the zoom stepper cluster and the colour-swatch strips on the
 /// toolbar's last row.
 const ZOOM_SWATCH_GAP: f64 = 16.0;
-
-/// Fill a triangle from three screen-space points (ruler indent wedges).
-fn fill_tri(
-    scene: &mut Scene,
-    transform: Affine,
-    col: Color,
-    a: (f64, f64),
-    b: (f64, f64),
-    c: (f64, f64),
-) {
-    let mut p = vello::kurbo::BezPath::new();
-    p.move_to(a);
-    p.line_to(b);
-    p.line_to(c);
-    p.close_path();
-    scene.fill(Fill::NonZero, transform, col, None, &p);
-}
 
 /// Which layout element the bottom bar is editing. Each mode shows draggable
 /// guides on the page with live preview.
@@ -468,32 +439,6 @@ struct GuideDrag {
     mode: LayoutMode,
     side: Side,
     kind: DragKind,
-}
-
-/// A draggable marker on the horizontal ruler. Margin markers edit `self.margins`
-/// (page-wide, persisted like the on-page guides); indent + tab markers edit the
-/// caret paragraph's block attrs.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum RulerMarker {
-    /// Left page margin (the down-pointing wedge at the left text edge).
-    MarginLeft,
-    /// Right page margin.
-    MarginRight,
-    /// Left / hanging indent of the current paragraph (the bottom up-wedge).
-    IndentLeft,
-    /// First-line indent of the current paragraph (the top down-wedge).
-    IndentFirst,
-    /// A tab stop on the current paragraph, by index into its sorted stop list.
-    Tab(usize),
-}
-
-/// An active ruler-marker drag.
-#[derive(Clone, Copy)]
-struct RulerDrag {
-    marker: RulerMarker,
-    /// Set once a tab marker has been dragged below the ruler band — releasing
-    /// there removes the stop (the standard "drag off to delete" gesture).
-    drop_off: bool,
 }
 
 impl Side {
@@ -579,7 +524,7 @@ enum PanelHit {
     ToggleBold,
     ToggleItalic,
     SetColor([u8; 3]),
-    /// Open the shared [`ColorPicker`] popover to choose an arbitrary colour for
+    /// Open the shared colour-picker popover to choose an arbitrary colour for
     /// the focused style (beyond the quick-preset swatches).
     OpenColorPicker,
     /// The value box of a numeric field — click to type, drag to scrub.
@@ -632,7 +577,10 @@ fn char_to_byte(text: &str, char_off: usize) -> usize {
 }
 fn byte_to_char(text: &str, byte_off: usize) -> usize {
     let b = byte_off.min(text.len());
-    text[..b].chars().count()
+    // Iterator-based rather than `text[..b]`: `b` isn't guaranteed to land on
+    // a char boundary, and this counts every char that starts before it
+    // without ever slicing through one.
+    text.char_indices().take_while(|&(i, _)| i < b).count()
 }
 
 /// Per-visual-line `(line_top, line_height)` for a shaped layout (same coordinate
@@ -642,6 +590,12 @@ fn byte_to_char(text: &str, byte_off: usize) -> usize {
 /// `RichTextLayout` has no line iterator, so tops are recovered from selection
 /// rects of the full text; blank wrapped lines (no glyphs, no rect) are back-filled
 /// at the uniform line advance. Result is sorted, deduped, and spans `[0, height())`.
+#[allow(
+    clippy::while_float,
+    reason = "line_h/step are clamped to >= 1.0 above each loop, so every \
+              iteration strictly advances past a fixed floor — this can't \
+              spin on float imprecision, only run a bounded number of times"
+)]
 fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
     let mut tops: Vec<(f64, f64)> = layout
         .selection_rects(0, text.len().max(1))
@@ -664,12 +618,15 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
         return vec![(0.0, total_h.max(1.0))];
     }
     // Ensure the first line starts at the top (a leading blank line has no rect).
-    let line_h = tops[0].1.max(1.0);
-    while tops[0].0 > line_h * 0.5 {
-        tops.insert(0, (tops[0].0 - line_h, line_h));
+    let line_h = tops.first().map_or(1.0, |&(_, h)| h).max(1.0);
+    while tops.first().is_some_and(|&(top, _)| top > line_h * 0.5) {
+        let first_top = tops.first().map_or(0.0, |&(top, _)| top);
+        tops.insert(0, (first_top - line_h, line_h));
     }
     // Back-fill any trailing blank lines so the tops span the full height.
-    let (last_top, last_h) = *tops.last().unwrap();
+    let Some(&(last_top, last_h)) = tops.last() else {
+        return tops;
+    };
     let mut next = last_top + last_h;
     let step = last_h.max(1.0);
     while next + step * 0.5 < total_h {
@@ -764,9 +721,9 @@ fn pack_toolbar_rows(widths: &[f64], group_starts: &[bool], avail_w: f64) -> Vec
     let usable = (avail_w - TOOLBAR_PAD - TOOLBAR_RIGHT_PAD).max(1.0);
     let mut row_start = 0usize;
     let mut x = 0.0f64; // running width consumed within the current row (post-pad)
-    for i in 0..widths.len() {
-        let sep = if group_starts[i] { TOOLBAR_SEP } else { 0.0 };
-        let item_w = sep + widths[i] + TOOLBAR_GAP;
+    for (i, (&w, &group_start)) in widths.iter().zip(group_starts.iter()).enumerate() {
+        let sep = if group_start { TOOLBAR_SEP } else { 0.0 };
+        let item_w = sep + w + TOOLBAR_GAP;
         // If this isn't the first item on the row and it would overflow, wrap.
         if i > row_start && x + item_w > usable {
             rows.push((row_start, i));
@@ -802,7 +759,7 @@ fn char_font_size(i: usize, marks: &[MarkSpan]) -> Option<f32> {
         .iter()
         .find(|m| (m.name == "size" || m.name == "fontSize") && i >= m.start && i < m.end)
         .and_then(|m| m.value.as_int())
-        .map(|n| num::f32_of_i64(n))
+        .map(num::f32_of_i64)
 }
 
 /// The font-family run mark covering char `i`, if any. The editor writes the
@@ -859,13 +816,16 @@ fn char_baseline(i: usize, marks: &[MarkSpan]) -> ui::richtext::BaselineShift {
 
 fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
     let h = s.strip_prefix('#').unwrap_or(s);
-    if h.len() != 6 {
+    if h.len() != 6 || !h.is_ascii() {
         return None;
     }
+    // `h.len() == 6` alone doesn't rule out multi-byte UTF-8 (a 3-byte char
+    // plus 3 ASCII bytes also has `.len() == 6`); `is_ascii` above guarantees
+    // every byte offset below is a char boundary, so `.get` never misses.
     Some([
-        u8::from_str_radix(&h[0..2], 16).ok()?,
-        u8::from_str_radix(&h[2..4], 16).ok()?,
-        u8::from_str_radix(&h[4..6], 16).ok()?,
+        u8::from_str_radix(h.get(0..2)?, 16).ok()?,
+        u8::from_str_radix(h.get(2..4)?, 16).ok()?,
+        u8::from_str_radix(h.get(4..6)?, 16).ok()?,
     ])
 }
 
@@ -906,7 +866,10 @@ fn next_line_spacing(cur: f64) -> f64 {
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map_or(0, |(i, _)| i);
-    LINE_SPACINGS[(idx + 1) % LINE_SPACINGS.len()]
+    LINE_SPACINGS
+        .get((idx + 1) % LINE_SPACINGS.len())
+        .copied()
+        .unwrap_or(1.0)
 }
 
 /// A short label for a line-spacing multiplier (the toolbar chip text).
@@ -1014,35 +977,40 @@ fn block_style_key(b: &BlockView) -> String {
 /// `(runs, underline_ranges, strike_ranges)`.
 type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
 
+/// A measured table row within [`WordProcessorWidget::paginate_blocks`]'s
+/// table-layout branch: `(row_height, cells)`, each cell as `(col,
+/// cell_height, block)`.
+type TableRow<'a> = (f64, Vec<(usize, f64, &'a BlockView)>);
+
 /// Split a block's text into styled runs (bold/italic/size/family) + underline
 /// and strikethrough byte ranges.
-fn block_runs(b: &BlockView) -> BlockRuns {
-    let chars: Vec<char> = b.text.chars().collect();
-    let n = chars.len();
+fn block_runs(block: &BlockView) -> BlockRuns {
+    let chars: Vec<char> = block.text.chars().collect();
+    let len = chars.len();
     // Run key: f32 size as bits so the tuple is comparable. Highlight (background)
     // and super/subscript baseline join the key so a change in either splits runs.
     let key = |i: usize| {
         (
-            char_has(i, &b.marks, "strong"),
-            char_has(i, &b.marks, "em"),
-            char_font_size(i, &b.marks).map(f32::to_bits),
-            char_font_family(i, &b.marks),
-            char_color(i, &b.marks),
-            char_highlight(i, &b.marks),
-            char_baseline(i, &b.marks),
+            char_has(i, &block.marks, "strong"),
+            char_has(i, &block.marks, "em"),
+            char_font_size(i, &block.marks).map(f32::to_bits),
+            char_font_family(i, &block.marks),
+            char_color(i, &block.marks),
+            char_highlight(i, &block.marks),
+            char_baseline(i, &block.marks),
         )
     };
     let mut runs = Vec::new();
     let mut i = 0;
-    while i < n {
+    while i < len {
         let k = key(i);
         let mut j = i;
-        while j < n && key(j) == k {
+        while j < len && key(j) == k {
             j += 1;
         }
         let (bold, italic, size_bits, family, color, background, baseline) = k;
         runs.push(RichSpan {
-            text: chars[i..j].iter().collect(),
+            text: chars.get(i..j).unwrap_or(&[]).iter().collect(),
             bold,
             italic,
             size: size_bits.map(f32::from_bits),
@@ -1057,10 +1025,16 @@ fn block_runs(b: &BlockView) -> BlockRuns {
         runs.push(RichSpan::new(""));
     }
     let deco = |name: &str| {
-        b.marks
+        block
+            .marks
             .iter()
             .filter(|m| m.name == name)
-            .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
+            .map(|m| {
+                (
+                    char_to_byte(&block.text, m.start),
+                    char_to_byte(&block.text, m.end),
+                )
+            })
             .collect::<Vec<_>>()
     };
     // Links render underlined as well as blue.
@@ -1086,17 +1060,17 @@ fn char_in_mark(i: usize, marks: &[MarkSpan], name: &str) -> bool {
 /// tinting `ins`/`del` tracked-change runs in the review colour (green/red).
 /// Underline/strike decorations are drawn separately in the body pass. Identical
 /// to [`block_runs`] when `show_markup` is false.
-fn block_runs_markup(b: &BlockView, show_markup: bool) -> BlockRuns {
+fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRuns {
     if !show_markup {
-        return block_runs(b);
+        return block_runs(block);
     }
-    let chars: Vec<char> = b.text.chars().collect();
-    let n = chars.len();
+    let chars: Vec<char> = block.text.chars().collect();
+    let len = chars.len();
     // An `ins` run is green, a `del` run red.
     let track_color = |i: usize| -> Option<[u8; 3]> {
-        if char_in_mark(i, &b.marks, qdoc::schema::MARK_INS) {
+        if char_in_mark(i, &block.marks, qdoc::schema::MARK_INS) {
             Some(TRACK_INS_RGB)
-        } else if char_in_mark(i, &b.marks, qdoc::schema::MARK_DEL) {
+        } else if char_in_mark(i, &block.marks, qdoc::schema::MARK_DEL) {
             Some(TRACK_DEL_RGB)
         } else {
             None
@@ -1107,26 +1081,26 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> BlockRuns {
     // wins for legibility).
     let key = |i: usize| {
         (
-            char_has(i, &b.marks, "strong"),
-            char_has(i, &b.marks, "em"),
-            char_font_size(i, &b.marks).map(f32::to_bits),
-            char_font_family(i, &b.marks),
-            track_color(i).or_else(|| char_color(i, &b.marks)),
-            char_highlight(i, &b.marks),
-            char_baseline(i, &b.marks),
+            char_has(i, &block.marks, "strong"),
+            char_has(i, &block.marks, "em"),
+            char_font_size(i, &block.marks).map(f32::to_bits),
+            char_font_family(i, &block.marks),
+            track_color(i).or_else(|| char_color(i, &block.marks)),
+            char_highlight(i, &block.marks),
+            char_baseline(i, &block.marks),
         )
     };
     let mut runs = Vec::new();
     let mut i = 0;
-    while i < n {
+    while i < len {
         let k = key(i);
         let mut j = i;
-        while j < n && key(j) == k {
+        while j < len && key(j) == k {
             j += 1;
         }
         let (bold, italic, size_bits, family, color, background, baseline) = k;
         runs.push(RichSpan {
-            text: chars[i..j].iter().collect(),
+            text: chars.get(i..j).unwrap_or(&[]).iter().collect(),
             bold,
             italic,
             size: size_bits.map(f32::from_bits),
@@ -1141,10 +1115,16 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> BlockRuns {
         runs.push(RichSpan::new(""));
     }
     let deco = |name: &str| {
-        b.marks
+        block
+            .marks
             .iter()
             .filter(|m| m.name == name)
-            .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
+            .map(|m| {
+                (
+                    char_to_byte(&block.text, m.start),
+                    char_to_byte(&block.text, m.end),
+                )
+            })
             .collect::<Vec<_>>()
     };
     let mut underlines = deco("underline");
@@ -1161,6 +1141,16 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> BlockRuns {
 /// The `(ins_ranges, del_ranges)` byte ranges in a block covered by an `ins`
 /// tracked-insertion mark and a `del` tracked-deletion mark respectively.
 type ChangeDecoRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
+
+/// `prepare_pass2_inputs`'s `(multi_sel, note_nums, spell_by_block)` result:
+/// whether the selection spans multiple cells, footnote citation numbers
+/// keyed by block id, and (when spell-check is on) misspelled byte spans
+/// keyed by block id.
+type Pass2Inputs = (
+    bool,
+    HashMap<String, usize>,
+    HashMap<String, Vec<(usize, usize)>>,
+);
 
 /// The `(byte_start, byte_end)` ranges in a block covered by an `ins` tracked-
 /// insertion mark and a `del` tracked-deletion mark respectively. Used by the
@@ -1264,7 +1254,7 @@ fn running_head_runs(b: &BlockView, page_no: usize) -> Vec<RichSpan> {
             // number once per placeholder char so a literal repeat still works.
             page_no.to_string().repeat(j - i)
         } else {
-            chars[i..j].iter().collect()
+            chars.get(i..j).unwrap_or(&[]).iter().collect()
         };
         runs.push(RichSpan {
             text,
@@ -1312,7 +1302,7 @@ fn running_head_runs_editing(b: &BlockView) -> Vec<RichSpan> {
         let text: String = if is_field {
             "#".repeat(j - i)
         } else {
-            chars[i..j].iter().collect()
+            chars.get(i..j).unwrap_or(&[]).iter().collect()
         };
         runs.push(RichSpan {
             text,
@@ -1385,6 +1375,12 @@ fn note_text(note: &NoteView) -> String {
 /// Draw a wavy red spell-check underline from `x0` to `x1` at baseline `y`, in the
 /// given (already zoom-adjusted) transform. Approximated by short line segments
 /// tracing a sine so it reads as a squiggle without per-glyph curve math.
+#[allow(
+    clippy::while_float,
+    reason = "x advances by the fixed positive SQUIGGLE_PERIOD/2.0 each turn \
+              (clamped to x1), so this is bounded by (x1-x0)/step, not float \
+              imprecision"
+)]
 fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64) {
     if x1 <= x0 {
         return;
@@ -1558,6 +1554,9 @@ const LIST_INDENT_STEP: f64 = 24.0;
 const BULLET_GAP: f64 = 20.0;
 /// US-Letter page height in inches (width is 8.5in → `MAX_PAGE_W` px).
 const LETTER_RATIO: f64 = 11.0 / 8.5;
+/// Gap between a floated image's edge and the text column that wraps beside
+/// it, in [`WordProcessorWidget::paginate_blocks`]'s float-reserve math.
+const FLOAT_GUTTER: f64 = 12.0;
 
 /// The bullet glyph for an unordered item at `level` (cycles by depth).
 fn bullet_glyph(level: usize) -> &'static str {
@@ -1583,6 +1582,14 @@ fn cell_rc(b: &BlockView) -> (usize, usize) {
     (get("row"), get("col"))
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag on the top-level editor \
+              state (focus/dirty/undo-commit bookkeeping, per-panel visibility, \
+              spell-check/markup view toggles, --shots staging) — not a set of \
+              options that combine, so a sub-struct or bitflags wouldn't read any \
+              better; matches the same call made for MailApp/TubeApp/CodeApp"
+)]
 pub struct WordProcessorWidget {
     inner: WordProcessor,
     rect: Rect,
@@ -1649,10 +1656,8 @@ pub struct WordProcessorWidget {
     /// "Ruler" button + the View bottom-bar chip). Default ON — it is the primary
     /// surface for margin / indent / tab-stop editing.
     ruler_on: bool,
-    /// The ruler band's rect in screen space, cached each frame for hit-testing.
-    ruler_rect: Rect,
-    /// An active ruler-marker drag, if any.
-    ruler_drag: Option<RulerDrag>,
+    /// Horizontal ruler component: painting, geometry and marker drag lifecycle.
+    ruler: Ruler,
     /// The page rect in screen space (post-scroll), cached each frame so the
     /// event handler can hit-test layout guides against it.
     page_rect: Rect,
@@ -1671,16 +1676,8 @@ pub struct WordProcessorWidget {
     edit_buf: String,
     /// An active drag-to-scrub on a numeric field, if any.
     scrub: Option<ScrubState>,
-    /// Page+content zoom factor (1.0 = 100%). Applied to the page transform and
-    /// accounted for in hit-testing + scroll. Lives in widget state (a view
-    /// preference), not the document. Clamped to `[ZOOM_MIN, ZOOM_MAX]`.
-    zoom: f64,
-    /// The screen-space anchor used for the content zoom transform this frame
-    /// (top-center of the canvas). Cached so the event handler can map pointer
-    /// positions from screen space back into unscaled content space.
-    zoom_anchor: Point,
-    /// Clickable zoom-stepper controls (now in the toolbar): `(action, rect)`.
-    status_buttons: Vec<(StatusAction, Rect)>,
+    /// Local page scale plus its toolbar drawing and hit-testing.
+    zoom: ZoomControl,
     /// Transient floating status readout (word/char count + modified dot,
     /// filename and format), in place of a permanent bottom status strip. Pokes
     /// on a label change, reveals while the pointer hovers the bottom-right
@@ -1733,37 +1730,18 @@ pub struct WordProcessorWidget {
     /// Whether comment + tracked-change markup is drawn (default ON, like
     /// spell-check). View-only — never mutates the document.
     show_markup: bool,
-    /// Whether the document outline / navigation pane is shown (left side).
-    /// Toggled via the toolbar "Outline" button. Default OFF so existing layouts
-    /// are unchanged until the user opens it.
-    outline_open: bool,
-    /// The outline pane rect in screen space, cached each frame for hit-testing.
-    outline_rect: Rect,
+    /// Document-outline visibility, drawing, and frame-local hit geometry.
+    outline: OutlinePane,
     /// Version-history strip under the canvas: the document's own change graph
     /// rendered as a scrubber. Toggled from the toolbar's "History" button.
     history: crate::history_panel::HistoryPanel,
-    /// Clickable outline entries this frame: `(rect, heading_block_id)`. A click
-    /// scrolls that heading into view.
-    outline_hits: Vec<(Rect, String)>,
     /// OS-theme-driven chrome palette, resolved at the top of every `draw` from
     /// the passed-in [`Theme`]. Every chrome helper reads this instead of
     /// hard-coded colours, so the editor honours light/dark mode + the OS
     /// palette. Initialised to the dark theme's mapping for off-frame use.
     chrome: ChromeColors,
-    /// OS-theme-driven chrome palette, resolved at the top of every `draw` so
-    /// chrome helpers honour light/dark mode instead of hard-coding colours.
-    /// is available in the headless test path, so the trigger is edit-count based).
-    edits_since_autosave: u32,
-    /// A pending crash-recovery offer: a newer recovery copy was found on disk for
-    /// the open document. Surfaced as a banner with Restore / Discard. `None` when
-    /// there is nothing to recover (the common case).
-    recovery: Option<RecoveryOffer>,
-    /// Clickable recovery-banner controls this frame: `(action, rect)`.
-    recovery_buttons: Vec<(RecoveryAction, Rect)>,
-    /// Test/override base directory for recovery copies. When set it takes
-    /// precedence over the `$QOS_WP_RECOVERY_DIR` / `$XDG_STATE_HOME` resolution so
-    /// a test can point recovery at a temp dir without touching the real home.
-    recovery_base: Option<PathBuf>,
+    /// Crash-recovery persistence and its Restore/Discard surface.
+    recovery: RecoveryBanner,
     // ---- new-from-template picker -----------------------------------------
     /// The "New ▾" template picker menu (reuses the shared [`ContextMenu`]). Open
     /// only while the user is choosing a template; a selection replaces the open
@@ -1788,40 +1766,10 @@ pub struct WordProcessorWidget {
     /// A transient confirmation message (e.g. "Table of contents updated"),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Option<String>,
-    /// The shared [`ColorPicker`] overlay popover from the style inspector's
-    /// "Custom…" affordance; a committed colour applies to the focused style.
-    /// hue strip / RGB sliders); replaces hand-rolling a bespoke colour control.
-    color_picker: Option<ColorPicker>,
+    /// The style inspector's shared color-picker popover. It owns its lifecycle,
+    /// layout, drawing, and modal input routing; this editor applies its result.
+    color_picker: StyleColorPicker,
 }
-
-/// A crash-recovery offer: a recovery copy exists on disk for the open document
-/// and is newer than (or present without) a clean save. Holds the recovery
-/// file's path + the Markdown to restore so Restore is a pure in-memory re-import.
-#[derive(Clone, Debug)]
-struct RecoveryOffer {
-    /// The on-disk recovery file (deleted on Discard / a successful real save).
-    path: PathBuf,
-    /// The recovered document's Markdown bytes (re-imported in place on Restore).
-    markdown: Vec<u8>,
-}
-
-/// A clickable control in the crash-recovery banner.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum RecoveryAction {
-    /// Re-import the recovery copy over the current (just-opened) document.
-    Restore,
-    /// Dismiss the banner and delete the recovery copy.
-    Discard,
-}
-
-/// Write a recovery copy after this many document-modifying edits. Small enough
-/// that little work is lost on a crash, large enough that the codec export isn't
-/// run on literally every keystroke.
-const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
-
-/// Height of the crash-recovery banner (drawn just under the toolbar, like the
-/// Find bar).
-const RECOVERY_BANNER_H: f64 = 40.0;
 
 /// One process-wide built-in dictionary, shared across every word-processor
 /// widget so the ~75k-word list is parsed at most once per process.
@@ -1875,8 +1823,7 @@ impl WordProcessorWidget {
             layout_mode: LayoutMode::None,
             guide_drag: None,
             ruler_on: true,
-            ruler_rect: Rect::ZERO,
-            ruler_drag: None,
+            ruler: Ruler::default(),
             page_rect: Rect::ZERO,
             layout_chips: Vec::new(),
             // Default the panel open: it is the primary surface for the
@@ -1887,9 +1834,7 @@ impl WordProcessorWidget {
             editing_field: None,
             edit_buf: String::new(),
             scrub: None,
-            zoom: 1.0,
-            zoom_anchor: Point::ZERO,
-            status_buttons: Vec::new(),
+            zoom: ZoomControl::new(),
             status_bubble: ui::StatusBubble::new(),
             last_status: String::new(),
             shots_status: false,
@@ -1904,16 +1849,11 @@ impl WordProcessorWidget {
             comments: Vec::new(),
             changes: Vec::new(),
             show_markup: true,
-            outline_open: false,
-            outline_rect: Rect::ZERO,
-            outline_hits: Vec::new(),
+            outline: OutlinePane::default(),
             history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
-            edits_since_autosave: 0,
-            recovery: None,
-            recovery_buttons: Vec::new(),
-            recovery_base: None,
+            recovery: RecoveryBanner::default(),
             new_menu: ContextMenu::new(),
             new_menu_templates: Vec::new(),
             portal_rx: None,
@@ -1921,7 +1861,7 @@ impl WordProcessorWidget {
             style_menu: ContextMenu::new(),
             style_menu_actions: Vec::new(),
             toast: None,
-            color_picker: None,
+            color_picker: StyleColorPicker::default(),
         }
     }
 
@@ -1934,10 +1874,10 @@ impl WordProcessorWidget {
     fn perform_action(
         &mut self,
         state: &mut AutoCommit,
-        action: crate::actions::WordProcessorAction,
+        action: &crate::actions::WordProcessorAction,
     ) {
         self.actions
-            .dispatch(state, crate::actions::WORD_PROCESSOR_ACTION_TYPE, &action);
+            .dispatch(state, crate::actions::WORD_PROCESSOR_ACTION_TYPE, action);
     }
 
     /// The context Ctrl+K needs to build the document's resource tree: the caret
@@ -1988,7 +1928,7 @@ impl WordProcessorWidget {
             Some(crate::actions::MarkVal::Bool(true))
         };
         let action = crate::actions::set_mark_action(region, to_spans(spans), name, value, vec![]);
-        self.perform_action(state, action);
+        self.perform_action(state, &action);
     }
 
     /// Toggle a mutually-exclusive mark (super/sub) over the selection / caret
@@ -2012,7 +1952,7 @@ impl WordProcessorWidget {
         };
         let action =
             crate::actions::set_mark_action(region, to_spans(spans), name, value, also_clear);
-        self.perform_action(state, action);
+        self.perform_action(state, &action);
     }
 
     /// Set a valued inline mark (font/size/colour/highlight) over the selection
@@ -2030,7 +1970,7 @@ impl WordProcessorWidget {
         let region = self.inner.region_kind();
         let action =
             crate::actions::set_mark_action(region, to_spans(spans), name, Some(value), vec![]);
-        self.perform_action(state, action);
+        self.perform_action(state, &action);
     }
 
     /// Clear a valued inline mark over the selection or caret block.
@@ -2041,7 +1981,7 @@ impl WordProcessorWidget {
         }
         let region = self.inner.region_kind();
         let action = crate::actions::set_mark_action(region, to_spans(spans), name, None, vec![]);
-        self.perform_action(state, action);
+        self.perform_action(state, &action);
     }
 
     /// Set the paragraph kind/level over the selection, as one replayable action.
@@ -2057,7 +1997,7 @@ impl WordProcessorWidget {
             return;
         }
         let action = crate::actions::set_paragraph_style_action(blocks, kind, level, ordered);
-        self.perform_action(state, action);
+        self.perform_action(state, &action);
     }
 
     /// Apply a named paragraph style (a style-picker pick) over the current
@@ -2073,7 +2013,7 @@ impl WordProcessorWidget {
             None => (None, None, None),
         };
         let action = crate::actions::apply_named_style_action(blocks, id, kind, level, ordered);
-        self.perform_action(state, action);
+        self.perform_action(state, &action);
     }
 
     /// Set a block attribute (alignment / line-spacing / style) over the current
@@ -2090,7 +2030,7 @@ impl WordProcessorWidget {
         }
         let region = self.inner.region_kind();
         let action = crate::actions::set_block_attr_action(region, blocks, key, value);
-        self.perform_action(state, action);
+        self.perform_action(state, &action);
     }
 
     /// Insert a `rows`×`cols` table after the caret as one replayable action,
@@ -2102,7 +2042,7 @@ impl WordProcessorWidget {
         let before: std::collections::HashSet<String> = self.body_cell_ids(state);
         self.perform_action(
             state,
-            crate::actions::insert_table_action(&after, rows, cols),
+            &crate::actions::insert_table_action(&after, rows, cols),
         );
         // The first cell of the freshly-created table = the new `cell` block at
         // (row 0, col 0). Seat the caret there so typing continues in the table.
@@ -2485,9 +2425,7 @@ impl WordProcessorWidget {
     /// Set the zoom factor (clamped) and request a repaint. Returns whether it
     /// changed.
     fn set_zoom(&mut self, z: f64) -> bool {
-        let z = z.clamp(ZOOM_MIN, ZOOM_MAX);
-        if (z - self.zoom).abs() > 1e-6 {
-            self.zoom = z;
+        if self.zoom.set(z) {
             self.dirty = true;
             true
         } else {
@@ -2496,24 +2434,22 @@ impl WordProcessorWidget {
     }
 
     fn zoom_by(&mut self, delta: f64) -> bool {
-        // Round to the nearest step so the displayed percentage stays tidy.
-        let raw = self.zoom + delta;
-        let snapped = (raw / ZOOM_STEP).round() * ZOOM_STEP;
-        self.set_zoom(snapped)
+        let changed = self.zoom.step(delta);
+        self.dirty |= changed;
+        changed
     }
 
     /// The content (page) transform for this frame: a scale about the cached
     /// top-center anchor. Everything inside the page clip draws through this so
     /// the toolbar / find-bar / status bar stay unscaled.
     fn content_transform(&self, base: Affine) -> Affine {
-        base * Affine::scale_about(self.zoom, self.zoom_anchor)
+        self.zoom.transform(base)
     }
 
     /// Map a screen-space pointer into the unscaled content coordinate space the
     /// `Laid` rects live in (the inverse of `content_transform`'s scale-about).
     fn pointer_to_content(&self, p: Point) -> Point {
-        let a = self.zoom_anchor;
-        Point::new(a.x + (p.x - a.x) / self.zoom, a.y + (p.y - a.y) / self.zoom)
+        self.zoom.screen_to_content(p)
     }
 
     /// Select (so it highlights) + scroll to the active match.
@@ -2771,6 +2707,16 @@ fn apply_edges(e: &mut Edges, page: Rect, side: Side, p: Point, kind: DragKind) 
     }
 }
 
+/// The shared draw arguments [`WordProcessorWidget::draw_styles_panel`]
+/// threads through its per-section helpers, so each one carries a handful of
+/// positions rather than the whole argument list.
+struct PanelDrawCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    tr: &'a mut TextRenderer,
+    cc: ChromeColors,
+}
+
 impl WordProcessorWidget {
     /// Toggle a layout-edit mode from a chip click.
     fn toggle_layout_mode(&mut self, mode: LayoutMode) {
@@ -2805,7 +2751,6 @@ impl WordProcessorWidget {
     /// empty unless `editing`.
     #[allow(clippy::too_many_arguments)]
     fn draw_running_band(
-        &self,
         scene: &mut Scene,
         ctf: Affine,
         tr: &mut TextRenderer,
@@ -3136,326 +3081,77 @@ impl WordProcessorWidget {
 
     /// Map an unscaled content x (the page coordinate space) to screen x using the
     /// cached zoom + anchor — the same scale-about the page content draws through.
+    #[cfg(test)]
     fn content_x_to_screen(&self, cx: f64) -> f64 {
-        self.zoom_anchor.x + (cx - self.zoom_anchor.x) * self.zoom
+        self.zoom.content_x_to_screen(cx)
     }
 
-    /// Inverse of [`Self::content_x_to_screen`].
-    fn screen_x_to_content(&self, sx: f64) -> f64 {
-        self.zoom_anchor.x + (sx - self.zoom_anchor.x) / self.zoom
-    }
-
-    /// The screen-space x of every ruler marker for the current margins + caret
-    /// paragraph, as `(marker, screen_x)`. `page_x` is the page's left edge in
-    /// content space. Shared by `draw_ruler` (positions) and the event handler
-    /// (hit-testing), so the picked marker always matches what is drawn.
-    fn ruler_markers(&self, page_x: f64, page_w: f64) -> Vec<(RulerMarker, f64)> {
-        let m = self.margins;
-        let left_margin_cx = page_x + m.left; // left text edge
-        let right_margin_cx = page_x + page_w - m.right;
-        let indent = self.caret_block_indent();
-        let first = self.caret_block_first_line_indent();
-        let left_indent_cx = left_margin_cx + indent;
-        let first_indent_cx = left_indent_cx + first;
-        let mut v = vec![
-            (
-                RulerMarker::MarginLeft,
-                self.content_x_to_screen(left_margin_cx),
-            ),
-            (
-                RulerMarker::MarginRight,
-                self.content_x_to_screen(right_margin_cx),
-            ),
-            (
-                RulerMarker::IndentLeft,
-                self.content_x_to_screen(left_indent_cx),
-            ),
-            (
-                RulerMarker::IndentFirst,
-                self.content_x_to_screen(first_indent_cx),
-            ),
-        ];
-        for (i, t) in self.caret_block_tab_stops().into_iter().enumerate() {
-            v.push((
-                RulerMarker::Tab(i),
-                self.content_x_to_screen(left_margin_cx + t),
-            ));
+    fn ruler_model(&self, band: Rect, page_x: f64, page_w: f64) -> RulerModel {
+        RulerModel {
+            band,
+            page_x,
+            page_w,
+            margin_left: self.margins.left,
+            margin_right: self.margins.right,
+            indent_left: self.caret_block_indent(),
+            indent_first: self.caret_block_first_line_indent(),
+            tab_stops: self.caret_block_tab_stops(),
+            zoom: self.zoom.factor(),
+            anchor_x: self.zoom.anchor().x,
         }
-        v
     }
 
-    /// Draw the horizontal ruler band: a fixed-height strip with inch ticks +
-    /// labels aligned to the page, a tinted "text region" between the margins, and
-    /// the draggable margin / indent / tab markers.
-    #[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
+    fn current_ruler_model(&self) -> RulerModel {
+        self.ruler_model(self.ruler.rect(), self.page_rect.x0, self.page_rect.width())
+    }
+
+    #[cfg(test)]
+    fn ruler_markers(&self, page_x: f64, page_w: f64) -> Vec<(RulerMarker, f64)> {
+        Ruler::markers(&self.ruler_model(self.ruler.rect(), page_x, page_w))
+    }
+
     fn draw_ruler(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        tr: &mut TextRenderer,
-        _theme: &Theme,
+        text: &mut TextRenderer,
         band: Rect,
         page_x: f64,
         page_w: f64,
     ) {
-        let cc = self.chrome;
-        self.ruler_rect = band;
-        // Band background.
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &band);
-        // Hairline along the bottom edge separating ruler from canvas.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(band.x0, band.y1 - 1.0, band.x1, band.y1),
-        );
+        let model = self.ruler_model(band, page_x, page_w);
+        let colors = RulerColors {
+            bar: self.chrome.bar,
+            field: self.chrome.field,
+            paper: self.chrome.paper,
+            border: self.chrome.border,
+            text: self.chrome.text,
+            text_dim: self.chrome.text_dim,
+            accent: self.chrome.accent,
+            accent_faint: self.chrome.accent_faint,
+        };
+        self.ruler.draw(scene, transform, text, colors, &model);
+    }
 
-        let page_left_sx = self.content_x_to_screen(page_x);
-        let page_right_sx = self.content_x_to_screen(page_x + page_w);
-        let text_left_sx = self.content_x_to_screen(page_x + self.margins.left);
-        let text_right_sx = self.content_x_to_screen(page_x + page_w - self.margins.right);
-        // Clamp drawing to the band's visible width.
-        let clip = |x: f64| x.clamp(band.x0, band.x1);
-        let mid = f64::midpoint(band.y0, band.y1);
-
-        // The whole page span: a recessed "field" tone (the margins area).
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.field,
-            None,
-            &Rect::new(
-                clip(page_left_sx),
-                band.y0 + 4.0,
-                clip(page_right_sx),
-                band.y1 - 4.0,
-            ),
-        );
-        // The text region (between the margins): the paper tone, so the active
-        // typing column reads as the lit part of the ruler.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.paper,
-            None,
-            &Rect::new(
-                clip(text_left_sx),
-                band.y0 + 4.0,
-                clip(text_right_sx),
-                band.y1 - 4.0,
-            ),
-        );
-
-        // Inch ticks + quarter ticks, measured from the LEFT TEXT MARGIN (so "0"
-        // sits at the left indent edge — the standard word-processor convention).
-        // Ticks are placed in content space and mapped through zoom so they track
-        // the page at any scale.
-        let unit_px = PX_PER_INCH; // ticks per inch
-        let text_left_cx = page_x + self.margins.left;
-        let text_right_cx = page_x + page_w - self.margins.right;
-        let max_in = num::i32_of_f64(((text_right_cx - text_left_cx) / unit_px).ceil());
-        for i in 0..=max_in {
-            let cx = text_left_cx + f64::from(i) * unit_px;
-            let sx = self.content_x_to_screen(cx);
-            if sx < band.x0 - 2.0 || sx > band.x1 + 2.0 {
-                continue;
+    fn apply_ruler_preview(&mut self, effect: RulerEffect) {
+        match effect {
+            RulerEffect::PreviewMarginLeft(value) => self.margins.left = value,
+            RulerEffect::PreviewMarginRight(value) => self.margins.right = value,
+            RulerEffect::PreviewIndentLeft(value) => self.set_caret_block_indent_view(value),
+            RulerEffect::PreviewIndentFirst(value) => {
+                self.set_caret_block_first_line_view(value);
             }
-            // Major inch tick + number.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                cc.text_dim,
-                None,
-                &Rect::new(sx - 0.5, mid - 5.0, sx + 0.5, mid + 5.0),
-            );
-            if i > 0 {
-                tr.draw_text(
-                    scene,
-                    &i.to_string(),
-                    9.0,
-                    cc.text_dim,
-                    transform * Affine::translate((sx + 2.0, band.y0 + 1.0)),
-                    None,
-                );
+            RulerEffect::PreviewTab { index, value } => {
+                self.set_caret_tab_stop_view(index, value);
             }
-            // Quarter-inch minor ticks between this inch and the next.
-            for q in 1..4 {
-                let qcx = cx + f64::from(q) * unit_px / 4.0;
-                if qcx > text_right_cx + 1.0 {
-                    break;
-                }
-                let qsx = self.content_x_to_screen(qcx);
-                let h = if q == 2 { 3.5 } else { 2.0 }; // half-inch tick is taller
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    with_alpha(cc.text_dim, 0xaa),
-                    None,
-                    &Rect::new(qsx - 0.5, mid - h, qsx + 0.5, mid + h),
-                );
-            }
-        }
-
-        // "in" unit label at the far left of the band.
-        tr.draw_text(
-            scene,
-            "in",
-            9.0,
-            cc.text_dim,
-            transform * Affine::translate((band.x0 + 4.0, mid - 6.0)),
-            None,
-        );
-
-        // Markers. Margins draw as solid wedges at the band edges; indent markers
-        // as smaller wedges (first-line points down from the top, hanging/left
-        // points up from the bottom); tab stops as small ⌐ ticks.
-        let drag_marker = self.ruler_drag.map(|d| d.marker);
-        for (marker, sx) in self.ruler_markers(page_x, page_w) {
-            if sx < band.x0 - 6.0 || sx > band.x1 + 6.0 {
-                continue;
-            }
-            let active = drag_marker == Some(marker);
-            let col = if active { cc.accent } else { cc.text };
-            match marker {
-                RulerMarker::MarginLeft | RulerMarker::MarginRight => {
-                    // Tall thin handle spanning the band at the margin edge.
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        if active { cc.accent } else { cc.accent_faint },
-                        None,
-                        &Rect::new(sx - 1.0, band.y0 + 2.0, sx + 1.0, band.y1 - 2.0),
-                    );
-                    // A small grab knob.
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        col,
-                        None,
-                        &vello::kurbo::Circle::new((sx, mid), 3.0),
-                    );
-                }
-                RulerMarker::IndentFirst => {
-                    // Down-pointing wedge near the top of the band.
-                    fill_tri(
-                        scene,
-                        transform,
-                        col,
-                        (sx - 4.0, band.y0 + 2.0),
-                        (sx + 4.0, band.y0 + 2.0),
-                        (sx, band.y0 + 9.0),
-                    );
-                }
-                RulerMarker::IndentLeft => {
-                    // Up-pointing wedge near the bottom of the band.
-                    fill_tri(
-                        scene,
-                        transform,
-                        col,
-                        (sx - 4.0, band.y1 - 2.0),
-                        (sx + 4.0, band.y1 - 2.0),
-                        (sx, band.y1 - 9.0),
-                    );
-                }
-                RulerMarker::Tab(_) => {
-                    // Small ⌐ tab mark sitting on the band's lower edge.
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        col,
-                        None,
-                        &Rect::new(sx - 0.5, mid, sx + 0.5, band.y1 - 3.0),
-                    );
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        col,
-                        None,
-                        &Rect::new(sx - 0.5, band.y1 - 3.5, sx + 4.0, band.y1 - 3.0),
-                    );
-                }
-            }
+            _ => {}
         }
     }
 
-    /// A left press inside the ruler band: grab the nearest marker to start a
-    /// drag, or — on the page span with no marker hit — add a tab stop on the
-    /// caret paragraph at the clicked position.
     fn ruler_press(&mut self, state: &mut AutoCommit) {
-        let page_x = self.page_rect.x0;
-        let page_w = self.page_rect.width();
-        if page_w <= 0.0 {
-            return;
-        }
-        let px = self.pointer.x;
-        let py = self.pointer.y;
-        let band = self.ruler_rect;
-        // Nearest marker within the grab radius, ties broken first by the
-        // pointer's vertical zone (first-line wedge in the top third, hanging
-        // wedge in the bottom third, margin bar owns the middle) and then by a
-        // type priority so small indent/tab handles win over the full-height
-        // margin bar when still ambiguous.
-        let top_zone = py < band.y0 + (band.y1 - band.y0) / 3.0;
-        let bot_zone = py > band.y1 - (band.y1 - band.y0) / 3.0;
-        let priority = |m: RulerMarker| -> i32 {
-            match m {
-                RulerMarker::Tab(_) => 4,
-                RulerMarker::IndentFirst => {
-                    if top_zone {
-                        5
-                    } else {
-                        1
-                    }
-                }
-                RulerMarker::IndentLeft => {
-                    if bot_zone {
-                        5
-                    } else {
-                        1
-                    }
-                }
-                // The margin bar wins the middle zone (where indent wedges are
-                // absent), so a 0-indent paragraph can still grab its margin.
-                RulerMarker::MarginLeft | RulerMarker::MarginRight => {
-                    if top_zone || bot_zone {
-                        1
-                    } else {
-                        3
-                    }
-                }
-            }
-        };
-        let mut best: Option<(RulerMarker, f64, i32)> = None;
-        for (marker, sx) in self.ruler_markers(page_x, page_w) {
-            let d = (px - sx).abs();
-            if d > RULER_GRAB {
-                continue;
-            }
-            let pr = priority(marker);
-            let better = match best {
-                None => true,
-                Some((_, bd, bpr)) => d < bd - 0.5 || ((d - bd).abs() <= 0.5 && pr > bpr),
-            };
-            if better {
-                best = Some((marker, d, pr));
-            }
-        }
-        if let Some((marker, _, _)) = best {
-            self.ruler_drag = Some(RulerDrag {
-                marker,
-                drop_off: false,
-            });
-            return;
-        }
-        // No marker — a click in the page span adds a tab stop (px from the left
-        // text margin). Clicks outside the page span do nothing.
-        let text_left_sx = self.content_x_to_screen(page_x + self.margins.left);
-        let text_right_sx = self.content_x_to_screen(page_x + page_w - self.margins.right);
-        if px >= text_left_sx && px <= text_right_sx {
-            let cx = self.screen_x_to_content(px);
-            let tab_px = (cx - (page_x + self.margins.left)).max(0.0);
-            self.inner.add_tab_stop(state, tab_px);
+        let model = self.current_ruler_model();
+        if let Some(RulerEffect::AddTab(value)) = self.ruler.press(self.pointer, &model) {
+            self.inner.add_tab_stop(state, value);
             self.refresh_blocks(state);
             self.needs_commit = true;
             self.modified = true;
@@ -3463,83 +3159,38 @@ impl WordProcessorWidget {
         }
     }
 
-    /// Live-update a ruler-marker drag from the current pointer. Margin + indent
-    /// markers update the widget value (persisted on release); tab markers update
-    /// the in-progress stop position. A tab dragged below the band is flagged for
-    /// removal on release ("drag off to delete").
     fn ruler_drag_move(&mut self) {
-        let Some(mut drag) = self.ruler_drag else {
-            return;
-        };
-        let page_x = self.page_rect.x0;
-        let page_w = self.page_rect.width();
-        if page_w <= 0.0 {
-            return;
+        let model = self.current_ruler_model();
+        if let Some(effect) = self.ruler.drag_to(self.pointer, &model) {
+            self.apply_ruler_preview(effect);
         }
-        let cx = self.screen_x_to_content(self.pointer.x);
-        let left_margin_cx = page_x + self.margins.left;
-        match drag.marker {
-            RulerMarker::MarginLeft => {
-                // Distance of the pointer from the page's left edge → left margin.
-                let v = (cx - page_x).clamp(4.0, page_w / 2.0);
-                self.margins.left = v;
-            }
-            RulerMarker::MarginRight => {
-                let v = (page_x + page_w - cx).clamp(4.0, page_w / 2.0);
-                self.margins.right = v;
-            }
-            RulerMarker::IndentLeft => {
-                let v = (cx - left_margin_cx).max(0.0);
-                // Drag follows in the widget's cached block view so the preview is
-                // live; persisted to the document on release.
-                self.set_caret_block_indent_view(v);
-            }
-            RulerMarker::IndentFirst => {
-                let base = left_margin_cx + self.caret_block_indent();
-                let v = cx - base; // may be negative (hanging first line)
-                self.set_caret_block_first_line_view(v);
-            }
-            RulerMarker::Tab(i) => {
-                // Below the band → mark for removal; else move the stop.
-                drag.drop_off = self.pointer.y > self.ruler_rect.y1;
-                self.ruler_drag = Some(drag);
-                if !drag.drop_off {
-                    let v = (cx - left_margin_cx).max(0.0);
-                    self.set_caret_tab_stop_view(i, v);
-                }
-                return;
-            }
-        }
-        self.ruler_drag = Some(drag);
     }
 
-    /// Persist a ruler-marker drag on release.
     fn ruler_drag_release(&mut self, state: &mut AutoCommit) {
-        let Some(drag) = self.ruler_drag.take() else {
+        let Some(effect) = self.ruler.release() else {
             return;
         };
-        match drag.marker {
-            RulerMarker::MarginLeft | RulerMarker::MarginRight => {
-                self.persist_margins(state);
-            }
-            RulerMarker::IndentLeft => {
-                let v = self.caret_block_indent();
+        match effect {
+            RulerEffect::CommitMargins => self.persist_margins(state),
+            RulerEffect::CommitIndentLeft => {
+                let value = self.caret_block_indent();
                 let block = self.inner.caret.block.clone();
-                self.inner.set_block_indent(state, &block, v);
+                self.inner.set_block_indent(state, &block, value);
             }
-            RulerMarker::IndentFirst => {
-                let v = self.caret_block_first_line_indent();
+            RulerEffect::CommitIndentFirst => {
+                let value = self.caret_block_first_line_indent();
                 let block = self.inner.caret.block.clone();
-                self.inner.set_block_first_line_indent(state, &block, v);
+                self.inner.set_block_first_line_indent(state, &block, value);
             }
-            RulerMarker::Tab(i) => {
+            RulerEffect::CommitTabs { remove } => {
                 let mut stops = self.caret_block_tab_stops();
-                if drag.drop_off && i < stops.len() {
-                    stops.remove(i);
+                if let Some(index) = remove.filter(|index| *index < stops.len()) {
+                    stops.remove(index);
                 }
                 let block = self.inner.caret.block.clone();
                 self.inner.set_block_tab_stops(state, &block, &stops);
             }
+            _ => return,
         }
         self.refresh_blocks(state);
         self.needs_commit = true;
@@ -3570,8 +3221,8 @@ impl WordProcessorWidget {
     fn set_caret_tab_stop_view(&mut self, i: usize, v: f64) {
         let id = self.inner.caret.block.clone();
         let mut stops = self.caret_block_tab_stops();
-        if i < stops.len() {
-            stops[i] = v.max(0.0);
+        if let Some(stop) = stops.get_mut(i) {
+            *stop = v.max(0.0);
         }
         let encoded = stops
             .iter()
@@ -3819,14 +3470,80 @@ impl WordProcessorWidget {
             scene.pop_layer();
             return;
         };
+        // A snapshot of the focused style, threaded through every panel
+        // section below that reads it.
+        let st = self.sheet.get(&key);
 
-        // ================= This paragraph (direct formatting) =============
-        tr.draw_text(
+        let mut ctx = PanelDrawCtx {
             scene,
+            transform,
+            tr,
+            cc,
+        };
+        y = self.draw_panel_this_paragraph(&mut ctx, x0, right, y);
+        y = self.draw_panel_style_header(&mut ctx, x0, right, y, &key, &st);
+        y = self.draw_panel_font_weight(&mut ctx, x0, right, y, &st);
+        y = self.draw_panel_colour(&mut ctx, x0, right, y, &st);
+
+        // Numeric rows (style defaults: size, spacing before/after, indent).
+        for field in [
+            NumField::Size,
+            NumField::SpaceBefore,
+            NumField::SpaceAfter,
+            NumField::Indent,
+        ] {
+            self.draw_num_row(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                field,
+                field.get(&st),
+                x0,
+                right,
+                y,
+            );
+            y += 30.0;
+        }
+
+        panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
+        y += 12.0;
+
+        // New style from this.
+        {
+            let r = Rect::new(x0, y, right, y + 26.0);
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                r,
+                &t("panel-new-style"),
+                false,
+                true,
+            );
+            self.panel_hits.push((r, PanelHit::NewStyle));
+        }
+
+        ctx.scene.pop_layer();
+    }
+
+    /// "This paragraph" section: alignment (L/C/R/J) and line-spacing cycling
+    /// chip on the current paragraph(s) — direct/instance formatting, not the
+    /// named style below it. Returns the `y` past it.
+    fn draw_panel_this_paragraph(
+        &mut self,
+        ctx: &mut PanelDrawCtx,
+        x0: f64,
+        right: f64,
+        mut y: f64,
+    ) -> f64 {
+        // ================= This paragraph (direct formatting) =============
+        ctx.tr.draw_text(
+            ctx.scene,
             &t("panel-this-paragraph"),
             10.5,
-            cc.text_dim,
-            transform * Affine::translate((x0, y)),
+            ctx.cc.text_dim,
+            ctx.transform * Affine::translate((x0, y)),
             None,
         );
         y += 18.0;
@@ -3841,12 +3558,12 @@ impl WordProcessorWidget {
             let bw = 28.0;
             let gap = 6.0;
             let strip_left = right - 4.0 * bw - 3.0 * gap;
-            tr.draw_text(
-                scene,
+            ctx.tr.draw_text(
+                ctx.scene,
                 &t("panel-align"),
                 12.5,
-                cc.text,
-                transform * Affine::translate((x0, y + 5.0)),
+                ctx.cc.text,
+                ctx.transform * Affine::translate((x0, y + 5.0)),
                 None,
             );
             for (i, (label, val)) in [
@@ -3860,7 +3577,16 @@ impl WordProcessorWidget {
             {
                 let rx = strip_left + num::f64_of_usize(i) * (bw + gap);
                 let r = Rect::new(rx, y, rx + bw, y + 24.0);
-                draw_btn(scene, transform, tr, &cc, r, label, cur == *val, true);
+                draw_btn(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.tr,
+                    &ctx.cc,
+                    r,
+                    label,
+                    cur == *val,
+                    true,
+                );
                 self.panel_hits.push((r, PanelHit::ParaAlign(val)));
             }
             y += 30.0;
@@ -3869,55 +3595,79 @@ impl WordProcessorWidget {
         // Line spacing: a cycling chip (1.0 → 1.15 → 1.5 → 2.0) on the current
         // paragraph(s).
         {
-            tr.draw_text(
-                scene,
+            ctx.tr.draw_text(
+                ctx.scene,
                 &t("panel-line-spacing"),
                 12.5,
-                cc.text,
-                transform * Affine::translate((x0, y + 5.0)),
+                ctx.cc.text,
+                ctx.transform * Affine::translate((x0, y + 5.0)),
                 None,
             );
             let label = line_spacing_label(self.current_line_spacing());
             let r = Rect::new(right - 96.0, y, right, y + 24.0);
-            draw_btn(scene, transform, tr, &cc, r, &label, false, true);
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                r,
+                &label,
+                false,
+                true,
+            );
             self.panel_hits.push((r, PanelHit::ParaLineSpacing));
             y += 30.0;
         }
 
-        panel_divider(scene, transform, &cc, x0, right, y);
+        panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
         y += 12.0;
+        y
+    }
 
+    /// "Paragraph style" section: the focused style's display name + hint,
+    /// and the style-picker grid (click a chip to apply it). Returns the `y`
+    /// past it.
+    fn draw_panel_style_header(
+        &mut self,
+        ctx: &mut PanelDrawCtx,
+        x0: f64,
+        right: f64,
+        mut y: f64,
+        key: &str,
+        st: &crate::styles::StyleProps,
+    ) -> f64 {
         // ================= Paragraph style (the named preset) =============
-        // Snapshot the focused style for drawing (read-only copy).
-        let st = self.sheet.get(&key);
-        let display_name = crate::styles::style_display_name(&key, &st);
-        tr.draw_text(
-            scene,
+        let inner_w = right - x0;
+        // `st` is a snapshot of the focused style (read-only copy), taken once
+        // by the caller and threaded through every panel section that needs it.
+        let display_name = crate::styles::style_display_name(key, st);
+        ctx.tr.draw_text(
+            ctx.scene,
             &t("panel-style"),
             10.5,
-            cc.text_dim,
-            transform * Affine::translate((x0, y)),
+            ctx.cc.text_dim,
+            ctx.transform * Affine::translate((x0, y)),
             None,
         );
         y += 16.0;
-        tr.draw_text(
-            scene,
+        ctx.tr.draw_text(
+            ctx.scene,
             &display_name,
             18.0,
-            cc.text,
-            transform * Affine::translate((x0, y)),
+            ctx.cc.text,
+            ctx.transform * Affine::translate((x0, y)),
             Some(num::f32_of_f64(inner_w)),
         );
         y += 24.0;
         // Caption: name the preset semantics explicitly so this section reads as
         // "edit the shared style" — distinct from the toolbar, which formats only
         // the current selection. This is what keeps the two homes unambiguous.
-        tr.draw_text(
-            scene,
-            &t_args("panel-style-hint", &[arg("name", display_name.clone())]),
+        ctx.tr.draw_text(
+            ctx.scene,
+            &t_args("panel-style-hint", &[arg("name", display_name)]),
             11.0,
-            cc.text_dim,
-            transform * Affine::translate((x0, y)),
+            ctx.cc.text_dim,
+            ctx.transform * Affine::translate((x0, y)),
             Some(num::f32_of_f64(inner_w)),
         );
         y += 22.0;
@@ -3934,14 +3684,35 @@ impl WordProcessorWidget {
             let cy = y + row * (chip_h + gap);
             let r = Rect::new(cx, cy, cx + col_w, cy + chip_h);
             let name = crate::styles::style_display_name(id, &self.sheet.get(id));
-            draw_btn(scene, transform, tr, &cc, r, &name, id == &key, false);
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                r,
+                &name,
+                id.as_str() == key,
+                false,
+            );
             self.panel_hits.push((r, PanelHit::Pick(id.clone())));
         }
         let rows = num::f64_of_usize(order.len().div_ceil(2));
         y += rows * (chip_h + gap) + 6.0;
-        panel_divider(scene, transform, &cc, x0, right, y);
+        panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
         y += 12.0;
+        y
+    }
 
+    /// Editable style-default properties, part 1: font family (cycling chip)
+    /// and Bold/Italic toggles. Returns the `y` past it.
+    fn draw_panel_font_weight(
+        &mut self,
+        ctx: &mut PanelDrawCtx,
+        x0: f64,
+        right: f64,
+        mut y: f64,
+        st: &crate::styles::StyleProps,
+    ) -> f64 {
         // ---- Editable style properties (defaults for every block of this style;
         // alignment + line spacing are the direct controls above, not here). The
         // "PARAGRAPH STYLE" header + style name already frame this as the preset
@@ -3949,12 +3720,12 @@ impl WordProcessorWidget {
 
         // Font (cycles sans → serif → mono).
         {
-            tr.draw_text(
-                scene,
+            ctx.tr.draw_text(
+                ctx.scene,
                 &t("panel-font"),
                 12.5,
-                cc.text,
-                transform * Affine::translate((x0, y + 5.0)),
+                ctx.cc.text,
+                ctx.transform * Affine::translate((x0, y + 5.0)),
                 None,
             );
             let fl = t(match st.font.as_str() {
@@ -3963,39 +3734,48 @@ impl WordProcessorWidget {
                 _ => "panel-font-sans",
             });
             let r = Rect::new(right - 96.0, y, right, y + 24.0);
-            draw_btn(scene, transform, tr, &cc, r, &fl, false, true);
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                r,
+                &fl,
+                false,
+                true,
+            );
             self.panel_hits.push((r, PanelHit::CycleFont));
             y += 30.0;
         }
 
         // Weight: Bold / Italic toggles.
         {
-            tr.draw_text(
-                scene,
+            ctx.tr.draw_text(
+                ctx.scene,
                 &t("panel-weight"),
                 12.5,
-                cc.text,
-                transform * Affine::translate((x0, y + 5.0)),
+                ctx.cc.text,
+                ctx.transform * Affine::translate((x0, y + 5.0)),
                 None,
             );
             let bw = 60.0;
             let rb = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 24.0);
             let ri = Rect::new(right - bw, y, right, y + 24.0);
             draw_btn(
-                scene,
-                transform,
-                tr,
-                &cc,
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
                 rb,
                 &t("panel-bold"),
                 st.bold,
                 true,
             );
             draw_btn(
-                scene,
-                transform,
-                tr,
-                &cc,
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
                 ri,
                 &t("panel-italic"),
                 st.italic,
@@ -4005,16 +3785,30 @@ impl WordProcessorWidget {
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
             y += 30.0;
         }
+        y
+    }
 
+    /// Editable style-default properties, part 2: the colour swatch strip +
+    /// "Custom…" affordance that opens the shared colour-picker popover.
+    /// Returns the `y` past it.
+    fn draw_panel_colour(
+        &mut self,
+        ctx: &mut PanelDrawCtx,
+        x0: f64,
+        right: f64,
+        mut y: f64,
+        st: &crate::styles::StyleProps,
+    ) -> f64 {
         // Colour: quick-preset swatches + a "Custom…" affordance that opens the
         // shared `ColorPicker` popover for an arbitrary colour.
+        let inner_w = right - x0;
         {
-            tr.draw_text(
-                scene,
+            ctx.tr.draw_text(
+                ctx.scene,
                 &t("panel-colour"),
                 12.5,
-                cc.text,
-                transform * Affine::translate((x0, y + 5.0)),
+                ctx.cc.text,
+                ctx.transform * Affine::translate((x0, y + 5.0)),
                 None,
             );
             let n = STYLE_PALETTE.len();
@@ -4027,17 +3821,17 @@ impl WordProcessorWidget {
                 let sx = sx0 + num::f64_of_usize(i) * (sw + sw_gap);
                 let r = Rect::new(sx, y, sx + sw, y + 22.0);
                 let col = Color::from_rgb8(c[0], c[1], c[2]);
-                scene.fill(
+                ctx.scene.fill(
                     Fill::NonZero,
-                    transform,
+                    ctx.transform,
                     col,
                     None,
                     &vello::kurbo::RoundedRect::from_rect(r, 4.0),
                 );
                 if *c == st.color {
-                    scene.stroke(
+                    ctx.scene.stroke(
                         &vello::kurbo::Stroke::new(2.0),
-                        transform,
+                        ctx.transform,
                         Color::WHITE,
                         None,
                         &vello::kurbo::RoundedRect::from_rect(r, 4.0),
@@ -4049,67 +3843,36 @@ impl WordProcessorWidget {
             // "Custom…" — shows the current colour chip and opens the full picker.
             let chip = Rect::new(x0, y, x0 + 22.0, y + 22.0);
             let cur = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                transform,
+                ctx.transform,
                 cur,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(chip, 4.0),
             );
-            scene.stroke(
+            ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
-                transform,
-                cc.border,
+                ctx.transform,
+                ctx.cc.border,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(chip, 4.0),
             );
             let btn = Rect::new(chip.x1 + 8.0, y, right, y + 22.0);
             draw_btn(
-                scene,
-                transform,
-                tr,
-                &cc,
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
                 btn,
                 &t("panel-colour-custom"),
-                self.color_picker.is_some(),
+                self.color_picker.is_open(),
                 true,
             );
             self.panel_hits.push((btn, PanelHit::OpenColorPicker));
             self.panel_hits.push((chip, PanelHit::OpenColorPicker));
             y += 30.0;
         }
-
-        // Numeric rows (style defaults: size, spacing before/after, indent).
-        for field in [
-            NumField::Size,
-            NumField::SpaceBefore,
-            NumField::SpaceAfter,
-            NumField::Indent,
-        ] {
-            self.draw_num_row(scene, transform, tr, field, field.get(&st), x0, right, y);
-            y += 30.0;
-        }
-
-        panel_divider(scene, transform, &cc, x0, right, y);
-        y += 12.0;
-
-        // New style from this.
-        {
-            let r = Rect::new(x0, y, right, y + 26.0);
-            draw_btn(
-                scene,
-                transform,
-                tr,
-                &cc,
-                r,
-                &t("panel-new-style"),
-                false,
-                true,
-            );
-            self.panel_hits.push((r, PanelHit::NewStyle));
-        }
-
-        scene.pop_layer();
+        y
     }
 
     /// The image inspector shown in the styles panel when an image is selected:
@@ -4195,7 +3958,25 @@ impl WordProcessorWidget {
         self.panel_hits.push((rl, PanelHit::ImageScale(1.1)));
         y += 34.0;
 
-        // ---- Flip (horizontal / vertical mirror toggles) ------------------
+        self.draw_panel_image_flip(scene, transform, tr, x0, right, y, bw);
+    }
+
+    /// The image inspector's Flip section: Horizontal / Vertical mirror
+    /// toggles, reflecting the selected image's current `flip_h`/`flip_v`
+    /// attrs. `bw` is the button width the Size section above already
+    /// computed, so the two rows of steppers line up.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_panel_image_flip(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        x0: f64,
+        right: f64,
+        y: f64,
+        bw: f64,
+    ) {
+        let cc = self.chrome;
         let img_id = self.selected_image_id();
         let (fh, fv) = self
             .blocks
@@ -4362,111 +4143,6 @@ impl WordProcessorWidget {
         best.or(first).map(|(_, id)| id)
     }
 
-    /// The document outline / navigation pane: a scroll-anchored list of every
-    /// heading, indented by level. Clicking an entry scrolls it into view; the
-    /// heading nearest the current scroll is highlighted. Mirrors the styles
-    /// panel's chrome (background, left/right edge, clipped content).
-    fn draw_outline_pane(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        panel: Rect,
-    ) {
-        let cc = self.chrome;
-        self.outline_rect = panel;
-        self.outline_hits.clear();
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &panel);
-        // Right border (the pane sits on the canvas's left edge).
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(panel.x1 - 1.0, panel.y0, panel.x1, panel.y1),
-        );
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &panel,
-        );
-
-        let pad = 14.0;
-        let x0 = panel.x0 + pad;
-        let right = panel.x1 - pad;
-        let inner_w = (right - x0).max(40.0);
-        let mut y = panel.y0 + 14.0;
-
-        tr.draw_text(
-            scene,
-            &t("outline-header"),
-            10.5,
-            cc.text_dim,
-            transform * Affine::translate((x0, y)),
-            None,
-        );
-        y += 18.0;
-
-        let entries = self.outline_entries();
-        if entries.is_empty() {
-            tr.draw_text(
-                scene,
-                &t("outline-empty"),
-                12.5,
-                cc.text_dim,
-                transform * Affine::translate((x0, y)),
-                Some(num::f32_of_f64(inner_w)),
-            );
-            scene.pop_layer();
-            return;
-        }
-        let active = self.active_outline_block();
-        let row_h = 24.0;
-        for h in &entries {
-            if y > panel.y1 - 4.0 {
-                break; // beyond the pane; the list is unscrolled for v1
-            }
-            let indent = ((h.level.max(1) - 1) as f64) * 14.0;
-            let r = Rect::new(x0, y, right, y + row_h);
-            let is_active = active.as_deref() == Some(h.id.as_str());
-            if is_active {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    cc.chip,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(r, 5.0),
-                );
-            }
-            // A small level cue: deeper headings render dimmer + smaller. The
-            // active row sits on a `chip` fill, so its ink is the primary text
-            // colour (readable on the chip), not the on-accent colour.
-            let (size, ink) = match h.level {
-                1 => (13.5, cc.text),
-                2 => (12.5, cc.text),
-                _ => (11.5, if is_active { cc.text } else { cc.text_dim }),
-            };
-            let label = if h.text.trim().is_empty() {
-                t("outline-untitled")
-            } else {
-                h.text.trim().to_string()
-            };
-            tr.draw_text(
-                scene,
-                &label,
-                size,
-                ink,
-                transform * Affine::translate((x0 + indent, y + 4.0)),
-                Some(num::f32_of_f64((inner_w - indent).max(20.0))),
-            );
-            self.outline_hits.push((r, h.id.clone()));
-            y += row_h;
-        }
-        scene.pop_layer();
-    }
-
     /// Generate (or regenerate) the table of contents from the document headings.
     /// Page numbers are read from the last frame's laid geometry (`Laid::page`);
     /// a heading not yet laid out falls back to page 1. Delegates the block
@@ -4513,7 +4189,7 @@ impl WordProcessorWidget {
     /// Draw the transient status toast (a rounded pill just above the status bar)
     /// when one is staged. Purely a confirmation cue — dismissed on the next
     /// interaction. Kept in the overlay pass so it floats over the page content.
-    fn draw_toast(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer) {
+    fn draw_toast(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer) {
         let Some(msg) = self.toast.clone() else {
             return;
         };
@@ -4816,6 +4492,3226 @@ impl WordProcessorWidget {
     }
 }
 
+/// Frame-level geometry resolved once per frame by
+/// [`WordProcessorWidget::draw_frame_chrome`] and threaded through `draw`'s
+/// other per-pass helpers below — split out so `draw` itself stays under the
+/// line-count limit.
+struct FrameGeometry {
+    canvas: Rect,
+    canvas_left: f64,
+    canvas_right: f64,
+    tb_h: f64,
+    layout_bar_top: f64,
+    history_top: f64,
+    history_h: f64,
+    content_bottom: f64,
+    ctf: Affine,
+    page_x: f64,
+    page_top: f64,
+    page_w: f64,
+    content_x: f64,
+    content_w: f32,
+    m: Edges,
+    letter_h: f64,
+    page_pitch: f64,
+}
+
+/// [`WordProcessorWidget::paginate_blocks`]'s pagination + text-shaping
+/// output, carried into the drawing passes that follow it.
+struct PaginationResult {
+    laid: Vec<Laid>,
+    cache: HashMap<String, (u64, RichTextLayout)>,
+    cur_page: usize,
+    y: f64,
+    blocks: Vec<BlockView>,
+}
+
+/// Loop-carried pagination state threaded through
+/// [`WordProcessorWidget::paginate_blocks`]'s per-block-kind handlers.
+struct PageCursor {
+    /// Current page index.
+    cur_page: usize,
+    /// Whether anything has landed on the current page yet (the first item
+    /// on a page never breaks, so an over-tall block simply overflows its
+    /// own page — acceptable for v1).
+    placed_on_page: bool,
+    /// The running content y.
+    y: f64,
+    /// The currently-active floated image (anchor=paragraph/page,
+    /// wrap=left/right), if any: subsequent paragraphs on its page are
+    /// narrowed to flow beside it (coarse wrap — see [`FloatReserve`]).
+    /// Cleared once `y` clears the float's bottom, when the page advances
+    /// past it, or when the next float supersedes it.
+    active_float: Option<FloatReserve>,
+    /// Per-level ordered-list counters (index = nesting level); reset when a
+    /// non-list block is reached or a shallower level re-enters.
+    ol_counts: Vec<u32>,
+}
+
+/// [`WordProcessorWidget::resolve_paragraph_shape`]'s output: everything
+/// [`WordProcessorWidget::paginate_paragraph`] needs to decide where the
+/// block lands and how to lay it out.
+struct ParagraphShape {
+    st: crate::styles::StyleProps,
+    indent: f64,
+    bullet: Option<String>,
+    /// The coarse float-wrap x-origin offset, valid only while the active
+    /// float still applies to this block's (possibly page-advanced) page —
+    /// the caller re-checks that before using it.
+    float_offset: f64,
+    wrap_w: f32,
+    key: u64,
+    layout: RichTextLayout,
+}
+
+/// The resolved per-block draw geometry [`WordProcessorWidget::paginate_paragraph`]
+/// and [`WordProcessorWidget::emit_paragraph_slices`] both push into `Laid`
+/// entries for one paragraph-like block.
+struct ParagraphPlacement {
+    text_x: f64,
+    width: f64,
+    size: f32,
+    bullet: Option<String>,
+    ink: Color,
+    space_after: f32,
+}
+
+/// The top-left content y for page `i`, in unscaled content space.
+fn page_content_top(fg: &FrameGeometry, i: usize) -> f64 {
+    fg.page_top + num::f64_of_usize(i) * fg.page_pitch + fg.m.top
+}
+
+/// The bottom text-margin y for page `i`, in unscaled content space.
+fn page_content_bottom(fg: &FrameGeometry, i: usize) -> f64 {
+    fg.page_top + num::f64_of_usize(i) * fg.page_pitch + fg.letter_h - fg.m.bottom
+}
+
+/// Per-frame accumulators [`WordProcessorWidget::draw_page_content`] collects
+/// while painting `laid`, rendered by the caller once the pass completes.
+struct Pass2Markers {
+    page_notes: HashMap<usize, Vec<usize>>,
+    comment_markers: Vec<(String, f64, f64)>,
+    change_markers: Vec<(String, f64, f64)>,
+}
+
+/// One [`Laid`] item's shaped layout + its on-screen origin y, bundled so
+/// [`WordProcessorWidget::draw_page_content`]'s per-item decoration helpers
+/// below don't each carry the same three parameters.
+struct LaidItemCtx<'a> {
+    l: &'a Laid,
+    layout: &'a RichTextLayout,
+    ly: f64,
+}
+
+impl WordProcessorWidget {
+    /// Chrome bands above the canvas — toolbar, recovery banner, Find bar,
+    /// ruler — plus the canvas/page geometry they reserve around. The first
+    /// pass of [`Self::draw`].
+    fn draw_frame_chrome(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        full: Rect,
+    ) -> FrameGeometry {
+        // The toolbar may wrap to several rows on a narrow window; reserve its
+        // actual (possibly multi-row) height so the canvas top sits below it and
+        // no control is clipped. `draw_toolbar` re-derives the same packing, so
+        // the reserved band and the drawn rows always agree.
+        let tb_h = self.toolbar_height(full.width());
+        let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
+        self.draw_toolbar(scene, transform, text_renderer, theme, tb);
+
+        // No bottom status strip: its readout floats as a transient bubble (see
+        // `draw_status_bubble`), so the content spans down to the layout bar and
+        // reclaims the strip's height. The layout bar now sits at the very bottom.
+        let content_bottom = full.y1.max(full.y0 + tb_h);
+        let layout_bar_top = (content_bottom - LAYOUT_BAR_H).max(full.y0 + tb_h);
+        // Version-history strip: a band between the canvas and the layout bar,
+        // so the page shrinks rather than the history painting over the text.
+        let history_h = self.history.band_height();
+        let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
+        // Reserve the styles panel out of the canvas so the page re-centers in the
+        // remaining width (and scrolled content never paints under the panel).
+        let canvas_right = if self.styles_panel_visible() {
+            (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
+        } else {
+            full.x1
+        };
+        // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
+        // styles panel on the right) so the page re-centers and scrolled content
+        // never paints under the pane.
+        let canvas_left = if self.outline.is_open() {
+            (full.x0 + OUTLINE_PANEL_W).min(canvas_right - 1.0)
+        } else {
+            full.x0
+        };
+        // Reserve + draw the crash-recovery banner (when staged) and the Find
+        // bar (when open), stacked directly under the toolbar.
+        let (recovery_h, find_h) = self.draw_recovery_and_find_bars(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            canvas_left,
+            canvas_right,
+            full.y0 + tb_h,
+        );
+        // Reserve the horizontal ruler band (when on) out of the canvas top, below
+        // the find bar. It is drawn with the *unscaled* `transform` so it stays a
+        // fixed-height strip while the page scrolls/zooms; its tick + marker
+        // positions are mapped through the zoom so they track the page edge.
+        let ruler_h = if self.ruler_on { RULER_H } else { 0.0 };
+        let canvas = Rect::new(
+            canvas_left,
+            full.y0 + tb_h + recovery_h + find_h + ruler_h,
+            canvas_right,
+            history_top,
+        );
+        scene.fill(Fill::NonZero, transform, self.chrome.canvas, None, &canvas);
+
+        // Zoom anchor: the canvas top, horizontally centered. The page+content
+        // transform scales about this point, so the page stays centered and the
+        // top of the (scrolled) content stays pinned to the canvas top as zoom
+        // changes. The toolbar/find-bar/status bar are drawn with the unscaled
+        // `transform` and are unaffected.
+        self.zoom
+            .set_anchor(Point::new(f64::midpoint(canvas.x0, canvas.x1), canvas.y0));
+        let ctf = self.content_transform(transform);
+
+        // Per-side page geometry — every margin is independently customizable.
+        // The page is a FIXED size (it does not resize with the window); the
+        // window just shows more or less of it and centers it.
+        let m = self.margins;
+        let page_w = MAX_PAGE_W;
+        let page_x = canvas.x0 + ((canvas.width() - page_w) / 2.0).max(0.0);
+        let page_top = canvas.y0 + PAGE_TOP;
+        let content_x = page_x + m.left;
+        let content_w = num::f32_of_f64((page_w - m.left - m.right).max(80.0));
+
+        // Horizontal ruler band (drawn unscaled, above the canvas). Reads the
+        // page edge geometry just computed, plus the caret paragraph's indent +
+        // tab stops from the cached block views.
+        if ruler_h > 0.0 {
+            let band = Rect::new(
+                canvas_left,
+                full.y0 + tb_h + recovery_h + find_h,
+                canvas_right,
+                canvas.y0,
+            );
+            self.draw_ruler(scene, transform, text_renderer, band, page_x, page_w);
+        } else {
+            self.ruler.clear();
+        }
+        // True pagination: each page is a fixed US-Letter sheet (height `letter_h`)
+        // stacked with `PAGE_GAP` between sheets. A block lays into the current
+        // page's text band [content_top, content_bottom]; when the *next whole
+        // block* would not fit before the bottom text margin, the page advances and
+        // the block starts at the next page's top margin — content is never split,
+        // so a page-end never crosses a line of text.
+        let letter_h = page_w * LETTER_RATIO;
+        let page_pitch = letter_h + PAGE_GAP;
+
+        FrameGeometry {
+            canvas,
+            canvas_left,
+            canvas_right,
+            tb_h,
+            layout_bar_top,
+            history_top,
+            history_h,
+            content_bottom,
+            ctf,
+            page_x,
+            page_top,
+            page_w,
+            content_x,
+            content_w,
+            m,
+            letter_h,
+            page_pitch,
+        }
+    }
+
+    /// Reserve + draw the crash-recovery banner (when an offer is staged) and
+    /// the Find bar (when open), stacked directly under the toolbar at
+    /// `tb_bottom`. Returns `(recovery_h, find_h)` — the heights the caller
+    /// reserves out of the canvas top.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_recovery_and_find_bars(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        canvas_left: f64,
+        canvas_right: f64,
+        tb_bottom: f64,
+    ) -> (f64, f64) {
+        let recovery_h = self.recovery.height();
+        if recovery_h > 0.0 {
+            let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
+            let cc = self.chrome;
+            self.recovery.draw(
+                scene,
+                transform,
+                text_renderer,
+                RecoveryPalette {
+                    border: cc.border,
+                    chip: cc.chip,
+                    text: cc.text,
+                    on_accent: cc.on_accent,
+                    accent: theme.accent_primary,
+                    notice: with_alpha(theme.accent_primary, 0x22),
+                },
+                rbar,
+            );
+        }
+        let find_h = self.find.height();
+        if find_h > 0.0 {
+            let fbar = Rect::new(
+                canvas_left,
+                tb_bottom + recovery_h,
+                canvas_right,
+                tb_bottom + recovery_h + find_h,
+            );
+            let cc = self.chrome;
+            self.find.draw(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &PresenceCtx::empty(),
+                FindPalette {
+                    bar: cc.bar,
+                    chip: cc.chip,
+                    border: cc.border,
+                    text: cc.text,
+                    text_dim: cc.text_dim,
+                    accent: cc.accent,
+                    on_accent: cc.on_accent,
+                    danger: theme.tokens.colors.semantic.danger,
+                },
+                fbar,
+            );
+        }
+        (recovery_h, find_h)
+    }
+
+    /// Pass 1 of [`Self::draw`]: shape blocks top-to-bottom and paginate them
+    /// across discrete page sheets. Runs of consecutive `cell` blocks sharing a
+    /// table id lay out as a grid; everything else stacks normally.
+    /// Pass 1 of [`Self::draw`]: shape blocks top-to-bottom and paginate them
+    /// across discrete page sheets. Runs of consecutive `cell` blocks sharing a
+    /// table id lay out as a grid; everything else stacks normally.
+    fn paginate_blocks(
+        &mut self,
+        text_renderer: &mut TextRenderer,
+        fg: &FrameGeometry,
+    ) -> PaginationResult {
+        let blocks = std::mem::take(&mut self.blocks);
+        let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
+        // Incremental layout cache: take last frame's shaped layouts so matching
+        // blocks can be reused, and build this frame's cache afresh. Any entry
+        // left in `old_cache` at the end (a block that no longer exists) is
+        // dropped — this is the per-frame prune that keeps memory bounded.
+        let mut old_cache = std::mem::take(&mut self.layout_cache);
+        let mut new_cache: HashMap<String, (u64, RichTextLayout)> =
+            HashMap::with_capacity(blocks.len());
+        self.dbg_layout_hits = 0;
+        self.dbg_layout_misses = 0;
+        let cell_pad = 8.0f64;
+        // Pagination cursor: current page index, whether anything has landed on
+        // it yet (the first item on a page never breaks, so an over-tall block
+        // simply overflows its own page — acceptable for v1), the running
+        // content y, the currently-active floated image (subsequent paragraphs
+        // on its page are narrowed to flow beside it — coarse wrap, see
+        // `FloatReserve`), and the per-level ordered-list counters.
+        let mut cur = PageCursor {
+            cur_page: 0,
+            placed_on_page: false,
+            y: page_content_top(fg, 0),
+            active_float: None,
+            ol_counts: Vec::new(),
+        };
+        let mut bi = 0;
+        while bi < blocks.len() {
+            let b = &blocks[bi];
+            // Coarse-wrap only narrows *paragraph* blocks beside a float. A table or
+            // another image cannot share the float column, so before laying one out
+            // push the cursor below the active float and retire it — they stack under
+            // the image as a full-width block rather than overlapping it.
+            let next_is_paragraph = !b.kind.eq("image") && cell_table(b).is_none();
+            if !next_is_paragraph
+                && let Some(f) = cur.active_float.take()
+                && f.page == cur.cur_page
+            {
+                cur.y = cur
+                    .y
+                    .max(f.bottom + f64::from(self.sheet.get("body").space_after));
+            }
+            if cell_table(b).is_some() {
+                bi = self.paginate_table(
+                    &blocks,
+                    bi,
+                    fg,
+                    cell_pad,
+                    text_renderer,
+                    &mut old_cache,
+                    &mut new_cache,
+                    &mut laid,
+                    &mut cur,
+                );
+            } else if b.kind == "image" {
+                self.paginate_image(b, fg, text_renderer, &mut new_cache, &mut laid, &mut cur);
+                bi += 1;
+            } else {
+                self.paginate_paragraph(
+                    b,
+                    fg,
+                    text_renderer,
+                    &mut old_cache,
+                    &mut new_cache,
+                    &mut laid,
+                    &mut cur,
+                );
+                bi += 1;
+            }
+        }
+
+        PaginationResult {
+            laid,
+            cache: new_cache,
+            cur_page: cur.cur_page,
+            y: cur.y,
+            blocks,
+        }
+    }
+
+    /// One table (a run of consecutive `cell` blocks sharing a table id):
+    /// measure every row first (so the whole table paginates as one unit,
+    /// never split mid-row across a page boundary), then lay out row by row,
+    /// breaking to a fresh page when a row would cross the bottom margin — the
+    /// first row on a page never breaks, so an over-tall single row overflows
+    /// its page (acceptable for v1). Returns the block index just past the
+    /// table's last cell.
+    #[allow(clippy::too_many_arguments)]
+    fn paginate_table(
+        &mut self,
+        blocks: &[BlockView],
+        bi: usize,
+        fg: &FrameGeometry,
+        cell_pad: f64,
+        text_renderer: &mut TextRenderer,
+        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        laid: &mut Vec<Laid>,
+        cur: &mut PageCursor,
+    ) -> usize {
+        let b = &blocks[bi];
+        let Some(tid) = cell_table(b) else {
+            // The caller only calls this when `cell_table(b).is_some()`; if
+            // that ever changes, skip this one block rather than losing the
+            // pagination cursor.
+            return bi + 1;
+        };
+        let mut bi = bi;
+        cur.ol_counts.clear();
+        let start = bi;
+        while bi < blocks.len() && cell_table(&blocks[bi]).as_deref() == Some(tid.as_str()) {
+            bi += 1;
+        }
+        let cells = &blocks[start..bi];
+        let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
+        let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
+        let col_w = f64::from(fg.content_w) / num::f64_of_usize(ncols);
+        // Measure every row first so the whole table can paginate as one
+        // unit (it is never split mid-row across a page boundary).
+        let rows = self.measure_table_rows(
+            cells,
+            ncols,
+            nrows,
+            col_w,
+            cell_pad,
+            text_renderer,
+            old_cache,
+            new_cache,
+        );
+        let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
+        // Break to the next page if a manual page break is set on the
+        // first cell, or the whole table would not fit.
+        let force_break = cells.first().is_some_and(block_page_break_before);
+        let item_top = if cur.placed_on_page
+            && (force_break || cur.y + table_h > page_content_bottom(fg, cur.cur_page) + 0.5)
+        {
+            cur.cur_page += 1;
+            page_content_top(fg, cur.cur_page)
+        } else {
+            cur.y
+        };
+        cur.placed_on_page = true;
+        let mut ry = item_top;
+        // Whether the current page already carries a row of this table —
+        // the first row on a page never breaks (so an over-tall single row
+        // overflows its page, acceptable for v1).
+        let mut row_on_page = false;
+        for (r, (row_h, row_items)) in rows.into_iter().enumerate() {
+            // Split the table at a row boundary: if this whole row would
+            // cross the page's bottom margin, move it to the next page's top
+            // margin (rows that fit stay on this page). No header repeat.
+            if row_on_page && ry + row_h > page_content_bottom(fg, cur.cur_page) + 0.5 {
+                cur.cur_page += 1;
+                ry = page_content_top(fg, cur.cur_page);
+            }
+            row_on_page = true;
+            for (c, cell_h, cell) in row_items {
+                let cell_x = fg.content_x + num::f64_of_usize(c) * col_w;
+                let cbox = Rect::new(cell_x, ry, cell_x + col_w, ry + row_h);
+                laid.push(Laid {
+                    id: cell.id.clone(),
+                    text: cell.text.clone(),
+                    kind: "cell".into(),
+                    size: 16.0,
+                    y_top: ry + cell_pad,
+                    text_x: cell_x + cell_pad,
+                    width: col_w - 2.0 * cell_pad,
+                    height: cell_h,
+                    layout_y: ry + cell_pad,
+                    clip: None,
+                    bullet: None,
+                    ink: PAPER_INK,
+                    image_hash: None,
+                    cell_box: Some(cbox),
+                    cell_row: Some(r),
+                    page: cur.cur_page,
+                });
+            }
+            ry += row_h;
+        }
+        cur.y = ry + f64::from(self.sheet.get("body").space_after);
+        bi
+    }
+
+    /// Measure every row of a table before laying it out, so the whole table
+    /// can paginate as one unit (it is never split mid-row across a page
+    /// boundary): the shaped (or cache-reused) layout for each populated
+    /// cell, and each row's height (the tallest cell, or a minimum).
+    #[allow(clippy::too_many_arguments)]
+    fn measure_table_rows<'a>(
+        &mut self,
+        cells: &'a [BlockView],
+        ncols: usize,
+        nrows: usize,
+        col_w: f64,
+        cell_pad: f64,
+        text_renderer: &mut TextRenderer,
+        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+    ) -> Vec<TableRow<'a>> {
+        let mut rows: Vec<TableRow<'a>> = Vec::with_capacity(nrows);
+        for r in 0..nrows {
+            let mut row_items: Vec<(usize, f64, &BlockView)> = Vec::new();
+            let mut row_h = 26.0f64;
+            for c in 0..ncols {
+                if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
+                    let (runs, underlines, strikes) = block_runs_markup(cell, self.show_markup);
+                    let wrap_w = num::f32_of_f64((col_w - 2.0 * cell_pad).max(24.0));
+                    let align = block_align(cell, TextAlign::Left);
+                    let key = shape_key(
+                        &runs,
+                        &underlines,
+                        &strikes,
+                        false,
+                        16.0,
+                        wrap_w,
+                        align,
+                        FontFamily::Sans,
+                        1.0,
+                    );
+                    let layout = match old_cache.remove(&cell.id) {
+                        Some((k, lay)) if k == key => {
+                            self.dbg_layout_hits += 1;
+                            lay
+                        }
+                        _ => {
+                            self.dbg_layout_misses += 1;
+                            RichTextLayout::shape(
+                                &mut text_renderer.font_system,
+                                &runs,
+                                false,
+                                16.0,
+                                wrap_w,
+                                align,
+                                FontFamily::Sans,
+                                underlines,
+                                strikes,
+                                1.0,
+                            )
+                        }
+                    };
+                    let cell_h = f64::from(layout.height());
+                    row_h = row_h.max(cell_h + 2.0 * cell_pad);
+                    new_cache.insert(cell.id.clone(), (key, layout));
+                    row_items.push((c, cell_h, cell));
+                }
+            }
+            rows.push((row_h, row_items));
+        }
+        rows
+    }
+
+    /// Resolve one image block's decoded intrinsic size and the on-screen
+    /// display size to draw it at: an explicit `width`/`height` attr (set by
+    /// importers or a resize handle) wins; otherwise the decoded intrinsic
+    /// size is fit to the content column. Either way the final width is
+    /// clamped to the content column and the height follows the chosen
+    /// aspect ratio, so a requested-but-too-wide image scales down without
+    /// distorting. Also seeds `new_cache` with the block's trivial empty
+    /// layout (used only so pointer hit-testing resolves to offset 0; cheap
+    /// enough to re-shape every frame rather than cache incrementally).
+    /// Returns `(blob_hash, intrinsic_size, draw_w, draw_h)`.
+    fn resolve_image_display_size(
+        &mut self,
+        b: &BlockView,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+    ) -> (String, Option<(u32, u32)>, f64, f64) {
+        let hash = match b.attrs.get("blob") {
+            Some(AttrVal::Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        if !hash.is_empty() && !self.image_cache.contains_key(&hash) {
+            let decoded = self
+                .blobs
+                .get(&hash)
+                .and_then(|bytes| ui::widget::Image::from_encoded(bytes).ok());
+            self.image_cache.insert(hash.clone(), decoded);
+        }
+        let intrinsic = self
+            .image_cache
+            .get(&hash)
+            .and_then(|o| o.as_ref())
+            .map(ui::widget::Image::intrinsic_size);
+        let (draw_w, draw_h) = match image_explicit_size(b) {
+            Some((ew, eh)) if ew > 0.0 && eh > 0.0 => {
+                let w = ew.min(f64::from(fg.content_w));
+                (w, (eh * (w / ew)).max(8.0))
+            }
+            _ => match intrinsic {
+                Some((iw, ih)) if iw > 0 && ih > 0 => {
+                    let w = f64::from(iw).min(f64::from(fg.content_w));
+                    (w, (f64::from(ih) * (w / f64::from(iw))).max(8.0))
+                }
+                _ => (f64::from(fg.content_w).min(280.0), 90.0),
+            },
+        };
+        // Image blocks carry a trivial empty layout (used only so pointer
+        // hit-testing resolves to offset 0); it is cheap, so just re-shape
+        // it every frame rather than caching it incrementally.
+        let empty = RichTextLayout::shape(
+            &mut text_renderer.font_system,
+            &[RichSpan::new("")],
+            false,
+            16.0,
+            fg.content_w,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
+        new_cache.insert(b.id.clone(), (0, empty));
+        (hash, intrinsic, draw_w, draw_h)
+    }
+
+    /// One image block: resolve its decoded size, paginate it (a floated
+    /// image reserves a column beside it instead of a full-width slot; see
+    /// `FloatReserve`), and push its `Laid` entry.
+    fn paginate_image(
+        &mut self,
+        b: &BlockView,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        laid: &mut Vec<Laid>,
+        cur: &mut PageCursor,
+    ) {
+        cur.ol_counts.clear();
+        let (hash, intrinsic, draw_w, draw_h) =
+            self.resolve_image_display_size(b, fg, text_renderer, new_cache);
+        // Break to the next page on a manual page break, or if the image
+        // would not fit.
+        let force_break = block_page_break_before(b);
+        let item_top = if cur.placed_on_page
+            && (force_break || cur.y + draw_h > page_content_bottom(fg, cur.cur_page) + 0.5)
+        {
+            cur.cur_page += 1;
+            page_content_top(fg, cur.cur_page)
+        } else {
+            cur.y
+        };
+        cur.placed_on_page = true;
+        if image_floats(b) {
+            // Floated image (anchor=paragraph/page, wrap=left/right): instead
+            // of a full-width vertical slot, pin it to the left or right edge
+            // of the content column and reserve that column so following
+            // paragraphs flow beside it (coarse wrap — `FloatReserve`). `cur.y`
+            // does NOT advance past the image: the next blocks start level
+            // with its top and are narrowed until they clear its bottom.
+            let left = image_wrap(b) == "left";
+            let img_x = if left {
+                fg.content_x
+            } else {
+                fg.content_x + f64::from(fg.content_w) - draw_w
+            };
+            laid.push(Laid {
+                id: b.id.clone(),
+                text: String::new(),
+                kind: "image".into(),
+                size: 16.0,
+                y_top: item_top,
+                text_x: img_x,
+                width: draw_w,
+                height: draw_h,
+                layout_y: item_top,
+                clip: None,
+                bullet: None,
+                ink: PAPER_INK,
+                image_hash: intrinsic.map(|_| hash),
+                cell_box: None,
+                cell_row: None,
+                page: cur.cur_page,
+            });
+            cur.active_float = Some(FloatReserve {
+                left,
+                reserve_w: draw_w + FLOAT_GUTTER,
+                bottom: item_top + draw_h,
+                page: cur.cur_page,
+            });
+            // Leave `cur.y` at the image top so following text wraps beside it.
+            cur.y = item_top;
+        } else {
+            // Inline (default), or anchored with wrap none/both: a full-width
+            // vertical slot. A non-inline-anchored image with no one-sided
+            // wrap is centered in the column; inline images stay left-aligned.
+            let centered = image_anchor(b) != "inline";
+            let img_x = if centered {
+                fg.content_x + ((f64::from(fg.content_w) - draw_w) / 2.0).max(0.0)
+            } else {
+                fg.content_x
+            };
+            laid.push(Laid {
+                id: b.id.clone(),
+                text: String::new(),
+                kind: "image".into(),
+                size: 16.0,
+                y_top: item_top,
+                text_x: img_x,
+                width: draw_w,
+                height: draw_h,
+                layout_y: item_top,
+                clip: None,
+                bullet: None,
+                ink: PAPER_INK,
+                image_hash: intrinsic.map(|_| hash),
+                cell_box: None,
+                cell_row: None,
+                page: cur.cur_page,
+            });
+            cur.y = item_top + draw_h + f64::from(self.sheet.get("body").space_after);
+        }
+    }
+
+    /// Resolve one paragraph-like block's style, list indent/bullet, coarse
+    /// float-wrap reserve, and shaped (or cache-reused) layout — everything
+    /// [`Self::paginate_paragraph`] needs before it can decide where the
+    /// block lands.
+    fn resolve_paragraph_shape(
+        &mut self,
+        b: &BlockView,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        cur: &mut PageCursor,
+    ) -> ParagraphShape {
+        // Resolve the block's style (component-instance model). `size`
+        // and `base_bold` are the style default; per-run `size` marks
+        // override them in `block_runs`.
+        let st = self.sheet.get(&block_style_key(b));
+        let (size, base_bold) = (st.size, st.bold);
+        // List items indent by nesting level; the bullet/number sits just
+        // left of the text. Ordered items number per level.
+        let (indent, bullet) = if b.kind == "list_item" {
+            let level = list_level(b);
+            let indent = f64::from(st.indent) + num::f64_of_usize(level) * LIST_INDENT_STEP;
+            // Keep the ordered counters sized to the current depth; entering
+            // a shallower level drops the deeper counters so they restart.
+            cur.ol_counts.truncate(level + 1);
+            if cur.ol_counts.len() <= level {
+                cur.ol_counts.resize(level + 1, 0);
+            }
+            let bullet = if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
+                cur.ol_counts[level] += 1;
+                format!("{}.", cur.ol_counts[level])
+            } else {
+                cur.ol_counts[level] = 0; // a bullet item resets this level's number
+                bullet_glyph(level).to_string()
+            };
+            (indent, Some(bullet))
+        } else {
+            cur.ol_counts.clear();
+            // Style indent + the paragraph's own ruler indent attr.
+            (f64::from(st.indent) + block_indent_attr(b), None)
+        };
+        // Coarse float-wrap: if a floated image is active on this page and
+        // this block's top still falls within the image band, narrow the
+        // text column by the reserved width and (for a left float) push the
+        // text origin right so it sits beside the image. The block is shaped
+        // at the reduced width, so all its line geometry already reflects the
+        // narrowing — draw + hit-test only need the shared x-origin offset.
+        let (float_reserve, float_offset) = match cur.active_float {
+            Some(f)
+                if f.page == cur.cur_page
+                    && cur.y + f64::from(st.space_before) + 0.5 < f.bottom =>
+            {
+                // Subtract the reserved column from the wrap width; for a
+                // left float, shift the text origin right by the same amount.
+                (f.reserve_w, if f.left { f.reserve_w } else { 0.0 })
+            }
+            _ => (0.0, 0.0),
+        };
+        let wrap_w =
+            (fg.content_w - num::f32_of_f64(indent) - num::f32_of_f64(float_reserve)).max(40.0);
+        let (runs, underlines, strikes) = block_runs_markup(b, self.show_markup);
+        let align = block_align(b, style_align(&st.align));
+        let family = parse_font(&st.font);
+        // The paragraph's line-spacing multiplier (1.0 = single) scales the
+        // shaped line advance, so it is part of the shape key.
+        let line_mult = block_line_spacing(b);
+        let key = shape_key(
+            &runs,
+            &underlines,
+            &strikes,
+            base_bold,
+            size,
+            wrap_w,
+            align,
+            family,
+            line_mult,
+        );
+        // Reuse the shaped layout if nothing affecting shaping changed
+        // (text, marks, resolved style, wrap width, or line spacing), else
+        // re-shape.
+        let layout = match old_cache.remove(&b.id) {
+            Some((k, lay)) if k == key => {
+                self.dbg_layout_hits += 1;
+                lay
+            }
+            _ => {
+                self.dbg_layout_misses += 1;
+                RichTextLayout::shape(
+                    &mut text_renderer.font_system,
+                    &runs,
+                    base_bold,
+                    size,
+                    wrap_w,
+                    align,
+                    family,
+                    underlines,
+                    strikes,
+                    line_mult,
+                )
+            }
+        };
+        ParagraphShape {
+            st,
+            indent,
+            bullet,
+            float_offset,
+            wrap_w,
+            key,
+            layout,
+        }
+    }
+
+    /// One paragraph-like block (a normal paragraph, heading, or list item):
+    /// resolve its style/shape, decide whether it fits whole on the current
+    /// page or needs to be split into per-page slices, and push its `Laid`
+    /// entry/entries. Handles the paragraph side of float bookkeeping — a
+    /// floated image only narrows blocks on its own page.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors emit_paragraph_slices below: one call site threading \
+                  the shared pagination cursor, both layout caches, and the \
+                  output vec through the single-paragraph pagination step"
+    )]
+    fn paginate_paragraph(
+        &mut self,
+        b: &BlockView,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        laid: &mut Vec<Laid>,
+        cur: &mut PageCursor,
+    ) {
+        let ps = self.resolve_paragraph_shape(b, fg, text_renderer, old_cache, cur);
+        let block_h = f64::from(ps.layout.height());
+        // Place with the style's space-before as the leading gap, breaking
+        // to the next page when the whole block would not fit before the
+        // bottom text margin (the lead is dropped at the top of a fresh
+        // page so the first paragraph hugs the top margin).
+        let top_candidate = cur.y + f64::from(ps.st.space_before);
+        // A manual page break forces a fresh page; otherwise break only
+        // when the whole block would overflow the bottom text margin.
+        let force_break = block_page_break_before(b);
+        let item_top = if cur.placed_on_page
+            && (force_break
+                || top_candidate + block_h > page_content_bottom(fg, cur.cur_page) + 0.5)
+        {
+            cur.cur_page += 1;
+            page_content_top(fg, cur.cur_page)
+        } else {
+            top_candidate
+        };
+        cur.placed_on_page = true;
+        // If the page advanced past the float (page-break), the float no
+        // longer applies to this block — drop the x-origin offset so the
+        // block lays full-width on its new page. (The float only ever
+        // narrows blocks on its own page.)
+        let float_offset = if cur.active_float.is_some_and(|f| f.page == cur.cur_page) {
+            ps.float_offset
+        } else {
+            0.0
+        };
+        let pl = ParagraphPlacement {
+            text_x: fg.content_x + ps.indent + float_offset,
+            width: f64::from(ps.wrap_w),
+            size: ps.st.size,
+            bullet: ps.bullet.clone(),
+            ink: Color::from_rgb8(ps.st.color[0], ps.st.color[1], ps.st.color[2]),
+            space_after: ps.st.space_after,
+        };
+        // Does the whole block fit on the current page from `item_top`? If
+        // so this is the fast, unchanged single-`Laid` path. Otherwise the
+        // block is split at line boundaries across as many pages as needed.
+        if item_top + block_h <= page_content_bottom(fg, cur.cur_page) + 0.5 {
+            laid.push(Laid {
+                id: b.id.clone(),
+                text: b.text.clone(),
+                kind: b.kind.clone(),
+                size: pl.size,
+                y_top: item_top,
+                text_x: pl.text_x,
+                width: pl.width,
+                height: block_h,
+                layout_y: item_top,
+                clip: None,
+                bullet: pl.bullet.clone(),
+                ink: pl.ink,
+                image_hash: None,
+                cell_box: None,
+                cell_row: None,
+                page: cur.cur_page,
+            });
+            cur.y = item_top + block_h + f64::from(pl.space_after);
+        } else {
+            Self::emit_paragraph_slices(b, fg, &ps.layout, laid, cur, item_top, &pl);
+        }
+        new_cache.insert(b.id.clone(), (ps.key, ps.layout));
+        // Float bookkeeping: a float only narrows blocks on its own page and
+        // only while text is still beside the image. Clear it once the page
+        // has advanced past the float, or once this block has flowed down to
+        // (or past) the image's bottom — and in that latter case make sure
+        // the cursor sits at least at the image bottom so the next full-width
+        // block clears the image vertically rather than overlapping it.
+        if let Some(f) = cur.active_float {
+            if cur.cur_page > f.page {
+                cur.active_float = None;
+            } else if cur.y >= f.bottom {
+                cur.y = cur.y.max(f.bottom + f64::from(ps.st.space_after));
+                cur.active_float = None;
+            }
+        }
+    }
+
+    /// Intra-block pagination for one paragraph-like block that doesn't fit
+    /// on the current page: emit one `Laid` slice per page the block spans.
+    /// Each slice shares the one cached `layout` (one id, one cache entry);
+    /// only the *visual* rendering is split. A slice's `layout_y` maps the
+    /// layout origin so line geometry (`selection_rects`/`caret_geometry`/
+    /// `hit`) still resolves, and its `clip` band keeps lines from other
+    /// slices off this page.
+    fn emit_paragraph_slices(
+        b: &BlockView,
+        fg: &FrameGeometry,
+        layout: &RichTextLayout,
+        laid: &mut Vec<Laid>,
+        cur: &mut PageCursor,
+        item_top: f64,
+        pl: &ParagraphPlacement,
+    ) {
+        // Intra-block pagination: emit one `Laid` slice per page the
+        // block spans. Each slice shares the one cached layout (one id,
+        // one cache entry); only the *visual* rendering is split. A
+        // slice's `layout_y` maps the layout origin so that line geometry
+        // (`selection_rects`/`caret_geometry`/`hit`) still resolves, and
+        // its `clip` band keeps lines from other slices off this page.
+        let lines = layout_line_tops(layout, &b.text);
+        let mut li = 0usize;
+        let mut slice_top = item_top; // on-screen top of the current slice
+        let mut first_slice = true;
+        while li < lines.len() {
+            let bottom = page_content_bottom(fg, cur.cur_page);
+            let (first_line_top, _) = lines[li];
+            // layout_y maps line `li`'s internal top to `slice_top`.
+            let layout_y = slice_top - first_line_top;
+            // Take every subsequent line that still fits on this page.
+            let mut last = li;
+            while last + 1 < lines.len() {
+                let (nt, nh) = lines[last + 1];
+                if layout_y + nt + nh > bottom + 0.5 {
+                    break;
+                }
+                last += 1;
+            }
+            // Respect the shared paragraph widow/orphan policy. If the
+            // next page would receive too few lines, leave enough there;
+            // if this page cannot retain the minimum, move the paragraph
+            // fragment wholesale instead of producing a one-line stub.
+            let available = last - li + 1;
+            let allowed = layout.fragment_line_count_from(li, available);
+            if allowed == 0 && slice_top > page_content_top(fg, cur.cur_page) + 0.5 {
+                cur.cur_page += 1;
+                slice_top = page_content_top(fg, cur.cur_page);
+                cur.y = slice_top;
+                continue;
+            }
+            let allowed = allowed.max(1).min(available);
+            last = li + allowed - 1;
+            let (lt, lh) = lines[last];
+            let slice_bottom = layout_y + lt + lh;
+            let band = Rect::new(pl.text_x, slice_top, pl.text_x + pl.width, slice_bottom);
+            laid.push(Laid {
+                id: b.id.clone(),
+                text: b.text.clone(),
+                kind: b.kind.clone(),
+                size: pl.size,
+                y_top: slice_top,
+                text_x: pl.text_x,
+                width: pl.width,
+                height: slice_bottom - slice_top,
+                layout_y,
+                clip: Some(band),
+                // The bullet/number belongs to the block's first line only.
+                bullet: if first_slice { pl.bullet.clone() } else { None },
+                ink: pl.ink,
+                image_hash: None,
+                cell_box: None,
+                cell_row: None,
+                page: cur.cur_page,
+            });
+            li = last + 1;
+            first_slice = false;
+            if li < lines.len() {
+                // More lines remain: spill onto the next page's top margin.
+                cur.cur_page += 1;
+                slice_top = page_content_top(fg, cur.cur_page);
+                cur.y = slice_top;
+            } else {
+                cur.y = slice_bottom + f64::from(pl.space_after);
+            }
+        }
+    }
+
+    /// Pass 1's aftermath: the document's total extent, the clamped scroll
+    /// offset, and shifting `laid` (+ its cell/clip rects) into screen space so
+    /// hit-testing needs no further offset. Returns `(num_pages, sy)`.
+    fn finish_scroll(
+        &mut self,
+        fg: &FrameGeometry,
+        laid: &mut [Laid],
+        cur_page: usize,
+        y: f64,
+    ) -> (usize, f64) {
+        // Total document extent below `fg.page_top`: the stacked page sheets + gaps,
+        // widened if an over-tall block overflowed its page's text band.
+        let num_pages = cur_page + 1;
+        let pages_extent =
+            num::f64_of_usize(num_pages) * fg.letter_h + num::f64_of_usize(cur_page) * PAGE_GAP;
+        let extent = pages_extent.max(y - fg.page_top);
+
+        // Scrolling: clamp the offset to the overflow, then shift the laid-out
+        // content (+ pages) into screen space so hit-testing needs no offset.
+        // `scroll_y` is an offset in unscaled content space; on screen the content
+        // is magnified by `zoom`, so the visible window covers `fg.canvas.height() /
+        // zoom` of content — divide by zoom so the overflow (and thus max scroll)
+        // grows when zoomed in and shrinks when zoomed out.
+        self.max_scroll =
+            (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom.factor()).max(0.0);
+        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
+        let sy = self.scroll_y;
+        if sy != 0.0 {
+            for l in laid.iter_mut() {
+                l.y_top -= sy;
+                l.layout_y -= sy;
+                if let Some(bx) = l.cell_box.as_mut() {
+                    *bx = Rect::new(bx.x0, bx.y0 - sy, bx.x1, bx.y1 - sy);
+                }
+                if let Some(c) = l.clip.as_mut() {
+                    *c = Rect::new(c.x0, c.y0 - sy, c.x1, c.y1 - sy);
+                }
+            }
+        }
+
+        (num_pages, sy)
+    }
+
+    /// Push the canvas clip, then draw each discrete page sheet: shadow +
+    /// paper, header/footer running bands (with the active edit-context band
+    /// highlighted), and the default "Page N" indicator when there's no footer
+    /// of its own. Returns the reference (first) page's rect in screen space.
+    fn draw_page_sheets(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        fg: &FrameGeometry,
+        num_pages: usize,
+        sy: f64,
+    ) -> Rect {
+        // Clip the document to the canvas so scrolled content never paints over
+        // the toolbar / status bar.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &fg.canvas,
+        );
+
+        // Discrete page sheets (shadow + paper) stacked with `PAGE_GAP`. Each
+        // sheet draws the page header inside its top-margin band and the footer
+        // inside its bottom-margin band (page-number fields resolved to this
+        // page's number). A subtle "Page N" indicator lives in the gap below the
+        // sheet only when the document has no footer of its own. All through
+        // `fg.ctf` (the zoom transform) so the page magnifies with the content.
+        let header = std::mem::take(&mut self.header);
+        let footer = std::mem::take(&mut self.footer);
+        // Which running region (if any) is currently the active edit context, and
+        // on which page its editable band lives (the first page is the reference —
+        // the header/footer content is shared across pages, like Word).
+        let edit_region = self.inner.region();
+        self.region_laid.clear();
+        for i in 0..num_pages {
+            self.draw_page_sheet(
+                scene,
+                text_renderer,
+                fg,
+                &header,
+                &footer,
+                edit_region,
+                i,
+                sy,
+            );
+        }
+        self.header = header;
+        self.footer = footer;
+        // The first page is the reference rect for the margin-guide overlay
+        // (margins apply to every page identically).
+        let page = Rect::new(
+            fg.page_x,
+            fg.page_top - sy,
+            fg.page_x + fg.page_w,
+            fg.page_top + fg.letter_h - sy,
+        );
+        self.page_rect = page;
+        page
+    }
+
+    /// One page sheet (shadow + paper), its header/footer running bands (with
+    /// the active edit-context band highlighted), and the default "Page N"
+    /// indicator when there's no footer of its own.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_page_sheet(
+        &mut self,
+        scene: &mut Scene,
+        text_renderer: &mut TextRenderer,
+        fg: &FrameGeometry,
+        header: &[BlockView],
+        footer: &[BlockView],
+        edit_region: Region,
+        i: usize,
+        sy: f64,
+    ) {
+        let ptop = fg.page_top + num::f64_of_usize(i) * fg.page_pitch - sy;
+        let sheet = Rect::new(fg.page_x, ptop, fg.page_x + fg.page_w, ptop + fg.letter_h);
+        chrome::page::draw(
+            scene,
+            fg.ctf,
+            sheet,
+            self.chrome.paper,
+            &self.chrome.paper_elevation,
+        );
+        let page_no = i + 1;
+        // Header band: the top margin, inset by the L/R text margins.
+        let head_band = Rect::new(
+            sheet.x0 + fg.m.left,
+            sheet.y0,
+            sheet.x1 - fg.m.right,
+            sheet.y0 + fg.m.top,
+        );
+        // Footer band: the bottom margin, inset by the L/R text margins.
+        let foot_band = Rect::new(
+            sheet.x0 + fg.m.left,
+            sheet.y1 - fg.m.bottom,
+            sheet.x1 - fg.m.right,
+            sheet.y1,
+        );
+        // Cache the reference-page band rects for the event handler's hit-test.
+        if i == 0 {
+            self.head_band_rect = head_band;
+            self.foot_band_rect = foot_band;
+        }
+        let head_editing = i == 0 && edit_region == Region::Header;
+        let foot_editing = i == 0 && edit_region == Region::Footer;
+        let (_, head_laid) = Self::draw_running_band(
+            scene,
+            fg.ctf,
+            text_renderer,
+            header,
+            page_no,
+            head_band,
+            false,
+            head_editing,
+        );
+        let (drew_footer, foot_laid) = Self::draw_running_band(
+            scene,
+            fg.ctf,
+            text_renderer,
+            footer,
+            page_no,
+            foot_band,
+            true,
+            foot_editing,
+        );
+        if head_editing {
+            self.region_laid = head_laid;
+            self.draw_active_band_chrome(scene, fg.ctf, text_renderer, head_band);
+        }
+        if foot_editing {
+            self.region_laid = foot_laid;
+            self.draw_active_band_chrome(scene, fg.ctf, text_renderer, foot_band);
+        }
+        // Default page indicator in the gap — only when no footer was drawn.
+        if !drew_footer && !foot_editing {
+            let label = t_args("page-indicator", &[arg("n", num::i64_of_usize(page_no))]);
+            let approx = num::f64_of_usize(label.chars().count()) * 6.4;
+            let lx = f64::midpoint(sheet.x0, sheet.x1) - approx / 2.0;
+            let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
+            // Drawn in the inter-page gap on the canvas — chrome, so themed.
+            text_renderer.draw_text(
+                scene,
+                &label,
+                11.0,
+                self.chrome.text_dim,
+                fg.ctf * Affine::translate((lx, ly)),
+                None,
+            );
+        }
+    }
+
+    /// Restore the block cache pass 1 took, then precompute pass 2's read-only
+    /// inputs: whether the selection spans multiple cells, footnote citation
+    /// numbers in document order, and (when spell-check is on) the misspelled
+    /// spans for every body block near the viewport. Returns `(multi_sel,
+    /// note_nums, spell_by_block)`.
+    fn prepare_pass2_inputs(
+        &mut self,
+        blocks: Vec<BlockView>,
+        laid: &[Laid],
+        fg: &FrameGeometry,
+    ) -> Pass2Inputs {
+        // Restore the block cache before pass 2 so selection lookups resolve.
+        self.blocks = blocks;
+        let multi_sel = self.selection_blocks_cached().len() > 1;
+
+        // Footnote numbering: assign citation numbers (1,2,3…) to notes in the
+        // order their `note-ref` markers first appear in the body. This drives
+        // both the in-text superscript and the bottom-of-page footnote list.
+        let note_nums = note_numbering(&self.blocks);
+
+        // Spell-check (squiggles): precompute the misspelled byte spans for every
+        // body block *near the viewport* before pass 2, so the read-only pass-2
+        // loop (which borrows `self` immutably) can look them up without a `&mut`
+        // borrow conflict. Cheap: cached per block keyed by text (an edit
+        // re-checks), and culled to a band around the visible canvas.
+        let mut spell_by_block: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        if self.spellcheck_on {
+            // A generous band around the canvas (one screenful above/below) so a
+            // block scrolling into view is already checked; everything else is
+            // skipped to keep the pass cheap on long documents.
+            let cull_lo = fg.canvas.y0 - fg.canvas.height();
+            let cull_hi = fg.canvas.y1 + fg.canvas.height();
+            // Collect the (id, text) of in-band, spellable body blocks first to end
+            // the immutable borrow of `laid`/`self.blocks` before the `&mut self`
+            // dictionary/cache calls below.
+            let targets: Vec<(String, String)> = laid
+                .iter()
+                .filter(|l| {
+                    !l.text.is_empty()
+                        && l.kind != "image"
+                        && l.kind != "fidelity"
+                        && l.y_top + l.height >= cull_lo
+                        && l.y_top <= cull_hi
+                })
+                .map(|l| (l.id.clone(), l.text.clone()))
+                .collect();
+            for (id, text) in targets {
+                let spans = self.block_spell_spans(&id, &text);
+                if !spans.is_empty() {
+                    spell_by_block.insert(id, spans);
+                }
+            }
+        }
+
+        (multi_sel, note_nums, spell_by_block)
+    }
+
+    /// Pass 2 of [`Self::draw`]: paint cell borders, bullets, selection, the
+    /// shaped text, decorations (find/comment/tracked-change highlights,
+    /// spell-check squiggles, footnote superscripts) and the caret for every
+    /// laid item. Collects the footnote/comment/change-card bookkeeping that
+    /// the passes after this one render.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_page_content(
+        &mut self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        laid: &[Laid],
+        new_cache: &HashMap<String, (u64, RichTextLayout)>,
+        multi_sel: bool,
+        spell_by_block: &HashMap<String, Vec<(usize, usize)>>,
+        note_nums: &HashMap<String, usize>,
+    ) -> Pass2Markers {
+        let mut page_notes: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut comment_markers: Vec<(String, f64, f64)> = Vec::new();
+        let mut change_markers: Vec<(String, f64, f64)> = Vec::new();
+
+        // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
+        // here renders through `fg.ctf` (the zoom transform) so page content scales
+        // while the surrounding chrome stays at 100%.
+        for l in laid {
+            if l.kind == "image" {
+                self.draw_laid_image(scene, fg, text_renderer, l);
+                continue;
+            }
+            if let Some(bx) = l.cell_box {
+                self.draw_laid_cell_box(scene, fg, bx, l.cell_row);
+            }
+
+            if l.kind == "fidelity" {
+                Self::draw_laid_fidelity(scene, fg, text_renderer, l);
+                continue;
+            }
+
+            if let Some(bul) = &l.bullet {
+                text_renderer.draw_text(
+                    scene,
+                    bul,
+                    l.size,
+                    l.ink,
+                    fg.ctf * Affine::translate((l.text_x - BULLET_GAP, l.y_top)),
+                    None,
+                );
+            }
+
+            // The shaped text lives in the layout cache (built in pass 1), keyed
+            // by block id. Every normal/cell entry was inserted there.
+            let Some((_, layout)) = new_cache.get(&l.id) else {
+                continue;
+            };
+            // Layout-relative geometry is measured from `layout_y` (= the on-screen
+            // y of the shaped layout's origin). For an unsplit block this equals
+            // `y_top`; for a slice of a page-split block it is offset so the carried
+            // lines land in this slice's band.
+            let ly = l.layout_y;
+            // A split slice clips its drawing to its own band so lines belonging to
+            // the block's other slices (drawn from the same layout via `ly`) never
+            // bleed onto this page. Unsplit blocks (`clip == None`) draw unclipped.
+            let clipped = l.clip.is_some();
+            if let Some(band) = l.clip {
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    fg.ctf,
+                    &band,
+                );
+            }
+
+            let item = LaidItemCtx { l, layout, ly };
+            self.draw_laid_text(
+                scene,
+                fg,
+                text_renderer,
+                &item,
+                multi_sel,
+                &mut comment_markers,
+            );
+            self.draw_laid_change_decos(scene, fg, &item, &mut change_markers);
+            self.draw_laid_notes_and_spellcheck(
+                scene,
+                fg,
+                text_renderer,
+                &item,
+                spell_by_block,
+                note_nums,
+                &mut page_notes,
+            );
+
+            if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
+                let byte = char_to_byte(&l.text, self.inner.caret.offset);
+                let (cx, cy, ch) = layout.caret_geometry(byte);
+                let caret = Rect::new(
+                    l.text_x + f64::from(cx),
+                    ly + f64::from(cy),
+                    l.text_x + f64::from(cx) + CARET_WIDTH,
+                    ly + f64::from(cy) + f64::from(ch),
+                );
+                scene.fill(Fill::NonZero, fg.ctf, PAPER_CARET, None, &caret);
+            }
+            if clipped {
+                scene.pop_layer();
+            }
+        }
+
+        Pass2Markers {
+            page_notes,
+            comment_markers,
+            change_markers,
+        }
+    }
+
+    /// A table cell's tinted background (header row / zebra stripe / plain)
+    /// + border, for one pass-2 item.
+    fn draw_laid_cell_box(
+        &self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        bx: Rect,
+        cell_row: Option<usize>,
+    ) {
+        let fill = match cell_row {
+            Some(0) => Color::from_rgb8(0xec, 0xee, 0xf3), // header row tint
+            Some(r) if r % 2 == 0 => Color::from_rgb8(0xf6, 0xf6, 0xf9), // zebra
+            _ => self.chrome.paper,
+        };
+        scene.fill(Fill::NonZero, fg.ctf, fill, None, &bx);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            fg.ctf,
+            Color::from_rgb8(0xc4, 0xc6, 0xcc),
+            None,
+            &bx,
+        );
+    }
+
+    /// One pass-2 image item: paint it (mirrored per `flip_h`/`flip_v`, or a
+    /// placeholder if undecoded), then ring it with the selection chrome when
+    /// it's the caret's block.
+    fn draw_laid_image(
+        &mut self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        l: &Laid,
+    ) {
+        let rect = Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height);
+        // Mirror flips (`flip_h` / `flip_v` block attrs) are applied as a
+        // scale-about-centre on the paint transform, so the image draws
+        // mirrored in place without moving its slot.
+        let (fh, fv) = self
+            .blocks
+            .iter()
+            .find(|b| b.id == l.id)
+            .map_or((false, false), |b| {
+                (
+                    matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
+                    matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
+                )
+            });
+        let itf = if fh || fv {
+            let cx = f64::midpoint(rect.x0, rect.x1);
+            let cy = f64::midpoint(rect.y0, rect.y1);
+            fg.ctf
+                * Affine::translate((cx, cy))
+                * Affine::scale_non_uniform(
+                    if fh { -1.0 } else { 1.0 },
+                    if fv { -1.0 } else { 1.0 },
+                )
+                * Affine::translate((-cx, -cy))
+        } else {
+            fg.ctf
+        };
+        if let Some(hash) = &l.image_hash {
+            if let Some(slot) = self.image_cache.get_mut(hash)
+                && let Some(img) = slot
+            {
+                img.paint_at(scene, itf, rect);
+            }
+        } else {
+            // Missing or undecodable (e.g. non-PNG) image — placeholder.
+            scene.fill(
+                Fill::NonZero,
+                fg.ctf,
+                Color::from_rgb8(0xee, 0xee, 0xf2),
+                None,
+                &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                fg.ctf,
+                Color::from_rgb8(0xcc, 0xce, 0xd6),
+                None,
+                &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                &t("canvas-image-missing"),
+                14.0,
+                PAPER_MUTED,
+                fg.ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)),
+                None,
+            );
+        }
+        // Selection chrome: when this image is the caret's block, ring it
+        // with an accent border + corner resize handles so it reads as
+        // "selected" (the panel then shows the resize / flip controls).
+        if l.id == self.inner.caret.block {
+            let accent = self.chrome.accent;
+            scene.stroke(&vello::kurbo::Stroke::new(2.0), fg.ctf, accent, None, &rect);
+            let handle_r = 5.0;
+            for (handle_x, handle_y) in [
+                (rect.x0, rect.y0),
+                (rect.x1, rect.y0),
+                (rect.x0, rect.y1),
+                (rect.x1, rect.y1),
+            ] {
+                let handle_rect = Rect::new(
+                    handle_x - handle_r,
+                    handle_y - handle_r,
+                    handle_x + handle_r,
+                    handle_y + handle_r,
+                );
+                scene.fill(Fill::NonZero, fg.ctf, Color::WHITE, None, &handle_rect);
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.5),
+                    fg.ctf,
+                    accent,
+                    None,
+                    &handle_rect,
+                );
+            }
+        }
+    }
+
+    /// One pass-2 "fidelity" (unrenderable embedded content) placeholder item.
+    fn draw_laid_fidelity(
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        l: &Laid,
+    ) {
+        let box_rect = Rect::new(
+            l.text_x,
+            l.y_top + 2.0,
+            (fg.page_x + fg.page_w - fg.m.right).min(l.text_x + 360.0),
+            l.y_top + l.height - 2.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            fg.ctf,
+            Color::from_rgb8(0xee, 0xee, 0xf2),
+            None,
+            &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            &t("canvas-embedded-content"),
+            14.0,
+            PAPER_MUTED,
+            fg.ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)),
+            None,
+        );
+    }
+
+    /// Selection highlight, find-match highlight, comment highlight (which
+    /// also records `comment_markers` for the review-card pass), and the
+    /// shaped text itself, for one pass-2 item.
+    fn draw_laid_text(
+        &self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        item: &LaidItemCtx,
+        multi_sel: bool,
+        comment_markers: &mut Vec<(String, f64, f64)>,
+    ) {
+        let (l, layout, ly) = (item.l, item.layout, item.ly);
+        if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
+            if let (Some(bx), true) = (l.cell_box, multi_sel) {
+                // Multi-cell selection: highlight the whole cell (spreadsheet-style).
+                scene.fill(Fill::NonZero, fg.ctf, PAPER_SELECTION, None, &bx);
+            } else {
+                for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                    let r = Rect::new(
+                        l.text_x + f64::from(rx0),
+                        ly + f64::from(ry0),
+                        l.text_x + f64::from(rx1),
+                        ly + f64::from(ry1),
+                    );
+                    scene.fill(Fill::NonZero, fg.ctf, PAPER_SELECTION, None, &r);
+                }
+            }
+        }
+
+        // Find-match highlights (under the text).
+        if self.find.is_open() {
+            for (bid, cs, ce) in self.find.matches() {
+                if bid == &l.id {
+                    let bs = char_to_byte(&l.text, *cs);
+                    let be = char_to_byte(&l.text, *ce);
+                    for (rx0, ry0, rx1, ry1) in layout.selection_rects(bs, be) {
+                        let r = Rect::new(
+                            l.text_x + f64::from(rx0),
+                            ly + f64::from(ry0),
+                            l.text_x + f64::from(rx1),
+                            ly + f64::from(ry1),
+                        );
+                        scene.fill(Fill::NonZero, fg.ctf, FIND_HL, None, &r);
+                    }
+                }
+            }
+        }
+        // Comment highlight bands (under the text): a pale-yellow band over
+        // each `comment`-marked range. Mapped to on-screen rects via the same
+        // `selection_rects` geometry as the selection highlight, so it tracks
+        // wrapping. The comment's start line is recorded for the right-margin
+        // indicator/card rendered after the loop. Only when markup is shown.
+        if self.show_markup
+            && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
+        {
+            for (bs, be, cid) in block_comment_ranges(b) {
+                let rects = layout.selection_rects(bs, be);
+                for &(rx0, ry0, rx1, ry1) in &rects {
+                    let r = Rect::new(
+                        l.text_x + f64::from(rx0),
+                        ly + f64::from(ry0),
+                        l.text_x + f64::from(rx1),
+                        ly + f64::from(ry1),
+                    );
+                    scene.fill(Fill::NonZero, fg.ctf, COMMENT_HL, None, &r);
+                }
+                // Anchor the marker at the start line's top, and remember
+                // the range's right edge (max rect x1) for the inline tab.
+                if let Some(&(_, ry0, _, _)) = rects.first() {
+                    let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
+                    comment_markers.push((cid, ly + f64::from(ry0), l.text_x + f64::from(right_x)));
+                }
+            }
+        }
+
+        text_renderer.draw_rich(
+            scene,
+            layout,
+            fg.ctf * Affine::translate((l.text_x, ly)),
+            l.ink,
+        );
+    }
+
+    /// Tracked-change decorations (green underline for `ins`, red strike for
+    /// `del`) over one pass-2 item's text, plus recording `change_markers`
+    /// for the review-card pass. Drawn here (rather than via the shaped
+    /// layout's own underline/strike lists) so the decoration colour matches
+    /// the review-tinted glyphs — the toolkit paints shaped decorations in
+    /// the block ink. Only when markup is shown.
+    fn draw_laid_change_decos(
+        &self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        item: &LaidItemCtx,
+        change_markers: &mut Vec<(String, f64, f64)>,
+    ) {
+        let (l, layout, ly) = (item.l, item.layout, item.ly);
+        if self.show_markup
+            && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
+        {
+            let (ins_ranges, del_ranges) = block_change_decos(b);
+            for &(b0, b1) in &ins_ranges {
+                for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                    let uy = ly + f64::from(ry1) - 2.0;
+                    let line = Rect::new(
+                        l.text_x + f64::from(rx0),
+                        uy,
+                        l.text_x + f64::from(rx1),
+                        uy + 1.5,
+                    );
+                    scene.fill(Fill::NonZero, fg.ctf, TRACK_INS, None, &line);
+                }
+            }
+            for &(b0, b1) in &del_ranges {
+                for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                    let my = ly + f64::from(f32::midpoint(ry0, ry1));
+                    let line = Rect::new(
+                        l.text_x + f64::from(rx0),
+                        my,
+                        l.text_x + f64::from(rx1),
+                        my + 1.5,
+                    );
+                    scene.fill(Fill::NonZero, fg.ctf, TRACK_DEL, None, &line);
+                }
+            }
+            // Collect a review-card marker per change range (carrying the
+            // change id so the card's Accept/Reject can act on it).
+            for (bs, be, cid) in block_change_ranges(b) {
+                let rects = layout.selection_rects(bs, be);
+                if let Some(&(_, ry0, _, _)) = rects.first() {
+                    let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
+                    change_markers.push((cid, ly + f64::from(ry0), l.text_x + f64::from(right_x)));
+                }
+            }
+        }
+    }
+
+    /// Spell-check squiggles + note-reference superscripts over one pass-2
+    /// item's text, recording `page_notes` for the footnote-area pass.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_laid_notes_and_spellcheck(
+        &self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        item: &LaidItemCtx,
+        spell_by_block: &HashMap<String, Vec<(usize, usize)>>,
+        note_nums: &HashMap<String, usize>,
+        page_notes: &mut HashMap<usize, Vec<usize>>,
+    ) {
+        let (l, layout, ly) = (item.l, item.layout, item.ly);
+        // Spell-check squiggles: a wavy red underline under each misspelled
+        // span. The byte span maps to one-or-more on-screen rects via the same
+        // `selection_rects` geometry the selection highlight uses (so it tracks
+        // wrapping). The squiggle hugs just under each rect's bottom.
+        if let Some(spans) = spell_by_block.get(&l.id) {
+            for &(b0, b1) in spans {
+                for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                    let y = ly + f64::from(ry1) - 1.0;
+                    draw_squiggle(
+                        scene,
+                        fg.ctf,
+                        l.text_x + f64::from(rx0),
+                        l.text_x + f64::from(rx1),
+                        y,
+                    );
+                }
+            }
+        }
+
+        // Note-reference superscripts: each `note-ref` placeholder in this
+        // block renders as a small superscript citation number, positioned at
+        // the placeholder glyph's location (it occupies one U+FFFC char, which
+        // the body run shapes as near-zero-width). The number is taken from the
+        // document-order numbering; the page is recorded so the footnote text
+        // renders at the bottom of this page.
+        if !note_nums.is_empty()
+            && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
+        {
+            for (ci, note_id) in block_note_refs(b) {
+                let Some(&num) = note_nums.get(&note_id) else {
+                    continue;
+                };
+                let bs = char_to_byte(&l.text, ci);
+                let be = char_to_byte(&l.text, ci + 1);
+                // Anchor at the placeholder's left edge; fall back to the
+                // caret geometry if the glyph produced no selection rect.
+                let placeholder_rect = layout.selection_rects(bs, be).into_iter().next();
+                let (mx, my) = placeholder_rect.map_or_else(
+                    || {
+                        let (cx, cy, _) = layout.caret_geometry(bs);
+                        (cx, cy)
+                    },
+                    |(rx0, ry0, _, _)| (rx0, ry0),
+                );
+                // Mask the U+FFFC object-replacement glyph (a box in some
+                // fonts) with paper so only the superscript number shows.
+                if let Some((rx0, ry0, rx1, ry1)) = placeholder_rect {
+                    let mask = Rect::new(
+                        l.text_x + f64::from(rx0),
+                        ly + f64::from(ry0),
+                        l.text_x + f64::from(rx1),
+                        ly + f64::from(ry1),
+                    );
+                    scene.fill(Fill::NonZero, fg.ctf, self.chrome.paper, None, &mask);
+                }
+                let label = num.to_string();
+                // Superscript: smaller font, raised toward the line's top.
+                let sup_size = (l.size * 0.7).max(8.0);
+                text_renderer.draw_text(
+                    scene,
+                    &label,
+                    sup_size,
+                    l.ink,
+                    fg.ctf
+                        * Affine::translate((l.text_x + f64::from(mx), ly + f64::from(my) - 1.0)),
+                    None,
+                );
+                page_notes.entry(l.page).or_default().push(num);
+            }
+        }
+    }
+
+    /// Comment indicators + annotation cards from pass 2's markers: a small
+    /// accent tab at each comment's start line, and an always-visible card
+    /// (author + content) anchored to the canvas so it stays on-screen
+    /// regardless of page width or the styles panel, stacked without overlap.
+    fn draw_comment_cards(
+        &mut self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        mut comment_markers: Vec<(String, f64, f64)>,
+    ) {
+        if self.show_markup && !comment_markers.is_empty() {
+            comment_markers
+                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            // The card column hugs the right edge of the visible canvas.
+            let card_x = fg.canvas.x1 - COMMENT_CARD_W - 6.0;
+            let mut next_card_y = f64::MIN;
+            for (cid, anchor_y, range_right) in &comment_markers {
+                next_card_y = self.draw_one_comment_card(
+                    scene,
+                    fg,
+                    text_renderer,
+                    card_x,
+                    next_card_y,
+                    *anchor_y,
+                    *range_right,
+                    cid,
+                );
+            }
+        }
+    }
+
+    /// One comment's inline indicator tab + annotation card (author + body +
+    /// a Resolve button), stacked below `next_card_y` (or at `anchor_y`,
+    /// whichever is lower) so cards never overlap. Returns the `y` past this
+    /// card — the next card's floor.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_one_comment_card(
+        &mut self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        card_x: f64,
+        next_card_y: f64,
+        anchor_y: f64,
+        range_right: f64,
+        cid: &str,
+    ) -> f64 {
+        let Some(cv) = self.comments.iter().find(|c| c.id == cid) else {
+            return next_card_y;
+        };
+        // The little accent tab sits just after the commented text, on its
+        // start line — an always-visible inline indicator.
+        let tab_x = (range_right + 2.0).min(card_x - COMMENT_TAB_W - 2.0);
+        let tab = Rect::new(
+            tab_x,
+            anchor_y + 1.0,
+            tab_x + COMMENT_TAB_W,
+            anchor_y + 18.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            fg.ctf,
+            COMMENT_TAB,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(tab, 1.5),
+        );
+
+        // Author + content (comment bodies are a small block sequence).
+        let comment_label = t("review-comment");
+        let author = if cv.author.is_empty() {
+            comment_label.as_str()
+        } else {
+            cv.author.as_str()
+        };
+        let body: String = {
+            let parts: Vec<&str> = cv
+                .blocks
+                .iter()
+                .map(|b| b.text.as_str())
+                .filter(|t| !t.is_empty())
+                .collect();
+            parts.join(" ")
+        };
+        let inner_w = num::f32_of_f64(COMMENT_CARD_W - 16.0);
+        let body_layout = RichTextLayout::shape(
+            &mut text_renderer.font_system,
+            &[RichSpan::new(&body)],
+            false,
+            11.0,
+            inner_w,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
+        let body_h = f64::from(body_layout.height());
+        let card_top = anchor_y.max(next_card_y);
+        // Header (author) + body + a footer row carrying the Resolve button.
+        let card_h = 22.0 + body_h + 8.0 + REVIEW_BTN + 6.0;
+        let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
+        scene.fill(
+            Fill::NonZero,
+            fg.ctf,
+            COMMENT_CARD_BG,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(card, 5.0),
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            fg.ctf,
+            COMMENT_CARD_EDGE,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(card, 5.0),
+        );
+        // Accent stripe down the card's left edge (ties it to the tab).
+        let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
+        scene.fill(Fill::NonZero, fg.ctf, COMMENT_TAB, None, &stripe);
+        text_renderer.draw_text(
+            scene,
+            author,
+            11.5,
+            COMMENT_AUTHOR_INK,
+            fg.ctf * Affine::translate((card_x + 9.0, card_top + 5.0)),
+            None,
+        );
+        text_renderer.draw_rich(
+            scene,
+            &body_layout,
+            fg.ctf * Affine::translate((card_x + 9.0, card_top + 20.0)),
+            COMMENT_BODY_INK,
+        );
+        self.draw_comment_resolve_button(scene, fg, text_renderer, card_x, card_top, card_h, cid);
+        card_top + card_h + 6.0
+    }
+
+    /// A comment card's footer: a single "Resolve" pill that removes the
+    /// comment + its mark, registered as a `review_hits` target.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_comment_resolve_button(
+        &mut self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        card_x: f64,
+        card_top: f64,
+        card_h: f64,
+        cid: &str,
+    ) {
+        let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
+        let resolve = Rect::new(
+            card_x + COMMENT_CARD_W - 64.0,
+            btn_y,
+            card_x + COMMENT_CARD_W - 8.0,
+            btn_y + REVIEW_BTN,
+        );
+        scene.fill(
+            Fill::NonZero,
+            fg.ctf,
+            REVIEW_ACCEPT_BG,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(resolve, 4.0),
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            fg.ctf,
+            COMMENT_CARD_EDGE,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(resolve, 4.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            &t("review-resolve"),
+            10.5,
+            REVIEW_ACCEPT_INK,
+            fg.ctf * Affine::translate((resolve.x0 + 5.0, resolve.y0 + 2.5)),
+            None,
+        );
+        self.review_hits
+            .push((resolve, CtxAction::ResolveComment(cid.to_string())));
+    }
+
+    /// Tracked-change review cards from pass 2's markers: a compact
+    /// kind/author heading + Accept/Reject buttons per ins/del range, stacked
+    /// left of the comment column so the two never collide.
+    fn draw_change_cards(
+        &mut self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        mut change_markers: Vec<(String, f64, f64)>,
+    ) {
+        if self.show_markup && !change_markers.is_empty() {
+            change_markers
+                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            // The change column sits just left of the comment column.
+            let card_x = fg.canvas.x1 - COMMENT_CARD_W - 6.0 - CHANGE_CARD_W - 6.0;
+            let mut next_card_y = f64::MIN;
+            for (cid, anchor_y, _range_right) in &change_markers {
+                next_card_y = self.draw_one_change_card(
+                    scene,
+                    fg,
+                    text_renderer,
+                    card_x,
+                    next_card_y,
+                    *anchor_y,
+                    cid,
+                );
+            }
+        }
+    }
+
+    /// One tracked change's review card: a compact kind/author heading +
+    /// Accept/Reject buttons, stacked below `next_card_y` (or at `anchor_y`,
+    /// whichever is lower) so cards never overlap. Returns the `y` past this
+    /// card — the next card's floor.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_one_change_card(
+        &mut self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        card_x: f64,
+        next_card_y: f64,
+        anchor_y: f64,
+        cid: &str,
+    ) -> f64 {
+        let Some(cv) = self.changes.iter().find(|c| c.id == cid) else {
+            return next_card_y;
+        };
+        let (label, kind_color) = match cv.kind {
+            qdoc::snapshot::ChangeKind::Ins => (t("review-insertion"), TRACK_INS),
+            qdoc::snapshot::ChangeKind::Del => (t("review-deletion"), TRACK_DEL),
+        };
+        let author = if cv.author.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", cv.author)
+        };
+        let heading = format!("{label}{author}");
+        let card_top = anchor_y.max(next_card_y);
+        let card_h = 22.0 + REVIEW_BTN + 6.0;
+        let card = Rect::new(card_x, card_top, card_x + CHANGE_CARD_W, card_top + card_h);
+        scene.fill(
+            Fill::NonZero,
+            fg.ctf,
+            CHANGE_CARD_BG,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(card, 5.0),
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            fg.ctf,
+            CHANGE_CARD_EDGE,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(card, 5.0),
+        );
+        // Accent stripe in the change's review colour (green ins / red del).
+        let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
+        scene.fill(Fill::NonZero, fg.ctf, kind_color, None, &stripe);
+        text_renderer.draw_text(
+            scene,
+            &heading,
+            10.5,
+            CHANGE_LABEL_INK,
+            fg.ctf * Affine::translate((card_x + 9.0, card_top + 5.0)),
+            None,
+        );
+        // Accept ✓ / Reject ✗ buttons on the footer row.
+        self.draw_change_accept_reject(scene, fg, text_renderer, card_x, card_top, card_h, cid);
+        card_top + card_h + 6.0
+    }
+
+    /// A change card's footer: Accept ✓ / Reject ✗ buttons, registered as
+    /// `review_hits` targets.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_change_accept_reject(
+        &mut self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        card_x: f64,
+        card_top: f64,
+        card_h: f64,
+        cid: &str,
+    ) {
+        let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
+        let accept = Rect::new(
+            card_x + 9.0,
+            btn_y,
+            card_x + 9.0 + REVIEW_BTN,
+            btn_y + REVIEW_BTN,
+        );
+        let reject = Rect::new(
+            accept.x1 + 6.0,
+            btn_y,
+            accept.x1 + 6.0 + REVIEW_BTN,
+            btn_y + REVIEW_BTN,
+        );
+        scene.fill(
+            Fill::NonZero,
+            fg.ctf,
+            REVIEW_ACCEPT_BG,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(accept, 4.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            fg.ctf,
+            REVIEW_REJECT_BG,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(reject, 4.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "✓",
+            12.0,
+            REVIEW_ACCEPT_INK,
+            fg.ctf * Affine::translate((accept.x0 + 4.0, accept.y0 + 1.5)),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            "✗",
+            12.0,
+            REVIEW_REJECT_INK,
+            fg.ctf * Affine::translate((reject.x0 + 4.0, reject.y0 + 1.5)),
+            None,
+        );
+        self.review_hits
+            .push((accept, CtxAction::AcceptChange(cid.to_string())));
+        self.review_hits
+            .push((reject, CtxAction::RejectChange(cid.to_string())));
+    }
+
+    /// Footnote areas: a thin separator + numbered footnotes at the bottom of
+    /// each page's text band, keyed by the page pass 2 recorded each marker
+    /// against. Page assignment is approximate; drawn inside the page clip so
+    /// it scrolls with the content. Endnotes are skipped (they belong at the
+    /// document end, not per page).
+    fn draw_footnotes(
+        &self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        page_notes: &HashMap<usize, Vec<usize>>,
+        note_nums: &HashMap<String, usize>,
+        sy: f64,
+    ) {
+        if !page_notes.is_empty() {
+            // number → footnote text, resolved once. Endnotes are skipped here
+            // (they belong at the document end, not per page).
+            let mut num_to_note: HashMap<usize, String> = HashMap::new();
+            for n in &self.notes {
+                if n.kind == qdoc::schema::NOTE_KIND_FOOTNOTE
+                    && let Some(&num) = note_nums.get(&n.id)
+                {
+                    num_to_note.insert(num, note_text(n));
+                }
+            }
+            for (page, nums) in page_notes {
+                // Distinct, ascending footnote numbers on this page.
+                let mut nums: Vec<usize> = nums
+                    .iter()
+                    .copied()
+                    .filter(|n| num_to_note.contains_key(n))
+                    .collect();
+                nums.sort_unstable();
+                nums.dedup();
+                if nums.is_empty() {
+                    continue;
+                }
+                let line_h = (f64::from(NOTE_FONT) * 1.4).ceil();
+                let area_h = num::f64_of_usize(nums.len()) * line_h;
+                // Bottom of the text band on this page (above the footer margin).
+                let band_bottom =
+                    fg.page_top + num::f64_of_usize(*page) * fg.page_pitch + fg.letter_h
+                        - fg.m.bottom
+                        - sy;
+                let sep_y = band_bottom - area_h - NOTE_AREA_GAP;
+                let left = fg.page_x + fg.m.left;
+                let right = fg.page_x + fg.page_w - fg.m.right;
+                // Thin separator (about a third of the text width, like Word).
+                let sep =
+                    vello::kurbo::Line::new((left, sep_y), (left + (right - left) * 0.33, sep_y));
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(0.75),
+                    fg.ctf,
+                    NOTE_SEP,
+                    None,
+                    &sep,
+                );
+                let mut ny = sep_y + NOTE_AREA_GAP * 0.6;
+                for num in nums {
+                    if let Some(text) = num_to_note.get(&num) {
+                        let line = format!("{num}. {text}");
+                        text_renderer.draw_text(
+                            scene,
+                            &line,
+                            NOTE_FONT,
+                            NOTE_INK,
+                            fg.ctf * Affine::translate((left, ny)),
+                            None,
+                        );
+                        ny += line_h;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The single-line "start typing" placeholder shown over an otherwise
+    /// empty document.
+    fn draw_empty_placeholder(
+        &self,
+        scene: &mut Scene,
+        ctf: Affine,
+        text_renderer: &mut TextRenderer,
+        first: Option<&Laid>,
+    ) {
+        if self.blocks.len() == 1
+            && self.blocks[0].kind == "paragraph"
+            && self.blocks[0].text.is_empty()
+            && let Some(l) = first
+        {
+            let placeholder = t("canvas-empty-placeholder");
+            text_renderer.draw_text(
+                scene,
+                &placeholder,
+                16.5,
+                PAPER_MUTED,
+                ctf * Affine::translate((l.text_x, l.y_top)),
+                None,
+            );
+        }
+    }
+
+    /// Header/footer edit mode: veil the body (Word dims it while editing a
+    /// running head) on every page, then draw the band caret on top so it
+    /// stays crisp through the veil.
+    fn draw_running_region_veil(
+        &self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        num_pages: usize,
+        sy: f64,
+    ) {
+        if self.inner.in_running_region() {
+            for i in 0..num_pages {
+                let ptop = fg.page_top + num::f64_of_usize(i) * fg.page_pitch - sy;
+                let body_top = ptop + fg.m.top;
+                let body_bot = ptop + fg.letter_h - fg.m.bottom;
+                let veil = Rect::new(
+                    fg.page_x + fg.m.left,
+                    body_top,
+                    fg.page_x + fg.page_w - fg.m.right,
+                    body_bot,
+                );
+                scene.fill(Fill::NonZero, fg.ctf, BODY_DIM_VEIL, None, &veil);
+            }
+            self.draw_band_caret(scene, fg.ctf);
+        }
+    }
+
+    /// The scrollbar thumb (right edge), shown only when the content
+    /// overflows the canvas.
+    fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, canvas: Rect) {
+        if self.max_scroll > 0.0 {
+            let track = canvas.height();
+            let thumb_h = (track * track / (track + self.max_scroll)).max(28.0);
+            let frac = self.scroll_y / self.max_scroll;
+            let thumb_y = canvas.y0 + frac * (track - thumb_h);
+            let thumb = Rect::new(
+                canvas.x1 - 8.0,
+                thumb_y + 2.0,
+                canvas.x1 - 4.0,
+                thumb_y + thumb_h - 2.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                self.chrome.scrollbar,
+                None,
+                &vello::kurbo::RoundedRect::from_rect(thumb, 2.0),
+            );
+        }
+    }
+
+    /// Remote collaborators' carets + selections, resolved by the single
+    /// [`Self::remote_presence_overlays`] pass so on-screen geometry matches
+    /// what the unit tests assert on. Selections paint under the text, carets
+    /// over it, each in the peer's colour with a name pill. A no-op with no
+    /// remote presence, so single-user rendering is unchanged.
+    fn draw_remote_overlays(
+        &self,
+        scene: &mut Scene,
+        ctf: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
+        // A peer's just-typed run glows in their colour, fading; drawn first so it
+        // sits under the selection and caret rather than competing with them.
+        for (user, spans) in self.remote_typing_overlays(presence, std::time::Instant::now()) {
+            presence.draw_peer_typing(scene, theme, &user, &spans);
+        }
+        for sel in &remote_selections {
+            for r in &sel.rects {
+                presence.draw_peer_selection(scene, theme, ctf, &sel.user, *r);
+            }
+        }
+        for c in &remote_carets {
+            presence.draw_peer_caret(scene, theme, ctf, &c.user, c.rect);
+            Self::draw_remote_caret_label(
+                scene,
+                ctf,
+                text_renderer,
+                theme,
+                presence,
+                &c.user,
+                &c.label,
+                c.rect.x0,
+                c.rect.y0,
+            );
+        }
+    }
+}
+
+impl WordProcessorWidget {
+    /// Route input to the open version-history strip when it should capture
+    /// this event (pointer inside its band, mid-drag, or its name field wants
+    /// the keyboard). A restore/rename still lands its document-side effects
+    /// even when the strip doesn't claim the whole event. Returns whether the
+    /// strip fully handled it (the caller should stop dispatching further).
+    fn handle_history_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !self.history.is_open() {
+            return false;
+        }
+        let at = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                Point::new(position.x / scale_factor, position.y / scale_factor)
+            }
+            _ => self.pointer,
+        };
+        // The strip also takes the keyboard outright while its name field is
+        // up: a name that could only be typed with the pointer held still
+        // over the band would be unusable.
+        if !(self.history.band().contains(at)
+            || self.history.is_dragging()
+            || self.history.wants_keyboard())
+        {
+            return false;
+        }
+        let outcome = self
+            .history
+            .handle_event(event, scale_factor, &modifiers, state, path);
+        if outcome.restored {
+            self.needs_commit = true;
+            self.history.follow_document();
+            self.refresh_blocks(state);
+        }
+        if outcome.named {
+            // Naming a version is a document write; it commits with the
+            // same author and timestamp as an edit, and lands on the undo
+            // stack so it can be taken back the usual way.
+            self.needs_commit = true;
+        }
+        outcome.handled
+    }
+
+    /// Drag-and-drop a file onto the window inserts it as an image at the
+    /// **drop point**: seat the caret under the last pointer position (where
+    /// the file was released) before inserting, so the image lands where the
+    /// user dropped it rather than wherever the caret happened to be. winit's
+    /// `DroppedFile` carries no coordinates, so the tracked pointer (updated
+    /// on every `CursorMoved`, including during the drag-hover) is the drop
+    /// location. A drop over the page body relocates the caret; a drop over
+    /// chrome falls back to the existing caret.
+    fn handle_dropped_file(
+        &mut self,
+        state: &mut AutoCommit,
+        path: &std::path::Path,
+        handled: &mut bool,
+    ) {
+        if self.rect.contains(self.pointer) {
+            let tb_h = self.toolbar_height(self.rect.width());
+            let over_body = self.pointer.y >= self.rect.y0 + tb_h
+                && self.pointer.y <= self.rect.y1 - LAYOUT_BAR_H
+                && !(self.styles_panel_open && self.panel_rect.contains(self.pointer))
+                && !self.outline.contains(self.pointer);
+            if over_body {
+                self.caret_from_pointer(self.pointer_to_content(self.pointer), false);
+            }
+        }
+        if self.insert_image_from_path(state, path) {
+            *handled = true;
+        }
+    }
+
+    /// Ctrl+wheel zooms a step per notch (scroll-up = zoom in); a plain wheel
+    /// scrolls, clamped to the content overflow.
+    fn handle_mouse_wheel(
+        &mut self,
+        delta: &MouseScrollDelta,
+        scale_factor: f64,
+        ctrl: bool,
+        handled: &mut bool,
+    ) {
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
+            MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+        };
+        if ctrl {
+            // Ctrl + wheel zooms (a step per notch of scroll), the standard
+            // editor gesture. Scroll-up (positive dy) zooms in.
+            let step = if dy > 0.0 { ZOOM_STEP } else { -ZOOM_STEP };
+            if self.zoom_by(step) {
+                *handled = true;
+            }
+            return;
+        }
+        let new = (self.scroll_y - dy).clamp(0.0, self.max_scroll);
+        // Exact-change check (not "close enough"): any scroll delta, however
+        // tiny, should mark the frame dirty, so bit-compare rather than use a
+        // tolerance that could mask a real change.
+        if new.to_bits() != self.scroll_y.to_bits() {
+            self.scroll_y = new;
+            self.dirty = true;
+            *handled = true;
+        }
+    }
+
+    /// Track the pointer, update toolbar hover feedback, and continue
+    /// whichever live drag is active (style-field scrub, ruler marker, layout
+    /// guide, or a text-selection extend) — scrub takes priority, since a
+    /// scrub in progress should never fall through to selection.
+    fn handle_cursor_moved(
+        &mut self,
+        x: f64,
+        y: f64,
+        scale_factor: f64,
+        tb_h: f64,
+        handled: &mut bool,
+    ) {
+        self.pointer = Point::new(x / scale_factor, y / scale_factor);
+        // Toolbar hover feedback — repaint only when the hovered button changes.
+        let new_hover = if self.pointer.y < self.rect.y0 + tb_h {
+            self.toolbar
+                .iter()
+                .find(|(_, r)| r.contains(self.pointer))
+                .map(|(_, r)| *r)
+        } else {
+            None
+        };
+        if new_hover != self.hover_tool {
+            self.hover_tool = new_hover;
+            self.dirty = true;
+            *handled = true;
+        }
+        if let Some(sc) = self.scrub {
+            // Drag-to-scrub a numeric style field (live preview for every
+            // block of that style).
+            let dx = self.pointer.x - sc.start_x;
+            if dx.abs() > 3.0 {
+                if let Some(s) = self.scrub.as_mut() {
+                    s.moved = true;
+                }
+                let v = sc
+                    .field
+                    .clamp(sc.start_val + num::f32_of_f64(dx) * sc.field.scrub_factor());
+                if let Some(key) = self.focused_style_key()
+                    && let Some(st) = self.sheet.styles.get_mut(&key)
+                {
+                    sc.field.set(st, v);
+                }
+                self.dirty = true;
+            }
+            *handled = true;
+        } else if self.ruler.is_dragging() {
+            // Live-drag a ruler marker (margin / indent / tab). Updates the
+            // value for an instant preview; persisted on release.
+            self.ruler_drag_move();
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(gd) = self.guide_drag {
+            // Live-drag a layout guide (margin / border / spacing). Guides
+            // live in unscaled page space, so map the pointer through the
+            // inverse zoom first.
+            self.apply_guide_drag(gd, self.pointer_to_content(self.pointer));
+            self.dirty = true; // repaint every move so the preview is live
+            *handled = true;
+        } else if self.drag.drag().is_some() {
+            // Extend the selection: keep the anchor, move the caret. The
+            // `Laid` rects are unscaled, so hit-test in content space.
+            self.caret_from_pointer(self.pointer_to_content(self.pointer), true);
+            // Claim the move so the host App repaints (its redraw is gated
+            // behind `handled`).
+            *handled = true;
+        }
+    }
+
+    /// Right-click: open the style-management menu when it lands on a
+    /// styles-panel chip, else the editing/spell-check context menu when it
+    /// lands on the page body (chrome — toolbar/panel/status bar — ignores
+    /// the right button; it only hit-tests the left one).
+    fn handle_right_press(&mut self, state: &AutoCommit, tb_h: f64, handled: &mut bool) {
+        if !self.rect.contains(self.pointer) {
+            return;
+        }
+        self.focused = true;
+        // A right-click on a style chip in the styles panel opens the
+        // style-management menu (Delete / Duplicate) before the generic
+        // "panel is chrome, ignore" rule kicks in.
+        if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
+            if let Some(id) = self.style_chip_at(self.pointer) {
+                let pos = [
+                    num::f32_of_f64(self.pointer.x),
+                    num::f32_of_f64(self.pointer.y),
+                ];
+                self.open_style_menu(&id, pos);
+                *handled = true;
+            }
+            return;
+        }
+        let in_chrome = self.pointer.y < self.rect.y0 + tb_h
+            || self.pointer.y > self.rect.y1 - LAYOUT_BAR_H
+            || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
+            || self.outline.contains(self.pointer);
+        if !in_chrome {
+            let cp = self.pointer_to_content(self.pointer);
+            let pos = [
+                num::f32_of_f64(self.pointer.x),
+                num::f32_of_f64(self.pointer.y),
+            ];
+            self.open_context_menu(state, cp, pos);
+            *handled = true;
+        }
+    }
+
+    /// Left press: route to an open menu first, then dismiss any staged
+    /// toast, then (once the pointer is inside this widget and it's focused)
+    /// walk the chrome regions in priority order, falling back to the page
+    /// body — review affordances, layout guides, header/footer band switch,
+    /// then the text-selection gesture.
+    fn handle_left_press(
+        &mut self,
+        state: &mut AutoCommit,
+        tb_h: f64,
+        shift: bool,
+        ctrl: bool,
+        handled: &mut bool,
+    ) {
+        if self.handle_left_press_menu_routing(state, handled) {
+            return;
+        }
+        // Any left press dismisses a staged toast (a transient cue).
+        if self.toast.take().is_some() {
+            self.dirty = true;
+        }
+        if !self.rect.contains(self.pointer) {
+            return;
+        }
+        self.focused = true;
+        if self.handle_left_press_recovery_and_panels(state, handled) {
+            return;
+        }
+        if self.handle_left_press_find_ruler_toolbar(state, tb_h, handled) {
+            return;
+        }
+        self.handle_left_press_body(state, shift, ctrl, handled);
+    }
+
+    /// While the context / "New ▾" template / paragraph-style menu is open,
+    /// route the left press to it: a row dispatches its action, a click
+    /// outside dismisses it. Either way the click is consumed so it never
+    /// reaches the page beneath. Returns whether a menu claimed the press.
+    fn handle_left_press_menu_routing(
+        &mut self,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        // While the context menu is open, route the left press to it: a
+        // row dispatches its action, a click outside dismisses it. Either
+        // way the click is consumed so it never reaches the page beneath.
+        if self.context_menu.is_open() {
+            let point = [self.pointer.x, self.pointer.y];
+            if let Some(idx) = self.context_menu.item_at(point) {
+                self.dispatch_context_action(idx, state);
+            } else {
+                self.context_menu.close();
+            }
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        // Likewise route the press to the "New ▾" template menu when open:
+        // a row applies that template; a click elsewhere dismisses it.
+        if self.new_menu.is_open() {
+            let point = [self.pointer.x, self.pointer.y];
+            if let Some(idx) = self.new_menu.item_at(point) {
+                self.dispatch_new_menu(idx, state);
+            } else {
+                self.new_menu.close();
+            }
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        // The paragraph-style menu (Delete / Duplicate) captures the press
+        // the same way: a row runs its action, an outside click dismisses.
+        if self.style_menu.is_open() {
+            let point = [self.pointer.x, self.pointer.y];
+            if let Some(idx) = self.style_menu.item_at(point) {
+                self.dispatch_style_menu(idx, state);
+            } else {
+                self.style_menu.close();
+            }
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// The crash-recovery banner's Restore/Discard, a pending numeric-field
+    /// commit, the styles panel, and the outline pane — in that priority
+    /// order. Returns whether one of them claimed the press.
+    fn handle_left_press_recovery_and_panels(
+        &mut self,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        // Crash-recovery banner (just under the toolbar): a click on
+        // Restore / Discard resolves the offer before any other hit-test.
+        if let Some(decision) = self.recovery.handle_click(self.pointer) {
+            if let RecoveryDecision::Restore(markdown) = decision
+                && self.inner.replace_with_markdown(state, &markdown)
+            {
+                self.refresh_blocks(state);
+                self.layout_cache.clear();
+                self.spell_cache.clear();
+                self.modified = true;
+                self.needs_commit = true;
+            }
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        // A press anywhere commits a pending typed numeric edit.
+        if self.editing_field.is_some() {
+            self.commit_num_edit(state);
+        }
+        // Styles panel (right side): dispatch a click on its controls.
+        if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
+            if let Some(hit) = self
+                .panel_hits
+                .iter()
+                .rev()
+                .find(|(r, _)| r.contains(self.pointer))
+                .map(|(_, h)| h.clone())
+            {
+                self.apply_panel_hit(state, hit);
+            }
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        // Outline / navigation pane (left side): a click on an entry
+        // scrolls that heading into view.
+        if self.outline.contains(self.pointer) {
+            if let Some(block_id) = self.outline.heading_at(self.pointer).map(str::to_owned) {
+                self.scroll_to_block(&block_id);
+            }
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// The Find bar's fields, the ruler band, the toolbar (zoom stepper +
+    /// buttons), and the bottom layout bar — in that priority order. Returns
+    /// whether one of them claimed the press.
+    fn handle_left_press_find_ruler_toolbar(
+        &mut self,
+        state: &mut AutoCommit,
+        tb_h: f64,
+        handled: &mut bool,
+    ) -> bool {
+        // Find bar (when open): dispatch clicks on its fields + controls.
+        // The recovery banner (when shown) sits above the find bar, so the
+        // find band starts below it.
+        if self.find.is_open() {
+            let recovery_h = self.recovery.height();
+            let fbar_top = self.rect.y0 + tb_h + recovery_h;
+            let fbar_bot = fbar_top + crate::find_bar::HEIGHT;
+            if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
+                let effect = self.find.click(self.pointer, &self.blocks);
+                self.apply_find_effect_mut(state, effect);
+                self.dirty = true;
+                *handled = true;
+                return true;
+            }
+        }
+        // Ruler band (when on): grab a marker to drag, else a click in the
+        // page span adds a tab stop on the current paragraph.
+        if self.ruler_on && self.ruler.rect().contains(self.pointer) {
+            self.ruler_press(state);
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        if self.pointer.y < self.rect.y0 + tb_h {
+            // The right-aligned zoom component owns its hit targets and scale.
+            if self.zoom.click(self.pointer) {
+                self.dirty = true;
+                *handled = true;
+                return true;
+            }
+            // Reverse so the colour swatches (pushed after the chrome
+            // buttons) win a hit-test on any overlap at a crowded edge.
+            let clicked = self
+                .toolbar
+                .iter()
+                .rev()
+                .find(|(_, r)| r.contains(self.pointer))
+                .map(|(a, _)| *a);
+            if let Some(action) = clicked {
+                self.apply_tool(state, action);
+                self.refresh_blocks(state);
+                self.dirty = true;
+                // View toggles (panels) + opening the New menu are not undo
+                // points; everything else (including TOC generation) is.
+                if !matches!(
+                    action,
+                    ToolAction::ToggleStyles
+                        | ToolAction::ToggleRuler
+                        | ToolAction::ToggleOutline
+                        | ToolAction::ToggleHistory
+                        | ToolAction::NewMenu
+                ) {
+                    self.needs_commit = true;
+                    self.modified = true;
+                    self.note_edit_for_autosave(state);
+                }
+            }
+            *handled = true;
+            return true;
+        }
+        // Bottom layout bar (mode chips) sits at the very bottom; its readout floats via `status_bubble`.
+        let lbar_top = self.rect.y1 - LAYOUT_BAR_H;
+        if self.pointer.y >= lbar_top {
+            if let Some(mode) = self
+                .layout_chips
+                .iter()
+                .find(|(_, r)| r.contains(self.pointer))
+                .map(|(m, _)| *m)
+            {
+                self.toggle_layout_mode(mode);
+            }
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// The page-body left press: right-margin review affordances, then (in a
+    /// layout-edit mode) grabbing a guide, then the header/footer
+    /// edit-context switch, and finally the text-selection gesture.
+    fn handle_left_press_body(
+        &mut self,
+        state: &mut AutoCommit,
+        shift: bool,
+        ctrl: bool,
+        handled: &mut bool,
+    ) {
+        // Page-content hit-tests work in unscaled content space; map the
+        // pointer through the inverse zoom transform once here.
+        let cp = self.pointer_to_content(self.pointer);
+        // Right-margin review affordances (comment Resolve, change
+        // Accept/Reject) are drawn through the zoom transform, so they
+        // hit-test in content space too. A hit dispatches + consumes the
+        // click before it can start a text selection.
+        if let Some(action) = self
+            .review_hits
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(cp))
+            .map(|(_, a)| a.clone())
+        {
+            self.dispatch_review_action(action, state);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        // In a layout-edit mode, grabbing a guide starts a drag instead of
+        // a text selection.
+        if self.layout_mode != LayoutMode::None
+            && let Some(side) = self.hit_guide(cp)
+        {
+            let kind = if ctrl {
+                DragKind::Proportional
+            } else if shift {
+                DragKind::Single
+            } else {
+                DragKind::Pair
+            };
+            self.guide_drag = Some(GuideDrag {
+                mode: self.layout_mode,
+                side,
+                kind,
+            });
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        // Edit-context switch: a click into a page header/footer band
+        // focuses that running region (creating an empty paragraph if the
+        // region is empty); a click in the body while editing a running
+        // region returns to the body. This is the entry point to Word-style
+        // header/footer editing.
+        let band = self.band_at_pointer(cp);
+        match band {
+            Some(region) if region != self.inner.region() => {
+                // Switch into the band. `focus_region` seats the caret on
+                // the region's (possibly newly-created) first block; the
+                // band lays out next frame, after which clicks refine the
+                // exact offset.
+                self.inner.focus_region(state, region);
+                self.refresh_blocks(state);
+                self.drag.press(self.pointer, shift);
+                self.dirty = true;
+                self.needs_commit = true;
+                *handled = true;
+                return;
+            }
+            None if self.inner.in_running_region() => {
+                // Click in the body area exits header/footer editing.
+                self.inner.focus_body(state);
+                self.refresh_blocks(state);
+                // Fall through so the same click also seats the body caret.
+            }
+            _ => {}
+        }
+        // Selection gesture (ui::DragSelect): shift extends; double/triple
+        // click select word/paragraph; a plain press starts a fresh drag.
+        let intent = self.drag.press(self.pointer, shift);
+        self.caret_from_pointer(cp, intent.extend);
+        match intent.granularity {
+            Granularity::Word => self.inner.select_word(state),
+            Granularity::Line => self.select_all_in_block(state),
+            Granularity::Char => {}
+        }
+        self.dirty = true;
+        *handled = true;
+    }
+
+    /// Left release: persist whichever live drag was active (style-field
+    /// scrub, ruler marker, or layout guide) into the document, or — with no
+    /// drag active — end a text-selection drag.
+    fn handle_left_release(&mut self, state: &mut AutoCommit, handled: &mut bool) {
+        if let Some(sc) = self.scrub.take() {
+            if sc.moved {
+                // A scrub persists the style edit (every instance follows).
+                let sheet = self.sheet.clone();
+                self.inner.set_stylesheet(state, &sheet);
+                self.needs_commit = true;
+            } else {
+                // A plain click (no drag) focuses the field for typing.
+                self.editing_field = Some(sc.field);
+                let cur = self
+                    .focused_style_key()
+                    .map_or(0.0, |k| sc.field.get(&self.sheet.get(&k)));
+                self.edit_buf = fmt_num(cur);
+            }
+            self.dirty = true;
+            *handled = true;
+        } else if self.ruler.is_dragging() {
+            // A ruler-marker drag persists on release (margins → page meta,
+            // indents / tab stops → the caret block's attrs).
+            self.ruler_drag_release(state);
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(gd) = self.guide_drag.take() {
+            // A layout edit persists into the document on release: spacing
+            // into the stylesheet, margins into the page-setup meta.
+            match gd.mode {
+                LayoutMode::Spacing => {
+                    let sheet = self.sheet.clone();
+                    self.inner.set_stylesheet(state, &sheet);
+                    self.needs_commit = true;
+                }
+                LayoutMode::Margins => {
+                    self.persist_margins(state);
+                    self.needs_commit = true;
+                }
+                LayoutMode::None => {}
+            }
+            self.dirty = true;
+            *handled = true;
+        } else if self.drag.release() {
+            self.dirty = true;
+            *handled = true;
+        }
+    }
+
+    /// A key press once the guard checks (focus, Escape, a numeric-field
+    /// edit in progress, the Find bar, Ctrl+Enter's page break) and any
+    /// Ctrl+<char> shortcut have both passed it through: motion keys extend
+    /// or clear the selection, editing keys mutate the document, and any
+    /// other printable text is inserted.
+    fn handle_key_press(
+        &mut self,
+        state: &mut AutoCommit,
+        logical_key: &Key,
+        text: Option<&str>,
+        shift: bool,
+        ctrl: bool,
+        handled: &mut bool,
+    ) {
+        if self.handle_key_press_guards(state, logical_key, text, ctrl, handled) {
+            return;
+        }
+        if ctrl && let Key::Character(s) = logical_key {
+            self.handle_ctrl_shortcut(state, s, shift, handled);
+            return;
+        }
+        let mut changed = true;
+        let mut motion = false;
+        match logical_key {
+            Key::Named(NamedKey::Tab) => {
+                // Inside a table, Tab/Shift-Tab walk cells (and Tab in the
+                // last cell appends a row). Otherwise, when the paragraph has
+                // ruler tab stops, Tab advances to the next one (recording a
+                // tab char); with no stops it falls back to inserting spaces.
+                if self.inner.tab_cell(state, !shift) {
+                    motion = true; // tab_cell already cleared any selection
+                } else if self.inner.tab_advance(state) {
+                    // Caret advanced to the next tab stop.
+                } else {
+                    self.inner.insert_str(state, "    ");
+                }
+            }
+            Key::Named(NamedKey::Enter) => self.inner.enter(state),
+            Key::Named(NamedKey::Backspace) => self.inner.backspace(state),
+            Key::Named(NamedKey::Delete) => self.inner.delete_forward(state),
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.extend_or_clear(shift);
+                self.inner.move_left(state);
+                motion = true;
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.extend_or_clear(shift);
+                self.inner.move_right(state);
+                motion = true;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.extend_or_clear(shift);
+                // Inside a table, Up moves to the cell directly above; the
+                // grid is block-granular so this matches block-relative motion.
+                if !self.inner.cell_vertical(state, false) {
+                    self.inner.move_block_relative(state, -1);
+                }
+                motion = true;
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.extend_or_clear(shift);
+                if !self.inner.cell_vertical(state, true) {
+                    self.inner.move_block_relative(state, 1);
+                }
+                motion = true;
+            }
+            Key::Named(NamedKey::Home) => {
+                self.extend_or_clear(shift);
+                self.inner.move_home();
+                motion = true;
+            }
+            Key::Named(NamedKey::End) => {
+                self.extend_or_clear(shift);
+                self.inner.move_end(state);
+                motion = true;
+            }
+            Key::Named(NamedKey::Space) => {
+                if !self.inner.autoformat_on_space(state) {
+                    self.inner.insert_str(state, " ");
+                }
+            }
+            _ => {
+                let typed: String = text
+                    .map(|t| t.chars().filter(|c| !c.is_control()).collect())
+                    .unwrap_or_default();
+                if typed.is_empty() {
+                    changed = false;
+                } else {
+                    self.inner.insert_str(state, &typed);
+                }
+            }
+        }
+        if changed {
+            if !motion {
+                // editing consumes/collapses any selection
+                self.inner.clear_anchor();
+                // A real content edit (not caret motion) advances the
+                // autosave debounce — may write a recovery copy.
+                self.modified = true;
+                self.note_edit_for_autosave(state);
+            }
+            self.refresh_blocks(state);
+            self.dirty = true;
+            self.needs_commit = true;
+            *handled = true;
+        }
+    }
+
+    /// Early exits before a key press reaches editing: an unfocused widget,
+    /// Escape (closing an open menu, or exiting header/footer editing), a
+    /// numeric-field edit in progress, the Find bar capturing non-Ctrl keys,
+    /// and Ctrl+Enter's manual page break. Returns whether one of these fully
+    /// handled the event (the caller should stop dispatching further).
+    fn handle_key_press_guards(
+        &mut self,
+        state: &mut AutoCommit,
+        logical_key: &Key,
+        text: Option<&str>,
+        ctrl: bool,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.focused {
+            return true;
+        }
+        // Escape dismisses an open context / style menu before anything else.
+        if matches!(logical_key, Key::Named(NamedKey::Escape))
+            && (self.context_menu.is_open() || self.style_menu.is_open() || self.new_menu.is_open())
+        {
+            self.context_menu.close();
+            self.style_menu.close();
+            self.new_menu.close();
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        // Escape exits header/footer editing, returning to the body.
+        if self.inner.in_running_region() && matches!(logical_key, Key::Named(NamedKey::Escape)) {
+            self.inner.focus_body(state);
+            self.refresh_blocks(state);
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        // While typing into a numeric style field, capture digits + editing
+        // keys (Enter commits, Esc cancels, Backspace deletes).
+        if self.editing_field.is_some() {
+            match logical_key {
+                Key::Named(NamedKey::Enter) => self.commit_num_edit(state),
+                Key::Named(NamedKey::Escape) => {
+                    self.editing_field = None;
+                    self.edit_buf.clear();
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.edit_buf.pop();
+                    self.apply_edit_buf_live();
+                }
+                _ => {
+                    let typed: String = text
+                        .map(|t| {
+                            t.chars()
+                                .filter(|c| c.is_ascii_digit() || *c == '.')
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for ch in typed.chars() {
+                        if ch == '.' && self.edit_buf.contains('.') {
+                            continue;
+                        }
+                        self.edit_buf.push(ch);
+                    }
+                    self.apply_edit_buf_live();
+                }
+            }
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        // Ctrl+Enter inserts a manual page break: the caret block splits
+        // and the new block is marked to start on a fresh page. (Handled
+        // here because `NamedKey::Enter` is not a `Key::Character`.)
+        if ctrl && matches!(logical_key, Key::Named(NamedKey::Enter)) {
+            self.inner.insert_page_break(state);
+            self.refresh_blocks(state);
+            self.dirty = true;
+            self.needs_commit = true;
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// Ctrl+<char> shortcuts while the keyboard has focus: save/open/find,
+    /// spell-check/markup view toggles, zoom, page-number insert, and the
+    /// formatting/selection shortcuts dispatched through the same actions the
+    /// toolbar uses. Always consumes the event once `ctrl` holds a
+    /// `Character` key, whether or not `s` matched a known shortcut (so an
+    /// unrecognized Ctrl+<char> doesn't fall through to plain typing).
+    fn handle_ctrl_shortcut(
+        &mut self,
+        state: &mut AutoCommit,
+        s: &str,
+        shift: bool,
+        handled: &mut bool,
+    ) {
+        // Save is not an editing action — don't mark the doc
+        // modified again after writing it. Ctrl+Shift+S always
+        // opens the host Save-As picker; a bare Ctrl+S saves to
+        // the current path (or, when untitled, prompts via the
+        // same picker rather than inventing a path).
+        if s.eq_ignore_ascii_case("s") {
+            if shift {
+                self.request_save_as();
+            } else {
+                self.save(state);
+            }
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        // Ctrl+O opens a document through the host portal, in
+        // place of the current one.
+        if s.eq_ignore_ascii_case("o") {
+            self.request_open_document();
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        if s.eq_ignore_ascii_case("f") {
+            if self.find.is_open() {
+                self.close_find();
+            } else {
+                self.open_find(state);
+            }
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        // Ctrl+Shift+L toggles the spell-check squiggles (view-only,
+        // default ON). Never mutates the document.
+        if shift && s.eq_ignore_ascii_case("l") {
+            self.toggle_spellcheck();
+            *handled = true;
+            return;
+        }
+        // Ctrl+Shift+M toggles comment + tracked-change markup
+        // (view-only, default ON). Never mutates the document.
+        if shift && s.eq_ignore_ascii_case("m") {
+            self.toggle_markup();
+            *handled = true;
+            return;
+        }
+        // Ctrl+Shift+P inserts a page-number field at the caret.
+        // Primarily for header/footer editing (a running "Page N"),
+        // but works in the body too (the field renderer substitutes
+        // the page number per page).
+        if shift && s.eq_ignore_ascii_case("p") {
+            self.inner.insert_page_number(state);
+            self.refresh_blocks(state);
+            self.dirty = true;
+            self.needs_commit = true;
+            self.modified = true;
+            self.note_edit_for_autosave(state);
+            *handled = true;
+            return;
+        }
+        // Zoom: Ctrl+= / Ctrl++ (in), Ctrl+- (out), Ctrl+0 (reset
+        // to 100%). These are view-only — they never mutate the doc,
+        // so they return before the editing path below.
+        match s {
+            "=" | "+" => {
+                self.zoom_by(ZOOM_STEP);
+                *handled = true;
+                return;
+            }
+            "-" | "_" => {
+                self.zoom_by(-ZOOM_STEP);
+                *handled = true;
+                return;
+            }
+            "0" => {
+                self.set_zoom(1.0);
+                *handled = true;
+                return;
+            }
+            _ => {}
+        }
+        match s.to_lowercase().as_str() {
+            // Formatting shortcuts dispatch the same
+            // `WordProcessorAction` the toolbar + Ctrl+K palette
+            // do (one replayable source of truth).
+            "b" => self.dispatch_toggle_mark(state, "strong"),
+            "i" => self.dispatch_toggle_mark(state, "em"),
+            "u" => self.dispatch_toggle_mark(state, "underline"),
+            // Ctrl+. → superscript, Ctrl+, → subscript (mutually
+            // exclusive; matches common word-processor bindings).
+            "." | ">" => self.dispatch_exclusive_mark(state, "super", "sub"),
+            "," | "<" => self.dispatch_exclusive_mark(state, "sub", "super"),
+            "c" => self.clipboard_copy(state),
+            "x" => {
+                self.clipboard_copy(state);
+                self.inner.delete_selection(state);
+            }
+            // Ctrl+V keeps formatting; Ctrl+Shift+V pastes plain text.
+            "v" if shift => self.clipboard_paste_plain(state),
+            "v" => self.clipboard_paste(state),
+            "a" => self.inner.select_all(state),
+            // Ctrl+1/2/3 → heading levels. (Ctrl+0 is zoom-reset;
+            // Body paragraph is reachable via the toolbar / panel.)
+            "1" => self.dispatch_paragraph_style(state, "heading", Some(1), None),
+            "2" => self.dispatch_paragraph_style(state, "heading", Some(2), None),
+            "3" => self.dispatch_paragraph_style(state, "heading", Some(3), None),
+            // z / y (undo/redo) are handled by the host App.
+            _ => {}
+        }
+        self.refresh_blocks(state);
+        self.dirty = true;
+        self.needs_commit = true;
+        self.modified = true;
+        self.note_edit_for_autosave(state);
+        *handled = true;
+    }
+}
+
 impl Widget for WordProcessorWidget {
     /// The document being edited is a record; its identity is its path. Two
     /// editors on two different files in one room announce two different
@@ -4911,1646 +7807,82 @@ impl Widget for WordProcessorWidget {
         // light/dark mode + the OS palette.
         self.chrome = ChromeColors::for_theme(theme);
         let full = self.rect;
-        // The toolbar may wrap to several rows on a narrow window; reserve its
-        // actual (possibly multi-row) height so the canvas top sits below it and
-        // no control is clipped. `draw_toolbar` re-derives the same packing, so
-        // the reserved band and the drawn rows always agree.
-        let tb_h = self.toolbar_height(full.width());
-        let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
-        self.draw_toolbar(scene, transform, text_renderer, theme, tb);
+        let fg = self.draw_frame_chrome(scene, transform, text_renderer, theme, full);
 
-        // No bottom status strip: its readout floats as a transient bubble (see
-        // `draw_status_bubble`), so the content spans down to the layout bar and
-        // reclaims the strip's height. The layout bar now sits at the very bottom.
-        let content_bottom = full.y1.max(full.y0 + tb_h);
-        let layout_bar_top = (content_bottom - LAYOUT_BAR_H).max(full.y0 + tb_h);
-        // Version-history strip: a band between the canvas and the layout bar,
-        // so the page shrinks rather than the history painting over the text.
-        let history_h = self.history.band_height();
-        let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
-        // Reserve the styles panel out of the canvas so the page re-centers in the
-        // remaining width (and scrolled content never paints under the panel).
-        let canvas_right = if self.styles_panel_visible() {
-            (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
-        } else {
-            full.x1
-        };
-        // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
-        // styles panel on the right) so the page re-centers and scrolled content
-        // never paints under the pane.
-        let canvas_left = if self.outline_open {
-            (full.x0 + OUTLINE_PANEL_W).min(canvas_right - 1.0)
-        } else {
-            full.x0
-        };
-        // Reserve the crash-recovery banner (when an offer is staged) directly
-        // under the toolbar — above the Find bar and the canvas.
-        let recovery_h = if self.recovery.is_some() {
-            RECOVERY_BANNER_H
-        } else {
-            0.0
-        };
-        if recovery_h > 0.0 {
-            let rbar = Rect::new(
-                canvas_left,
-                full.y0 + tb_h,
-                canvas_right,
-                full.y0 + tb_h + recovery_h,
-            );
-            self.draw_recovery_banner(scene, transform, text_renderer, theme, rbar);
-        } else {
-            self.recovery_buttons.clear();
-        }
-        // Reserve the Find bar (when open) out of the canvas top (below the banner).
-        let find_h = self.find.height();
-        if find_h > 0.0 {
-            let fbar = Rect::new(
-                canvas_left,
-                full.y0 + tb_h + recovery_h,
-                canvas_right,
-                full.y0 + tb_h + recovery_h + find_h,
-            );
-            let cc = self.chrome;
-            self.find.draw(
-                scene,
-                transform,
-                text_renderer,
-                FindPalette {
-                    bar: cc.bar,
-                    field: cc.field,
-                    chip: cc.chip,
-                    border: cc.border,
-                    text: cc.text,
-                    text_dim: cc.text_dim,
-                    accent: cc.accent,
-                    on_accent: cc.on_accent,
-                    danger: theme.tokens.colors.semantic.danger,
-                },
-                fbar,
-            );
-        }
-        // Reserve the horizontal ruler band (when on) out of the canvas top, below
-        // the find bar. It is drawn with the *unscaled* `transform` so it stays a
-        // fixed-height strip while the page scrolls/zooms; its tick + marker
-        // positions are mapped through the zoom so they track the page edge.
-        let ruler_h = if self.ruler_on { RULER_H } else { 0.0 };
-        let canvas = Rect::new(
-            canvas_left,
-            full.y0 + tb_h + recovery_h + find_h + ruler_h,
-            canvas_right,
-            history_top,
-        );
-        scene.fill(Fill::NonZero, transform, self.chrome.canvas, None, &canvas);
+        // Pass 1: shape + paginate every block, then resolve scroll against the
+        // resulting extent and shift `laid` into screen space.
+        let PaginationResult {
+            mut laid,
+            cache: new_cache,
+            cur_page,
+            y,
+            blocks,
+        } = self.paginate_blocks(text_renderer, &fg);
+        let (num_pages, sy) = self.finish_scroll(&fg, &mut laid, cur_page, y);
 
-        // Zoom anchor: the canvas top, horizontally centered. The page+content
-        // transform scales about this point, so the page stays centered and the
-        // top of the (scrolled) content stays pinned to the canvas top as zoom
-        // changes. The toolbar/find-bar/status bar are drawn with the unscaled
-        // `transform` and are unaffected.
-        self.zoom_anchor = Point::new(f64::midpoint(canvas.x0, canvas.x1), canvas.y0);
-        let ctf = self.content_transform(transform);
+        // `draw_page_sheets` pushes the canvas clip (so scrolled content never
+        // paints over the toolbar/status bar) before drawing the sheets; popped
+        // once every page-space pass below — sheets, pass 2, review cards,
+        // footnotes, placeholder, overlays — has run.
+        let page = self.draw_page_sheets(scene, transform, text_renderer, &fg, num_pages, sy);
 
-        // Per-side page geometry — every margin is independently customizable.
-        // The page is a FIXED size (it does not resize with the window); the
-        // window just shows more or less of it and centers it.
-        let m = self.margins;
-        let page_w = MAX_PAGE_W;
-        let page_x = canvas.x0 + ((canvas.width() - page_w) / 2.0).max(0.0);
-        let page_top = canvas.y0 + PAGE_TOP;
-        let content_x = page_x + m.left;
-        let content_w = num::f32_of_f64((page_w - m.left - m.right).max(80.0));
-
-        // Horizontal ruler band (drawn unscaled, above the canvas). Reads the
-        // page edge geometry just computed, plus the caret paragraph's indent +
-        // tab stops from the cached block views.
-        if ruler_h > 0.0 {
-            let band = Rect::new(
-                canvas_left,
-                full.y0 + tb_h + recovery_h + find_h,
-                canvas_right,
-                canvas.y0,
-            );
-            self.draw_ruler(scene, transform, text_renderer, theme, band, page_x, page_w);
-        } else {
-            self.ruler_rect = Rect::ZERO;
-        }
-        // True pagination: each page is a fixed US-Letter sheet (height `letter_h`)
-        // stacked with `PAGE_GAP` between sheets. A block lays into the current
-        // page's text band [content_top, content_bottom]; when the *next whole
-        // block* would not fit before the bottom text margin, the page advances and
-        // the block starts at the next page's top margin — content is never split,
-        // so a page-end never crosses a line of text.
-        let letter_h = page_w * LETTER_RATIO;
-        let page_pitch = letter_h + PAGE_GAP;
-        let page_content_top = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + m.top;
-        let page_content_bottom =
-            |i: usize| page_top + num::f64_of_usize(i) * page_pitch + letter_h - m.bottom;
-
-        // Pass 1: shape blocks top-to-bottom. Runs of consecutive `cell` blocks
-        // sharing a table id lay out as a grid; everything else stacks normally.
-        let blocks = std::mem::take(&mut self.blocks);
-        let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
-        // Incremental layout cache: take last frame's shaped layouts so matching
-        // blocks can be reused, and build this frame's cache afresh. Any entry
-        // left in `old_cache` at the end (a block that no longer exists) is
-        // dropped — this is the per-frame prune that keeps memory bounded.
-        let mut old_cache = std::mem::take(&mut self.layout_cache);
-        let mut new_cache: HashMap<String, (u64, RichTextLayout)> =
-            HashMap::with_capacity(blocks.len());
-        self.dbg_layout_hits = 0;
-        self.dbg_layout_misses = 0;
-        // Pagination cursor: current page index, whether anything has landed on it
-        // yet (the first item on a page never breaks, so an over-tall block simply
-        // overflows its own page — acceptable for v1), and the running content y.
-        let mut cur_page = 0usize;
-        let mut placed_on_page = false;
-        let mut y = page_content_top(0);
-        // The currently-active floated image (anchor=paragraph/page, wrap=left/right),
-        // if any: subsequent paragraphs on its page are narrowed to flow beside it
-        // (coarse wrap — see `FloatReserve`). Cleared once `y` clears the float's
-        // bottom, when the page advances past it, or when the next float supersedes it.
-        let mut active_float: Option<FloatReserve> = None;
-        // Per-level ordered-list counters (index = nesting level); reset when a
-        // non-list block is reached or a shallower level re-enters.
-        let mut ol_counts: Vec<u32> = Vec::new();
-        let cell_pad = 8.0f64;
-        let mut bi = 0;
-        while bi < blocks.len() {
-            let b = &blocks[bi];
-            // Coarse-wrap only narrows *paragraph* blocks beside a float. A table or
-            // another image cannot share the float column, so before laying one out
-            // push the cursor below the active float and retire it — they stack under
-            // the image as a full-width block rather than overlapping it.
-            let next_is_paragraph = !b.kind.eq("image") && cell_table(b).is_none();
-            if !next_is_paragraph
-                && let Some(f) = active_float.take()
-                && f.page == cur_page
-            {
-                y = y.max(f.bottom + f64::from(self.sheet.get("body").space_after));
-            }
-            if let Some(tid) = cell_table(b) {
-                ol_counts.clear();
-                let start = bi;
-                while bi < blocks.len() && cell_table(&blocks[bi]).as_deref() == Some(tid.as_str())
-                {
-                    bi += 1;
-                }
-                let cells = &blocks[start..bi];
-                let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
-                let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
-                let col_w = f64::from(content_w) / num::f64_of_usize(ncols);
-                // Measure every row first so the whole table can paginate as one
-                // unit (it is never split mid-row across a page boundary).
-                // A measured table row: `(row_height, cells)`, each cell as
-                // `(col, cell_height, block)`.
-                type TableRow<'a> = (f64, Vec<(usize, f64, &'a BlockView)>);
-                let mut rows: Vec<TableRow> = Vec::with_capacity(nrows);
-                for r in 0..nrows {
-                    let mut row_items: Vec<(usize, f64, &BlockView)> = Vec::new();
-                    let mut row_h = 26.0f64;
-                    for c in 0..ncols {
-                        if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
-                            let (runs, underlines, strikes) =
-                                block_runs_markup(cell, self.show_markup);
-                            let wrap_w = num::f32_of_f64((col_w - 2.0 * cell_pad).max(24.0));
-                            let align = block_align(cell, TextAlign::Left);
-                            let key = shape_key(
-                                &runs,
-                                &underlines,
-                                &strikes,
-                                false,
-                                16.0,
-                                wrap_w,
-                                align,
-                                FontFamily::Sans,
-                                1.0,
-                            );
-                            let layout = match old_cache.remove(&cell.id) {
-                                Some((k, lay)) if k == key => {
-                                    self.dbg_layout_hits += 1;
-                                    lay
-                                }
-                                _ => {
-                                    self.dbg_layout_misses += 1;
-                                    RichTextLayout::shape(
-                                        &mut text_renderer.font_system,
-                                        &runs,
-                                        false,
-                                        16.0,
-                                        wrap_w,
-                                        align,
-                                        FontFamily::Sans,
-                                        underlines,
-                                        strikes,
-                                        1.0,
-                                    )
-                                }
-                            };
-                            let cell_h = f64::from(layout.height());
-                            row_h = row_h.max(cell_h + 2.0 * cell_pad);
-                            new_cache.insert(cell.id.clone(), (key, layout));
-                            row_items.push((c, cell_h, cell));
-                        }
-                    }
-                    rows.push((row_h, row_items));
-                }
-                let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
-                // Break to the next page if a manual page break is set on the
-                // first cell, or the whole table would not fit.
-                let force_break = cells.first().is_some_and(block_page_break_before);
-                let item_top = if placed_on_page
-                    && (force_break || y + table_h > page_content_bottom(cur_page) + 0.5)
-                {
-                    cur_page += 1;
-                    page_content_top(cur_page)
-                } else {
-                    y
-                };
-                placed_on_page = true;
-                let mut ry = item_top;
-                // Whether the current page already carries a row of this table —
-                // the first row on a page never breaks (so an over-tall single row
-                // overflows its page, acceptable for v1).
-                let mut row_on_page = false;
-                for (r, (row_h, row_items)) in rows.into_iter().enumerate() {
-                    // Split the table at a row boundary: if this whole row would
-                    // cross the page's bottom margin, move it to the next page's top
-                    // margin (rows that fit stay on this page). No header repeat.
-                    if row_on_page && ry + row_h > page_content_bottom(cur_page) + 0.5 {
-                        cur_page += 1;
-                        ry = page_content_top(cur_page);
-                    }
-                    row_on_page = true;
-                    for (c, cell_h, cell) in row_items {
-                        let cell_x = content_x + num::f64_of_usize(c) * col_w;
-                        let cbox = Rect::new(cell_x, ry, cell_x + col_w, ry + row_h);
-                        laid.push(Laid {
-                            id: cell.id.clone(),
-                            text: cell.text.clone(),
-                            kind: "cell".into(),
-                            size: 16.0,
-                            y_top: ry + cell_pad,
-                            text_x: cell_x + cell_pad,
-                            width: col_w - 2.0 * cell_pad,
-                            height: cell_h,
-                            layout_y: ry + cell_pad,
-                            clip: None,
-                            bullet: None,
-                            ink: PAPER_INK,
-                            image_hash: None,
-                            cell_box: Some(cbox),
-                            cell_row: Some(r),
-                            page: cur_page,
-                        });
-                    }
-                    ry += row_h;
-                }
-                y = ry + f64::from(self.sheet.get("body").space_after);
-            } else if b.kind == "image" {
-                ol_counts.clear();
-                let hash = match b.attrs.get("blob") {
-                    Some(AttrVal::Str(s)) => s.clone(),
-                    _ => String::new(),
-                };
-                if !hash.is_empty() && !self.image_cache.contains_key(&hash) {
-                    let decoded = self
-                        .blobs
-                        .get(&hash)
-                        .and_then(|bytes| ui::widget::Image::from_encoded(bytes).ok());
-                    self.image_cache.insert(hash.clone(), decoded);
-                }
-                let intrinsic = self
-                    .image_cache
-                    .get(&hash)
-                    .and_then(|o| o.as_ref())
-                    .map(ui::widget::Image::intrinsic_size);
-                // Display size: an explicit `width`/`height` attr (set by importers
-                // or a resize handle) wins; otherwise fit the decoded intrinsic size
-                // to the content column. Either way the final width is clamped to the
-                // content column and the height follows the chosen aspect ratio so a
-                // requested-but-too-wide image scales down without distorting.
-                let (draw_w, draw_h) = match image_explicit_size(b) {
-                    Some((ew, eh)) if ew > 0.0 && eh > 0.0 => {
-                        let w = ew.min(f64::from(content_w));
-                        (w, (eh * (w / ew)).max(8.0))
-                    }
-                    _ => match intrinsic {
-                        Some((iw, ih)) if iw > 0 && ih > 0 => {
-                            let w = f64::from(iw).min(f64::from(content_w));
-                            (w, (f64::from(ih) * (w / f64::from(iw))).max(8.0))
-                        }
-                        _ => (f64::from(content_w).min(280.0), 90.0),
-                    },
-                };
-                // Image blocks carry a trivial empty layout (used only so pointer
-                // hit-testing resolves to offset 0); it is cheap, so just re-shape
-                // it every frame rather than caching it incrementally.
-                let empty = RichTextLayout::shape(
-                    &mut text_renderer.font_system,
-                    &[RichSpan::new("")],
-                    false,
-                    16.0,
-                    content_w,
-                    TextAlign::Left,
-                    FontFamily::Sans,
-                    vec![],
-                    vec![],
-                    1.0,
-                );
-                new_cache.insert(b.id.clone(), (0, empty));
-                // Break to the next page on a manual page break, or if the image
-                // would not fit.
-                let force_break = block_page_break_before(b);
-                let item_top = if placed_on_page
-                    && (force_break || y + draw_h > page_content_bottom(cur_page) + 0.5)
-                {
-                    cur_page += 1;
-                    page_content_top(cur_page)
-                } else {
-                    y
-                };
-                placed_on_page = true;
-                if image_floats(b) {
-                    // Floated image (anchor=paragraph/page, wrap=left/right): instead
-                    // of a full-width vertical slot, pin it to the left or right edge
-                    // of the content column and reserve that column so following
-                    // paragraphs flow beside it (coarse wrap — `FloatReserve`). `y`
-                    // does NOT advance past the image: the next blocks start level
-                    // with its top and are narrowed until they clear its bottom.
-                    let left = image_wrap(b) == "left";
-                    let img_x = if left {
-                        content_x
-                    } else {
-                        content_x + f64::from(content_w) - draw_w
-                    };
-                    const FLOAT_GUTTER: f64 = 12.0;
-                    laid.push(Laid {
-                        id: b.id.clone(),
-                        text: String::new(),
-                        kind: "image".into(),
-                        size: 16.0,
-                        y_top: item_top,
-                        text_x: img_x,
-                        width: draw_w,
-                        height: draw_h,
-                        layout_y: item_top,
-                        clip: None,
-                        bullet: None,
-                        ink: PAPER_INK,
-                        image_hash: intrinsic.map(|_| hash),
-                        cell_box: None,
-                        cell_row: None,
-                        page: cur_page,
-                    });
-                    active_float = Some(FloatReserve {
-                        left,
-                        reserve_w: draw_w + FLOAT_GUTTER,
-                        bottom: item_top + draw_h,
-                        page: cur_page,
-                    });
-                    // Leave `y` at the image top so following text wraps beside it.
-                    y = item_top;
-                } else {
-                    // Inline (default), or anchored with wrap none/both: a full-width
-                    // vertical slot. A non-inline-anchored image with no one-sided
-                    // wrap is centered in the column; inline images stay left-aligned.
-                    let centered = image_anchor(b) != "inline";
-                    let img_x = if centered {
-                        content_x + ((f64::from(content_w) - draw_w) / 2.0).max(0.0)
-                    } else {
-                        content_x
-                    };
-                    laid.push(Laid {
-                        id: b.id.clone(),
-                        text: String::new(),
-                        kind: "image".into(),
-                        size: 16.0,
-                        y_top: item_top,
-                        text_x: img_x,
-                        width: draw_w,
-                        height: draw_h,
-                        layout_y: item_top,
-                        clip: None,
-                        bullet: None,
-                        ink: PAPER_INK,
-                        image_hash: intrinsic.map(|_| hash),
-                        cell_box: None,
-                        cell_row: None,
-                        page: cur_page,
-                    });
-                    y = item_top + draw_h + f64::from(self.sheet.get("body").space_after);
-                }
-                bi += 1;
-            } else {
-                // Resolve the block's style (component-instance model). `size`
-                // and `base_bold` are the style default; per-run `size` marks
-                // override them in `block_runs`.
-                let st = self.sheet.get(&block_style_key(b));
-                let (size, base_bold) = (st.size, st.bold);
-                // List items indent by nesting level; the bullet/number sits just
-                // left of the text. Ordered items number per level.
-                let (indent, bullet) = if b.kind == "list_item" {
-                    let level = list_level(b);
-                    let indent = f64::from(st.indent) + num::f64_of_usize(level) * LIST_INDENT_STEP;
-                    // Keep the ordered counters sized to the current depth; entering
-                    // a shallower level drops the deeper counters so they restart.
-                    ol_counts.truncate(level + 1);
-                    if ol_counts.len() <= level {
-                        ol_counts.resize(level + 1, 0);
-                    }
-                    let bullet = if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
-                        ol_counts[level] += 1;
-                        format!("{}.", ol_counts[level])
-                    } else {
-                        ol_counts[level] = 0; // a bullet item resets this level's number
-                        bullet_glyph(level).to_string()
-                    };
-                    (indent, Some(bullet))
-                } else {
-                    ol_counts.clear();
-                    // Style indent + the paragraph's own ruler indent attr.
-                    (f64::from(st.indent) + block_indent_attr(b), None)
-                };
-                // Coarse float-wrap: if a floated image is active on this page and
-                // this block's top still falls within the image band, narrow the
-                // text column by the reserved width and (for a left float) push the
-                // text origin right so it sits beside the image. The block is shaped
-                // at the reduced width, so all its line geometry already reflects the
-                // narrowing — draw + hit-test only need the shared x-origin offset.
-                let (float_reserve, float_offset) = match active_float {
-                    Some(f)
-                        if f.page == cur_page
-                            && y + f64::from(st.space_before) + 0.5 < f.bottom =>
-                    {
-                        // Subtract the reserved column from the wrap width; for a
-                        // left float, shift the text origin right by the same amount.
-                        (f.reserve_w, if f.left { f.reserve_w } else { 0.0 })
-                    }
-                    _ => (0.0, 0.0),
-                };
-                let wrap_w = (content_w - num::f32_of_f64(indent) - num::f32_of_f64(float_reserve))
-                    .max(40.0);
-                let (runs, underlines, strikes) = block_runs_markup(b, self.show_markup);
-                let align = block_align(b, style_align(&st.align));
-                let family = parse_font(&st.font);
-                // The paragraph's line-spacing multiplier (1.0 = single) scales the
-                // shaped line advance, so it is part of the shape key.
-                let line_mult = block_line_spacing(b);
-                let key = shape_key(
-                    &runs,
-                    &underlines,
-                    &strikes,
-                    base_bold,
-                    size,
-                    wrap_w,
-                    align,
-                    family,
-                    line_mult,
-                );
-                // Reuse the shaped layout if nothing affecting shaping changed
-                // (text, marks, resolved style, wrap width, or line spacing), else
-                // re-shape.
-                let layout = match old_cache.remove(&b.id) {
-                    Some((k, lay)) if k == key => {
-                        self.dbg_layout_hits += 1;
-                        lay
-                    }
-                    _ => {
-                        self.dbg_layout_misses += 1;
-                        RichTextLayout::shape(
-                            &mut text_renderer.font_system,
-                            &runs,
-                            base_bold,
-                            size,
-                            wrap_w,
-                            align,
-                            family,
-                            underlines,
-                            strikes,
-                            line_mult,
-                        )
-                    }
-                };
-                let block_h = f64::from(layout.height());
-                // Place with the style's space-before as the leading gap, breaking
-                // to the next page when the whole block would not fit before the
-                // bottom text margin (the lead is dropped at the top of a fresh
-                // page so the first paragraph hugs the top margin).
-                let top_candidate = y + f64::from(st.space_before);
-                // A manual page break forces a fresh page; otherwise break only
-                // when the whole block would overflow the bottom text margin.
-                let force_break = block_page_break_before(b);
-                let item_top = if placed_on_page
-                    && (force_break
-                        || top_candidate + block_h > page_content_bottom(cur_page) + 0.5)
-                {
-                    cur_page += 1;
-                    page_content_top(cur_page)
-                } else {
-                    top_candidate
-                };
-                placed_on_page = true;
-                // If the page advanced past the float (page-break), the float no
-                // longer applies to this block — drop the x-origin offset so the
-                // block lays full-width on its new page. (The float only ever
-                // narrows blocks on its own page.)
-                let float_offset = if active_float.is_some_and(|f| f.page == cur_page) {
-                    float_offset
-                } else {
-                    0.0
-                };
-                let text_x = content_x + indent + float_offset;
-                let ink = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
-                let width = f64::from(wrap_w);
-                // Does the whole block fit on the current page from `item_top`? If
-                // so this is the fast, unchanged single-`Laid` path. Otherwise the
-                // block is split at line boundaries across as many pages as needed.
-                if item_top + block_h <= page_content_bottom(cur_page) + 0.5 {
-                    laid.push(Laid {
-                        id: b.id.clone(),
-                        text: b.text.clone(),
-                        kind: b.kind.clone(),
-                        size,
-                        y_top: item_top,
-                        text_x,
-                        width,
-                        height: block_h,
-                        layout_y: item_top,
-                        clip: None,
-                        bullet,
-                        ink,
-                        image_hash: None,
-                        cell_box: None,
-                        cell_row: None,
-                        page: cur_page,
-                    });
-                    y = item_top + block_h + f64::from(st.space_after);
-                } else {
-                    // Intra-block pagination: emit one `Laid` slice per page the
-                    // block spans. Each slice shares the one cached layout (one id,
-                    // one cache entry); only the *visual* rendering is split. A
-                    // slice's `layout_y` maps the layout origin so that line geometry
-                    // (`selection_rects`/`caret_geometry`/`hit`) still resolves, and
-                    // its `clip` band keeps lines from other slices off this page.
-                    let lines = layout_line_tops(&layout, &b.text);
-                    let mut li = 0usize;
-                    let mut slice_top = item_top; // on-screen top of the current slice
-                    let mut first_slice = true;
-                    while li < lines.len() {
-                        let bottom = page_content_bottom(cur_page);
-                        let (first_line_top, _) = lines[li];
-                        // layout_y maps line `li`'s internal top to `slice_top`.
-                        let layout_y = slice_top - first_line_top;
-                        // Take every subsequent line that still fits on this page.
-                        let mut last = li;
-                        while last + 1 < lines.len() {
-                            let (nt, nh) = lines[last + 1];
-                            if layout_y + nt + nh > bottom + 0.5 {
-                                break;
-                            }
-                            last += 1;
-                        }
-                        // Respect the shared paragraph widow/orphan policy. If the
-                        // next page would receive too few lines, leave enough there;
-                        // if this page cannot retain the minimum, move the paragraph
-                        // fragment wholesale instead of producing a one-line stub.
-                        let available = last - li + 1;
-                        let allowed = layout.fragment_line_count_from(li, available);
-                        if allowed == 0 && slice_top > page_content_top(cur_page) + 0.5 {
-                            cur_page += 1;
-                            slice_top = page_content_top(cur_page);
-                            y = slice_top;
-                            continue;
-                        }
-                        let allowed = allowed.max(1).min(available);
-                        last = li + allowed - 1;
-                        let (lt, lh) = lines[last];
-                        let slice_bottom = layout_y + lt + lh;
-                        let band = Rect::new(text_x, slice_top, text_x + width, slice_bottom);
-                        laid.push(Laid {
-                            id: b.id.clone(),
-                            text: b.text.clone(),
-                            kind: b.kind.clone(),
-                            size,
-                            y_top: slice_top,
-                            text_x,
-                            width,
-                            height: slice_bottom - slice_top,
-                            layout_y,
-                            clip: Some(band),
-                            // The bullet/number belongs to the block's first line only.
-                            bullet: if first_slice { bullet.clone() } else { None },
-                            ink,
-                            image_hash: None,
-                            cell_box: None,
-                            cell_row: None,
-                            page: cur_page,
-                        });
-                        li = last + 1;
-                        first_slice = false;
-                        if li < lines.len() {
-                            // More lines remain: spill onto the next page's top margin.
-                            cur_page += 1;
-                            slice_top = page_content_top(cur_page);
-                            y = slice_top;
-                        } else {
-                            y = slice_bottom + f64::from(st.space_after);
-                        }
-                    }
-                }
-                new_cache.insert(b.id.clone(), (key, layout));
-                // Float bookkeeping: a float only narrows blocks on its own page and
-                // only while text is still beside the image. Clear it once the page
-                // has advanced past the float, or once this block has flowed down to
-                // (or past) the image's bottom — and in that latter case make sure
-                // the cursor sits at least at the image bottom so the next full-width
-                // block clears the image vertically rather than overlapping it.
-                if let Some(f) = active_float {
-                    if cur_page > f.page {
-                        active_float = None;
-                    } else if y >= f.bottom {
-                        y = y.max(f.bottom + f64::from(st.space_after));
-                        active_float = None;
-                    }
-                }
-                bi += 1;
-            }
-        }
-        // Total document extent below `page_top`: the stacked page sheets + gaps,
-        // widened if an over-tall block overflowed its page's text band.
-        let num_pages = cur_page + 1;
-        let pages_extent =
-            num::f64_of_usize(num_pages) * letter_h + num::f64_of_usize(cur_page) * PAGE_GAP;
-        let extent = pages_extent.max(y - page_top);
-
-        // Scrolling: clamp the offset to the overflow, then shift the laid-out
-        // content (+ pages) into screen space so hit-testing needs no offset.
-        // `scroll_y` is an offset in unscaled content space; on screen the content
-        // is magnified by `zoom`, so the visible window covers `canvas.height() /
-        // zoom` of content — divide by zoom so the overflow (and thus max scroll)
-        // grows when zoomed in and shrinks when zoomed out.
-        self.max_scroll = (extent + 2.0 * PAGE_TOP - canvas.height() / self.zoom).max(0.0);
-        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
-        let sy = self.scroll_y;
-        if sy != 0.0 {
-            for l in &mut laid {
-                l.y_top -= sy;
-                l.layout_y -= sy;
-                if let Some(bx) = l.cell_box.as_mut() {
-                    *bx = Rect::new(bx.x0, bx.y0 - sy, bx.x1, bx.y1 - sy);
-                }
-                if let Some(c) = l.clip.as_mut() {
-                    *c = Rect::new(c.x0, c.y0 - sy, c.x1, c.y1 - sy);
-                }
-            }
-        }
-
-        // Clip the document to the canvas so scrolled content never paints over
-        // the toolbar / status bar.
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &canvas,
-        );
-
-        // Discrete page sheets (shadow + paper) stacked with `PAGE_GAP`. Each
-        // sheet draws the page header inside its top-margin band and the footer
-        // inside its bottom-margin band (page-number fields resolved to this
-        // page's number). A subtle "Page N" indicator lives in the gap below the
-        // sheet only when the document has no footer of its own. All through
-        // `ctf` (the zoom transform) so the page magnifies with the content.
-        let header = std::mem::take(&mut self.header);
-        let footer = std::mem::take(&mut self.footer);
-        // Which running region (if any) is currently the active edit context, and
-        // on which page its editable band lives (the first page is the reference —
-        // the header/footer content is shared across pages, like Word).
-        let edit_region = self.inner.region();
-        self.region_laid.clear();
-        for i in 0..num_pages {
-            let ptop = page_top + num::f64_of_usize(i) * page_pitch - sy;
-            let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
-            chrome::page::draw(
-                scene,
-                ctf,
-                sheet,
-                self.chrome.paper,
-                &self.chrome.paper_elevation,
-            );
-            let page_no = i + 1;
-            // Header band: the top margin, inset by the L/R text margins.
-            let head_band = Rect::new(
-                sheet.x0 + m.left,
-                sheet.y0,
-                sheet.x1 - m.right,
-                sheet.y0 + m.top,
-            );
-            // Footer band: the bottom margin, inset by the L/R text margins.
-            let foot_band = Rect::new(
-                sheet.x0 + m.left,
-                sheet.y1 - m.bottom,
-                sheet.x1 - m.right,
-                sheet.y1,
-            );
-            // Cache the reference-page band rects for the event handler's hit-test.
-            if i == 0 {
-                self.head_band_rect = head_band;
-                self.foot_band_rect = foot_band;
-            }
-            let head_editing = i == 0 && edit_region == Region::Header;
-            let foot_editing = i == 0 && edit_region == Region::Footer;
-            let (_, head_laid) = self.draw_running_band(
-                scene,
-                ctf,
-                text_renderer,
-                &header,
-                page_no,
-                head_band,
-                false,
-                head_editing,
-            );
-            let (drew_footer, foot_laid) = self.draw_running_band(
-                scene,
-                ctf,
-                text_renderer,
-                &footer,
-                page_no,
-                foot_band,
-                true,
-                foot_editing,
-            );
-            if head_editing {
-                self.region_laid = head_laid;
-                self.draw_active_band_chrome(scene, ctf, text_renderer, head_band);
-            }
-            if foot_editing {
-                self.region_laid = foot_laid;
-                self.draw_active_band_chrome(scene, ctf, text_renderer, foot_band);
-            }
-            // Default page indicator in the gap — only when no footer was drawn.
-            if !drew_footer && !foot_editing {
-                let label = t_args("page-indicator", &[arg("n", num::i64_of_usize(page_no))]);
-                let approx = num::f64_of_usize(label.chars().count()) * 6.4;
-                let lx = f64::midpoint(sheet.x0, sheet.x1) - approx / 2.0;
-                let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
-                // Drawn in the inter-page gap on the canvas — chrome, so themed.
-                text_renderer.draw_text(
-                    scene,
-                    &label,
-                    11.0,
-                    self.chrome.text_dim,
-                    ctf * Affine::translate((lx, ly)),
-                    None,
-                );
-            }
-        }
-        self.header = header;
-        self.footer = footer;
-        // The first page is the reference rect for the margin-guide overlay
-        // (margins apply to every page identically).
-        let page = Rect::new(
-            page_x,
-            page_top - sy,
-            page_x + page_w,
-            page_top + letter_h - sy,
-        );
-        self.page_rect = page;
-
-        // Restore the block cache before pass 2 so selection lookups resolve.
-        self.blocks = blocks;
-        let multi_sel = self.selection_blocks_cached().len() > 1;
-
-        // Footnote numbering: assign citation numbers (1,2,3…) to notes in the
-        // order their `note-ref` markers first appear in the body. This drives
-        // both the in-text superscript and the bottom-of-page footnote list.
-        let note_nums = note_numbering(&self.blocks);
-
-        // Spell-check (squiggles): precompute the misspelled byte spans for every
-        // body block *near the viewport* before pass 2, so the read-only pass-2
-        // loop (which borrows `self` immutably) can look them up without a `&mut`
-        // borrow conflict. Cheap: cached per block keyed by text (an edit
-        // re-checks), and culled to a band around the visible canvas.
-        let mut spell_by_block: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
-        if self.spellcheck_on {
-            // A generous band around the canvas (one screenful above/below) so a
-            // block scrolling into view is already checked; everything else is
-            // skipped to keep the pass cheap on long documents.
-            let cull_lo = canvas.y0 - canvas.height();
-            let cull_hi = canvas.y1 + canvas.height();
-            // Collect the (id, text) of in-band, spellable body blocks first to end
-            // the immutable borrow of `laid`/`self.blocks` before the `&mut self`
-            // dictionary/cache calls below.
-            let targets: Vec<(String, String)> = laid
-                .iter()
-                .filter(|l| {
-                    !l.text.is_empty()
-                        && l.kind != "image"
-                        && l.kind != "fidelity"
-                        && l.y_top + l.height >= cull_lo
-                        && l.y_top <= cull_hi
-                })
-                .map(|l| (l.id.clone(), l.text.clone()))
-                .collect();
-            for (id, text) in targets {
-                let spans = self.block_spell_spans(&id, &text);
-                if !spans.is_empty() {
-                    spell_by_block.insert(id, spans);
-                }
-            }
-        }
-
-        // Per-page footnote bucket: page index → note numbers whose marker lands
-        // on that page, collected during pass 2 and rendered after it.
-        let mut page_notes: HashMap<usize, Vec<usize>> = HashMap::new();
-
-        // Comment-marker collection: `(comment_id, start_line_top_y,
-        // range_right_x)` for each comment range encountered in pass 2. Rendered
-        // after the loop as an inline indicator tab (at the range's right edge) +
-        // an annotation card stacked at the right edge of the visible canvas (so
-        // it is never clipped by the page width or hidden behind the styles
-        // panel). Only populated when markup is shown.
-        let mut comment_markers: Vec<(String, f64, f64)> = Vec::new();
-
-        // Tracked-change-marker collection: `(change_id, start_line_top_y,
-        // range_right_x)` for each `ins`/`del` range encountered in pass 2. Used
-        // after the loop to stack a small Accept/Reject review card next to each
-        // change. The change id is recovered from the mark value (the same id the
-        // `changes` container keys on). Only populated when markup is shown.
-        let mut change_markers: Vec<(String, f64, f64)> = Vec::new();
-
-        // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
-        // here renders through `ctf` (the zoom transform) so page content scales
-        // while the surrounding chrome stays at 100%.
-        for l in &laid {
-            if l.kind == "image" {
-                let rect = Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height);
-                // Mirror flips (`flip_h` / `flip_v` block attrs) are applied as a
-                // scale-about-centre on the paint transform, so the image draws
-                // mirrored in place without moving its slot.
-                let (fh, fv) =
-                    self.blocks
-                        .iter()
-                        .find(|b| b.id == l.id)
-                        .map_or((false, false), |b| {
-                            (
-                                matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
-                                matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
-                            )
-                        });
-                let itf = if fh || fv {
-                    let cx = f64::midpoint(rect.x0, rect.x1);
-                    let cy = f64::midpoint(rect.y0, rect.y1);
-                    ctf * Affine::translate((cx, cy))
-                        * Affine::scale_non_uniform(
-                            if fh { -1.0 } else { 1.0 },
-                            if fv { -1.0 } else { 1.0 },
-                        )
-                        * Affine::translate((-cx, -cy))
-                } else {
-                    ctf
-                };
-                if let Some(hash) = &l.image_hash {
-                    if let Some(slot) = self.image_cache.get_mut(hash)
-                        && let Some(img) = slot
-                    {
-                        img.paint_at(scene, itf, rect);
-                    }
-                } else {
-                    // Missing or undecodable (e.g. non-PNG) image — placeholder.
-                    scene.fill(
-                        Fill::NonZero,
-                        ctf,
-                        Color::from_rgb8(0xee, 0xee, 0xf2),
-                        None,
-                        &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
-                    );
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        ctf,
-                        Color::from_rgb8(0xcc, 0xce, 0xd6),
-                        None,
-                        &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
-                    );
-                    text_renderer.draw_text(
-                        scene,
-                        &t("canvas-image-missing"),
-                        14.0,
-                        PAPER_MUTED,
-                        ctf * Affine::translate((
-                            rect.x0 + 12.0,
-                            rect.y0 + rect.height() / 2.0 - 8.0,
-                        )),
-                        None,
-                    );
-                }
-                // Selection chrome: when this image is the caret's block, ring it
-                // with an accent border + corner resize handles so it reads as
-                // "selected" (the panel then shows the resize / flip controls).
-                if l.id == self.inner.caret.block {
-                    let accent = self.chrome.accent;
-                    scene.stroke(&vello::kurbo::Stroke::new(2.0), ctf, accent, None, &rect);
-                    let hs = 5.0;
-                    for (hx, hy) in [
-                        (rect.x0, rect.y0),
-                        (rect.x1, rect.y0),
-                        (rect.x0, rect.y1),
-                        (rect.x1, rect.y1),
-                    ] {
-                        let hr = Rect::new(hx - hs, hy - hs, hx + hs, hy + hs);
-                        scene.fill(Fill::NonZero, ctf, Color::WHITE, None, &hr);
-                        scene.stroke(&vello::kurbo::Stroke::new(1.5), ctf, accent, None, &hr);
-                    }
-                }
-                continue;
-            }
-            if let Some(bx) = l.cell_box {
-                let fill = match l.cell_row {
-                    Some(0) => Color::from_rgb8(0xec, 0xee, 0xf3), // header row tint
-                    Some(r) if r % 2 == 0 => Color::from_rgb8(0xf6, 0xf6, 0xf9), // zebra
-                    _ => self.chrome.paper,
-                };
-                scene.fill(Fill::NonZero, ctf, fill, None, &bx);
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    ctf,
-                    Color::from_rgb8(0xc4, 0xc6, 0xcc),
-                    None,
-                    &bx,
-                );
-            }
-
-            if l.kind == "fidelity" {
-                let box_rect = Rect::new(
-                    l.text_x,
-                    l.y_top + 2.0,
-                    (page_x + page_w - m.right).min(l.text_x + 360.0),
-                    l.y_top + l.height - 2.0,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    ctf,
-                    Color::from_rgb8(0xee, 0xee, 0xf2),
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0),
-                );
-                text_renderer.draw_text(
-                    scene,
-                    &t("canvas-embedded-content"),
-                    14.0,
-                    PAPER_MUTED,
-                    ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)),
-                    None,
-                );
-                continue;
-            }
-
-            if let Some(bul) = &l.bullet {
-                text_renderer.draw_text(
-                    scene,
-                    bul,
-                    l.size,
-                    l.ink,
-                    ctf * Affine::translate((l.text_x - BULLET_GAP, l.y_top)),
-                    None,
-                );
-            }
-
-            // The shaped text lives in the layout cache (built in pass 1), keyed
-            // by block id. Every normal/cell entry was inserted there.
-            let layout = match new_cache.get(&l.id) {
-                Some((_, lay)) => lay,
-                None => continue,
-            };
-            // Layout-relative geometry is measured from `layout_y` (= the on-screen
-            // y of the shaped layout's origin). For an unsplit block this equals
-            // `y_top`; for a slice of a page-split block it is offset so the carried
-            // lines land in this slice's band.
-            let ly = l.layout_y;
-            // A split slice clips its drawing to its own band so lines belonging to
-            // the block's other slices (drawn from the same layout via `ly`) never
-            // bleed onto this page. Unsplit blocks (`clip == None`) draw unclipped.
-            let clipped = l.clip.is_some();
-            if let Some(band) = l.clip {
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    ctf,
-                    &band,
-                );
-            }
-
-            if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
-                if let (Some(bx), true) = (l.cell_box, multi_sel) {
-                    // Multi-cell selection: highlight the whole cell (spreadsheet-style).
-                    scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &bx);
-                } else {
-                    for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                        let r = Rect::new(
-                            l.text_x + f64::from(rx0),
-                            ly + f64::from(ry0),
-                            l.text_x + f64::from(rx1),
-                            ly + f64::from(ry1),
-                        );
-                        scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &r);
-                    }
-                }
-            }
-
-            // Find-match highlights (under the text).
-            if self.find.is_open() {
-                for (bid, cs, ce) in self.find.matches() {
-                    if bid == &l.id {
-                        let bs = char_to_byte(&l.text, *cs);
-                        let be = char_to_byte(&l.text, *ce);
-                        for (rx0, ry0, rx1, ry1) in layout.selection_rects(bs, be) {
-                            let r = Rect::new(
-                                l.text_x + f64::from(rx0),
-                                ly + f64::from(ry0),
-                                l.text_x + f64::from(rx1),
-                                ly + f64::from(ry1),
-                            );
-                            scene.fill(Fill::NonZero, ctf, FIND_HL, None, &r);
-                        }
-                    }
-                }
-            }
-            // Comment highlight bands (under the text): a pale-yellow band over
-            // each `comment`-marked range. Mapped to on-screen rects via the same
-            // `selection_rects` geometry as the selection highlight, so it tracks
-            // wrapping. The comment's start line is recorded for the right-margin
-            // indicator/card rendered after the loop. Only when markup is shown.
-            if self.show_markup
-                && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
-            {
-                for (bs, be, cid) in block_comment_ranges(b) {
-                    let rects = layout.selection_rects(bs, be);
-                    for &(rx0, ry0, rx1, ry1) in &rects {
-                        let r = Rect::new(
-                            l.text_x + f64::from(rx0),
-                            ly + f64::from(ry0),
-                            l.text_x + f64::from(rx1),
-                            ly + f64::from(ry1),
-                        );
-                        scene.fill(Fill::NonZero, ctf, COMMENT_HL, None, &r);
-                    }
-                    // Anchor the marker at the start line's top, and remember
-                    // the range's right edge (max rect x1) for the inline tab.
-                    if let Some(&(_, ry0, _, _)) = rects.first() {
-                        let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
-                        comment_markers.push((
-                            cid,
-                            ly + f64::from(ry0),
-                            l.text_x + f64::from(right_x),
-                        ));
-                    }
-                }
-            }
-
-            text_renderer.draw_rich(
-                scene,
-                layout,
-                ctf * Affine::translate((l.text_x, ly)),
-                l.ink,
-            );
-
-            // Tracked-change decorations (over the text): an `ins` range gets a
-            // green underline (the glyphs are already tinted green by
-            // `block_runs_markup`); a `del` range gets a red strike-through. Drawn
-            // here — rather than via the shaped layout's underline/strike lists —
-            // so the decoration colour matches the review-tinted glyphs (the
-            // toolkit paints shaped decorations in the block ink). Only when shown.
-            if self.show_markup
-                && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
-            {
-                let (ins_ranges, del_ranges) = block_change_decos(b);
-                for &(b0, b1) in &ins_ranges {
-                    for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                        let uy = ly + f64::from(ry1) - 2.0;
-                        let line = Rect::new(
-                            l.text_x + f64::from(rx0),
-                            uy,
-                            l.text_x + f64::from(rx1),
-                            uy + 1.5,
-                        );
-                        scene.fill(Fill::NonZero, ctf, TRACK_INS, None, &line);
-                    }
-                }
-                for &(b0, b1) in &del_ranges {
-                    for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                        let my = ly + f64::from(f32::midpoint(ry0, ry1));
-                        let line = Rect::new(
-                            l.text_x + f64::from(rx0),
-                            my,
-                            l.text_x + f64::from(rx1),
-                            my + 1.5,
-                        );
-                        scene.fill(Fill::NonZero, ctf, TRACK_DEL, None, &line);
-                    }
-                }
-                // Collect a review-card marker per change range (carrying the
-                // change id so the card's Accept/Reject can act on it).
-                for (bs, be, cid) in block_change_ranges(b) {
-                    let rects = layout.selection_rects(bs, be);
-                    if let Some(&(_, ry0, _, _)) = rects.first() {
-                        let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
-                        change_markers.push((
-                            cid,
-                            ly + f64::from(ry0),
-                            l.text_x + f64::from(right_x),
-                        ));
-                    }
-                }
-            }
-
-            // Spell-check squiggles: a wavy red underline under each misspelled
-            // span. The byte span maps to one-or-more on-screen rects via the same
-            // `selection_rects` geometry the selection highlight uses (so it tracks
-            // wrapping). The squiggle hugs just under each rect's bottom.
-            if let Some(spans) = spell_by_block.get(&l.id) {
-                for &(b0, b1) in spans {
-                    for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                        let y = ly + f64::from(ry1) - 1.0;
-                        draw_squiggle(
-                            scene,
-                            ctf,
-                            l.text_x + f64::from(rx0),
-                            l.text_x + f64::from(rx1),
-                            y,
-                        );
-                    }
-                }
-            }
-
-            // Note-reference superscripts: each `note-ref` placeholder in this
-            // block renders as a small superscript citation number, positioned at
-            // the placeholder glyph's location (it occupies one U+FFFC char, which
-            // the body run shapes as near-zero-width). The number is taken from the
-            // document-order numbering; the page is recorded so the footnote text
-            // renders at the bottom of this page.
-            if !note_nums.is_empty()
-                && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
-            {
-                for (ci, note_id) in block_note_refs(b) {
-                    let Some(&num) = note_nums.get(&note_id) else {
-                        continue;
-                    };
-                    let bs = char_to_byte(&l.text, ci);
-                    let be = char_to_byte(&l.text, ci + 1);
-                    // Anchor at the placeholder's left edge; fall back to the
-                    // caret geometry if the glyph produced no selection rect.
-                    let placeholder_rect = layout.selection_rects(bs, be).into_iter().next();
-                    let (mx, my) = placeholder_rect.map_or_else(
-                        || {
-                            let (cx, cy, _) = layout.caret_geometry(bs);
-                            (cx, cy)
-                        },
-                        |(rx0, ry0, _, _)| (rx0, ry0),
-                    );
-                    // Mask the U+FFFC object-replacement glyph (a box in some
-                    // fonts) with paper so only the superscript number shows.
-                    if let Some((rx0, ry0, rx1, ry1)) = placeholder_rect {
-                        let mask = Rect::new(
-                            l.text_x + f64::from(rx0),
-                            ly + f64::from(ry0),
-                            l.text_x + f64::from(rx1),
-                            ly + f64::from(ry1),
-                        );
-                        scene.fill(Fill::NonZero, ctf, self.chrome.paper, None, &mask);
-                    }
-                    let label = num.to_string();
-                    // Superscript: smaller font, raised toward the line's top.
-                    let sup_size = (l.size * 0.7).max(8.0);
-                    text_renderer.draw_text(
-                        scene,
-                        &label,
-                        sup_size,
-                        l.ink,
-                        ctf * Affine::translate((
-                            l.text_x + f64::from(mx),
-                            ly + f64::from(my) - 1.0,
-                        )),
-                        None,
-                    );
-                    page_notes.entry(l.page).or_default().push(num);
-                }
-            }
-
-            if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
-                let byte = char_to_byte(&l.text, self.inner.caret.offset);
-                let (cx, cy, ch) = layout.caret_geometry(byte);
-                let caret = Rect::new(
-                    l.text_x + f64::from(cx),
-                    ly + f64::from(cy),
-                    l.text_x + f64::from(cx) + CARET_WIDTH,
-                    ly + f64::from(cy) + f64::from(ch),
-                );
-                scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &caret);
-            }
-            if clipped {
-                scene.pop_layer();
-            }
-        }
+        let (multi_sel, note_nums, spell_by_block) = self.prepare_pass2_inputs(blocks, &laid, &fg);
 
         // Review affordances (Resolve/Accept/Reject) live in right-margin cards,
         // rebuilt each frame; hit rects are in *content* space, like `pointer_to_content`.
         self.review_hits.clear();
+        let markers = self.draw_page_content(
+            scene,
+            &fg,
+            text_renderer,
+            &laid,
+            &new_cache,
+            multi_sel,
+            &spell_by_block,
+            &note_nums,
+        );
+        self.draw_comment_cards(scene, &fg, text_renderer, markers.comment_markers);
+        self.draw_change_cards(scene, &fg, text_renderer, markers.change_markers);
+        self.draw_footnotes(
+            scene,
+            &fg,
+            text_renderer,
+            &markers.page_notes,
+            &note_nums,
+            sy,
+        );
 
-        // Comment indicators + annotation cards: a small accent tab at the comment's
-        // start line, and an always-visible card (author + content) anchored to the
-        // *canvas* (not the page, so it stays on-screen when the page is wider or the
-        // styles panel is open), stacked top-to-bottom without overlap.
-        if self.show_markup && !comment_markers.is_empty() {
-            comment_markers
-                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            // The card column hugs the right edge of the visible canvas.
-            let card_x = canvas.x1 - COMMENT_CARD_W - 6.0;
-            let mut next_card_y = f64::MIN;
-            for (cid, anchor_y, range_right) in &comment_markers {
-                let Some(cv) = self.comments.iter().find(|c| &c.id == cid) else {
-                    continue;
-                };
-                // The little accent tab sits just after the commented text, on its
-                // start line — an always-visible inline indicator.
-                let tab_x = (range_right + 2.0).min(card_x - COMMENT_TAB_W - 2.0);
-                let tab = Rect::new(
-                    tab_x,
-                    anchor_y + 1.0,
-                    tab_x + COMMENT_TAB_W,
-                    anchor_y + 18.0,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    ctf,
-                    COMMENT_TAB,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(tab, 1.5),
-                );
-
-                // Author + content (comment bodies are a small block sequence).
-                let comment_label = t("review-comment");
-                let author = if cv.author.is_empty() {
-                    comment_label.as_str()
-                } else {
-                    cv.author.as_str()
-                };
-                let body: String = {
-                    let parts: Vec<&str> = cv
-                        .blocks
-                        .iter()
-                        .map(|b| b.text.as_str())
-                        .filter(|t| !t.is_empty())
-                        .collect();
-                    parts.join(" ")
-                };
-                let inner_w = num::f32_of_f64(COMMENT_CARD_W - 16.0);
-                let body_layout = RichTextLayout::shape(
-                    &mut text_renderer.font_system,
-                    &[RichSpan::new(&body)],
-                    false,
-                    11.0,
-                    inner_w,
-                    TextAlign::Left,
-                    FontFamily::Sans,
-                    vec![],
-                    vec![],
-                    1.0,
-                );
-                let body_h = f64::from(body_layout.height());
-                let card_top = anchor_y.max(next_card_y);
-                // Header (author) + body + a footer row carrying the Resolve button.
-                let card_h = 22.0 + body_h + 8.0 + REVIEW_BTN + 6.0;
-                let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
-                scene.fill(
-                    Fill::NonZero,
-                    ctf,
-                    COMMENT_CARD_BG,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(card, 5.0),
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    ctf,
-                    COMMENT_CARD_EDGE,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(card, 5.0),
-                );
-                // Accent stripe down the card's left edge (ties it to the tab).
-                let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
-                scene.fill(Fill::NonZero, ctf, COMMENT_TAB, None, &stripe);
-                text_renderer.draw_text(
-                    scene,
-                    author,
-                    11.5,
-                    COMMENT_AUTHOR_INK,
-                    ctf * Affine::translate((card_x + 9.0, card_top + 5.0)),
-                    None,
-                );
-                text_renderer.draw_rich(
-                    scene,
-                    &body_layout,
-                    ctf * Affine::translate((card_x + 9.0, card_top + 20.0)),
-                    COMMENT_BODY_INK,
-                );
-                // Footer: a single "Resolve" pill that removes the comment + its mark.
-                let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
-                let resolve = Rect::new(
-                    card_x + COMMENT_CARD_W - 64.0,
-                    btn_y,
-                    card_x + COMMENT_CARD_W - 8.0,
-                    btn_y + REVIEW_BTN,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    ctf,
-                    REVIEW_ACCEPT_BG,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(resolve, 4.0),
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    ctf,
-                    COMMENT_CARD_EDGE,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(resolve, 4.0),
-                );
-                text_renderer.draw_text(
-                    scene,
-                    &t("review-resolve"),
-                    10.5,
-                    REVIEW_ACCEPT_INK,
-                    ctf * Affine::translate((resolve.x0 + 5.0, resolve.y0 + 2.5)),
-                    None,
-                );
-                self.review_hits
-                    .push((resolve, CtxAction::ResolveComment(cid.clone())));
-                next_card_y = card_top + card_h + 6.0;
-            }
-        }
-
-        // Tracked-change review cards: a compact kind/author + Accept/Reject card
-        // per ins/del range, stacked LEFT of the comment column so they don't collide.
-        if self.show_markup && !change_markers.is_empty() {
-            change_markers
-                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            // The change column sits just left of the comment column.
-            let card_x = canvas.x1 - COMMENT_CARD_W - 6.0 - CHANGE_CARD_W - 6.0;
-            let mut next_card_y = f64::MIN;
-            for (cid, anchor_y, _range_right) in &change_markers {
-                let Some(cv) = self.changes.iter().find(|c| &c.id == cid) else {
-                    continue;
-                };
-                let (label, kind_color) = match cv.kind {
-                    qdoc::snapshot::ChangeKind::Ins => (t("review-insertion"), TRACK_INS),
-                    qdoc::snapshot::ChangeKind::Del => (t("review-deletion"), TRACK_DEL),
-                };
-                let author = if cv.author.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · {}", cv.author)
-                };
-                let heading = format!("{label}{author}");
-                let card_top = anchor_y.max(next_card_y);
-                let card_h = 22.0 + REVIEW_BTN + 6.0;
-                let card = Rect::new(card_x, card_top, card_x + CHANGE_CARD_W, card_top + card_h);
-                scene.fill(
-                    Fill::NonZero,
-                    ctf,
-                    CHANGE_CARD_BG,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(card, 5.0),
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    ctf,
-                    CHANGE_CARD_EDGE,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(card, 5.0),
-                );
-                // Accent stripe in the change's review colour (green ins / red del).
-                let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
-                scene.fill(Fill::NonZero, ctf, kind_color, None, &stripe);
-                text_renderer.draw_text(
-                    scene,
-                    &heading,
-                    10.5,
-                    CHANGE_LABEL_INK,
-                    ctf * Affine::translate((card_x + 9.0, card_top + 5.0)),
-                    None,
-                );
-                // Accept ✓ / Reject ✗ buttons on the footer row.
-                let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
-                let accept = Rect::new(
-                    card_x + 9.0,
-                    btn_y,
-                    card_x + 9.0 + REVIEW_BTN,
-                    btn_y + REVIEW_BTN,
-                );
-                let reject = Rect::new(
-                    accept.x1 + 6.0,
-                    btn_y,
-                    accept.x1 + 6.0 + REVIEW_BTN,
-                    btn_y + REVIEW_BTN,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    ctf,
-                    REVIEW_ACCEPT_BG,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(accept, 4.0),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    ctf,
-                    REVIEW_REJECT_BG,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(reject, 4.0),
-                );
-                text_renderer.draw_text(
-                    scene,
-                    "✓",
-                    12.0,
-                    REVIEW_ACCEPT_INK,
-                    ctf * Affine::translate((accept.x0 + 4.0, accept.y0 + 1.5)),
-                    None,
-                );
-                text_renderer.draw_text(
-                    scene,
-                    "✗",
-                    12.0,
-                    REVIEW_REJECT_INK,
-                    ctf * Affine::translate((reject.x0 + 4.0, reject.y0 + 1.5)),
-                    None,
-                );
-                self.review_hits
-                    .push((accept, CtxAction::AcceptChange(cid.clone())));
-                self.review_hits
-                    .push((reject, CtxAction::RejectChange(cid.clone())));
-                next_card_y = card_top + card_h + 6.0;
-            }
-        }
-
-        // Footnote areas: a thin separator + numbered footnotes at the bottom of
-        // each page's text band. Page assignment is approximate (the page a marker
-        // was laid on); rendered inside the page clip so it scrolls with the content.
-        if !page_notes.is_empty() {
-            // number → footnote text, resolved once. Endnotes are skipped here
-            // (they belong at the document end, not per page).
-            let mut num_to_note: HashMap<usize, String> = HashMap::new();
-            for n in &self.notes {
-                if n.kind == qdoc::schema::NOTE_KIND_FOOTNOTE
-                    && let Some(&num) = note_nums.get(&n.id)
-                {
-                    num_to_note.insert(num, note_text(n));
-                }
-            }
-            for (page, nums) in &page_notes {
-                // Distinct, ascending footnote numbers on this page.
-                let mut nums: Vec<usize> = nums
-                    .iter()
-                    .copied()
-                    .filter(|n| num_to_note.contains_key(n))
-                    .collect();
-                nums.sort_unstable();
-                nums.dedup();
-                if nums.is_empty() {
-                    continue;
-                }
-                let line_h = (f64::from(NOTE_FONT) * 1.4).ceil();
-                let area_h = num::f64_of_usize(nums.len()) * line_h;
-                // Bottom of the text band on this page (above the footer margin).
-                let band_bottom =
-                    page_top + num::f64_of_usize(*page) * page_pitch + letter_h - m.bottom - sy;
-                let sep_y = band_bottom - area_h - NOTE_AREA_GAP;
-                let left = page_x + m.left;
-                let right = page_x + page_w - m.right;
-                // Thin separator (about a third of the text width, like Word).
-                let sep =
-                    vello::kurbo::Line::new((left, sep_y), (left + (right - left) * 0.33, sep_y));
-                scene.stroke(&vello::kurbo::Stroke::new(0.75), ctf, NOTE_SEP, None, &sep);
-                let mut ny = sep_y + NOTE_AREA_GAP * 0.6;
-                for num in nums {
-                    if let Some(text) = num_to_note.get(&num) {
-                        let line = format!("{num}. {text}");
-                        text_renderer.draw_text(
-                            scene,
-                            &line,
-                            NOTE_FONT,
-                            NOTE_INK,
-                            ctf * Affine::translate((left, ny)),
-                            None,
-                        );
-                        ny += line_h;
-                    }
-                }
-            }
-        }
-
-        // Empty-document placeholder.
-        if self.blocks.len() == 1
-            && self.blocks[0].kind == "paragraph"
-            && self.blocks[0].text.is_empty()
-            && let Some(l) = laid.first()
-        {
-            let placeholder = t("canvas-empty-placeholder");
-            text_renderer.draw_text(
-                scene,
-                &placeholder,
-                16.5,
-                PAPER_MUTED,
-                ctf * Affine::translate((l.text_x, l.y_top)),
-                None,
-            );
-        }
+        self.draw_empty_placeholder(scene, fg.ctf, text_renderer, laid.first());
 
         // Layout-edit overlay: draggable guides + live value labels for the
         // active mode (drawn over the content, still inside the page clip).
         if self.layout_mode != LayoutMode::None {
-            self.draw_layout_overlay(scene, ctf, text_renderer, page);
+            self.draw_layout_overlay(scene, fg.ctf, text_renderer, page);
         }
-
-        // Header/footer edit mode: veil the body (Word dims it while editing a
-        // running head) and draw the band caret. Drawn last so the veil covers the
-        // body but the band + its caret stay crisp on top.
-        if self.inner.in_running_region() {
-            for i in 0..num_pages {
-                let ptop = page_top + num::f64_of_usize(i) * page_pitch - sy;
-                let body_top = ptop + m.top;
-                let body_bot = ptop + letter_h - m.bottom;
-                let veil = Rect::new(
-                    page_x + m.left,
-                    body_top,
-                    page_x + page_w - m.right,
-                    body_bot,
-                );
-                scene.fill(Fill::NonZero, ctf, BODY_DIM_VEIL, None, &veil);
-            }
-            self.draw_band_caret(scene, ctf);
-        }
+        // Header/footer edit mode: veil the body + draw the band caret (checks
+        // `self.inner.in_running_region()` itself). Drawn last so the veil
+        // covers the body but the band + its caret stay crisp on top.
+        self.draw_running_region_veil(scene, &fg, num_pages, sy);
 
         scene.pop_layer();
 
-        // Scrollbar thumb (right edge) when the content overflows the canvas.
-        if self.max_scroll > 0.0 {
-            let track = canvas.height();
-            let thumb_h = (track * track / (track + self.max_scroll)).max(28.0);
-            let frac = self.scroll_y / self.max_scroll;
-            let thumb_y = canvas.y0 + frac * (track - thumb_h);
-            let thumb = Rect::new(
-                canvas.x1 - 8.0,
-                thumb_y + 2.0,
-                canvas.x1 - 4.0,
-                thumb_y + thumb_h - 2.0,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                self.chrome.scrollbar,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(thumb, 2.0),
-            );
-        }
+        self.draw_scrollbar(scene, transform, fg.canvas);
 
         self.laid = laid;
-        // Adopt this frame's cache (dropping `old_cache`, i.e. pruning entries
-        // for blocks that no longer exist) so the next frame can reuse it.
+        // Adopt this frame's cache (dropping the pruned entries for blocks that
+        // no longer exist) so the next frame can reuse it.
         self.layout_cache = new_cache;
 
-        // Remote collaborators' carets + selections: resolved by the single
-        // `remote_presence_overlays` pass so on-screen geometry matches what the unit
-        // test asserts on. Selections paint under the text, carets over it, each in
-        // the peer's colour with a name pill, through `ctf` so they track scroll/zoom.
-        // A no-op with no remote presence, so single-user rendering is unchanged.
-        let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
-        // A peer's just-typed run glows in their colour, fading; drawn first so it
-        // sits under the selection and caret rather than competing with them.
-        for (user, spans) in self.remote_typing_overlays(presence, std::time::Instant::now()) {
-            presence.draw_peer_typing(scene, theme, &user, &spans);
-        }
-        for sel in &remote_selections {
-            for r in &sel.rects {
-                presence.draw_peer_selection(scene, theme, ctf, &sel.user, *r);
-            }
-        }
-        for c in &remote_carets {
-            presence.draw_peer_caret(scene, theme, ctf, &c.user, c.rect);
-            self.draw_remote_caret_label(
-                scene,
-                ctf,
-                text_renderer,
-                theme,
-                presence,
-                &c.user,
-                &c.label,
-                c.rect.x0,
-                c.rect.y0,
-            );
-        }
+        self.draw_remote_overlays(scene, fg.ctf, text_renderer, theme, presence);
 
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_visible() {
-            let panel = Rect::new(canvas_right, full.y0 + tb_h, full.x1, layout_bar_top);
+            let panel = Rect::new(
+                fg.canvas_right,
+                full.y0 + fg.tb_h,
+                full.x1,
+                fg.layout_bar_top,
+            );
             self.draw_styles_panel(scene, transform, text_renderer, panel);
         } else {
             self.panel_rect = Rect::ZERO;
@@ -6560,21 +7892,38 @@ impl Widget for WordProcessorWidget {
         // Document outline / navigation pane on the left (between toolbar and
         // layout bar). Drawn after `self.laid` is set so the active-heading
         // highlight reflects this frame's pagination.
-        if self.outline_open {
-            let pane = Rect::new(full.x0, full.y0 + tb_h, canvas_left, history_top);
-            self.draw_outline_pane(scene, transform, text_renderer, pane);
+        if self.outline.is_open() {
+            let outline_band =
+                Rect::new(full.x0, full.y0 + fg.tb_h, fg.canvas_left, fg.history_top);
+            let entries = self.outline_entries();
+            let active = self.active_outline_block();
+            let cc = self.chrome;
+            self.outline.draw(
+                scene,
+                transform,
+                text_renderer,
+                outline_band,
+                &entries,
+                active.as_deref(),
+                OutlinePalette {
+                    background: cc.bar,
+                    border: cc.border,
+                    chip: cc.chip,
+                    text: cc.text,
+                    text_dim: cc.text_dim,
+                },
+            );
         } else {
-            self.outline_rect = Rect::ZERO;
-            self.outline_hits.clear();
+            self.outline.clear_frame();
         }
 
-        if history_h > 0.0 {
-            let band = Rect::new(full.x0, history_top, full.x1, layout_bar_top);
+        if fg.history_h > 0.0 {
+            let band = Rect::new(full.x0, fg.history_top, full.x1, fg.layout_bar_top);
             self.history
                 .draw(scene, transform, text_renderer, theme, presence, band);
         }
 
-        let lbar = Rect::new(full.x0, layout_bar_top, full.x1, content_bottom);
+        let lbar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
 
         // Transient floating status readout (bottom-right, above the layout bar),
@@ -6590,19 +7939,19 @@ impl Widget for WordProcessorWidget {
         scale_factor: f64,
         modifiers: &Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key();
         // While the colour-picker popover is open it captures input (modal-ish):
         // route drags to it, apply committed colours, and let an outside-click /
         // Escape dismiss it before any page/panel hit-testing.
-        if self.color_picker.is_some()
-            && self.pump_color_picker(event, scale_factor, modifiers, state, _path, handled)
+        if self.color_picker.is_open()
+            && self.pump_color_picker(event, scale_factor, *modifiers, state, path, handled)
         {
             return;
         }
@@ -6610,144 +7959,52 @@ impl Widget for WordProcessorWidget {
         // keeps capturing mid-drag). A restore flags `needs_commit`, handing the
         // commit to `App::commit_action` so it lands on the undo stack stamped and
         // attributed like a typed edit.
-        if self.history.is_open() {
-            let at = match event {
-                WindowEvent::CursorMoved { position, .. } => {
-                    Point::new(position.x / scale_factor, position.y / scale_factor)
-                }
-                _ => self.pointer,
-            };
-            // The strip also takes the keyboard outright while its name field is
-            // up: a name that could only be typed with the pointer held still
-            // over the band would be unusable.
-            if self.history.band().contains(at)
-                || self.history.is_dragging()
-                || self.history.wants_keyboard()
-            {
-                let outcome =
-                    self.history
-                        .handle_event(event, scale_factor, modifiers, state, _path);
-                if outcome.restored {
-                    self.needs_commit = true;
-                    self.history.follow_document();
-                    self.refresh_blocks(state);
-                }
-                if outcome.named {
-                    // Naming a version is a document write; it commits with the
-                    // same author and timestamp as an edit, and lands on the undo
-                    // stack so it can be taken back the usual way.
-                    self.needs_commit = true;
-                }
-                if outcome.handled {
-                    *handled = true;
-                    return;
-                }
-            }
+        if self.handle_history_event(event, scale_factor, *modifiers, state, path) {
+            *handled = true;
+            return;
         }
         // The toolbar may have wrapped to several rows; hit-test against its
         // actual bottom (`tb_h`), matching `draw`.
         let tb_h = self.toolbar_height(self.rect.width());
-        match event {
-            // Drag-and-drop a file onto the window inserts it as an image at the
-            // **drop point**: seat the caret under the last pointer position (where
-            // the file was released) before inserting, so the image lands where the
-            // user dropped it rather than wherever the caret happened to be. winit's
-            // `DroppedFile` carries no coordinates, so the tracked pointer (updated
-            // on every `CursorMoved`, including during the drag-hover) is the drop
-            // location. A drop over the page body relocates the caret; a drop over
-            // chrome falls back to the existing caret.
-            WindowEvent::DroppedFile(path) => {
-                if self.rect.contains(self.pointer) {
-                    let tb_h = self.toolbar_height(self.rect.width());
-                    let over_body = self.pointer.y >= self.rect.y0 + tb_h
-                        && self.pointer.y <= self.rect.y1 - LAYOUT_BAR_H
-                        && !(self.styles_panel_open && self.panel_rect.contains(self.pointer))
-                        && !(self.outline_open && self.outline_rect.contains(self.pointer));
-                    if over_body {
-                        self.caret_from_pointer(self.pointer_to_content(self.pointer), false);
-                    }
-                }
-                if self.insert_image_from_path(state, path) {
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
-                };
-                if ctrl {
-                    // Ctrl + wheel zooms (a step per notch of scroll), the standard
-                    // editor gesture. Scroll-up (positive dy) zooms in.
-                    let step = if dy > 0.0 { ZOOM_STEP } else { -ZOOM_STEP };
-                    if self.zoom_by(step) {
-                        *handled = true;
-                    }
+
+        // Find/replace embeds the shared TextInput rather than maintaining a
+        // second text editor. Feed it raw events first so IME, selection and
+        // clipboard shortcuts retain the toolkit's exact behavior. Ctrl+F is
+        // deliberately left for the editor-level toggle below.
+        if self.focused && self.find.is_open() {
+            let mut find_handled = false;
+            let effect = self.find.handle_event(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                &mut find_handled,
+                focus_target,
+                node_id,
+                taffy,
+                &self.blocks,
+            );
+            self.apply_find_effect_mut(state, effect);
+            if find_handled {
+                self.dirty = true;
+                *handled = true;
+                // Cursor movement still feeds the editor below so its shared
+                // pointer coordinate remains current for subsequent clicks.
+                if !matches!(event, WindowEvent::CursorMoved { .. }) {
                     return;
                 }
-                let new = (self.scroll_y - dy).clamp(0.0, self.max_scroll);
-                if new != self.scroll_y {
-                    self.scroll_y = new;
-                    self.dirty = true;
-                    *handled = true;
-                }
+            }
+        }
+        match event {
+            // Drag-and-drop a file onto the window inserts it as an image at the
+            // drop point (see `handle_dropped_file`).
+            WindowEvent::DroppedFile(path) => self.handle_dropped_file(state, path, handled),
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.handle_mouse_wheel(delta, scale_factor, ctrl, handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
-                // Toolbar hover feedback — repaint only when the hovered button changes.
-                let new_hover = if self.pointer.y < self.rect.y0 + tb_h {
-                    self.toolbar
-                        .iter()
-                        .find(|(_, r)| r.contains(self.pointer))
-                        .map(|(_, r)| *r)
-                } else {
-                    None
-                };
-                if new_hover != self.hover_tool {
-                    self.hover_tool = new_hover;
-                    self.dirty = true;
-                    *handled = true;
-                }
-                if let Some(sc) = self.scrub {
-                    // Drag-to-scrub a numeric style field (live preview for every
-                    // block of that style).
-                    let dx = self.pointer.x - sc.start_x;
-                    if dx.abs() > 3.0 {
-                        if let Some(s) = self.scrub.as_mut() {
-                            s.moved = true;
-                        }
-                        let v = sc
-                            .field
-                            .clamp(sc.start_val + num::f32_of_f64(dx) * sc.field.scrub_factor());
-                        if let Some(key) = self.focused_style_key()
-                            && let Some(st) = self.sheet.styles.get_mut(&key)
-                        {
-                            sc.field.set(st, v);
-                        }
-                        self.dirty = true;
-                    }
-                    *handled = true;
-                } else if self.ruler_drag.is_some() {
-                    // Live-drag a ruler marker (margin / indent / tab). Updates the
-                    // value for an instant preview; persisted on release.
-                    self.ruler_drag_move();
-                    self.dirty = true;
-                    *handled = true;
-                } else if let Some(gd) = self.guide_drag {
-                    // Live-drag a layout guide (margin / border / spacing). Guides
-                    // live in unscaled page space, so map the pointer through the
-                    // inverse zoom first.
-                    self.apply_guide_drag(gd, self.pointer_to_content(self.pointer));
-                    self.dirty = true; // repaint every move so the preview is live
-                    *handled = true;
-                } else if self.drag.drag().is_some() {
-                    // Extend the selection: keep the anchor, move the caret. The
-                    // `Laid` rects are unscaled, so hit-test in content space.
-                    self.caret_from_pointer(self.pointer_to_content(self.pointer), true);
-                    // Claim the move so the host App repaints (its redraw is gated
-                    // behind `handled`).
-                    *handled = true;
-                }
+                self.handle_cursor_moved(position.x, position.y, scale_factor, tb_h, handled);
             }
             // Right (secondary) press opens the editing / spell-check context
             // menu on the page body. Toolbar / panel / status-bar chrome ignore
@@ -6756,363 +8013,17 @@ impl Widget for WordProcessorWidget {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } => {
-                if !self.rect.contains(self.pointer) {
-                    return;
-                }
-                self.focused = true;
-                // A right-click on a style chip in the styles panel opens the
-                // style-management menu (Delete / Duplicate) before the generic
-                // "panel is chrome, ignore" rule kicks in.
-                if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
-                    if let Some(id) = self.style_chip_at(self.pointer) {
-                        let pos = [
-                            num::f32_of_f64(self.pointer.x),
-                            num::f32_of_f64(self.pointer.y),
-                        ];
-                        self.open_style_menu(&id, pos);
-                        *handled = true;
-                    }
-                    return;
-                }
-                let in_chrome = self.pointer.y < self.rect.y0 + tb_h
-                    || self.pointer.y > self.rect.y1 - LAYOUT_BAR_H
-                    || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
-                    || (self.outline_open && self.outline_rect.contains(self.pointer));
-                if !in_chrome {
-                    let cp = self.pointer_to_content(self.pointer);
-                    let pos = [
-                        num::f32_of_f64(self.pointer.x),
-                        num::f32_of_f64(self.pointer.y),
-                    ];
-                    self.open_context_menu(state, cp, pos);
-                    *handled = true;
-                }
-            }
+            } => self.handle_right_press(state, tb_h, handled),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                // While the context menu is open, route the left press to it: a
-                // row dispatches its action, a click outside dismisses it. Either
-                // way the click is consumed so it never reaches the page beneath.
-                if self.context_menu.is_open() {
-                    let point = [self.pointer.x, self.pointer.y];
-                    if let Some(idx) = self.context_menu.item_at(point) {
-                        self.dispatch_context_action(idx, state);
-                    } else {
-                        self.context_menu.close();
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // Likewise route the press to the "New ▾" template menu when open:
-                // a row applies that template; a click elsewhere dismisses it.
-                if self.new_menu.is_open() {
-                    let point = [self.pointer.x, self.pointer.y];
-                    if let Some(idx) = self.new_menu.item_at(point) {
-                        self.dispatch_new_menu(idx, state);
-                    } else {
-                        self.new_menu.close();
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // The paragraph-style menu (Delete / Duplicate) captures the press
-                // the same way: a row runs its action, an outside click dismisses.
-                if self.style_menu.is_open() {
-                    let point = [self.pointer.x, self.pointer.y];
-                    if let Some(idx) = self.style_menu.item_at(point) {
-                        self.dispatch_style_menu(idx, state);
-                    } else {
-                        self.style_menu.close();
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // Any left press dismisses a staged toast (a transient cue).
-                if self.toast.take().is_some() {
-                    self.dirty = true;
-                }
-                if !self.rect.contains(self.pointer) {
-                    return;
-                }
-                self.focused = true;
-                // Crash-recovery banner (just under the toolbar): a click on
-                // Restore / Discard resolves the offer before any other hit-test.
-                if self.recovery.is_some()
-                    && let Some(action) = self
-                        .recovery_buttons
-                        .iter()
-                        .find(|(_, r)| r.contains(self.pointer))
-                        .map(|(a, _)| *a)
-                {
-                    match action {
-                        RecoveryAction::Restore => self.restore_recovery(state),
-                        RecoveryAction::Discard => self.discard_recovery(),
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // A press anywhere commits a pending typed numeric edit.
-                if self.editing_field.is_some() {
-                    self.commit_num_edit(state);
-                }
-                // Styles panel (right side): dispatch a click on its controls.
-                if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
-                    if let Some(hit) = self
-                        .panel_hits
-                        .iter()
-                        .rev()
-                        .find(|(r, _)| r.contains(self.pointer))
-                        .map(|(_, h)| h.clone())
-                    {
-                        self.apply_panel_hit(state, hit);
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // Outline / navigation pane (left side): a click on an entry
-                // scrolls that heading into view.
-                if self.outline_open && self.outline_rect.contains(self.pointer) {
-                    if let Some(bid) = self
-                        .outline_hits
-                        .iter()
-                        .find(|(r, _)| r.contains(self.pointer))
-                        .map(|(_, b)| b.clone())
-                    {
-                        self.scroll_to_block(&bid);
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // Find bar (when open): dispatch clicks on its fields + controls.
-                // The recovery banner (when shown) sits above the find bar, so the
-                // find band starts below it.
-                if self.find.is_open() {
-                    let recovery_h = if self.recovery.is_some() {
-                        RECOVERY_BANNER_H
-                    } else {
-                        0.0
-                    };
-                    let fbar_top = self.rect.y0 + tb_h + recovery_h;
-                    let fbar_bot = fbar_top + crate::find_bar::HEIGHT;
-                    if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
-                        let effect = self.find.click(self.pointer, &self.blocks);
-                        self.apply_find_effect_mut(state, effect);
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                }
-                // Ruler band (when on): grab a marker to drag, else a click in the
-                // page span adds a tab stop on the current paragraph.
-                if self.ruler_on && self.ruler_rect.contains(self.pointer) {
-                    self.ruler_press(state);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                if self.pointer.y < self.rect.y0 + tb_h {
-                    // The zoom stepper lives in the toolbar (right-aligned); its
-                    // buttons are tracked in `self.status_buttons`, separate from
-                    // the chrome toolbar buttons — check them first.
-                    if let Some(action) = self
-                        .status_buttons
-                        .iter()
-                        .find(|(_, r)| r.contains(self.pointer))
-                        .map(|(a, _)| *a)
-                    {
-                        match action {
-                            StatusAction::Out => self.zoom_by(-ZOOM_STEP),
-                            StatusAction::In => self.zoom_by(ZOOM_STEP),
-                            StatusAction::Reset => self.set_zoom(1.0),
-                        };
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                    // Reverse so the colour swatches (pushed after the chrome
-                    // buttons) win a hit-test on any overlap at a crowded edge.
-                    let clicked = self
-                        .toolbar
-                        .iter()
-                        .rev()
-                        .find(|(_, r)| r.contains(self.pointer))
-                        .map(|(a, _)| *a);
-                    if let Some(action) = clicked {
-                        self.apply_tool(state, action);
-                        self.refresh_blocks(state);
-                        self.dirty = true;
-                        // View toggles (panels) + opening the New menu are not undo
-                        // points; everything else (including TOC generation) is.
-                        if !matches!(
-                            action,
-                            ToolAction::ToggleStyles
-                                | ToolAction::ToggleRuler
-                                | ToolAction::ToggleOutline
-                                | ToolAction::ToggleHistory
-                                | ToolAction::NewMenu
-                        ) {
-                            self.needs_commit = true;
-                            self.modified = true;
-                            self.note_edit_for_autosave(state);
-                        }
-                    }
-                    *handled = true;
-                    return;
-                }
-                // Bottom layout bar (mode chips) sits at the very bottom; its readout floats via `status_bubble`.
-                let lbar_top = self.rect.y1 - LAYOUT_BAR_H;
-                if self.pointer.y >= lbar_top {
-                    if let Some(mode) = self
-                        .layout_chips
-                        .iter()
-                        .find(|(_, r)| r.contains(self.pointer))
-                        .map(|(m, _)| *m)
-                    {
-                        self.toggle_layout_mode(mode);
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // Page-content hit-tests work in unscaled content space; map the
-                // pointer through the inverse zoom transform once here.
-                let cp = self.pointer_to_content(self.pointer);
-                // Right-margin review affordances (comment Resolve, change
-                // Accept/Reject) are drawn through the zoom transform, so they
-                // hit-test in content space too. A hit dispatches + consumes the
-                // click before it can start a text selection.
-                if let Some(action) = self
-                    .review_hits
-                    .iter()
-                    .rev()
-                    .find(|(r, _)| r.contains(cp))
-                    .map(|(_, a)| a.clone())
-                {
-                    self.dispatch_review_action(action, state);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // In a layout-edit mode, grabbing a guide starts a drag instead of
-                // a text selection.
-                if self.layout_mode != LayoutMode::None
-                    && let Some(side) = self.hit_guide(cp)
-                {
-                    let kind = if ctrl {
-                        DragKind::Proportional
-                    } else if shift {
-                        DragKind::Single
-                    } else {
-                        DragKind::Pair
-                    };
-                    self.guide_drag = Some(GuideDrag {
-                        mode: self.layout_mode,
-                        side,
-                        kind,
-                    });
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // Edit-context switch: a click into a page header/footer band
-                // focuses that running region (creating an empty paragraph if the
-                // region is empty); a click in the body while editing a running
-                // region returns to the body. This is the entry point to Word-style
-                // header/footer editing.
-                let band = self.band_at_pointer(cp);
-                match band {
-                    Some(region) if region != self.inner.region() => {
-                        // Switch into the band. `focus_region` seats the caret on
-                        // the region's (possibly newly-created) first block; the
-                        // band lays out next frame, after which clicks refine the
-                        // exact offset.
-                        self.inner.focus_region(state, region);
-                        self.refresh_blocks(state);
-                        self.drag.press(self.pointer, shift);
-                        self.dirty = true;
-                        self.needs_commit = true;
-                        *handled = true;
-                        return;
-                    }
-                    None if self.inner.in_running_region() => {
-                        // Click in the body area exits header/footer editing.
-                        self.inner.focus_body(state);
-                        self.refresh_blocks(state);
-                        // Fall through so the same click also seats the body caret.
-                    }
-                    _ => {}
-                }
-                // Selection gesture (ui::DragSelect): shift extends; double/triple
-                // click select word/paragraph; a plain press starts a fresh drag.
-                let intent = self.drag.press(self.pointer, shift);
-                self.caret_from_pointer(cp, intent.extend);
-                match intent.granularity {
-                    Granularity::Word => self.inner.select_word(state),
-                    Granularity::Line => self.select_all_in_block(state),
-                    Granularity::Char => {}
-                }
-                self.dirty = true;
-                *handled = true;
-            }
+            } => self.handle_left_press(state, tb_h, shift, ctrl, handled),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if let Some(sc) = self.scrub.take() {
-                    if sc.moved {
-                        // A scrub persists the style edit (every instance follows).
-                        let sheet = self.sheet.clone();
-                        self.inner.set_stylesheet(state, &sheet);
-                        self.needs_commit = true;
-                    } else {
-                        // A plain click (no drag) focuses the field for typing.
-                        self.editing_field = Some(sc.field);
-                        let cur = self
-                            .focused_style_key()
-                            .map_or(0.0, |k| sc.field.get(&self.sheet.get(&k)));
-                        self.edit_buf = fmt_num(cur);
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                } else if self.ruler_drag.is_some() {
-                    // A ruler-marker drag persists on release (margins → page meta,
-                    // indents / tab stops → the caret block's attrs).
-                    self.ruler_drag_release(state);
-                    self.dirty = true;
-                    *handled = true;
-                } else if let Some(gd) = self.guide_drag.take() {
-                    // A layout edit persists into the document on release: spacing
-                    // into the stylesheet, margins into the page-setup meta.
-                    match gd.mode {
-                        LayoutMode::Spacing => {
-                            let sheet = self.sheet.clone();
-                            self.inner.set_stylesheet(state, &sheet);
-                            self.needs_commit = true;
-                        }
-                        LayoutMode::Margins => {
-                            self.persist_margins(state);
-                            self.needs_commit = true;
-                        }
-                        LayoutMode::None => {}
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                } else if self.drag.release() {
-                    self.dirty = true;
-                    *handled = true;
-                }
-            }
+            } => self.handle_left_release(state, handled),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -7122,295 +8033,7 @@ impl Widget for WordProcessorWidget {
                         ..
                     },
                 ..
-            } => {
-                if !self.focused {
-                    return;
-                }
-                // Escape dismisses an open context / style menu before anything else.
-                if matches!(logical_key, Key::Named(NamedKey::Escape))
-                    && (self.context_menu.is_open()
-                        || self.style_menu.is_open()
-                        || self.new_menu.is_open())
-                {
-                    self.context_menu.close();
-                    self.style_menu.close();
-                    self.new_menu.close();
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // Escape exits header/footer editing, returning to the body.
-                if self.inner.in_running_region()
-                    && matches!(logical_key, Key::Named(NamedKey::Escape))
-                {
-                    self.inner.focus_body(state);
-                    self.refresh_blocks(state);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // While typing into a numeric style field, capture digits + editing
-                // keys (Enter commits, Esc cancels, Backspace deletes).
-                if self.editing_field.is_some() {
-                    match logical_key {
-                        Key::Named(NamedKey::Enter) => self.commit_num_edit(state),
-                        Key::Named(NamedKey::Escape) => {
-                            self.editing_field = None;
-                            self.edit_buf.clear();
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.edit_buf.pop();
-                            self.apply_edit_buf_live();
-                        }
-                        _ => {
-                            let typed: String = text
-                                .as_ref()
-                                .map(|t| {
-                                    t.chars()
-                                        .filter(|c| c.is_ascii_digit() || *c == '.')
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            for ch in typed.chars() {
-                                if ch == '.' && self.edit_buf.contains('.') {
-                                    continue;
-                                }
-                                self.edit_buf.push(ch);
-                            }
-                            self.apply_edit_buf_live();
-                        }
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // While the Find bar is open, non-Ctrl keys edit its fields.
-                if self.find.is_open() && !ctrl {
-                    let typed = text.as_deref();
-                    let effect = self.find.key(logical_key, typed, shift, &self.blocks);
-                    self.apply_find_effect_mut(state, effect);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // Ctrl+Enter inserts a manual page break: the caret block splits
-                // and the new block is marked to start on a fresh page. (Handled
-                // here because `NamedKey::Enter` is not a `Key::Character`.)
-                if ctrl && matches!(logical_key, Key::Named(NamedKey::Enter)) {
-                    self.inner.insert_page_break(state);
-                    self.refresh_blocks(state);
-                    self.dirty = true;
-                    self.needs_commit = true;
-                    *handled = true;
-                    return;
-                }
-                if ctrl && let Key::Character(s) = logical_key {
-                    // Save is not an editing action — don't mark the doc
-                    // modified again after writing it. Ctrl+Shift+S always
-                    // opens the host Save-As picker; a bare Ctrl+S saves to
-                    // the current path (or, when untitled, prompts via the
-                    // same picker rather than inventing a path).
-                    if s.eq_ignore_ascii_case("s") {
-                        if shift {
-                            self.request_save_as();
-                        } else {
-                            self.save(state);
-                        }
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                    // Ctrl+O opens a document through the host portal, in
-                    // place of the current one.
-                    if s.eq_ignore_ascii_case("o") {
-                        self.request_open_document();
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                    if s.eq_ignore_ascii_case("f") {
-                        if self.find.is_open() {
-                            self.close_find();
-                        } else {
-                            self.open_find(state);
-                        }
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                    // Ctrl+Shift+L toggles the spell-check squiggles (view-only,
-                    // default ON). Never mutates the document.
-                    if shift && s.eq_ignore_ascii_case("l") {
-                        self.toggle_spellcheck();
-                        *handled = true;
-                        return;
-                    }
-                    // Ctrl+Shift+M toggles comment + tracked-change markup
-                    // (view-only, default ON). Never mutates the document.
-                    if shift && s.eq_ignore_ascii_case("m") {
-                        self.toggle_markup();
-                        *handled = true;
-                        return;
-                    }
-                    // Ctrl+Shift+P inserts a page-number field at the caret.
-                    // Primarily for header/footer editing (a running "Page N"),
-                    // but works in the body too (the field renderer substitutes
-                    // the page number per page).
-                    if shift && s.eq_ignore_ascii_case("p") {
-                        self.inner.insert_page_number(state);
-                        self.refresh_blocks(state);
-                        self.dirty = true;
-                        self.needs_commit = true;
-                        self.modified = true;
-                        self.note_edit_for_autosave(state);
-                        *handled = true;
-                        return;
-                    }
-                    // Zoom: Ctrl+= / Ctrl++ (in), Ctrl+- (out), Ctrl+0 (reset
-                    // to 100%). These are view-only — they never mutate the doc,
-                    // so they return before the editing path below.
-                    match s.as_str() {
-                        "=" | "+" => {
-                            self.zoom_by(ZOOM_STEP);
-                            *handled = true;
-                            return;
-                        }
-                        "-" | "_" => {
-                            self.zoom_by(-ZOOM_STEP);
-                            *handled = true;
-                            return;
-                        }
-                        "0" => {
-                            self.set_zoom(1.0);
-                            *handled = true;
-                            return;
-                        }
-                        _ => {}
-                    }
-                    match s.to_lowercase().as_str() {
-                        // Formatting shortcuts dispatch the same
-                        // `WordProcessorAction` the toolbar + Ctrl+K palette
-                        // do (one replayable source of truth).
-                        "b" => self.dispatch_toggle_mark(state, "strong"),
-                        "i" => self.dispatch_toggle_mark(state, "em"),
-                        "u" => self.dispatch_toggle_mark(state, "underline"),
-                        // Ctrl+. → superscript, Ctrl+, → subscript (mutually
-                        // exclusive; matches common word-processor bindings).
-                        "." | ">" => self.dispatch_exclusive_mark(state, "super", "sub"),
-                        "," | "<" => self.dispatch_exclusive_mark(state, "sub", "super"),
-                        "c" => self.clipboard_copy(state),
-                        "x" => {
-                            self.clipboard_copy(state);
-                            self.inner.delete_selection(state);
-                        }
-                        // Ctrl+V keeps formatting; Ctrl+Shift+V pastes plain text.
-                        "v" if shift => self.clipboard_paste_plain(state),
-                        "v" => self.clipboard_paste(state),
-                        "a" => self.inner.select_all(state),
-                        // Ctrl+1/2/3 → heading levels. (Ctrl+0 is zoom-reset;
-                        // Body paragraph is reachable via the toolbar / panel.)
-                        "1" => self.dispatch_paragraph_style(state, "heading", Some(1), None),
-                        "2" => self.dispatch_paragraph_style(state, "heading", Some(2), None),
-                        "3" => self.dispatch_paragraph_style(state, "heading", Some(3), None),
-                        // z / y (undo/redo) are handled by the host App.
-                        _ => {}
-                    }
-                    self.refresh_blocks(state);
-                    self.dirty = true;
-                    self.needs_commit = true;
-                    self.modified = true;
-                    self.note_edit_for_autosave(state);
-                    *handled = true;
-                    return;
-                }
-
-                let mut changed = true;
-                let mut motion = false;
-                match logical_key {
-                    Key::Named(NamedKey::Tab) => {
-                        // Inside a table, Tab/Shift-Tab walk cells (and Tab in the
-                        // last cell appends a row). Otherwise, when the paragraph has
-                        // ruler tab stops, Tab advances to the next one (recording a
-                        // tab char); with no stops it falls back to inserting spaces.
-                        if self.inner.tab_cell(state, !shift) {
-                            motion = true; // tab_cell already cleared any selection
-                        } else if self.inner.tab_advance(state) {
-                            // Caret advanced to the next tab stop.
-                        } else {
-                            self.inner.insert_str(state, "    ");
-                        }
-                    }
-                    Key::Named(NamedKey::Enter) => self.inner.enter(state),
-                    Key::Named(NamedKey::Backspace) => self.inner.backspace(state),
-                    Key::Named(NamedKey::Delete) => self.inner.delete_forward(state),
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        self.extend_or_clear(shift);
-                        self.inner.move_left(state);
-                        motion = true;
-                    }
-                    Key::Named(NamedKey::ArrowRight) => {
-                        self.extend_or_clear(shift);
-                        self.inner.move_right(state);
-                        motion = true;
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        self.extend_or_clear(shift);
-                        // Inside a table, Up moves to the cell directly above; the
-                        // grid is block-granular so this matches block-relative motion.
-                        if !self.inner.cell_vertical(state, false) {
-                            self.inner.move_block_relative(state, -1);
-                        }
-                        motion = true;
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        self.extend_or_clear(shift);
-                        if !self.inner.cell_vertical(state, true) {
-                            self.inner.move_block_relative(state, 1);
-                        }
-                        motion = true;
-                    }
-                    Key::Named(NamedKey::Home) => {
-                        self.extend_or_clear(shift);
-                        self.inner.move_home();
-                        motion = true;
-                    }
-                    Key::Named(NamedKey::End) => {
-                        self.extend_or_clear(shift);
-                        self.inner.move_end(state);
-                        motion = true;
-                    }
-                    Key::Named(NamedKey::Space) => {
-                        if !self.inner.autoformat_on_space(state) {
-                            self.inner.insert_str(state, " ");
-                        }
-                    }
-                    _ => {
-                        let typed: String = text
-                            .as_ref()
-                            .map(|t| t.chars().filter(|c| !c.is_control()).collect())
-                            .unwrap_or_default();
-                        if typed.is_empty() {
-                            changed = false;
-                        } else {
-                            self.inner.insert_str(state, &typed);
-                        }
-                    }
-                }
-                if changed {
-                    if !motion {
-                        // editing consumes/collapses any selection
-                        self.inner.clear_anchor();
-                        // A real content edit (not caret motion) advances the
-                        // autosave debounce — may write a recovery copy.
-                        self.modified = true;
-                        self.note_edit_for_autosave(state);
-                    }
-                    self.refresh_blocks(state);
-                    self.dirty = true;
-                    self.needs_commit = true;
-                    *handled = true;
-                }
-            }
+            } => self.handle_key_press(state, logical_key, text.as_deref(), shift, ctrl, handled),
             _ => {}
         }
     }
@@ -7457,7 +8080,24 @@ impl Widget for WordProcessorWidget {
                 presence,
             );
         }
-        self.draw_color_picker(scene, transform, text_renderer, theme, presence);
+        if self.find.is_open() {
+            self.find
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        let cc = self.chrome;
+        self.color_picker.draw(
+            crate::style_color_picker::DrawArgs {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            },
+            self.rect,
+            self.panel_rect,
+            cc.bar,
+            cc.border,
+        );
     }
 
     /// Outbound collaboration presence: while focused, broadcast the local caret
@@ -7525,6 +8165,7 @@ impl Widget for WordProcessorWidget {
     }
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+        self.find.set_host_focused(focused);
         if !focused {
             // Blur any in-progress numeric edit; the next sync reloads the
             // persisted style values.
@@ -7536,6 +8177,20 @@ impl Widget for WordProcessorWidget {
     }
     fn is_focused(&self) -> bool {
         self.focused
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if self.find.is_open() {
+            self.find.ime_cursor_rect()
+        } else {
+            None
+        }
+    }
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        if self.find.is_open() {
+            self.find.ime_purpose()
+        } else {
+            None
+        }
     }
     fn needs_commit(&self) -> bool {
         self.needs_commit
@@ -7781,7 +8436,6 @@ impl WordProcessorWidget {
     /// page content transform `ctf` so it tracks the page like the caret it labels.
     #[allow(clippy::too_many_arguments)]
     fn draw_remote_caret_label(
-        &self,
         scene: &mut Scene,
         ctf: Affine,
         text_renderer: &mut TextRenderer,
@@ -7912,7 +8566,7 @@ impl WordProcessorWidget {
             ToolAction::TableDelete => self.inner.table_delete(state),
             ToolAction::ToggleStyles => self.styles_panel_open = !self.styles_panel_open,
             ToolAction::ToggleRuler => self.ruler_on = !self.ruler_on,
-            ToolAction::ToggleOutline => self.outline_open = !self.outline_open,
+            ToolAction::ToggleOutline => self.outline.toggle(),
             ToolAction::ToggleHistory => {
                 self.history.toggle();
                 if self.history.is_open() {
@@ -8048,74 +8702,80 @@ impl WordProcessorWidget {
                     field.set(st, nv);
                 });
             }
-            PanelHit::Num(field) => {
-                // Start a scrub candidate: a drag scrubs the value, a plain click
-                // (no movement) focuses the field for typing (handled on release).
-                let start_val = self
-                    .focused_style_key()
-                    .map_or(0.0, |k| field.get(&self.sheet.get(&k)));
-                self.editing_field = None;
-                self.scrub = Some(ScrubState {
-                    field,
-                    start_x: self.pointer.x,
-                    start_val,
-                    moved: false,
-                });
-                self.dirty = true;
-            }
-            PanelHit::NewStyle => {
-                let Some(key) = self.focused_style_key() else {
-                    return;
-                };
-                let base = self.sheet.get(&key);
-                let new_id = self.sheet.fresh_custom_id();
-                let mut props = base.clone();
-                props.name = format!("{} copy", base.name);
-                self.sheet.styles.insert(new_id.clone(), props);
-                let sheet = self.sheet.clone();
-                self.inner.set_stylesheet(state, &sheet);
-                self.inner.set_block_style(state, &new_id);
-                self.refresh_blocks(state);
-                self.needs_commit = true;
-                self.dirty = true;
-            }
-            PanelHit::ImageScale(factor) => {
-                if let Some(id) = self.selected_image_id() {
-                    // Scale the *current on-screen* size (aspect locked) so repeated
-                    // presses compound predictably, seeding from the live doc size
-                    // when set, else the laid display size.
-                    let (cw, ch) = self
-                        .inner
-                        .image_size(state, &id)
-                        .or_else(|| self.selected_image_dims())
-                        .unwrap_or((240.0, 160.0));
-                    self.inner
-                        .set_image_size(state, &id, cw * factor, ch * factor);
-                    self.refresh_blocks(state);
-                    self.needs_commit = true;
-                    self.modified = true;
-                    self.dirty = true;
-                }
-            }
-            PanelHit::ImageFlipH => {
-                if let Some(id) = self.selected_image_id() {
-                    self.inner.flip_image(state, &id, true);
-                    self.refresh_blocks(state);
-                    self.needs_commit = true;
-                    self.modified = true;
-                    self.dirty = true;
-                }
-            }
-            PanelHit::ImageFlipV => {
-                if let Some(id) = self.selected_image_id() {
-                    self.inner.flip_image(state, &id, false);
-                    self.refresh_blocks(state);
-                    self.needs_commit = true;
-                    self.modified = true;
-                    self.dirty = true;
-                }
-            }
+            PanelHit::Num(field) => self.apply_panel_hit_num_start(field),
+            PanelHit::NewStyle => self.apply_panel_hit_new_style(state),
+            PanelHit::ImageScale(factor) => self.apply_panel_hit_image_scale(state, factor),
+            PanelHit::ImageFlipH => self.apply_panel_hit_image_flip(state, true),
+            PanelHit::ImageFlipV => self.apply_panel_hit_image_flip(state, false),
         }
+    }
+
+    /// `PanelHit::Num`: start a scrub candidate — a drag scrubs the value, a
+    /// plain click (no movement) focuses the field for typing (handled on
+    /// release).
+    fn apply_panel_hit_num_start(&mut self, field: NumField) {
+        let start_val = self
+            .focused_style_key()
+            .map_or(0.0, |k| field.get(&self.sheet.get(&k)));
+        self.editing_field = None;
+        self.scrub = Some(ScrubState {
+            field,
+            start_x: self.pointer.x,
+            start_val,
+            moved: false,
+        });
+        self.dirty = true;
+    }
+
+    /// `PanelHit::NewStyle`: duplicate the focused style under a fresh id.
+    fn apply_panel_hit_new_style(&mut self, state: &mut AutoCommit) {
+        let Some(key) = self.focused_style_key() else {
+            return;
+        };
+        let base = self.sheet.get(&key);
+        let new_id = self.sheet.fresh_custom_id();
+        let mut props = base.clone();
+        props.name = format!("{} copy", base.name);
+        self.sheet.styles.insert(new_id.clone(), props);
+        let sheet = self.sheet.clone();
+        self.inner.set_stylesheet(state, &sheet);
+        self.inner.set_block_style(state, &new_id);
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.dirty = true;
+    }
+
+    /// `PanelHit::ImageScale`: scale the *current on-screen* size (aspect
+    /// locked) so repeated presses compound predictably, seeding from the
+    /// live doc size when set, else the laid display size.
+    fn apply_panel_hit_image_scale(&mut self, state: &mut AutoCommit, factor: f64) {
+        let Some(id) = self.selected_image_id() else {
+            return;
+        };
+        let (cw, ch) = self
+            .inner
+            .image_size(state, &id)
+            .or_else(|| self.selected_image_dims())
+            .unwrap_or((240.0, 160.0));
+        self.inner
+            .set_image_size(state, &id, cw * factor, ch * factor);
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.modified = true;
+        self.dirty = true;
+    }
+
+    /// `PanelHit::ImageFlipH`/`ImageFlipV`: mirror the selected image about
+    /// its horizontal (`horizontal`) or vertical axis.
+    fn apply_panel_hit_image_flip(&mut self, state: &mut AutoCommit, horizontal: bool) {
+        let Some(id) = self.selected_image_id() else {
+            return;
+        };
+        self.inner.flip_image(state, &id, horizontal);
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.modified = true;
+        self.dirty = true;
     }
 
     // ---- colour picker popover --------------------------------------------
@@ -8125,93 +8785,8 @@ impl WordProcessorWidget {
         let seed = self
             .focused_style_key()
             .map_or([0x1c, 0x1c, 0x20], |k| self.sheet.get(&k).color);
-        self.color_picker = Some(ColorPicker::new(Color::from_rgb8(
-            seed[0], seed[1], seed[2],
-        )));
+        self.color_picker.open(seed, self.pointer);
         self.dirty = true;
-    }
-
-    /// Top-left anchor of the colour-picker popover: floated just left of the
-    /// styles panel so it overlays the page, never the panel controls.
-    fn color_picker_anchor(&self) -> Point {
-        let x = (self.panel_rect.x0 - CP_W - 12.0).max(self.rect.x0 + 12.0);
-        let y =
-            (self.panel_rect.y0 + 150.0).min((self.rect.y1 - CP_H - 48.0).max(self.rect.y0 + 60.0));
-        Point::new(x, y)
-    }
-
-    /// Lay the picker out at its anchor (a throwaway taffy pass), so its internal
-    /// SV / hue / slider / hex rects are current for both draw and hit-testing.
-    fn layout_color_picker(&mut self) {
-        if self.color_picker.is_none() {
-            return;
-        }
-        let anchor = self.color_picker_anchor();
-        let cp = self.color_picker.as_mut().unwrap();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = cp.build_layout(&mut taffy, &theme, &mut nm);
-        let _ = taffy.set_style(
-            node,
-            Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_f64(CP_W)),
-                    height: Dimension::length(num::f32_of_f64(CP_H)),
-                },
-                ..Default::default()
-            },
-        );
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(num::f32_of_f64(CP_W)),
-                    height: taffy::AvailableSpace::Definite(num::f32_of_f64(CP_H)),
-                },
-            )
-            .unwrap();
-        cp.apply_layout(&taffy, node, anchor);
-    }
-
-    /// Draw the colour-picker popover (a bordered card behind the shared widget).
-    fn draw_color_picker(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if self.color_picker.is_none() {
-            return;
-        }
-        self.layout_color_picker();
-        let cc = self.chrome;
-        let cp = self.color_picker.as_mut().unwrap();
-        let r = cp.get_rect();
-        let pad = 10.0;
-        let card = Rect::new(r.x0 - pad, r.y0 - pad, r.x1 + pad, r.y1 + pad);
-        let shape = vello::kurbo::RoundedRect::from_rect(card, 8.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            with_alpha(Color::BLACK, 0x30),
-            None,
-            &vello::kurbo::RoundedRect::from_rect(
-                Rect::new(card.x0, card.y0 + 3.0, card.x1, card.y1 + 3.0),
-                8.0,
-            ),
-        );
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &shape);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            cc.border,
-            None,
-            &shape,
-        );
-        cp.draw(scene, transform, tr, theme, presence);
     }
 
     /// While the colour picker is open, route input to it (drag the SV square /
@@ -8222,98 +8797,31 @@ impl WordProcessorWidget {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        mods: &Modifiers,
+        mods: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
     ) -> bool {
-        if self.color_picker.is_none() {
-            return false;
-        }
-        self.layout_color_picker();
-        let rect = self
-            .color_picker
-            .as_ref()
-            .map_or(Rect::ZERO, ui::Widget::get_rect);
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale, position.y / scale);
-                self.forward_to_color_picker(event, scale, mods, state, root, handled);
-                self.dirty = true;
-                *handled = true;
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if rect.contains(self.pointer) {
-                    self.forward_to_color_picker(event, scale, mods, state, root, handled);
-                } else {
-                    // A click anywhere outside dismisses the popover.
-                    self.color_picker = None;
-                }
-                self.dirty = true;
-                *handled = true;
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.forward_to_color_picker(event, scale, mods, state, root, handled);
-                *handled = true;
-                true
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                self.color_picker = None;
-                self.dirty = true;
-                *handled = true;
-                true
-            }
-            // Modal-ish: swallow other events while the popover is up.
-            _ => true,
-        }
-    }
-
-    /// Forward one event to the open picker and apply any committed colour to the
-    /// focused style (a live preview on every drag).
-    fn forward_to_color_picker(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        mods: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-    ) {
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        let mut ft: Option<NodeId> = None;
-        if let Some(cp) = self.color_picker.as_mut() {
-            cp.handle_event(
-                event, scale, mods, state, root, handled, &mut ft, node, &taffy,
-            );
-        }
-        let changed = self
-            .color_picker
-            .as_mut()
-            .and_then(ui::widget::ColorPicker::take_changed);
-        if let Some(col) = changed {
-            let rgb = [col.r(), col.g(), col.b()];
+        let result = self.color_picker.handle_event(
+            event,
+            scale,
+            mods,
+            state,
+            root,
+            self.rect,
+            self.panel_rect,
+        );
+        if let Some(rgb) = result.changed {
             self.edit_focused_style(state, true, |st| st.color = rgb);
-            self.dirty = true;
         }
+        if result.consumed {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.pointer = Point::new(position.x / scale, position.y / scale);
+            }
+            self.dirty = true;
+            *handled = true;
+        }
+        result.consumed
     }
 
     /// The next/previous cell id within the caret cell's table, if any.
@@ -8489,85 +8997,124 @@ impl WordProcessorWidget {
         let mut menu = ContextMenu::new();
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
 
-        // Review rows: when the click lands inside a tracked-change range, offer
-        // Accept/Reject for that change; inside a comment range, offer Resolve.
-        // The clicked char offset is `click_off` in `block`; match it against the
-        // block's `ins`/`del`/`comment` marks (char offsets). Always offer
-        // Accept All / Reject All when the document has any tracked change.
-        if self.show_markup {
-            let mut review_rows = false;
-            if let Some(b) = self.blocks.iter().find(|b| b.id == block) {
-                for m in &b.marks {
-                    // The clicked word span `[wstart, wend)` must overlap the mark
-                    // (covers a click anywhere in the range, robust to the
-                    // word-snap). Fall back to the raw click point for whitespace.
-                    let overlaps = if wstart < wend {
-                        wstart < m.end && m.start < wend
+        self.push_review_rows(&mut menu, &mut actions, &block, wstart, wend, raw_click_off);
+        self.push_spellcheck_rows(&mut menu, &mut actions, &block, &word, wstart, wend);
+        self.push_clipboard_rows(&mut menu, &mut actions);
+
+        menu.open_at(pos);
+        self.context_menu = menu;
+        self.context_actions = actions;
+        self.dirty = true;
+    }
+
+    /// Context-menu rows offering Accept/Reject for a tracked-change range or
+    /// Resolve for a comment range under the click, plus Accept All / Reject
+    /// All whenever the document has any tracked change. The clicked word
+    /// span `[wstart, wend)` (falling back to `raw_click_off` for a
+    /// whitespace click) is matched against `block`'s `ins`/`del`/`comment`
+    /// marks. A no-op unless `self.show_markup`.
+    fn push_review_rows(
+        &self,
+        menu: &mut ContextMenu,
+        actions: &mut Vec<Option<CtxAction>>,
+        block: &str,
+        wstart: usize,
+        wend: usize,
+        raw_click_off: usize,
+    ) {
+        if !self.show_markup {
+            return;
+        }
+        let mut review_rows = false;
+        if let Some(b) = self.blocks.iter().find(|b| b.id == block) {
+            for m in &b.marks {
+                // The clicked word span `[wstart, wend)` must overlap the mark
+                // (covers a click anywhere in the range, robust to the
+                // word-snap). Fall back to the raw click point for whitespace.
+                let overlaps = if wstart < wend {
+                    wstart < m.end && m.start < wend
+                } else {
+                    raw_click_off >= m.start && raw_click_off < m.end
+                };
+                if !overlaps {
+                    continue;
+                }
+                let Some(id) = m.value.as_str().map(std::string::ToString::to_string) else {
+                    continue;
+                };
+                if m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL {
+                    let is_ins = m.name == qdoc::schema::MARK_INS;
+                    let accept_key = if is_ins {
+                        "review-accept-insertion"
                     } else {
-                        raw_click_off >= m.start && raw_click_off < m.end
+                        "review-accept-deletion"
                     };
-                    if !overlaps {
-                        continue;
-                    }
-                    let Some(id) = m.value.as_str().map(std::string::ToString::to_string) else {
-                        continue;
+                    let reject_key = if is_ins {
+                        "review-reject-insertion"
+                    } else {
+                        "review-reject-deletion"
                     };
-                    if m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL {
-                        let is_ins = m.name == qdoc::schema::MARK_INS;
-                        let accept_key = if is_ins {
-                            "review-accept-insertion"
-                        } else {
-                            "review-accept-deletion"
-                        };
-                        let reject_key = if is_ins {
-                            "review-reject-insertion"
-                        } else {
-                            "review-reject-deletion"
-                        };
-                        menu.push(MenuItem::action(t(accept_key), || {}));
-                        actions.push(Some(CtxAction::AcceptChange(id.clone())));
-                        menu.push(MenuItem::action(t(reject_key), || {}));
-                        actions.push(Some(CtxAction::RejectChange(id.clone())));
-                        review_rows = true;
-                    } else if m.name == qdoc::schema::MARK_COMMENT {
-                        menu.push(MenuItem::action(t("review-resolve-comment"), || {}));
-                        actions.push(Some(CtxAction::ResolveComment(id.clone())));
-                        review_rows = true;
-                    }
+                    menu.push(MenuItem::action(t(accept_key), || {}));
+                    actions.push(Some(CtxAction::AcceptChange(id.clone())));
+                    menu.push(MenuItem::action(t(reject_key), || {}));
+                    actions.push(Some(CtxAction::RejectChange(id.clone())));
+                    review_rows = true;
+                } else if m.name == qdoc::schema::MARK_COMMENT {
+                    menu.push(MenuItem::action(t("review-resolve-comment"), || {}));
+                    actions.push(Some(CtxAction::ResolveComment(id.clone())));
+                    review_rows = true;
                 }
             }
-            if !self.changes.is_empty() {
-                menu.push(MenuItem::action(t("review-accept-all"), || {}));
-                actions.push(Some(CtxAction::AcceptAllChanges));
-                menu.push(MenuItem::action(t("review-reject-all"), || {}));
-                actions.push(Some(CtxAction::RejectAllChanges));
-                review_rows = true;
-            }
-            if review_rows {
-                menu.push(MenuItem::separator());
-                actions.push(None);
-            }
         }
-
-        // Spell-check rows: only when the clicked word is currently flagged.
-        if self.spellcheck_on
-            && let Some(suggestions) = self.suggestions_for_word(&word)
-        {
-            for sug in suggestions.iter().take(3) {
-                menu.push(MenuItem::action(sug.clone(), || {}));
-                actions.push(Some(CtxAction::ApplySuggestion {
-                    block: block.clone(),
-                    start: wstart,
-                    end: wend,
-                    replacement: sug.clone(),
-                }));
-            }
-            menu.push(MenuItem::action(t("menu-add-to-dictionary"), || {}));
-            actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+        if !self.changes.is_empty() {
+            menu.push(MenuItem::action(t("review-accept-all"), || {}));
+            actions.push(Some(CtxAction::AcceptAllChanges));
+            menu.push(MenuItem::action(t("review-reject-all"), || {}));
+            actions.push(Some(CtxAction::RejectAllChanges));
+            review_rows = true;
+        }
+        if review_rows {
             menu.push(MenuItem::separator());
             actions.push(None);
         }
+    }
 
+    /// Context-menu rows for the clicked word's spell-check suggestions (up
+    /// to 3) + "Add to dictionary", when spell-check is on and the word is
+    /// currently flagged.
+    fn push_spellcheck_rows(
+        &mut self,
+        menu: &mut ContextMenu,
+        actions: &mut Vec<Option<CtxAction>>,
+        block: &str,
+        word: &str,
+        wstart: usize,
+        wend: usize,
+    ) {
+        if !self.spellcheck_on {
+            return;
+        }
+        let Some(suggestions) = self.suggestions_for_word(word) else {
+            return;
+        };
+        for sug in suggestions.iter().take(3) {
+            menu.push(MenuItem::action(sug.clone(), || {}));
+            actions.push(Some(CtxAction::ApplySuggestion {
+                block: block.to_string(),
+                start: wstart,
+                end: wend,
+                replacement: sug.clone(),
+            }));
+        }
+        menu.push(MenuItem::action(t("menu-add-to-dictionary"), || {}));
+        actions.push(Some(CtxAction::AddToDictionary(word.to_string())));
+        menu.push(MenuItem::separator());
+        actions.push(None);
+    }
+
+    /// Context-menu rows for Cut/Copy (when there's a selection), Paste
+    /// (when the clipboard holds text) and always Select All.
+    fn push_clipboard_rows(&self, menu: &mut ContextMenu, actions: &mut Vec<Option<CtxAction>>) {
         let has_sel = self.inner.has_selection();
         let can_paste = arboard::Clipboard::new()
             .ok()
@@ -8589,11 +9136,6 @@ impl WordProcessorWidget {
         }
         menu.push(MenuItem::action(t("menu-select-all"), || {}));
         actions.push(Some(CtxAction::SelectAll));
-
-        menu.open_at(pos);
-        self.context_menu = menu;
-        self.context_actions = actions;
-        self.dirty = true;
     }
 
     /// Dispatch the context-menu row at `idx` against the widget, then close the
@@ -8772,185 +9314,43 @@ impl WordProcessorWidget {
 
     // ---- autosave / crash-recovery ----------------------------------------
 
-    /// The recovery base directory this widget uses: the per-instance override if
-    /// set (tests), else the library default ([`crate::recovery::base_dir`]).
-    fn recovery_dir(&self) -> PathBuf {
-        self.recovery_base
-            .clone()
-            .unwrap_or_else(crate::recovery::base_dir)
-    }
-
-    /// The recovery file path for the open document (stable per document path; a
-    /// single shared slot for an untitled doc). Honours the per-instance override.
+    /// Recovery path for the currently open document (exposed for focused tests).
+    #[cfg(test)]
     fn recovery_path(&self) -> PathBuf {
-        let name = crate::recovery::recovery_path_for(self.path.as_deref());
-        // Re-root onto this widget's base dir so the override applies even though
-        // `recovery_path_for` only consults the env/default.
-        match name.file_name() {
-            Some(f) => self.recovery_dir().join(f),
-            None => name,
-        }
+        self.recovery.path_for(self.path.as_deref())
     }
 
-    /// Point this widget's recovery store at `dir` (used by tests + callers that
-    /// want to relocate the store). Takes effect immediately for the next write.
+    /// Point this widget's recovery store at `dir`.
     pub fn set_recovery_dir(&mut self, dir: PathBuf) {
-        self.recovery_base = Some(dir);
+        self.recovery.set_base_dir(dir);
     }
 
-    /// Count one document-modifying edit toward the autosave debounce; when the
-    /// running count crosses [`AUTOSAVE_EDIT_THRESHOLD`], write a recovery copy and
-    /// reset. Best-effort — a failed write never disturbs editing.
+    /// Export one Markdown snapshot and hand it to the recovery component when
+    /// the edit debounce reaches its threshold.
     fn note_edit_for_autosave(&mut self, state: &AutoCommit) {
-        self.edits_since_autosave = self.edits_since_autosave.saturating_add(1);
-        if self.edits_since_autosave >= AUTOSAVE_EDIT_THRESHOLD {
-            self.write_recovery(state);
-        }
+        let inner = &self.inner;
+        let document_path = self.path.clone();
+        self.recovery.note_edit(document_path.as_deref(), || {
+            inner.containers.as_ref().and_then(|c| {
+                WpFormat::Markdown
+                    .export(qdoc::DocRef { doc: state, c })
+                    .ok()
+            })
+        });
     }
 
-    /// Write a recovery copy of the current document (Markdown) to the stable
-    /// recovery path and reset the edit counter. Best-effort: no panic if the
-    /// directory is unwritable or the document has no schema yet.
-    fn write_recovery(&mut self, state: &AutoCommit) {
-        self.edits_since_autosave = 0;
-        let Some(c) = self.inner.containers.as_ref() else {
-            return;
-        };
-        let dr = qdoc::DocRef { doc: state, c };
-        let Ok(bytes) = WpFormat::Markdown.export(dr) else {
-            return;
-        };
-        let path = self.recovery_path();
-        if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err()
-        {
-            return;
-        }
-        let _ = std::fs::write(&path, bytes);
-    }
-
-    /// Delete the recovery copy for the open document (called after a successful
-    /// real save — the on-disk file is now authoritative). Resets the autosave
-    /// counter so the next edit starts a fresh debounce window.
+    /// Delete a recovery copy superseded by a successful open/save.
     fn clear_recovery(&mut self) {
-        let _ = std::fs::remove_file(self.recovery_path());
-        self.edits_since_autosave = 0;
+        self.recovery.clear(self.path.as_deref());
     }
 
-    /// Check for an existing recovery copy of the open document and, if one is
-    /// present (a previous session crashed before saving), stage a recovery offer
-    /// so the banner surfaces with Restore / Discard. Idempotent and best-effort.
-    /// Call after binding a freshly-opened document. Returns whether an offer was
-    /// staged.
+    /// Stage a recovery offer for the currently open document, if one exists.
     pub fn check_for_recovery(&mut self) -> bool {
-        let path = self.recovery_path();
-        match std::fs::read(&path) {
-            Ok(markdown) if !markdown.is_empty() => {
-                self.recovery = Some(RecoveryOffer { path, markdown });
-                self.dirty = true;
-                true
-            }
-            _ => false,
+        let staged = self.recovery.check(self.path.as_deref());
+        if staged {
+            self.dirty = true;
         }
-    }
-
-    /// Restore the staged recovery copy: re-import its Markdown over the open
-    /// document in place, mark the document modified (the restored content is not
-    /// yet on disk), dismiss the banner, and delete the recovery file (the live
-    /// document now holds its content).
-    fn restore_recovery(&mut self, state: &mut AutoCommit) {
-        let Some(offer) = self.recovery.take() else {
-            return;
-        };
-        if self.inner.replace_with_markdown(state, &offer.markdown) {
-            self.refresh_blocks(state);
-            self.layout_cache.clear();
-            self.spell_cache.clear();
-            self.modified = true;
-            self.needs_commit = true;
-        }
-        let _ = std::fs::remove_file(&offer.path);
-        self.dirty = true;
-    }
-
-    /// Discard the staged recovery copy: dismiss the banner and delete the file
-    /// (the user prefers the on-disk document as opened).
-    fn discard_recovery(&mut self) {
-        if let Some(offer) = self.recovery.take() {
-            let _ = std::fs::remove_file(&offer.path);
-        }
-        self.dirty = true;
-    }
-
-    /// Draw the crash-recovery banner (a prominent strip under the toolbar with
-    /// Restore / Discard buttons), registering its controls for hit-testing.
-    fn draw_recovery_banner(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        bar: Rect,
-    ) {
-        self.recovery_buttons.clear();
-        let cc = self.chrome;
-        let accent = theme.accent_primary;
-        // A tinted strip so it reads as a transient notice, not chrome.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            with_alpha(accent, 0x22),
-            None,
-            &bar,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
-        );
-        let cy = f64::midpoint(bar.y0, bar.y1);
-        tr.draw_text(
-            scene,
-            &t("recovery-banner"),
-            13.0,
-            cc.text,
-            transform * Affine::translate((bar.x0 + 14.0, cy - 8.0)),
-            None,
-        );
-        // Right-aligned Restore / Discard buttons.
-        let mut x = bar.x1 - 12.0;
-        for (action, label, w, primary) in [
-            (RecoveryAction::Discard, t("recovery-discard"), 80.0, false),
-            (RecoveryAction::Restore, t("recovery-restore"), 80.0, true),
-        ] {
-            x -= w;
-            let r = Rect::new(x, cy - 13.0, x + w, cy + 13.0);
-            let (bg, fg) = if primary {
-                (accent, cc.on_accent)
-            } else {
-                (cc.chip, cc.text)
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                bg,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 6.0),
-            );
-            let tx = r.x0 + (w - num::f64_of_usize(label.chars().count()) * 7.4).max(6.0) / 2.0;
-            tr.draw_text(
-                scene,
-                &label,
-                13.0,
-                fg,
-                transform * Affine::translate((tx, cy - 8.0)),
-                None,
-            );
-            self.recovery_buttons.push((action, r));
-            x -= 8.0;
-        }
+        staged
     }
 
     /// Act on a tracked-change / comment review affordance (from a margin-card
@@ -9044,7 +9444,7 @@ impl WordProcessorWidget {
         // open forever.
         if label != self.last_status {
             self.status_bubble.poke(now);
-            self.last_status = label.clone();
+            self.last_status.clone_from(&label);
         }
         let text_size = 12.0f32;
         let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
@@ -9089,10 +9489,7 @@ impl WordProcessorWidget {
         self.status_bubble.poke(std::time::Instant::now());
     }
 
-    /// Draw the toolbar's zoom control: a − button, the current percentage, a +
-    /// button, right-aligned within `row` (the toolbar's last row). The
-    /// percentage chip doubles as a click-to-reset-to-100% target. Each control
-    /// is registered in `self.status_buttons` for click hit-testing.
+    /// Draw the zoom component in the toolbar's last row.
     fn draw_zoom_control(
         &mut self,
         scene: &mut Scene,
@@ -9100,70 +9497,22 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         row: Rect,
     ) {
-        let cc = self.chrome;
-        self.status_buttons.clear();
-        let cy = f64::midpoint(row.y0, row.y1);
-        let bw = 18.0;
-        let bh = 18.0;
-        let y0 = cy - bh / 2.0;
-        let pct = format!("{}%", num::i32_of_f64((self.zoom * 100.0).round()));
-        // Layout: [−] [ 100% ] [+]  — right-aligned in the row (its width is
-        // `ZOOM_CLUSTER_W`), matching the swatch strip's edge margin.
-        let val_w = 44.0;
-        let total = bw + 4.0 + val_w + 4.0 + bw;
-        let mut x = row.x1 - 14.0 - total;
-
-        let btn = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str| -> Rect {
-            let r = Rect::new(x, y0, x + bw, y0 + bh);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                cc.chip,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 4.0),
-            );
-            let tx = r.x0 + (bw - num::f64_of_usize(label.chars().count()) * 6.5).max(2.0) / 2.0;
-            tr.draw_text(
-                scene,
-                label,
-                13.0,
-                cc.text,
-                transform * Affine::translate((tx, cy - 8.0)),
-                None,
-            );
-            r
-        };
-
-        let minus = btn(scene, tr, x, "−");
-        self.status_buttons.push((StatusAction::Out, minus));
-        x += bw + 4.0;
-
-        // The percentage chip doubles as a reset target (click to return to 100%).
-        let vr = Rect::new(x, y0, x + val_w, y0 + bh);
-        let pw = num::f64_of_usize(pct.chars().count()) * 6.8;
-        tr.draw_text(
+        self.zoom.draw(
             scene,
-            &pct,
-            12.5,
-            cc.text,
-            transform * Affine::translate((x + (val_w - pw) / 2.0, cy - 8.0)),
-            None,
+            transform,
+            tr,
+            row,
+            self.chrome.chip,
+            self.chrome.text,
         );
-        self.status_buttons.push((StatusAction::Reset, vr));
-        x += val_w + 4.0;
-
-        let plus = btn(scene, tr, x, "+");
-        self.status_buttons.push((StatusAction::In, plus));
     }
 
-    fn draw_toolbar(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        tb: Rect,
-    ) {
+    /// Build the toolbar's button spec list (action, label, width,
+    /// active-state) for this frame: formatting toggles, the contextual table
+    /// section (editing controls inside a cell, else "Insert table"), and the
+    /// panel/pane toggles. Paragraph-style presets/controls live in the side
+    /// panel, not here — see [`ToolAction`].
+    fn toolbar_button_specs(&self) -> Vec<(ToolAction, ToolbarItem)> {
         let bold_a = self.mark_active_in_selection("strong");
         let italic_a = self.mark_active_in_selection("em");
         let under_a = self.mark_active_in_selection("underline");
@@ -9262,7 +9611,7 @@ impl WordProcessorWidget {
             ToolAction::ToggleOutline,
             &t("toolbar-outline"),
             72.0,
-            self.outline_open,
+            self.outline.is_open(),
         );
         add(
             ToolAction::ToggleHistory,
@@ -9271,7 +9620,18 @@ impl WordProcessorWidget {
             self.history.is_open(),
         );
         add(ToolAction::InsertToc, &t("toolbar-toc"), 48.0, false);
+        specs
+    }
 
+    fn draw_toolbar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        tb: Rect,
+    ) {
+        let specs = self.toolbar_button_specs();
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
 
         // Responsive packing: when the controls don't fit `tb.width()`, wrap to
@@ -9284,7 +9644,7 @@ impl WordProcessorWidget {
         // Reserve the right-aligned swatch strips + zoom stepper (drawn directly,
         // not as chrome buttons) as a trailing phantom item so no button row
         // extends under them; `toolbar_item_widths` mirrors this exactly.
-        widths.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
+        widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
         starts.push(true);
         let rows = pack_toolbar_rows(&widths, &starts, tb.width());
         self.toolbar_rows = rows.len();
@@ -9342,7 +9702,7 @@ impl WordProcessorWidget {
         // it). The colour/highlight swatch strips pack to its left.
         let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
         self.draw_zoom_control(scene, transform, tr, last_row);
-        let swatch_x1 = (tb.x1 - ZOOM_CLUSTER_W - ZOOM_SWATCH_GAP).max(tb.x0);
+        let swatch_x1 = (tb.x1 - ZoomControl::WIDTH - ZOOM_SWATCH_GAP).max(tb.x0);
         let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
         let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
         // Highlight swatch strip, packed just left of the text-colour strip.
@@ -9404,7 +9764,7 @@ impl WordProcessorWidget {
         w.push(48.0); // TOC
         // right-aligned colour + highlight swatches, plus the zoom stepper cluster
         // (mirrors the reservation in `draw_toolbar`).
-        w.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
+        w.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
         w
     }
 
@@ -9605,6 +9965,7 @@ impl WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
 
@@ -9721,7 +10082,7 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "Body text here");
         // Open the find bar + outline pane so their chrome is drawn too.
         wp.find.open(None, &wp.blocks);
-        wp.outline_open = true;
+        wp.outline.toggle();
         (state, wp)
     }
 
@@ -9827,7 +10188,7 @@ mod tests {
             .unwrap_or_else(|| panic!("spec {id}"));
         match &spec.input {
             qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("{id} is immediate"),
+            qos_actions::ActionInput::Prompted { .. } => panic!("{id} is immediate"),
         }
     }
 
@@ -10702,7 +11063,7 @@ mod tests {
         // ONE paragraph with enough words to wrap to well over a page of lines.
         let mut para = String::new();
         for i in 0..400 {
-            para.push_str(&format!("word{i} "));
+            write!(para, "word{i} ").unwrap();
         }
         let para = para.trim_end().to_string();
         wp.model_mut().insert_str(&mut state.doc, &para);
@@ -10781,7 +11142,7 @@ mod tests {
         wp.sync(&mut state.doc, &state.root);
         let mut para = String::new();
         for i in 0..400 {
-            para.push_str(&format!("word{i} "));
+            write!(para, "word{i} ").unwrap();
         }
         let para = para.trim_end().to_string();
         wp.model_mut().insert_str(&mut state.doc, &para);
@@ -10990,7 +11351,7 @@ mod tests {
         let centre_content = Point::new(f64::midpoint(hb.x0, hb.x1), f64::midpoint(hb.y0, hb.y1));
         let screen = Point::new(
             wp.content_x_to_screen(centre_content.x),
-            wp.zoom_anchor.y + (centre_content.y - wp.zoom_anchor.y) * wp.zoom,
+            wp.zoom.anchor().y + (centre_content.y - wp.zoom.anchor().y) * wp.zoom.factor(),
         );
 
         left_click(&mut wp, &mut state, screen);
@@ -11483,7 +11844,7 @@ mod tests {
             "zoom doubles the scale"
         );
         // The anchor maps to itself.
-        let a = wp.zoom_anchor;
+        let a = wp.zoom.anchor();
         let mapped_anchor = ctf * a;
         assert!(
             (mapped_anchor.x - a.x).abs() < 1e-6 && (mapped_anchor.y - a.y).abs() < 1e-6,
@@ -11553,29 +11914,35 @@ mod tests {
     #[test]
     fn zoom_clamps_and_resets() {
         let mut wp = WordProcessorWidget::new();
-        assert!((wp.zoom - 1.0).abs() < 1e-9, "default zoom is 100%");
+        assert!(
+            (wp.zoom.factor() - 1.0).abs() < 1e-9,
+            "default zoom is 100%"
+        );
         // Clamp at the bounds.
         for _ in 0..100 {
             wp.zoom_by(-ZOOM_STEP);
         }
         assert!(
-            (wp.zoom - ZOOM_MIN).abs() < 1e-6,
+            (wp.zoom.factor() - ZOOM_MIN).abs() < 1e-6,
             "zoom clamps to the minimum"
         );
         for _ in 0..100 {
             wp.zoom_by(ZOOM_STEP);
         }
         assert!(
-            (wp.zoom - ZOOM_MAX).abs() < 1e-6,
+            (wp.zoom.factor() - ZOOM_MAX).abs() < 1e-6,
             "zoom clamps to the maximum"
         );
         wp.set_zoom(1.0);
-        assert!((wp.zoom - 1.0).abs() < 1e-9, "reset returns to 100%");
+        assert!(
+            (wp.zoom.factor() - 1.0).abs() < 1e-9,
+            "reset returns to 100%"
+        );
     }
 
     /// The zoom stepper lives right-aligned in the toolbar. Driving its buttons
     /// through the real event handler must zoom out/in/reset, proving
-    /// `status_buttons` hit-testing fires correctly from the toolbar band.
+    /// the component's hit-testing fires correctly from the toolbar band.
     #[test]
     fn toolbar_zoom_stepper_drives_zoom_from_its_new_home() {
         let mut state = ui::State::new();
@@ -11585,12 +11952,9 @@ mod tests {
 
         // Every zoom button sits inside the toolbar band, not a bottom strip.
         let tb_h = wp.toolbar_height(1000.0);
-        assert_eq!(
-            wp.status_buttons.len(),
-            3,
-            "the −/%/+ stepper registered three targets"
-        );
-        for (_, r) in &wp.status_buttons {
+        let rects = wp.zoom.hit_rects();
+        assert_eq!(rects.len(), 3, "the −/%/+ stepper registered three targets");
+        for r in &rects {
             assert!(
                 r.y1 <= tb_h + 1.0,
                 "zoom button is in the toolbar (rect={r:?}, toolbar_h={tb_h})"
@@ -11601,43 +11965,41 @@ mod tests {
             );
         }
 
-        let center = |wp: &WordProcessorWidget, want: StatusAction| -> Point {
-            let (_, r) = wp
-                .status_buttons
-                .iter()
-                .find(|(a, _)| *a == want)
-                .expect("zoom button present");
+        // Component order is −, percentage/reset, +.
+        let center = |wp: &WordProcessorWidget, index: usize| -> Point {
+            let rects = wp.zoom.hit_rects();
+            let r = &rects[index];
             Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
         };
 
         // Click + : zoom in one step.
-        let p = center(&wp, StatusAction::In);
+        let p = center(&wp, 2);
         left_click(&mut wp, &mut state, p);
         assert!(
-            (wp.zoom - (1.0 + ZOOM_STEP)).abs() < 1e-6,
+            (wp.zoom.factor() - (1.0 + ZOOM_STEP)).abs() < 1e-6,
             "clicking + zooms in one step: {}",
-            wp.zoom
+            wp.zoom.factor()
         );
 
         // Click − : back to 100%.
         pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, StatusAction::Out);
+        let p = center(&wp, 0);
         left_click(&mut wp, &mut state, p);
         assert!(
-            (wp.zoom - 1.0).abs() < 1e-6,
+            (wp.zoom.factor() - 1.0).abs() < 1e-6,
             "clicking − zooms out one step: {}",
-            wp.zoom
+            wp.zoom.factor()
         );
 
         // Click the percentage chip: reset to 100% from any zoom.
         wp.set_zoom(1.6);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, StatusAction::Reset);
+        let p = center(&wp, 1);
         left_click(&mut wp, &mut state, p);
         assert!(
-            (wp.zoom - 1.0).abs() < 1e-9,
+            (wp.zoom.factor() - 1.0).abs() < 1e-9,
             "clicking the % chip resets to 100%: {}",
-            wp.zoom
+            wp.zoom.factor()
         );
     }
 
@@ -12719,29 +13081,25 @@ mod tests {
         let (mut wp, mut state) = doc_with_headings(1000, 700);
         // Open the outline pane and redraw so its clickable entries are built.
         wp.apply_tool(&mut state.doc, ToolAction::ToggleOutline);
-        assert!(wp.outline_open, "outline toggled on");
+        assert!(wp.outline.is_open(), "outline toggled on");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
         // The last heading ("Conclusion") is far down; it should be off-screen at
         // the top of the document.
-        let concl = wp
-            .outline_entries()
-            .into_iter()
-            .find(|h| h.text == "Conclusion")
-            .expect("conclusion heading");
-        let (rect, _) = wp
-            .outline_hits
+        let entries = wp.outline_entries();
+        let (entry_index, concl) = entries
             .iter()
-            .find(|(_, id)| id == &concl.id)
-            .expect("conclusion has a clickable outline entry")
-            .clone();
+            .enumerate()
+            .find(|(_, heading)| heading.text == "Conclusion")
+            .expect("conclusion heading");
         assert_eq!(wp.scroll_y, 0.0, "starts scrolled to the top");
 
-        // Click the entry; the production handler scrolls that heading into view.
-        let pt = Point::new(
-            f64::midpoint(rect.x0, rect.x1),
-            f64::midpoint(rect.y0, rect.y1),
-        );
+        // The pane lays entries immediately below its header. Click the centre
+        // of the selected row through the production event path rather than
+        // reaching into the component's private hit map.
+        let row_y =
+            wp.toolbar_height(1000.0) + 14.0 + 18.0 + num::f64_of_usize(entry_index) * 24.0 + 12.0;
+        let pt = Point::new(30.0, row_y);
         left_click(&mut wp, &mut state, pt);
         assert!(
             wp.scroll_y > 0.0,
@@ -12990,6 +13348,8 @@ mod tests {
     /// catches both; asserting merely "non-empty" catches only the first.
     #[test]
     fn typed_text_lands_in_the_document_with_its_capitals() {
+        const TYPED: &str = "Hello World";
+
         let (mut state, mut wp) = bound();
         assert_eq!(
             body_text(&wp, &state).concat(),
@@ -12998,7 +13358,6 @@ mod tests {
              what typing added and nothing else",
         );
 
-        const TYPED: &str = "Hello World";
         for ch in TYPED.chars() {
             type_char(&mut wp, &mut state, ch);
         }
@@ -13039,7 +13398,7 @@ mod tests {
                 "precondition: the default-open panel is the one under test",
             );
             assert!(
-                !wp.outline_open,
+                !wp.outline.is_open(),
                 "precondition: the left-hand outline pane is closed, so the \
                  canvas is bounded only by the panel under test",
             );
@@ -13117,15 +13476,14 @@ mod tests {
             wp.check_for_recovery(),
             "a present recovery copy stages an offer"
         );
-        assert!(wp.recovery.is_some(), "the recovery banner is now active");
+        assert!(wp.recovery.is_active(), "the recovery banner is now active");
 
         // Draw so the banner's Restore/Discard buttons are registered, then click
         // Restore through the production handler.
         pipeline_draw(&mut wp, &mut state, 1200, 700);
-        let (_, rrect) = *wp
-            .recovery_buttons
-            .iter()
-            .find(|(a, _)| *a == RecoveryAction::Restore)
+        let rrect = wp
+            .recovery
+            .restore_button_rect()
             .expect("Restore button is drawn");
         left_click(
             &mut wp,
@@ -13137,7 +13495,7 @@ mod tests {
         );
 
         assert!(
-            wp.recovery.is_none(),
+            !wp.recovery.is_active(),
             "the banner is dismissed after Restore"
         );
         assert_eq!(
@@ -13167,10 +13525,9 @@ mod tests {
         assert!(wp.check_for_recovery());
 
         pipeline_draw(&mut wp, &mut state, 1200, 700);
-        let (_, drect) = *wp
-            .recovery_buttons
-            .iter()
-            .find(|(a, _)| *a == RecoveryAction::Discard)
+        let drect = wp
+            .recovery
+            .discard_button_rect()
             .expect("Discard button is drawn");
         left_click(
             &mut wp,
@@ -13181,7 +13538,7 @@ mod tests {
             ),
         );
 
-        assert!(wp.recovery.is_none(), "Discard dismisses the banner");
+        assert!(!wp.recovery.is_active(), "Discard dismisses the banner");
         assert!(!rp.exists(), "Discard deletes the recovery file");
         assert_eq!(
             first_block(&wp, &state).map(|b| b.text),
@@ -13285,7 +13642,7 @@ mod tests {
         );
 
         // At zoom 1.0 content-x == screen-x (anchor scale is identity).
-        assert!((wp.zoom - 1.0).abs() < 1e-6, "default zoom");
+        assert!((wp.zoom.factor() - 1.0).abs() < 1e-6, "default zoom");
         let markers = wp.ruler_markers(page_x, page_w);
         let mx = |m: RulerMarker| {
             markers
@@ -13316,7 +13673,7 @@ mod tests {
         // Zooming in moves the markers further from the anchor by the zoom factor.
         wp.set_zoom(2.0);
         pipeline_draw(&mut wp, &mut state, 1200, 760);
-        let anchor = wp.zoom_anchor.x;
+        let anchor = wp.zoom.anchor().x;
         let zoomed = wp.ruler_markers(wp.page_rect.x0, wp.page_rect.width());
         let zx = |m: RulerMarker| {
             zoomed
@@ -13353,10 +13710,13 @@ mod tests {
             .find(|(k, _)| *k == RulerMarker::MarginLeft)
             .map(|(_, x)| *x)
             .unwrap();
-        wp.pointer = Point::new(marker_x, f64::midpoint(wp.ruler_rect.y0, wp.ruler_rect.y1));
+        wp.pointer = Point::new(
+            marker_x,
+            f64::midpoint(wp.ruler.rect().y0, wp.ruler.rect().y1),
+        );
         wp.ruler_press(&mut state.doc);
         assert_eq!(
-            wp.ruler_drag.map(|d| d.marker),
+            wp.ruler.drag_marker(),
             Some(RulerMarker::MarginLeft),
             "grabbed the left-margin marker"
         );
@@ -13374,7 +13734,7 @@ mod tests {
 
         // Release persists into the document (a fresh widget reloads the value).
         wp.ruler_drag_release(&mut state.doc);
-        assert!(wp.ruler_drag.is_none(), "drag ended on release");
+        assert!(!wp.ruler.is_dragging(), "drag ended on release");
         let mut wp2 = WordProcessorWidget::new();
         wp2.sync(&mut state.doc, &state.root);
         assert!(
@@ -13402,12 +13762,9 @@ mod tests {
             .map(|(_, x)| *x)
             .unwrap();
         // The hanging/left-indent wedge lives in the lower third of the band.
-        wp.pointer = Point::new(mxl, wp.ruler_rect.y1 - 2.0);
+        wp.pointer = Point::new(mxl, wp.ruler.rect().y1 - 2.0);
         wp.ruler_press(&mut state.doc);
-        assert_eq!(
-            wp.ruler_drag.map(|d| d.marker),
-            Some(RulerMarker::IndentLeft)
-        );
+        assert_eq!(wp.ruler.drag_marker(), Some(RulerMarker::IndentLeft));
 
         // Drag the indent marker 60 px right of the left text margin.
         let target = page_x + wp.margins.left + 60.0;
@@ -13449,7 +13806,7 @@ mod tests {
         let tab_content_x = page_x + wp.margins.left + 200.0;
         wp.pointer = Point::new(
             wp.content_x_to_screen(tab_content_x),
-            f64::midpoint(wp.ruler_rect.y0, wp.ruler_rect.y1),
+            f64::midpoint(wp.ruler.rect().y0, wp.ruler.rect().y1),
         );
         wp.ruler_press(&mut state.doc);
         let stops = wp.model().block_tab_stops(&state.doc, &block);
@@ -13513,18 +13870,18 @@ mod tests {
             .find(|(k, _)| matches!(k, RulerMarker::Tab(0)))
             .map(|(_, x)| *x)
             .unwrap();
-        wp.pointer = Point::new(tx, f64::midpoint(wp.ruler_rect.y0, wp.ruler_rect.y1));
+        wp.pointer = Point::new(tx, f64::midpoint(wp.ruler.rect().y0, wp.ruler.rect().y1));
         wp.ruler_press(&mut state.doc);
         assert!(
-            matches!(wp.ruler_drag.map(|d| d.marker), Some(RulerMarker::Tab(0))),
+            matches!(wp.ruler.drag_marker(), Some(RulerMarker::Tab(0))),
             "grabbed the tab marker"
         );
 
         // Drag below the band → flagged for removal, then release removes it.
-        wp.pointer = Point::new(tx, wp.ruler_rect.y1 + 40.0);
+        wp.pointer = Point::new(tx, wp.ruler.rect().y1 + 40.0);
         wp.ruler_drag_move();
         assert!(
-            wp.ruler_drag.is_some_and(|d| d.drop_off),
+            wp.ruler.dropping_tab(),
             "dragging below the band flags drop-off"
         );
         wp.ruler_drag_release(&mut state.doc);
@@ -13719,11 +14076,12 @@ mod tests {
     /// [`Role::Toolbar`] group of button nodes with spelled-out accessible names.
     #[test]
     fn accessibility_tree_exposes_toolbar_buttons() {
+        use ui::a11y::Role;
+
         // Assertions below are literal English button names; pin the locale so
         // the test doesn't depend on the host's `LANG` (nextest runs each test
         // in its own process, so this can't leak into a sibling test).
         crate::i18n::set_locale("en-US");
-        use ui::a11y::Role;
         let (mut state, mut wp) = populated();
         pipeline_draw(&mut wp, &mut state, 1100, 760);
         // Re-sync so the tree reflects the drawn toolbar.
@@ -13737,13 +14095,12 @@ mod tests {
             .expect("a toolbar group is present after a draw");
         assert!(!toolbar.children.is_empty(), "the toolbar has button nodes");
         // The buttons read with human names, not the terse visible glyphs.
-        let names: Vec<&str> = toolbar
-            .children
-            .iter()
-            .filter_map(|c| c.node.name.as_deref())
-            .collect();
         assert!(
-            names.contains(&"Bold"),
+            toolbar
+                .children
+                .iter()
+                .filter_map(|c| c.node.name.as_deref())
+                .any(|n| n == "Bold"),
             "the Bold button is named for a screen reader"
         );
         assert!(
@@ -14696,14 +15053,14 @@ mod tests {
             ),
         );
         assert!(
-            wp.color_picker.is_some(),
+            wp.color_picker.is_open(),
             "the shared ColorPicker popover opened"
         );
 
         // Lay the picker out and drive a press into the top-left of its SV square
         // (high value, some saturation) so it commits a fresh colour.
-        wp.layout_color_picker();
-        let pr = wp.color_picker.as_ref().unwrap().get_rect();
+        wp.color_picker.layout(wp.rect, wp.panel_rect);
+        let pr = wp.color_picker.rect();
         let sv_pt = Point::new(pr.x0 + 20.0, pr.y0 + 20.0);
         let style_before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         // CursorMoved (to set the picker's internal cursor) then press.
@@ -14756,12 +15113,12 @@ mod tests {
         wp.styles_panel_open = true;
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         wp.open_color_picker();
-        assert!(wp.color_picker.is_some());
+        assert!(wp.color_picker.is_open());
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         // Click far away from the popover (top-left corner of the canvas).
         left_click(&mut wp, &mut state, Point::new(80.0, 400.0));
         assert!(
-            wp.color_picker.is_none(),
+            !wp.color_picker.is_open(),
             "an outside click closes the colour picker"
         );
     }

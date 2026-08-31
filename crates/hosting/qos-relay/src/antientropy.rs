@@ -67,6 +67,11 @@ pub fn heads_wire(doc: &mut AutoCommit) -> Vec<[u8; 32]> {
 /// Apply the `delta_since` bytes from an [`Envelope::SyncResponse`] into
 /// `doc`. Returns the number of new operations applied (0 = already
 /// converged / empty response).
+///
+/// # Errors
+///
+/// Returns an error if `delta_since` is non-empty but does not decode
+/// as a valid Automerge incremental change series.
 pub fn apply_sync_response(
     doc: &mut AutoCommit,
     delta_since: &[u8],
@@ -81,6 +86,10 @@ pub fn apply_sync_response(
 /// for `workspace_id`. Fire-and-forget; handle the matching
 /// [`Envelope::SyncResponse`] in your recv loop with
 /// [`apply_sync_response`].
+///
+/// # Errors
+///
+/// Returns [`SyncError::Disconnected`] if the relay connection is gone.
 pub fn send_sync_request(
     client: &RelayClient,
     workspace_id: u64,
@@ -105,6 +114,13 @@ pub fn send_sync_request(
 /// concurrently with an app's main recv loop on the same client, which
 /// would race for the same inbound stream. For loop-integrated use,
 /// prefer [`send_sync_request`] + [`apply_sync_response`].
+///
+/// # Errors
+///
+/// Returns [`SyncError::Disconnected`] if the relay connection is gone,
+/// [`SyncError::Timeout`] if no matching `SyncResponse` arrives within
+/// `timeout` (or `timeout` itself can't be added to the current time),
+/// and [`SyncError::Apply`] if the response's changes fail to apply.
 pub async fn reconcile(
     client: &RelayClient,
     workspace_id: u64,
@@ -112,7 +128,12 @@ pub async fn reconcile(
     timeout: Duration,
 ) -> Result<usize, SyncError> {
     send_sync_request(client, workspace_id, doc)?;
-    let deadline = Instant::now() + timeout;
+    // A `timeout` large enough to overflow `Instant`'s representable
+    // range cannot be waited out anyway; treat it the same as running
+    // out of budget rather than panicking on the addition.
+    let Some(deadline) = Instant::now().checked_add(timeout) else {
+        return Err(SyncError::Timeout);
+    };
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -127,7 +148,7 @@ pub async fn reconcile(
             }
             // Unrelated envelope (Ready, a live Delta, presence, a
             // SyncResponse for another workspace); keep waiting.
-            Ok(Some(_)) => continue,
+            Ok(Some(_)) => {}
             Ok(None) => return Err(SyncError::Disconnected),
             Err(_) => return Err(SyncError::Timeout),
         }

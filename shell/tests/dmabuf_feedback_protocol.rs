@@ -14,6 +14,16 @@
 //! DRM node; the format table offers only buffers
 //! [`shell::compositor::foreign::validate_importable`] would accept.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -144,7 +154,9 @@ fn pump(
     predicate: impl Fn(&ClientAppState) -> bool,
     label: &str,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(3))
+        .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         let _ = conn.flush();
         let _ = display.dispatch_clients(server_state);
@@ -246,11 +258,12 @@ fn dmabuf_global_is_advertised_with_feedback() {
 /// A wrong or absent number sends the client to no GPU at all.
 #[test]
 fn feedback_main_device_is_the_advertised_render_node() {
+    use std::os::unix::fs::MetadataExt as _;
+
     let Some((app, node)) = walk() else {
         eprintln!("skipping: no advertisable render node on this machine");
         return;
     };
-    use std::os::unix::fs::MetadataExt as _;
     let expected = std::fs::metadata(&node)
         .expect("probed render node must stat")
         .rdev();

@@ -65,10 +65,20 @@ impl FetchWorker {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<FetchRequest>();
         let (res_tx, res_rx) = std::sync::mpsc::channel::<FetchResult>();
 
-        std::thread::Builder::new()
+        // A clone survives a failed spawn (the closure below, and the `res_tx`
+        // it owns, never runs in that case) so the honest Failed result below
+        // still has a sender to use.
+        let fallback_tx = res_tx.clone();
+        let spawned = std::thread::Builder::new()
             .name("feeds-fetch".into())
-            .spawn(move || worker_main(req_rx, res_tx))
-            .expect("spawn fetch worker");
+            .spawn(move || worker_main(&req_rx, &res_tx))
+            .is_ok();
+        if !spawned {
+            let _ = fallback_tx.send(FetchResult::Failed {
+                feed_id: None,
+                message: "failed to spawn fetch worker thread".to_string(),
+            });
+        }
 
         Self {
             tx: req_tx,
@@ -107,11 +117,11 @@ impl FetchWorker {
     /// refresh is a constant-time, network-free operation.
     #[cfg(test)]
     pub fn for_test() -> (Self, Sender<FetchResult>) {
-        let (req_tx, _req_rx) = std::sync::mpsc::channel::<FetchRequest>();
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<FetchRequest>();
         let (res_tx, res_rx) = std::sync::mpsc::channel::<FetchResult>();
-        // `_req_rx` is dropped, so `send()` would fail; keep it alive so the
-        // pending counter advances just like the production path.
-        std::mem::forget(_req_rx);
+        // Otherwise `req_rx` would drop here, so `send()` would fail; keep it
+        // alive so the pending counter advances just like the production path.
+        std::mem::forget(req_rx);
         (
             Self {
                 tx: req_tx,
@@ -123,7 +133,7 @@ impl FetchWorker {
     }
 }
 
-fn worker_main(req_rx: Receiver<FetchRequest>, res_tx: Sender<FetchResult>) {
+fn worker_main(req_rx: &Receiver<FetchRequest>, res_tx: &Sender<FetchResult>) {
     // A *multi-thread* runtime so a burst of refresh requests run concurrently
     // rather than head-of-line-blocking each other. Previously this used a
     // current-thread runtime and `block_on`'d each request in turn, so a single
@@ -158,7 +168,7 @@ fn worker_main(req_rx: Receiver<FetchRequest>, res_tx: Sender<FetchResult>) {
         let client = client.clone();
         let res_tx = res_tx.clone();
         runtime.spawn(async move {
-            let result = handle(&client, req).await;
+            let result = handle(client.as_ref(), req).await;
             // If the UI is gone the send fails; the task simply ends.
             let _ = res_tx.send(result);
         });
@@ -167,7 +177,7 @@ fn worker_main(req_rx: Receiver<FetchRequest>, res_tx: Sender<FetchResult>) {
     // process exits; for app shutdown that's fine (best-effort fetches).
 }
 
-async fn handle(client: &Option<reqwest::Client>, req: FetchRequest) -> FetchResult {
+async fn handle(client: Option<&reqwest::Client>, req: FetchRequest) -> FetchResult {
     match req {
         FetchRequest::Refresh { feed_id, url, kind } => {
             match fetch_feed(client, &url, kind).await {
@@ -230,14 +240,14 @@ async fn handle(client: &Option<reqwest::Client>, req: FetchRequest) -> FetchRes
 
 /// Fetch + parse a feed, returning (title, articles).
 async fn fetch_feed(
-    client: &Option<reqwest::Client>,
+    client: Option<&reqwest::Client>,
     url: &str,
     kind: FeedKind,
 ) -> Result<(Option<String>, Vec<Article>), String> {
     if kind == FeedKind::Gemini || url.starts_with("gemini://") {
         return fetch_gemini(url).await;
     }
-    let client = client.as_ref().ok_or("no http client")?;
+    let client = client.ok_or("no http client")?;
     let resp = client
         .get(url)
         .send()
@@ -259,8 +269,7 @@ fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Article>), Strin
     for entry in parsed.entries {
         let title = entry
             .title
-            .map(|t| t.content)
-            .unwrap_or_else(|| "(untitled)".to_string());
+            .map_or_else(|| "(untitled)".to_string(), |t| t.content);
         let url = entry
             .links
             .first()
@@ -274,8 +283,7 @@ fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Article>), Strin
         let published = entry
             .published
             .or(entry.updated)
-            .map(|d| d.timestamp())
-            .unwrap_or(0);
+            .map_or(0, |d| d.timestamp());
 
         // Prefer full content; fall back to summary.
         let (summary, body_html) = match (&entry.summary, &entry.content) {
@@ -323,9 +331,13 @@ fn plain_summary(html_text: &str) -> String {
 pub(crate) fn derive_site_url(feed_url: &str) -> String {
     // scheme://host  (drop path) as a reasonable homepage guess.
     if let Some(scheme_end) = feed_url.find("://") {
-        let after = &feed_url[scheme_end + 3..];
+        let after = feed_url.get(scheme_end + 3..).unwrap_or_default();
         let host_end = after.find('/').unwrap_or(after.len());
-        return format!("{}{}", &feed_url[..scheme_end + 3], &after[..host_end]);
+        return format!(
+            "{}{}",
+            feed_url.get(..scheme_end + 3).unwrap_or_default(),
+            after.get(..host_end).unwrap_or_default()
+        );
     }
     feed_url.to_string()
 }
@@ -365,7 +377,7 @@ async fn gemini_request(url: &str) -> Result<String, String> {
 
     let rest = url.strip_prefix("gemini://").unwrap_or(url);
     let host_port_end = rest.find('/').unwrap_or(rest.len());
-    let host = &rest[..host_port_end];
+    let host = rest.get(..host_port_end).unwrap_or_default();
     let (host_only, port) = match host.rsplit_once(':') {
         Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(1965)),
         None => (host.to_string(), 1965u16),
@@ -399,12 +411,14 @@ async fn gemini_request(url: &str) -> Result<String, String> {
     let Some(nl) = text.find("\r\n") else {
         return Err("malformed gemini response".into());
     };
-    let header = &text[..nl];
+    let Some(header) = text.get(..nl) else {
+        return Err("malformed gemini response".into());
+    };
     let status = header.chars().take(2).collect::<String>();
     if !status.starts_with('2') {
         return Err(format!("gemini status {header}"));
     }
-    Ok(text[nl + 2..].to_string())
+    Ok(text.get(nl + 2..).unwrap_or_default().to_string())
 }
 
 fn gemini_tls_config() -> Result<tokio_rustls::rustls::ClientConfig, String> {

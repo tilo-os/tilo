@@ -9,15 +9,25 @@ qOS has two settings contexts, but not two unrelated implementations:
 - **Personal Settings** is a normal application for this person's device,
   account, accessibility and fallback preferences. Its window title and
   launcher name always say *Personal Settings*.
-- **Workspace Settings** is opened from the active workspace's name in shell
-  chrome. It always shows that workspace's identity and the local person's
+- **Workspace Settings** is a shell-native lens opened from the active
+  workspace capsule. It docks beside the live workspace instead of dimming it
+  behind an app-shaped modal. Its header repeats the workspace name and local
   role, and owner/admin-only controls stay visibly disabled for other members.
 
 Workspace Settings is contextual rather than a second launcher application:
 opening a generic “Workspace Settings” icon and then asking which workspace to
 edit makes high-impact permission changes too easy to misdirect. Global search
-may deep-link to it, but the shell must bind the route to a concrete workspace
-id and show that workspace before accepting a mutation.
+and Personal Settings may deep-link to an exact tab, but only through the
+versioned `WorkspaceSettingsRoute` enum. The shell accepts the request only
+when its workspace id is still the active room; it never silently switches
+context before exposing governance controls.
+
+The boundary is intentionally spatial rather than window-shaped. The active
+workspace capsule gains a context mark while the lens is open, the lens enters
+from that capsule, and the desktop remains visible and pointer-live beside it.
+On a narrow output the same surface promotes to an inset sheet with compact tab
+labels. Reduced-motion skips the travel. There is still one state model, one
+mutation path, and one set of controls.
 
 Cross-cutting domains use a single resolver. Default applications, for
 example, have a personal fallback, an optional workspace-admin policy, and an
@@ -113,7 +123,7 @@ The target architecture has four pieces:
 
 1. A domain service owns live state and privileged actions. UI packages receive typed status and submit typed intents.
 2. One versioned persistence schema defines ownership down to the field or nested namespace. Writers perform merge updates and preserve unknown fields for forward compatibility.
-3. The shell provides a versioned `ToolIntent` service. Settings can submit only a compiled enum such as `Vpn { route: Profile, profile: "Work VPN" }`; the shell maps that variant to `dev.qos.vpn`, validates the workspace and context, and launches it. The wire format has no executable, package-id, argv, or permission fields.
+3. The shell provides a versioned `ToolIntent` service. Settings can submit only a compiled enum such as `Vpn { route: Profile, profile: "Work VPN" }` or `WorkspaceSettings { route: PrivacySecurity }`. The shell maps specialist variants to known packages and handles workspace variants itself on the compositor thread. It validates workspace and context first. The wire format has no executable, package-id, argv, or permission fields.
 4. A Studio applies an artifact through the same domain service. Settings and Quick Settings update from service state, not from optimistic parallel copies.
 
 Privileged operations remain narrow and auditable: for example, the battery-cap service normalizes vendor sysfs differences, validates a supported battery and bounded threshold, and exposes only that operation through policy-controlled elevation.

@@ -28,6 +28,13 @@ use crate::model::{self, CalcModel, Mode, PlotFn};
 
 const TOPBAR_H: f64 = 60.0;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, orthogonal flag (layout state, \
+              drag state, and seed/dirty bookkeeping); they aren't a state \
+              machine, and grouping them would mean churning every field \
+              access across this widget for no behavioural gain"
+)]
 pub struct CalculatorApp {
     model: CalcModel,
     calc: CalcScreen,
@@ -175,9 +182,9 @@ impl CalculatorApp {
         let seg_total = seg_w * 3.0;
         let seg_start =
             seg_area_left + ((seg_area_right - seg_area_left) - seg_total).max(0.0) / 2.0;
-        for i in 0..3 {
+        for (i, rect) in self.seg_rects.iter_mut().enumerate() {
             let sx = seg_start + i as f64 * seg_w;
-            self.seg_rects[i] = Rect::new(sx, y0, sx + seg_w, y0 + seg_h);
+            *rect = Rect::new(sx, y0, sx + seg_w, y0 + seg_h);
         }
     }
 
@@ -216,9 +223,9 @@ impl CalculatorApp {
     /// existing row to toggle/delete) — because the executor commits even a
     /// no-op action, and an empty change wedges the next dispatch. This app
     /// supplies only its domain: the action and its type.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: CalculatorAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &CalculatorAction) {
         self.actions
-            .dispatch(doc, actions::CALCULATOR_ACTION_TYPE, &action);
+            .dispatch(doc, actions::CALCULATOR_ACTION_TYPE, action);
     }
 
     /// Commit the current expression (`=` / Enter in Calc mode). Evaluates and
@@ -230,7 +237,7 @@ impl CalculatorApp {
         if let Some(entry) = self.model.commit_equals() {
             self.perform_action(
                 doc,
-                actions::commit_history_action(&entry.expr, &entry.result),
+                &actions::commit_history_action(&entry.expr, &entry.result),
             );
         }
         self.model_dirty = true;
@@ -267,7 +274,7 @@ impl CalculatorApp {
         }
     }
 
-    fn draw_topbar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_topbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, self.topbar, c.surfaces.raised);
         draw::line(
@@ -291,8 +298,7 @@ impl CalculatorApp {
         );
         draw::fill_rrect(scene, t, outer, 10.0, c.neutral[2]);
         let sel = self.model.mode.index();
-        for (i, m) in Mode::all().iter().enumerate() {
-            let r = self.seg_rects[i];
+        for (i, (m, &r)) in Mode::all().iter().zip(self.seg_rects.iter()).enumerate() {
             if i == sel {
                 draw::fill_rrect(scene, t, r, 8.0, c.accent[5]);
             }
@@ -366,8 +372,8 @@ impl CalculatorApp {
 
     fn on_press(&mut self, p: Point, doc: &mut AutoCommit) {
         // header first
-        for i in 0..3 {
-            if self.seg_rects[i].contains(p) {
+        for (i, r) in self.seg_rects.iter().enumerate() {
+            if r.contains(p) {
                 self.set_mode(Mode::from_index(i));
                 return;
             }
@@ -415,14 +421,14 @@ impl CalculatorApp {
                 visible: true,
             });
             self.model.active_surface = self.model.surfaces.len() - 1;
-            self.perform_action(doc, actions::add_graph_action(GraphKind::Surface3d, ""));
+            self.perform_action(doc, &actions::add_graph_action(GraphKind::Surface3d, ""));
             self.model_dirty = true;
         } else if let Some(i) = self.g3.vis_at(p) {
-            if self.model.surfaces.get(i).is_some() {
-                self.model.surfaces[i].visible = !self.model.surfaces[i].visible;
+            if let Some(f) = self.model.surfaces.get_mut(i) {
+                f.visible = !f.visible;
                 self.perform_action(
                     doc,
-                    actions::toggle_graph_visible_action(GraphKind::Surface3d, i),
+                    &actions::toggle_graph_visible_action(GraphKind::Surface3d, i),
                 );
                 self.model_dirty = true;
             }
@@ -459,25 +465,27 @@ impl CalculatorApp {
         }
         if let Some(i) = self.calc.key_at(p) {
             self.calc.pressed_key = Some(i);
-            let key = self.calc.keys()[i].clone();
-            // `=` commits to the shared history through an action; every other
-            // key is a live edit of the (presentation) expression line.
-            if matches!(key, model::Key::Equals) {
-                self.commit_equals(doc);
-            } else {
+            if let Some(key) = self.calc.keys().get(i).cloned() {
+                // `=` commits to the shared history through an action; every
+                // other key is a live edit of the (presentation) expression line.
+                if matches!(key, model::Key::Equals) {
+                    self.commit_equals(doc);
+                } else {
+                    model::apply_key(&mut self.model, &key);
+                    self.model_dirty = true;
+                }
+            }
+        } else if let Some(i) = self.calc.mem_at(p) {
+            if let Some(key) = MEM_KEYS.get(i).cloned() {
                 model::apply_key(&mut self.model, &key);
                 self.model_dirty = true;
             }
-        } else if let Some(i) = self.calc.mem_at(p) {
-            let key = MEM_KEYS[i].clone();
-            model::apply_key(&mut self.model, &key);
-            self.model_dirty = true;
         } else if self.calc.clear_history_at(p) {
             // Only a non-empty history is a real mutation; clearing an empty
             // list would be a no-op action (which wedges the executor).
             if !self.model.history.is_empty() {
                 self.model.history.clear();
-                self.perform_action(doc, actions::clear_history_action());
+                self.perform_action(doc, &actions::clear_history_action());
                 self.model_dirty = true;
             }
         } else if let Some(hi) = self.calc.history_at(p)
@@ -505,14 +513,14 @@ impl CalculatorApp {
                 visible: true,
             });
             self.model.active_fn = self.model.funcs.len() - 1;
-            self.perform_action(doc, actions::add_graph_action(GraphKind::Curve2d, ""));
+            self.perform_action(doc, &actions::add_graph_action(GraphKind::Curve2d, ""));
             self.model_dirty = true;
         } else if let Some(i) = self.g2.vis_at(p) {
-            if self.model.funcs.get(i).is_some() {
-                self.model.funcs[i].visible = !self.model.funcs[i].visible;
+            if let Some(f) = self.model.funcs.get_mut(i) {
+                f.visible = !f.visible;
                 self.perform_action(
                     doc,
-                    actions::toggle_graph_visible_action(GraphKind::Curve2d, i),
+                    &actions::toggle_graph_visible_action(GraphKind::Curve2d, i),
                 );
                 self.model_dirty = true;
             }
@@ -643,7 +651,7 @@ impl CalculatorApp {
 
     // -- keyboard ------------------------------------------------------------
 
-    fn on_key(&mut self, key: &WKey, modifiers: &winit::event::Modifiers, doc: &mut AutoCommit) {
+    fn on_key(&mut self, key: &WKey, modifiers: winit::event::Modifiers, doc: &mut AutoCommit) {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
         // Ctrl+digit always switches mode, from any screen.
@@ -698,7 +706,7 @@ impl CalculatorApp {
                         visible: true,
                     });
                     self.model.active_fn = self.model.funcs.len() - 1;
-                    self.perform_action(doc, actions::add_graph_action(GraphKind::Curve2d, ""));
+                    self.perform_action(doc, &actions::add_graph_action(GraphKind::Curve2d, ""));
                     self.model_dirty = true;
                 }
                 Mode::Graph3d => {
@@ -707,7 +715,7 @@ impl CalculatorApp {
                         visible: true,
                     });
                     self.model.active_surface = self.model.surfaces.len() - 1;
-                    self.perform_action(doc, actions::add_graph_action(GraphKind::Surface3d, ""));
+                    self.perform_action(doc, &actions::add_graph_action(GraphKind::Surface3d, ""));
                     self.model_dirty = true;
                 }
             },
@@ -746,7 +754,7 @@ impl CalculatorApp {
 
     /// Route a key to the active Graph 2D function field. Returns whether the
     /// key was consumed by the field.
-    fn on_key_g2(&mut self, key: &WKey, modifiers: &winit::event::Modifiers) -> bool {
+    fn on_key_g2(&mut self, key: &WKey, modifiers: winit::event::Modifiers) -> bool {
         self.g2.sync_fields(&self.model);
         let a = self.model.active_fn;
         let Some(field) = self.g2.active_field_mut(a) else {
@@ -757,7 +765,7 @@ impl CalculatorApp {
         if !field_handles(key, modifiers) {
             return false;
         }
-        let changed = field.handle_key(key, modifiers);
+        let changed = field.handle_key(key, &modifiers);
         if changed {
             let linear = field.current_linear();
             if let Some(f) = self.model.funcs.get_mut(a) {
@@ -770,7 +778,7 @@ impl CalculatorApp {
 
     /// Route a key to the active Graph 3D surface field. Returns whether the
     /// key was consumed by the field.
-    fn on_key_g3(&mut self, key: &WKey, modifiers: &winit::event::Modifiers) -> bool {
+    fn on_key_g3(&mut self, key: &WKey, modifiers: winit::event::Modifiers) -> bool {
         self.g3.sync_fields(&self.model);
         let a = self.model.active_surface;
         let Some(field) = self.g3.active_field_mut(a) else {
@@ -779,7 +787,7 @@ impl CalculatorApp {
         if !field_handles(key, modifiers) {
             return false;
         }
-        let changed = field.handle_key(key, modifiers);
+        let changed = field.handle_key(key, &modifiers);
         if changed {
             let linear = field.current_linear();
             if let Some(f) = self.model.surfaces.get_mut(a) {
@@ -802,7 +810,7 @@ impl Default for CalculatorApp {
 impl CalculatorApp {
     #[doc(hidden)]
     pub fn bench_seg_center(&self, i: usize) -> Point {
-        self.seg_rects[i].center()
+        self.seg_rects.get(i).map_or(Point::ZERO, Rect::center)
     }
 
     /// Screen-space center of the Calc keypad key labelled `label`, after the
@@ -848,7 +856,7 @@ fn remote_carets(presence: &PresenceCtx) -> Vec<(Point, Color)> {
 
 /// Whether a key is one the math field acts on (so the app knows to route it
 /// there and consume it, vs. letting it fall through to mode-level handling).
-fn field_handles(key: &WKey, modifiers: &winit::event::Modifiers) -> bool {
+fn field_handles(key: &WKey, modifiers: winit::event::Modifiers) -> bool {
     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
     match key {
         WKey::Named(
@@ -916,6 +924,8 @@ impl Widget for CalculatorApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only errs when the tree is at capacity; degrade to an
+        // inert node rather than aborting the whole session.
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -924,14 +934,16 @@ impl Widget for CalculatorApp {
                 },
                 ..Default::default()
             })
-            .unwrap();
+            .unwrap_or_else(|_| NodeId::from(0u64));
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.area = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1069,7 +1081,7 @@ impl Widget for CalculatorApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.on_key(&key_event.logical_key, modifiers, state);
+                self.on_key(&key_event.logical_key, *modifiers, state);
                 *handled = true;
             }
             _ => {}
@@ -1310,7 +1322,7 @@ mod tests {
         let mut app = CalculatorApp::new();
         let mut st = ui::State::new();
         let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        app.on_key(&WKey::Character("3".into()), &ctrl, &mut st.doc);
+        app.on_key(&WKey::Character("3".into()), ctrl, &mut st.doc);
         assert_eq!(app.model.mode, Mode::Graph3d);
     }
 
@@ -1327,7 +1339,7 @@ mod tests {
         app.model.active_fn = 0;
         let none = winit::event::Modifiers::default();
         for ch in ["2", "*", "x"] {
-            app.on_key(&WKey::Character(ch.into()), &none, &mut st.doc);
+            app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
         }
         assert_eq!(app.model.funcs[0].expr, "2*x");
     }
@@ -1344,7 +1356,7 @@ mod tests {
         app.model.active_surface = 0;
         // on_key_g3 resyncs the active field to the surface before editing.
         let none = winit::event::Modifiers::default();
-        app.on_key(&WKey::Named(NamedKey::Backspace), &none, &mut st.doc);
+        app.on_key(&WKey::Named(NamedKey::Backspace), none, &mut st.doc);
         assert_eq!(app.model.surfaces[0].expr, "x+");
     }
 
@@ -1362,10 +1374,10 @@ mod tests {
         app.model.active_fn = 0;
         let none = winit::event::Modifiers::default();
         for ch in ["s", "i", "n", "(", "x", ")"] {
-            app.on_key(&WKey::Character(ch.into()), &none, &mut st.doc);
+            app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
         }
         assert_eq!(app.model.funcs[0].expr, "sin(x)");
-        app.on_key(&WKey::Named(NamedKey::Enter), &none, &mut st.doc);
+        app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
         assert_eq!(
             app.model.funcs.len(),
             2,
@@ -1389,7 +1401,7 @@ mod tests {
         app.set_mode(Mode::Graph3d); // seeds one starter surface
         let start = app.model.surfaces.len();
         let none = winit::event::Modifiers::default();
-        app.on_key(&WKey::Named(NamedKey::Enter), &none, &mut st.doc);
+        app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
         assert_eq!(
             app.model.surfaces.len(),
             start + 1,
@@ -1434,7 +1446,7 @@ mod tests {
         // App's needs_commit → commit_action coalescing does after a pause.
         let none = winit::event::Modifiers::default();
         for ch in ["2", "*", "x"] {
-            app.on_key(&WKey::Character(ch.into()), &none, &mut state.doc);
+            app.on_key(&WKey::Character(ch.into()), none, &mut state.doc);
         }
         assert_eq!(app.model.funcs[0].expr, "2*x");
         doc::store(&mut state.doc, &app.model);
@@ -1721,11 +1733,11 @@ mod tests {
         let c = app.g3.canvas.center();
         drag(&mut app, &mut st, c, Point::new(c.x + 50.0, c.y + 20.0));
         assert!(
-            app.model.view3d.yaw != yaw0,
+            (app.model.view3d.yaw - yaw0).abs() >= f64::EPSILON,
             "horizontal drag must change yaw"
         );
         assert!(
-            app.model.view3d.pitch != pitch0,
+            (app.model.view3d.pitch - pitch0).abs() >= f64::EPSILON,
             "vertical drag must change pitch"
         );
     }

@@ -20,7 +20,7 @@ use smithay::backend::input::{
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 // xkb comes from smithay's re-export, no new dependency; mirrors `XkbConfig::default()`'s `XKB_DEFAULT_*` handling via empty rule names (see `KeyboardXkb::new`).
 use smithay::backend::session::Session;
-use smithay::backend::session::libseat::LibSeatSession;
+use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
 use smithay::backend::udev::{UdevBackend, all_gpus};
 use smithay::input::keyboard::{Keysym, keysyms, xkb};
 use smithay::reexports::calloop::{EventLoop, LoopHandle};
@@ -58,8 +58,14 @@ use crate::compositor::backend::{
 pub enum DrmBackendError {
     /// Seat acquisition failed — the payload is the *diagnosis*, not the
     /// raw errno: libseat collapses distinct failures into one `ENOSYS`. See [`super::seat_diag`].
+    ///
+    /// Boxed: [`super::seat_diag::SeatFailure`] carries a
+    /// [`super::seat_diag::SeatEnvironment`] (several `Option<String>`
+    /// fields) plus its own raw string, which otherwise makes every
+    /// `Result<_, DrmBackendError>` several times larger than its `Ok` case
+    /// needs, even on the hot paths that never see this variant.
     #[error("failed to open libseat session\n{0}")]
-    Seat(super::seat_diag::SeatFailure),
+    Seat(Box<super::seat_diag::SeatFailure>),
 
     #[error("failed to enumerate DRM devices via udev: {0}")]
     Udev(String),
@@ -168,6 +174,87 @@ pub enum ScanoutCommand {
 }
 
 impl DrmDispatchState {
+    /// Build the initial dispatch state from everything [`DrmRuntime::new`]
+    /// gathered before it — the seat's active session, the primary card (if
+    /// scanout came up), and the persisted settings. Every other field
+    /// starts at its zero value; [`Self::finalize_startup_scanouts`] is
+    /// what actually populates `live`/`output_meta`/`pointer`. Extracted
+    /// from that constructor to keep it a readable top-level sequence.
+    fn new(
+        session_state: SessionState,
+        card: Option<CardHandle>,
+        input: InputSettings,
+        accessibility: AccessibilityInputSettings,
+        scale_override: Option<f64>,
+        commands_tx: Sender<ScanoutCommand>,
+        keyboard: Option<KeyboardXkb>,
+    ) -> Self {
+        Self {
+            session: Some(session_state),
+            outputs: OutputRegistry::new(),
+            events: Vec::new(),
+            card,
+            color_profiles: BTreeMap::new(),
+            live: Vec::new(),
+            commands: Some(commands_tx),
+            input,
+            accessibility,
+            slow_pending: HashMap::new(),
+            sticky_latched: ModifiersState::empty(),
+            physical_modifiers: ModifiersState::empty(),
+            devices: Vec::new(),
+            scale_override,
+            gestures: GestureTracker::new(GestureConfig {
+                natural_scroll: input.natural_scroll,
+                ..GestureConfig::default()
+            }),
+            outputs_changed: false,
+            output_meta: HashMap::new(),
+            pointer: (0.0, 0.0),
+            output_size: (0, 0),
+            hw_cursor: CursorPlanes::default(),
+            keyboard,
+        }
+    }
+
+    /// Adopt the connectors already live at startup — the same path a
+    /// hot-plug takes, so a display present at boot and one plugged in
+    /// later end up configured identically. Each is interned by `(device,
+    /// connector)` so its `OutputId` is stable, and the first gets
+    /// `OutputId(0)`, preserving the "primary == `OutputId(0)`" contract.
+    /// Also seeds the pointer at the center of the combined space and
+    /// publishes the initial display snapshot. Extracted from
+    /// [`DrmRuntime::new`] to keep that constructor a readable top-level
+    /// sequence.
+    fn finalize_startup_scanouts(
+        &mut self,
+        scanout_builds: Vec<ScanoutBuild>,
+    ) -> Vec<ScanoutEntry> {
+        let mut scanouts = self.adopt_builds(scanout_builds);
+        self.relayout_outputs();
+        // `adopt_builds` leaves positions provisional; the relayout above
+        // computed the real ones, so copy them onto the entries the
+        // presenter will own.
+        for entry in &mut scanouts {
+            if let Some(live) = self.live.iter().find(|l| l.id == entry.id) {
+                entry.position = live.position;
+                entry.transform = live.transform;
+            }
+            let profile = self
+                .output_meta
+                .get(&entry.id)
+                .and_then(|output| output.color_profile.clone());
+            entry.set_color_profile(profile);
+        }
+        scanouts.sort_by_key(|e| e.id.0);
+        // Start the pointer in the middle of the combined space.
+        let (ow, oh) = self.output_size;
+        self.pointer = (f64::from(ow) / 2.0, f64::from(oh) / 2.0);
+        self.hw_cursor.move_to(self.pointer.0, self.pointer.1);
+        self.publish_display_snapshot();
+        scanouts
+    }
+
     pub fn push(&mut self, ev: BackendEvent) {
         self.events.push(ev);
     }
@@ -389,18 +476,19 @@ impl DrmDispatchState {
         let min_x = positions.iter().map(|p| p.0).min().unwrap_or(0);
         let min_y = positions.iter().map(|p| p.1).min().unwrap_or(0);
         for p in &mut positions {
-            p.0 -= min_x;
-            p.1 -= min_y;
+            // `min_x`/`min_y` are the minimum over `positions`, so this can
+            // never go negative; `saturating_sub` just avoids a raw `-`
+            // clippy can't see is bounded (config-supplied coordinates, in
+            // principle unbounded).
+            p.0 = p.0.saturating_sub(min_x);
+            p.1 = p.1.saturating_sub(min_y);
         }
         for (entry, position) in self.live.iter_mut().zip(&positions) {
             entry.position = *position;
-            entry.scale = config
-                .outputs
-                .get(&entry.connector_name)
-                .map(|c| c.scale)
-                .unwrap_or_else(|| {
-                    resolve_scale(entry.size, entry.physical_mm, self.scale_override)
-                });
+            entry.scale = config.outputs.get(&entry.connector_name).map_or_else(
+                || resolve_scale(entry.size, entry.physical_mm, self.scale_override),
+                |c| c.scale,
+            );
         }
         let extent = hotplug::combined_extent(&positions, &sizes);
         self.output_size = extent;
@@ -416,6 +504,14 @@ impl DrmDispatchState {
                         id: l.id,
                         position: l.position,
                         size: logical_output_size(l.size, l.transform),
+                        // `l.scale` is a UI scale factor bounded to
+                        // `[MIN_SCALE, MAX_SCALE]` (see `scale.rs`) or a
+                        // validated settings override; f32 precision is
+                        // ample for it.
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "UI scale factor bounded to a small known range; f32 precision is ample"
+                        )]
                         scale: l.scale as f32,
                         transform: l.transform,
                         color_profile: config
@@ -551,12 +647,13 @@ impl DrmDispatchState {
                 _ => self.gestures.shell_owns_current(),
             };
         let action = match ev {
-            GestureEvent::SwipeBegin { fingers } => {
+            // A hold has no shell meaning, but still registers as a gesture in flight so the finger count on its begin governs where its end goes — same tracking as a swipe.
+            GestureEvent::SwipeBegin { fingers } | GestureEvent::HoldBegin { fingers } => {
                 self.gestures.swipe_begin(fingers);
                 None
             }
             GestureEvent::SwipeUpdate { dx, dy } => self.gestures.swipe_update(dx, dy),
-            GestureEvent::SwipeEnd { .. } => {
+            GestureEvent::SwipeEnd { .. } | GestureEvent::HoldEnd { .. } => {
                 self.gestures.swipe_end();
                 None
             }
@@ -567,15 +664,6 @@ impl DrmDispatchState {
             GestureEvent::PinchUpdate { scale, .. } => self.gestures.pinch_update(scale),
             GestureEvent::PinchEnd { .. } => {
                 self.gestures.pinch_end();
-                None
-            }
-            // A hold has no shell meaning, but still registers as a gesture in flight so the finger count on its begin governs where its end goes.
-            GestureEvent::HoldBegin { fingers } => {
-                self.gestures.swipe_begin(fingers);
-                None
-            }
-            GestureEvent::HoldEnd { .. } => {
-                self.gestures.swipe_end();
                 None
             }
         };
@@ -652,6 +740,288 @@ impl DrmDispatchState {
                         self.physical_modifiers,
                     )));
             }
+        }
+    }
+
+    /// Handle one libseat session event: a VT switch. Pausing has to stop
+    /// scanout and give up DRM master before the incoming session can
+    /// modeset; activating has to take master back and rebuild every
+    /// output, since nothing about a CRTC survives the switch.
+    /// `super::session`'s state machine owns the ordering; this only
+    /// performs the actions it returns. Extracted from [`DrmRuntime::new`]'s
+    /// calloop source registration so that function stays a readable list
+    /// of "wire this event source up," not the handler bodies themselves.
+    fn handle_session_event(&mut self, event: smithay::backend::session::Event) {
+        use smithay::backend::session::Event as SeatEvent;
+        let tick = match event {
+            SeatEvent::ActivateSession => {
+                tracing::info!("DRM backend: session activated");
+                SeatTick::Activate
+            }
+            SeatEvent::PauseSession => {
+                tracing::info!("DRM backend: session paused");
+                SeatTick::Pause
+            }
+        };
+        let actions = match self.session.as_ref() {
+            Some(s) => s.apply_with_actions(tick),
+            None => Vec::new(),
+        };
+        self.perform_all(actions);
+    }
+
+    /// Handle one udev event for a DRM device. Every one of the three is
+    /// the same question — what is connected now? — so all three
+    /// re-enumerate and reconcile; the hotplug plan decides whether that
+    /// implies any work. `Changed` is what a monitor plugged into a live
+    /// card raises, so treating it as a no-op means plugging in a display
+    /// does nothing. Extracted from [`DrmRuntime::new`] for the same reason
+    /// as [`Self::handle_session_event`].
+    fn handle_udev_event(&mut self, event: smithay::backend::udev::UdevEvent) {
+        use smithay::backend::udev::UdevEvent;
+        match event {
+            UdevEvent::Added { device_id, path } => {
+                tracing::info!(?device_id, ?path, "DRM: udev device added");
+                self.rescan_outputs("udev device added");
+            }
+            UdevEvent::Changed { device_id } => {
+                tracing::debug!(?device_id, "DRM: udev device changed");
+                self.rescan_outputs("udev device changed");
+            }
+            UdevEvent::Removed { device_id } => {
+                tracing::info!(?device_id, "DRM: udev device removed");
+                self.rescan_outputs("udev device removed");
+            }
+        }
+    }
+
+    /// Handle one libinput event: pointer, keyboard, gestures and touch all
+    /// come through here, translated into winit-shaped `WindowEvent`s the
+    /// chrome handles — a bare-TTY keystroke takes the same path as a
+    /// nested dev window's. Extracted from [`DrmRuntime::new`] for the same
+    /// reason as [`Self::handle_session_event`]; this one dwarfed the rest
+    /// of the constructor at ~160 lines on its own.
+    /// Handle one libinput event: pointer, keyboard, gestures and touch all
+    /// come through here, translated into winit-shaped `WindowEvent`s the
+    /// chrome handles — a bare-TTY keystroke takes the same path as a
+    /// nested dev window's. Extracted from [`DrmRuntime::new`] for the same
+    /// reason as [`Self::handle_session_event`]; this one dwarfed the rest
+    /// of the constructor at ~160 lines on its own.
+    fn handle_libinput_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        match event {
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => {
+                self.handle_libinput_device_event(event);
+            }
+            InputEvent::PointerMotionAbsolute { .. }
+            | InputEvent::PointerMotion { .. }
+            | InputEvent::PointerButton { .. }
+            | InputEvent::PointerAxis { .. } => {
+                self.handle_libinput_pointer_event(event);
+            }
+            // Keyboard: run the libinput keycode through xkb to get a
+            // logical key + text, then enqueue a winit-shaped
+            // `KeyboardInput` (plus `ModifiersChanged` on a modifier flip)
+            // — the same wire the winit backend feeds, so `dispatch_event` handles DRM keystrokes identically to hosted-mode ones.
+            InputEvent::Keyboard { event } => {
+                let pressed = matches!(event.state(), KeyState::Pressed);
+                self.handle_keyboard_key(event.key_code(), pressed);
+            }
+            InputEvent::GestureSwipeBegin { .. }
+            | InputEvent::GestureSwipeUpdate { .. }
+            | InputEvent::GestureSwipeEnd { .. }
+            | InputEvent::GesturePinchBegin { .. }
+            | InputEvent::GesturePinchUpdate { .. }
+            | InputEvent::GesturePinchEnd { .. }
+            | InputEvent::GestureHoldBegin { .. }
+            | InputEvent::GestureHoldEnd { .. } => {
+                self.handle_libinput_gesture_event(event);
+            }
+            InputEvent::TouchDown { .. }
+            | InputEvent::TouchMotion { .. }
+            | InputEvent::TouchUp { .. }
+            | InputEvent::TouchCancel { .. }
+            | InputEvent::TouchFrame { .. } => {
+                self.handle_libinput_touch_event(event);
+            }
+            // Switches (lid, tablet mode) and tablet-tool events are handled elsewhere or not at all; unlike the gestures above they were never advertised to clients, so dropping them promises nothing undelivered.
+            _ => {}
+        }
+    }
+
+    /// `InputEvent::DeviceAdded`/`DeviceRemoved` half of
+    /// [`Self::handle_libinput_event`] — split out to keep that dispatcher
+    /// short. A device appearing is the only moment libinput will accept
+    /// its configuration (at startup and on real hot-plug) — the arm that
+    /// makes persisted input settings reach the hardware at all.
+    fn handle_libinput_device_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        match event {
+            InputEvent::DeviceAdded { mut device } => {
+                self.configure_device(&mut device);
+                self.devices.push(device);
+            }
+            InputEvent::DeviceRemoved { device } => {
+                tracing::info!(device = device.name(), "DRM input: device removed");
+                self.devices.retain(|d| *d != device);
+            }
+            _ => {}
+        }
+    }
+
+    /// `InputEvent::PointerMotionAbsolute`/`PointerMotion`/`PointerButton`/
+    /// `PointerAxis` half of [`Self::handle_libinput_event`] — split out to
+    /// keep that dispatcher short.
+    fn handle_libinput_pointer_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        match event {
+            InputEvent::PointerMotionAbsolute { event } => {
+                let (w, h) = self.output_size;
+                let x = event.x_transformed(w.max(1));
+                let y = event.y_transformed(h.max(1));
+                self.pointer = (x, y);
+                // Reposition the hardware cursor plane immediately — no framebuffer redraw needed; `CursorPlanes` routes the global position to the plane under the pointer.
+                self.hw_cursor.move_to(x, y);
+                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+            }
+            // Relative motion (mouse): accumulate + clamp to output.
+            InputEvent::PointerMotion { event } => {
+                let (w, h) = self.output_size;
+                // `w`/`h` are clamped to at least 1 just above, so this
+                // never underflows; `saturating_sub` just avoids a raw `-`
+                // clippy can't see is bounded.
+                let max_x = f64::from(w.max(1).saturating_sub(1));
+                let max_y = f64::from(h.max(1).saturating_sub(1));
+                let x = (self.pointer.0 + event.delta_x()).clamp(0.0, max_x);
+                let y = (self.pointer.1 + event.delta_y()).clamp(0.0, max_y);
+                self.pointer = (x, y);
+                self.hw_cursor.move_to(x, y);
+                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+            }
+            InputEvent::PointerButton { event } => {
+                if let Some(button) = map_mouse_button(event.button()) {
+                    let st = match event.state() {
+                        ButtonState::Pressed => ElementState::Pressed,
+                        ButtonState::Released => ElementState::Released,
+                    };
+                    self.push(BackendEvent::Input(mouse_input_event(st, button)));
+                }
+            }
+            InputEvent::PointerAxis { event } => {
+                let dx = event.amount(Axis::Horizontal).unwrap_or(0.0);
+                let dy = event.amount(Axis::Vertical).unwrap_or(0.0);
+                if dx != 0.0 || dy != 0.0 {
+                    self.push(BackendEvent::Input(mouse_wheel_event(dx, dy)));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The touchpad-gesture arms of [`Self::handle_libinput_event`] — split
+    /// out to keep that dispatcher short.
+    fn handle_libinput_gesture_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        match event {
+            InputEvent::GestureSwipeBegin { event } => {
+                self.handle_gesture(GestureEvent::SwipeBegin {
+                    fingers: event.fingers(),
+                });
+            }
+            InputEvent::GestureSwipeUpdate { event } => {
+                self.handle_gesture(GestureEvent::SwipeUpdate {
+                    dx: event.delta_x(),
+                    dy: event.delta_y(),
+                });
+            }
+            InputEvent::GestureSwipeEnd { event } => {
+                self.handle_gesture(GestureEvent::SwipeEnd {
+                    cancelled: event.cancelled(),
+                });
+            }
+            InputEvent::GesturePinchBegin { event } => {
+                self.handle_gesture(GestureEvent::PinchBegin {
+                    fingers: event.fingers(),
+                });
+            }
+            InputEvent::GesturePinchUpdate { event } => {
+                self.handle_gesture(GestureEvent::PinchUpdate {
+                    dx: event.delta_x(),
+                    dy: event.delta_y(),
+                    scale: event.scale(),
+                    rotation: event.rotation(),
+                });
+            }
+            InputEvent::GesturePinchEnd { event } => {
+                self.handle_gesture(GestureEvent::PinchEnd {
+                    cancelled: event.cancelled(),
+                });
+            }
+            InputEvent::GestureHoldBegin { event } => {
+                self.handle_gesture(GestureEvent::HoldBegin {
+                    fingers: event.fingers(),
+                });
+            }
+            InputEvent::GestureHoldEnd { event } => {
+                self.handle_gesture(GestureEvent::HoldEnd {
+                    cancelled: event.cancelled(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// The touchscreen arms of [`Self::handle_libinput_event`] — split out
+    /// to keep that dispatcher short. Each touch point is delivered twice:
+    /// once as a `wl_touch` event for real multi-touch clients, and once as
+    /// pointer motion + a left click so the shell chrome (driven by the
+    /// winit event stream, no touch path) responds like a click. Without the
+    /// second half, a touchscreen can operate apps but not the desktop.
+    fn handle_libinput_touch_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        match event {
+            InputEvent::TouchDown { event } => {
+                let (x, y) = touch_position(self, &event);
+                self.pointer = (x, y);
+                self.hw_cursor.move_to(x, y);
+                self.push(BackendEvent::Touch(QosTouchEvent::Down {
+                    slot: touch_slot(event.slot()),
+                    x,
+                    y,
+                }));
+                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                self.push(BackendEvent::Input(mouse_input_event(
+                    ElementState::Pressed,
+                    MouseButton::Left,
+                )));
+            }
+            InputEvent::TouchMotion { event } => {
+                let (x, y) = touch_position(self, &event);
+                self.pointer = (x, y);
+                self.hw_cursor.move_to(x, y);
+                self.push(BackendEvent::Touch(QosTouchEvent::Motion {
+                    slot: touch_slot(event.slot()),
+                    x,
+                    y,
+                }));
+                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+            }
+            InputEvent::TouchUp { event } => {
+                self.push(BackendEvent::Touch(QosTouchEvent::Up {
+                    slot: touch_slot(event.slot()),
+                }));
+                self.push(BackendEvent::Input(mouse_input_event(
+                    ElementState::Released,
+                    MouseButton::Left,
+                )));
+            }
+            InputEvent::TouchCancel { .. } => {
+                self.push(BackendEvent::Touch(QosTouchEvent::Cancel));
+                // A cancelled touch is not a click — release the synthetic button so the chrome doesn't sit on a phantom held pointer.
+                self.push(BackendEvent::Input(mouse_input_event(
+                    ElementState::Released,
+                    MouseButton::Left,
+                )));
+            }
+            InputEvent::TouchFrame { .. } => {
+                self.push(BackendEvent::Touch(QosTouchEvent::Frame));
+            }
+            _ => {}
         }
     }
 }
@@ -765,12 +1135,134 @@ pub(crate) fn logical_output_size(
     }
 }
 
+/// Bring up scanout(s) on the primary GPU, keeping the card fd open as DRM
+/// master. `open_all_scanouts` opens the card once and modesets every
+/// connected connector, each on its own crtc, sharing a dup'd fd. libseat
+/// refuses a second `open` of the same node, so the connector-enumeration
+/// pass in [`enumerate_secondary_connectors`] excludes it. A total modeset
+/// failure is non-fatal: log and run headless (`None` card, empty builds)
+/// rather than failing [`DrmRuntime::new`] outright. Extracted from that
+/// constructor to keep it a readable top-level sequence.
+fn bring_up_primary_scanouts(
+    session: &LibSeatSession,
+    primary_gpu: Option<&PathBuf>,
+) -> (Option<CardHandle>, Vec<ScanoutBuild>) {
+    let Some(path) = primary_gpu else {
+        return (None, Vec::new());
+    };
+    let mut scanout_session = session.clone();
+    match open_all_scanouts(&mut scanout_session, path) {
+        Ok((card, b)) => {
+            tracing::info!(count = b.len(), "DRM backend: scanout live on primary GPU");
+            (Some(card), b)
+        }
+        Err(e) => {
+            tracing::warn!("DRM backend: scanout setup failed ({e}); running headless");
+            (None, Vec::new())
+        }
+    }
+}
+
+/// Connector enumeration on the GPUs scanout does not own (the primary is
+/// held open by [`bring_up_primary_scanouts`]). Driving connectors on
+/// secondary GPUs needs a second card fd plus cross-GPU buffer handling, so
+/// this pass is diagnostic-only (logs what's attached). Failures are logged
+/// and skipped, not fatal; `LibSeatSession` is cheap to clone. Extracted
+/// from [`DrmRuntime::new`] for the same reason as
+/// [`bring_up_primary_scanouts`].
+fn enumerate_secondary_connectors(
+    session: &LibSeatSession,
+    kms_gpus: Vec<PathBuf>,
+    primary_gpu: Option<&PathBuf>,
+    have_scanouts: bool,
+) -> Vec<ConnectorInfo> {
+    let enum_gpus: Vec<PathBuf> = if have_scanouts {
+        kms_gpus
+            .iter()
+            .filter(|p| Some(*p) != primary_gpu)
+            .cloned()
+            .collect()
+    } else {
+        kms_gpus
+    };
+    let mut session_for_enum = session.clone();
+    let connectors = enumerate_connectors(&mut session_for_enum, &enum_gpus);
+    tracing::info!(
+        count = connectors.len(),
+        "DRM backend: enumerated DRM connectors on secondary GPUs (diagnostic; not yet driven)"
+    );
+    connectors
+}
+
+/// Register the three loop-wide event sources: session (VT switch), udev
+/// (hotplug), and libinput (all pointer/keyboard/gesture/touch input).
+/// page-flip/DRM-device sources attach separately, once individual `cardN`
+/// devices open. Extracted from [`DrmRuntime::new`] to keep that
+/// constructor a readable top-level sequence — see
+/// [`DrmDispatchState::handle_session_event`],
+/// [`DrmDispatchState::handle_udev_event`], and
+/// [`DrmDispatchState::handle_libinput_event`] for what each one actually does.
+fn register_event_sources(
+    handle: &LoopHandle<'static, DrmDispatchState>,
+    session_notifier: LibSeatSessionNotifier,
+    udev: UdevBackend,
+    libinput_backend: LibinputInputBackend,
+) -> Result<(), DrmBackendError> {
+    // Session events: a VT switch. Pausing has to stop scanout and give up
+    // DRM master before the incoming session can modeset; activating has
+    // to take master back and rebuild every output, since nothing about a
+    // CRTC survives the switch. `super::session`'s state machine owns the
+    // ordering; the handler performs what it returns.
+    handle
+        .insert_source(
+            session_notifier,
+            |event, (), state: &mut DrmDispatchState| state.handle_session_event(event),
+        )
+        .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
+
+    // Every one of the three udev events is the same question — what is
+    // connected now? — so all three re-enumerate and reconcile; the
+    // hotplug plan decides whether that implies any work. `Changed` is
+    // what a monitor plugged into a live card raises, so treating it as a
+    // no-op means plugging in a display does nothing.
+    handle
+        .insert_source(udev, |event, (), state: &mut DrmDispatchState| {
+            state.handle_udev_event(event);
+        })
+        .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
+
+    // libinput events. Pointer, keyboard, gestures and touch all come
+    // through here, translated into winit-shaped `WindowEvent`s the chrome
+    // handles — a bare-TTY keystroke takes the same path as a nested dev
+    // window's.
+    handle
+        .insert_source(
+            libinput_backend,
+            |event, (), state: &mut DrmDispatchState| state.handle_libinput_event(event),
+        )
+        .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
+
+    Ok(())
+}
+
 impl DrmRuntime {
     /// Acquire the session, enumerate DRM devices, attach libinput, and wire everything onto an internal calloop — returns `Err`, not a panic, matching the binary entry point's `eprintln!` + `exit(1)` contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the libseat session can't be acquired, udev
+    /// enumeration fails, no KMS-capable `/dev/dri/cardN` device is found,
+    /// libinput can't attach to the seat, or a source can't be inserted
+    /// into the internal calloop event loop.
     pub fn new() -> Result<Self, DrmBackendError> {
         // `LibSeatSession::new()` blocks until the seat hands us an `Enable` event, so by return we either own the seat or already failed.
         let (session, session_notifier) = LibSeatSession::new().map_err(|e| {
-            DrmBackendError::Seat(super::seat_diag::diagnose_live(format!("{e:?}")))
+            // `{e}` (Display): libseat's `Error` is a `thiserror` type whose
+            // Display already folds in the wrapped `io::Error`'s detail
+            // (e.g. "Function not implemented (os error 38)"), which reads
+            // better here than the enum's raw Debug syntax — `classify()`
+            // doesn't parse this string, so the format is cosmetic only.
+            DrmBackendError::Seat(Box::new(super::seat_diag::diagnose_live(format!("{e}"))))
         })?;
         let seat_name = session.seat();
         tracing::info!(seat = %seat_name, "DRM backend: libseat session acquired");
@@ -793,48 +1285,15 @@ impl DrmRuntime {
             "DRM backend: enumerated KMS card nodes"
         );
 
-        // Bring up scanout(s) on the primary GPU first, keeping the card fd
-        // open as DRM master. `open_all_scanouts` opens the card once and
-        // modesets every connected connector, each on its own crtc, sharing
-        // a dup'd fd. libseat refuses a second `open` of the same node, so
-        // the connector-enumeration pass below excludes it. A total modeset failure is non-fatal: log and run headless.
-        let (card, scanout_builds) = match primary_gpu.as_ref() {
-            Some(path) => {
-                let mut scanout_session = session.clone();
-                match open_all_scanouts(&mut scanout_session, path) {
-                    Ok((card, b)) => {
-                        tracing::info!(count = b.len(), "DRM backend: scanout live on primary GPU");
-                        (Some(card), b)
-                    }
-                    Err(e) => {
-                        tracing::warn!("DRM backend: scanout setup failed ({e}); running headless");
-                        (None, Vec::new())
-                    }
-                }
-            }
-            None => (None, Vec::new()),
-        };
+        // Bring up scanout(s) on the primary GPU first, then diagnostically
+        // enumerate whatever's attached to the rest — see each helper's doc
+        // comment for why the two are split and in this order (the primary
+        // must claim its card before the second pass excludes it).
+        let (card, scanout_builds) = bring_up_primary_scanouts(&session, primary_gpu.as_ref());
         let have_scanouts = !scanout_builds.is_empty();
-
-        // Connector enumeration on the GPUs scanout does not own (primary
-        // is held open above). Driving connectors on secondary GPUs needs a
-        // second card fd plus cross-GPU buffer handling, so this pass is
-        // diagnostic-only (logs what's attached). Failures logged and skipped, not fatal; `LibSeatSession` is cheap to clone.
-        let enum_gpus: Vec<PathBuf> = if have_scanouts {
-            kms_gpus
-                .iter()
-                .filter(|p| Some((*p).clone()) != primary_gpu)
-                .cloned()
-                .collect()
-        } else {
-            kms_gpus
-        };
-        let mut session_for_enum = session.clone();
-        let connectors = enumerate_connectors(&mut session_for_enum, &enum_gpus);
-        tracing::info!(
-            count = connectors.len(),
-            "DRM backend: enumerated DRM connectors on secondary GPUs (diagnostic; not yet driven)"
-        );
+        // Diagnostic-only (logs internally); nothing later in construction
+        // consults the result — see the helper's doc comment.
+        enumerate_secondary_connectors(&session, kms_gpus, primary_gpu.as_ref(), have_scanouts);
 
         // The session-interface adapter routes libinput's `open`/`close` calls through libseat so it inherits privileged FDs without root.
         let mut libinput_ctx =
@@ -848,225 +1307,7 @@ impl DrmRuntime {
         let event_loop: EventLoop<'static, DrmDispatchState> =
             EventLoop::try_new().map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
         let handle: LoopHandle<'static, DrmDispatchState> = event_loop.handle();
-
-        // Session events: a VT switch. Pausing has to stop scanout and
-        // give up DRM master before the incoming session can modeset;
-        // activating has to take master back and rebuild every output,
-        // since nothing about a CRTC survives the switch. `super::session`'s state machine owns the ordering; this handler performs what it returns.
-        handle
-            .insert_source(
-                session_notifier,
-                move |event, (), state: &mut DrmDispatchState| {
-                    use smithay::backend::session::Event as SeatEvent;
-                    let tick = match event {
-                        SeatEvent::ActivateSession => {
-                            tracing::info!("DRM backend: session activated");
-                            SeatTick::Activate
-                        }
-                        SeatEvent::PauseSession => {
-                            tracing::info!("DRM backend: session paused");
-                            SeatTick::Pause
-                        }
-                    };
-                    let actions = match state.session.as_ref() {
-                        Some(s) => s.apply_with_actions(tick),
-                        None => Vec::new(),
-                    };
-                    state.perform_all(actions);
-                },
-            )
-            .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
-
-        // Every one of the three udev events is the same question — what
-        // is connected now? — so all three re-enumerate and reconcile; the
-        // hotplug plan decides whether that implies any work. `Changed` is
-        // what a monitor plugged into a live card raises, so treating it as a no-op means plugging in a display does nothing.
-        handle
-            .insert_source(udev, move |event, (), state: &mut DrmDispatchState| {
-                use smithay::backend::udev::UdevEvent;
-                match event {
-                    UdevEvent::Added { device_id, path } => {
-                        tracing::info!(?device_id, ?path, "DRM: udev device added");
-                        state.rescan_outputs("udev device added");
-                    }
-                    UdevEvent::Changed { device_id } => {
-                        tracing::debug!(?device_id, "DRM: udev device changed");
-                        state.rescan_outputs("udev device changed");
-                    }
-                    UdevEvent::Removed { device_id } => {
-                        tracing::info!(?device_id, "DRM: udev device removed");
-                        state.rescan_outputs("udev device removed");
-                    }
-                }
-            })
-            .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
-
-        // libinput events. Pointer, keyboard, gestures and touch all come
-        // through here, translated into winit-shaped `WindowEvent`s the chrome handles — a bare-TTY keystroke takes the same path as a nested dev window's.
-        handle
-            .insert_source(
-                libinput_backend,
-                move |event, (), state: &mut DrmDispatchState| match event {
-                    // A device appearing is the only moment libinput will
-                    // accept its configuration (at startup and on real hot-plug) — the arm that makes persisted input settings reach the hardware at all.
-                    InputEvent::DeviceAdded { mut device } => {
-                        state.configure_device(&mut device);
-                        state.devices.push(device);
-                    }
-                    InputEvent::DeviceRemoved { device } => {
-                        tracing::info!(device = device.name(), "DRM input: device removed");
-                        state.devices.retain(|d| *d != device);
-                    }
-                    // Absolute motion (usb-tablet/touch): map normalized coords through the output size to a pixel position.
-                    InputEvent::PointerMotionAbsolute { event } => {
-                        let (w, h) = state.output_size;
-                        let x = event.x_transformed(w.max(1));
-                        let y = event.y_transformed(h.max(1));
-                        state.pointer = (x, y);
-                        // Reposition the hardware cursor plane immediately — no framebuffer redraw needed; `CursorPlanes` routes the global position to the plane under the pointer.
-                        state.hw_cursor.move_to(x, y);
-                        state.push(BackendEvent::Input(cursor_moved_event(x, y)));
-                    }
-                    // Relative motion (mouse): accumulate + clamp to output.
-                    InputEvent::PointerMotion { event } => {
-                        let (w, h) = state.output_size;
-                        let max_x = f64::from(w.max(1) - 1);
-                        let max_y = f64::from(h.max(1) - 1);
-                        let x = (state.pointer.0 + event.delta_x()).clamp(0.0, max_x);
-                        let y = (state.pointer.1 + event.delta_y()).clamp(0.0, max_y);
-                        state.pointer = (x, y);
-                        state.hw_cursor.move_to(x, y);
-                        state.push(BackendEvent::Input(cursor_moved_event(x, y)));
-                    }
-                    InputEvent::PointerButton { event } => {
-                        if let Some(button) = map_mouse_button(event.button()) {
-                            let st = match event.state() {
-                                ButtonState::Pressed => ElementState::Pressed,
-                                ButtonState::Released => ElementState::Released,
-                            };
-                            state.push(BackendEvent::Input(mouse_input_event(st, button)));
-                        }
-                    }
-                    InputEvent::PointerAxis { event } => {
-                        let dx = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                        let dy = event.amount(Axis::Vertical).unwrap_or(0.0);
-                        if dx != 0.0 || dy != 0.0 {
-                            state.push(BackendEvent::Input(mouse_wheel_event(dx, dy)));
-                        }
-                    }
-                    // Keyboard: run the libinput keycode through xkb to get a
-                    // logical key + text, then enqueue a winit-shaped
-                    // `KeyboardInput` (plus `ModifiersChanged` on a modifier flip)
-                    // — the same wire the winit backend feeds, so `dispatch_event` handles DRM keystrokes identically to hosted-mode ones.
-                    InputEvent::Keyboard { event } => {
-                        let pressed = matches!(event.state(), KeyState::Pressed);
-                        state.handle_keyboard_key(event.key_code(), pressed);
-                    }
-
-                    // ---- touchpad gestures ----
-                    InputEvent::GestureSwipeBegin { event } => {
-                        state.handle_gesture(GestureEvent::SwipeBegin {
-                            fingers: event.fingers(),
-                        });
-                    }
-                    InputEvent::GestureSwipeUpdate { event } => {
-                        state.handle_gesture(GestureEvent::SwipeUpdate {
-                            dx: event.delta_x(),
-                            dy: event.delta_y(),
-                        });
-                    }
-                    InputEvent::GestureSwipeEnd { event } => {
-                        state.handle_gesture(GestureEvent::SwipeEnd {
-                            cancelled: event.cancelled(),
-                        });
-                    }
-                    InputEvent::GesturePinchBegin { event } => {
-                        state.handle_gesture(GestureEvent::PinchBegin {
-                            fingers: event.fingers(),
-                        });
-                    }
-                    InputEvent::GesturePinchUpdate { event } => {
-                        state.handle_gesture(GestureEvent::PinchUpdate {
-                            dx: event.delta_x(),
-                            dy: event.delta_y(),
-                            scale: event.scale(),
-                            rotation: event.rotation(),
-                        });
-                    }
-                    InputEvent::GesturePinchEnd { event } => {
-                        state.handle_gesture(GestureEvent::PinchEnd {
-                            cancelled: event.cancelled(),
-                        });
-                    }
-                    InputEvent::GestureHoldBegin { event } => {
-                        state.handle_gesture(GestureEvent::HoldBegin {
-                            fingers: event.fingers(),
-                        });
-                    }
-                    InputEvent::GestureHoldEnd { event } => {
-                        state.handle_gesture(GestureEvent::HoldEnd {
-                            cancelled: event.cancelled(),
-                        });
-                    }
-
-                    // touchscreen
-                    //
-                    // Each touch point is delivered twice: once as a `wl_touch`
-                    // event for real multi-touch clients, and once as pointer
-                    // motion + a left click so the shell chrome (driven by the
-                    // winit event stream, no touch path) responds like a click. Without the second half, a touchscreen can operate apps but not the desktop.
-                    InputEvent::TouchDown { event } => {
-                        let (x, y) = touch_position(state, &event);
-                        state.pointer = (x, y);
-                        state.hw_cursor.move_to(x, y);
-                        state.push(BackendEvent::Touch(QosTouchEvent::Down {
-                            slot: touch_slot(event.slot()),
-                            x,
-                            y,
-                        }));
-                        state.push(BackendEvent::Input(cursor_moved_event(x, y)));
-                        state.push(BackendEvent::Input(mouse_input_event(
-                            ElementState::Pressed,
-                            MouseButton::Left,
-                        )));
-                    }
-                    InputEvent::TouchMotion { event } => {
-                        let (x, y) = touch_position(state, &event);
-                        state.pointer = (x, y);
-                        state.hw_cursor.move_to(x, y);
-                        state.push(BackendEvent::Touch(QosTouchEvent::Motion {
-                            slot: touch_slot(event.slot()),
-                            x,
-                            y,
-                        }));
-                        state.push(BackendEvent::Input(cursor_moved_event(x, y)));
-                    }
-                    InputEvent::TouchUp { event } => {
-                        state.push(BackendEvent::Touch(QosTouchEvent::Up {
-                            slot: touch_slot(event.slot()),
-                        }));
-                        state.push(BackendEvent::Input(mouse_input_event(
-                            ElementState::Released,
-                            MouseButton::Left,
-                        )));
-                    }
-                    InputEvent::TouchCancel { .. } => {
-                        state.push(BackendEvent::Touch(QosTouchEvent::Cancel));
-                        // A cancelled touch is not a click — release the synthetic button so the chrome doesn't sit on a phantom held pointer.
-                        state.push(BackendEvent::Input(mouse_input_event(
-                            ElementState::Released,
-                            MouseButton::Left,
-                        )));
-                    }
-                    InputEvent::TouchFrame { .. } => {
-                        state.push(BackendEvent::Touch(QosTouchEvent::Frame));
-                    }
-
-                    // Switches (lid, tablet mode) and tablet-tool events are handled elsewhere or not at all; unlike the gestures above they were never advertised to clients, so dropping them promises nothing undelivered.
-                    _ => {}
-                },
-            )
-            .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
+        register_event_sources(&handle, session_notifier, udev, libinput_backend)?;
 
         // Compile the xkb keymap once at startup from the session's `XKB_DEFAULT_*` environment (installer-seeded, PAM-exported); a failure is non-fatal, running pointer-only rather than refusing to boot.
         let keyboard = KeyboardXkb::new();
@@ -1092,59 +1333,19 @@ impl DrmRuntime {
         let icc_profiles = IccProfileWorker::new()?;
         icc_profiles.request_refresh();
 
-        let mut dispatch = DrmDispatchState {
-            session: Some(session_state),
-            outputs: OutputRegistry::new(),
-            events: Vec::new(),
+        let mut dispatch = DrmDispatchState::new(
+            session_state,
             card,
-            color_profiles: BTreeMap::new(),
-            live: Vec::new(),
-            commands: Some(tx),
             input,
             accessibility,
-            slow_pending: HashMap::new(),
-            sticky_latched: ModifiersState::empty(),
-            physical_modifiers: ModifiersState::empty(),
-            devices: Vec::new(),
             scale_override,
-            gestures: GestureTracker::new(GestureConfig {
-                natural_scroll: input.natural_scroll,
-                ..GestureConfig::default()
-            }),
-            outputs_changed: false,
-            output_meta: HashMap::new(),
-            pointer: (0.0, 0.0),
-            output_size: (0, 0),
-            hw_cursor: CursorPlanes::default(),
+            tx,
             keyboard,
-        };
-
+        );
         // Adopt the connectors already live at startup — the same path a
-        // hot-plug takes, so a display present at boot and one plugged in
-        // later end up configured identically. Each is interned by
-        // `(device, connector)` so its `OutputId` is stable, and the first gets `OutputId(0)`, preserving the "primary == OutputId(0)" contract.
-        let mut scanouts = dispatch.adopt_builds(scanout_builds);
-        dispatch.relayout_outputs();
-        // `adopt_builds` leaves positions provisional; the relayout above computed the real ones, so copy them onto the entries the presenter will own.
-        for entry in &mut scanouts {
-            if let Some(live) = dispatch.live.iter().find(|l| l.id == entry.id) {
-                entry.position = live.position;
-                entry.transform = live.transform;
-            }
-            let profile = dispatch
-                .output_meta
-                .get(&entry.id)
-                .and_then(|output| output.color_profile.clone());
-            entry.set_color_profile(profile);
-        }
-        scanouts.sort_by_key(|e| e.id.0);
-        // Start the pointer in the middle of the combined space.
-        let (ow, oh) = dispatch.output_size;
-        dispatch.pointer = (f64::from(ow) / 2.0, f64::from(oh) / 2.0);
-        dispatch
-            .hw_cursor
-            .move_to(dispatch.pointer.0, dispatch.pointer.1);
-        dispatch.publish_display_snapshot();
+        // hot-plug takes — and seed the pointer/snapshot; see the helper's
+        // doc comment.
+        let scanouts = dispatch.finalize_startup_scanouts(scanout_builds);
 
         Ok(Self {
             event_loop,
@@ -1169,7 +1370,7 @@ impl DrmRuntime {
         use smithay::backend::session::Session as _;
         match self.session.change_vt(vt) {
             Ok(()) => tracing::info!(vt, "DRM backend: switching virtual terminal"),
-            Err(e) => tracing::warn!("DRM backend: change_vt({vt}) failed: {e:?}"),
+            Err(e) => tracing::warn!("DRM backend: change_vt({vt}) failed: {e}"),
         }
     }
 
@@ -1276,20 +1477,20 @@ impl DrmRuntime {
             return;
         }
         self.last_display_transaction_check = now;
-        if let Some(profiles) = self.icc_profiles.take_latest() {
-            if profiles != self.dispatch.color_profiles {
-                self.dispatch.color_profiles = profiles;
-                self.dispatch.relayout_outputs();
-                self.dispatch.command(ScanoutCommand::Reconfigure {
-                    remove: Vec::new(),
-                    add: Vec::new(),
-                    outputs: self.dispatch.output_table(),
-                });
-                self.dispatch.outputs_changed = true;
-                self.dispatch.push(BackendEvent::OutputsChanged);
-                self.dispatch.push(BackendEvent::Redraw);
-                self.dispatch.publish_display_snapshot();
-            }
+        if let Some(profiles) = self.icc_profiles.take_latest()
+            && profiles != self.dispatch.color_profiles
+        {
+            self.dispatch.color_profiles = profiles;
+            self.dispatch.relayout_outputs();
+            self.dispatch.command(ScanoutCommand::Reconfigure {
+                remove: Vec::new(),
+                add: Vec::new(),
+                outputs: self.dispatch.output_table(),
+            });
+            self.dispatch.outputs_changed = true;
+            self.dispatch.push(BackendEvent::OutputsChanged);
+            self.dispatch.push(BackendEvent::Redraw);
+            self.dispatch.publish_display_snapshot();
         }
         if now.duration_since(self.last_icc_profile_refresh) >= std::time::Duration::from_secs(30) {
             self.last_icc_profile_refresh = now;
@@ -1312,7 +1513,7 @@ impl DrmRuntime {
     /// Advance one display request before the KMS re-probe consumes its
     /// effective configuration. Validation uses the compositor-published
     /// descriptor set, never values supplied by Settings.
-    fn reconcile_display_transaction(&mut self) {
+    fn reconcile_display_transaction(&self) {
         use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
 
         let Some(mut transaction) = DisplayTransaction::load() else {
@@ -1440,7 +1641,9 @@ fn load_display_scale_override() -> Option<f64> {
 /// Touch slot as a plain integer for the backend event. libinput reports `-1` for single-touch devices with no slot concept — all one finger, so slot 0 is honest.
 fn touch_slot(slot: TouchSlot) -> u32 {
     let id: i32 = slot.into();
-    id.max(0) as u32
+    // `max(0)` already clamps to non-negative; `try_from` just avoids an
+    // `as` cast clippy can't see is sign-safe.
+    u32::try_from(id.max(0)).unwrap_or(0)
 }
 
 /// Map a normalised touch position onto the combined output space.
@@ -1471,9 +1674,16 @@ fn mouse_input_event(state: ElementState, button: MouseButton) -> WindowEvent {
 
 /// Build a `WindowEvent::MouseWheel` from libinput axis amounts. libinput's `amount` is ~15/notch with `+y`=down; winit's `LineDelta` uses `+y`=up, so negate and scale to lines.
 fn mouse_wheel_event(dx: f64, dy: f64) -> WindowEvent {
+    // Scroll deltas in wheel "lines," not device pixels — f32 precision is
+    // ample, and winit's own `LineDelta` is `f32`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "scroll delta in wheel lines; f32 precision is ample and matches winit's LineDelta type"
+    )]
+    let (lines_x, lines_y) = (-(dx / 15.0) as f32, -(dy / 15.0) as f32);
     WindowEvent::MouseWheel {
         device_id: unsafe { std::mem::zeroed() },
-        delta: MouseScrollDelta::LineDelta(-(dx / 15.0) as f32, -(dy / 15.0) as f32),
+        delta: MouseScrollDelta::LineDelta(lines_x, lines_y),
         phase: TouchPhase::Moved,
     }
 }
@@ -1718,7 +1928,7 @@ where
             path,
             OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
         )
-        .map_err(|e| format!("session.open({path:?}): errno={:?}", e.as_errno()))?;
+        .map_err(|e| format!("session.open({}): errno={:?}", path.display(), e.as_errno()))?;
     let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
     let dev_id_raw: u64 = device_fd.dev_id().map_err(|e| format!("dev_id: {e}"))?;
 
@@ -2161,7 +2371,9 @@ mod tests {
             connector_name: format!("TEST-{connector}"),
             size,
             physical_mm: mm,
-            crtc: crtc(id + 1),
+            // Test ids are always small literals; `saturating_add` just
+            // avoids a raw `+` clippy can't see is bounded.
+            crtc: crtc(id.saturating_add(1)),
             position: (0, 0),
             scale: 1.0,
             transform: settings_store::hardware::OutputTransform::Normal,
@@ -2172,8 +2384,10 @@ mod tests {
     /// A dispatch state with a command channel attached, plus the receiving end so a test can assert on what was sent.
     fn dispatch_with_channel() -> (DrmDispatchState, Receiver<ScanoutCommand>) {
         let (tx, rx) = channel();
-        let mut state = DrmDispatchState::default();
-        state.commands = Some(tx);
+        let state = DrmDispatchState {
+            commands: Some(tx),
+            ..Default::default()
+        };
         (state, rx)
     }
 

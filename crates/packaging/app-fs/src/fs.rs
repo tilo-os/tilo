@@ -41,7 +41,7 @@ pub const FUSE_ROOT_ID: u64 = 1;
 /// Attribute/entry kernel TTL — generous, since a qOS payload is
 /// immutable for the mount's lifetime (content-addressed; a new
 /// package id publishes rather than mutates).
-pub const TTL: Duration = Duration::from_hours(1);
+pub const TTL: Duration = Duration::from_secs(3600);
 
 /// Default kernel max-readahead (1 MiB, matching fs/'s workspace
 /// mount) — large enough that one mmap fault pulls a meaningful prefix into cache.
@@ -50,6 +50,15 @@ pub const MAX_READAHEAD: u32 = 1024 * 1024;
 /// Default page-cache capacity: 4096 pages * 4 KiB = 16 MiB per
 /// mount; tunable via [`QosAppFs::with_cache_pages`].
 pub const DEFAULT_CACHE_PAGES: usize = 4096;
+
+/// Convert a 1-based inode number (the numbering FUSE and
+/// [`Entry::Dir`]'s `children` map use) to its 0-based index into
+/// `entries`. `None` for inode 0 — never issued by FUSE — or an inode
+/// number that doesn't fit `usize` (only reachable on a 32-bit target
+/// with an implausibly large inode table).
+fn index_of(ino: u64) -> Option<usize> {
+    usize::try_from(ino.checked_sub(1)?).ok()
+}
 
 /// The Filesystem implementation.
 pub struct QosAppFs<S: BlobStore + 'static> {
@@ -80,11 +89,21 @@ enum Entry {
 impl<S: BlobStore + 'static> QosAppFs<S> {
     /// Build a filesystem rooted at `collection`'s payload tree, reading
     /// blobs from `store`, with the default page cache size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError`] if `collection` contains an invalid path,
+    /// two entries overlap (one path is a directory-prefix of
+    /// another's), or `store` can't report a referenced blob's size.
     pub fn new(collection: &Collection, store: S) -> Result<Self, BuildError> {
         Self::with_cache_pages(collection, store, DEFAULT_CACHE_PAGES)
     }
 
     /// Same as [`Self::new`] but with a caller-chosen cache capacity in pages (4 KiB each).
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::new`].
     pub fn with_cache_pages(
         collection: &Collection,
         store: S,
@@ -110,12 +129,21 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
 
             // Walk down, allocating directory inodes as needed.
             let mut current: u64 = FUSE_ROOT_ID;
+            let last_segment = segments.len().saturating_sub(1);
             for (i, seg) in segments.iter().enumerate() {
-                let is_last = i == segments.len() - 1;
-                let existing = match &entries[(current - 1) as usize] {
-                    Entry::Dir { children } => children.get(*seg).copied(),
-                    Entry::Blob { .. } => {
+                let is_last = i == last_segment;
+                let current_idx = index_of(current).ok_or_else(|| {
+                    BuildError::Internal(format!("bad inode {current} while building {path:?}"))
+                })?;
+                let existing = match entries.get(current_idx) {
+                    Some(Entry::Dir { children }) => children.get(*seg).copied(),
+                    Some(Entry::Blob { .. }) => {
                         return Err(BuildError::PathOverlap(path.clone()));
+                    }
+                    None => {
+                        return Err(BuildError::Internal(format!(
+                            "inode {current} missing while building {path:?}"
+                        )));
                     }
                 };
                 if let Some(child_ino) = existing {
@@ -124,7 +152,12 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
                         // already rejects this, but belt-and-braces.
                         return Err(BuildError::PathOverlap(path.clone()));
                     }
-                    if !matches!(entries[(child_ino - 1) as usize], Entry::Dir { .. }) {
+                    let child_idx = index_of(child_ino).ok_or_else(|| {
+                        BuildError::Internal(format!(
+                            "bad child inode {child_ino} while building {path:?}"
+                        ))
+                    })?;
+                    if !matches!(entries.get(child_idx), Some(Entry::Dir { .. })) {
                         return Err(BuildError::PathOverlap(path.clone()));
                     }
                     current = child_ino;
@@ -143,8 +176,10 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
                     });
                 }
                 let new_ino = entries.len() as u64; // 1-based.
-                let Entry::Dir { children } = &mut entries[(current - 1) as usize] else {
-                    unreachable!("checked above");
+                let Some(Entry::Dir { children }) = entries.get_mut(current_idx) else {
+                    return Err(BuildError::Internal(format!(
+                        "parent inode {current} stopped being a directory while building {path:?}"
+                    )));
                 };
                 children.insert((*seg).to_string(), new_ino);
                 current = new_ino;
@@ -165,6 +200,7 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
 
     /// Override the owner uid/gid stamped on every reply (default:
     /// mounting process); the launcher may remap it to the sandboxed user.
+    #[must_use]
     pub fn with_owner(mut self, uid: u32, gid: u32) -> Self {
         self.uid = uid;
         self.gid = gid;
@@ -191,7 +227,8 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
             return Some(current);
         }
         for seg in path.split('/') {
-            let Entry::Dir { children } = &self.entries[(current - 1) as usize] else {
+            let Entry::Dir { children } = index_of(current).and_then(|i| self.entries.get(i))?
+            else {
                 return None;
             };
             current = *children.get(seg)?;
@@ -203,7 +240,7 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
     /// unknown inodes. Test-only — exercises the same cache path as the
     /// FUSE `read` handler without a real kernel mount.
     pub fn blob_at(&self, ino: u64) -> Option<([u8; 32], u64)> {
-        match self.entries.get((ino - 1) as usize)? {
+        match self.entries.get(index_of(ino)?)? {
             Entry::Blob { hash, size } => Some((*hash, *size)),
             Entry::Dir { .. } => None,
         }
@@ -211,21 +248,23 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
 
     /// Build the `FileAttr` for `ino`; caller hands it to the correct `Reply…`.
     fn attr(&self, ino: u64) -> Option<FileAttr> {
-        let entry = self.entries.get((ino - 1) as usize)?;
+        let entry = self.entries.get(index_of(ino)?)?;
         let (kind, size, perm, nlink) = match entry {
             Entry::Dir { children } => {
                 // 2 + child-dir count is the historical `.`/`..` convention; a
                 // read-only mount mostly has the kernel ignore this, but use it anyway.
-                let sub_dirs = children
+                let sub_dir_count = children
                     .values()
                     .filter(|c| {
                         matches!(
-                            self.entries.get((**c - 1) as usize),
+                            index_of(**c).and_then(|i| self.entries.get(i)),
                             Some(Entry::Dir { .. })
                         )
                     })
-                    .count() as u32;
-                (FileType::Directory, 0u64, 0o555u16, 2 + sub_dirs)
+                    .count();
+                let sub_dirs = u32::try_from(sub_dir_count).unwrap_or(u32::MAX);
+                let nlink = 2u32.saturating_add(sub_dirs);
+                (FileType::Directory, 0u64, 0o555u16, nlink)
             }
             Entry::Blob { size, .. } => (FileType::RegularFile, *size, 0o444u16, 1u32),
         };
@@ -262,6 +301,12 @@ pub enum BuildError {
     /// The store couldn't report the size of a blob the Collection points at.
     #[error("blob size lookup failed for {0:?}: {1}")]
     Store(String, BlobError),
+    /// An internal invariant was violated while building the inode
+    /// table — always a bug in the builder, never a bad [`Collection`].
+    /// Surfaced as an error rather than a panic so a broken build fails
+    /// the mount cleanly instead of crashing the process.
+    #[error("internal error building inode table: {0}")]
+    Internal(String),
 }
 
 impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
@@ -275,7 +320,7 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
             reply.error(Errno::EINVAL);
             return;
         };
-        let Some(parent_entry) = self.entries.get((parent.0 - 1) as usize) else {
+        let Some(parent_entry) = index_of(parent.0).and_then(|i| self.entries.get(i)) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -319,9 +364,7 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let entry = if let Some(e) = self.entries.get((ino.0 - 1) as usize) {
-            e
-        } else {
+        let Some(entry) = index_of(ino.0).and_then(|i| self.entries.get(i)) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -358,7 +401,8 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let Some(Entry::Dir { children }) = self.entries.get((ino.0 - 1) as usize) else {
+        let Some(Entry::Dir { children }) = index_of(ino.0).and_then(|i| self.entries.get(i))
+        else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -374,24 +418,24 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
         .into_iter()
         .map(|(ino, kind, name)| (ino, kind, name.to_string()))
         .chain(children.iter().map(|(name, child)| {
-            let kind = match &self.entries[(*child - 1) as usize] {
-                Entry::Dir { .. } => FileType::Directory,
-                Entry::Blob { .. } => FileType::RegularFile,
+            let kind = match index_of(*child).and_then(|i| self.entries.get(i)) {
+                Some(Entry::Dir { .. }) => FileType::Directory,
+                Some(Entry::Blob { .. }) | None => FileType::RegularFile,
             };
             (*child, kind, name.clone())
         }));
 
         for (child_ino, kind, name) in entries_iter {
             if idx < offset {
-                idx += 1;
+                idx = idx.saturating_add(1);
                 continue;
             }
             // The `offset` handed back is the *next* offset the kernel should ask for, not this one — see fuser docs.
-            if reply.add(INodeNo(child_ino), idx + 1, kind, name) {
+            if reply.add(INodeNo(child_ino), idx.saturating_add(1), kind, name) {
                 // Buffer full — stop and let the kernel ask for more.
                 break;
             }
-            idx += 1;
+            idx = idx.saturating_add(1);
         }
         reply.ok();
     }

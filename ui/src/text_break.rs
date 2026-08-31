@@ -49,20 +49,21 @@ pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
         return Vec::new();
     };
     let code = parsed.language.as_str().as_bytes();
-    let Some(lang) = (code.len() == 2)
-        .then(|| {
-            hypher::Lang::from_iso([code[0].to_ascii_lowercase(), code[1].to_ascii_lowercase()])
-        })
-        .flatten()
-    else {
+    let Some(lang) = (match code {
+        [a, b] => hypher::Lang::from_iso([a.to_ascii_lowercase(), b.to_ascii_lowercase()]),
+        _ => None,
+    }) else {
         return Vec::new();
     };
     let mut breaks = Vec::new();
     for range in unicode_word_ranges(text) {
+        let Some(word) = text.get(range.clone()) else {
+            continue;
+        };
         let mut source = range.start;
-        let mut syllables = hypher::hyphenate(&text[range.clone()], lang).peekable();
+        let mut syllables = hypher::hyphenate(word, lang).peekable();
         while let Some(syllable) = syllables.next() {
-            source += syllable.len();
+            source = source.saturating_add(syllable.len());
             if syllables.peek().is_some() {
                 breaks.push(source);
             }
@@ -108,11 +109,13 @@ impl OffsetMap {
         if let Some(lang) = lang {
             let hyphen = lang.hyphenation_character().unwrap_or(VIRTUAL_BREAK);
             for range in unicode_word_ranges(text) {
-                let word = &text[range.clone()];
+                let Some(word) = text.get(range.clone()) else {
+                    continue;
+                };
                 let mut source = range.start;
                 let mut syllables = hypher::hyphenate(word, lang).peekable();
                 while let Some(syllable) = syllables.next() {
-                    source += syllable.len();
+                    source = source.saturating_add(syllable.len());
                     if syllables.peek().is_some() {
                         insertions.push(VirtualInsertion { source, ch: hyphen });
                     }
@@ -145,12 +148,13 @@ impl OffsetMap {
     }
 
     pub(crate) fn source_to_shaped(&self, byte: usize) -> usize {
-        byte + self
+        let inserted: usize = self
             .insertions
             .iter()
             .take_while(|insertion| insertion.source <= byte)
             .map(|insertion| insertion.ch.len_utf8())
-            .sum::<usize>()
+            .sum();
+        byte.saturating_add(inserted)
     }
 
     pub(crate) fn shaped_to_source(&self, byte: usize) -> usize {
@@ -158,14 +162,14 @@ impl OffsetMap {
         for insertion in &self.insertions {
             let source = insertion.source;
             let len = insertion.ch.len_utf8();
-            let shaped = source + added;
+            let shaped = source.saturating_add(added);
             if byte <= shaped {
                 return byte.saturating_sub(added);
             }
-            if byte <= shaped + len {
+            if byte <= shaped.saturating_add(len) {
                 return source;
             }
-            added += len;
+            added = added.saturating_add(len);
         }
         byte.saturating_sub(added)
     }
@@ -179,15 +183,19 @@ impl OffsetMap {
             .iter()
             .map(|insertion| insertion.ch.len_utf8())
             .sum::<usize>();
-        let mut shaped = String::with_capacity(text.len() + extra);
+        let mut shaped = String::with_capacity(text.len().saturating_add(extra));
         let mut start = 0;
         for insertion in &self.insertions {
             let at = insertion.source;
-            shaped.push_str(&text[start..at]);
+            if let Some(chunk) = text.get(start..at) {
+                shaped.push_str(chunk);
+            }
             shaped.push(insertion.ch);
             start = at;
         }
-        shaped.push_str(&text[start..]);
+        if let Some(chunk) = text.get(start..) {
+            shaped.push_str(chunk);
+        }
         std::borrow::Cow::Owned(shaped)
     }
 
@@ -196,7 +204,7 @@ impl OffsetMap {
         text: &'a str,
         source_start: usize,
     ) -> std::borrow::Cow<'a, str> {
-        let source_end = source_start + text.len();
+        let source_end = source_start.saturating_add(text.len());
         if self
             .insertions
             .iter()
@@ -214,12 +222,16 @@ impl OffsetMap {
             if at <= source_start || at > source_end {
                 continue;
             }
-            let local = at - source_start;
-            shaped.push_str(&text[local_start..local]);
+            let local = at.saturating_sub(source_start);
+            if let Some(chunk) = text.get(local_start..local) {
+                shaped.push_str(chunk);
+            }
             shaped.push(insertion.ch);
             local_start = local;
         }
-        shaped.push_str(&text[local_start..]);
+        if let Some(chunk) = text.get(local_start..) {
+            shaped.push_str(chunk);
+        }
         std::borrow::Cow::Owned(shaped)
     }
 }
@@ -234,8 +246,12 @@ pub(crate) fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Ra
         let boundaries: Vec<_> = iterator.iter_with_word_type().collect();
         boundaries
             .windows(2)
-            .filter(|window| window[1].1.is_word_like())
-            .map(|window| window[0].0..window[1].0)
+            .filter_map(|window| {
+                let [first, second] = window else {
+                    return None;
+                };
+                second.1.is_word_like().then_some(first.0..second.0)
+            })
             .collect::<Vec<_>>()
             .into_iter()
     })

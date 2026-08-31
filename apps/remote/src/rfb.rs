@@ -147,6 +147,11 @@ pub struct ServerInit {
 
 impl ServerInit {
     /// Read a `ServerInit` message body from a stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stream ends before the fixed header or the
+    /// server-supplied name have been fully read.
     pub fn read(r: &mut impl Read) -> io::Result<Self> {
         let mut head = [0u8; 24];
         r.read_exact(&mut head)?;
@@ -192,13 +197,24 @@ impl Framebuffer {
             return;
         }
         let idx = (y as usize * self.width as usize + x as usize) * 4;
-        self.data[idx..idx + 4].copy_from_slice(&rgba);
+        let Some(slot) = self.data.get_mut(idx..idx + 4) else {
+            return;
+        };
+        slot.copy_from_slice(&rgba);
     }
 
+    /// Out-of-range coordinates (a malicious or buggy server can send a
+    /// `CopyRect` source outside the framebuffer) read back as transparent
+    /// black rather than panicking.
     fn get_pixel(&self, x: u16, y: u16) -> [u8; 4] {
+        if x >= self.width || y >= self.height {
+            return [0u8; 4];
+        }
         let idx = (y as usize * self.width as usize + x as usize) * 4;
         let mut out = [0u8; 4];
-        out.copy_from_slice(&self.data[idx..idx + 4]);
+        if let Some(slice) = self.data.get(idx..idx + 4) {
+            out.copy_from_slice(slice);
+        }
         out
     }
 }
@@ -233,6 +249,12 @@ impl RectHeader {
 ///
 /// The same function backs both the fixture tests (`r` is a `Cursor`) and
 /// the live client (`r` is a `TcpStream`).
+///
+/// # Errors
+///
+/// Returns an error if the stream ends before a rectangle's declared data
+/// has fully arrived, or if the server names a rectangle encoding this
+/// client did not advertise support for.
 pub fn decode_framebuffer_update(
     r: &mut impl Read,
     fb: &mut Framebuffer,
@@ -272,7 +294,13 @@ fn decode_raw(
     let mut i = 0;
     for dy in 0..rect.h {
         for dx in 0..rect.w {
-            let rgba = fmt.decode_pixel(&pixels[i..i + bpp]);
+            let Some(px) = pixels.get(i..i + bpp) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "raw rectangle pixel buffer too short",
+                ));
+            };
+            let rgba = fmt.decode_pixel(px);
             fb.put_pixel(rect.x + dx, rect.y + dy, rgba);
             i += bpp;
         }
@@ -295,7 +323,13 @@ fn decode_copy_rect(r: &mut impl Read, fb: &mut Framebuffer, rect: RectHeader) -
     let mut i = 0;
     for dy in 0..rect.h {
         for dx in 0..rect.w {
-            fb.put_pixel(rect.x + dx, rect.y + dy, buf[i]);
+            let Some(&pixel) = buf.get(i) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "copy-rect source buffer too short",
+                ));
+            };
+            fb.put_pixel(rect.x + dx, rect.y + dy, pixel);
             i += 1;
         }
     }
@@ -323,13 +357,24 @@ fn decode_rre(
     }
     // Then paint each subrectangle.
     let mut sub = vec![0u8; bpp + 8];
+    let bad_subrect = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RRE subrectangle buffer too short",
+        )
+    };
     for _ in 0..subrects {
         r.read_exact(&mut sub)?;
-        let color = fmt.decode_pixel(&sub[..bpp]);
-        let sx = u16::from_be_bytes([sub[bpp], sub[bpp + 1]]);
-        let sy = u16::from_be_bytes([sub[bpp + 2], sub[bpp + 3]]);
-        let sw = u16::from_be_bytes([sub[bpp + 4], sub[bpp + 5]]);
-        let sh = u16::from_be_bytes([sub[bpp + 6], sub[bpp + 7]]);
+        let color_bytes = sub.get(..bpp).ok_or_else(bad_subrect)?;
+        let color = fmt.decode_pixel(color_bytes);
+        let coord: [u8; 8] = sub
+            .get(bpp..bpp + 8)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(bad_subrect)?;
+        let sx = u16::from_be_bytes([coord[0], coord[1]]);
+        let sy = u16::from_be_bytes([coord[2], coord[3]]);
+        let sw = u16::from_be_bytes([coord[4], coord[5]]);
+        let sh = u16::from_be_bytes([coord[6], coord[7]]);
         for dy in 0..sh {
             for dx in 0..sw {
                 fb.put_pixel(rect.x + sx + dx, rect.y + sy + dy, color);
@@ -368,11 +413,20 @@ pub fn client_protocol_version(server_major: u8, server_minor: u8) -> [u8; 12] {
 /// Parse the 3.7+ security-type list: a count byte followed by that many
 /// type bytes. A zero count means the server rejected us and follows with a
 /// reason string — surfaced here as an error.
+///
+/// # Errors
+///
+/// Returns an error if the server advertised zero security types, or if
+/// fewer type bytes followed than the count promised.
 pub fn parse_security_types(count: u8, types: &[u8]) -> Result<Vec<u8>, String> {
     if count == 0 {
         return Err("server offered no security types".into());
     }
-    Ok(types[..(count as usize).min(types.len())].to_vec())
+    let n = (count as usize).min(types.len());
+    let Some(slice) = types.get(..n) else {
+        return Err("malformed security type list".into());
+    };
+    Ok(slice.to_vec())
 }
 
 /// Pick the security type we prefer from the server's offer: `None` when
@@ -396,7 +450,9 @@ pub fn vnc_auth_response(challenge: &[u8; 16], password: &str) -> [u8; 16] {
 
     let mut key = [0u8; 8];
     for (i, b) in password.bytes().take(8).enumerate() {
-        key[i] = mirror_bits(b);
+        if let Some(slot) = key.get_mut(i) {
+            *slot = mirror_bits(b);
+        }
     }
     let cipher = des::Des::new(GenericArray::from_slice(&key));
     let mut out = *challenge;
@@ -448,14 +504,14 @@ pub fn encode_framebuffer_update_request(
     w: u16,
     h: u16,
 ) -> [u8; 10] {
-    let mut b = [0u8; 10];
-    b[0] = 3;
-    b[1] = u8::from(incremental);
-    b[2..4].copy_from_slice(&x.to_be_bytes());
-    b[4..6].copy_from_slice(&y.to_be_bytes());
-    b[6..8].copy_from_slice(&w.to_be_bytes());
-    b[8..10].copy_from_slice(&h.to_be_bytes());
-    b
+    let mut buf = [0u8; 10];
+    buf[0] = 3;
+    buf[1] = u8::from(incremental);
+    buf[2..4].copy_from_slice(&x.to_be_bytes());
+    buf[4..6].copy_from_slice(&y.to_be_bytes());
+    buf[6..8].copy_from_slice(&w.to_be_bytes());
+    buf[8..10].copy_from_slice(&h.to_be_bytes());
+    buf
 }
 
 /// `PointerEvent` (message type 5).

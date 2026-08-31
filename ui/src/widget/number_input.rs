@@ -51,7 +51,7 @@ fn parse_leading_number(s: &str) -> Option<f64> {
     let mut seen_digit = false;
     for (i, c) in s.char_indices() {
         if (c == '-' || c == '+') && i == 0 {
-            end = i + c.len_utf8();
+            end = i.saturating_add(c.len_utf8());
             continue;
         }
         if c == '.' {
@@ -59,12 +59,12 @@ fn parse_leading_number(s: &str) -> Option<f64> {
                 break;
             }
             seen_dot = true;
-            end = i + c.len_utf8();
+            end = i.saturating_add(c.len_utf8());
             continue;
         }
         if c.is_ascii_digit() {
             seen_digit = true;
-            end = i + c.len_utf8();
+            end = i.saturating_add(c.len_utf8());
             continue;
         }
         break;
@@ -72,9 +72,58 @@ fn parse_leading_number(s: &str) -> Option<f64> {
     if !seen_digit {
         return None;
     }
-    s[..end].parse::<f64>().ok()
+    // `end` is always 0 or the byte offset just past a char boundary
+    // visited above, so this can never actually miss — `.get` keeps the
+    // lint honest without asserting that at runtime.
+    s.get(..end).and_then(|leading| leading.parse::<f64>().ok())
 }
 
+/// `i64::MIN`/`MAX` as `f64` *literals* (not casts), so clamping into
+/// `i64`'s range below doesn't itself need a lossy-cast allow. `f64`
+/// can't represent `i64::MAX` exactly; the literal rounds up to the
+/// nearest representable value (`2^63`), which only makes the clamp
+/// very slightly more permissive at the top edge — irrelevant since the
+/// cast below saturates there regardless.
+const I64_MIN_AS_F64: f64 = -9_223_372_036_854_775_808.0;
+const I64_MAX_AS_F64: f64 = 9_223_372_036_854_775_807.0;
+
+/// Rounds `v` to the nearest `i64`, clamping first so the saturating
+/// float-to-int cast is an explicit, visible step rather than an
+/// implicit one the lint can't see through.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "value is clamped into i64's representable range immediately above"
+)]
+fn round_to_i64(v: f64) -> i64 {
+    v.round().clamp(I64_MIN_AS_F64, I64_MAX_AS_F64) as i64
+}
+
+/// Narrows a screen-space length (`f64`, this widget's own unit) to the
+/// `f32` taffy consumes. Control widths/heights never approach `f32`'s
+/// range, so this never truncates in practice.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "widget widths/heights are always far below f32's range"
+)]
+fn px_f32(v: f64) -> f32 {
+    v as f32
+}
+
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
+              or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (focus/hover/pending/bound/enabled), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
+)]
 pub struct NumberInput {
     id: String,
     /// Canonical value — the single source of truth. The embedded field's
@@ -157,6 +206,7 @@ impl NumberInput {
 
     /// Clamp committed + typed values to `[min, max]`. The current value is
     /// re-clamped immediately.
+    #[must_use]
     pub fn with_range(mut self, min: f64, max: f64) -> Self {
         self.min = min;
         self.max = max;
@@ -166,6 +216,7 @@ impl NumberInput {
     }
 
     /// Amount a single stepper press (or Arrow Up / Down) moves the value.
+    #[must_use]
     pub fn with_step(mut self, step: f64) -> Self {
         self.step = step;
         self
@@ -173,6 +224,7 @@ impl NumberInput {
 
     /// Decimal places for display (`0` = integer). Also re-formats the
     /// current value.
+    #[must_use]
     pub fn with_precision(mut self, decimals: usize) -> Self {
         self.decimals = decimals;
         self.sync_field();
@@ -180,6 +232,7 @@ impl NumberInput {
     }
 
     /// Unit suffix appended to the displayed number (`"px"`, `"%"`, …).
+    #[must_use]
     pub fn with_suffix(mut self, suffix: &str) -> Self {
         self.suffix = suffix.to_string();
         self.sync_field();
@@ -188,12 +241,14 @@ impl NumberInput {
 
     /// Override the [`Widget::test_id`]; also used to disambiguate multiple
     /// number fields in one inspector.
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
         self
     }
 
     /// Fixed control width / height in logical pixels.
+    #[must_use]
     pub fn with_size(mut self, width: f64, height: f64) -> Self {
         self.width = width;
         self.height = height;
@@ -203,6 +258,7 @@ impl NumberInput {
     /// Bind the committed value to a CRDT `F64` at `path` under the widget's
     /// root — read on `sync`, written on every commit. Empty path leaves the
     /// widget self-contained (poll [`take_changed`](NumberInput::take_changed)).
+    #[must_use]
     pub fn with_on_change_path(mut self, path: &str) -> Self {
         self.on_change_path = path.to_string();
         self.crdt_bound = !path.is_empty();
@@ -210,6 +266,7 @@ impl NumberInput {
     }
 
     /// Build-time enabled flag. A disabled field is inert and dimmed.
+    #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self.field.set_disabled(!enabled);
@@ -224,7 +281,7 @@ impl NumberInput {
     /// The current value as an `i64` (rounded) — convenience for the common
     /// integer-inspector case (font size, margins).
     pub fn value_i64(&self) -> i64 {
-        self.value.round() as i64
+        round_to_i64(self.value)
     }
 
     /// Push a value in programmatically. Clamps and re-formats the
@@ -253,7 +310,7 @@ impl NumberInput {
     /// unit suffix (space-separated when a suffix is present).
     fn format_value(&self) -> String {
         let n = if self.decimals == 0 {
-            format!("{}", self.value.round() as i64)
+            format!("{}", round_to_i64(self.value))
         } else {
             format!("{:.*}", self.decimals, self.value)
         };
@@ -344,6 +401,13 @@ impl Widget for NumberInput {
         if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
             && let Value::Scalar(s) = val
         {
+            // A CRDT-stored integer read as this widget's f64: relative
+            // error is at most 1 part in 2^52, invisible for any realistic
+            // UI range (font size, margins, opacity) this field displays.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "the widget's value is an f64 throughout; converting a CRDT-stored i64/u64 loses only sub-visible precision for realistic UI ranges"
+            )]
             let v = match s.as_ref() {
                 automerge::ScalarValue::F64(f) => Some(*f),
                 automerge::ScalarValue::Int(i) => Some(*i as f64),
@@ -368,8 +432,8 @@ impl Widget for NumberInput {
     ) -> NodeId {
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(self.width as f32),
-                height: Dimension::length(self.height as f32),
+                width: Dimension::length(px_f32(self.width)),
+                height: Dimension::length(px_f32(self.height)),
             },
             ..Default::default()
         });
@@ -441,7 +505,7 @@ impl Widget for NumberInput {
                 glyph,
                 STEP_GLYPH_SIZE,
                 glyph_color,
-                transform * Affine::translate((gx, gy)),
+                translated(transform, gx, gy),
                 None,
             );
         }
@@ -796,7 +860,7 @@ mod tests {
     }
 
     /// Typing a value and committing with Enter parses, clamps and reports
-    /// the change through the production handle_event path.
+    /// the change through the production `handle_event` path.
     #[test]
     fn type_then_enter_parses_clamps_and_commits() {
         let mut n = NumberInput::new(16.0)
@@ -855,12 +919,12 @@ mod tests {
         let mut n = NumberInput::new(70.0).with_range(8.0, 72.0).with_step(2.0);
         layout_at(&mut n, 0.0, 0.0);
         let plus_c = (
-            (n.plus_rect.x0 + n.plus_rect.x1) / 2.0,
-            (n.plus_rect.y0 + n.plus_rect.y1) / 2.0,
+            n.plus_rect.x0.midpoint(n.plus_rect.x1),
+            n.plus_rect.y0.midpoint(n.plus_rect.y1),
         );
         let minus_c = (
-            (n.minus_rect.x0 + n.minus_rect.x1) / 2.0,
-            (n.minus_rect.y0 + n.minus_rect.y1) / 2.0,
+            n.minus_rect.x0.midpoint(n.minus_rect.x1),
+            n.minus_rect.y0.midpoint(n.minus_rect.y1),
         );
 
         // Click + once: 70 → 72.
@@ -920,7 +984,7 @@ mod tests {
                 automerge::ScalarValue::F64(f) => assert_eq!(*f, 40.0),
                 other => panic!("expected F64, got {other:?}"),
             },
-            other => panic!("expected scalar, got {other:?}"),
+            Value::Object(o) => panic!("expected scalar, got object: {o:?}"),
         }
     }
 
@@ -1008,8 +1072,8 @@ mod tests {
         layout_at(&mut n, 0.0, 0.0);
         let before = n.value();
         let plus_c = (
-            (n.plus_rect.x0 + n.plus_rect.x1) / 2.0,
-            (n.plus_rect.y0 + n.plus_rect.y1) / 2.0,
+            n.plus_rect.x0.midpoint(n.plus_rect.x1),
+            n.plus_rect.y0.midpoint(n.plus_rect.y1),
         );
         dispatch(&mut n, &cursor(plus_c.0, plus_c.1));
         dispatch(&mut n, &press());

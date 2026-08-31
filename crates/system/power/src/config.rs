@@ -112,7 +112,9 @@ pub fn policy_from_section_for_profile(
     let legacy_suspend_minutes = section
         .get("suspend_minutes")
         .and_then(serde_json::Value::as_u64)
-        .map_or(DEFAULT_SUSPEND_MINUTES, |m| m as u32);
+        .map_or(DEFAULT_SUSPEND_MINUTES, |m| {
+            u32::try_from(m).unwrap_or(u32::MAX)
+        });
     let profile_key = match active_profile {
         Some("power-saver") => Some("saver_suspend_minutes"),
         Some("balanced") => Some("balanced_suspend_minutes"),
@@ -122,7 +124,9 @@ pub fn policy_from_section_for_profile(
     let suspend_minutes = profile_key
         .and_then(|key| section.get(key))
         .and_then(serde_json::Value::as_u64)
-        .map_or(legacy_suspend_minutes, |m| m as u32);
+        .map_or(legacy_suspend_minutes, |m| {
+            u32::try_from(m).unwrap_or(u32::MAX)
+        });
 
     // `auto_suspend` off, or a 0-minute timeout, disables idle-suspend.
     let idle_suspend = if auto_suspend && suspend_minutes > 0 {
@@ -178,7 +182,7 @@ mod tests {
     fn missing_file_is_settings_defaults() {
         let p = policy_from_settings_json("");
         assert_eq!(p, default_policy());
-        assert_eq!(p.idle_suspend, Some(Duration::from_mins(15)));
+        assert_eq!(p.idle_suspend, Some(Duration::from_secs(900)));
     }
 
     #[test]
@@ -204,7 +208,7 @@ mod tests {
             }
         }"#;
         let p = policy_from_settings_json(json);
-        assert_eq!(p.idle_suspend, Some(Duration::from_mins(20)));
+        assert_eq!(p.idle_suspend, Some(Duration::from_secs(1200)));
         assert_eq!(p.lid_close_action, PowerAction::Lock);
         assert_eq!(p.power_key_action, PowerAction::Ignore);
         assert_eq!(p.low_battery_percent, 20);
@@ -263,15 +267,15 @@ mod tests {
         .unwrap();
         assert_eq!(
             policy_from_section_for_profile(&section, Some("power-saver")).idle_suspend,
-            Some(Duration::from_secs(7 * 60))
+            Some(Duration::from_secs(420))
         );
         assert_eq!(
             policy_from_section_for_profile(&section, Some("balanced")).idle_suspend,
-            Some(Duration::from_secs(17 * 60))
+            Some(Duration::from_secs(1020))
         );
         assert_eq!(
             policy_from_section_for_profile(&section, Some("performance")).idle_suspend,
-            Some(Duration::from_secs(37 * 60))
+            Some(Duration::from_secs(2220))
         );
     }
 
@@ -282,7 +286,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             policy_from_section_for_profile(&section, Some("vendor-profile")).idle_suspend,
-            Some(Duration::from_secs(23 * 60))
+            Some(Duration::from_secs(1380))
         );
     }
 }

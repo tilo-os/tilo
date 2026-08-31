@@ -138,9 +138,9 @@ fn default_state_root() -> PathBuf {
 }
 
 fn default_iroh_listen() -> SocketAddr {
-    "0.0.0.0:0"
-        .parse()
-        .expect("valid default iroh listen socket")
+    // Constructed directly rather than parsed — `0.0.0.0:0` is
+    // infallible either way, but this has no panic path to document.
+    SocketAddr::from(([0, 0, 0, 0], 0))
 }
 
 impl Default for RelayConfig {
@@ -172,6 +172,11 @@ pub enum ConfigError {
 
 impl RelayConfig {
     /// Read a config file from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` can't be read, or its contents
+    /// don't parse as valid TOML for this schema.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let bytes = std::fs::read_to_string(path)?;
         Ok(toml::from_str(&bytes)?)
@@ -179,6 +184,12 @@ impl RelayConfig {
 
     /// Serialise + write the config to disk. Preserves the exact
     /// key ordering the type produces.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path`'s parent directory can't be
+    /// created, `self` fails to serialise to TOML (shouldn't happen
+    /// for this shape), or the write fails.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

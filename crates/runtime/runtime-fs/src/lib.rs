@@ -22,14 +22,18 @@
 //! are expected to fall back to a stock-Linux path (or disable the
 //! feature) when running as a Flatpak.
 
-// Every `async fn` here awaits a capnp-rpc promise, and capnp-rpc's promises are
-// `!Send` by construction: a capability is reference-counted with `Rc` and its
-// hooks are `dyn` traits without a `Send` bound, so the RPC system runs on one
-// thread and is driven by `tokio::task::spawn_local`. There is no version of
-// this client whose futures cross threads, which is why the module docs tell
-// callers to run it inside a `LocalSet`. `future_not_send` has nothing to warn
-// about here — it would only ever be silenced, never satisfied.
-#![allow(clippy::future_not_send)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use std::rc::Rc;
 
@@ -37,24 +41,9 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 
 // Generated schema. `include!` at the crate root under the exact
 // module name the capnp compiler emits (`fs_capnp` for schema/fs.capnp).
-//
-// capnpc rewrites this file on every build, so nothing in it can be fixed —
-// the lint groups are switched off wholesale rather than chased. The same
-// list guards `app_host_capnp` in `crates/packaging/app-host`.
-#[allow(
-    clippy::all,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::restriction,
-    unused_imports,
-    unused_qualifications,
-    unused_results,
-    non_camel_case_types,
-    missing_docs,
-    unused,
-    dead_code,
-    unsafe_code
-)]
+#[allow(clippy::all)]
+#[allow(unused)]
+#[allow(dead_code)]
 pub mod fs_capnp {
     include!(concat!(env!("OUT_DIR"), "/fs_capnp.rs"));
 }
@@ -76,13 +65,9 @@ pub const MAX_READ_CHUNK: u32 = 1 << 20;
 ///
 /// # Errors
 ///
-/// [`NotAvailable::ServiceFdMissing`] when `QOS_SVC_FS_FD` is unset or names an fd that is
-/// no longer open — the ordinary case off qOS, where the caller is expected to fall back to
-/// a stock-Linux path rather than treat it as a fault. [`NotAvailable::ConnectionFailed`]
-/// when the fd is there but cannot be lifted onto the tokio reactor.
-///
-/// Dialling is local: nothing is sent to the proxy, so a broken or absent server on the far
-/// end shows up on the first call made through the returned client, not here.
+/// Returns [`NotAvailable::ServiceFdMissing`] if the launcher didn't pass a
+/// service fd, or [`NotAvailable::ConnectionFailed`] if the fd can't be
+/// lifted to an RPC connection.
 pub fn try_connect() -> Result<FsClient, NotAvailable> {
     let fd = service_fd("fs").ok_or(NotAvailable::ServiceFdMissing)?;
     let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
@@ -145,12 +130,15 @@ pub struct Metadata {
 }
 
 impl Metadata {
+    // An unknown wire value for `kind` collapses to `Other` rather than
+    // erroring, since schema evolution must not break clients — so this
+    // never fails and doesn't need to return `Result`.
     fn from_reader(r: fs_capnp::metadata::Reader<'_>) -> Self {
         let secs = r.get_modified_unix_seconds();
-        // An unknown wire value collapses to `Other` rather than failing, since
-        // schema evolution must not break older clients. Nothing else here can
-        // fail, so this is infallible and does not need a `Result`.
-        let kind = r.get_kind().map_or(EntryKind::Other, Into::into);
+        let kind = match r.get_kind() {
+            Ok(k) => k.into(),
+            Err(_) => EntryKind::Other,
+        };
         Self {
             kind,
             size: r.get_size(),
@@ -185,11 +173,12 @@ impl FsClient {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::Capnp`] for everything the proxy can refuse: the path does not exist
-    /// and `mode` is [`OpenMode::Read`], it resolves outside the workspace, the sandbox
-    /// policy denies it, or it is a directory. The same variant covers a dropped connection,
-    /// as `Disconnected` — a peer that went away is indistinguishable from one that refused,
-    /// at this layer.
+    /// Returns [`NotAvailable::Capnp`] if `path` doesn't exist, the server
+    /// rejects the request, or the connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn open(&self, path: &str, mode: OpenMode) -> Result<FileHandle, NotAvailable> {
         let mut req = self.inner.open_request();
         {
@@ -209,10 +198,13 @@ impl FsClient {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::Capnp`] when the proxy refuses the path (missing, not a directory,
-    /// outside the workspace, denied) or the connection has dropped, and also when an entry
-    /// name is not valid UTF-8 — the whole listing fails rather than silently skipping the
-    /// row, since a file the caller cannot be told about is worse than an error.
+    /// Returns [`NotAvailable::Capnp`] if `path` isn't a directory, an
+    /// entry's name isn't valid UTF-8, or the connection drops before a
+    /// reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn list(&self, path: &str) -> Result<Vec<DirEntry>, NotAvailable> {
         let mut req = self.inner.list_request();
         req.get().set_path(path);
@@ -236,9 +228,12 @@ impl FsClient {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::Capnp`] when the path does not exist, resolves outside the workspace,
-    /// is denied by the sandbox policy, or the connection has dropped. Decoding the reply
-    /// cannot fail: an unrecognised entry kind is reported as [`EntryKind::Other`].
+    /// Returns [`NotAvailable::Capnp`] if `path` doesn't exist or the
+    /// connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn stat(&self, path: &str) -> Result<Metadata, NotAvailable> {
         let mut req = self.inner.stat_request();
         req.get().set_path(path);
@@ -250,9 +245,13 @@ impl FsClient {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::Capnp`] when a path component exists as a non-directory, the parent
-    /// is not writable, the path resolves outside the workspace, or the connection has
-    /// dropped. An already-existing directory is success, not an error.
+    /// Returns [`NotAvailable::Capnp`] if the server rejects the request
+    /// (e.g. a path component exists and isn't a directory) or the
+    /// connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn mkdir(&self, path: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.mkdir_request();
         req.get().set_path(path);
@@ -264,8 +263,13 @@ impl FsClient {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::Capnp`] when the path does not exist, names a directory that is not
-    /// empty, is not writable or lies outside the workspace, or the connection has dropped.
+    /// Returns [`NotAvailable::Capnp`] if `path` doesn't exist, a directory
+    /// at `path` isn't empty, or the connection drops before a reply
+    /// arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn remove(&self, path: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.remove_request();
         req.get().set_path(path);
@@ -285,10 +289,12 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::Capnp`] when the handle was opened for writing, hydration of a
-    /// remote-only file fails (the bytes may live on a peer that is unreachable — `open`
-    /// succeeding does not mean the content is local), the underlying read fails, or the
-    /// connection has dropped. Reading past the end is not an error; it yields no bytes.
+    /// Returns [`NotAvailable::Capnp`] if the handle is no longer valid or
+    /// the connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn read_at(&self, offset: u64, max_len: u32) -> Result<Vec<u8>, NotAvailable> {
         let mut req = self.inner.read_request();
         {
@@ -305,8 +311,12 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// Whatever [`Self::read_at`] returns, on any chunk. A partial read is discarded rather
-    /// than returned, so the caller never mistakes a truncated file for a whole one.
+    /// Returns [`NotAvailable::Capnp`] if any underlying [`Self::read_at`]
+    /// call fails.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn read_all(&self) -> Result<Vec<u8>, NotAvailable> {
         let mut buf = Vec::new();
         let mut offset: u64 = 0;
@@ -315,8 +325,6 @@ impl FileHandle {
             if chunk.is_empty() {
                 return Ok(buf);
             }
-            // Saturating rather than wrapping: reaching u64::MAX would take a
-            // 16-exabyte file, but a wrap would silently restart the read at 0.
             offset = offset.saturating_add(chunk.len() as u64);
             buf.extend_from_slice(&chunk);
         }
@@ -326,9 +334,12 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::Capnp`] when the handle was opened [`OpenMode::Read`], the workspace
-    /// is out of space or over quota, the write fails, or the connection has dropped. A
-    /// short write is reported in the return value, not as an error — check it.
+    /// Returns [`NotAvailable::Capnp`] if the handle isn't writable or the
+    /// connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<u32, NotAvailable> {
         let mut req = self.inner.write_request();
         {
@@ -344,8 +355,12 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::Capnp`] when the underlying flush fails — which is where a write that
-    /// was only buffered finally reports being out of space — or the connection has dropped.
+    /// Returns [`NotAvailable::Capnp`] if the server rejects the flush or
+    /// the connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn flush(&self) -> Result<(), NotAvailable> {
         let req = self.inner.flush_request();
         req.send().promise.await?;
@@ -356,8 +371,12 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::Capnp`] when the server has invalidated the handle (the file was
-    /// removed under it) or the connection has dropped.
+    /// Returns [`NotAvailable::Capnp`] if the handle is no longer valid or
+    /// the connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn metadata(&self) -> Result<Metadata, NotAvailable> {
         let req = self.inner.metadata_request();
         let reply = req.send().promise.await?;

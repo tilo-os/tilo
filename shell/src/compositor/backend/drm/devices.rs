@@ -55,10 +55,12 @@ pub fn is_kms_node(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    if !name.starts_with("card") {
+    // `strip_prefix` avoids a manual byte-index slice (which clippy can't
+    // prove stays on a UTF-8 char boundary, even though "card" is ASCII).
+    let Some(digits) = name.strip_prefix("card") else {
         return false;
-    }
-    name[4..].chars().all(|c| c.is_ascii_digit()) && name.len() > 4
+    };
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Pick the "best" mode from a connector's mode list: prefer modes flagged
@@ -75,10 +77,16 @@ pub fn preferred_mode(modes: &[ModeInfo]) -> Option<ModeInfo> {
     } else {
         &preferred_set
     };
-    working
-        .iter()
-        .copied()
-        .max_by_key(|m| (u64::from(m.width) * u64::from(m.height), m.refresh_mhz))
+    working.iter().copied().max_by_key(|m| {
+        // `width`/`height` are `u16`, so the widened product tops out around
+        // 65535*65535 (~4.3e9), far under `u64::MAX` — this can never overflow.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "u16 * u16 widened to u64 cannot overflow"
+        )]
+        let area = u64::from(m.width) * u64::from(m.height);
+        (area, m.refresh_mhz)
+    })
 }
 
 #[cfg(test)]

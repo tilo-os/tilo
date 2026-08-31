@@ -156,9 +156,13 @@ fn measure_name(tr: &mut TextRenderer, name: &str, size: f32) -> f64 {
 /// presentation glyphs for single-letter variables.
 pub fn math_display_char(character: char) -> char {
     match character {
-        'A'..='Z' => char::from_u32(0x1D434 + (character as u32 - 'A' as u32)).unwrap_or(character),
+        'A'..='Z' => {
+            let offset = (character as u32).saturating_sub('A' as u32);
+            char::from_u32(0x1D434u32.saturating_add(offset)).unwrap_or(character)
+        }
         'a'..='z' if character != 'h' => {
-            char::from_u32(0x1D44E + (character as u32 - 'a' as u32)).unwrap_or(character)
+            let offset = (character as u32).saturating_sub('a' as u32);
+            char::from_u32(0x1D44Eu32.saturating_add(offset)).unwrap_or(character)
         }
         // Mathematical italic small h occupies the historic Planck-constant
         // code point rather than the otherwise contiguous alphabet range.
@@ -259,7 +263,7 @@ fn layout_row(row: &Row, steps: &[(usize, Slot)], tr: &mut TextRenderer, size: f
         // Trailing gap after node `i` (offset i+1).
         gaps.push(Gap {
             steps: steps.to_vec(),
-            index: i + 1,
+            index: i.saturating_add(1),
             x: pen,
             top: caret_top,
             bottom: caret_bot,
@@ -293,567 +297,713 @@ fn layout_node(
     size: f32,
 ) -> NodeFrag {
     match node {
-        Node::Char(ch) => {
-            let w = measure_glyph(tr, *ch, size);
-            let (space_before, space_after) = operator_spacing(*ch, size);
-            let (ascent, descent) = metrics(size);
-            let b = Box2d {
-                x: space_before,
-                y: 0.0,
-                w,
-                h: ascent + descent,
-                baseline: ascent,
-                kind: BoxKind::Glyph {
-                    ch: math_display_char(*ch),
-                    size,
-                },
-            };
-            NodeFrag {
-                boxes: vec![b],
-                gaps: vec![],
-                width: space_before + w + space_after,
-                ascent,
-                descent,
-            }
-        }
-        Node::Text(text) => {
-            let width = measure_name(tr, text, size);
-            let (ascent, descent) = metrics(size);
-            NodeFrag {
-                boxes: vec![Box2d {
-                    x: 0.0,
-                    y: 0.0,
-                    w: width,
-                    h: ascent + descent,
-                    baseline: ascent,
-                    kind: BoxKind::Name {
-                        text: text.clone(),
-                        size,
-                    },
-                }],
-                gaps: vec![],
-                width,
-                ascent,
-                descent,
-            }
-        }
+        Node::Char(ch) => layout_char(*ch, tr, size),
+        Node::Text(text) => layout_text(text, tr, size),
         Node::Accent { base, mark, over } => {
-            let base_steps = child_steps(steps, idx, Slot::Base);
-            let inner = layout_row(base, &base_steps, tr, size);
-            let accent_height = match mark {
-                '˙' | '¨' => f64::from(size) * 0.18,
-                _ => f64::from(size) * 0.24,
-            }
-            .max(3.0);
-            let gap = (f64::from(size) * 0.045).max(1.0);
-            let width = inner.width.max(f64::from(size) * 0.45);
-            let inner_x = (width - inner.width) * 0.5;
-            let (ascent, descent, inner_y, accent_y) = if *over {
-                (
-                    inner.ascent + accent_height + gap,
-                    inner.descent,
-                    accent_height + gap,
-                    0.0,
-                )
-            } else {
-                (
-                    inner.ascent,
-                    inner.descent + accent_height + gap,
-                    0.0,
-                    inner.height() + gap,
-                )
-            };
-            let mut boxes = vec![Box2d {
-                x: 0.0,
-                y: accent_y,
-                w: width,
-                h: accent_height,
-                baseline: accent_height,
-                kind: BoxKind::Accent { mark: *mark, size },
-            }];
-            let mut gaps = Vec::new();
-            for mut math_box in inner.boxes {
-                math_box.x += inner_x;
-                math_box.y += inner_y;
-                boxes.push(math_box);
-            }
-            for mut insertion in inner.gaps {
-                insertion.x += inner_x;
-                insertion.top += inner_y;
-                insertion.bottom += inner_y;
-                gaps.push(insertion);
-            }
-            NodeFrag {
-                boxes,
-                gaps,
-                width,
-                ascent,
-                descent,
-            }
+            layout_accent(base, *mark, *over, idx, steps, tr, size)
         }
         Node::UnderOver { base, under, over } => {
-            let base_steps = child_steps(steps, idx, Slot::Base);
-            let base_fragment = layout_row(base, &base_steps, tr, size);
-            let script_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
-            let upper = over
-                .as_ref()
-                .map(|row| layout_row(row, &child_steps(steps, idx, Slot::Over), tr, script_size));
-            let lower = under
-                .as_ref()
-                .map(|row| layout_row(row, &child_steps(steps, idx, Slot::Under), tr, script_size));
-            let gap = f64::from(size) * 0.12;
-            let width = base_fragment
-                .width
-                .max(upper.as_ref().map_or(0.0, |fragment| fragment.width))
-                .max(lower.as_ref().map_or(0.0, |fragment| fragment.width));
-            let upper_height = upper.as_ref().map_or(0.0, Frag::height);
-            let base_top = if upper.is_some() {
-                upper_height + gap
-            } else {
-                0.0
-            };
-            let ascent = base_top + base_fragment.ascent;
-            let base_descent = base_fragment.descent;
-            let descent = base_descent
-                + lower
-                    .as_ref()
-                    .map_or(0.0, |fragment| gap + fragment.height());
-            let mut boxes = Vec::new();
-            let mut gaps = Vec::new();
-            let mut place = |fragment: Frag, top: f64| {
-                let x = (width - fragment.width) * 0.5;
-                for mut math_box in fragment.boxes {
-                    math_box.x += x;
-                    math_box.y += top;
-                    boxes.push(math_box);
-                }
-                for mut insertion in fragment.gaps {
-                    insertion.x += x;
-                    insertion.top += top;
-                    insertion.bottom += top;
-                    gaps.push(insertion);
-                }
-            };
-            if let Some(upper) = upper {
-                place(upper, 0.0);
-            }
-            place(base_fragment, base_top);
-            if let Some(lower) = lower {
-                place(lower, ascent + base_descent + gap);
-            }
-            NodeFrag {
-                boxes,
-                gaps,
-                width,
-                ascent,
-                descent,
-            }
+            layout_under_over(base, under.as_ref(), over.as_ref(), idx, steps, tr, size)
         }
-        Node::Table { rows } => {
-            let column_count = rows.iter().map(Vec::len).max().unwrap_or(0);
-            if rows.is_empty() || column_count == 0 {
-                let (ascent, descent) = metrics(size);
-                return NodeFrag {
-                    boxes: Vec::new(),
-                    gaps: Vec::new(),
-                    width: measure_glyph(tr, '0', size),
-                    ascent,
-                    descent,
-                };
-            }
-            let mut fragments: Vec<Vec<Frag>> = Vec::with_capacity(rows.len());
-            let mut column_widths = vec![0.0f64; column_count];
-            let mut row_ascents = Vec::with_capacity(rows.len());
-            let mut row_descents = Vec::with_capacity(rows.len());
-            for (row_index, cells) in rows.iter().enumerate() {
-                let mut laid_cells = Vec::with_capacity(cells.len());
-                let mut row_ascent: f64 = 0.0;
-                let mut row_descent: f64 = 0.0;
-                for (column, cell) in cells.iter().enumerate() {
-                    let fragment = layout_row(
-                        cell,
-                        &child_steps(
-                            steps,
-                            idx,
-                            Slot::Cell(
-                                u16::try_from(row_index).unwrap_or(u16::MAX),
-                                u16::try_from(column).unwrap_or(u16::MAX),
-                            ),
-                        ),
-                        tr,
-                        size,
-                    );
-                    column_widths[column] = column_widths[column].max(fragment.width);
-                    row_ascent = row_ascent.max(fragment.ascent);
-                    row_descent = row_descent.max(fragment.descent);
-                    laid_cells.push(fragment);
-                }
-                fragments.push(laid_cells);
-                row_ascents.push(row_ascent);
-                row_descents.push(row_descent);
-            }
-            let column_gap = f64::from(size) * 0.65;
-            let row_gap = f64::from(size) * 0.28;
-            let width = column_widths.iter().sum::<f64>()
-                + column_gap * column_count.saturating_sub(1) as f64;
-            let height = row_ascents
-                .iter()
-                .zip(&row_descents)
-                .map(|(ascent, descent)| ascent + descent)
-                .sum::<f64>()
-                + row_gap * rows.len().saturating_sub(1) as f64;
-            let ascent = height * 0.5;
-            let descent = height - ascent;
-            let mut boxes = Vec::new();
-            let mut gaps = Vec::new();
-            let mut row_top = 0.0;
-            for (row_index, laid_cells) in fragments.into_iter().enumerate() {
-                let mut column_x = 0.0;
-                for (column, fragment) in laid_cells.into_iter().enumerate() {
-                    let x = column_x + (column_widths[column] - fragment.width) * 0.5;
-                    let y = row_top + row_ascents[row_index] - fragment.ascent;
-                    for mut math_box in fragment.boxes {
-                        math_box.x += x;
-                        math_box.y += y;
-                        boxes.push(math_box);
-                    }
-                    for mut insertion in fragment.gaps {
-                        insertion.x += x;
-                        insertion.top += y;
-                        insertion.bottom += y;
-                        gaps.push(insertion);
-                    }
-                    column_x += column_widths[column] + column_gap;
-                }
-                row_top += row_ascents[row_index] + row_descents[row_index] + row_gap;
-            }
-            NodeFrag {
-                boxes,
-                gaps,
-                width,
-                ascent,
-                descent,
-            }
-        }
-        Node::Func { name, arg } => {
-            let name_w = measure_name(tr, name, size);
-            let (ascent, descent) = metrics(size);
-            let arg_steps = child_steps(steps, idx, Slot::Arg);
-            let inner = layout_row(arg, &arg_steps, tr, size);
-            let paren_size = size;
-            let open = delimiter_width(paren_size);
-            let close = open;
-            let delimiter_pad = delimiter_padding(paren_size);
-            let row_ascent = ascent.max(inner.ascent + delimiter_pad);
-            let row_descent = descent.max(inner.descent + delimiter_pad);
-            let total_ascent = row_ascent;
-            // The function name is the SAME font size as its argument; sit its
-            // box so its baseline lands on the row baseline (`total_ascent`),
-            // not the frag top — otherwise a tall argument (a √ with
-            // superscripts, e.g. `sin(√(x²+y²))`) would leave the name floating
-            // above and reading as an oversized, misaligned glyph.
-            let mut boxes = vec![Box2d {
-                x: 0.0,
-                y: total_ascent - ascent,
-                w: name_w,
-                h: ascent + descent,
-                baseline: ascent,
-                kind: BoxKind::Name {
-                    text: name.clone(),
-                    size,
-                },
-            }];
-            let mut gaps = Vec::new();
-            let mut pen = name_w;
-            boxes.push(Box2d {
-                x: pen,
-                y: 0.0,
-                w: open,
-                h: row_ascent + row_descent,
-                baseline: total_ascent,
-                kind: BoxKind::Paren {
-                    open: true,
-                    size: paren_size,
-                },
-            });
-            pen += open;
-            let dy = total_ascent - inner.ascent;
-            for mut b in inner.boxes {
-                b.x += pen;
-                b.y += dy;
-                boxes.push(b);
-            }
-            for mut g in inner.gaps {
-                g.x += pen;
-                g.top += dy;
-                g.bottom += dy;
-                gaps.push(g);
-            }
-            pen += inner.width;
-            boxes.push(Box2d {
-                x: pen,
-                y: 0.0,
-                w: close,
-                h: row_ascent + row_descent,
-                baseline: total_ascent,
-                kind: BoxKind::Paren {
-                    open: false,
-                    size: paren_size,
-                },
-            });
-            pen += close;
-            NodeFrag {
-                boxes,
-                gaps,
-                width: pen,
-                ascent: total_ascent,
-                descent: row_descent,
-            }
-        }
+        Node::Table { rows } => layout_table(rows, idx, steps, tr, size),
+        Node::Func { name, arg } => layout_func(name, arg, idx, steps, tr, size),
         Node::Paren { body } => {
             layout_delimited(body, Some('('), Some(')'), idx, steps, tr, size, true)
         }
         Node::Delimited { open, close, body } => {
             layout_delimited(body, *open, *close, idx, steps, tr, size, false)
         }
-        Node::Sup { exp } => {
-            // Exponent is raised and smaller, sitting above the row baseline.
-            let exp_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
-            let exp_steps = child_steps(steps, idx, Slot::Exp);
-            let inner = layout_row(exp, &exp_steps, tr, exp_size);
-            let (base_ascent, base_descent) = metrics(size);
-            // Raise the exponent so its bottom sits ~ at 55% of base ascent.
-            let raise = base_ascent * 0.55;
-            let ascent = (inner.height() + raise).max(base_ascent);
-            let descent = base_descent;
-            let mut boxes = Vec::new();
-            let mut gaps = Vec::new();
-            let dy = ascent - inner.height();
-            for mut b in inner.boxes {
-                b.y += dy;
-                boxes.push(b);
-            }
-            for mut g in inner.gaps {
-                g.top += dy;
-                g.bottom += dy;
-                gaps.push(g);
-            }
-            let width = inner.width.max(measure_glyph(tr, '2', exp_size));
-            NodeFrag {
-                boxes,
-                gaps,
-                width,
-                ascent,
-                descent,
-            }
-        }
-        Node::Sub { sub } => {
-            let sub_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
-            let sub_steps = child_steps(steps, idx, Slot::Sub);
-            let inner = layout_row(sub, &sub_steps, tr, sub_size);
-            let (ascent, base_descent) = metrics(size);
-            let shift = f64::from(size) * 0.28;
-            let top = ascent + shift - inner.ascent;
-            let descent = base_descent.max(top + inner.height() - ascent);
-            let mut boxes = inner.boxes;
-            let mut gaps = inner.gaps;
-            for math_box in &mut boxes {
-                math_box.y += top;
-            }
-            for gap in &mut gaps {
-                gap.top += top;
-                gap.bottom += top;
-            }
-            NodeFrag {
-                width: inner.width.max(measure_glyph(tr, '0', sub_size)),
-                boxes,
-                gaps,
-                ascent,
-                descent,
-            }
-        }
-        Node::SubSup { sub, sup } => {
-            let script_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
-            let sub_steps = child_steps(steps, idx, Slot::Sub);
-            let superscript_steps = child_steps(steps, idx, Slot::Sup);
-            let lower = layout_row(sub, &sub_steps, tr, script_size);
-            let upper = layout_row(sup, &superscript_steps, tr, script_size);
-            let (base_ascent, base_descent) = metrics(size);
-            let raise = base_ascent * 0.55;
-            let ascent = (upper.height() + raise).max(base_ascent);
-            let lower_top = ascent + f64::from(size) * 0.28 - lower.ascent;
-            let descent = base_descent.max(lower_top + lower.height() - ascent);
-            let width = lower
-                .width
-                .max(upper.width)
-                .max(measure_glyph(tr, '0', script_size));
-            let mut boxes = Vec::new();
-            let mut gaps = Vec::new();
-            let upper_x = (width - upper.width) * 0.5;
-            let upper_y = ascent - upper.height();
-            for mut math_box in upper.boxes {
-                math_box.x += upper_x;
-                math_box.y += upper_y;
-                boxes.push(math_box);
-            }
-            for mut gap in upper.gaps {
-                gap.x += upper_x;
-                gap.top += upper_y;
-                gap.bottom += upper_y;
-                gaps.push(gap);
-            }
-            let lower_x = (width - lower.width) * 0.5;
-            for mut math_box in lower.boxes {
-                math_box.x += lower_x;
-                math_box.y += lower_top;
-                boxes.push(math_box);
-            }
-            for mut gap in lower.gaps {
-                gap.x += lower_x;
-                gap.top += lower_top;
-                gap.bottom += lower_top;
-                gaps.push(gap);
-            }
-            NodeFrag {
-                boxes,
-                gaps,
-                width,
-                ascent,
-                descent,
-            }
-        }
-        Node::Frac { num, den } => {
-            let num_steps = child_steps(steps, idx, Slot::Num);
-            let den_steps = child_steps(steps, idx, Slot::Den);
-            let num_f = layout_row(num, &num_steps, tr, size);
-            let den_f = layout_row(den, &den_steps, tr, size);
-            let pad = 6.0;
-            let bar_pad = 4.0;
-            let width = num_f
-                .width
-                .max(den_f.width)
-                .max(measure_glyph(tr, '0', size))
-                + pad * 2.0;
-            let bar_thick = 1.6;
-            let gap_above = 3.0;
-            let gap_below = 3.0;
-            // Numerator sits above the bar; the bar is at the row baseline.
-            let num_h = num_f.height();
-            let den_h = den_f.height();
-            let bar_y = num_h + gap_above;
-            let ascent = bar_y + bar_thick * 0.5;
-            let descent = bar_thick * 0.5 + gap_below + den_h;
-
-            let mut boxes = Vec::new();
-            let mut gaps = Vec::new();
-            // numerator centered
-            let num_x = (width - num_f.width) / 2.0;
-            for mut b in num_f.boxes {
-                b.x += num_x;
-                b.y += 0.0;
-                boxes.push(b);
-            }
-            for mut g in num_f.gaps {
-                g.x += num_x;
-                gaps.push(g);
-            }
-            // bar
-            boxes.push(Box2d {
-                x: bar_pad,
-                y: bar_y - bar_thick * 0.5,
-                w: width - bar_pad * 2.0,
-                h: bar_thick,
-                baseline: bar_thick,
-                kind: BoxKind::FracBar,
-            });
-            // denominator centered, below the bar
-            let den_x = (width - den_f.width) / 2.0;
-            let den_dy = bar_y + bar_thick * 0.5 + gap_below;
-            for mut b in den_f.boxes {
-                b.x += den_x;
-                b.y += den_dy;
-                boxes.push(b);
-            }
-            for mut g in den_f.gaps {
-                g.x += den_x;
-                g.top += den_dy;
-                g.bottom += den_dy;
-                gaps.push(g);
-            }
-            NodeFrag {
-                boxes,
-                gaps,
-                width,
-                ascent,
-                descent,
-            }
-        }
+        Node::Sup { exp } => layout_sup(exp, idx, steps, tr, size),
+        Node::Sub { sub } => layout_sub(sub, idx, steps, tr, size),
+        Node::SubSup { sub, sup } => layout_subsup(sub, sup, idx, steps, tr, size),
+        Node::Frac { num, den } => layout_frac(num, den, idx, steps, tr, size),
         Node::Sqrt { index, radicand } => {
-            let rad_steps = child_steps(steps, idx, Slot::Radicand);
-            let inner = layout_row(radicand, &rad_steps, tr, size);
-            // The radical is drawn as a vector path (see render::SqrtSign), so
-            // its width is a fixed fraction of the font size rather than the
-            // font's `√` advance — keeps the nib proportions consistent.
-            let sign_w = (f64::from(size) * 0.62).max(9.0);
-            let over_pad = 4.0;
-            let top_gap = 3.0;
-            let ascent = inner.ascent + top_gap + 2.0;
-            let descent = inner.descent;
-            let mut boxes = Vec::new();
-            let mut gaps = Vec::new();
-            let mut pen = 0.0;
-
-            // Optional index in the crook (small, raised).
-            if let Some(idx_row) = index {
-                let idx_size = (size * 0.6).max(MIN_SIZE);
-                let idx_steps = child_steps(steps, idx, Slot::Index);
-                let idxf = layout_row(idx_row, &idx_steps, tr, idx_size);
-                for mut b in idxf.boxes {
-                    b.x += pen;
-                    b.y += 0.0;
-                    boxes.push(b);
-                }
-                for mut g in idxf.gaps {
-                    g.x += pen;
-                    gaps.push(g);
-                }
-                pen += idxf.width.max(f64::from(idx_size) * 0.5);
-            }
-
-            let radicand_w = inner.width + over_pad;
-            boxes.push(Box2d {
-                x: pen,
-                y: 0.0,
-                w: sign_w,
-                h: ascent + descent,
-                baseline: ascent,
-                kind: BoxKind::SqrtSign {
-                    over_w: radicand_w,
-                    size,
-                },
-            });
-            pen += sign_w;
-            let dy = ascent - inner.ascent;
-            for mut b in inner.boxes {
-                b.x += pen;
-                b.y += dy;
-                boxes.push(b);
-            }
-            for mut g in inner.gaps {
-                g.x += pen;
-                g.top += dy;
-                g.bottom += dy;
-                gaps.push(g);
-            }
-            pen += inner.width + over_pad;
-            NodeFrag {
-                boxes,
-                gaps,
-                width: pen,
-                ascent,
-                descent,
-            }
+            layout_sqrt(index.as_ref(), radicand, idx, steps, tr, size)
         }
+    }
+}
+
+fn layout_char(ch: char, tr: &mut TextRenderer, size: f32) -> NodeFrag {
+    let w = measure_glyph(tr, ch, size);
+    let (space_before, space_after) = operator_spacing(ch, size);
+    let (ascent, descent) = metrics(size);
+    let b = Box2d {
+        x: space_before,
+        y: 0.0,
+        w,
+        h: ascent + descent,
+        baseline: ascent,
+        kind: BoxKind::Glyph {
+            ch: math_display_char(ch),
+            size,
+        },
+    };
+    NodeFrag {
+        boxes: vec![b],
+        gaps: vec![],
+        width: space_before + w + space_after,
+        ascent,
+        descent,
+    }
+}
+
+fn layout_text(text: &str, tr: &mut TextRenderer, size: f32) -> NodeFrag {
+    let width = measure_name(tr, text, size);
+    let (ascent, descent) = metrics(size);
+    NodeFrag {
+        boxes: vec![Box2d {
+            x: 0.0,
+            y: 0.0,
+            w: width,
+            h: ascent + descent,
+            baseline: ascent,
+            kind: BoxKind::Name {
+                text: text.to_string(),
+                size,
+            },
+        }],
+        gaps: vec![],
+        width,
+        ascent,
+        descent,
+    }
+}
+
+fn layout_accent(
+    base: &Row,
+    mark: char,
+    over: bool,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    let base_steps = child_steps(steps, idx, Slot::Base);
+    let inner = layout_row(base, &base_steps, tr, size);
+    let accent_height = match mark {
+        '˙' | '¨' => f64::from(size) * 0.18,
+        _ => f64::from(size) * 0.24,
+    }
+    .max(3.0);
+    let gap = (f64::from(size) * 0.045).max(1.0);
+    let width = inner.width.max(f64::from(size) * 0.45);
+    let inner_x = (width - inner.width) * 0.5;
+    let (ascent, descent, inner_y, accent_y) = if over {
+        (
+            inner.ascent + accent_height + gap,
+            inner.descent,
+            accent_height + gap,
+            0.0,
+        )
+    } else {
+        (
+            inner.ascent,
+            inner.descent + accent_height + gap,
+            0.0,
+            inner.height() + gap,
+        )
+    };
+    let mut boxes = vec![Box2d {
+        x: 0.0,
+        y: accent_y,
+        w: width,
+        h: accent_height,
+        baseline: accent_height,
+        kind: BoxKind::Accent { mark, size },
+    }];
+    let mut gaps = Vec::new();
+    for mut math_box in inner.boxes {
+        math_box.x += inner_x;
+        math_box.y += inner_y;
+        boxes.push(math_box);
+    }
+    for mut insertion in inner.gaps {
+        insertion.x += inner_x;
+        insertion.top += inner_y;
+        insertion.bottom += inner_y;
+        gaps.push(insertion);
+    }
+    NodeFrag {
+        boxes,
+        gaps,
+        width,
+        ascent,
+        descent,
+    }
+}
+
+fn layout_under_over(
+    base: &Row,
+    under: Option<&Row>,
+    over: Option<&Row>,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    let base_steps = child_steps(steps, idx, Slot::Base);
+    let base_fragment = layout_row(base, &base_steps, tr, size);
+    let script_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
+    let upper =
+        over.map(|row| layout_row(row, &child_steps(steps, idx, Slot::Over), tr, script_size));
+    let lower =
+        under.map(|row| layout_row(row, &child_steps(steps, idx, Slot::Under), tr, script_size));
+    let gap = f64::from(size) * 0.12;
+    let width = base_fragment
+        .width
+        .max(upper.as_ref().map_or(0.0, |fragment| fragment.width))
+        .max(lower.as_ref().map_or(0.0, |fragment| fragment.width));
+    let upper_height = upper.as_ref().map_or(0.0, Frag::height);
+    let base_top = if upper.is_some() {
+        upper_height + gap
+    } else {
+        0.0
+    };
+    let ascent = base_top + base_fragment.ascent;
+    let base_descent = base_fragment.descent;
+    let descent = base_descent
+        + lower
+            .as_ref()
+            .map_or(0.0, |fragment| gap + fragment.height());
+    let mut boxes = Vec::new();
+    let mut gaps = Vec::new();
+    let mut place = |fragment: Frag, top: f64| {
+        let x = (width - fragment.width) * 0.5;
+        for mut math_box in fragment.boxes {
+            math_box.x += x;
+            math_box.y += top;
+            boxes.push(math_box);
+        }
+        for mut insertion in fragment.gaps {
+            insertion.x += x;
+            insertion.top += top;
+            insertion.bottom += top;
+            gaps.push(insertion);
+        }
+    };
+    if let Some(upper) = upper {
+        place(upper, 0.0);
+    }
+    place(base_fragment, base_top);
+    if let Some(lower) = lower {
+        place(lower, ascent + base_descent + gap);
+    }
+    NodeFrag {
+        boxes,
+        gaps,
+        width,
+        ascent,
+        descent,
+    }
+}
+
+fn layout_table(
+    rows: &[Vec<Row>],
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    let column_count = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if rows.is_empty() || column_count == 0 {
+        let (ascent, descent) = metrics(size);
+        return NodeFrag {
+            boxes: Vec::new(),
+            gaps: Vec::new(),
+            width: measure_glyph(tr, '0', size),
+            ascent,
+            descent,
+        };
+    }
+    let measured = measure_table(rows, column_count, idx, steps, tr, size);
+    place_table(measured)
+}
+
+/// Cell fragments plus the shared row/column geometry `layout_table` derives
+/// from them, kept separate so measuring and placing the grid stay under the
+/// function-length lint independently.
+struct TableMeasure {
+    fragments: Vec<Vec<Frag>>,
+    column_widths: Vec<f64>,
+    row_ascents: Vec<f64>,
+    row_descents: Vec<f64>,
+    column_gap: f64,
+    row_gap: f64,
+    width: f64,
+    ascent: f64,
+    descent: f64,
+}
+
+fn measure_table(
+    rows: &[Vec<Row>],
+    column_count: usize,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> TableMeasure {
+    let mut fragments: Vec<Vec<Frag>> = Vec::with_capacity(rows.len());
+    let mut column_widths = vec![0.0f64; column_count];
+    let mut row_ascents = Vec::with_capacity(rows.len());
+    let mut row_descents = Vec::with_capacity(rows.len());
+    for (row_index, cells) in rows.iter().enumerate() {
+        let mut laid_cells = Vec::with_capacity(cells.len());
+        let mut row_ascent: f64 = 0.0;
+        let mut row_descent: f64 = 0.0;
+        for (column, cell) in cells.iter().enumerate() {
+            let fragment = layout_row(
+                cell,
+                &child_steps(
+                    steps,
+                    idx,
+                    Slot::Cell(
+                        u16::try_from(row_index).unwrap_or(u16::MAX),
+                        u16::try_from(column).unwrap_or(u16::MAX),
+                    ),
+                ),
+                tr,
+                size,
+            );
+            if let Some(slot) = column_widths.get_mut(column) {
+                *slot = slot.max(fragment.width);
+            }
+            row_ascent = row_ascent.max(fragment.ascent);
+            row_descent = row_descent.max(fragment.descent);
+            laid_cells.push(fragment);
+        }
+        fragments.push(laid_cells);
+        row_ascents.push(row_ascent);
+        row_descents.push(row_descent);
+    }
+    let column_gap = f64::from(size) * 0.65;
+    let row_gap = f64::from(size) * 0.28;
+    let column_gaps = f64::from(u32::try_from(column_count.saturating_sub(1)).unwrap_or(u32::MAX));
+    let width = column_widths.iter().sum::<f64>() + column_gap * column_gaps;
+    let row_gaps = f64::from(u32::try_from(rows.len().saturating_sub(1)).unwrap_or(u32::MAX));
+    let height = row_ascents
+        .iter()
+        .zip(&row_descents)
+        .map(|(ascent, descent)| ascent + descent)
+        .sum::<f64>()
+        + row_gap * row_gaps;
+    let ascent = height * 0.5;
+    let descent = height - ascent;
+    TableMeasure {
+        fragments,
+        column_widths,
+        row_ascents,
+        row_descents,
+        column_gap,
+        row_gap,
+        width,
+        ascent,
+        descent,
+    }
+}
+
+fn place_table(measured: TableMeasure) -> NodeFrag {
+    let TableMeasure {
+        fragments,
+        column_widths,
+        row_ascents,
+        row_descents,
+        column_gap,
+        row_gap,
+        width,
+        ascent,
+        descent,
+    } = measured;
+    let mut boxes = Vec::new();
+    let mut gaps = Vec::new();
+    let mut row_top = 0.0;
+    for (row_index, laid_cells) in fragments.into_iter().enumerate() {
+        let mut column_x = 0.0;
+        let row_ascent = row_ascents.get(row_index).copied().unwrap_or(0.0);
+        let row_descent = row_descents.get(row_index).copied().unwrap_or(0.0);
+        for (column, fragment) in laid_cells.into_iter().enumerate() {
+            let column_width = column_widths.get(column).copied().unwrap_or(0.0);
+            let x = column_x + (column_width - fragment.width) * 0.5;
+            let y = row_top + row_ascent - fragment.ascent;
+            for mut math_box in fragment.boxes {
+                math_box.x += x;
+                math_box.y += y;
+                boxes.push(math_box);
+            }
+            for mut insertion in fragment.gaps {
+                insertion.x += x;
+                insertion.top += y;
+                insertion.bottom += y;
+                gaps.push(insertion);
+            }
+            column_x += column_width + column_gap;
+        }
+        row_top += row_ascent + row_descent + row_gap;
+    }
+    NodeFrag {
+        boxes,
+        gaps,
+        width,
+        ascent,
+        descent,
+    }
+}
+
+fn layout_func(
+    name: &str,
+    arg: &Row,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    let name_w = measure_name(tr, name, size);
+    let (ascent, descent) = metrics(size);
+    let arg_steps = child_steps(steps, idx, Slot::Arg);
+    let inner = layout_row(arg, &arg_steps, tr, size);
+    let paren_size = size;
+    let open = delimiter_width(paren_size);
+    let close = open;
+    let delimiter_pad = delimiter_padding(paren_size);
+    let row_ascent = ascent.max(inner.ascent + delimiter_pad);
+    let row_descent = descent.max(inner.descent + delimiter_pad);
+    let total_ascent = row_ascent;
+    // The function name is the SAME font size as its argument; sit its
+    // box so its baseline lands on the row baseline (`total_ascent`),
+    // not the frag top — otherwise a tall argument (a √ with
+    // superscripts, e.g. `sin(√(x²+y²))`) would leave the name floating
+    // above and reading as an oversized, misaligned glyph.
+    let mut boxes = vec![Box2d {
+        x: 0.0,
+        y: total_ascent - ascent,
+        w: name_w,
+        h: ascent + descent,
+        baseline: ascent,
+        kind: BoxKind::Name {
+            text: name.to_string(),
+            size,
+        },
+    }];
+    let mut gaps = Vec::new();
+    let mut pen = name_w;
+    boxes.push(Box2d {
+        x: pen,
+        y: 0.0,
+        w: open,
+        h: row_ascent + row_descent,
+        baseline: total_ascent,
+        kind: BoxKind::Paren {
+            open: true,
+            size: paren_size,
+        },
+    });
+    pen += open;
+    let dy = total_ascent - inner.ascent;
+    for mut b in inner.boxes {
+        b.x += pen;
+        b.y += dy;
+        boxes.push(b);
+    }
+    for mut g in inner.gaps {
+        g.x += pen;
+        g.top += dy;
+        g.bottom += dy;
+        gaps.push(g);
+    }
+    pen += inner.width;
+    boxes.push(Box2d {
+        x: pen,
+        y: 0.0,
+        w: close,
+        h: row_ascent + row_descent,
+        baseline: total_ascent,
+        kind: BoxKind::Paren {
+            open: false,
+            size: paren_size,
+        },
+    });
+    pen += close;
+    NodeFrag {
+        boxes,
+        gaps,
+        width: pen,
+        ascent: total_ascent,
+        descent: row_descent,
+    }
+}
+
+fn layout_sup(
+    exp: &Row,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    // Exponent is raised and smaller, sitting above the row baseline.
+    let exp_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
+    let exp_steps = child_steps(steps, idx, Slot::Exp);
+    let inner = layout_row(exp, &exp_steps, tr, exp_size);
+    let (base_ascent, base_descent) = metrics(size);
+    // Raise the exponent so its bottom sits ~ at 55% of base ascent.
+    let raise = base_ascent * 0.55;
+    let ascent = (inner.height() + raise).max(base_ascent);
+    let descent = base_descent;
+    let mut boxes = Vec::new();
+    let mut gaps = Vec::new();
+    let dy = ascent - inner.height();
+    for mut b in inner.boxes {
+        b.y += dy;
+        boxes.push(b);
+    }
+    for mut g in inner.gaps {
+        g.top += dy;
+        g.bottom += dy;
+        gaps.push(g);
+    }
+    let width = inner.width.max(measure_glyph(tr, '2', exp_size));
+    NodeFrag {
+        boxes,
+        gaps,
+        width,
+        ascent,
+        descent,
+    }
+}
+
+fn layout_sub(
+    sub: &Row,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    let sub_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
+    let sub_steps = child_steps(steps, idx, Slot::Sub);
+    let inner = layout_row(sub, &sub_steps, tr, sub_size);
+    let (ascent, base_descent) = metrics(size);
+    let shift = f64::from(size) * 0.28;
+    let top = ascent + shift - inner.ascent;
+    let descent = base_descent.max(top + inner.height() - ascent);
+    let mut boxes = inner.boxes;
+    let mut gaps = inner.gaps;
+    for math_box in &mut boxes {
+        math_box.y += top;
+    }
+    for gap in &mut gaps {
+        gap.top += top;
+        gap.bottom += top;
+    }
+    NodeFrag {
+        width: inner.width.max(measure_glyph(tr, '0', sub_size)),
+        boxes,
+        gaps,
+        ascent,
+        descent,
+    }
+}
+
+fn layout_subsup(
+    sub: &Row,
+    sup: &Row,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    let script_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
+    let sub_steps = child_steps(steps, idx, Slot::Sub);
+    let superscript_steps = child_steps(steps, idx, Slot::Sup);
+    let lower = layout_row(sub, &sub_steps, tr, script_size);
+    let upper = layout_row(sup, &superscript_steps, tr, script_size);
+    let (base_ascent, base_descent) = metrics(size);
+    let raise = base_ascent * 0.55;
+    let ascent = (upper.height() + raise).max(base_ascent);
+    let lower_top = ascent + f64::from(size) * 0.28 - lower.ascent;
+    let descent = base_descent.max(lower_top + lower.height() - ascent);
+    let width = lower
+        .width
+        .max(upper.width)
+        .max(measure_glyph(tr, '0', script_size));
+    let mut boxes = Vec::new();
+    let mut gaps = Vec::new();
+    let upper_x = (width - upper.width) * 0.5;
+    let upper_y = ascent - upper.height();
+    for mut math_box in upper.boxes {
+        math_box.x += upper_x;
+        math_box.y += upper_y;
+        boxes.push(math_box);
+    }
+    for mut gap in upper.gaps {
+        gap.x += upper_x;
+        gap.top += upper_y;
+        gap.bottom += upper_y;
+        gaps.push(gap);
+    }
+    let lower_x = (width - lower.width) * 0.5;
+    for mut math_box in lower.boxes {
+        math_box.x += lower_x;
+        math_box.y += lower_top;
+        boxes.push(math_box);
+    }
+    for mut gap in lower.gaps {
+        gap.x += lower_x;
+        gap.top += lower_top;
+        gap.bottom += lower_top;
+        gaps.push(gap);
+    }
+    NodeFrag {
+        boxes,
+        gaps,
+        width,
+        ascent,
+        descent,
+    }
+}
+
+fn layout_frac(
+    num: &Row,
+    den: &Row,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    let num_steps = child_steps(steps, idx, Slot::Num);
+    let den_steps = child_steps(steps, idx, Slot::Den);
+    let num_f = layout_row(num, &num_steps, tr, size);
+    let den_f = layout_row(den, &den_steps, tr, size);
+    let pad = 6.0;
+    let bar_pad = 4.0;
+    let width = num_f
+        .width
+        .max(den_f.width)
+        .max(measure_glyph(tr, '0', size))
+        + pad * 2.0;
+    let bar_thick = 1.6;
+    let gap_above = 3.0;
+    let gap_below = 3.0;
+    // Numerator sits above the bar; the bar is at the row baseline.
+    let num_h = num_f.height();
+    let den_h = den_f.height();
+    let bar_y = num_h + gap_above;
+    let ascent = bar_y + bar_thick * 0.5;
+    let descent = bar_thick * 0.5 + gap_below + den_h;
+
+    let mut boxes = Vec::new();
+    let mut gaps = Vec::new();
+    // numerator centered
+    let num_x = (width - num_f.width) / 2.0;
+    for mut b in num_f.boxes {
+        b.x += num_x;
+        b.y += 0.0;
+        boxes.push(b);
+    }
+    for mut g in num_f.gaps {
+        g.x += num_x;
+        gaps.push(g);
+    }
+    // bar
+    boxes.push(Box2d {
+        x: bar_pad,
+        y: bar_y - bar_thick * 0.5,
+        w: width - bar_pad * 2.0,
+        h: bar_thick,
+        baseline: bar_thick,
+        kind: BoxKind::FracBar,
+    });
+    // denominator centered, below the bar
+    let den_x = (width - den_f.width) / 2.0;
+    let den_dy = bar_y + bar_thick * 0.5 + gap_below;
+    for mut b in den_f.boxes {
+        b.x += den_x;
+        b.y += den_dy;
+        boxes.push(b);
+    }
+    for mut g in den_f.gaps {
+        g.x += den_x;
+        g.top += den_dy;
+        g.bottom += den_dy;
+        gaps.push(g);
+    }
+    NodeFrag {
+        boxes,
+        gaps,
+        width,
+        ascent,
+        descent,
+    }
+}
+
+fn layout_sqrt(
+    index: Option<&Row>,
+    radicand: &Row,
+    idx: usize,
+    steps: &[(usize, Slot)],
+    tr: &mut TextRenderer,
+    size: f32,
+) -> NodeFrag {
+    let rad_steps = child_steps(steps, idx, Slot::Radicand);
+    let inner = layout_row(radicand, &rad_steps, tr, size);
+    // The radical is drawn as a vector path (see render::SqrtSign), so
+    // its width is a fixed fraction of the font size rather than the
+    // font's `√` advance — keeps the nib proportions consistent.
+    let sign_w = (f64::from(size) * 0.62).max(9.0);
+    let over_pad = 4.0;
+    let top_gap = 3.0;
+    let ascent = inner.ascent + top_gap + 2.0;
+    let descent = inner.descent;
+    let mut boxes = Vec::new();
+    let mut gaps = Vec::new();
+    let mut pen = 0.0;
+
+    // Optional index in the crook (small, raised).
+    if let Some(idx_row) = index {
+        let idx_size = (size * 0.6).max(MIN_SIZE);
+        let idx_steps = child_steps(steps, idx, Slot::Index);
+        let idxf = layout_row(idx_row, &idx_steps, tr, idx_size);
+        for mut b in idxf.boxes {
+            b.x += pen;
+            b.y += 0.0;
+            boxes.push(b);
+        }
+        for mut g in idxf.gaps {
+            g.x += pen;
+            gaps.push(g);
+        }
+        pen += idxf.width.max(f64::from(idx_size) * 0.5);
+    }
+
+    let radicand_w = inner.width + over_pad;
+    boxes.push(Box2d {
+        x: pen,
+        y: 0.0,
+        w: sign_w,
+        h: ascent + descent,
+        baseline: ascent,
+        kind: BoxKind::SqrtSign {
+            over_w: radicand_w,
+            size,
+        },
+    });
+    pen += sign_w;
+    let dy = ascent - inner.ascent;
+    for mut b in inner.boxes {
+        b.x += pen;
+        b.y += dy;
+        boxes.push(b);
+    }
+    for mut g in inner.gaps {
+        g.x += pen;
+        g.top += dy;
+        g.bottom += dy;
+        gaps.push(g);
+    }
+    pen += inner.width + over_pad;
+    NodeFrag {
+        boxes,
+        gaps,
+        width: pen,
+        ascent,
+        descent,
     }
 }
 
@@ -936,6 +1086,30 @@ fn child_steps(steps: &[(usize, Slot)], idx: usize, slot: Slot) -> Vec<(usize, S
     let mut s = steps.to_vec();
     s.push((idx, slot));
     s
+}
+
+/// Find the gap nearest a click point `(px, py)` (content-local). Picks the
+/// row whose vertical band contains `py` if any, else the globally nearest
+/// gap by Euclidean distance to the gap's vertical extent.
+pub fn nearest_gap(gaps: &[Gap], px: f64, py: f64) -> Option<&Gap> {
+    let mut best: Option<(&Gap, f64)> = None;
+    for g in gaps {
+        let dy = if py < g.top {
+            g.top - py
+        } else if py > g.bottom {
+            py - g.bottom
+        } else {
+            0.0
+        };
+        let dx = (g.x - px).abs();
+        // Strongly prefer gaps whose band contains py, then nearest x.
+        let cost = dy * 4.0 + dx;
+        match best {
+            Some((_, c)) if c <= cost => {}
+            _ => best = Some((g, cost)),
+        }
+    }
+    best.map(|(g, _)| g)
 }
 
 #[cfg(test)]
@@ -1021,7 +1195,7 @@ mod layout_tests {
             },
         ];
         let laid = layout(&row, &mut tr, 24.0);
-        assert!(laid.height > f64::from(24.0 * 1.25));
+        assert!(laid.height > 24.0 * 1.25);
         let script_gaps: Vec<_> = laid
             .gaps
             .iter()
@@ -1049,8 +1223,8 @@ mod layout_tests {
             }],
         }];
         let laid = layout(&row, &mut tr, 22.0);
-        assert!(laid.height > f64::from(22.0 * 2.0));
-        assert!(laid.width > f64::from(22.0 * 3.0));
+        assert!(laid.height > 22.0 * 2.0);
+        assert!(laid.width > 22.0 * 3.0);
         assert!(
             laid.boxes
                 .iter()
@@ -1143,7 +1317,7 @@ mod layout_tests {
             .fold(f64::NEG_INFINITY, f64::max);
         let matrix_center = (matrix_top + matrix_bottom) * 0.5;
         assert!(
-            (delimiter_center - matrix_center).abs() < f64::from(22.0 * 0.2),
+            (delimiter_center - matrix_center).abs() < 22.0 * 0.2,
             "delimiter and matrix must share an optical centre"
         );
     }
@@ -1185,28 +1359,4 @@ mod layout_tests {
         assert!(accent.x <= base.x + base.w * 0.25);
         assert!(accent.x + accent.w >= base.x + base.w * 0.75);
     }
-}
-
-/// Find the gap nearest a click point `(px, py)` (content-local). Picks the
-/// row whose vertical band contains `py` if any, else the globally nearest
-/// gap by Euclidean distance to the gap's vertical extent.
-pub fn nearest_gap(gaps: &[Gap], px: f64, py: f64) -> Option<&Gap> {
-    let mut best: Option<(&Gap, f64)> = None;
-    for g in gaps {
-        let dy = if py < g.top {
-            g.top - py
-        } else if py > g.bottom {
-            py - g.bottom
-        } else {
-            0.0
-        };
-        let dx = (g.x - px).abs();
-        // Strongly prefer gaps whose band contains py, then nearest x.
-        let cost = dy * 4.0 + dx;
-        match best {
-            Some((_, c)) if c <= cost => {}
-            _ => best = Some((g, cost)),
-        }
-    }
-    best.map(|(g, _)| g)
 }

@@ -1,11 +1,10 @@
 //! Four execution modes for the `shots` binary:
-//!   - `offscreen`  — wgpu adapter, no window; captures PNGs.
-//!   - `headless`   — no GPU; dumps state JSON.
-//!   - `recording`  — wgpu adapter, no window; encodes a scenario to
-//!                    a raw H.264 NALU stream (Annex-B), suitable for
-//!                    ffplay / mpv / vlc.
-//!   - `window`     — real winit window; pre-rolls a scenario then
-//!                    yields control to the live event loop.
+//!   - `offscreen` — wgpu adapter, no window; captures PNGs.
+//!   - `headless` — no GPU; dumps state JSON.
+//!   - `recording` — wgpu adapter, no window; encodes a scenario to a raw
+//!     H.264 NALU stream (Annex-B), suitable for ffplay / mpv / vlc.
+//!   - `window` — real winit window; pre-rolls a scenario then yields
+//!     control to the live event loop.
 
 use std::path::Path;
 
@@ -16,12 +15,45 @@ use ui::offscreen::OffscreenRenderer;
 use super::driver::ShellDriver;
 use super::scenario::{self, JsonDirSink, NullSink, Scenario, SnapshotSink};
 
+/// Round a logical-pixel viewport dimension (from [`ShellDriver::viewport`]) to the
+/// nearest `u32`. Viewport sizes are always small and non-negative in practice — the
+/// clamp documents that rather than letting the cast wrap on a hypothetical
+/// out-of-range value.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0.0..=f64::from(u32::MAX) immediately above, so it always fits a non-negative u32"
+)]
+fn dim_to_u32(v: f64) -> u32 {
+    v.round().clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
+/// Frames to encode per scenario step in recording mode: `fps * step_duration_secs`,
+/// rounded and floored at 1 so a step never contributes zero frames to the video.
+fn frames_per_step_for(fps: u32, step_duration_secs: f32) -> u32 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "fps is a frame rate (tens to low hundreds); f32 precision loss is not reachable"
+    )]
+    let frames = (fps as f32) * step_duration_secs;
+    let frames = frames.round().max(1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rounded and clamped to >= 1.0 immediately above, so it always fits a non-negative u32"
+    )]
+    let frames = frames as u32;
+    frames
+}
+
 // =====================================================================
 // Offscreen mode
 // =====================================================================
 
 pub mod offscreen {
-    use super::{Color, OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, scenario};
+    use super::{
+        Color, OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, dim_to_u32, scenario,
+    };
 
     /// `SnapshotSink` that renders into a PNG file per snapshot under
     /// `dir`, using the supplied `OffscreenRenderer`.
@@ -58,20 +90,24 @@ pub mod offscreen {
     /// is `Some(n)`, every `Wait(k)` step in the scenario is expanded
     /// into `n` intermediate snapshots so animation curves are inspectable
     /// frame-by-frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the output directory cannot be created.
     pub fn run_scenario(
         driver: &mut ShellDriver,
         scenario: &Scenario,
         dir: &Path,
         per_frame: Option<u32>,
-    ) {
-        std::fs::create_dir_all(dir).expect("create offscreen output dir");
+    ) -> Result<(), String> {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
         let (w, h) = driver.viewport();
-        let mut renderer = OffscreenRenderer::new(w as u32, h as u32);
+        let (w, h) = (dim_to_u32(w), dim_to_u32(h));
+        let mut renderer = OffscreenRenderer::new(w, h);
         println!(
-            "shots: offscreen scenario '{}' at {}x{} → {}",
+            "shots: offscreen scenario '{}' at {w}x{h} → {}",
             scenario.name,
-            w as u32,
-            h as u32,
             dir.display()
         );
         let mut sink = PngDirSink {
@@ -80,12 +116,19 @@ pub mod offscreen {
             first_paint_seen: false,
         };
         scenario::run_with(driver, scenario, &mut sink, per_frame);
+        Ok(())
     }
 
     /// Backwards-compat scene-set path: render each named scene with a
     /// fresh driver (so flag mutations don't bleed between scenes).
-    pub fn run_scenes(scenes: &[String], dir: &Path, viewport: (u32, u32)) {
-        std::fs::create_dir_all(dir).expect("create offscreen output dir");
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the output directory cannot be created, or if a
+    /// scene named in `scenes` fails its own setup.
+    pub fn run_scenes(scenes: &[String], dir: &Path, viewport: (u32, u32)) -> Result<(), String> {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
         let mut renderer = OffscreenRenderer::new(viewport.0, viewport.1);
         println!(
             "shots: offscreen scene-set ({} scenes) at {}x{} → {}",
@@ -99,7 +142,7 @@ pub mod offscreen {
             let mut driver = ShellDriver::new(viewport);
             driver
                 .scene_setup(name)
-                .unwrap_or_else(|e| panic!("scene_setup({name}) failed: {e}"));
+                .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
             let scene = driver.paint_settled();
             let path = dir.join(format!("{name}.png"));
             renderer.render_png(&scene, Color::TRANSPARENT, &path);
@@ -112,6 +155,7 @@ pub mod offscreen {
             }
             println!("  wrote {}", path.display());
         }
+        Ok(())
     }
 }
 
@@ -120,25 +164,32 @@ pub mod offscreen {
 // =====================================================================
 
 pub mod headless {
-    use super::{JsonDirSink, Path, Scenario, ShellDriver, scenario};
+    use super::{JsonDirSink, Path, Scenario, ShellDriver, dim_to_u32, scenario};
 
+    /// Run a scenario through the headless state dumper.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the output directory cannot be created.
     pub fn run_scenario(
         driver: &mut ShellDriver,
         scenario: &Scenario,
         dir: &Path,
         per_frame: Option<u32>,
-    ) {
-        std::fs::create_dir_all(dir).expect("create headless output dir");
+    ) -> Result<(), String> {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("create headless output dir '{}': {e}", dir.display()))?;
         let (w, h) = driver.viewport();
         println!(
             "shots: headless scenario '{}' at {}x{} → {}",
             scenario.name,
-            w as u32,
-            h as u32,
+            dim_to_u32(w),
+            dim_to_u32(h),
             dir.display()
         );
         let mut sink = JsonDirSink::new(dir);
         scenario::run_with(driver, scenario, &mut sink, per_frame);
+        Ok(())
     }
 }
 
@@ -147,7 +198,10 @@ pub mod headless {
 // =====================================================================
 
 pub mod recording {
-    use super::{OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, scenario};
+    use super::{
+        OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, dim_to_u32,
+        frames_per_step_for, scenario,
+    };
 
     use std::fs::File;
     use std::io::Write;
@@ -164,22 +218,29 @@ pub mod recording {
     ///
     /// Output is a raw Annex-B byte stream (no MP4 container). ffplay /
     /// mpv / vlc all play `.h264` directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the output file cannot be created, the encoder cannot be
+    /// constructed, or a frame fails to encode or write.
     pub fn run_scenario(
         driver: &mut ShellDriver,
         scenario: &Scenario,
         out: &Path,
         fps: u32,
         step_duration_secs: f32,
-    ) {
+    ) -> Result<(), String> {
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).ok();
         }
         let (w, h) = driver.viewport();
-        let (w, h) = (w as u32, h as u32);
+        let (w, h) = (dim_to_u32(w), dim_to_u32(h));
         let mut renderer = OffscreenRenderer::new(w, h);
-        let mut encoder = H264Encoder::new(w, h, fps).expect("H264Encoder::new for recording mode");
-        let mut file = File::create(out).expect("create recording output file");
-        let frames_per_step = ((fps as f32) * step_duration_secs).round().max(1.0) as u32;
+        let mut encoder = H264Encoder::new(w, h, fps)
+            .map_err(|e| format!("H264Encoder::new for recording mode: {e}"))?;
+        let mut file = File::create(out)
+            .map_err(|e| format!("create recording output file '{}': {e}", out.display()))?;
+        let frames_per_step = frames_per_step_for(fps, step_duration_secs);
         println!(
             "shots: recording scenario '{}' at {}x{} {}fps, {} frame(s)/step → {}",
             scenario.name,
@@ -194,6 +255,7 @@ pub mod recording {
             encoder: &mut encoder,
             file: &mut file,
             frames_per_step,
+            error: None,
         };
         // Snapshot the start state too (sink runs only on `Snapshot`
         // actions). For recording we want **every step** to contribute a
@@ -201,8 +263,9 @@ pub mod recording {
         // step-driven loop that wraps `scenario::apply` with our own
         // capture pass.
         for action in &scenario.actions {
-            scenario_apply_then_capture(driver, action, &mut sink);
+            scenario_apply_then_capture(driver, action, &mut sink)?;
         }
+        Ok(())
     }
 
     /// `SnapshotSink` adapter for recording mode. Encodes `frames_per_step`
@@ -214,23 +277,28 @@ pub mod recording {
         pub encoder: &'a mut H264Encoder,
         pub file: &'a mut File,
         pub frames_per_step: u32,
+        /// Set by [`Self::encode_current`] on failure when called through
+        /// [`SnapshotSink::capture`], whose signature can't return `Result`;
+        /// the driving loop checks this after every capture.
+        error: Option<String>,
     }
 
     impl RecordingSink<'_> {
-        fn encode_current(&mut self, driver: &mut ShellDriver) {
+        fn encode_current(&mut self, driver: &mut ShellDriver) -> Result<(), String> {
             let scene = driver.paint();
             let rgba = self.renderer.render_rgba(&scene);
             for _ in 0..self.frames_per_step {
                 let nalus = self
                     .encoder
                     .encode(&rgba)
-                    .expect("H264Encoder::encode in recording mode");
+                    .map_err(|e| format!("H264Encoder::encode in recording mode: {e}"))?;
                 if !nalus.is_empty() {
                     self.file
                         .write_all(&nalus)
-                        .expect("write encoded NALU bytes");
+                        .map_err(|e| format!("write encoded NALU bytes: {e}"))?;
                 }
             }
+            Ok(())
         }
     }
 
@@ -244,7 +312,9 @@ pub mod recording {
             // and is a single step to the outer loop. Skipping here left
             // those videos jumping from the curve's first state to its
             // last with nothing in between.
-            self.encode_current(driver);
+            if let Err(e) = self.encode_current(driver) {
+                self.error.get_or_insert(e);
+            }
         }
     }
 
@@ -256,7 +326,7 @@ pub mod recording {
         driver: &mut ShellDriver,
         action: &scenario::Action,
         sink: &mut RecordingSink<'_>,
-    ) {
+    ) -> Result<(), String> {
         // Runs through the recording sink itself (see `RecordingSink::capture`
         // for why) rather than a side `NullSink`. `scenario::apply` is
         // private to the module, so this uses `run` with a one-action
@@ -267,11 +337,14 @@ pub mod recording {
             actions: vec![action.clone()],
         };
         scenario::run(driver, &one_off, sink);
+        if let Some(e) = sink.error.take() {
+            return Err(e);
+        }
         // Always settle layout between steps so the encoded frame
         // matches what the user would see at this point in the
         // scenario, not a half-rebuilt tree.
         driver.relayout();
-        sink.encode_current(driver);
+        sink.encode_current(driver)
     }
 }
 
@@ -315,7 +388,9 @@ pub mod window {
             let mut sink = NullSink;
             scenario::run(&mut driver, scenario, &mut sink);
             let chrome = driver.chrome();
-            if let Err(e) = persist::save_tree_to(&chrome.tree(), &path) {
+            let saved = persist::save_tree_to(&chrome.tree(), &path);
+            drop(chrome);
+            if let Err(e) = saved {
                 eprintln!("shots: pre-roll persist failed: {e}");
             }
         }
@@ -377,7 +452,7 @@ mod tests {
         // with enough resolution to render real content. The recording
         // mode honours the driver's viewport, so we set a small one.
         let mut driver = ShellDriver::new((128, 96));
-        recording::run_scenario(&mut driver, &scenario, &tmp, 30, 1.0);
+        recording::run_scenario(&mut driver, &scenario, &tmp, 30, 1.0).expect("run_scenario");
 
         let bytes = fs::read(&tmp).expect("read recorded file");
         assert!(
@@ -406,7 +481,9 @@ mod tests {
         assert_eq!(frame.height, 96);
         let pixels = match &frame.pixels {
             shell::network::DecodedPixels::Rgba8(bytes) => bytes,
-            other => panic!("SDR H.264 decoder should yield RGBA pixels, got {other:?}"),
+            other @ shell::network::DecodedPixels::P010 { .. } => {
+                panic!("SDR H.264 decoder should yield RGBA pixels, got {other:?}")
+            }
         };
         let first_r = pixels[0];
         // If every pixel's R channel equals the first byte, the frame is

@@ -32,6 +32,17 @@ use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
 
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
+              matrix math; it never panics or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
 struct LabelTile {
     text: String,
     rect: Rect,
@@ -52,6 +63,13 @@ impl Widget for LabelTile {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // taffy 0.10's `new_leaf` always inserts and returns `Ok` for a
+        // fresh tree; see `ui::widget::TaffyTreeExt`'s doc comment (not
+        // usable here — it's `pub(crate)` and this is an example binary).
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_leaf cannot fail on a freshly built taffy tree"
+        )]
         let node = taffy
             .new_leaf(taffy::Style {
                 size: Size {
@@ -77,7 +95,7 @@ impl Widget for LabelTile {
         }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -105,7 +123,7 @@ impl Widget for LabelTile {
             &self.text,
             theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.rect.x0 + 8.0, self.rect.y0 + 6.0)),
+            translated(transform, self.rect.x0 + 8.0, self.rect.y0 + 6.0),
             None,
         );
     }
@@ -132,20 +150,22 @@ impl Widget for LabelTile {
 
 fn placeholder_image() -> PenikoImage {
     let mut buf = vec![0u8; 4 * 16 * 16];
-    for y in 0..16 {
-        for x in 0..16 {
-            let i = (y * 16 + x) * 4;
-            let on = ((x / 4) + (y / 4)) % 2 == 0;
-            if on {
-                buf[i] = 99;
-                buf[i + 1] = 102;
-                buf[i + 2] = 241;
-                buf[i + 3] = 255;
+    for y in 0..16usize {
+        for x in 0..16usize {
+            let i = y.saturating_mul(16).saturating_add(x).saturating_mul(4);
+            let on = x
+                .checked_div(4)
+                .unwrap_or(0)
+                .saturating_add(y.checked_div(4).unwrap_or(0))
+                .checked_rem(2)
+                == Some(0);
+            let color: [u8; 4] = if on {
+                [99, 102, 241, 255]
             } else {
-                buf[i] = 30;
-                buf[i + 1] = 41;
-                buf[i + 2] = 59;
-                buf[i + 3] = 255;
+                [30, 41, 59, 255]
+            };
+            if let Some(slot) = buf.get_mut(i..i.saturating_add(4)) {
+                slot.copy_from_slice(&color);
             }
         }
     }
@@ -162,15 +182,9 @@ fn caption(key: &'static str) -> Box<dyn Widget> {
     Box::new(Text::new(key))
 }
 
-pub fn run(_args: &[String]) {
-    let out_top = std::env::var("QUICK_UI_SHOWCASE_OUT")
-        .unwrap_or_else(|_| "/tmp/quick-ui-widget-showcase.png".to_string());
-    let out_scrolled = "/tmp/quick-ui-widget-showcase-scrolled.png";
-    // Window-sized canvas so we can verify scrolling against a fixed
-    // viewport: only ~800 px of content fits at a time, so scrolling
-    // 400 px down must reveal new widgets that weren't in the top frame.
-    let (canvas_w, canvas_h) = (1100u32, 600u32);
-
+/// Registers the `fluent` strings this scenario's widgets read their
+/// labels from. Split out of `run` to keep that under the line cap.
+fn register_i18n() {
     I18nManager::init("en-US");
     I18nManager::add_resource(
         "en-US",
@@ -190,23 +204,28 @@ pub fn run(_args: &[String]) {
         ]
         .join("\n"),
     );
+}
 
-    let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
-    let theme = Theme::dark();
-    let mut tr = TextRenderer::new();
-    let mut scene = Scene::new();
+/// The Automerge document backing this scenario's bound widgets (toggle,
+/// checkbox, slider, text field). Split out of `run` to keep that under
+/// the line cap.
+fn seed_doc() -> AutoCommit {
+    use automerge::transaction::Transactable;
     let mut doc = AutoCommit::new();
+    let _ = doc.put(&automerge::ObjId::Root, "toggle_1", true);
+    let _ = doc.put(&automerge::ObjId::Root, "check_1", false);
+    let _ = doc.put(&automerge::ObjId::Root, "slider_1", 0.5);
+    if let Ok(text_id) = doc.put_object(&automerge::ObjId::Root, "text_1", automerge::ObjType::Text)
     {
-        use automerge::transaction::Transactable;
-        let _ = doc.put(&automerge::ObjId::Root, "toggle_1", true);
-        let _ = doc.put(&automerge::ObjId::Root, "check_1", false);
-        let _ = doc.put(&automerge::ObjId::Root, "slider_1", 0.5);
-        let text_id = doc
-            .put_object(&automerge::ObjId::Root, "text_1", automerge::ObjType::Text)
-            .unwrap();
         let _ = doc.splice_text(&text_id, 0, 0, "Edit me");
     }
+    doc
+}
 
+/// The `row_struct` demo tree: a `project/src/{main.rs,lib.rs}` +
+/// `README.md` layout with the first two branches pre-expanded. Split out
+/// of `run` to keep that under the line cap.
+fn build_tree_view() -> TreeView<()> {
     let tree_root = TreeNode::branch(
         1u64,
         "project",
@@ -227,7 +246,15 @@ pub fn run(_args: &[String]) {
     let mut tree = TreeView::new(tree_root);
     tree.toggle_expand(1);
     tree.toggle_expand(2);
+    tree
+}
 
+/// The scrollable column of every widget this scenario showcases. Also
+/// builds (and discards) a `PopoverWidget` and `ModalDialog` to prove they
+/// construct cleanly — see the trailing comment on `row_struct` for why
+/// they aren't actually spliced into the column. Split out of `run` to
+/// keep that under the line cap.
+fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
     let popover = PopoverWidget::new(
         Rect::new(60.0, 60.0, 220.0, 90.0),
         LabelTile::new("Popover content (always open)"),
@@ -243,7 +270,7 @@ pub fn run(_args: &[String]) {
     .primary_action("Save", || {})
     .secondary_action("Discard", || {});
 
-    let mut root: Box<dyn Widget> = Box::new(
+    let root: Box<dyn Widget> = Box::new(
         Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(
             Column::new()
                 .with_intrinsic_height()
@@ -307,7 +334,7 @@ pub fn run(_args: &[String]) {
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(DatePicker::new(
-                            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+                            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap_or_default(),
                         )))
                         .push(Box::new(TimePicker::new(14, 30)))
                         .push(Box::new(TimePicker::new(9, 15).with_seconds(45))),
@@ -326,17 +353,48 @@ pub fn run(_args: &[String]) {
     ); // close Scrollable.with_child → Box::new (outer root)
     let _ = popover;
     let _ = modal;
+    root
+}
+
+pub fn run(_args: &[String]) {
+    use winit::event::{MouseScrollDelta, WindowEvent};
+
+    let out_top = std::env::var("QUICK_UI_SHOWCASE_OUT")
+        .unwrap_or_else(|_| "/tmp/quick-ui-widget-showcase.png".to_string());
+    let out_scrolled = "/tmp/quick-ui-widget-showcase-scrolled.png";
+    // Window-sized canvas so we can verify scrolling against a fixed
+    // viewport: only ~800 px of content fits at a time, so scrolling
+    // 400 px down must reveal new widgets that weren't in the top frame.
+    let (canvas_w, canvas_h) = (1100u32, 600u32);
+
+    register_i18n();
+
+    let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let mut scene = Scene::new();
+    let mut doc = seed_doc();
+
+    let tree = build_tree_view();
+    let mut root = build_root_widget(tree);
 
     // Stamp the column at (0, 0) with the canvas size — exactly what the
     // App harness does, just offscreen.
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
+    // canvas_w/canvas_h are small fixed pixel dimensions (1100, 600), far
+    // below f32's 24-bit exact-integer range.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "canvas_w/canvas_h are small fixed pixel dimensions, far below f32's exact-integer range"
+    )]
+    let (layout_width_px, layout_height_px) = (canvas_w as f32, canvas_h as f32);
     let _ = taffy.compute_layout_with_measure(
         root_node,
         Size {
-            width: AvailableSpace::Definite(canvas_w as f32),
-            height: AvailableSpace::Definite(canvas_h as f32),
+            width: AvailableSpace::Definite(layout_width_px),
+            height: AvailableSpace::Definite(layout_height_px),
         },
         |known, available, node_id, _, _| {
             if let Some(&ptr) = node_map.get(&node_id) {
@@ -358,7 +416,6 @@ pub fn run(_args: &[String]) {
     // catch and convert to an `offset_y` update. Then re-apply layout
     // (Scrollable's apply_layout re-positions its child using the new
     // offset) and re-draw.
-    use winit::event::{MouseScrollDelta, WindowEvent};
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
     let modifiers = winit::event::Modifiers::default();

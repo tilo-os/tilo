@@ -59,7 +59,7 @@ pub struct AudioDevice {
     /// Number of channels reported by Props.channelVolumes. Balance and
     /// channel-test controls must not appear unless this is at least two.
     pub channels: usize,
-    /// Active Bluetooth codec when the PipeWire BlueZ node advertises it.
+    /// Active Bluetooth codec when the `PipeWire` `BlueZ` node advertises it.
     /// Informational: codec selection is exposed only through real profiles.
     pub codec: Option<String>,
 }
@@ -72,7 +72,7 @@ pub struct DeviceProfile {
     pub available: bool,
 }
 
-/// A PipeWire Device (sound card / Bluetooth transport) and the profiles the
+/// A `PipeWire` Device (sound card / Bluetooth transport) and the profiles the
 /// daemon says can actually be selected with `wpctl set-profile`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioHardwareDevice {
@@ -231,13 +231,18 @@ impl GraphDelta {
 fn as_u32(v: &Value) -> Option<u32> {
     v.as_u64()
         .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
-        .map(|n| n as u32)
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 /// The perceptual volume `wpctl` shows is the cube root of `PipeWire`'s raw
 /// linear channel volume; invert that so an enumerated `channelVolumes` matches
 /// the slider position a user set. `wpctl set-volume` takes the perceptual
 /// value back, so the round trip is exact.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a cube-root perceptual volume is a small, near-1.0 ratio; f32's \
+              range is never at risk"
+)]
 fn perceptual_from_channel_volumes(cv: &[f64]) -> Option<f32> {
     // Treat the loudest channel as the device's base volume. Reading the
     // first channel made a right-balanced sink appear quieter on every graph
@@ -292,11 +297,21 @@ fn node_channel_count(obj: &Value) -> usize {
 pub fn parse_pw_dump(json: &str) -> AudioGraph {
     let root: Value = serde_json::from_str(json).unwrap_or(Value::Null);
     let objs = root.as_array().cloned().unwrap_or_default();
+    let (default_sink_name, default_source_name) = default_device_names(&objs);
+    let links = collect_links(&objs);
+    build_graph(
+        &objs,
+        &links,
+        default_sink_name.as_deref(),
+        default_source_name.as_deref(),
+    )
+}
 
-    // Pass 1 — the default sink/source node names from the "default" metadata.
+/// Pass 1 — the default sink/source node names from the "default" metadata.
+fn default_device_names(objs: &[Value]) -> (Option<String>, Option<String>) {
     let mut default_sink_name: Option<String> = None;
     let mut default_source_name: Option<String> = None;
-    for o in &objs {
+    for o in objs {
         let Some(md) = o.get("metadata").and_then(|m| m.as_array()) else {
             continue;
         };
@@ -314,12 +329,15 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
             }
         }
     }
+    (default_sink_name, default_source_name)
+}
 
-    // Pass 2 — the links, as (output.node, input.node) pairs. A playback
-    // stream's output links into its sink; a capture stream's input links from
-    // its source.
+/// Pass 2 — the links, as (output.node, input.node) pairs. A playback
+/// stream's output links into its sink; a capture stream's input links from
+/// its source.
+fn collect_links(objs: &[Value]) -> Vec<(u32, u32)> {
     let mut links: Vec<(u32, u32)> = Vec::new();
-    for o in &objs {
+    for o in objs {
         let is_link = o
             .get("type")
             .and_then(|t| t.as_str())
@@ -334,70 +352,27 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
             links.push((out, inp));
         }
     }
+    links
+}
 
-    // Pass 3 — the audio nodes: sinks, sources, and streams.
+/// Pass 3 — the audio nodes: sinks, sources, and streams (plus hardware
+/// Devices, for their selectable profiles).
+fn build_graph(
+    objs: &[Value],
+    links: &[(u32, u32)],
+    default_sink_name: Option<&str>,
+    default_source_name: Option<&str>,
+) -> AudioGraph {
     let mut graph = AudioGraph::default();
-    for o in &objs {
+    for o in objs {
         let is_device = o
             .get("type")
             .and_then(Value::as_str)
             .is_some_and(|t| t.ends_with("Device"));
         if is_device {
-            let Some(id) = o.get("id").and_then(as_u32) else {
-                continue;
-            };
-            let props = o.get("info").and_then(|i| i.get("props"));
-            let description = props
-                .and_then(|p| p.get("device.description"))
-                .and_then(Value::as_str)
-                .or_else(|| {
-                    props
-                        .and_then(|p| p.get("device.name"))
-                        .and_then(Value::as_str)
-                })
-                .unwrap_or("Audio device")
-                .to_string();
-            let params = o.get("info").and_then(|i| i.get("params"));
-            let active_profile = params
-                .and_then(|p| p.get("Profile"))
-                .and_then(Value::as_array)
-                .and_then(|a| a.first())
-                .and_then(|p| p.get("index"))
-                .and_then(as_u32);
-            let profiles = params
-                .and_then(|p| p.get("EnumProfile"))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|p| {
-                    let index = p.get("index").and_then(as_u32)?;
-                    let name = p
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let description = p
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or(&name)
-                        .to_string();
-                    let available =
-                        !matches!(p.get("available").and_then(Value::as_str), Some("no"));
-                    Some(DeviceProfile {
-                        index,
-                        name,
-                        description,
-                        available,
-                    })
-                })
-                .collect();
-            graph.hardware.push(AudioHardwareDevice {
-                id,
-                description,
-                active_profile,
-                profiles,
-            });
+            if let Some(hw) = parse_hardware_device(o) {
+                graph.hardware.push(hw);
+            }
             continue;
         }
         let is_node = o
@@ -407,95 +382,166 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
         if !is_node {
             continue;
         }
-        let Some(id) = o.get("id").and_then(as_u32) else {
-            continue;
-        };
-        let props = o.get("info").and_then(|i| i.get("props"));
-        let getp = |k: &str| props.and_then(|p| p.get(k));
-        let media_class = getp("media.class").and_then(|v| v.as_str()).unwrap_or("");
-        let serial = getp("object.serial").and_then(as_u32).unwrap_or(id);
-        let name = getp("node.name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let (volume, muted) = node_volume_mute(o);
-
-        match media_class {
-            "Audio/Sink" | "Audio/Source" => {
-                let description = getp("node.description")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(&name)
-                    .to_string();
-                let default_name = if media_class == "Audio/Sink" {
-                    &default_sink_name
-                } else {
-                    &default_source_name
-                };
-                let is_default = default_name.as_deref() == Some(name.as_str());
-                let dev = AudioDevice {
-                    id,
-                    serial,
-                    name,
-                    description,
-                    is_default,
-                    volume,
-                    muted,
-                    channels: node_channel_count(o),
-                    codec: getp("api.bluez5.codec")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                };
-                if media_class == "Audio/Sink" {
-                    graph.sinks.push(dev);
-                } else {
-                    graph.sources.push(dev);
-                }
-            }
-            "Stream/Output/Audio" | "Stream/Input/Audio" => {
-                let playback = media_class == "Stream/Output/Audio";
-                let app = getp("application.name")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(&name)
-                    .to_string();
-                let media_name = getp("media.name")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                // A playback stream links out→sink; a capture stream links
-                // source→in. Resolve the device end accordingly.
-                let target_id = if playback {
-                    links
-                        .iter()
-                        .find(|(out, _)| *out == id)
-                        .map(|(_, inp)| *inp)
-                } else {
-                    links
-                        .iter()
-                        .find(|(_, inp)| *inp == id)
-                        .map(|(out, _)| *out)
-                };
-                let stream = AudioStream {
-                    id,
-                    serial,
-                    app,
-                    media_name,
-                    playback,
-                    target_id,
-                    volume,
-                    muted,
-                };
-                if playback {
-                    graph.playback_streams.push(stream);
-                } else {
-                    graph.record_streams.push(stream);
-                }
-            }
-            _ => {}
-        }
+        push_node(o, links, default_sink_name, default_source_name, &mut graph);
     }
     graph
+}
+
+/// Parse one `PipeWire:Interface:Device` object into its selectable-profile
+/// summary. `None` when it carries no usable id.
+fn parse_hardware_device(o: &Value) -> Option<AudioHardwareDevice> {
+    let id = o.get("id").and_then(as_u32)?;
+    let props = o.get("info").and_then(|i| i.get("props"));
+    let description = props
+        .and_then(|p| p.get("device.description"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            props
+                .and_then(|p| p.get("device.name"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("Audio device")
+        .to_string();
+    let params = o.get("info").and_then(|i| i.get("params"));
+    let active_profile = params
+        .and_then(|p| p.get("Profile"))
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(|p| p.get("index"))
+        .and_then(as_u32);
+    let profiles = params
+        .and_then(|p| p.get("EnumProfile"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let index = p.get("index").and_then(as_u32)?;
+            let name = p
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let description = p
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&name)
+                .to_string();
+            let available = !matches!(p.get("available").and_then(Value::as_str), Some("no"));
+            Some(DeviceProfile {
+                index,
+                name,
+                description,
+                available,
+            })
+        })
+        .collect();
+    Some(AudioHardwareDevice {
+        id,
+        description,
+        active_profile,
+        profiles,
+    })
+}
+
+/// Parse one audio `Node` object and push it into `graph` as a device
+/// (sink/source) or a stream (playback/record), whichever `media.class` says
+/// it is. Ignored (no push) when it carries no usable id or an unrecognised
+/// `media.class`.
+fn push_node(
+    o: &Value,
+    links: &[(u32, u32)],
+    default_sink_name: Option<&str>,
+    default_source_name: Option<&str>,
+    graph: &mut AudioGraph,
+) {
+    let Some(id) = o.get("id").and_then(as_u32) else {
+        return;
+    };
+    let props = o.get("info").and_then(|i| i.get("props"));
+    let getp = |k: &str| props.and_then(|p| p.get(k));
+    let media_class = getp("media.class").and_then(|v| v.as_str()).unwrap_or("");
+    let serial = getp("object.serial").and_then(as_u32).unwrap_or(id);
+    let name = getp("node.name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let (volume, muted) = node_volume_mute(o);
+
+    match media_class {
+        "Audio/Sink" | "Audio/Source" => {
+            let description = getp("node.description")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&name)
+                .to_string();
+            let default_name = if media_class == "Audio/Sink" {
+                default_sink_name
+            } else {
+                default_source_name
+            };
+            let is_default = default_name == Some(name.as_str());
+            let dev = AudioDevice {
+                id,
+                serial,
+                name,
+                description,
+                is_default,
+                volume,
+                muted,
+                channels: node_channel_count(o),
+                codec: getp("api.bluez5.codec")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            };
+            if media_class == "Audio/Sink" {
+                graph.sinks.push(dev);
+            } else {
+                graph.sources.push(dev);
+            }
+        }
+        "Stream/Output/Audio" | "Stream/Input/Audio" => {
+            let playback = media_class == "Stream/Output/Audio";
+            let app = getp("application.name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&name)
+                .to_string();
+            let media_name = getp("media.name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            // A playback stream links out→sink; a capture stream links
+            // source→in. Resolve the device end accordingly.
+            let target_id = if playback {
+                links
+                    .iter()
+                    .find(|(out, _)| *out == id)
+                    .map(|(_, inp)| *inp)
+            } else {
+                links
+                    .iter()
+                    .find(|(_, inp)| *inp == id)
+                    .map(|(out, _)| *out)
+            };
+            let stream = AudioStream {
+                id,
+                serial,
+                app,
+                media_name,
+                playback,
+                target_id,
+                volume,
+                muted,
+            };
+            if playback {
+                graph.playback_streams.push(stream);
+            } else {
+                graph.record_streams.push(stream);
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -568,17 +614,53 @@ pub fn wpctl_set_profile_args(device_id: u32, profile_index: u32) -> Vec<String>
 /// recorder so the settings pane's dispatch can be asserted without a daemon.
 pub trait GraphControl: Send + Sync {
     /// Switch the default sink (output).
+    ///
+    /// # Errors
+    ///
+    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
+    /// rejects `node_id`.
     fn set_default_sink(&self, node_id: u32) -> Result<(), String>;
     /// Switch the default source (input).
+    ///
+    /// # Errors
+    ///
+    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
+    /// rejects `node_id`.
     fn set_default_source(&self, node_id: u32) -> Result<(), String>;
     /// Route a stream node to a device by the device's `object.serial`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the tool's diagnostic message if `pw-metadata` is unavailable
+    /// or rejects the stream id or target serial.
     fn route_stream(&self, stream_id: u32, target_serial: u32) -> Result<(), String>;
     /// Clear a stream's explicit target (follow the default device).
+    ///
+    /// # Errors
+    ///
+    /// Returns the tool's diagnostic message if `pw-metadata` is unavailable
+    /// or rejects the stream id.
     fn unroute_stream(&self, stream_id: u32) -> Result<(), String>;
     /// Set a node's perceptual volume (`0.0..=1.0`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
+    /// rejects `node_id`.
     fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String>;
     /// Mute or unmute a node.
+    ///
+    /// # Errors
+    ///
+    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
+    /// rejects `node_id`.
     fn set_node_mute(&self, node_id: u32, muted: bool) -> Result<(), String>;
+    /// Switch a hardware device to one of its enumerated profiles.
+    ///
+    /// # Errors
+    ///
+    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
+    /// rejects `device_id`/`profile_index`.
     fn set_device_profile(&self, device_id: u32, profile_index: u32) -> Result<(), String>;
 }
 

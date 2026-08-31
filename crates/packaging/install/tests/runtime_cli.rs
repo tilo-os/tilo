@@ -9,6 +9,16 @@
 //! populate with stub loader / libc files so the tests don't depend on
 //! the runner's actual `/lib64` layout.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

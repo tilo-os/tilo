@@ -35,6 +35,11 @@ pub struct InstalledPackage {
 
 /// Load-and-search wrapper: parses `registry.toml`, returns the entry
 /// matching `pkg_id`, or `None` if not installed.
+///
+/// # Errors
+///
+/// Returns [`RegistryError`] if either registry exists but fails to read or
+/// parse, or if neither `HOME` nor `XDG_DATA_HOME` is set.
 pub fn find_installed(pkg_id: &str) -> Result<Option<InstalledPackage>, RegistryError> {
     Ok(list_installed()?.into_iter().find(|e| e.id == pkg_id))
 }
@@ -46,16 +51,21 @@ pub fn find_installed(pkg_id: &str) -> Result<Option<InstalledPackage>, Registry
 /// A missing `registry.toml` is "nothing installed", not an error. A
 /// registry that exists but doesn't parse *is* an error — silently
 /// reporting "no apps" would hide the breakage.
+///
+/// # Errors
+///
+/// Returns [`RegistryError`] if either registry exists but fails to read or
+/// parse, or if neither `HOME` nor `XDG_DATA_HOME` is set.
 pub fn list_installed() -> Result<Vec<InstalledPackage>, RegistryError> {
     let mut out = match system_registry_path() {
         Some(path) => read_registry(&path)?,
         None => Vec::new(),
     };
     for entry in read_registry(&default_registry_path()?)? {
-        match out.iter().position(|e| e.id == entry.id) {
+        match out.iter_mut().find(|e| e.id == entry.id) {
             // Same id in both stores: the user's install runs. Replacing in place
             // keeps the system store's ordering stable.
-            Some(at) => out[at] = entry,
+            Some(slot) => *slot = entry,
             None => out.push(entry),
         }
     }
@@ -118,6 +128,11 @@ pub fn display_name_for_package_id(package_id: &str) -> String {
 
 /// Resolve `~/.local/share/qos-apps/registry.toml`. Kept separate so
 /// tests can point the launcher at a temp dir via `QOS_APPS_DATA_DIR`.
+///
+/// # Errors
+///
+/// Returns [`RegistryError::NoHome`] if neither `HOME` nor
+/// `XDG_DATA_HOME`/`QOS_APPS_DATA_DIR` is set.
 pub fn default_registry_path() -> Result<PathBuf, RegistryError> {
     Ok(default_data_dir()?.join("registry.toml"))
 }
@@ -167,6 +182,11 @@ pub fn system_registry_path() -> Option<PathBuf> {
 /// Root install directory. Honours the `QOS_APPS_DATA_DIR` override for
 /// tests/dev-mode; falls back to `$XDG_DATA_HOME` or
 /// `$HOME/.local/share/qos-apps`.
+///
+/// # Errors
+///
+/// Returns [`RegistryError::NoHome`] if neither `HOME` nor
+/// `XDG_DATA_HOME`/`QOS_APPS_DATA_DIR` is set.
 pub fn default_data_dir() -> Result<PathBuf, RegistryError> {
     if let Some(override_dir) = std::env::var_os("QOS_APPS_DATA_DIR") {
         return Ok(PathBuf::from(override_dir));
@@ -204,6 +224,7 @@ mod tests {
     /// Write a `registry.toml` naming `ids`, with a payload dir and
     /// manifest on disk for each, and return the directory.
     fn store_with(ids: &[&str]) -> tempfile::TempDir {
+        use std::fmt::Write as _;
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut toml_src = String::new();
         for id in ids {
@@ -211,11 +232,12 @@ mod tests {
             std::fs::create_dir_all(&payload).unwrap();
             let manifest = payload.join("manifest.toml");
             std::fs::write(&manifest, "").unwrap();
-            toml_src.push_str(&format!(
+            let _ = write!(
+                toml_src,
                 "[[entry]]\nid = '{id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
                 payload.display().to_string(),
                 manifest.display().to_string()
-            ));
+            );
         }
         std::fs::write(tmp.path().join("registry.toml"), toml_src).unwrap();
         tmp
@@ -386,6 +408,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn list_installed_returns_every_entry_in_file_order() {
+        use std::fmt::Write as _;
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut toml_src = String::new();
         for id in ["dev.qos.alpha", "dev.qos.beta"] {
@@ -393,11 +416,12 @@ mod tests {
             std::fs::create_dir_all(&payload).unwrap();
             let manifest = payload.join("manifest.toml");
             std::fs::write(&manifest, "").unwrap();
-            toml_src.push_str(&format!(
+            let _ = write!(
+                toml_src,
                 "[[entry]]\nid = '{id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
                 payload.display().to_string(),
                 manifest.display().to_string()
-            ));
+            );
         }
         std::fs::write(tmp.path().join("registry.toml"), toml_src).unwrap();
 

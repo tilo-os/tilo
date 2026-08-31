@@ -11,6 +11,19 @@
 //! iroh secret is `load_or_create_iroh_secret` — same file → same
 //! iroh node id. Its device cert is built by the test.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the arithmetic \
+              here is a synthetic per-delta timestamp counter bounded by a \
+              3-item literal array, not real user data"
+)]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -73,55 +86,41 @@ async fn start_relay_at(
     relay
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
-    let user = TestUser::fresh("Alice");
-    let p1 = user.enrol("laptop", DeviceCapabilities::primary());
-    let p2 = user.enrol("phone", DeviceCapabilities::member());
-    let members = vec![p1.device_pubkey(), p2.device_pubkey()];
-
-    let relay1 = spawn_relay(
-        &user,
-        user.enrol("r1", DeviceCapabilities::host()),
-        &[11],
-        &members,
-    )
-    .await;
-
-    // Stable identity + state root for relay2 across the outage.
-    let (r2_sk, r2_cert) = make_relay_device(&user, "r2");
-    let r2_pubkey = r2_cert.device_public_key;
-    let r2_tmp = tempfile::tempdir().unwrap();
-    let r2_state_root = r2_tmp.path().to_path_buf();
-
-    // Round 1: relay2 up briefly so relay1 learns its device pubkey
-    // via PeerRelayHello.
-    let r2_first = start_relay_at(
-        &user,
-        r2_sk.clone(),
-        r2_cert.clone(),
-        r2_state_root.clone(),
-        &[11],
-        &members,
-    )
-    .await;
+/// Bring relay2 up briefly so relay1 learns its device pubkey via
+/// `PeerRelayHello`, then close it (rather than drop, so relay1 doesn't
+/// have to wait out the QUIC idle timeout before noticing the
+/// subscription drop — far longer than any outage this test can sit through).
+async fn prime_then_close_relay2(
+    user: &TestUser,
+    relay1_addr: iroh_base::EndpointAddr,
+    r2_sk: SigningKey,
+    r2_cert: DeviceCert,
+    r2_state_root: PathBuf,
+    workspaces: &[u64],
+    members: &[[u8; 32]],
+) {
+    let r2_first = start_relay_at(user, r2_sk, r2_cert, r2_state_root, workspaces, members).await;
     // Peer-relay r1 ← r2 dial primes relay1's `known_peer_relays`.
-    r2_first.add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
+    r2_first.add_peer_relay_at(relay1_addr, "r1".into(), 0);
     // Wait for the handshake + hello exchange to complete.
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    // Close, rather than drop: a dropped relay leaves relay1 believing
-    // r2 is still subscribed until the QUIC idle timeout, which is far
-    // longer than any outage this test can afford to sit through.
     r2_first.shutdown().await;
     // Give relay1 a moment to observe the subscription drop.
     tokio::time::sleep(Duration::from_millis(300)).await;
+}
 
-    // Round 2: p1 publishes three deltas via relay1 while relay2
-    // is down. Relay1's fanout enqueues for the (known) r2 pubkey.
-    let ep = client_endpoint().await;
+/// p1 publishes three tagged deltas via relay1 while relay2 is down, and
+/// this waits until all three have landed in relay1's pending queue for
+/// r2's device pubkey (the same store path offline device peers use).
+async fn publish_three_while_peer_is_down(
+    relay1_addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    p1: &crate::common::TestDevice,
+    pending_dir: &std::path::Path,
+) {
     let c1 = RelayClient::connect(
-        ep,
-        relay1.relay.node_addr(),
+        client_endpoint().await,
+        relay1_addr,
         user.user_pk,
         p1.cert.clone(),
         p1.sk.clone(),
@@ -145,19 +144,10 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
         .unwrap();
     }
 
-    // Confirm the three deltas landed in the pending dir for r2's
-    // device pubkey — same store path as offline device peers.
-    let hex_r2 = hex::encode(r2_pubkey);
-    let pending_dir = relay1
-        .state_root
-        .join("workspaces")
-        .join("11")
-        .join("pending")
-        .join(&hex_r2);
     let mut queued = 0;
     for _ in 0..50 {
         queued = if pending_dir.exists() {
-            std::fs::read_dir(&pending_dir)
+            std::fs::read_dir(pending_dir)
                 .unwrap()
                 .flatten()
                 .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
@@ -171,29 +161,19 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(queued, 3, "3 deltas should queue for offline peer relay");
+}
 
-    // Round 3: relay2 restarts with the SAME device cert AND the
-    // SAME state root → same device pubkey, same iroh secret →
-    // same iroh node id (load_or_create_iroh_secret persists the
-    // file). Its subscribe drains the queue.
-    let r2_restart = start_relay_at(
-        &user,
-        r2_sk,
-        r2_cert,
-        r2_state_root.clone(),
-        &[11],
-        &members,
-    )
-    .await;
-    r2_restart.add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
-
-    // p2 → r2_restart. Once relay2 subscribes upstream to relay1
-    // (which happens inside its peer-relay dial task), relay1
-    // drains the queue → relay2 fans out to p2.
-    let ep_p2 = client_endpoint().await;
+/// p2 subscribes through `r2_addr` and collects delta payloads until 3
+/// have arrived or the retry budget runs out (whichever first — the
+/// caller's own assertion reports a short collection).
+async fn drain_three_deltas(
+    r2_addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    p2: &crate::common::TestDevice,
+) -> Vec<Vec<u8>> {
     let c2 = RelayClient::connect(
-        ep_p2,
-        r2_restart.node_addr(),
+        client_endpoint().await,
+        r2_addr,
         user.user_pk,
         p2.cert.clone(),
         p2.sk.clone(),
@@ -219,6 +199,75 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
             break;
         }
     }
+    got
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
+    let user = TestUser::fresh("Alice");
+    let p1 = user.enrol("laptop", DeviceCapabilities::primary());
+    let p2 = user.enrol("phone", DeviceCapabilities::member());
+    let members = vec![p1.device_pubkey(), p2.device_pubkey()];
+
+    let relay1 = spawn_relay(
+        &user,
+        user.enrol("r1", DeviceCapabilities::host()),
+        &[11],
+        &members,
+    )
+    .await;
+
+    // Stable identity + state root for relay2 across the outage.
+    let (r2_sk, r2_cert) = make_relay_device(&user, "r2");
+    let r2_pubkey = r2_cert.device_public_key;
+    let r2_tmp = tempfile::tempdir().unwrap();
+    let r2_state_root = r2_tmp.path().to_path_buf();
+
+    // Round 1: relay2 up briefly so relay1 learns its device pubkey
+    // via PeerRelayHello.
+    prime_then_close_relay2(
+        &user,
+        relay1.relay.node_addr(),
+        r2_sk.clone(),
+        r2_cert.clone(),
+        r2_state_root.clone(),
+        &[11],
+        &members,
+    )
+    .await;
+
+    // Round 2: p1 publishes three deltas via relay1 while relay2 is
+    // down. Relay1's fanout enqueues for the (known) r2 pubkey. Confirm
+    // they land in the pending dir for r2's device pubkey — same store
+    // path as offline device peers.
+    let hex_r2 = hex::encode(r2_pubkey);
+    let pending_dir = relay1
+        .state_root
+        .join("workspaces")
+        .join("11")
+        .join("pending")
+        .join(&hex_r2);
+    publish_three_while_peer_is_down(relay1.relay.node_addr(), &user, &p1, &pending_dir).await;
+
+    // Round 3: relay2 restarts with the SAME device cert AND the
+    // SAME state root → same device pubkey, same iroh secret →
+    // same iroh node id (load_or_create_iroh_secret persists the
+    // file). Its subscribe drains the queue.
+    let r2_restart = start_relay_at(
+        &user,
+        r2_sk,
+        r2_cert,
+        r2_state_root.clone(),
+        &[11],
+        &members,
+    )
+    .await;
+    r2_restart.add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
+
+    // p2 → r2_restart. Once relay2 subscribes upstream to relay1
+    // (which happens inside its peer-relay dial task), relay1
+    // drains the queue → relay2 fans out to p2.
+    let got = drain_three_deltas(r2_restart.node_addr(), &user, &p2).await;
     assert_eq!(
         got,
         vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()],

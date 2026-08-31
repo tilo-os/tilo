@@ -78,6 +78,13 @@ pub enum ModalEmphasis {
 }
 
 /// One button in the action row.
+// Four independent interaction axes (enabled, hovered, pressed, focused)
+// that can co-occur in any combination — not a state machine an enum
+// would clarify.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent interaction-state flags, not related toggles"
+)]
 #[derive(Clone, Copy, Debug)]
 pub struct ModalAction<'a> {
     pub label: &'a str,
@@ -111,14 +118,17 @@ impl<'a> ModalAction<'a> {
             focused: false,
         }
     }
+    #[must_use]
     pub fn enabled(mut self, v: bool) -> Self {
         self.enabled = v;
         self
     }
+    #[must_use]
     pub fn hovered(mut self, v: bool) -> Self {
         self.hovered = v;
         self
     }
+    #[must_use]
     pub fn pressed(mut self, v: bool) -> Self {
         self.pressed = v;
         self
@@ -126,6 +136,7 @@ impl<'a> ModalAction<'a> {
     /// Set it and the action draws the focus ring every other control draws. A
     /// modal whose buttons never take this is one a keyboard user cannot see
     /// their way around.
+    #[must_use]
     pub fn focused(mut self, v: bool) -> Self {
         self.focused = v;
         self
@@ -133,6 +144,13 @@ impl<'a> ModalAction<'a> {
 }
 
 /// What a modal is being asked to frame.
+// Four independent flags (closable, the close control's own hover/focus,
+// and whether the scrim dismisses) — each toggled by a different caller
+// concern, not a combinatorial state an enum would simplify.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent spec flags set by unrelated callers, not related toggles"
+)]
 #[derive(Clone, Debug)]
 pub struct ModalSpec<'a> {
     /// Shown in the title row. A modal without one is a modal whose purpose
@@ -181,30 +199,37 @@ impl<'a> ModalSpec<'a> {
             ..Self::default()
         }
     }
+    #[must_use]
     pub fn actions(mut self, actions: &'a [ModalAction<'a>]) -> Self {
         self.actions = actions;
         self
     }
+    #[must_use]
     pub fn body_height(mut self, h: f64) -> Self {
         self.body_height = h;
         self
     }
+    #[must_use]
     pub fn max_width(mut self, w: f64) -> Self {
         self.max_width = w;
         self
     }
+    #[must_use]
     pub fn closable(mut self, v: bool) -> Self {
         self.closable = v;
         self
     }
+    #[must_use]
     pub fn dismiss_on_scrim(mut self, v: bool) -> Self {
         self.dismiss_on_scrim = v;
         self
     }
+    #[must_use]
     pub fn close_hovered(mut self, v: bool) -> Self {
         self.close_hovered = v;
         self
     }
+    #[must_use]
     pub fn close_focused(mut self, v: bool) -> Self {
         self.close_focused = v;
         self
@@ -447,15 +472,31 @@ impl ModalFrame {
 
         if !spec.title.is_empty() {
             let size = tokens.typography.scale.base.max(14.0);
-            let shown = text_renderer.elide_to_width(spec.title, size, layout.title.width() as f32);
+            // Title-band width is a bounded screen dimension; the f64->f32
+            // narrowing for the text layout call cannot lose meaningful
+            // precision at UI scale.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "bounded screen-space width; f32 precision is sufficient for text layout"
+            )]
+            let title_w = layout.title.width() as f32;
+            let shown = text_renderer.elide_to_width(spec.title, size, title_w);
             let (_, th) = text_renderer.measure(&shown, size, None);
             let ty = f64::midpoint(layout.title.y0, layout.title.y1) - f64::from(th) / 2.0;
+            // Affine composition of f64 transforms via the `Mul` operator
+            // overload; clippy's arithmetic_side_effects flags any operator
+            // overload, but this cannot meaningfully overflow.
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
+            )]
+            let pos = transform * Affine::translate((layout.title.x0, ty));
             text_renderer.draw_text_weighted(
                 scene,
                 &shown,
                 size,
                 ink,
-                transform * Affine::translate((layout.title.x0, ty)),
+                pos,
                 None,
                 TextWeight::Semibold,
             );
@@ -533,8 +574,8 @@ mod tests {
     fn card_centres_on_the_viewport() {
         let spec = ModalSpec::new("Workspace invite").body_height(120.0);
         let l = lay(&spec, &Theme::dark());
-        let cx = (l.card.x0 + l.card.x1) / 2.0;
-        let cy = (l.card.y0 + l.card.y1) / 2.0;
+        let cx = f64::midpoint(l.card.x0, l.card.x1);
+        let cy = f64::midpoint(l.card.y0, l.card.y1);
         assert!(
             (cx - 800.0).abs() < 0.5,
             "card centre x = {cx}, viewport centre is 800"

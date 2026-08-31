@@ -6,6 +6,19 @@
 //! `cargo test -p qos-rollback --test mechanism -- --test-threads 1` (each test gets its own
 //! `swtpm` since several drive dictionary-attack lockout, which a shared instance would leak).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the arithmetic \
+              here crafts an adversarial (stale) counter value for a rollback \
+              test, not real user data"
+)]
+
 use qos_rollback::{
     Config, Pbkdf, approval, confirm, counter, exec, keyslots, lockout, policy,
     policy::{Prediction, Workspace},
@@ -51,15 +64,15 @@ fn free_port_pair() -> (u16, u16) {
         // threads handed adjacent ephemeral ports do not converge on one pair.
         let base = base
             .checked_add(skew)
-            .and_then(|b| b.checked_add(attempt * 2))
+            .and_then(|b| b.checked_add(attempt.saturating_mul(2)))
             .unwrap_or(base);
         if base >= u16::MAX - 1 {
             continue;
         }
         let a = std::net::TcpListener::bind(("127.0.0.1", base));
-        let b = std::net::TcpListener::bind(("127.0.0.1", base + 1));
+        let b = std::net::TcpListener::bind(("127.0.0.1", base.saturating_add(1)));
         if a.is_ok() && b.is_ok() {
-            return (base, base + 1);
+            return (base, base.saturating_add(1));
         }
     }
     panic!("could not find an adjacent free TCP port pair for swtpm");
@@ -316,7 +329,7 @@ impl Fixture {
             counter: counter_value,
             base,
         };
-        let target = floor.floor_generation() + times;
+        let target = floor.floor_generation().saturating_add(times);
         let approvals = self.issue_approvals(floor, &[], target, false);
         let out = counter::advance(
             &self.runner,
@@ -659,6 +672,8 @@ fn a_new_signed_prediction_restores_unlock_after_the_measurements_change() {
 
 #[test]
 fn a_prediction_signed_by_another_key_is_refused() {
+    use base64::Engine as _;
+
     let f = fixture!();
     let floor = f.floor(0);
     let secret = b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -668,7 +683,6 @@ fn a_prediction_signed_by_another_key_is_refused() {
 
     let forged = f.predict(7, &f.evil_priv, "forged");
     let mut tampered = token;
-    use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
     tampered.predictions[0].signature = b64.encode(&forged.signature);
     assert_eq!(
@@ -683,6 +697,8 @@ fn a_prediction_signed_by_another_key_is_refused() {
 /// old image's own — letting the floor check pass against the newest token's bound.
 #[test]
 fn a_prediction_signed_for_a_different_generation_cannot_unseal_this_one() {
+    use base64::Engine as _;
+
     let f = fixture!();
     let floor = f.floor(0);
     let secret = b"cccccccccccccccccccccccccccccccc";
@@ -707,7 +723,6 @@ fn a_prediction_signed_for_a_different_generation_cannot_unseal_this_one() {
     );
 
     let mut swapped = token7;
-    use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
     swapped.predictions[0].signature = b64.encode(&for_3.signature);
     assert_eq!(
@@ -1701,6 +1716,222 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
 /// Every policy digest this crate computes without a TPM, checked against the TPM's own
 /// trial-session arithmetic — the floor authority computes approvals in software, which is
 /// only safe while software and hardware agree, so that agreement is tested, not assumed.
+/// A trial session is the TPM's own answer for the policy `steps` given. Every hand-computed
+/// digest in [`pure_policy_digests_match_the_tpms_own_arithmetic`] is checked against it.
+fn trial_digest(f: &Fixture, steps: &[&[&str]]) -> Vec<u8> {
+    let sess = f.dir().join("purity.ctx");
+    let _ = f.raw("tpm2_flushcontext", &["-s"]);
+    assert!(
+        f.raw("tpm2_startauthsession", &["-S", sess.to_str().unwrap()])
+            .ok(),
+        "could not start a trial session"
+    );
+    for step in steps {
+        let mut argv: Vec<&str> = vec![];
+        argv.extend_from_slice(step);
+        let out = f.raw(argv[0], &argv[1..]);
+        assert!(out.ok(), "{argv:?} failed: {}", out.last_error_line());
+    }
+    let out_file = f.dir().join("purity.digest");
+    assert!(
+        f.raw(
+            "tpm2_getpolicydigest",
+            &[
+                "-S",
+                sess.to_str().unwrap(),
+                "-o",
+                out_file.to_str().unwrap()
+            ],
+        )
+        .ok(),
+        "could not read the trial digest"
+    );
+    let d = std::fs::read(&out_file).expect("read digest");
+    let _ = f.raw("tpm2_flushcontext", &[sess.to_str().unwrap()]);
+    d
+}
+
+/// `PolicyCommandCode`, `PolicyAuthValue` and `PolicyNvWritten` (both ways) each match the TPM's own
+/// trial-session digest.
+fn assert_simple_policy_primitives_match(f: &Fixture, sess_s: &str) {
+    assert_eq!(
+        trial_digest(
+            f,
+            &[&[
+                "tpm2_policycommandcode",
+                "-S",
+                sess_s,
+                "TPM2_CC_NV_Increment"
+            ]]
+        ),
+        tpm_policy::command_code(tpm_policy::ZERO, tpm_policy::CC_NV_INCREMENT).to_vec(),
+        "PolicyCommandCode"
+    );
+
+    assert_eq!(
+        trial_digest(f, &[&["tpm2_policyauthvalue", "-S", sess_s]]),
+        tpm_policy::auth_value(tpm_policy::ZERO).to_vec(),
+        "PolicyAuthValue"
+    );
+
+    // PolicyNvWritten, both ways.
+    assert_eq!(
+        trial_digest(f, &[&["tpm2_policynvwritten", "-S", sess_s, "c"]]),
+        tpm_policy::nv_written(tpm_policy::ZERO, false).to_vec(),
+        "PolicyNvWritten(clear)"
+    );
+    assert_eq!(
+        trial_digest(f, &[&["tpm2_policynvwritten", "-S", sess_s, "s"]]),
+        tpm_policy::nv_written(tpm_policy::ZERO, true).to_vec(),
+        "PolicyNvWritten(set)"
+    );
+}
+
+/// `PolicyNV` (both comparison operations we rely on) matches the TPM's own trial-session
+/// digest. Returns the operand file path, reused by the end-to-end approval check.
+fn assert_policy_nv_matches(f: &Fixture, sess_s: &str, idx: &str, nv_name: &[u8]) -> PathBuf {
+    let operand = f.dir().join("purity_operand.bin");
+    std::fs::write(&operand, 7u64.to_be_bytes()).expect("write operand");
+    let op_s = operand.to_str().unwrap().to_string();
+    assert_eq!(
+        trial_digest(
+            f,
+            &[&[
+                "tpm2_policynv",
+                "-S",
+                sess_s,
+                "-i",
+                &op_s,
+                idx,
+                "eq",
+                "-C",
+                idx
+            ]]
+        ),
+        tpm_policy::nv_counter(tpm_policy::ZERO, nv_name, 7, tpm_policy::Operation::Eq).to_vec(),
+        "PolicyNV(eq)"
+    );
+    assert_eq!(
+        trial_digest(
+            f,
+            &[&[
+                "tpm2_policynv",
+                "-S",
+                sess_s,
+                "-i",
+                &op_s,
+                idx,
+                "ule",
+                "-C",
+                idx
+            ]]
+        ),
+        tpm_policy::nv_counter(
+            tpm_policy::ZERO,
+            nv_name,
+            7,
+            tpm_policy::Operation::UnsignedLe
+        )
+        .to_vec(),
+        "PolicyNV(ule)"
+    );
+    operand
+}
+
+/// `PolicyAuthorize` (the signed branch) and the one-time materialise branch each match the
+/// TPM's own trial-session digest, and `PolicyOR` of the two equals the index's authPolicy.
+fn assert_policy_authorize_and_or_match(f: &Fixture, sess_s: &str) {
+    let name_file = f.dir().join("purity_key.name");
+    std::fs::write(&name_file, &f.authority_name).expect("write key name");
+    let ref_file = f.dir().join("purity_ref.bin");
+    std::fs::write(&ref_file, approval::POLICY_REF).expect("write ref");
+    assert_eq!(
+        trial_digest(
+            f,
+            &[&[
+                "tpm2_policyauthorize",
+                "-S",
+                sess_s,
+                "-n",
+                name_file.to_str().unwrap(),
+                "-q",
+                ref_file.to_str().unwrap(),
+            ]]
+        ),
+        counter::signed_branch(&f.authority_name).to_vec(),
+        "PolicyAuthorize with the floor policy reference"
+    );
+    assert_eq!(
+        trial_digest(
+            f,
+            &[
+                &["tpm2_policynvwritten", "-S", sess_s, "c"],
+                &[
+                    "tpm2_policycommandcode",
+                    "-S",
+                    sess_s,
+                    "TPM2_CC_NV_Increment"
+                ],
+            ]
+        ),
+        counter::first_write_branch().to_vec(),
+        "the one-time materialise branch"
+    );
+
+    // PolicyOR over those two branches is the index's authPolicy.
+    let a_file = f.dir().join("purity_a.bin");
+    let b_file = f.dir().join("purity_b.bin");
+    std::fs::write(&a_file, counter::signed_branch(&f.authority_name)).expect("write a");
+    std::fs::write(&b_file, counter::first_write_branch()).expect("write b");
+    let list = format!("sha256:{},{}", a_file.display(), b_file.display());
+    assert_eq!(
+        trial_digest(f, &[&["tpm2_policyor", "-S", sess_s, "-l", &list]]),
+        f.nv_auth_policy.to_vec(),
+        "PolicyOR of the two branches is the index's authPolicy"
+    );
+}
+
+/// The end-to-end approval policy — command code + `PolicyNV` for `target - 1` — matches what
+/// `approval::approved_policy` computes. `operand` is the file [`assert_policy_nv_matches`]
+/// already created; it gets overwritten here with `target - 1`.
+fn assert_approval_policy_matches(
+    f: &Fixture,
+    sess_s: &str,
+    idx: &str,
+    nv_name: &[u8],
+    operand: &Path,
+    target: u64,
+) {
+    let op_s = operand.to_str().unwrap().to_string();
+    std::fs::write(operand, (target - 1).to_be_bytes()).expect("write operand");
+    assert_eq!(
+        trial_digest(
+            f,
+            &[
+                &[
+                    "tpm2_policycommandcode",
+                    "-S",
+                    sess_s,
+                    "TPM2_CC_NV_Increment"
+                ],
+                &[
+                    "tpm2_policynv",
+                    "-S",
+                    sess_s,
+                    "-i",
+                    &op_s,
+                    idx,
+                    "eq",
+                    "-C",
+                    idx
+                ],
+            ]
+        ),
+        approval::approved_policy(nv_name, target).unwrap().to_vec(),
+        "the policy an approval authorises"
+    );
+}
+
 #[test]
 fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     let f = fixture!();
@@ -1720,185 +1951,17 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
         "the unwritten Name must differ, or the written bit is not in the public area"
     );
 
-    // A trial session is the TPM's own answer. Compare each step of ours to it.
-    let trial = |steps: &[&[&str]]| -> Vec<u8> {
-        let sess = f.dir().join("purity.ctx");
-        let _ = f.raw("tpm2_flushcontext", &["-s"]);
-        assert!(
-            f.raw("tpm2_startauthsession", &["-S", sess.to_str().unwrap()])
-                .ok(),
-            "could not start a trial session"
-        );
-        for step in steps {
-            let mut argv: Vec<&str> = vec![];
-            argv.extend_from_slice(step);
-            let out = f.raw(argv[0], &argv[1..]);
-            assert!(out.ok(), "{argv:?} failed: {}", out.last_error_line());
-        }
-        let out_file = f.dir().join("purity.digest");
-        assert!(
-            f.raw(
-                "tpm2_getpolicydigest",
-                &[
-                    "-S",
-                    sess.to_str().unwrap(),
-                    "-o",
-                    out_file.to_str().unwrap()
-                ],
-            )
-            .ok(),
-            "could not read the trial digest"
-        );
-        let d = std::fs::read(&out_file).expect("read digest");
-        let _ = f.raw("tpm2_flushcontext", &[sess.to_str().unwrap()]);
-        d
-    };
     let sess = f.dir().join("purity.ctx");
     let sess_s = sess.to_str().unwrap().to_string();
     let idx = format!("0x{:08X}", f.cfg.nv_index);
 
-    assert_eq!(
-        trial(&[&[
-            "tpm2_policycommandcode",
-            "-S",
-            &sess_s,
-            "TPM2_CC_NV_Increment"
-        ]]),
-        tpm_policy::command_code(tpm_policy::ZERO, tpm_policy::CC_NV_INCREMENT).to_vec(),
-        "PolicyCommandCode"
-    );
-
-    assert_eq!(
-        trial(&[&["tpm2_policyauthvalue", "-S", &sess_s]]),
-        tpm_policy::auth_value(tpm_policy::ZERO).to_vec(),
-        "PolicyAuthValue"
-    );
-
-    // PolicyNvWritten, both ways.
-    assert_eq!(
-        trial(&[&["tpm2_policynvwritten", "-S", &sess_s, "c"]]),
-        tpm_policy::nv_written(tpm_policy::ZERO, false).to_vec(),
-        "PolicyNvWritten(clear)"
-    );
-    assert_eq!(
-        trial(&[&["tpm2_policynvwritten", "-S", &sess_s, "s"]]),
-        tpm_policy::nv_written(tpm_policy::ZERO, true).to_vec(),
-        "PolicyNvWritten(set)"
-    );
-
-    // PolicyNV, both operations we rely on.
-    let operand = f.dir().join("purity_operand.bin");
-    std::fs::write(&operand, 7u64.to_be_bytes()).expect("write operand");
-    let op_s = operand.to_str().unwrap().to_string();
-    assert_eq!(
-        trial(&[&[
-            "tpm2_policynv",
-            "-S",
-            &sess_s,
-            "-i",
-            &op_s,
-            &idx,
-            "eq",
-            "-C",
-            &idx
-        ]]),
-        tpm_policy::nv_counter(tpm_policy::ZERO, &nv_name, 7, tpm_policy::Operation::Eq).to_vec(),
-        "PolicyNV(eq)"
-    );
-    assert_eq!(
-        trial(&[&[
-            "tpm2_policynv",
-            "-S",
-            &sess_s,
-            "-i",
-            &op_s,
-            &idx,
-            "ule",
-            "-C",
-            &idx
-        ]]),
-        tpm_policy::nv_counter(
-            tpm_policy::ZERO,
-            &nv_name,
-            7,
-            tpm_policy::Operation::UnsignedLe
-        )
-        .to_vec(),
-        "PolicyNV(ule)"
-    );
-
-    // PolicyAuthorize, and the branch/OR structure the index actually uses.
-    let name_file = f.dir().join("purity_key.name");
-    std::fs::write(&name_file, &f.authority_name).expect("write key name");
-    let ref_file = f.dir().join("purity_ref.bin");
-    std::fs::write(&ref_file, approval::POLICY_REF).expect("write ref");
-    assert_eq!(
-        trial(&[&[
-            "tpm2_policyauthorize",
-            "-S",
-            &sess_s,
-            "-n",
-            name_file.to_str().unwrap(),
-            "-q",
-            ref_file.to_str().unwrap(),
-        ]]),
-        counter::signed_branch(&f.authority_name).to_vec(),
-        "PolicyAuthorize with the floor policy reference"
-    );
-    assert_eq!(
-        trial(&[
-            &["tpm2_policynvwritten", "-S", &sess_s, "c"],
-            &[
-                "tpm2_policycommandcode",
-                "-S",
-                &sess_s,
-                "TPM2_CC_NV_Increment"
-            ],
-        ]),
-        counter::first_write_branch().to_vec(),
-        "the one-time materialise branch"
-    );
-
-    // PolicyOR over those two branches is the index's authPolicy.
-    let a_file = f.dir().join("purity_a.bin");
-    let b_file = f.dir().join("purity_b.bin");
-    std::fs::write(&a_file, counter::signed_branch(&f.authority_name)).expect("write a");
-    std::fs::write(&b_file, counter::first_write_branch()).expect("write b");
-    let list = format!("sha256:{},{}", a_file.display(), b_file.display());
-    assert_eq!(
-        trial(&[&["tpm2_policyor", "-S", &sess_s, "-l", &list]]),
-        f.nv_auth_policy.to_vec(),
-        "PolicyOR of the two branches is the index's authPolicy"
-    );
+    assert_simple_policy_primitives_match(&f, &sess_s);
+    let operand = assert_policy_nv_matches(&f, &sess_s, &idx, &nv_name);
+    assert_policy_authorize_and_or_match(&f, &sess_s);
 
     // And the approval policy, end to end.
     let target = floor.counter + 1;
-    std::fs::write(&operand, (target - 1).to_be_bytes()).expect("write operand");
-    assert_eq!(
-        trial(&[
-            &[
-                "tpm2_policycommandcode",
-                "-S",
-                &sess_s,
-                "TPM2_CC_NV_Increment"
-            ],
-            &[
-                "tpm2_policynv",
-                "-S",
-                &sess_s,
-                "-i",
-                &op_s,
-                &idx,
-                "eq",
-                "-C",
-                &idx
-            ],
-        ]),
-        approval::approved_policy(&nv_name, target)
-            .unwrap()
-            .to_vec(),
-        "the policy an approval authorises"
-    );
+    assert_approval_policy_matches(&f, &sess_s, &idx, &nv_name, &operand, target);
 }
 
 #[test]
@@ -2065,12 +2128,14 @@ fn an_approval_signed_by_another_key_is_refused() {
     );
 }
 
-/// The answer to "what if the authority is unavailable": the floor stops
-/// advancing, the disk keeps unlocking, and the keyslot window is still pruned.
-#[test]
-fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
-    let f = fixture!();
-    let recovery = b"recovery-key-for-the-no-approvals-test";
+/// Enroll generations 5-8 (predictions + keyslots) into a fresh image and seed `state.json`
+/// as already confirmed through 5 — the starting point
+/// [`without_approvals_the_floor_stays_put_and_the_disk_still_unlocks`] confirms generation 8
+/// against.
+fn setup_generations_5_to_8(
+    f: &Fixture,
+    recovery: &[u8],
+) -> (Workspace, PathBuf, PathBuf, PathBuf, counter::FloorState) {
     let img = luks_image(f.dir(), recovery);
     let ws = f.ws();
     let preds = f.dir().join("predictions");
@@ -2105,6 +2170,16 @@ fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
         },
     )
     .expect("seed state");
+    (ws, img, preds, state, floor)
+}
+
+/// The answer to "what if the authority is unavailable": the floor stops
+/// advancing, the disk keeps unlocking, and the keyslot window is still pruned.
+#[test]
+fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
+    let f = fixture!();
+    let recovery = b"recovery-key-for-the-no-approvals-test";
+    let (ws, img, preds, state, floor) = setup_generations_5_to_8(&f, recovery);
 
     // No approvals anywhere.
     assert!(

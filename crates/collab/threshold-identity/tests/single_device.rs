@@ -4,6 +4,16 @@
 //! signatures verify through both `collab_types::verify_event` (the
 //! public consumer) and the crate's own `verify_threshold_signature` helper.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{ThresholdIdentity, signing::verify_threshold_signature};
 
@@ -74,17 +84,18 @@ fn bootstrap_single_device_seed_round_trips_via_dalek() {
     // key, verifiable via the standard Ed25519 verifier. The frost
     // variant of `bootstrap_single_device` cannot uphold this (frost
     // stores a scalar; dalek `from_bytes` treats input as a seed).
+    use ed25519_dalek::Signer;
+    use ed25519_dalek::Verifier;
+
     let mut rng = fixed_rng();
     let (seed, group_pk) = ThresholdIdentity::bootstrap_single_device_seed(&mut rng);
     let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
     let derived_pk = sk.verifying_key().to_bytes();
     assert_eq!(&derived_pk, group_pk.as_bytes());
 
-    use ed25519_dalek::Signer;
     let msg = b"round-trip";
     let sig = sk.sign(msg);
     let vk = ed25519_dalek::VerifyingKey::from_bytes(group_pk.as_bytes()).unwrap();
-    use ed25519_dalek::Verifier;
     vk.verify(msg, &sig).expect("dalek verify must succeed");
 }
 
@@ -111,6 +122,8 @@ fn single_device_seed_reconstructs_the_same_identity() {
 
 #[test]
 fn single_device_seed_is_the_dalek_seed_the_disk_record_stores() {
+    use ed25519_dalek::Signer;
+
     // The persisted bytes must be the bytes `SigningKey::from_bytes`
     // expands back into the *same* key — the property a frost signing
     // scalar cannot satisfy, and whose absence made ceremony-minted
@@ -129,13 +142,19 @@ fn single_device_seed_is_the_dalek_seed_the_disk_record_stores() {
     // …and a signature made by the dalek-side key verifies through
     // the identity's public key, which is what every app that loads
     // the record does.
-    use ed25519_dalek::Signer;
     let payload: Vec<u8> = b"disk round-trip".to_vec();
     let canon = canonical_bytes(&payload).unwrap();
     let sig = collab_types::Signature::from_bytes(dalek.sign(&canon).to_bytes());
     verify_event(&payload, &sig, &id.group_public_key).expect("dalek-signed op must verify");
 }
 
+// `_a`/`_b` names two independent DKG devices throughout this test —
+// the clearest available convention for a 2-device protocol test, used
+// the same way across every multi-device test in this crate.
+#[allow(
+    clippy::similar_names,
+    reason = "_a/_b device-pair naming is deliberate and used throughout this crate's multi-device tests"
+)]
 #[test]
 fn threshold_mode_exports_no_single_device_seed() {
     // A threshold identity has no whole secret to hand out — the
@@ -166,9 +185,8 @@ fn threshold_signing_calls_error_in_single_device_mode() {
     // half-baked partial.
     let mut rng = fixed_rng();
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-    let err = match id.sign_round1(&mut rng) {
-        Ok(_) => panic!("sign_round1 must fail in single-device mode"),
-        Err(e) => e,
+    let Err(err) = id.sign_round1(&mut rng) else {
+        panic!("sign_round1 must fail in single-device mode");
     };
     let msg = err.to_string();
     assert!(

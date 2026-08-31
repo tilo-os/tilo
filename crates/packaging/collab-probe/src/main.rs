@@ -23,6 +23,19 @@
 //! names the step, since "collaboration is off" / "no peer connected"
 //! / "nobody typed" would otherwise all look like silence.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::process::ExitCode;
 
 use automerge::transaction::Transactable;
@@ -69,7 +82,7 @@ fn main() -> ExitCode {
     // using it. `service_fd` returns None both when the env var is absent
     // and when it names something not open — the two shapes the handoff can fail in.
     if let Some(fd) = runtime_portal::service_fd("collab") {
-        println!("probe: collab service fd = {fd}")
+        println!("probe: collab service fd = {fd}");
     } else {
         eprintln!(
             "probe: FAIL no usable collab service fd. QOS_SVC_COLLAB_FD={:?}. \
@@ -105,6 +118,11 @@ fn main() -> ExitCode {
 
 /// Dial the broker over the launcher-supplied descriptor and join one
 /// channel; `channel` is the broker's routing key verbatim (room uuid, or `<room>#record:<id>`).
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
+              never spawned across threads"
+)]
 async fn join(
     channel: &str,
 ) -> Result<runtime_collab::ChannelHandle, runtime_portal::NotAvailable> {
@@ -121,6 +139,11 @@ async fn join(
     Ok(handle)
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
+              never spawned across threads"
+)]
 async fn write(channel: &str, text: &str) -> ExitCode {
     let Ok(handle) = join(channel).await else {
         return ExitCode::from(5);
@@ -145,6 +168,11 @@ async fn write(channel: &str, text: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
+              never spawned across threads"
+)]
 async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
     let Ok(handle) = join(channel).await else {
         return ExitCode::from(5);
@@ -171,11 +199,8 @@ async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
                 eprintln!("probe: received {} bytes that did not load", event.op.len());
                 continue;
             }
-            match doc.get(&ROOT, FIELD) {
-                Ok(Some((value, _))) => {
-                    return Some(value.to_str().unwrap_or_default().to_string());
-                }
-                _ => continue,
+            if let Ok(Some((value, _))) = doc.get(&ROOT, FIELD) {
+                return Some(value.to_str().unwrap_or_default().to_string());
             }
         }
     })

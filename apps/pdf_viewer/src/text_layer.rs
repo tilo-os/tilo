@@ -106,9 +106,9 @@ impl PageText {
         let m = q.len();
         let mut i = 0;
         while i + m <= n {
-            if hay[i..i + m] == q[..] {
-                let before_ok = i == 0 || !is_word(hay[i - 1]);
-                let after_ok = i + m >= n || !is_word(hay[i + m]);
+            if hay.get(i..i + m).is_some_and(|w| w == q.as_slice()) {
+                let before_ok = i == 0 || hay.get(i - 1).is_some_and(|c| !is_word(*c));
+                let after_ok = i + m >= n || hay.get(i + m).is_some_and(|c| !is_word(*c));
                 if !opts.whole_word || (before_ok && after_ok) {
                     out.push(TextMatch {
                         page,
@@ -178,8 +178,13 @@ impl PageText {
             return Vec::new();
         }
         let mut bands: Vec<PtRect> = Vec::new();
+        let Some(range) = self.chars.get(start..end) else {
+            // Unreachable given the guards above (end <= len, start < end);
+            // stay safe rather than assume it.
+            return bands;
+        };
         let mut cur: Option<PtRect> = None;
-        for c in &self.chars[start..end] {
+        for c in range {
             let r = c.rect;
             if r.w <= 0.0 || r.h <= 0.0 {
                 continue;
@@ -218,7 +223,10 @@ impl PageText {
             return (0, 0);
         }
         let g = glyph_idx.min(self.chars.len() - 1);
-        let byte = self.chars[g].byte_start;
+        let Some(byte) = self.chars.get(g).map(|c| c.byte_start) else {
+            // Unreachable: `g` is clamped to a valid index by the guards above.
+            return (0, 0);
+        };
         let (bs, be) = ui::word_boundaries(&self.text, byte);
         let gs = self.chars.partition_point(|c| c.byte_start < bs);
         let ge = self.chars.partition_point(|c| c.byte_start < be);
@@ -236,14 +244,17 @@ impl PageText {
             return (0, 0);
         }
         let g = glyph_idx.min(self.chars.len() - 1);
-        let a = self.chars[g].rect;
+        let Some(a) = self.chars.get(g).map(|c| c.rect) else {
+            // Unreachable: `g` is clamped to a valid index by the guard above.
+            return (0, 0);
+        };
         let cont = |r: &PtRect| r.w <= 0.0 || r.h <= 0.0 || (r.y < a.y + a.h && r.y + r.h > a.y);
         let mut s = g;
-        while s > 0 && cont(&self.chars[s - 1].rect) {
+        while s > 0 && self.chars.get(s - 1).is_some_and(|c| cont(&c.rect)) {
             s -= 1;
         }
         let mut e = g + 1;
-        while e < self.chars.len() && cont(&self.chars[e].rect) {
+        while self.chars.get(e).is_some_and(|c| cont(&c.rect)) {
             e += 1;
         }
         (s, e)
@@ -256,7 +267,12 @@ impl PageText {
         if start >= end {
             return String::new();
         }
-        self.chars[start..end].iter().map(|c| c.ch).collect()
+        self.chars
+            .get(start..end)
+            .into_iter()
+            .flatten()
+            .map(|c| c.ch)
+            .collect()
     }
 }
 

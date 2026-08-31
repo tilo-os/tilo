@@ -13,11 +13,11 @@
 //! self-checking geometry probe — a green run means "the thumb is where the
 //! offset says".
 //!
-//! Run:  cargo run -p ui --example ui-shots -- data_table
-//! Out:  $DATA_TABLE_SHOTS_OUT (default /tmp/data_table_shots)
+//! Run:  `cargo run -p ui --example ui-shots -- data_table`
+//! Out:  `$DATA_TABLE_SHOTS_OUT` (default `/tmp/data_table_shots`)
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -80,11 +80,11 @@ fn columns() -> Vec<ColumnDef<Proc>> {
 }
 
 fn rows() -> Vec<Proc> {
-    (0..40)
+    (0..40usize)
         .map(|i| Proc {
             name: format!("service-daemon-{i:02}"),
             cpu: format!("{}.{}%", i % 9, i % 10),
-            mem: format!("{} MB", 40 + i * 7),
+            mem: format!("{} MB", 40usize.saturating_add(i.saturating_mul(7))),
         })
         .collect()
 }
@@ -105,43 +105,48 @@ fn build() -> (DataTable<Proc>, TaffyTree<()>, NodeId) {
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut tr = TextRenderer::new();
     let tnode = table.build_layout(&mut taffy, &theme, &mut node_map);
-    let full_h = HEADER_H + ROW_H * rows().len() as f32;
+    // Row count is a small fixed fixture size (40), far below f32's
+    // exact-integer range; WIDTH is a small fixed pixel constant (520).
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "row count and WIDTH are small fixed fixture/pixel constants, far below f32's exact-integer range"
+    )]
+    let (rows_len_f32, width_f32) = (rows().len() as f32, WIDTH as f32);
+    let full_h = HEADER_H + ROW_H * rows_len_f32;
     let root = taffy
         .new_with_children(
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
                 size: Size {
-                    width: Dimension::length(WIDTH as f32),
+                    width: Dimension::length(width_f32),
                     height: Dimension::length(full_h),
                 },
                 ..Default::default()
             },
             &[tnode],
         )
-        .unwrap();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(WIDTH as f32),
-                height: AvailableSpace::Definite(full_h),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = node_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    Size::ZERO
-                }
-            },
-        )
-        .unwrap();
+        .unwrap_or(tnode);
+    let _ = taffy.compute_layout_with_measure(
+        root,
+        Size {
+            width: AvailableSpace::Definite(width_f32),
+            height: AvailableSpace::Definite(full_h),
+        },
+        |known, available, node_id, _, _| {
+            if let Some(&ptr) = node_map.get(&node_id) {
+                unsafe { (*ptr).measure(known, available, &mut tr) }
+            } else {
+                Size::ZERO
+            }
+        },
+    );
     table.apply_layout(&taffy, tnode, Point::ZERO);
     table.set_viewport(BODY_VP, ROW_H);
     (table, taffy, tnode)
 }
 
-fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: PathBuf) -> Rect {
+fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: &Path) -> Option<Rect> {
     table.set_scroll_y(scroll_y);
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
@@ -149,8 +154,15 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: PathBuf) -> Rect {
 
     // The visible region is the header + body viewport; the renderer canvas
     // clips everything below it, which is exactly the virtualized viewport.
+    // HEADER_H/BODY_VP are small fixed positive pixel constants, so the
+    // rounded sum always fits u32 losslessly.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "HEADER_H + BODY_VP is a small fixed positive pixel constant"
+    )]
     let h = (HEADER_H + BODY_VP).ceil() as u32;
-    let clip = Rect::new(0.0, 0.0, WIDTH as f64, h as f64);
+    let clip = Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(h));
 
     let mut scene = Scene::new();
     scene.push_layer(
@@ -164,25 +176,32 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: PathBuf) -> Rect {
     scene.pop_layer();
 
     let mut r = OffscreenRenderer::new(WIDTH, h);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
-    table
-        .scrollbar_thumb()
-        .expect("bar live in internal-scroll mode")
+    table.scrollbar_thumb()
 }
 
 pub fn run(_args: &[String]) {
     let dir = std::env::var("DATA_TABLE_SHOTS_OUT")
         .unwrap_or_else(|_| "/tmp/data_table_shots".to_string());
-    std::fs::create_dir_all(&dir).unwrap();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("data_table: failed to create output dir {dir}: {e}");
+        return;
+    }
     let dir = PathBuf::from(dir);
 
     let (mut table, _taffy, _node) = build();
     let max = table.max_scroll_y();
     println!("max_scroll_y = {max}");
 
-    let top = shoot(&mut table, 0.0, dir.join("data_table-top.png"));
-    let bottom = shoot(&mut table, max, dir.join("data_table-bottom.png"));
+    let Some(top) = shoot(&mut table, 0.0, &dir.join("data_table-top.png")) else {
+        eprintln!("data_table: table has no scrollbar thumb in internal-scroll mode");
+        return;
+    };
+    let Some(bottom) = shoot(&mut table, max, &dir.join("data_table-bottom.png")) else {
+        eprintln!("data_table: table has no scrollbar thumb in internal-scroll mode");
+        return;
+    };
 
     // The thumb must reflect the offset: at 0 it sits at the track top; at
     // max it sits at the bottom (and strictly lower than at the top).
@@ -194,8 +213,8 @@ pub fn run(_args: &[String]) {
         top.y0,
         bottom.y0,
     );
-    let track_top = HEADER_H as f64 + 2.0; // rect.y0(0) + HEADER + BAR_MARGIN
-    let track_bottom = HEADER_H as f64 + BODY_VP as f64 - 2.0;
+    let track_top = f64::from(HEADER_H) + 2.0; // rect.y0(0) + HEADER + BAR_MARGIN
+    let track_bottom = f64::from(HEADER_H) + f64::from(BODY_VP) - 2.0;
     assert!(
         (top.y0 - track_top).abs() < 1.0,
         "top thumb at track top: {}",

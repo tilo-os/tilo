@@ -23,11 +23,28 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 pub mod actions;
 mod find_bar;
 pub mod history_panel;
 pub mod i18n;
+mod outline_pane;
+mod recovery_banner;
+mod ruler;
+mod style_color_picker;
+mod zoom_control;
 pub use ui::num;
 pub mod styles;
 pub mod widget;

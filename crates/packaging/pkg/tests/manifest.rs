@@ -1,6 +1,16 @@
 //! Manifest-level tests: TOML round-trip, schema validation,
 //! service-req parsing.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::fixtures;
 use pkg::manifest::{Manifest, PortalPolicy, Requirement, ServiceReq, ServiceReqParseError};
 use pkg::validate::{ManifestError, validate_manifest};
@@ -29,7 +39,7 @@ fn manifest_roundtrip() {
             .first()
             .unwrap()
             .byte_range,
-        Some((0, 0x300000))
+        Some((0, 0x30_0000))
     );
     let svc = m.sandbox.services.get("collab").unwrap();
     assert_eq!(svc.requirement, Requirement::Required);

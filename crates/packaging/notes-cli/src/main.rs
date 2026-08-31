@@ -23,6 +23,19 @@
 //! `qos-install install ...` to drop a `notes` shim into
 //! `~/.local/share/qos-apps/bin/`.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::process::ExitCode;

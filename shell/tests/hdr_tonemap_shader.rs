@@ -3,6 +3,16 @@
 //! since fetching an adapter costs the `OffscreenRenderer` bring-up. Both
 //! paths use the same PQ math.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use shell::collab::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
@@ -15,10 +25,14 @@ fn p010(code: u16) -> u16 {
 
 /// A 4×4 P010 luma plane at the given 10-bit code with neutral chroma.
 fn solid_p010(luma_code: u16, width: u32, height: u32) -> (Vec<u16>, Vec<u16>) {
-    let y = vec![p010(luma_code); (width * height) as usize];
+    let y = vec![p010(luma_code); width.saturating_mul(height) as usize];
     // Neutral chroma at 512 (10-bit mid); UV is interleaved and 4:2:0
     // subsampled → width/2 * height/2 pairs, 2 samples per pair.
-    let uv = vec![p010(512); ((width / 2) * (height / 2) * 2) as usize];
+    let uv_len = width
+        .saturating_div(2)
+        .saturating_mul(height.saturating_div(2))
+        .saturating_mul(2);
+    let uv = vec![p010(512); uv_len as usize];
     (y, uv)
 }
 
@@ -54,7 +68,10 @@ fn cpu_tonemap_mid_gray_pq_produces_plausible_sdr_gray() {
         cfg,
     );
 
-    assert_eq!(rgba.len() as u32, width * height * 4);
+    assert_eq!(
+        u32::try_from(rgba.len()).unwrap_or(u32::MAX),
+        width * height * 4
+    );
     for (i, chunk) in rgba.chunks_exact(4).enumerate() {
         assert_eq!(chunk[3], 0xFF, "alpha for pixel {i} not full");
     }

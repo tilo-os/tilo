@@ -20,10 +20,10 @@ use rand_core::OsRng;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2, ThresholdIdentity};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, NamedKey, SmolStr};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -35,12 +35,30 @@ use crate::widget::identity_flow::{
     derive_pairing_code, derive_pairing_mac_key, format_pairing_code,
 };
 
+/// The pairing code is exactly six digits, one per input box.
+const CODE_LEN: usize = 6;
+
+/// Composes `transform` with a translation to `(x, y)` for one draw call.
+/// Goes through `Affine::pre_translate` so the composition stays inside
+/// `kurbo`'s floating-point matrix math rather than reading as integer
+/// arithmetic at every call site.
+fn at(transform: Affine, x: f64, y: f64) -> Affine {
+    transform.pre_translate(Vec2::new(x, y))
+}
+
+/// Widens a code-box index to `f64` for pixel-space arithmetic. The row
+/// holds exactly [`CODE_LEN`] boxes, so this is lossless; going through
+/// `u32` states that to the compiler instead of an `as` cast.
+fn box_index_to_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
 pub struct PairDeviceScreen {
     rect: Rect,
     /// 6-digit code, one box per digit.
-    code_digits: [char; 6],
+    code_digits: [char; CODE_LEN],
     code_focus: usize,
-    code_box_rects: [Rect; 6],
+    code_box_rects: [Rect; CODE_LEN],
     /// Pasted JSON payload from the QR (textarea fallback).
     payload_text: String,
     payload_focus: bool,
@@ -64,9 +82,9 @@ impl PairDeviceScreen {
     pub fn new() -> Self {
         Self {
             rect: Rect::ZERO,
-            code_digits: ['_'; 6],
+            code_digits: ['_'; CODE_LEN],
             code_focus: 0,
-            code_box_rects: [Rect::ZERO; 6],
+            code_box_rects: [Rect::ZERO; CODE_LEN],
             payload_text: String::new(),
             payload_focus: false,
             payload_rect: Rect::ZERO,
@@ -81,9 +99,13 @@ impl PairDeviceScreen {
 
     /// Inject the 6-digit code (used by tests + the QR-scanner shim).
     pub fn set_code(&mut self, code: &str) {
-        let digits: Vec<char> = code.chars().filter(char::is_ascii_digit).collect();
-        for i in 0..6 {
-            self.code_digits[i] = digits.get(i).copied().unwrap_or('_');
+        let digits = code.chars().filter(char::is_ascii_digit);
+        for (slot, entered) in self
+            .code_digits
+            .iter_mut()
+            .zip(digits.map(Some).chain(std::iter::repeat(None)))
+        {
+            *slot = entered.unwrap_or('_');
         }
     }
 
@@ -99,10 +121,8 @@ impl PairDeviceScreen {
     pub fn parse_code(&self) -> Option<u32> {
         let mut acc: u32 = 0;
         for c in &self.code_digits {
-            if !c.is_ascii_digit() {
-                return None;
-            }
-            acc = acc.saturating_mul(10) + (*c as u32 - '0' as u32);
+            let digit = c.to_digit(10)?;
+            acc = acc.saturating_mul(10).saturating_add(digit);
         }
         Some(acc)
     }
@@ -130,6 +150,11 @@ impl PairDeviceScreen {
 
     /// Sanity check that the typed code matches the payload's derived
     /// code, before launching the DKG.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError`] when the payload's nonce cannot be
+    /// decoded, or when `code` does not match the code that nonce derives.
     pub fn validate_code_against_payload(
         code: u32,
         payload: &PairingPayload,
@@ -149,6 +174,12 @@ impl PairDeviceScreen {
     /// Drive the pairer's half of the DKG: builds a fresh share-2 session
     /// on this device, exchanges round-1/round-2 packages with the host
     /// via `PairingHandshake`, and adopts the resulting threshold identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError`] when the payload cannot be decoded, when
+    /// any DKG round fails, when the round-2 reply cannot be encoded, or when
+    /// the host never publishes its own round-2 within the poll window.
     pub fn perform_pairing(
         &mut self,
         payload: &PairingPayload,
@@ -196,6 +227,11 @@ impl PairDeviceScreen {
 
     /// Companion to `perform_pairing` that *exposes* the round-1 the
     /// pairer would send, for tests that inspect the wire format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError`] when bootstrapping the device identity or
+    /// beginning its enrolment round fails.
     pub fn produce_pairer_round1() -> Result<(DkgSession, EnrolmentRound1), IdentityFlowError> {
         let mut rng = OsRng;
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
@@ -234,37 +270,7 @@ impl PairDeviceScreen {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                for (i, r) in self.code_box_rects.iter().enumerate() {
-                    if r.contains(self.last_cursor) {
-                        self.code_focus = i;
-                        self.payload_focus = false;
-                        *handled = true;
-                        return ScreenOutcome::Stay;
-                    }
-                }
-                if self.payload_rect.contains(self.last_cursor) {
-                    self.payload_focus = true;
-                    *handled = true;
-                    return ScreenOutcome::Stay;
-                }
-                if self.submit_rect.contains(self.last_cursor) {
-                    *handled = true;
-                    if self.completed {
-                        return ScreenOutcome::Advance;
-                    }
-                    self.error = None;
-                    self.status = "Pairing…".to_string();
-                    // Driving the handshake needs the `PairingHandshake` the shell
-                    // owns; the screen exposes `perform_pairing` for the shell to
-                    // call. A click here just checks both fields are filled.
-                    if self.parse_code().is_none() || self.payload_text.is_empty() {
-                        self.error = Some("Enter both the code and the QR payload.".to_string());
-                    }
-                    return ScreenOutcome::Stay;
-                }
-                ScreenOutcome::Stay
-            }
+            } => self.handle_mouse_press(handled),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -274,53 +280,296 @@ impl PairDeviceScreen {
                         ..
                     },
                 ..
-            } => {
-                if self.payload_focus {
-                    match logical_key {
-                        Key::Named(NamedKey::Backspace) => {
-                            self.payload_text.pop();
+            } => self.handle_key_press(logical_key, text.as_ref(), handled),
+            _ => ScreenOutcome::Stay,
+        }
+    }
+
+    /// `MouseInput` arm of [`Self::handle_event_screen`]: focuses a code box,
+    /// the payload field, or triggers submit, whichever rect the last cursor
+    /// position landed in.
+    fn handle_mouse_press(&mut self, handled: &mut bool) -> ScreenOutcome {
+        for (i, r) in self.code_box_rects.iter().enumerate() {
+            if r.contains(self.last_cursor) {
+                self.code_focus = i;
+                self.payload_focus = false;
+                *handled = true;
+                return ScreenOutcome::Stay;
+            }
+        }
+        if self.payload_rect.contains(self.last_cursor) {
+            self.payload_focus = true;
+            *handled = true;
+            return ScreenOutcome::Stay;
+        }
+        if self.submit_rect.contains(self.last_cursor) {
+            *handled = true;
+            if self.completed {
+                return ScreenOutcome::Advance;
+            }
+            self.error = None;
+            self.status = "Pairing…".to_string();
+            // Driving the handshake needs the `PairingHandshake` the shell
+            // owns; the screen exposes `perform_pairing` for the shell to
+            // call. A click here just checks both fields are filled.
+            if self.parse_code().is_none() || self.payload_text.is_empty() {
+                self.error = Some("Enter both the code and the QR payload.".to_string());
+            }
+            return ScreenOutcome::Stay;
+        }
+        ScreenOutcome::Stay
+    }
+
+    /// `KeyboardInput` arm of [`Self::handle_event_screen`]: routes typing
+    /// and backspace to either the payload textarea or the focused code box,
+    /// depending on which currently has focus.
+    fn handle_key_press(
+        &mut self,
+        logical_key: &Key,
+        text: Option<&SmolStr>,
+        handled: &mut bool,
+    ) -> ScreenOutcome {
+        if self.payload_focus {
+            match logical_key {
+                Key::Named(NamedKey::Backspace) => {
+                    self.payload_text.pop();
+                    *handled = true;
+                }
+                _ => {
+                    if let Some(t) = text {
+                        for c in t.chars() {
+                            if c == '\u{8}' || c == '\u{7f}' {
+                                continue;
+                            }
+                            self.payload_text.push(c);
                             *handled = true;
                         }
-                        _ => {
-                            if let Some(t) = text {
-                                for c in t.chars() {
-                                    if c == '\u{8}' || c == '\u{7f}' {
-                                        continue;
-                                    }
-                                    self.payload_text.push(c);
-                                    *handled = true;
-                                }
-                            }
-                        }
                     }
-                } else {
-                    match logical_key {
-                        Key::Named(NamedKey::Backspace) => {
-                            if self.code_focus > 0 {
-                                self.code_digits[self.code_focus - 1] = '_';
-                                self.code_focus -= 1;
-                                *handled = true;
+                }
+            }
+        } else {
+            match logical_key {
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(prev) = self.code_focus.checked_sub(1)
+                        && let Some(slot) = self.code_digits.get_mut(prev)
+                    {
+                        *slot = '_';
+                        self.code_focus = prev;
+                        *handled = true;
+                    }
+                }
+                _ => {
+                    if let Some(t) = text {
+                        for c in t.chars() {
+                            if !c.is_ascii_digit() {
+                                continue;
                             }
-                        }
-                        _ => {
-                            if let Some(t) = text {
-                                for c in t.chars() {
-                                    if !c.is_ascii_digit() {
-                                        continue;
-                                    }
-                                    if self.code_focus < 6 {
-                                        self.code_digits[self.code_focus] = c;
-                                        self.code_focus += 1;
-                                        *handled = true;
-                                    }
-                                }
+                            if let Some(slot) = self.code_digits.get_mut(self.code_focus) {
+                                *slot = c;
+                                self.code_focus = self.code_focus.saturating_add(1);
+                                *handled = true;
                             }
                         }
                     }
                 }
-                ScreenOutcome::Stay
             }
-            _ => ScreenOutcome::Stay,
+        }
+        ScreenOutcome::Stay
+    }
+
+    /// The card panel behind everything, plus its heading and status line.
+    fn draw_card(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pad: f64,
+    ) {
+        let radius = 12.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        text_renderer.draw_text(
+            scene,
+            "Pair with existing identity",
+            22.0,
+            theme.tokens.colors.text_primary,
+            at(transform, card.x0 + pad, card.y0 + pad),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            &self.status,
+            13.0,
+            theme.tokens.colors.text_dim,
+            at(transform, card.x0 + pad, card.y0 + pad + 28.0),
+            None,
+        );
+    }
+
+    /// The six monospace digit boxes, each with the digit typed into it.
+    fn draw_code_boxes(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        for (i, (r, ch)) in self
+            .code_box_rects
+            .iter()
+            .zip(self.code_digits.iter())
+            .enumerate()
+        {
+            let focused = self.code_focus == i && !self.payload_focus;
+            let border = if focused {
+                theme.border_focus
+            } else {
+                theme.tokens.colors.border_standard
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.base,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
+            scene.stroke(
+                &Stroke::new(if focused { 2.0 } else { 1.0 }),
+                transform,
+                border,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
+            let display: String = if *ch == '_' {
+                String::new()
+            } else {
+                ch.to_string()
+            };
+            let (w, _) = text_renderer.measure(&display, 26.0, None);
+            text_renderer.draw_text(
+                scene,
+                &display,
+                26.0,
+                theme.tokens.colors.text_primary,
+                at(
+                    transform,
+                    r.x0 + (r.width() - f64::from(w)) / 2.0,
+                    r.y0 + (r.height() - 26.0) / 2.0,
+                ),
+                None,
+            );
+        }
+    }
+
+    /// The QR-payload textarea fallback, showing its placeholder when empty.
+    fn draw_payload_field(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(self.payload_rect, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(if self.payload_focus { 2.0 } else { 1.0 }),
+            transform,
+            if self.payload_focus {
+                theme.border_focus
+            } else {
+                theme.tokens.colors.border_standard
+            },
+            None,
+            &RoundedRect::from_rect(self.payload_rect, 8.0),
+        );
+        let placeholder = if self.payload_text.is_empty() {
+            "Paste the QR payload here (TODO: real scanner)"
+        } else {
+            self.payload_text.as_str()
+        };
+        let color = if self.payload_text.is_empty() {
+            theme.tokens.colors.text_dim
+        } else {
+            theme.tokens.colors.text_primary
+        };
+        text_renderer.draw_text(
+            scene,
+            placeholder,
+            13.0,
+            color,
+            at(
+                transform,
+                self.payload_rect.x0 + 12.0,
+                self.payload_rect.y0 + 12.0,
+            ),
+            None,
+        );
+    }
+
+    /// The primary button and, when one is set, the error line above it.
+    fn draw_submit_and_error(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pad: f64,
+    ) {
+        let bg = if self.submit_hovered {
+            theme.bg_active
+        } else {
+            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            bg,
+            None,
+            &RoundedRect::from_rect(self.submit_rect, 8.0),
+        );
+        let label = if self.completed { "Continue" } else { "Pair" };
+        let (lw, _) = text_renderer.measure(label, 14.0, None);
+        text_renderer.draw_text(
+            scene,
+            label,
+            14.0,
+            Color::from_rgb8(255, 255, 255),
+            at(
+                transform,
+                self.submit_rect.x0 + (self.submit_rect.width() - f64::from(lw)) / 2.0,
+                self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0,
+            ),
+            None,
+        );
+        if let Some(err) = &self.error {
+            text_renderer.draw_text(
+                scene,
+                err,
+                12.0,
+                Color::from_rgb8(220, 80, 80),
+                at(transform, card.x0 + pad, self.submit_rect.y0 - 24.0),
+                None,
+            );
         }
     }
 }
@@ -364,9 +613,9 @@ impl Widget for PairDeviceScreen {
         let total = 6.0 * box_w + 5.0 * gap;
         let start_x = card_x + (card_w - total) / 2.0;
         let row_y = card_y + 100.0;
-        for i in 0..6 {
-            let x = start_x + i as f64 * (box_w + gap);
-            self.code_box_rects[i] = Rect::new(x, row_y, x + box_w, row_y + box_h);
+        for (i, slot) in self.code_box_rects.iter_mut().enumerate() {
+            let x = start_x + box_index_to_f64(i) * (box_w + gap);
+            *slot = Rect::new(x, row_y, x + box_w, row_y + box_h);
         }
         self.payload_rect = Rect::new(
             card_x + pad,
@@ -398,153 +647,12 @@ impl Widget for PairDeviceScreen {
         let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
         let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
         let pad = 32.0;
-        let radius = 12.0;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Pair with existing identity",
-            22.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &self.status,
-            13.0,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad + 28.0)),
-            None,
-        );
-        for (i, r) in self.code_box_rects.iter().enumerate() {
-            let focused = self.code_focus == i && !self.payload_focus;
-            let border = if focused {
-                theme.border_focus
-            } else {
-                theme.tokens.colors.border_standard
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &RoundedRect::from_rect(*r, 6.0),
-            );
-            scene.stroke(
-                &Stroke::new(if focused { 2.0 } else { 1.0 }),
-                transform,
-                border,
-                None,
-                &RoundedRect::from_rect(*r, 6.0),
-            );
-            let ch = self.code_digits[i];
-            let display: String = if ch == '_' {
-                String::new()
-            } else {
-                ch.to_string()
-            };
-            let (w, _) = text_renderer.measure(&display, 26.0, None);
-            text_renderer.draw_text(
-                scene,
-                &display,
-                26.0,
-                theme.tokens.colors.text_primary,
-                transform
-                    * Affine::translate((
-                        r.x0 + (r.width() - f64::from(w)) / 2.0,
-                        r.y0 + (r.height() - 26.0) / 2.0,
-                    )),
-                None,
-            );
-        }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.payload_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(if self.payload_focus { 2.0 } else { 1.0 }),
-            transform,
-            if self.payload_focus {
-                theme.border_focus
-            } else {
-                theme.tokens.colors.border_standard
-            },
-            None,
-            &RoundedRect::from_rect(self.payload_rect, 8.0),
-        );
-        let placeholder = if self.payload_text.is_empty() {
-            "Paste the QR payload here (TODO: real scanner)"
-        } else {
-            self.payload_text.as_str()
-        };
-        let color = if self.payload_text.is_empty() {
-            theme.tokens.colors.text_dim
-        } else {
-            theme.tokens.colors.text_primary
-        };
-        text_renderer.draw_text(
-            scene,
-            placeholder,
-            13.0,
-            color,
-            transform
-                * Affine::translate((self.payload_rect.x0 + 12.0, self.payload_rect.y0 + 12.0)),
-            None,
-        );
-        let bg = if self.submit_hovered {
-            theme.bg_active
-        } else {
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            bg,
-            None,
-            &RoundedRect::from_rect(self.submit_rect, 8.0),
-        );
-        let label = if self.completed { "Continue" } else { "Pair" };
-        let (lw, _) = text_renderer.measure(label, 14.0, None);
-        text_renderer.draw_text(
-            scene,
-            label,
-            14.0,
-            Color::from_rgb8(255, 255, 255),
-            transform
-                * Affine::translate((
-                    self.submit_rect.x0 + (self.submit_rect.width() - f64::from(lw)) / 2.0,
-                    self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0,
-                )),
-            None,
-        );
-        if let Some(err) = &self.error {
-            text_renderer.draw_text(
-                scene,
-                err,
-                12.0,
-                Color::from_rgb8(220, 80, 80),
-                transform * Affine::translate((card.x0 + pad, self.submit_rect.y0 - 24.0)),
-                None,
-            );
-        }
-    }
 
+        self.draw_card(scene, transform, text_renderer, theme, card, pad);
+        self.draw_code_boxes(scene, transform, text_renderer, theme);
+        self.draw_payload_field(scene, transform, text_renderer, theme);
+        self.draw_submit_and_error(scene, transform, text_renderer, theme, card, pad);
+    }
     fn handle_event(
         &mut self,
         _event: &WindowEvent,

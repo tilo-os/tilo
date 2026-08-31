@@ -5,13 +5,19 @@
 //! instead of editing qdoc itself: the parent editor remains the sole owner of
 //! undoable document mutations.
 
+use automerge::{AutoCommit, ObjId};
 use qdoc::snapshot::BlockView;
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{TextInput, Widget};
 
 use crate::i18n::{arg, t, t_args};
 use crate::num;
@@ -23,7 +29,6 @@ pub(crate) type FindMatch = (String, usize, usize);
 #[derive(Clone, Copy)]
 pub(crate) struct FindPalette {
     pub bar: Color,
-    pub field: Color,
     pub chip: Color,
     pub border: Color,
     pub text: Color,
@@ -55,19 +60,57 @@ enum Action {
     ToggleRegex,
 }
 
-#[derive(Default)]
+/// The three search-mode toggles, grouped so `FindBar` itself doesn't carry
+/// more than a handful of independent bools.
+#[derive(Default, Clone, Copy)]
+struct SearchOptions {
+    case_sensitive: bool,
+    whole_word: bool,
+    regex: bool,
+}
+
 pub(crate) struct FindBar {
     open: bool,
-    query: String,
-    replacement: String,
+    query: TextInput,
+    replacement: TextInput,
     on_replace: bool,
     matches: Vec<FindMatch>,
     index: usize,
     buttons: Vec<(Action, Rect)>,
-    case_sensitive: bool,
-    whole_word: bool,
-    regex: bool,
+    options: SearchOptions,
     regex_error: bool,
+    pointer: Point,
+}
+
+impl Default for FindBar {
+    fn default() -> Self {
+        Self {
+            open: false,
+            query: TextInput::local()
+                .with_id("word_processor_find")
+                .with_font_size(13.0),
+            replacement: TextInput::local()
+                .with_id("word_processor_replace")
+                .with_font_size(13.0),
+            on_replace: false,
+            matches: Vec::new(),
+            index: 0,
+            buttons: Vec::new(),
+            options: SearchOptions::default(),
+            regex_error: false,
+            pointer: Point::ZERO,
+        }
+    }
+}
+
+/// The render arguments [`FindBar::draw`] threads through its per-section
+/// helpers, so each one carries a handful of positions rather than the whole
+/// argument list.
+struct DrawCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    tr: &'a mut TextRenderer,
+    palette: FindPalette,
 }
 
 impl FindBar {
@@ -88,22 +131,23 @@ impl FindBar {
     }
 
     pub(crate) fn replacement(&self) -> &str {
-        &self.replacement
+        self.replacement.value()
     }
 
     #[cfg(test)]
     pub(crate) fn set_queries_for_tests(&mut self, query: &str, replacement: &str) {
-        self.query = query.to_string();
-        self.replacement = replacement.to_string();
+        self.query.set_text(query);
+        self.replacement.set_text(replacement);
     }
 
     pub(crate) fn open(&mut self, seed: Option<&str>, blocks: &[BlockView]) -> FindEffect {
         self.open = true;
         self.on_replace = false;
         if let Some(seed) = seed.filter(|s| !s.is_empty() && !s.contains('\n')) {
-            self.query.clear();
-            self.query.push_str(seed);
+            self.query.set_text(seed);
         }
+        Widget::set_focus(&mut self.query, true);
+        Widget::set_focus(&mut self.replacement, false);
         self.recompute(blocks)
     }
 
@@ -111,6 +155,8 @@ impl FindBar {
         self.open = false;
         self.matches.clear();
         self.buttons.clear();
+        Widget::set_focus(&mut self.query, false);
+        Widget::set_focus(&mut self.replacement, false);
     }
 
     /// Re-run the current query after the document changes.
@@ -131,58 +177,168 @@ impl FindBar {
         action.map_or(FindEffect::None, |action| self.apply(action, blocks))
     }
 
-    /// Consume a key while open. The parent only needs to enact the returned
-    /// document intent; query editing and match navigation stay private here.
-    pub(crate) fn key(
+    /// Route raw input through the shared text fields. Search query state stays
+    /// local, while the returned effect lets the editor keep document changes
+    /// on its existing collaborative/undoable splice path.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event for embedded fields"
+    )]
+    pub(crate) fn handle_event(
         &mut self,
-        key: &Key,
-        typed: Option<&str>,
-        shift: bool,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
         blocks: &[BlockView],
     ) -> FindEffect {
-        match key {
-            Key::Named(NamedKey::Escape) => {
-                self.close();
-                FindEffect::None
+        if !self.open {
+            return FindEffect::None;
+        }
+
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            // Each field must see cursor movement so hover/drag state stays
+            // correct even when focus is about to move between them.
+            for input in [&mut self.query, &mut self.replacement] {
+                Widget::handle_event(
+                    input,
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
             }
-            Key::Named(NamedKey::Enter) => self.jump(if shift { -1 } else { 1 }),
-            Key::Named(NamedKey::Tab) => {
-                self.on_replace = !self.on_replace;
-                FindEffect::None
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if self.on_replace {
-                    self.replacement.pop();
-                    FindEffect::None
-                } else {
-                    self.query.pop();
-                    self.recompute(blocks)
+            return FindEffect::None;
+        }
+
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            match logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.close();
+                    *handled = true;
+                    return FindEffect::None;
                 }
-            }
-            _ => {
-                if let Some(text) =
-                    typed.filter(|s| !s.is_empty() && !s.chars().any(char::is_control))
+                Key::Named(NamedKey::Enter) => {
+                    *handled = true;
+                    return self.jump(if modifiers.state().shift_key() { -1 } else { 1 });
+                }
+                Key::Named(NamedKey::Tab) => {
+                    self.focus_replace(!self.on_replace);
+                    *handled = true;
+                    return FindEffect::None;
+                }
+                // Ctrl+F remains the editor-level open/close shortcut. Other
+                // Ctrl combinations (A/C/X/V and word navigation) belong to
+                // the shared TextInput and are forwarded below.
+                Key::Character(s)
+                    if modifiers.state().control_key() && s.eq_ignore_ascii_case("f") =>
                 {
-                    if self.on_replace {
-                        self.replacement.push_str(text);
-                        return FindEffect::None;
-                    }
-                    self.query.push_str(text);
-                    return self.recompute(blocks);
+                    return FindEffect::None;
                 }
-                FindEffect::None
+                _ => {}
             }
+        }
+
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+            ..
+        } = event
+        {
+            let point = self.pointer;
+            if self.query.get_rect().contains(point) {
+                self.focus_replace(false);
+            } else if self.replacement.get_rect().contains(point) {
+                self.focus_replace(true);
+            }
+        }
+
+        let input = if self.on_replace {
+            &mut self.replacement
+        } else {
+            &mut self.query
+        };
+        Widget::handle_event(
+            input,
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+
+        let query_changed = self.query.take_dirty().is_some();
+        let _ = self.replacement.take_dirty();
+        if query_changed {
+            self.recompute(blocks)
+        } else {
+            FindEffect::None
+        }
+    }
+
+    fn focus_replace(&mut self, on_replace: bool) {
+        self.on_replace = on_replace;
+        Widget::set_focus(&mut self.query, !on_replace);
+        Widget::set_focus(&mut self.replacement, on_replace);
+    }
+
+    pub(crate) fn set_host_focused(&mut self, focused: bool) {
+        if focused && self.open {
+            self.focus_replace(self.on_replace);
+        } else {
+            Widget::set_focus(&mut self.query, false);
+            Widget::set_focus(&mut self.replacement, false);
+        }
+    }
+
+    pub(crate) fn ime_cursor_rect(&self) -> Option<Rect> {
+        if self.on_replace {
+            Widget::ime_cursor_rect(&self.replacement)
+        } else {
+            Widget::ime_cursor_rect(&self.query)
+        }
+    }
+
+    pub(crate) fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        if self.on_replace {
+            Widget::ime_purpose(&self.replacement)
+        } else {
+            Widget::ime_purpose(&self.query)
         }
     }
 
     fn apply(&mut self, action: Action, blocks: &[BlockView]) -> FindEffect {
         match action {
             Action::FocusFind => {
-                self.on_replace = false;
+                self.focus_replace(false);
                 FindEffect::None
             }
             Action::FocusReplace => {
-                self.on_replace = true;
+                self.focus_replace(true);
                 FindEffect::None
             }
             Action::Prev => self.jump(-1),
@@ -194,15 +350,15 @@ impl FindBar {
                 FindEffect::None
             }
             Action::ToggleCase => {
-                self.case_sensitive = !self.case_sensitive;
+                self.options.case_sensitive = !self.options.case_sensitive;
                 self.recompute(blocks)
             }
             Action::ToggleWord => {
-                self.whole_word = !self.whole_word;
+                self.options.whole_word = !self.options.whole_word;
                 self.recompute(blocks)
             }
             Action::ToggleRegex => {
-                self.regex = !self.regex;
+                self.options.regex = !self.options.regex;
                 self.recompute(blocks)
             }
         }
@@ -221,11 +377,11 @@ impl FindBar {
     fn recompute(&mut self, blocks: &[BlockView]) -> FindEffect {
         self.matches.clear();
         self.regex_error = false;
-        if self.query.is_empty() {
+        if self.query.value().is_empty() {
             self.index = 0;
             return FindEffect::None;
         }
-        if self.regex {
+        if self.options.regex {
             self.recompute_regex(blocks);
         } else {
             self.recompute_literal(blocks);
@@ -241,17 +397,17 @@ impl FindBar {
     }
 
     fn recompute_literal(&mut self, blocks: &[BlockView]) {
-        let needle: Vec<char> = if self.case_sensitive {
-            self.query.chars().collect()
+        let needle: Vec<char> = if self.options.case_sensitive {
+            self.query.value().chars().collect()
         } else {
-            self.query.to_lowercase().chars().collect()
+            self.query.value().to_lowercase().chars().collect()
         };
         if needle.is_empty() {
             return;
         }
         for block in blocks {
             let raw: Vec<char> = block.text.chars().collect();
-            let haystack: Vec<char> = if self.case_sensitive {
+            let haystack: Vec<char> = if self.options.case_sensitive {
                 raw.clone()
             } else {
                 block.text.to_lowercase().chars().collect()
@@ -263,7 +419,7 @@ impl FindBar {
             while start + needle.len() <= haystack.len() {
                 let end = start + needle.len();
                 if haystack[start..end] == needle[..]
-                    && (!self.whole_word || is_word_match(&raw, start, end))
+                    && (!self.options.whole_word || is_word_match(&raw, start, end))
                 {
                     self.matches.push((block.id.clone(), start, end));
                     start = end;
@@ -275,13 +431,13 @@ impl FindBar {
     }
 
     fn recompute_regex(&mut self, blocks: &[BlockView]) {
-        let pattern = if self.whole_word {
-            format!(r"\b(?:{})\b", self.query)
+        let pattern = if self.options.whole_word {
+            format!(r"\b(?:{})\b", self.query.value())
         } else {
-            self.query.clone()
+            self.query.value().to_string()
         };
         let Ok(regex) = regex::RegexBuilder::new(&pattern)
-            .case_insensitive(!self.case_sensitive)
+            .case_insensitive(!self.options.case_sensitive)
             .build()
         else {
             self.regex_error = true;
@@ -300,11 +456,14 @@ impl FindBar {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
         palette: FindPalette,
         bar: Rect,
     ) {
@@ -319,84 +478,122 @@ impl FindBar {
         );
         let cy = f64::midpoint(bar.y0, bar.y1);
         let field_y = cy - 13.0;
-        let mut x = bar.x0 + 12.0;
-
-        let find_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
-        draw_field(
+        let mut ctx = DrawCtx {
             scene,
             transform,
             tr,
             palette,
-            find_rect,
-            &self.query,
-            &t("find-find"),
-            !self.on_replace,
+        };
+        let mut x = bar.x0 + 12.0;
+        x = self.draw_find_field(&mut ctx, theme, presence, field_y, x);
+        x = self.draw_mode_toggles(&mut ctx, field_y, cy, x) + 8.0;
+        x = self.draw_replace_field(&mut ctx, theme, presence, field_y, x);
+        x = self.draw_match_count(&mut ctx, cy, x) + 78.0;
+        self.draw_action_buttons(&mut ctx, field_y, cy, x);
+    }
+
+    /// The find field itself, plus its bad-pattern outline. Returns the `x`
+    /// past it.
+    fn draw_find_field(
+        &mut self,
+        ctx: &mut DrawCtx,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        field_y: f64,
+        x: f64,
+    ) -> f64 {
+        let find_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
+        self.query.set_placeholder(&t("find-find"));
+        self.query.apply_layout_external(find_rect);
+        Widget::draw(
+            &mut self.query,
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
+            theme,
+            presence,
         );
-        if self.regex && self.regex_error {
-            scene.stroke(
+        if self.options.regex && self.regex_error {
+            ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
-                transform,
-                palette.danger,
+                ctx.transform,
+                ctx.palette.danger,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(find_rect, 5.0),
             );
         }
         self.buttons.push((Action::FocusFind, find_rect));
-        x += 196.0;
+        x + 196.0
+    }
 
+    /// The case/word/regex toggle chips. Returns the `x` past the last one.
+    fn draw_mode_toggles(&mut self, ctx: &mut DrawCtx, field_y: f64, cy: f64, mut x: f64) -> f64 {
         for (action, label, width, active) in [
-            (Action::ToggleCase, "Aa", 30.0, self.case_sensitive),
-            (Action::ToggleWord, "W", 26.0, self.whole_word),
-            (Action::ToggleRegex, ".*", 30.0, self.regex),
+            (Action::ToggleCase, "Aa", 30.0, self.options.case_sensitive),
+            (Action::ToggleWord, "W", 26.0, self.options.whole_word),
+            (Action::ToggleRegex, ".*", 30.0, self.options.regex),
         ] {
             let rect = Rect::new(x, field_y, x + width, field_y + 26.0);
             let (background, foreground) = if active {
-                (palette.accent, palette.on_accent)
+                (ctx.palette.accent, ctx.palette.on_accent)
             } else {
-                (palette.chip, palette.text_dim)
+                (ctx.palette.chip, ctx.palette.text_dim)
             };
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                transform,
+                ctx.transform,
                 background,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
             );
             let text_x =
                 rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.2).max(4.0) / 2.0;
-            tr.draw_text(
-                scene,
+            ctx.tr.draw_text(
+                ctx.scene,
                 label,
                 12.5,
                 foreground,
-                transform * Affine::translate((text_x, cy - 8.0)),
+                ctx.transform * Affine::translate((text_x, cy - 8.0)),
                 None,
             );
             self.buttons.push((action, rect));
             x += width + 5.0;
         }
-        x += 8.0;
+        x
+    }
 
+    /// The replace field. Returns the `x` past it.
+    fn draw_replace_field(
+        &mut self,
+        ctx: &mut DrawCtx,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        field_y: f64,
+        x: f64,
+    ) -> f64 {
         let replace_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
-        draw_field(
-            scene,
-            transform,
-            tr,
-            palette,
-            replace_rect,
-            &self.replacement,
-            &t("find-replace-with"),
-            self.on_replace,
+        self.replacement.set_placeholder(&t("find-replace-with"));
+        self.replacement.apply_layout_external(replace_rect);
+        Widget::draw(
+            &mut self.replacement,
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
+            theme,
+            presence,
         );
         self.buttons.push((Action::FocusReplace, replace_rect));
-        x += 196.0;
+        x + 196.0
+    }
 
-        let (count, count_color) = if self.query.is_empty() {
-            (String::new(), palette.text_dim)
-        } else if self.regex && self.regex_error {
-            (t("find-bad-pattern"), palette.danger)
+    /// The "N of M" (or error/empty) readout. Returns the `x` past it.
+    fn draw_match_count(&self, ctx: &mut DrawCtx, cy: f64, x: f64) -> f64 {
+        let (count, count_color) = if self.query.value().is_empty() {
+            (String::new(), ctx.palette.text_dim)
+        } else if self.options.regex && self.regex_error {
+            (t("find-bad-pattern"), ctx.palette.danger)
         } else if self.matches.is_empty() {
-            (t("find-no-results"), palette.text_dim)
+            (t("find-no-results"), ctx.palette.text_dim)
         } else {
             (
                 t_args(
@@ -406,19 +603,22 @@ impl FindBar {
                         arg("total", num::i64_of_usize(self.matches.len())),
                     ],
                 ),
-                palette.text_dim,
+                ctx.palette.text_dim,
             )
         };
-        tr.draw_text(
-            scene,
+        ctx.tr.draw_text(
+            ctx.scene,
             &count,
             12.5,
             count_color,
-            transform * Affine::translate((x, cy - 7.0)),
+            ctx.transform * Affine::translate((x, cy - 7.0)),
             None,
         );
-        x += 78.0;
+        x
+    }
 
+    /// Prev/Next/Replace/Replace All/Close.
+    fn draw_action_buttons(&mut self, ctx: &mut DrawCtx, field_y: f64, cy: f64, mut x: f64) {
         for (action, label, width) in [
             (Action::Prev, "↑".to_string(), 28.0),
             (Action::Next, "↓".to_string(), 28.0),
@@ -427,74 +627,39 @@ impl FindBar {
             (Action::Close, "✕".to_string(), 28.0),
         ] {
             let rect = Rect::new(x, field_y, x + width, field_y + 26.0);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                transform,
-                palette.chip,
+                ctx.transform,
+                ctx.palette.chip,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
             );
             let text_x =
                 rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.2).max(6.0) / 2.0;
-            tr.draw_text(
-                scene,
+            ctx.tr.draw_text(
+                ctx.scene,
                 &label,
                 13.0,
-                palette.text,
-                transform * Affine::translate((text_x, cy - 8.0)),
+                ctx.palette.text,
+                ctx.transform * Affine::translate((text_x, cy - 8.0)),
                 None,
             );
             self.buttons.push((action, rect));
             x += width + 6.0;
         }
     }
-}
 
-#[allow(clippy::too_many_arguments)]
-fn draw_field(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    palette: FindPalette,
-    rect: Rect,
-    text: &str,
-    placeholder: &str,
-    focused: bool,
-) {
-    let border = if focused {
-        palette.accent
-    } else {
-        palette.border
-    };
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        palette.field,
-        None,
-        &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
-    );
-    scene.stroke(
-        &vello::kurbo::Stroke::new(if focused { 1.5 } else { 1.0 }),
-        transform,
-        border,
-        None,
-        &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
-    );
-    let (shown, color) = if text.is_empty() && !focused {
-        (placeholder.to_string(), palette.text_dim)
-    } else if focused {
-        (format!("{text}_"), palette.text)
-    } else {
-        (text.to_string(), palette.text)
-    };
-    tr.draw_text(
-        scene,
-        &shown,
-        13.0,
-        color,
-        transform * Affine::translate((rect.x0 + 8.0, f64::midpoint(rect.y0, rect.y1) - 8.0)),
-        None,
-    );
+    pub(crate) fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        Widget::draw_overlay(&mut self.query, scene, transform, tr, theme, presence);
+        Widget::draw_overlay(&mut self.replacement, scene, transform, tr, theme, presence);
+    }
 }
 
 fn byte_to_char(text: &str, byte_offset: usize) -> usize {
@@ -512,6 +677,7 @@ fn is_word_match(chars: &[char], start: usize, end: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::keyboard::{NativeKeyCode, PhysicalKey, SmolStr};
 
     fn block(text: &str) -> BlockView {
         BlockView {
@@ -524,28 +690,66 @@ mod tests {
         }
     }
 
+    fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.logical_key = key;
+        event.text = text.map(SmolStr::new);
+        event.location = winit::keyboard::KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn drive(bar: &mut FindBar, event: &WindowEvent, modifiers: Modifiers, blocks: &[BlockView]) {
+        let mut state = AutoCommit::new();
+        let taffy = TaffyTree::new();
+        let mut handled = false;
+        let mut focus_target = None;
+        let effect = bar.handle_event(
+            event,
+            1.0,
+            modifiers,
+            &mut state,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            NodeId::new(0),
+            &taffy,
+            blocks,
+        );
+        assert!(handled, "the focused find field consumes {event:?}");
+        if !matches!(effect, FindEffect::None) {
+            assert_eq!(effect, FindEffect::SelectActive);
+        }
+    }
+
     #[test]
     fn literal_modes_and_regex_are_owned_by_the_component() {
         let blocks = [block("Hello hello HELLO category cat a1 b22")];
         let mut bar = FindBar::default();
-        bar.query = "hello".to_string();
+        bar.query.set_text("hello");
         bar.recompute(&blocks);
         assert_eq!(bar.matches.len(), 3);
         bar.apply(Action::ToggleCase, &blocks);
         assert_eq!(bar.matches.len(), 1);
 
-        bar.query = "cat".to_string();
-        bar.case_sensitive = false;
+        bar.query.set_text("cat");
+        bar.options.case_sensitive = false;
         bar.recompute(&blocks);
         assert_eq!(bar.matches.len(), 2);
         bar.apply(Action::ToggleWord, &blocks);
         assert_eq!(bar.matches.len(), 1);
 
-        bar.query = r"\d+".to_string();
-        bar.whole_word = false;
+        bar.query.set_text(r"\d+");
+        bar.options.whole_word = false;
         bar.apply(Action::ToggleRegex, &blocks);
         assert_eq!(bar.matches.len(), 2);
-        bar.query = "(".to_string();
+        bar.query.set_text("(");
         bar.recompute(&blocks);
         assert!(bar.regex_error);
         assert!(bar.matches.is_empty());
@@ -555,8 +759,12 @@ mod tests {
     fn navigation_wraps_and_close_drops_stale_hits() {
         let blocks = [block("one one")];
         let mut bar = FindBar::default();
-        bar.query = "one".to_string();
+        bar.query.set_text("one");
         bar.open(None, &blocks);
+        bar.set_host_focused(false);
+        assert!(!Widget::is_focused(&bar.query));
+        bar.set_host_focused(true);
+        assert!(Widget::is_focused(&bar.query));
         assert_eq!(bar.jump(-1), FindEffect::SelectActive);
         assert_eq!(bar.index, 1);
         bar.buttons
@@ -571,13 +779,12 @@ mod tests {
     fn drawn_button_geometry_drives_click_navigation() {
         let blocks = [block("one one")];
         let mut bar = FindBar::default();
-        bar.query = "one".to_string();
+        bar.query.set_text("one");
         bar.open(None, &blocks);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         let palette = FindPalette {
             bar: Color::BLACK,
-            field: Color::BLACK,
             chip: Color::BLACK,
             border: Color::WHITE,
             text: Color::WHITE,
@@ -590,6 +797,8 @@ mod tests {
             &mut scene,
             Affine::IDENTITY,
             &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
             palette,
             Rect::new(0.0, 0.0, 1200.0, HEIGHT),
         );
@@ -601,5 +810,68 @@ mod tests {
             .expect("draw records a Next target");
         assert_eq!(bar.click(next, &blocks), FindEffect::SelectActive);
         assert_eq!(bar.index, 1);
+    }
+
+    #[test]
+    fn shared_input_handles_ime_preedit_commit_and_match_refresh() {
+        let blocks = [block("before 漢 after")];
+        let mut bar = FindBar::default();
+        bar.open(None, &blocks);
+
+        drive(
+            &mut bar,
+            &WindowEvent::Ime(winit::event::Ime::Preedit(
+                "漢".into(),
+                Some(("漢".len(), "漢".len())),
+            )),
+            Modifiers::default(),
+            &blocks,
+        );
+        assert_eq!(bar.query.value(), "", "preedit remains display-only");
+        assert!(bar.matches().is_empty());
+
+        drive(
+            &mut bar,
+            &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
+            Modifiers::default(),
+            &blocks,
+        );
+        assert_eq!(bar.query.value(), "漢");
+        assert_eq!(bar.matches(), &[("p1".to_string(), 7, 8)]);
+    }
+
+    #[test]
+    fn shared_input_preserves_select_all_and_field_traversal_shortcuts() {
+        use winit::keyboard::ModifiersState;
+
+        let blocks = [block("one two")];
+        let mut bar = FindBar::default();
+        bar.open(Some("one"), &blocks);
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        drive(
+            &mut bar,
+            &key_event(Key::Character(SmolStr::new("a")), Some("a")),
+            ctrl,
+            &blocks,
+        );
+        assert_eq!(bar.query.selection_range_public(), Some((0, 3)));
+        drive(
+            &mut bar,
+            &key_event(Key::Character(SmolStr::new("two")), Some("two")),
+            Modifiers::default(),
+            &blocks,
+        );
+        assert_eq!(bar.query.value(), "two");
+        assert_eq!(bar.matches(), &[("p1".to_string(), 4, 7)]);
+
+        drive(
+            &mut bar,
+            &key_event(Key::Named(NamedKey::Tab), None),
+            Modifiers::default(),
+            &blocks,
+        );
+        assert!(bar.on_replace);
+        assert!(Widget::is_focused(&bar.replacement));
+        assert!(!Widget::is_focused(&bar.query));
     }
 }

@@ -15,7 +15,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::richtext::RichTextLayout;
 use crate::text_render::{TextRenderer, TextStyle};
-use crate::text_selection::Selection;
+use crate::text_selection::{
+    Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+    prev_char_boundary, prev_word_boundary,
+};
 
 /// Whether an IME event changed only the display composition or committed a
 /// new query value. Owners should re-run filtering only for `Committed`.
@@ -99,7 +102,7 @@ impl QueryComposition {
                     .collect();
                 let range = selection.range();
                 text.replace_range(range.clone(), &committed);
-                *selection = Selection::collapsed(range.start + committed.len());
+                *selection = Selection::collapsed(range.start.saturating_add(committed.len()));
                 self.preedit.clear();
                 self.preedit_cursor = None;
                 QueryImeChange::Committed
@@ -148,68 +151,10 @@ impl QueryComposition {
             return QueryEventChange::Ignored;
         };
 
-        use crate::text_selection::{
-            clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-            prev_char_boundary, prev_word_boundary,
-        };
-
-        let replace_selection = |text: &mut String, selection: &mut Selection, inserted: &str| {
-            let inserted: String = inserted
-                .chars()
-                .filter(|character| !character.is_control())
-                .collect();
-            if inserted.is_empty() {
-                return false;
-            }
-            let range = selection.range();
-            text.replace_range(range.clone(), &inserted);
-            *selection = Selection::collapsed(range.start + inserted.len());
-            true
-        };
-        let delete_selection = |text: &mut String, selection: &mut Selection| {
-            if selection.is_collapsed() {
-                return false;
-            }
-            let range = selection.range();
-            text.replace_range(range.clone(), "");
-            *selection = Selection::collapsed(range.start);
-            true
-        };
-
         match logical_key {
             Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) => {
                 let right = matches!(logical_key, Key::Named(NamedKey::ArrowRight));
-                if !shift && !selection.is_collapsed() {
-                    let edge = if right {
-                        selection.max()
-                    } else {
-                        selection.min()
-                    };
-                    selection.move_to(edge);
-                    return QueryEventChange::Display;
-                }
-                let cursor = selection.cursor;
-                let next = if command {
-                    if right {
-                        next_word_boundary(text, cursor)
-                    } else {
-                        prev_word_boundary(text, cursor)
-                    }
-                } else {
-                    self.visual_motion(text, cursor, right).unwrap_or_else(|| {
-                        if right {
-                            next_char_boundary(text, cursor)
-                        } else {
-                            prev_char_boundary(text, cursor)
-                        }
-                    })
-                };
-                if shift {
-                    selection.extend_to(next);
-                } else {
-                    selection.move_to(next);
-                }
-                QueryEventChange::Display
+                self.handle_arrow_key(text, selection, shift, command, right)
             }
             Key::Named(NamedKey::Home | NamedKey::End) => {
                 let next = if matches!(logical_key, Key::Named(NamedKey::Home)) {
@@ -224,39 +169,8 @@ impl QueryComposition {
                 }
                 QueryEventChange::Display
             }
-            Key::Named(NamedKey::Backspace) => {
-                if delete_selection(text, selection) {
-                    return QueryEventChange::Edited;
-                }
-                let cursor = selection.cursor;
-                if cursor == 0 {
-                    return QueryEventChange::Display;
-                }
-                let previous = if command {
-                    prev_word_boundary(text, cursor)
-                } else {
-                    prev_char_boundary(text, cursor)
-                };
-                text.replace_range(previous..cursor, "");
-                selection.move_to(previous);
-                QueryEventChange::Edited
-            }
-            Key::Named(NamedKey::Delete) => {
-                if delete_selection(text, selection) {
-                    return QueryEventChange::Edited;
-                }
-                let cursor = selection.cursor;
-                if cursor == text.len() {
-                    return QueryEventChange::Display;
-                }
-                let next = if command {
-                    next_word_boundary(text, cursor)
-                } else {
-                    next_char_boundary(text, cursor)
-                };
-                text.replace_range(cursor..next, "");
-                QueryEventChange::Edited
-            }
+            Key::Named(NamedKey::Backspace) => handle_backspace(text, selection, command),
+            Key::Named(NamedKey::Delete) => handle_delete_key(text, selection, command),
             Key::Named(NamedKey::Space) if !command => {
                 if replace_selection(text, selection, " ") {
                     QueryEventChange::Edited
@@ -264,37 +178,9 @@ impl QueryComposition {
                     QueryEventChange::Display
                 }
             }
-            Key::Character(shortcut) if command => match shortcut.as_str() {
-                "a" | "A" => {
-                    selection.anchor = 0;
-                    selection.cursor = text.len();
-                    QueryEventChange::Display
-                }
-                "c" | "C" => {
-                    let range = selection.range();
-                    if !range.is_empty() {
-                        clipboard_copy(&text[range]);
-                    }
-                    QueryEventChange::Display
-                }
-                "x" | "X" => {
-                    let range = selection.range();
-                    if range.is_empty() {
-                        QueryEventChange::Display
-                    } else {
-                        clipboard_copy(&text[range.clone()]);
-                        delete_selection(text, selection);
-                        QueryEventChange::Edited
-                    }
-                }
-                "v" | "V" => match clipboard_paste() {
-                    Some(pasted) if replace_selection(text, selection, &pasted) => {
-                        QueryEventChange::Edited
-                    }
-                    _ => QueryEventChange::Display,
-                },
-                _ => QueryEventChange::Ignored,
-            },
+            Key::Character(shortcut) if command => {
+                handle_command_shortcut(shortcut.as_str(), text, selection)
+            }
             Key::Character(character) if !command => {
                 // `KeyEvent::text` captures composed multi-scalar input when
                 // available. Synthetic events and some platform backends only
@@ -311,6 +197,50 @@ impl QueryComposition {
         }
     }
 
+    /// `ArrowLeft`/`ArrowRight` handling for [`handle_event`](Self::handle_event):
+    /// collapse an existing selection to its edge, or otherwise move by shaped
+    /// visual caret stop, word or character boundary.
+    fn handle_arrow_key(
+        &self,
+        text: &str,
+        selection: &mut Selection,
+        shift: bool,
+        command: bool,
+        right: bool,
+    ) -> QueryEventChange {
+        if !shift && !selection.is_collapsed() {
+            let edge = if right {
+                selection.max()
+            } else {
+                selection.min()
+            };
+            selection.move_to(edge);
+            return QueryEventChange::Display;
+        }
+        let cursor = selection.cursor;
+        let next = if command {
+            if right {
+                next_word_boundary(text, cursor)
+            } else {
+                prev_word_boundary(text, cursor)
+            }
+        } else {
+            self.visual_motion(text, cursor, right).unwrap_or_else(|| {
+                if right {
+                    next_char_boundary(text, cursor)
+                } else {
+                    prev_char_boundary(text, cursor)
+                }
+            })
+        };
+        if shift {
+            selection.extend_to(next);
+        } else {
+            selection.move_to(next);
+        }
+        QueryEventChange::Display
+    }
+
     /// Display text including composition. While composing, the committed
     /// selection is visually replaced but remains untouched in `text`.
     pub fn display_text(&self, text: &str, selection: &Selection) -> String {
@@ -318,16 +248,20 @@ impl QueryComposition {
             return text.to_string();
         }
         let range = selection.range();
-        let mut display = String::with_capacity(text.len() - range.len() + self.preedit.len());
-        display.push_str(&text[..range.start]);
+        let mut display = String::with_capacity(
+            text.len()
+                .saturating_sub(range.len())
+                .saturating_add(self.preedit.len()),
+        );
+        display.push_str(text.get(..range.start).unwrap_or(""));
         display.push_str(&self.preedit);
-        display.push_str(&text[range.end..]);
+        display.push_str(text.get(range.end..).unwrap_or(""));
         display
     }
 
     fn preedit_range(&self, selection: &Selection) -> Range<usize> {
         let start = selection.range().start;
-        start..start + self.preedit.len()
+        start..start.saturating_add(self.preedit.len())
     }
 
     fn display_caret(&self, selection: &Selection) -> usize {
@@ -337,10 +271,9 @@ impl QueryComposition {
         let start = selection.range().start;
         let offset = self
             .preedit_cursor
-            .map(|(_, end)| end)
-            .unwrap_or(self.preedit.len())
+            .map_or(self.preedit.len(), |(_, end)| end)
             .min(self.preedit.len());
-        start + self.preedit.floor_char_boundary(offset)
+        start.saturating_add(self.preedit.floor_char_boundary(offset))
     }
 
     fn signature(&self, display: &str, style: &TextStyle, selection: &Selection) -> u64 {
@@ -407,7 +340,11 @@ impl QueryComposition {
         } else {
             self.display_caret(selection)
         };
-        let layout = self.layout.as_ref().unwrap();
+        let Some(layout) = self.layout.as_ref() else {
+            // Unreachable: the block above always leaves `self.layout`
+            // populated before this point runs.
+            return;
+        };
         let (caret_x, caret_top, caret_height) = layout.caret_geometry(caret_byte);
         let scroll_x = if shows_placeholder {
             0.0
@@ -455,7 +392,7 @@ impl QueryComposition {
         renderer.draw_rich(
             scene,
             layout,
-            transform * Affine::translate((origin.x, origin.y)),
+            transform.pre_translate(origin.to_vec2()),
             if shows_placeholder { dim_ink } else { ink },
         );
         if show_caret {
@@ -485,6 +422,120 @@ impl QueryComposition {
         self.layout
             .as_ref()
             .map(|layout| layout.visual_motion(byte, right))
+    }
+}
+
+/// Replace the current selection with `inserted` (control characters
+/// filtered) and collapse the selection to the end of the inserted text.
+/// Returns `false` (no-op) when there is nothing left to insert.
+fn replace_selection(text: &mut String, selection: &mut Selection, inserted: &str) -> bool {
+    let inserted: String = inserted
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    if inserted.is_empty() {
+        return false;
+    }
+    let range = selection.range();
+    text.replace_range(range.clone(), &inserted);
+    *selection = Selection::collapsed(range.start.saturating_add(inserted.len()));
+    true
+}
+
+/// Delete the current selection in place. Returns `false` (no-op) when the
+/// selection is already collapsed.
+fn delete_selection(text: &mut String, selection: &mut Selection) -> bool {
+    if selection.is_collapsed() {
+        return false;
+    }
+    let range = selection.range();
+    text.replace_range(range.clone(), "");
+    *selection = Selection::collapsed(range.start);
+    true
+}
+
+/// `Backspace` handling for [`QueryComposition::handle_event`].
+fn handle_backspace(
+    text: &mut String,
+    selection: &mut Selection,
+    command: bool,
+) -> QueryEventChange {
+    if delete_selection(text, selection) {
+        return QueryEventChange::Edited;
+    }
+    let cursor = selection.cursor;
+    if cursor == 0 {
+        return QueryEventChange::Display;
+    }
+    let previous = if command {
+        prev_word_boundary(text, cursor)
+    } else {
+        prev_char_boundary(text, cursor)
+    };
+    text.replace_range(previous..cursor, "");
+    selection.move_to(previous);
+    QueryEventChange::Edited
+}
+
+/// `Delete` handling for [`QueryComposition::handle_event`].
+fn handle_delete_key(
+    text: &mut String,
+    selection: &mut Selection,
+    command: bool,
+) -> QueryEventChange {
+    if delete_selection(text, selection) {
+        return QueryEventChange::Edited;
+    }
+    let cursor = selection.cursor;
+    if cursor == text.len() {
+        return QueryEventChange::Display;
+    }
+    let next = if command {
+        next_word_boundary(text, cursor)
+    } else {
+        next_char_boundary(text, cursor)
+    };
+    text.replace_range(cursor..next, "");
+    QueryEventChange::Edited
+}
+
+/// Ctrl/Cmd-chord handling (select-all, copy, cut, paste) for
+/// [`QueryComposition::handle_event`].
+fn handle_command_shortcut(
+    shortcut: &str,
+    text: &mut String,
+    selection: &mut Selection,
+) -> QueryEventChange {
+    match shortcut {
+        "a" | "A" => {
+            selection.anchor = 0;
+            selection.cursor = text.len();
+            QueryEventChange::Display
+        }
+        "c" | "C" => {
+            let range = selection.range();
+            if let Some(slice) = (!range.is_empty()).then(|| text.get(range)).flatten() {
+                clipboard_copy(slice);
+            }
+            QueryEventChange::Display
+        }
+        "x" | "X" => {
+            let range = selection.range();
+            if range.is_empty() {
+                QueryEventChange::Display
+            } else {
+                if let Some(slice) = text.get(range) {
+                    clipboard_copy(slice);
+                }
+                delete_selection(text, selection);
+                QueryEventChange::Edited
+            }
+        }
+        "v" | "V" => match clipboard_paste() {
+            Some(pasted) if replace_selection(text, selection, &pasted) => QueryEventChange::Edited,
+            _ => QueryEventChange::Display,
+        },
+        _ => QueryEventChange::Ignored,
     }
 }
 

@@ -238,6 +238,7 @@ impl Actor {
 
     /// Add a principal (a room the actor is in, a token it presented,
     /// the app it is running as).
+    #[must_use]
     pub fn with_principal(mut self, p: Principal) -> Self {
         if !self.principals.contains(&p) {
             self.principals.push(p);
@@ -246,6 +247,7 @@ impl Actor {
     }
 
     /// Add room membership.
+    #[must_use]
     pub fn in_room(self, room: impl Into<String>) -> Self {
         self.with_principal(Principal::Room(room.into()))
     }
@@ -309,47 +311,46 @@ impl Scope {
         match (self, resource) {
             (Scope::Workspace, _) => true,
 
-            (Scope::App(a), ResourceRef::App(b)) => a == b,
-            (Scope::App(a), ResourceRef::Artifact { app: Some(b), .. }) => a == b,
-            (Scope::App(a), ResourceRef::Action { app: b, .. }) => a == b,
-            (Scope::App(_), _) => false,
+            (
+                Scope::App(a),
+                ResourceRef::App(b)
+                | ResourceRef::Artifact { app: Some(b), .. }
+                | ResourceRef::Action { app: b, .. },
+            ) => a == b,
 
             (Scope::ResourceType(k), ResourceRef::Artifact { kind, .. }) => k == kind,
-            (Scope::ResourceType(_), _) => false,
 
             (Scope::ResourceInstance(i), ResourceRef::Artifact { instance, .. }) => i == instance,
-            (Scope::ResourceInstance(_), _) => false,
 
             (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
-            (Scope::FsPath(_), _) => false,
 
             (Scope::Device(d), ResourceRef::Device(e)) => d == e,
-            (Scope::Device(_), _) => false,
 
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
-            (Scope::NetHost(_), _) => false,
 
             (Scope::Action { app, action }, ResourceRef::Action { app: b, action: c }) => {
                 app == b && action == c
             }
-            (Scope::Action { .. }, _) => false,
 
-            // KNOWN HOLE — a room-scoped capability authorises nothing a person *does*
-            // in the room, and does not survive replication. Two live defects:
-            //
-            // 1. `Scope::Room` pairs only with `ResourceRef::Room`; every chrome
-            //    action is `ResourceRef::Action`, so granting `Write` "on the room"
-            //    permits nothing — the only scope that actually confers ability
-            //    across a room is `Scope::Workspace`.
-            //
-            // 2. The key is the **local workspace id** (`grant_capability` writes
-            //    `ws_id.raw().to_string()`; `Workspace::role_of` compares against its
-            //    own). Two peers in one room have different local ids for it, so a
-            //    replicated room-scoped capability matches nobody on the receiving
-            //    machine. Keying by `RoomId` would fix it, but is a migration of
-            //    persisted state, not a one-line change.
+            // Room membership is converted into an actor role by `Workspace`
+            // before an action is checked. Direct scope matching remains narrow:
+            // a room grant cannot masquerade as a filesystem/app/action grant.
             (Scope::Room(r), ResourceRef::Room(s)) => r == s,
-            (Scope::Room(_), _) => false,
+
+            // Every scope variant is paired with its own condition above; a
+            // resource shape that doesn't match the scope's own kind is never
+            // covered by it.
+            (
+                Scope::App(_)
+                | Scope::ResourceType(_)
+                | Scope::ResourceInstance(_)
+                | Scope::FsPath(_)
+                | Scope::Device(_)
+                | Scope::NetHost(_)
+                | Scope::Action { .. }
+                | Scope::Room(_),
+                _,
+            ) => false,
         }
     }
 }
@@ -369,7 +370,7 @@ pub fn path_covers(prefix: &str, path: &str) -> bool {
     if path == prefix {
         return true;
     }
-    let mut with_sep = String::with_capacity(prefix.len() + 1);
+    let mut with_sep = String::with_capacity(prefix.len().saturating_add(1));
     with_sep.push_str(prefix);
     with_sep.push('/');
     path.starts_with(&with_sep)
@@ -601,24 +602,28 @@ impl CapOverride {
     }
 
     /// Attach a stable id.
+    #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
         self
     }
 
     /// Attach a wall-clock expiry (seconds since the Unix epoch).
+    #[must_use]
     pub fn with_expiry(mut self, unix_seconds: u64) -> Self {
         self.expiry = Expiry::AtUnix(unix_seconds);
         self
     }
 
     /// Attach any [`Expiry`].
+    #[must_use]
     pub fn expiring(mut self, expiry: Expiry) -> Self {
         self.expiry = expiry;
         self
     }
 
     /// Record who granted this.
+    #[must_use]
     pub fn granted_by(mut self, who: Principal) -> Self {
         self.granted_by = Some(who);
         self

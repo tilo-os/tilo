@@ -2,6 +2,8 @@
 name = "app-fs"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "FUSE3 driver that page-fault streams qOS package payloads from a content-addressed blob store."
 
 [lib]
@@ -11,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 fuser.workspace = true
 blake3.workspace = true
-lru = "0.16.3"
+lru = "0.18.3"
 thiserror.workspace = true
 libc.workspace = true
 tracing.workspace = true
@@ -28,7 +30,6 @@ required-features = ["cli"]
 
 [dev-dependencies]
 tempfile.workspace = true
-hex.workspace = true
 
 [lints]
 workspace = true

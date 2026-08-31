@@ -17,6 +17,14 @@
 
 use vello::kurbo::{Point, Rect, Size};
 
+/// Lossless `usize -> f64` widening for list-reflow geometry. Item/slot
+/// counts are bounded far below `u32::MAX`, so routing through `u32`
+/// (which `f64` represents exactly) avoids the precision loss a direct
+/// cast risks.
+fn usize_to_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
 /// Which way a reorderable list runs. The controller pins the *cross* axis
 /// while dragging so the ghost slides only along the list.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -62,7 +70,7 @@ impl ListMetrics {
     /// Leading-edge coordinate of slot boundary `i` (`0..=count`): boundary
     /// `0` sits before the first item, boundary `count` after the last.
     pub fn slot_lead(&self, i: usize) -> f64 {
-        self.origin + i as f64 * self.pitch()
+        self.origin + usize_to_f64(i) * self.pitch()
     }
 
     /// The insertion **boundary** (`0..=count`) nearest `axis_coord` —
@@ -73,7 +81,19 @@ impl ListMetrics {
             return 0;
         }
         let rel = (axis_coord - self.origin) / self.pitch();
-        (rel.round().max(0.0) as usize).min(self.count)
+        let boundary = rel.round().max(0.0);
+        // `boundary` is non-negative by construction and the result is
+        // immediately clamped to `self.count` below, so this cast cannot
+        // misread a sign or lose a bit that matters — an out-of-range
+        // `boundary` just saturates and is then capped by `.min`.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "boundary is non-negative and the result is immediately clamped to \
+                      self.count below"
+        )]
+        let idx = boundary as usize;
+        idx.min(self.count)
     }
 }
 
@@ -118,7 +138,18 @@ fn target_for<Id>(axis: Axis, s: &Session<Id>, m: &ListMetrics) -> usize {
     let ghost_lead = axis_coord(axis, s.current) - s.grab_offset;
     let orig_lead = m.slot_lead(s.from);
     let delta = ((ghost_lead - orig_lead) / m.pitch()).round();
-    (s.from as f64 + delta).clamp(0.0, (m.count - 1) as f64) as usize
+    let max_index = usize_to_f64(m.count.saturating_sub(1));
+    let target = (usize_to_f64(s.from) + delta).clamp(0.0, max_index);
+    // `target` is clamped into `[0.0, max_index]` immediately above (and
+    // `max_index` itself came from a `usize` via the lossless helper), so
+    // this cast is exact.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "target is clamped into [0.0, m.count - 1] immediately above"
+    )]
+    let idx = target as usize;
+    idx
 }
 
 /// A single-axis drag-to-reorder controller. Construct one per reorderable
@@ -162,6 +193,7 @@ impl<Id: Clone> DragController<Id> {
     }
 
     /// Override the drag-start threshold (default [`REORDER_THRESHOLD_PX`]).
+    #[must_use]
     pub fn with_threshold(mut self, px: f64) -> Self {
         self.threshold = px;
         self
@@ -307,15 +339,22 @@ impl<Id: Clone> DragController<Id> {
             return 0.0;
         }
         let to = s.target;
-        // Index within the list with the dragged item removed.
-        let collapsed = if index < s.from { index } else { index - 1 };
+        // Index within the list with the dragged item removed. Only reached
+        // when `index != s.from`, and this branch means `index > s.from`, so
+        // `index >= 1` and the subtraction cannot underflow — `saturating_sub`
+        // just makes that provable to the reader (and the lint) too.
+        let collapsed = if index < s.from {
+            index
+        } else {
+            index.saturating_sub(1)
+        };
         // Index after re-inserting the dragged item at `to`.
         let final_i = if collapsed < to {
             collapsed
         } else {
-            collapsed + 1
+            collapsed.saturating_add(1)
         };
-        (final_i as f64 - index as f64) * metrics.pitch()
+        (usize_to_f64(final_i) - usize_to_f64(index)) * metrics.pitch()
     }
 
     /// The leading-edge coordinate of the floating ghost along the axis

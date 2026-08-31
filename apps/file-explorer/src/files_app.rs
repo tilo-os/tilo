@@ -44,36 +44,41 @@ const BODY_BREAKPOINT_PX: f64 = 640.0;
 /// toolkit's `TextInput` binds to (and writes into) an existing `Text`
 /// object but never creates one, so the app must seed it — otherwise
 /// keystrokes mutate only the input's local string and never reach the CRDT.
+/// `None` if `root` is not a live object in `state` (seeding then simply
+/// does not happen for this sync pass).
 fn ensure_text_obj(
     state: &mut automerge::AutoCommit,
     root: &automerge::ObjId,
     key: &str,
-) -> automerge::ObjId {
+) -> Option<automerge::ObjId> {
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ReadDoc, Value};
     if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, key) {
-        return id;
+        return Some(id);
     }
-    state
-        .put_object(root, key, ObjType::Text)
-        .expect("put_object Text never fails")
+    state.put_object(root, key, ObjType::Text).ok()
 }
 
 /// Build the file manager's thumbnail service. The content-addressed cache
 /// lives under the app's persistence dir (a tempdir in tests, so they stay
 /// isolated) so previews survive across launches; it falls back to a temp dir
-/// when there is no persistence dir.
-fn build_thumb_service(config_dir: Option<&Path>) -> ThumbnailService {
+/// when there is no persistence dir. `None` when neither location is
+/// writable — previews then fall back to type badges (see [`ThumbCtx`]).
+fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
     let dir = config_dir.map_or_else(
         || std::env::temp_dir().join("qos-file-explorer-thumbnails"),
         |d| d.join("thumbnails"),
     );
-    ThumbnailService::open(&dir, 4).unwrap_or_else(|_| {
+    ThumbnailService::open(&dir, 4).ok().or_else(|| {
         let fallback = std::env::temp_dir().join("qos-file-explorer-thumbnails");
-        ThumbnailService::open(&fallback, 4).expect("a temp thumbnail cache dir is creatable")
+        ThumbnailService::open(&fallback, 4).ok()
     })
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent piece of widget state (loading, clipboard mode, rename phase, shots/layout bookkeeping), always set by name rather than a confusing positional constructor"
+)]
 pub struct FileExplorerWidget {
     current_path: PathBuf,
     home_path: Option<PathBuf>,
@@ -222,8 +227,10 @@ pub struct FileExplorerWidget {
     /// The shared, off-thread thumbnail service (content-addressed cache +
     /// worker pool). Cloned into each rebuilt file view so a folder of images /
     /// PDFs / ebooks shows real previews (and workspace files show the host's
-    /// gossiped preview) without janking on the UI thread.
-    thumbs: Arc<ThumbnailService>,
+    /// gossiped preview) without janking on the UI thread. `None` when no
+    /// writable cache directory could be found — the file view then falls
+    /// back to type badges.
+    thumbs: Option<Arc<ThumbnailService>>,
     /// App-lived memo turning a decoded thumbnail into a `peniko` image once, so
     /// a scrolling grid never rebuilds the GPU blob per frame.
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
@@ -286,7 +293,7 @@ impl FileExplorerWidget {
         }
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
-        let thumbs = Arc::new(build_thumb_service(config_dir.as_deref()));
+        let thumbs = build_thumb_service(config_dir.as_deref()).map(Arc::new);
         Self {
             current_path: cwd,
             home_path: home,
@@ -358,10 +365,11 @@ impl FileExplorerWidget {
     }
 
     /// The thumbnail context (service + peniko memo) handed to each rebuilt file
-    /// view.
+    /// view. `None` when no thumbnail service could be opened — the view then
+    /// falls back to type badges.
     fn thumb_ctx(&self) -> Option<ThumbCtx> {
         Some(ThumbCtx {
-            service: self.thumbs.clone(),
+            service: self.thumbs.clone()?,
             imgs: self.thumb_imgs.clone(),
         })
     }
@@ -391,7 +399,9 @@ impl FileExplorerWidget {
     /// pre-warm so a headless grid captures the real previews, never the
     /// placeholders. Never call on a live UI thread.
     pub fn prewarm_thumbnails(&self, timeout: std::time::Duration) {
-        self.thumbs.block_until_idle(timeout);
+        if let Some(thumbs) = self.thumbs.as_deref() {
+            thumbs.block_until_idle(timeout);
+        }
     }
 
     /// Refresh the persistent top bar with the current navigation context
@@ -541,7 +551,7 @@ impl FileExplorerWidget {
         let now = std::time::Instant::now();
         let label = self.footer_label();
         if label != self.last_status_label {
-            self.last_status_label = label.clone();
+            label.clone_into(&mut self.last_status_label);
             self.status_bubble.poke(now);
         }
         if label.is_empty() {
@@ -770,63 +780,10 @@ impl FileExplorerWidget {
                 self.refresh();
                 true
             }
-            FileCommand::Click { index, ctrl, shift } => {
-                if ctrl || shift {
-                    self.selection.apply_click(index, ctrl, shift);
-                    self.last_click = None;
-                } else {
-                    // Capture a multi-selection the press lands inside *before*
-                    // the click collapses it, so a drag that starts here carries
-                    // the whole set (drag a multi-selection). A press outside the
-                    // multi-selection seeds nothing.
-                    let sel = self.selection.selected();
-                    self.drag_seed = if sel.len() > 1 && sel.contains(&index) {
-                        self.selected_paths()
-                    } else {
-                        Vec::new()
-                    };
-                    if let Some(path) = self.select(Some(index)) {
-                        // Double-click → open / enter.
-                        self.open_path(path);
-                    }
-                }
-                true
-            }
-            FileCommand::ContextSelect(target) => {
-                match target {
-                    // A right-press on a row that isn't already part of the
-                    // selection selects just it; one inside an existing
-                    // multi-selection leaves that selection intact so the menu
-                    // action applies to every highlighted item.
-                    Some(i) if !self.selection.is_selected(i) => self.selection.select_only(i),
-                    Some(_) => {}
-                    // Right-press on empty space clears the selection.
-                    None => self.selection.clear(),
-                }
-                self.last_click = None;
-                true
-            }
-            FileCommand::Activate(index) => {
-                let disp = self.displayed_entries();
-                if let Some(e) = disp.get(index) {
-                    self.open_path(e.path.clone());
-                }
-                true
-            }
-            FileCommand::SortColumn(col) => {
-                let by = match col {
-                    1 => SortBy::Name,
-                    2 => SortBy::Size,
-                    3 => SortBy::Modified,
-                    _ => return false,
-                };
-                if self.sort_by == by {
-                    self.toggle_sort_order();
-                } else {
-                    self.set_sort_by(by);
-                }
-                true
-            }
+            FileCommand::Click { index, ctrl, shift } => self.apply_click(index, ctrl, shift),
+            FileCommand::ContextSelect(target) => self.apply_context_select(target),
+            FileCommand::Activate(index) => self.apply_activate(index),
+            FileCommand::SortColumn(col) => self.apply_sort_column(col),
             FileCommand::SetView(m) => {
                 self.set_view_mode(m);
                 true
@@ -847,24 +804,7 @@ impl FileExplorerWidget {
                 let _ = self.open_terminal(&mut SystemRunner);
                 false
             }
-            FileCommand::NewFolder => {
-                match fileops::new_folder(&self.current_path, "New Folder") {
-                    Ok(path) => {
-                        self.refresh();
-                        // Select the freshly-created folder and drop into
-                        // inline-rename so the user names it right away.
-                        if let Some(i) =
-                            self.displayed_entries().iter().position(|e| e.path == path)
-                        {
-                            self.selection.select_only(i);
-                            self.begin_rename();
-                        }
-                        self.status = Some("Created folder".to_string());
-                    }
-                    Err(e) => self.status = Some(format!("New folder failed: {e}")),
-                }
-                true
-            }
+            FileCommand::NewFolder => self.apply_new_folder(),
             FileCommand::Rename => {
                 self.begin_rename();
                 true
@@ -877,189 +817,22 @@ impl FileExplorerWidget {
                 self.cancel_rename();
                 true
             }
-            FileCommand::Delete => {
-                let paths = self.selected_paths();
-                if !paths.is_empty() {
-                    if self.is_trash_view() {
-                        // Already in the Trash — a second delete is a permanent
-                        // purge, not a re-trash.
-                        match fileops::purge_entries(&paths) {
-                            Ok(n) => {
-                                self.refresh();
-                                self.status = Some(format!("Permanently deleted {n}"));
-                            }
-                            Err(e) => self.status = Some(format!("Delete failed: {e}")),
-                        }
-                    } else {
-                        match fileops::delete_to_trash(&paths) {
-                            Ok(()) => {
-                                self.refresh();
-                                self.status = Some(format!("Moved {} to Trash", paths.len()));
-                            }
-                            Err(e) => self.status = Some(format!("Delete failed: {e}")),
-                        }
-                    }
-                }
-                true
-            }
-            FileCommand::RestoreFromTrash => {
-                let paths = self.selected_paths();
-                if !paths.is_empty() {
-                    match fileops::restore_entries(&paths) {
-                        Ok(n) => {
-                            self.refresh();
-                            self.status = Some(format!("Restored {n}"));
-                        }
-                        Err(e) => self.status = Some(format!("Restore failed: {e}")),
-                    }
-                }
-                true
-            }
-            FileCommand::EmptyTrash => {
-                match fileops::empty_trash() {
-                    Ok(n) => {
-                        self.refresh();
-                        self.status = Some(if n == 0 {
-                            "Trash is already empty".to_string()
-                        } else {
-                            format!("Emptied Trash ({n})")
-                        });
-                    }
-                    Err(e) => self.status = Some(format!("Empty Trash failed: {e}")),
-                }
-                true
-            }
-            FileCommand::Copy => {
-                self.clipboard = self.selected_paths();
-                self.clipboard_cut = false;
-                self.status = Some(format!("Copied {}", self.clipboard.len()));
-                true
-            }
-            FileCommand::Cut => {
-                self.clipboard = self.selected_paths();
-                self.clipboard_cut = true;
-                self.status = Some(format!("Cut {}", self.clipboard.len()));
-                true
-            }
+            FileCommand::Delete => self.apply_delete(),
+            FileCommand::RestoreFromTrash => self.apply_restore_from_trash(),
+            FileCommand::EmptyTrash => self.apply_empty_trash(),
+            FileCommand::Copy => self.apply_copy(),
+            FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
                 self.paste();
                 true
             }
-            FileCommand::OpenTemplatesMenu => {
-                // Opened from the menu-routing path with real geometry; if it
-                // arrives via the command queue just open it at the cursor.
-                self.open_templates_submenu(self.last_cursor);
-                true
-            }
-            FileCommand::NewFromTemplate(template) => {
-                match templates::create_from_template(&template, &self.current_path) {
-                    Ok(path) => {
-                        self.refresh();
-                        if let Some(i) =
-                            self.displayed_entries().iter().position(|e| e.path == path)
-                        {
-                            self.selection.select_only(i);
-                            self.begin_rename();
-                        }
-                        self.status = Some("Created file".to_string());
-                    }
-                    Err(e) => self.status = Some(format!("New file failed: {e}")),
-                }
-                true
-            }
-            FileCommand::ArmDrag { path, is_dir, at } => {
-                tracing::debug!(target: "file_explorer::drag", ?path, ?at, "drag armed");
-                self.armed_drag = Some((at, path, is_dir));
-                true
-            }
-            FileCommand::BeginDrag { path, is_dir } => {
-                if self.pin_drag.is_some() {
-                    // Already carrying — the view and the app both arm the
-                    // same press, and whichever fires second is redundant.
-                    return true;
-                }
-                self.armed_drag = None;
-                tracing::debug!(target: "file_explorer::drag", ?path, "drag begins");
-                // Start carrying the row(s); the ghost + the drop are owned by
-                // `handle_event`. Drag the whole multi-selection when the press
-                // landed inside it (captured in `drag_seed` before the click
-                // collapsed it, Finder/Nautilus behaviour), else just this row.
-                let seed = std::mem::take(&mut self.drag_seed);
-                self.drag_paths = if seed.contains(&path) {
-                    seed
-                } else {
-                    vec![path.clone()]
-                };
-                self.drag_origin_is_dir = is_dir;
-                self.pin_drag = Some(path);
-                self.drag_hover = None;
-                // Tell the host what is being carried: if the pointer
-                // reaches another application's window, the host turns
-                // this into a real drag-and-drop for that client.
-                //
-                // That is the path when Files is a widget inside the
-                // compositor. When it is a packaged app — its own
-                // process, its own sandbox, a Wayland client like any
-                // other — there is no host holding the gesture, so it
-                // opens the drag itself. Only one of the two can be
-                // true in a given process, and each reports whether it
-                // applied, so both are offered the gesture and at most
-                // one takes it.
-                crate::external_drag::begin(self.drag_paths.clone());
-                if ui::dnd::start_file_drag(&self.drag_paths) {
-                    tracing::debug!(
-                        target: "file_explorer::drag",
-                        paths = ?self.drag_paths,
-                        "carrying the drag out of this app as a client drag"
-                    );
-                    // The gesture now belongs to the compositor's
-                    // drag grab, and this window will not see the rest
-                    // of it: no more motion, and no release. Anything
-                    // kept here would be state waiting for an end that
-                    // never arrives — a ghost pinned to the last place
-                    // the pointer was, and a drop this app would try to
-                    // resolve against its own folders. So it is let go
-                    // of here, and the picture from this point on is
-                    // the compositor's to draw.
-                    self.pin_drag = None;
-                    self.drag_paths.clear();
-                    self.drag_hover = None;
-                    self.armed_drag = None;
-                    crate::external_drag::end();
-                }
-                true
-            }
-            FileCommand::AddFavorite(path) => {
-                let added = {
-                    let home = self.home_path.clone().unwrap_or_else(|| PathBuf::from("/"));
-                    let mut favs = self.favs.borrow_mut();
-                    favorites::add(&mut favs.favorites, path, &home, &self.user_dirs)
-                };
-                if added {
-                    self.save_favorites();
-                    self.status = Some("Added to Favourites".to_string());
-                }
-                true
-            }
-            FileCommand::RemoveFavorite(path) => {
-                let removed = {
-                    let mut favs = self.favs.borrow_mut();
-                    favorites::remove(&mut favs.favorites, &path)
-                };
-                if removed {
-                    self.save_favorites();
-                    self.status = Some("Removed from Favourites".to_string());
-                }
-                true
-            }
-            FileCommand::ReorderFavorite { from, to } => {
-                {
-                    let mut favs = self.favs.borrow_mut();
-                    favorites::reorder(&mut favs.favorites, from, to);
-                }
-                self.save_favorites();
-                true
-            }
+            FileCommand::OpenTemplatesMenu => self.apply_open_templates_menu(),
+            FileCommand::NewFromTemplate(template) => self.apply_new_from_template(&template),
+            FileCommand::ArmDrag { path, is_dir, at } => self.apply_arm_drag(path, is_dir, at),
+            FileCommand::BeginDrag { path, is_dir } => self.apply_begin_drag(path, is_dir),
+            FileCommand::AddFavorite(path) => self.apply_add_favorite(path),
+            FileCommand::RemoveFavorite(path) => self.apply_remove_favorite(&path),
+            FileCommand::ReorderFavorite { from, to } => self.apply_reorder_favorite(from, to),
             FileCommand::ZoomIn => {
                 self.set_zoom(self.zoom_level + 1);
                 true
@@ -1073,17 +846,7 @@ impl FileExplorerWidget {
                 self.refresh();
                 true
             }
-            FileCommand::OpenPath(p) => {
-                // A typed/accepted path from the editable path bar: open a file,
-                // navigate into a directory (or a not-yet-existing path, so the
-                // error affordance surfaces rather than silently doing nothing).
-                if p.is_file() {
-                    self.open_path(p);
-                } else {
-                    self.navigate(p);
-                }
-                true
-            }
+            FileCommand::OpenPath(p) => self.apply_open_path(p),
             FileCommand::OpenViewMenu => {
                 self.open_view_menu();
                 true
@@ -1092,19 +855,333 @@ impl FileExplorerWidget {
                 self.open_sort_menu();
                 true
             }
-            FileCommand::SetSortOrder(order) => {
-                if self.sort_order != order {
-                    self.toggle_sort_order();
-                }
-                true
-            }
-            FileCommand::OpenFavoriteMenu(path) => {
-                // Remember the target; the right-press handler opens the menu at
-                // the cursor once this event's commands are drained.
-                self.pending_fav_menu = Some(path);
-                false
+            FileCommand::SetSortOrder(order) => self.apply_set_sort_order(order),
+            FileCommand::OpenFavoriteMenu(path) => self.apply_open_favorite_menu(path),
+        }
+    }
+
+    /// `FileCommand::Click` — drives selection and, via the app's
+    /// double-click detection, opening.
+    fn apply_click(&mut self, index: usize, ctrl: bool, shift: bool) -> bool {
+        if ctrl || shift {
+            self.selection.apply_click(index, ctrl, shift);
+            self.last_click = None;
+        } else {
+            // Capture a multi-selection the press lands inside *before*
+            // the click collapses it, so a drag that starts here carries
+            // the whole set (drag a multi-selection). A press outside the
+            // multi-selection seeds nothing.
+            let sel = self.selection.selected();
+            self.drag_seed = if sel.len() > 1 && sel.contains(&index) {
+                self.selected_paths()
+            } else {
+                Vec::new()
+            };
+            if let Some(path) = self.select(Some(index)) {
+                // Double-click → open / enter.
+                self.open_path(path);
             }
         }
+        true
+    }
+
+    /// `FileCommand::ContextSelect` — selects the right-press target so the
+    /// context menu that follows acts on what was clicked.
+    fn apply_context_select(&mut self, target: Option<usize>) -> bool {
+        match target {
+            // A right-press on a row that isn't already part of the
+            // selection selects just it; one inside an existing
+            // multi-selection leaves that selection intact so the menu
+            // action applies to every highlighted item.
+            Some(i) if !self.selection.is_selected(i) => self.selection.select_only(i),
+            Some(_) => {}
+            // Right-press on empty space clears the selection.
+            None => self.selection.clear(),
+        }
+        self.last_click = None;
+        true
+    }
+
+    /// `FileCommand::NewFolder` — create, refresh, then drop into
+    /// inline-rename so the user names it right away.
+    fn apply_new_folder(&mut self) -> bool {
+        match fileops::new_folder(&self.current_path, "New Folder") {
+            Ok(path) => {
+                self.refresh();
+                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
+                    self.selection.select_only(i);
+                    self.begin_rename();
+                }
+                self.status = Some("Created folder".to_string());
+            }
+            Err(e) => self.status = Some(format!("New folder failed: {e}")),
+        }
+        true
+    }
+
+    /// `FileCommand::Delete` — trash the selection, or (already in the
+    /// Trash) permanently purge it.
+    fn apply_delete(&mut self) -> bool {
+        let paths = self.selected_paths();
+        if !paths.is_empty() {
+            if self.is_trash_view() {
+                // Already in the Trash — a second delete is a permanent
+                // purge, not a re-trash.
+                match fileops::purge_entries(&paths) {
+                    Ok(n) => {
+                        self.refresh();
+                        self.status = Some(format!("Permanently deleted {n}"));
+                    }
+                    Err(e) => self.status = Some(format!("Delete failed: {e}")),
+                }
+            } else {
+                match fileops::delete_to_trash(&paths) {
+                    Ok(()) => {
+                        self.refresh();
+                        self.status = Some(format!("Moved {} to Trash", paths.len()));
+                    }
+                    Err(e) => self.status = Some(format!("Delete failed: {e}")),
+                }
+            }
+        }
+        true
+    }
+
+    /// `FileCommand::RestoreFromTrash` — restore the selection to its
+    /// original location.
+    fn apply_restore_from_trash(&mut self) -> bool {
+        let paths = self.selected_paths();
+        if !paths.is_empty() {
+            match fileops::restore_entries(&paths) {
+                Ok(n) => {
+                    self.refresh();
+                    self.status = Some(format!("Restored {n}"));
+                }
+                Err(e) => self.status = Some(format!("Restore failed: {e}")),
+            }
+        }
+        true
+    }
+
+    /// `FileCommand::EmptyTrash` — permanently empty the Trash.
+    fn apply_empty_trash(&mut self) -> bool {
+        match fileops::empty_trash() {
+            Ok(n) => {
+                self.refresh();
+                self.status = Some(if n == 0 {
+                    "Trash is already empty".to_string()
+                } else {
+                    format!("Emptied Trash ({n})")
+                });
+            }
+            Err(e) => self.status = Some(format!("Empty Trash failed: {e}")),
+        }
+        true
+    }
+
+    /// `FileCommand::NewFromTemplate` — copy `template`, refresh, then drop
+    /// into inline-rename.
+    fn apply_new_from_template(&mut self, template: &Path) -> bool {
+        match templates::create_from_template(template, &self.current_path) {
+            Ok(path) => {
+                self.refresh();
+                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
+                    self.selection.select_only(i);
+                    self.begin_rename();
+                }
+                self.status = Some("Created file".to_string());
+            }
+            Err(e) => self.status = Some(format!("New file failed: {e}")),
+        }
+        true
+    }
+
+    /// `FileCommand::BeginDrag` — start carrying the row(s) as a floating
+    /// ghost, and hand the gesture to the host or the toolkit's own
+    /// client-side drag.
+    fn apply_begin_drag(&mut self, path: PathBuf, is_dir: bool) -> bool {
+        if self.pin_drag.is_some() {
+            // Already carrying — the view and the app both arm the
+            // same press, and whichever fires second is redundant.
+            return true;
+        }
+        self.armed_drag = None;
+        tracing::debug!(target: "file_explorer::drag", ?path, "drag begins");
+        // Start carrying the row(s); the ghost + the drop are owned by
+        // `handle_event`. Drag the whole multi-selection when the press
+        // landed inside it (captured in `drag_seed` before the click
+        // collapsed it, Finder/Nautilus behaviour), else just this row.
+        let seed = std::mem::take(&mut self.drag_seed);
+        self.drag_paths = if seed.contains(&path) {
+            seed
+        } else {
+            vec![path.clone()]
+        };
+        self.drag_origin_is_dir = is_dir;
+        self.pin_drag = Some(path);
+        self.drag_hover = None;
+        // Tell the host what is being carried: if the pointer
+        // reaches another application's window, the host turns
+        // this into a real drag-and-drop for that client.
+        //
+        // That is the path when Files is a widget inside the
+        // compositor. When it is a packaged app — its own
+        // process, its own sandbox, a Wayland client like any
+        // other — there is no host holding the gesture, so it
+        // opens the drag itself. Only one of the two can be
+        // true in a given process, and each reports whether it
+        // applied, so both are offered the gesture and at most
+        // one takes it.
+        crate::external_drag::begin(self.drag_paths.clone());
+        if ui::dnd::start_file_drag(&self.drag_paths) {
+            tracing::debug!(
+                target: "file_explorer::drag",
+                paths = ?self.drag_paths,
+                "carrying the drag out of this app as a client drag"
+            );
+            // The gesture now belongs to the compositor's
+            // drag grab, and this window will not see the rest
+            // of it: no more motion, and no release. Anything
+            // kept here would be state waiting for an end that
+            // never arrives — a ghost pinned to the last place
+            // the pointer was, and a drop this app would try to
+            // resolve against its own folders. So it is let go
+            // of here, and the picture from this point on is
+            // the compositor's to draw.
+            self.pin_drag = None;
+            self.drag_paths.clear();
+            self.drag_hover = None;
+            self.armed_drag = None;
+            crate::external_drag::end();
+        }
+        true
+    }
+
+    /// `FileCommand::AddFavorite` — pin `path` to the places list.
+    fn apply_add_favorite(&mut self, path: PathBuf) -> bool {
+        let added = {
+            let home = self.home_path.clone().unwrap_or_else(|| PathBuf::from("/"));
+            let mut favs = self.favs.borrow_mut();
+            favorites::add(&mut favs.favorites, path, &home, &self.user_dirs)
+        };
+        if added {
+            self.save_favorites();
+            self.status = Some("Added to Favourites".to_string());
+        }
+        true
+    }
+
+    /// `FileCommand::RemoveFavorite` — unpin `path` from the places list.
+    fn apply_remove_favorite(&mut self, path: &Path) -> bool {
+        let removed = {
+            let mut favs = self.favs.borrow_mut();
+            favorites::remove(&mut favs.favorites, path)
+        };
+        if removed {
+            self.save_favorites();
+            self.status = Some("Removed from Favourites".to_string());
+        }
+        true
+    }
+
+    /// `FileCommand::ReorderFavorite` — move favourite `from` to index `to`
+    /// (drag-to-reorder drop).
+    fn apply_reorder_favorite(&self, from: usize, to: usize) -> bool {
+        {
+            let mut favs = self.favs.borrow_mut();
+            favorites::reorder(&mut favs.favorites, from, to);
+        }
+        self.save_favorites();
+        true
+    }
+
+    /// `FileCommand::Activate` — activate entry `index` directly (keyboard
+    /// Enter / grid double-click).
+    fn apply_activate(&mut self, index: usize) -> bool {
+        let disp = self.displayed_entries();
+        if let Some(e) = disp.get(index) {
+            self.open_path(e.path.clone());
+        }
+        true
+    }
+
+    /// `FileCommand::SortColumn` — a sortable list header at `col` was
+    /// clicked; toggles order on a repeat click of the active column.
+    fn apply_sort_column(&mut self, col: usize) -> bool {
+        let by = match col {
+            1 => SortBy::Name,
+            2 => SortBy::Size,
+            3 => SortBy::Modified,
+            _ => return false,
+        };
+        if self.sort_by == by {
+            self.toggle_sort_order();
+        } else {
+            self.set_sort_by(by);
+        }
+        true
+    }
+
+    /// `FileCommand::Copy` — copy the selection into the clipboard.
+    fn apply_copy(&mut self) -> bool {
+        self.clipboard = self.selected_paths();
+        self.clipboard_cut = false;
+        self.status = Some(format!("Copied {}", self.clipboard.len()));
+        true
+    }
+
+    /// `FileCommand::Cut` — cut the selection into the clipboard.
+    fn apply_cut(&mut self) -> bool {
+        self.clipboard = self.selected_paths();
+        self.clipboard_cut = true;
+        self.status = Some(format!("Cut {}", self.clipboard.len()));
+        true
+    }
+
+    /// `FileCommand::OpenTemplatesMenu` — opened from the menu-routing path
+    /// with real geometry; if it arrives via the command queue just open it
+    /// at the cursor.
+    fn apply_open_templates_menu(&mut self) -> bool {
+        self.open_templates_submenu(self.last_cursor);
+        true
+    }
+
+    /// `FileCommand::ArmDrag` — a plain press landed on a row: arm a drag of
+    /// `path` from `at`, started once the held pointer travels far enough.
+    fn apply_arm_drag(&mut self, path: PathBuf, is_dir: bool, at: Point) -> bool {
+        tracing::debug!(target: "file_explorer::drag", ?path, ?at, "drag armed");
+        self.armed_drag = Some((at, path, is_dir));
+        true
+    }
+
+    /// `FileCommand::OpenPath` — a typed/accepted path from the editable
+    /// path bar: open a file, navigate into a directory (or a
+    /// not-yet-existing path, so the error affordance surfaces rather than
+    /// silently doing nothing).
+    fn apply_open_path(&mut self, p: PathBuf) -> bool {
+        if p.is_file() {
+            self.open_path(p);
+        } else {
+            self.navigate(p);
+        }
+        true
+    }
+
+    /// `FileCommand::SetSortOrder` — set the sort direction explicitly
+    /// (from the grid "Sort by" menu).
+    fn apply_set_sort_order(&mut self, order: SortOrder) -> bool {
+        if self.sort_order != order {
+            self.toggle_sort_order();
+        }
+        true
+    }
+
+    /// `FileCommand::OpenFavoriteMenu` — remember the target; the
+    /// right-press handler opens the menu at the cursor once this event's
+    /// commands are drained.
+    fn apply_open_favorite_menu(&mut self, path: PathBuf) -> bool {
+        self.pending_fav_menu = Some(path);
+        false
     }
 
     /// Set the zoom level (clamped) and persist it.
@@ -1482,7 +1559,7 @@ impl FileExplorerWidget {
             && let Some(e) = disp.get(i)
         {
             self.renaming = Some(i);
-            self.rename_buffer = e.name.clone();
+            e.name.clone_into(&mut self.rename_buffer);
             self.rename_seed_pending = true;
             self.rename_select_pending = true;
             self.rename_input.set_focus(true);
@@ -1620,6 +1697,7 @@ impl FileExplorerWidget {
         transform: vello::kurbo::Affine,
         theme: &ui::Theme,
     ) {
+        use ui::ColorCompat;
         use vello::kurbo::{Rect, RoundedRect, Stroke};
         use vello::peniko::Fill;
         let Some(hover) = &self.drag_hover else {
@@ -1639,7 +1717,6 @@ impl FileExplorerWidget {
                     .flatten()
             });
         let Some(rect) = rect else { return };
-        use ui::ColorCompat;
         let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let inset = Rect::new(rect.x0 + 6.0, rect.y0 + 2.0, rect.x1 - 6.0, rect.y1 - 2.0);
         let shape = RoundedRect::from_rect(inset, 8.0);
@@ -1786,7 +1863,19 @@ fn layout_menu_widget(menu: &mut ContextMenu) {
 /// default app" handler. Mocked in tests so the open/launch paths are
 /// verifiable without actually spawning anything.
 pub trait CommandRunner {
+    /// Spawn `program` in `cwd`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if the process cannot be spawned — `program`
+    /// is not on `PATH`, or the current user lacks permission to run it.
     fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()>;
+    /// Spawn `program` in `cwd` with `arg` as its sole argument.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if the process cannot be spawned — `program`
+    /// is not on `PATH`, or the current user lacks permission to run it.
     fn spawn_arg(
         &mut self,
         program: &str,
@@ -1797,6 +1886,11 @@ pub trait CommandRunner {
     /// every file type qOS has no registered app for (images, PDFs, video,
     /// audio, plain text, …) so double-click/Enter/Open never silently do
     /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if the desktop has no default handler
+    /// registered for `path`, or fails to launch it.
     fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()>;
 }
 
@@ -1888,13 +1982,37 @@ fn ask_host_to_open(path: &std::path::Path) -> Option<Result<(), String>> {
     DOCUMENT_OPENER.with(|slot| slot.borrow_mut().as_mut().map(|open| open(path)))
 }
 
+/// The full `Widget::handle_event` parameter set, bundled so the
+/// event-routing helpers `handle_event` delegates to stay under clippy's
+/// argument-count limit instead of threading nine parameters through each.
+struct EventCtx<'a> {
+    event: &'a winit::event::WindowEvent,
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    state: &'a mut automerge::AutoCommit,
+    path: &'a automerge::ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<taffy::NodeId>,
+    node_id: taffy::NodeId,
+    taffy: &'a taffy::TaffyTree<()>,
+}
+
 impl FileExplorerWidget {
+    /// Launch a terminal rooted at the current directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if the terminal process cannot be spawned.
     pub fn open_terminal<R: CommandRunner>(&self, runner: &mut R) -> std::io::Result<()> {
         runner.spawn("terminal", &self.current_path)
     }
 
     /// Activate entry `idx` (by displayed index): navigate into a directory
     /// or launch the associated app.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if launching the entry's associated app fails.
     pub fn open_entry<R: CommandRunner>(
         &mut self,
         idx: usize,
@@ -2039,9 +2157,8 @@ impl FileExplorerWidget {
         if sel.len() != 1 {
             return None;
         }
-        disp.get(sel[0])
-            .filter(|e| e.is_dir)
-            .map(|e| e.path.clone())
+        let idx = *sel.first()?;
+        disp.get(idx).filter(|e| e.is_dir).map(|e| e.path.clone())
     }
 
     /// Whether the current directory is a favourite that may be removed (i.e.
@@ -2266,6 +2383,10 @@ impl FileExplorerWidget {
 
     /// Drain and apply all queued commands. Returns whether any command
     /// changed the structure.
+    #[allow(
+        clippy::needless_collect,
+        reason = "collecting drops the RefCell borrow before the loop; apply_command can itself queue follow-up commands into the same self.cmds sink, and iterating the drain directly would hold the borrow_mut across that and panic"
+    )]
     fn drain_commands(&mut self) -> bool {
         let queued: Vec<FileCommand> = self.cmds.borrow_mut().drain(..).collect();
         let mut dirty = false;
@@ -2284,7 +2405,7 @@ impl FileExplorerWidget {
         &mut self,
         event: &winit::event::WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
         handled: &mut bool,
@@ -2302,7 +2423,7 @@ impl FileExplorerWidget {
             self.toolbar.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -2315,7 +2436,7 @@ impl FileExplorerWidget {
             self.nav.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -2331,7 +2452,7 @@ impl FileExplorerWidget {
     fn handle_app_key(
         &mut self,
         ke: &winit::event::KeyEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) -> bool {
         use winit::keyboard::{Key, NamedKey};
         if ke.state != winit::event::ElementState::Pressed {
@@ -2420,6 +2541,282 @@ impl FileExplorerWidget {
             _ => false,
         }
     }
+
+    /// A live drag owns the pointer: the ghost follows the cursor, the
+    /// hovered folder is highlighted, and the release resolves the drop —
+    /// moving the carried row(s) into a folder (or the parent), or pinning a
+    /// folder to the sidebar. Returns whether the event was consumed (the
+    /// caller should stop routing it further).
+    fn handle_live_drag_event(&mut self, ctx: &mut EventCtx) -> bool {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        if self.pin_drag.is_none() {
+            return false;
+        }
+        match ctx.event {
+            WindowEvent::CursorMoved { .. } => {
+                // Once the host has carried the drag to another
+                // application, no folder here is a target any more.
+                self.drag_hover = if crate::external_drag::is_handed_off() {
+                    None
+                } else {
+                    self.folder_target_at(self.last_cursor)
+                };
+                *ctx.handled = true;
+                self.structure_dirty = true;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if crate::external_drag::is_handed_off() {
+                    // The drop landed in another application; the host
+                    // delivered it. Nothing moves here.
+                    self.cancel_drag();
+                } else {
+                    self.finish_drag();
+                }
+                *ctx.handled = true;
+                self.structure_dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The open context menu (or its flyout) gets first dibs on clicks +
+    /// Escape. Returns whether the event was consumed.
+    fn handle_open_menu_event(&mut self, ctx: &mut EventCtx) -> bool {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        if !(self.context_menu.is_open() || self.submenu.is_open()) {
+            return false;
+        }
+        match ctx.event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.route_menu_click(self.last_cursor) {
+                    *ctx.handled = true;
+                    self.structure_dirty = true;
+                    let _ = self.drain_commands();
+                    return true;
+                }
+                false
+            }
+            WindowEvent::KeyboardInput { event: ke, .. }
+                if ke.state == ElementState::Pressed
+                    && matches!(
+                        ke.logical_key,
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                    ) =>
+            {
+                self.submenu.close();
+                self.context_menu.close();
+                *ctx.handled = true;
+                self.structure_dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Right-click opens the context menu. First deliver the press to the
+    /// body so the content pane selects the row under the cursor (it pushes
+    /// `ContextSelect`); draining that before building the menu is what
+    /// makes the menu's actions target what was actually clicked rather
+    /// than a stale selection from an earlier click. Returns whether the
+    /// event was consumed.
+    fn handle_right_click_open_menu(&mut self, ctx: &mut EventCtx) -> bool {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+            ..
+        } = ctx.event
+        else {
+            return false;
+        };
+        let mut child_handled = false;
+        self.forward_to_body(
+            ctx.event,
+            ctx.scale_factor,
+            ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            &mut child_handled,
+            ctx.focus_target,
+            ctx.node_id,
+            ctx.taffy,
+        );
+        self.drain_commands();
+        // A right-press over a sidebar favourite pushes `OpenFavoriteMenu`,
+        // which the drain records here; open the favourite's own menu at the
+        // cursor rather than the file-view context menu.
+        if let Some(fav) = self.pending_fav_menu.take() {
+            self.open_favorite_menu(fav, self.last_cursor);
+        } else {
+            self.open_context_menu(self.last_cursor);
+        }
+        *ctx.handled = true;
+        self.structure_dirty = true;
+        true
+    }
+
+    /// Ctrl + mouse-wheel zooms the icon/row size (before the wheel reaches
+    /// the Scrollable, which would otherwise consume it for scrolling).
+    /// Returns whether the event was consumed.
+    fn handle_zoom_wheel(&mut self, ctx: &mut EventCtx) -> bool {
+        let winit::event::WindowEvent::MouseWheel { delta, .. } = ctx.event else {
+            return false;
+        };
+        if !(ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key()) {
+            return false;
+        }
+        let dy = match delta {
+            winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+            winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
+        };
+        if dy > 0.0 {
+            self.set_zoom(self.zoom_level + 1);
+        } else if dy < 0.0 {
+            self.set_zoom(self.zoom_level - 1);
+        }
+        *ctx.handled = true;
+        self.structure_dirty = true;
+        true
+    }
+
+    /// While an inline rename is active the in-place editor (drawn over the
+    /// row, not in a bottom bar) owns input: Enter commits, Escape cancels,
+    /// every other keystroke edits the field, and a press outside the field
+    /// commits. Handled before the event reaches app-level nav / the file
+    /// view so typing never leaks into list navigation or Enter-opens a
+    /// row. Returns whether the event was consumed.
+    fn handle_rename_mode_event(&mut self, ctx: &mut EventCtx) -> bool {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        if self.renaming.is_none() {
+            return false;
+        }
+        if let Some(rect) = self.rename_rect.get() {
+            self.rename_input.apply_layout_external(rect);
+        }
+        match ctx.event {
+            WindowEvent::KeyboardInput { event: ke, .. } => {
+                use winit::keyboard::{Key, NamedKey};
+                if ke.state == ElementState::Pressed {
+                    match &ke.logical_key {
+                        Key::Named(NamedKey::Enter) => {
+                            // Pull the freshest field text from the CRDT, then
+                            // commit — the last keystroke may not have synced.
+                            let rename_obj =
+                                ensure_text_obj(ctx.state, ctx.path, RENAME_QUERY_PATH);
+                            if let Some(obj) = rename_obj.as_ref()
+                                && let Ok(text) = {
+                                    use automerge::ReadDoc;
+                                    ctx.state.text(obj)
+                                }
+                            {
+                                self.rename_buffer = text;
+                            }
+                            self.commit_rename();
+                            *ctx.handled = true;
+                            self.structure_dirty = true;
+                            return true;
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.cancel_rename();
+                            *ctx.handled = true;
+                            self.structure_dirty = true;
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+                // Typing / editing keys go to the field (it splices the CRDT).
+                self.rename_input.handle_event(
+                    ctx.event,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
+                );
+                *ctx.handled = true;
+                self.structure_dirty = true;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let inside = self
+                    .rename_rect
+                    .get()
+                    .is_some_and(|r| r.contains(self.last_cursor));
+                if inside {
+                    // Reposition the caret within the field.
+                    self.rename_input.handle_event(
+                        ctx.event,
+                        ctx.scale_factor,
+                        &ctx.modifiers,
+                        ctx.state,
+                        ctx.path,
+                        ctx.handled,
+                        ctx.focus_target,
+                        ctx.node_id,
+                        ctx.taffy,
+                    );
+                } else {
+                    // A click away commits the rename (then this click is
+                    // consumed; a second click acts on its target).
+                    self.commit_rename();
+                }
+                *ctx.handled = true;
+                self.structure_dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Deliver to the body first (toolbar/breadcrumb, places list, file
+    /// view), stopping at the first that consumes it; then app-level
+    /// keyboard nav, queued commands, and the narrow-drawer dismissal that
+    /// follows a place navigation.
+    fn finish_event(&mut self, ctx: &mut EventCtx) {
+        let path_before = self.current_path.clone();
+        self.forward_to_body(
+            ctx.event,
+            ctx.scale_factor,
+            ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+            ctx.focus_target,
+            ctx.node_id,
+            ctx.taffy,
+        );
+        if !*ctx.handled
+            && let winit::event::WindowEvent::KeyboardInput { event: ke, .. } = ctx.event
+            && self.handle_app_key(ke, ctx.modifiers)
+        {
+            *ctx.handled = true;
+            self.structure_dirty = true;
+        }
+        if self.drain_commands() {
+            self.structure_dirty = true;
+        }
+        if self.current_path != path_before && self.nav.mode() == ShellMode::Narrow {
+            self.nav.close_sidebar();
+        }
+    }
 }
 
 impl Widget for FileExplorerWidget {
@@ -2432,8 +2829,10 @@ impl Widget for FileExplorerWidget {
         let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
 
         // A just-started rename seeds the field with the entry's current name.
-        if self.rename_seed_pending {
-            ui::doc::splice_text_diffed(state, &rename_obj, &self.rename_buffer);
+        if let Some(obj) = rename_obj.as_ref()
+            && self.rename_seed_pending
+        {
+            ui::doc::splice_text_diffed(state, obj, &self.rename_buffer);
             self.rename_seed_pending = false;
         }
 
@@ -2452,7 +2851,8 @@ impl Widget for FileExplorerWidget {
         // While renaming, mirror the field's live text into our buffer so a
         // commit renames to what the user actually typed.
         if self.renaming.is_some()
-            && let Ok(text) = state.text(&rename_obj)
+            && let Some(obj) = rename_obj.as_ref()
+            && let Ok(text) = state.text(obj)
         {
             self.rename_buffer = text;
         }
@@ -2485,6 +2885,12 @@ impl Widget for FileExplorerWidget {
         // `NavShell::build_layout` hard-codes a `percent(1.0)` height leaf; in
         // a column of three that would claim the full height, so override it to
         // grow into the remaining space instead.
+        // `set_style` only fails when the node id is unknown to this tree;
+        // `nav_node` was just built in it above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "nav_node was just created in this same tree"
+        )]
         taffy
             .set_style(
                 nav_node,
@@ -2514,6 +2920,12 @@ impl Widget for FileExplorerWidget {
             },
             ..Default::default()
         };
+        // `new_with_children` only fails when a child belongs to a
+        // different tree; both children were just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "above_node and nav_node were just created in this same tree"
+        )]
         let node = taffy
             .new_with_children(style, &[above_node, nav_node])
             .unwrap();
@@ -2527,6 +2939,12 @@ impl Widget for FileExplorerWidget {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
+        // `node` was created by `build_layout` in this same tree, so a
+        // lookup miss would mean the frame cycle called these out of order.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
+        )]
         let l = taffy.layout(node).unwrap();
         self.rect = vello::kurbo::Rect::new(
             origin.x + f64::from(l.location.x),
@@ -2665,260 +3083,31 @@ impl Widget for FileExplorerWidget {
             self.armed_drag = None;
         }
 
-        // A live drag owns the pointer: the ghost follows the cursor, the
-        // hovered folder is highlighted, and the release resolves the drop —
-        // moving the carried row(s) into a folder (or the parent), or pinning a
-        // folder to the sidebar.
-        if self.pin_drag.is_some() {
-            match event {
-                WindowEvent::CursorMoved { .. } => {
-                    // Once the host has carried the drag to another
-                    // application, no folder here is a target any more.
-                    self.drag_hover = if crate::external_drag::is_handed_off() {
-                        None
-                    } else {
-                        self.folder_target_at(self.last_cursor)
-                    };
-                    *handled = true;
-                    self.structure_dirty = true;
-                    return;
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                    ..
-                } => {
-                    if crate::external_drag::is_handed_off() {
-                        // The drop landed in another application; the host
-                        // delivered it. Nothing moves here.
-                        self.cancel_drag();
-                    } else {
-                        self.finish_drag();
-                    }
-                    *handled = true;
-                    self.structure_dirty = true;
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // The open context menu (or its flyout) gets first dibs on clicks + Escape.
-        if self.context_menu.is_open() || self.submenu.is_open() {
-            match event {
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } => {
-                    if self.route_menu_click(self.last_cursor) {
-                        *handled = true;
-                        self.structure_dirty = true;
-                        let _ = self.drain_commands();
-                        return;
-                    }
-                }
-                WindowEvent::KeyboardInput { event: ke, .. }
-                    if ke.state == ElementState::Pressed
-                        && matches!(
-                            ke.logical_key,
-                            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
-                        ) =>
-                {
-                    self.submenu.close();
-                    self.context_menu.close();
-                    *handled = true;
-                    self.structure_dirty = true;
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Right-click opens the context menu. First deliver the press to the
-        // body so the content pane selects the row under the cursor (it pushes
-        // `ContextSelect`); draining that before building the menu is what makes
-        // the menu's actions target what was actually clicked rather than a
-        // stale selection from an earlier click.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Right,
-            ..
-        } = event
-        {
-            let mut child_handled = false;
-            self.forward_to_body(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut child_handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            self.drain_commands();
-            // A right-press over a sidebar favourite pushes `OpenFavoriteMenu`,
-            // which the drain records here; open the favourite's own menu at the
-            // cursor rather than the file-view context menu.
-            if let Some(fav) = self.pending_fav_menu.take() {
-                self.open_favorite_menu(fav, self.last_cursor);
-            } else {
-                self.open_context_menu(self.last_cursor);
-            }
-            *handled = true;
-            self.structure_dirty = true;
-            return;
-        }
-
-        // Ctrl + mouse-wheel zooms the icon/row size (before the wheel reaches
-        // the Scrollable, which would otherwise consume it for scrolling).
-        if let WindowEvent::MouseWheel { delta, .. } = event
-            && (modifiers.state().control_key() || modifiers.state().super_key())
-        {
-            let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
-            };
-            if dy > 0.0 {
-                self.set_zoom(self.zoom_level + 1);
-            } else if dy < 0.0 {
-                self.set_zoom(self.zoom_level - 1);
-            }
-            *handled = true;
-            self.structure_dirty = true;
-            return;
-        }
-
-        // While an inline rename is active the in-place editor (drawn over the
-        // row, not in a bottom bar) owns input: Enter commits, Escape cancels,
-        // every other keystroke edits the field, and a press outside the field
-        // commits. Handled before the event reaches app-level nav / the file
-        // view so typing never leaks into list navigation or Enter-opens a row.
-        if self.renaming.is_some() {
-            if let Some(rect) = self.rename_rect.get() {
-                self.rename_input.apply_layout_external(rect);
-            }
-            match event {
-                WindowEvent::KeyboardInput { event: ke, .. } => {
-                    use winit::keyboard::{Key, NamedKey};
-                    if ke.state == ElementState::Pressed {
-                        match &ke.logical_key {
-                            Key::Named(NamedKey::Enter) => {
-                                // Pull the freshest field text from the CRDT, then
-                                // commit — the last keystroke may not have synced.
-                                let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
-                                if let Ok(text) = {
-                                    use automerge::ReadDoc;
-                                    state.text(&rename_obj)
-                                } {
-                                    self.rename_buffer = text;
-                                }
-                                self.commit_rename();
-                                *handled = true;
-                                self.structure_dirty = true;
-                                return;
-                            }
-                            Key::Named(NamedKey::Escape) => {
-                                self.cancel_rename();
-                                *handled = true;
-                                self.structure_dirty = true;
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Typing / editing keys go to the field (it splices the CRDT).
-                    self.rename_input.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                    *handled = true;
-                    self.structure_dirty = true;
-                    return;
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } => {
-                    let inside = self
-                        .rename_rect
-                        .get()
-                        .is_some_and(|r| r.contains(self.last_cursor));
-                    if inside {
-                        // Reposition the caret within the field.
-                        self.rename_input.handle_event(
-                            event,
-                            scale_factor,
-                            modifiers,
-                            state,
-                            path,
-                            handled,
-                            focus_target,
-                            node_id,
-                            taffy,
-                        );
-                    } else {
-                        // A click away commits the rename (then this click is
-                        // consumed; a second click acts on its target).
-                        self.commit_rename();
-                    }
-                    *handled = true;
-                    self.structure_dirty = true;
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Remember where we are so a place-navigation this event can push the
-        // file view in (narrow / push layout).
-        let path_before = self.current_path.clone();
-
-        // Deliver to the body first (toolbar/breadcrumb, places list, file
-        // view), stopping at the first that consumes it.
-        self.forward_to_body(
+        let mut ctx = EventCtx {
             event,
             scale_factor,
-            modifiers,
+            modifiers: *modifiers,
             state,
             path,
             handled,
             focus_target,
             node_id,
             taffy,
-        );
+        };
 
-        // App-level keyboard nav for keys the children didn't consume.
-        if !*handled
-            && let winit::event::WindowEvent::KeyboardInput { event: ke, .. } = event
-            && self.handle_app_key(ke, modifiers)
+        // A live drag, the open context menu, a right-click, a zoom wheel,
+        // and an in-place rename all get first dibs on the event, in that
+        // priority order; the first that consumes it stops routing.
+        if self.handle_live_drag_event(&mut ctx)
+            || self.handle_open_menu_event(&mut ctx)
+            || self.handle_right_click_open_menu(&mut ctx)
+            || self.handle_zoom_wheel(&mut ctx)
+            || self.handle_rename_mode_event(&mut ctx)
         {
-            *handled = true;
-            self.structure_dirty = true;
+            return;
         }
 
-        // Apply any commands the children queued during this event.
-        if self.drain_commands() {
-            self.structure_dirty = true;
-        }
-
-        // Picking a destination dismisses the narrow drawer so the file list
-        // it navigated to is what the user is left looking at — the Adwaita
-        // overlay-sidebar behaviour. Wide keeps the places list docked, so
-        // there is nothing to dismiss there.
-        if self.current_path != path_before && self.nav.mode() == ShellMode::Narrow {
-            self.nav.close_sidebar();
-        }
+        self.finish_event(&mut ctx);
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -2967,17 +3156,11 @@ impl Widget for FileExplorerWidget {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut v: Vec<&dyn Widget> = Vec::new();
-        v.push(&self.toolbar);
-        v.push(&self.nav);
-        v
+        vec![&self.toolbar, &self.nav]
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
-        v.push(&mut self.toolbar);
-        v.push(&mut self.nav);
-        v
+        vec![&mut self.toolbar, &mut self.nav]
     }
 
     fn name(&self) -> &'static str {
@@ -3059,7 +3242,7 @@ mod open_with_tests {
     /// the moment anybody installs anything.
     #[test]
     fn activating_a_file_hands_the_path_to_the_host() {
-        let asked: std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>> = Default::default();
+        let asked: std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>> = std::rc::Rc::default();
         let sink = asked.clone();
         set_document_opener(move |p| {
             sink.borrow_mut().push(p.to_path_buf());
@@ -3197,13 +3380,13 @@ mod open_with_tests {
         w.apply_command(crate::command::FileCommand::Copy);
         assert_eq!(w.clipboard.len(), 1);
         w.open_context_menu(Point::new(10.0, 10.0));
-        let labels: Vec<String> = w
-            .context_menu
-            .items()
-            .iter()
-            .filter_map(|i| i.label().map(std::string::ToString::to_string))
-            .collect();
-        assert!(labels.contains(&"Paste".to_string()));
+        assert!(
+            w.context_menu
+                .items()
+                .iter()
+                .filter_map(|i| i.label().map(std::string::ToString::to_string))
+                .any(|label| label == "Paste")
+        );
     }
 }
 
@@ -3393,6 +3576,7 @@ mod command_path_tests {
 
     #[test]
     fn reseeding_the_rename_field_splices_only_the_changed_span() {
+        use automerge::ReadDoc;
         // Every rename re-seeds the *same* backing Text object with the new
         // entry's name. Clearing and refilling it tombstones the whole name
         // each time, so a session that renames a few dozen files pays for all
@@ -3404,7 +3588,6 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
 
-        use automerge::ReadDoc;
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         // First seed creates the object; measure growth from there.
@@ -3418,7 +3601,7 @@ mod command_path_tests {
         }
         let grown = doc.save().len() - baseline;
 
-        let obj = ensure_text_obj(&mut doc, &root, RENAME_QUERY_PATH);
+        let obj = ensure_text_obj(&mut doc, &root, RENAME_QUERY_PATH).unwrap();
         assert_eq!(
             doc.text(&obj).unwrap(),
             "report-039.txt",

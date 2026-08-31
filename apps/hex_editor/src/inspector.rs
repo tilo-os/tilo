@@ -23,11 +23,7 @@ pub struct Interpretation {
 /// Read up to `n` bytes starting at `offset` into a fixed array,
 /// returning None if the slice is too short.
 fn read_n(bytes: &[u8], offset: usize, n: usize) -> Option<Vec<u8>> {
-    if offset + n <= bytes.len() {
-        Some(bytes[offset..offset + n].to_vec())
-    } else {
-        None
-    }
+    bytes.get(offset..offset + n).map(<[u8]>::to_vec)
 }
 
 /// Order bytes per endianness so we can always treat them little-endian
@@ -70,7 +66,7 @@ pub fn decode_uleb128(bytes: &[u8], offset: usize) -> Option<(u64, usize)> {
     let mut result: u64 = 0;
     let mut shift: u32 = 0;
     let mut consumed = 0usize;
-    for &b in &bytes[offset..] {
+    for &b in bytes.get(offset..)? {
         consumed += 1;
         let low = u64::from(b & 0x7F);
         // Guard against shifting past the width of u64.
@@ -91,7 +87,7 @@ pub fn decode_sleb128(bytes: &[u8], offset: usize) -> Option<(i64, usize)> {
     let mut result: i64 = 0;
     let mut shift: u32 = 0;
     let mut consumed = 0usize;
-    for &b in &bytes[offset..] {
+    for &b in bytes.get(offset..)? {
         consumed += 1;
         if shift >= 64 {
             return None;
@@ -112,9 +108,16 @@ pub fn decode_sleb128(bytes: &[u8], offset: usize) -> Option<(i64, usize)> {
 
 /// Produce the full inspector table for the cursor at `offset`.
 pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretation> {
-    let mut rows = Vec::new();
+    let mut rows = single_byte_rows(bytes, offset);
+    rows.extend(integer_rows(bytes, offset, endian));
+    rows.extend(float_rows(bytes, offset, endian));
+    rows.extend(leb128_rows(bytes, offset));
+    rows
+}
 
-    // Single-byte views.
+/// The five single-byte views: i8, u8, bin, oct, char.
+fn single_byte_rows(bytes: &[u8], offset: usize) -> Vec<Interpretation> {
+    let mut rows = Vec::new();
     match bytes.get(offset).copied() {
         Some(b) => {
             rows.push(Interpretation {
@@ -153,65 +156,24 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
             }
         }
     }
+    rows
+}
 
-    // Multi-byte integers (endianness-aware).
-    rows.push(int_row!(
-        "i16",
-        bytes,
-        offset,
-        endian,
-        2,
-        i16,
-        i16::from_le_bytes
-    ));
-    rows.push(int_row!(
-        "u16",
-        bytes,
-        offset,
-        endian,
-        2,
-        u16,
-        u16::from_le_bytes
-    ));
-    rows.push(int_row!(
-        "i32",
-        bytes,
-        offset,
-        endian,
-        4,
-        i32,
-        i32::from_le_bytes
-    ));
-    rows.push(int_row!(
-        "u32",
-        bytes,
-        offset,
-        endian,
-        4,
-        u32,
-        u32::from_le_bytes
-    ));
-    rows.push(int_row!(
-        "i64",
-        bytes,
-        offset,
-        endian,
-        8,
-        i64,
-        i64::from_le_bytes
-    ));
-    rows.push(int_row!(
-        "u64",
-        bytes,
-        offset,
-        endian,
-        8,
-        u64,
-        u64::from_le_bytes
-    ));
+/// The six endianness-aware fixed-width integer views: i16/u16/i32/u32/i64/u64.
+fn integer_rows(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretation> {
+    vec![
+        int_row!("i16", bytes, offset, endian, 2, i16, i16::from_le_bytes),
+        int_row!("u16", bytes, offset, endian, 2, u16, u16::from_le_bytes),
+        int_row!("i32", bytes, offset, endian, 4, i32, i32::from_le_bytes),
+        int_row!("u32", bytes, offset, endian, 4, u32, u32::from_le_bytes),
+        int_row!("i64", bytes, offset, endian, 8, i64, i64::from_le_bytes),
+        int_row!("u64", bytes, offset, endian, 8, u64, u64::from_le_bytes),
+    ]
+}
 
-    // Floats.
-    rows.push(match read_n(bytes, offset, 4) {
+/// The two endianness-aware IEEE-754 float views: f32/f64.
+fn float_rows(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretation> {
+    let f32_row = match read_n(bytes, offset, 4) {
         Some(raw) => {
             let ord = ordered(raw, endian);
             let mut arr = [0u8; 4];
@@ -223,8 +185,8 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
             }
         }
         None => na("f32"),
-    });
-    rows.push(match read_n(bytes, offset, 8) {
+    };
+    let f64_row = match read_n(bytes, offset, 8) {
         Some(raw) => {
             let ord = ordered(raw, endian);
             let mut arr = [0u8; 8];
@@ -236,27 +198,29 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
             }
         }
         None => na("f64"),
-    });
+    };
+    vec![f32_row, f64_row]
+}
 
-    // LEB128 varints (endianness does not apply — byte-stream encoding).
-    rows.push(match decode_uleb128(bytes, offset) {
+/// The two byte-stream varint views (endianness does not apply).
+fn leb128_rows(bytes: &[u8], offset: usize) -> Vec<Interpretation> {
+    let uleb = match decode_uleb128(bytes, offset) {
         Some((v, n)) => Interpretation {
             label: "uleb128",
             value: v.to_string(),
             width: n,
         },
         None => na("uleb128"),
-    });
-    rows.push(match decode_sleb128(bytes, offset) {
+    };
+    let sleb = match decode_sleb128(bytes, offset) {
         Some((v, n)) => Interpretation {
             label: "sleb128",
             value: v.to_string(),
             width: n,
         },
         None => na("sleb128"),
-    });
-
-    rows
+    };
+    vec![uleb, sleb]
 }
 
 fn na(label: &'static str) -> Interpretation {
@@ -365,7 +329,7 @@ mod tests {
         // 624485 = 0xE5 0x8E 0x26 in ULEB128.
         let bytes = [0xE5, 0x8E, 0x26];
         let (v, n) = decode_uleb128(&bytes, 0).unwrap();
-        assert_eq!(v, 624485);
+        assert_eq!(v, 624_485);
         assert_eq!(n, 3);
     }
 
@@ -374,7 +338,7 @@ mod tests {
         // -123456 encodes as 0xC0 0xBB 0x78.
         let bytes = [0xC0, 0xBB, 0x78];
         let (v, n) = decode_sleb128(&bytes, 0).unwrap();
-        assert_eq!(v, -123456);
+        assert_eq!(v, -123_456);
         assert_eq!(n, 3);
     }
 

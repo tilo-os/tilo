@@ -98,7 +98,7 @@ impl FilesProvider {
             let home = home.clone();
             thread::Builder::new()
                 .name("qos-search-files-walk".into())
-                .spawn(move || walk_home(&home, name_index))
+                .spawn(move || walk_home(&home, &name_index))
                 .ok();
         }
         let tantivy = crate::shell::search::files_index::FilesIndex::open_or_create(&home).ok();
@@ -117,8 +117,45 @@ impl FilesProvider {
         let home = self.home.clone();
         thread::Builder::new()
             .name("qos-search-files-rescan".into())
-            .spawn(move || walk_home(&home, name_index))
+            .spawn(move || walk_home(&home, &name_index))
             .ok();
+    }
+
+    /// Content hits from tantivy, appended to `out` and deduped against
+    /// `seen` name hits so a file matching both only shows once (the
+    /// higher score wins). Split out of [`SearchProvider::query`] to stay
+    /// under clippy's line budget.
+    fn push_content_hits(
+        &self,
+        needle: &str,
+        seen: &HashSet<PathBuf>,
+        out: &mut Vec<SearchResult>,
+    ) {
+        let Some(idx) = self.tantivy.as_ref() else {
+            return;
+        };
+        let content_hits = idx.query(needle, MAX_RESULTS);
+        for hit in content_hits {
+            if seen.contains(&hit.path) {
+                continue;
+            }
+            if out.len() >= MAX_RESULTS {
+                break;
+            }
+            let display = hit.path.strip_prefix(&self.home).map_or_else(
+                |_| hit.path.display().to_string(),
+                |p| format!("~/{}", p.display()),
+            );
+            let entry = NameEntry {
+                path: hit.path.clone(),
+                facts: NameFacts::new(&display, None),
+                display,
+                is_dir: false,
+            };
+            // Clamp BM25 into the band the name scale reserves for it.
+            let content = hit.score.clamp(CONTENT_SCORE_MIN, CONTENT_SCORE_MAX);
+            out.push(make_result(&entry, content, hit.snippet));
+        }
     }
 }
 
@@ -161,17 +198,23 @@ impl SearchProvider for FilesProvider {
         // the first N would make ranking depend on directory traversal order.
         if let Ok(guard) = self.name_index.lock() {
             // Narrow from the previous match set when this needle extends it.
-            let mut cache = self.narrow.lock().ok();
-            let reuse: Option<&NarrowCache> = cache.as_ref().and_then(|c| c.as_ref()).filter(|c| {
-                !c.needle.is_empty()
-                    && c.generation == guard.generation
-                    && needle_lower.starts_with(&c.needle)
+            // Locked and released up front so the narrow-cache mutex isn't
+            // held across the (possibly expensive) candidate scan below.
+            let reuse_candidates: Option<Vec<usize>> = self.narrow.lock().ok().and_then(|cache| {
+                cache.as_ref().and_then(|c| {
+                    (!c.needle.is_empty()
+                        && c.generation == guard.generation
+                        && needle_lower.starts_with(&c.needle))
+                    .then(|| c.candidates.clone())
+                })
             });
             let mut candidates: Vec<usize> = Vec::new();
             let mut ranked: Vec<(i32, usize, usize)> = Vec::new();
             {
                 let mut consider = |i: usize| {
-                    let entry = &guard.entries[i];
+                    let Some(entry) = guard.entries.get(i) else {
+                        return;
+                    };
                     let Some(score) = name_score(&needle_lower, &entry.facts) else {
                         return;
                     };
@@ -183,19 +226,20 @@ impl SearchProvider for FilesProvider {
                     }
                     ranked.push((score, path_depth(&entry.facts.lower), i));
                 };
-                if let Some(c) = reuse {
-                    self.last_scanned
-                        .store(c.candidates.len(), Ordering::Relaxed);
-                    c.candidates.iter().for_each(|&i| consider(i));
+                if let Some(c) = &reuse_candidates {
+                    self.last_scanned.store(c.len(), Ordering::Relaxed);
+                    for &i in c {
+                        consider(i);
+                    }
                 } else {
                     self.last_scanned
                         .store(guard.entries.len(), Ordering::Relaxed);
                     (0..guard.entries.len()).for_each(&mut consider);
                 }
             }
-            if let Some(slot) = cache.as_mut() {
-                **slot = Some(NarrowCache {
-                    needle: needle_lower.clone(),
+            if let Ok(mut cache) = self.narrow.lock() {
+                cache.replace(NarrowCache {
+                    needle: needle_lower,
                     candidates,
                     generation: guard.generation,
                 });
@@ -204,10 +248,10 @@ impl SearchProvider for FilesProvider {
             // on path makes this a total order for the partition below.
             let cmp = |a: &(i32, usize, usize), b: &(i32, usize, usize)| {
                 b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)).then_with(|| {
-                    guard.entries[a.2]
-                        .facts
-                        .lower
-                        .cmp(&guard.entries[b.2].facts.lower)
+                    match (guard.entries.get(a.2), guard.entries.get(b.2)) {
+                        (Some(ea), Some(eb)) => ea.facts.lower.cmp(&eb.facts.lower),
+                        _ => std::cmp::Ordering::Equal,
+                    }
                 })
             };
             // Partition out the best `MAX_RESULTS`, then sort only those:
@@ -220,7 +264,9 @@ impl SearchProvider for FilesProvider {
             }
             ranked.sort_by(cmp);
             for (score, _, i) in ranked {
-                let entry = &guard.entries[i];
+                let Some(entry) = guard.entries.get(i) else {
+                    continue;
+                };
                 seen.insert(entry.path.clone());
                 out.push(make_result(entry, score, None));
             }
@@ -228,29 +274,8 @@ impl SearchProvider for FilesProvider {
 
         // Content hits from tantivy, deduped against name hits so a file
         // matching both only shows once (the higher score wins).
-        if want_file && let Some(idx) = self.tantivy.as_ref() {
-            let content_hits = idx.query(ctx.needle, MAX_RESULTS);
-            for hit in content_hits {
-                if seen.contains(&hit.path) {
-                    continue;
-                }
-                if out.len() >= MAX_RESULTS {
-                    break;
-                }
-                let display = hit.path.strip_prefix(&self.home).map_or_else(
-                    |_| hit.path.display().to_string(),
-                    |p| format!("~/{}", p.display()),
-                );
-                let entry = NameEntry {
-                    path: hit.path.clone(),
-                    facts: NameFacts::new(&display, None),
-                    display,
-                    is_dir: false,
-                };
-                // Clamp BM25 into the band the name scale reserves for it.
-                let content = hit.score.clamp(CONTENT_SCORE_MIN, CONTENT_SCORE_MAX);
-                out.push(make_result(&entry, content, hit.snippet));
-            }
+        if want_file {
+            self.push_content_hits(ctx.needle, &seen, &mut out);
         }
 
         // Final ordering across both backends: score, then shallower path.
@@ -397,11 +422,12 @@ const VENDOR_DIRS: &[&str] = &[
 
 /// Lockfiles and minified bundles: machine-written, machine-read.
 fn is_generated_leaf(leaf_lower: &str) -> bool {
-    leaf_lower.ends_with(".lock")
+    let ext = Path::new(leaf_lower).extension().and_then(|e| e.to_str());
+    ext == Some("lock")
         || leaf_lower.ends_with(".min.js")
         || leaf_lower.ends_with(".min.mjs")
         || leaf_lower.ends_with(".min.css")
-        || leaf_lower.ends_with(".map")
+        || ext == Some("map")
         || matches!(
             leaf_lower,
             "package-lock.json" | "npm-shrinkwrap.json" | "go.sum" | "pnpm-lock.yaml"
@@ -434,11 +460,12 @@ impl NameFacts {
         let leaf_orig = leaf_of(display);
         let stem_len = stem_len(&leaf_lower);
         let tokens = tokenize(leaf_orig, &leaf_lower);
-        let penalty = vendor_penalty(&lower, &leaf_lower, stem_len) + depth_penalty(&lower);
+        let penalty =
+            vendor_penalty(&lower, &leaf_lower, stem_len).saturating_add(depth_penalty(&lower));
         Self {
             leaf: leaf_lower.into_boxed_str(),
             tokens: tokens.into_boxed_slice(),
-            stem_len: stem_len.min(u16::MAX as usize) as u16,
+            stem_len: u16::try_from(stem_len).unwrap_or(u16::MAX),
             penalty,
             recency: recency_score(modified),
             lower,
@@ -448,8 +475,10 @@ impl NameFacts {
 
 /// Deduction for how far a path is buried. See [`DEPTH_FREE`].
 fn depth_penalty(lower_path: &str) -> i32 {
-    let past = path_depth(lower_path).saturating_sub(DEPTH_FREE) as i32;
-    (past * PENALTY_PER_LEVEL).min(PENALTY_DEPTH_MAX)
+    let past = path_depth(lower_path).saturating_sub(DEPTH_FREE);
+    let past = i32::try_from(past).unwrap_or(i32::MAX);
+    past.saturating_mul(PENALTY_PER_LEVEL)
+        .min(PENALTY_DEPTH_MAX)
 }
 
 fn leaf_of(path: &str) -> &str {
@@ -465,7 +494,9 @@ fn stem_len(leaf_lower: &str) -> usize {
     if dot == 0 {
         return leaf_lower.len();
     }
-    let ext = &leaf_lower[dot + 1..];
+    let Some(ext) = leaf_lower.get(dot.saturating_add(1)..) else {
+        return leaf_lower.len();
+    };
     if !ext.is_empty()
         && ext.len() <= 8
         && ext.chars().all(|c| c.is_ascii_alphanumeric())
@@ -478,7 +509,9 @@ fn stem_len(leaf_lower: &str) -> usize {
 }
 
 fn extension_of(leaf_lower: &str, stem_len: usize) -> Option<&str> {
-    (stem_len < leaf_lower.len()).then(|| &leaf_lower[stem_len + 1..])
+    (stem_len < leaf_lower.len())
+        .then(|| leaf_lower.get(stem_len.saturating_add(1)..))
+        .flatten()
 }
 
 /// Split a filename into words (byte ranges into the lowercased form).
@@ -493,10 +526,16 @@ fn tokenize(leaf_orig: &str, leaf_lower: &str) -> Vec<(u16, u16)> {
     let mut out: Vec<(u16, u16)> = Vec::new();
     let mut start: Option<usize> = None;
     for i in 0..=bytes.len() {
-        let sep = i == bytes.len() || matches!(bytes[i], b'-' | b'_' | b'.' | b' ');
+        let sep = i == bytes.len()
+            || bytes
+                .get(i)
+                .is_some_and(|&b| matches!(b, b'-' | b'_' | b'.' | b' '));
         if sep {
             if let Some(s) = start.take() {
-                out.push((s as u16, i as u16));
+                out.push((
+                    u16::try_from(s).unwrap_or(u16::MAX),
+                    u16::try_from(i).unwrap_or(u16::MAX),
+                ));
             }
             continue;
         }
@@ -506,8 +545,15 @@ fn tokenize(leaf_orig: &str, leaf_lower: &str) -> Vec<(u16, u16)> {
         }
         // Mid-run camelCase/letter-digit boundary: close and reopen at `i`.
         if camel_ok && is_word_boundary(orig, i) {
-            let s = start.replace(i).expect("start is Some in this branch");
-            out.push((s as u16, i as u16));
+            // `start` is always `Some` here — the `if start.is_none()` arm
+            // above always `continue`s — but a stray `None` just means one
+            // fewer token boundary rather than a panic.
+            if let Some(s) = start.replace(i) {
+                out.push((
+                    u16::try_from(s).unwrap_or(u16::MAX),
+                    u16::try_from(i).unwrap_or(u16::MAX),
+                ));
+            }
         }
     }
     out
@@ -518,7 +564,12 @@ fn is_word_boundary(b: &[u8], i: usize) -> bool {
     if i == 0 || i >= b.len() {
         return false;
     }
-    let (prev, cur) = (b[i - 1], b[i]);
+    let Some(prev_idx) = i.checked_sub(1) else {
+        return false;
+    };
+    let (Some(&prev), Some(&cur)) = (b.get(prev_idx), b.get(i)) else {
+        return false;
+    };
     // `openTtd` — lower/digit then upper.
     if cur.is_ascii_uppercase() && (prev.is_ascii_lowercase() || prev.is_ascii_digit()) {
         return true;
@@ -526,7 +577,8 @@ fn is_word_boundary(b: &[u8], i: usize) -> bool {
     // `HTTPServer` — the last capital of a run that starts a new word.
     if cur.is_ascii_uppercase()
         && prev.is_ascii_uppercase()
-        && b.get(i + 1).is_some_and(u8::is_ascii_lowercase)
+        && b.get(i.saturating_add(1))
+            .is_some_and(u8::is_ascii_lowercase)
     {
         return true;
     }
@@ -538,19 +590,19 @@ fn is_word_boundary(b: &[u8], i: usize) -> bool {
 /// Deduction for content that ships with software. Bounded by
 /// [`PENALTY_MAX`]; a match never disappears, it only sinks.
 fn vendor_penalty(lower_path: &str, leaf_lower: &str, stem_len: usize) -> i32 {
-    let mut p = 0;
+    let mut p: i32 = 0;
     if let Some(ext) = extension_of(leaf_lower, stem_len)
         && ASSET_EXTS.contains(&ext)
     {
-        p += PENALTY_ASSET_EXT;
+        p = p.saturating_add(PENALTY_ASSET_EXT);
     }
     if is_generated_leaf(leaf_lower) {
-        p += PENALTY_GENERATED_LEAF;
+        p = p.saturating_add(PENALTY_GENERATED_LEAF);
     }
     // Parent components only — a directory *named* `vendor` is a fine answer.
     let parent = lower_path.rsplit_once('/').map_or("", |(head, _)| head);
     if parent.split('/').any(|c| VENDOR_DIRS.contains(&c)) {
-        p += PENALTY_VENDOR_DIR;
+        p = p.saturating_add(PENALTY_VENDOR_DIR);
     }
     p.min(PENALTY_MAX)
 }
@@ -558,6 +610,7 @@ fn vendor_penalty(lower_path: &str, leaf_lower: &str, stem_len: usize) -> i32 {
 /// mtime → bounded score contribution, in bands so it's reproducible
 /// without pinning a clock. Capped so recency never outvotes the name.
 fn recency_score(modified: Option<SystemTime>) -> i32 {
+    const DAY: u64 = 86_400;
     let Some(m) = modified else {
         return 0;
     };
@@ -565,7 +618,6 @@ fn recency_score(modified: Option<SystemTime>) -> i32 {
         // Dated in the future: "just touched" is the right reading.
         return RECENCY_MAX;
     };
-    const DAY: u64 = 86_400;
     match age.as_secs() / DAY {
         0 => RECENCY_MAX,
         1..=6 => 13,
@@ -586,9 +638,20 @@ fn name_score(needle_lower: &str, facts: &NameFacts) -> Option<i32> {
     }
     let (structural, denom) = structural_match(needle_lower, facts)?;
     // Clamped at 1.0: "more than all of it" is still just all of it.
-    let ratio = (needle_lower.len() as f32 / denom.max(needle_lower.len()) as f32).min(1.0);
-    let ratio_bonus = (RATIO_WEIGHT as f32 * ratio).round() as i32;
-    let score = structural + ratio_bonus + facts.recency - facts.penalty;
+    let needle_len = u16::try_from(needle_lower.len()).unwrap_or(u16::MAX);
+    let denom_len = u16::try_from(denom.max(needle_lower.len())).unwrap_or(u16::MAX);
+    let ratio = (f32::from(needle_len) / f32::from(denom_len.max(1))).min(1.0);
+    let ratio_weight = f32::from(u16::try_from(RATIO_WEIGHT).unwrap_or(u16::MAX));
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "ratio_bonus = round(ratio_weight * ratio) is mathematically bounded to \
+                  0..=RATIO_WEIGHT (16), well inside i32"
+    )]
+    let ratio_bonus = (ratio_weight * ratio).round() as i32;
+    let score = structural
+        .saturating_add(ratio_bonus)
+        .saturating_add(facts.recency)
+        .saturating_sub(facts.penalty);
     // Floored at 1, not 0: a penalised match is a bad answer, not a hidden one.
     Some(score.clamp(1, MAX_SCORE))
 }
@@ -623,7 +686,7 @@ fn structural_match(needle: &str, facts: &NameFacts) -> Option<(i32, usize)> {
 fn leaf_tier(needle: &str, leaf: &str, stem_len: usize, tokens: &[(u16, u16)]) -> i32 {
     let mut best = STRUCT_IN_TOKEN;
     for (at, _) in leaf.match_indices(needle) {
-        let end = at + needle.len();
+        let end = at.saturating_add(needle.len());
         let starts_word = at == 0 || tokens.iter().any(|&(s, _)| s as usize == at);
         if !starts_word {
             continue;
@@ -733,7 +796,7 @@ fn spawn_open(path: &Path, _is_dir: bool) {
 /// tens of thousands of paths (`~/Spiele` alone walks to 31 168):
 /// depth-first would spend [`MAX_ENTRIES`] on whichever branch it entered
 /// first and exclude whole trees.
-fn walk_home(home: &Path, index: Arc<Mutex<NameIndex>>) {
+fn walk_home(home: &Path, index: &Arc<Mutex<NameIndex>>) {
     let entries = walk_breadth_first(home, MAX_ENTRIES);
     if let Ok(mut guard) = index.lock() {
         guard.entries = entries;
@@ -766,8 +829,9 @@ fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
             // `metadata` is the one stat, taken here off the UI thread.
             let is_dir = child.file_type().is_ok_and(|t| t.is_dir());
             let modified = child.metadata().ok().and_then(|m| m.modified().ok());
-            if is_dir && depth + 1 < MAX_DEPTH {
-                frontier.push_back((path.clone(), depth + 1));
+            let next_depth = depth.saturating_add(1);
+            if is_dir && next_depth < MAX_DEPTH {
+                frontier.push_back((path.clone(), next_depth));
             }
             let display = display_path(home, &path);
             entries.push(NameEntry {
@@ -826,6 +890,14 @@ fn display_path(home: &Path, path: &Path) -> String {
 mod tests {
     use super::*;
 
+    /// Case-insensitive-by-construction extension check for test assertions,
+    /// via `Path::extension` rather than a raw `ends_with(".ext")`.
+    fn has_ext(name: &str, ext: &str) -> bool {
+        Path::new(name)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+    }
+
     /// Facts for a path with no mtime; `aged_facts` covers the recency signal.
     fn facts(display: &str) -> NameFacts {
         NameFacts::new(display, None)
@@ -833,9 +905,10 @@ mod tests {
 
     /// Facts for a path last modified `days` ago.
     fn aged_facts(display: &str, days: u64) -> NameFacts {
+        let secs = days.saturating_mul(86_400).saturating_add(3_600);
         NameFacts::new(
             display,
-            Some(SystemTime::now() - Duration::from_secs(days * 86_400 + 3_600)),
+            SystemTime::now().checked_sub(Duration::from_secs(secs)),
         )
     }
 
@@ -891,7 +964,7 @@ mod tests {
             listing()
         );
         let doc_score = out[0].score;
-        for r in out.iter().filter(|r| r.title.ends_with(".ttf")) {
+        for r in out.iter().filter(|r| has_ext(&r.title, "ttf")) {
             assert!(
                 r.score < doc_score,
                 "{} scored {} against the document's {doc_score}: {:?}",
@@ -903,11 +976,11 @@ mod tests {
         // Below every non-asset hit, not merely the document.
         let first_font = out
             .iter()
-            .position(|r| r.title.ends_with(".ttf"))
+            .position(|r| has_ext(&r.title, "ttf"))
             .expect("the fonts are still in the results");
         let last_non_asset = out
             .iter()
-            .rposition(|r| !r.title.ends_with(".ttf") && !r.title.ends_with(".grf"))
+            .rposition(|r| !has_ext(&r.title, "ttf") && !has_ext(&r.title, "grf"))
             .expect("some non-asset hit");
         assert!(
             first_font > last_non_asset,
@@ -916,7 +989,7 @@ mod tests {
             listing()
         );
         assert_eq!(
-            out.iter().filter(|r| r.title.ends_with(".ttf")).count(),
+            out.iter().filter(|r| has_ext(&r.title, "ttf")).count(),
             4,
             "all four fonts must still be reachable: {:?}",
             listing()
@@ -959,7 +1032,12 @@ mod tests {
             let lower = s.to_lowercase();
             tokenize(s, &lower)
                 .into_iter()
-                .map(|(a, b)| lower[a as usize..b as usize].to_string())
+                .map(|(a, b)| {
+                    lower
+                        .get(a as usize..b as usize)
+                        .unwrap_or_default()
+                        .to_string()
+                })
                 .collect::<Vec<_>>()
         };
         assert_eq!(words("OpenTTD-Sans.ttf"), ["open", "ttd", "sans", "ttf"]);
@@ -1187,7 +1265,9 @@ mod tests {
                     path: PathBuf::from(display.replace('~', "/home/tester")),
                     facts: NameFacts::new(
                         display,
-                        Some(SystemTime::now() - Duration::from_secs(days * 86_400 + 3_600)),
+                        SystemTime::now().checked_sub(Duration::from_secs(
+                            days.saturating_mul(86_400).saturating_add(3_600),
+                        )),
                     ),
                     display: display.to_string(),
                     is_dir,
@@ -1300,7 +1380,8 @@ mod tests {
         let word = "component";
         let mut scanned = Vec::new();
         for end in 1..=word.len() {
-            p.query(ctx_for(&word[..end], &[ResourceKind::File], &st, &doc));
+            let prefix = word.get(..end).unwrap_or_default();
+            p.query(ctx_for(prefix, &[ResourceKind::File], &st, &doc));
             scanned.push(p.last_scanned.load(Ordering::Relaxed));
         }
 
@@ -1372,7 +1453,8 @@ mod tests {
             p.narrow.lock().unwrap().take();
             let mut warm = Vec::new();
             for end in 1..=prefix.len() {
-                warm = p.query(ctx_for(&prefix[..end], &kinds, &st, &doc));
+                let sub = prefix.get(..end).unwrap_or_default();
+                warm = p.query(ctx_for(sub, &kinds, &st, &doc));
             }
             p.narrow.lock().unwrap().take();
             let cold = p.query(ctx_for(prefix, &kinds, &st, &doc));

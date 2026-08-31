@@ -26,7 +26,10 @@ impl RgbaThumb {
     pub fn is_valid(&self) -> bool {
         self.width > 0
             && self.height > 0
-            && self.rgba.len() == (self.width as usize) * (self.height as usize) * 4
+            && self.rgba.len()
+                == (self.width as usize)
+                    .saturating_mul(self.height as usize)
+                    .saturating_mul(4)
     }
 
     /// The longest edge in pixels.
@@ -113,6 +116,17 @@ pub fn epub_cover_thumb(bytes: &[u8], max_edge: u32) -> Option<RgbaThumb> {
 }
 
 /// Common tail: cap the longest edge (only ever shrinking) and flatten to RGBA.
+///
+/// The `u32 as f32`/`f32 as u32` round-trip below is exact enough for any
+/// real image: dimensions here never come close to f32's 2^24 exact-integer
+/// range, and `.max(1)` after the truncating cast keeps the result positive
+/// even though the cast itself can't (a ratio of two positive values) go negative.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "see the function doc above"
+)]
 fn downscale_to_rgba(img: image::DynamicImage, max_edge: u32) -> Option<RgbaThumb> {
     let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 {
@@ -142,7 +156,7 @@ fn downscale_to_rgba(img: image::DynamicImage, max_edge: u32) -> Option<RgbaThum
 /// is dead code when neither `pdf` nor `video` is enabled).
 #[cfg_attr(not(any(feature = "pdf", feature = "video")), allow(dead_code))]
 pub(crate) fn rgba_to_thumb(rgba: Vec<u8>, w: u32, h: u32, max_edge: u32) -> Option<RgbaThumb> {
-    if w == 0 || h == 0 || rgba.len() != (w as usize) * (h as usize) * 4 {
+    if w == 0 || h == 0 || rgba.len() != (w as usize).saturating_mul(h as usize).saturating_mul(4) {
         return None;
     }
     let buf = image::RgbaImage::from_raw(w, h, rgba)?;
@@ -180,7 +194,10 @@ pub fn decode_png(bytes: &[u8]) -> Option<RgbaThumb> {
 /// can never make a worker allocate without bound. Returns `None` past `cap`.
 pub(crate) fn read_capped<R: Read>(mut r: R, cap: usize) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
-    let taken = (&mut r).take(cap as u64 + 1).read_to_end(&mut buf).ok()?;
+    let taken = (&mut r)
+        .take((cap as u64).saturating_add(1))
+        .read_to_end(&mut buf)
+        .ok()?;
     if taken > cap { None } else { Some(buf) }
 }
 

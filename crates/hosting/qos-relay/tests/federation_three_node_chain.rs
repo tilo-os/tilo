@@ -21,6 +21,16 @@
 //! in-process over iroh's loopback; genuine cross-machine NAT traversal
 //! is out of scope for a headless test (noted in the module docs).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
@@ -38,6 +48,61 @@ fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
         },
         _ => None,
     }
+}
+
+/// Connect B to `r3_addr`, subscribe, and drain until it converges with
+/// `doc_a` — applying live `Delta`s R3 fans out plus any `SyncResponse`,
+/// nudging a `SyncRequest` on each idle tick as a backstop. Returns B's
+/// document and whether it actually converged within the 15s budget.
+async fn drain_until_converged(
+    r3_addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    b: &crate::common::TestDevice,
+    ws: u64,
+    doc_a: &mut AutoCommit,
+) -> (AutoCommit, bool) {
+    let b_client = RelayClient::connect(
+        client_endpoint().await,
+        r3_addr,
+        user.user_pk,
+        b.cert.clone(),
+        b.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("B dial R3");
+    b_client
+        .send(Envelope::Subscribe { workspace_id: ws })
+        .unwrap();
+
+    let mut doc_b = AutoCommit::new();
+    doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
+    let _ = send_sync_request(&b_client, ws, &mut doc_b);
+
+    let mut converged = false;
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(15) {
+        match tokio::time::timeout(Duration::from_millis(400), b_client.recv()).await {
+            Ok(Some(Envelope::Delta { delta, .. })) => {
+                let _ = doc_b.load_incremental(&delta);
+            }
+            Ok(Some(Envelope::SyncResponse { delta_since, .. })) => {
+                let _ = apply_sync_response(&mut doc_b, &delta_since);
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {
+                // Idle — nudge anti-entropy against R3 again.
+                let _ = send_sync_request(&b_client, ws, &mut doc_b);
+            }
+        }
+        if !doc_b.get_heads().is_empty() && doc_b.get_heads() == doc_a.get_heads() {
+            converged = true;
+            break;
+        }
+    }
+    drop(b_client);
+    (doc_b, converged)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -104,49 +169,8 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
 
     // ---- Device on R3 must converge — only possible through the healed
     //      chain (R1 -> R2 materialize -> R3 anti-entropy). ----
-    let b_client = RelayClient::connect(
-        client_endpoint().await,
-        r3.relay.node_addr(),
-        user.user_pk,
-        b.cert.clone(),
-        b.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("B dial R3");
-    b_client
-        .send(Envelope::Subscribe { workspace_id: WS })
-        .unwrap();
-
-    // Drain everything B receives, applying live Deltas fanned out by R3
-    // (once R3 has ingested the change) and any SyncResponse; nudge a
-    // device-level SyncRequest against R3 on each idle tick as a backstop.
-    let mut doc_b = AutoCommit::new();
-    doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
-    let _ = send_sync_request(&b_client, WS, &mut doc_b);
-
-    let mut converged = false;
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(15) {
-        match tokio::time::timeout(Duration::from_millis(400), b_client.recv()).await {
-            Ok(Some(Envelope::Delta { delta, .. })) => {
-                let _ = doc_b.load_incremental(&delta);
-            }
-            Ok(Some(Envelope::SyncResponse { delta_since, .. })) => {
-                let _ = apply_sync_response(&mut doc_b, &delta_since);
-            }
-            Ok(Some(_)) => {}
-            Ok(None) => break,
-            Err(_) => {
-                // Idle — nudge anti-entropy against R3 again.
-                let _ = send_sync_request(&b_client, WS, &mut doc_b);
-            }
-        }
-        if !doc_b.get_heads().is_empty() && doc_b.get_heads() == doc_a.get_heads() {
-            converged = true;
-            break;
-        }
-    }
+    let (mut doc_b, converged) =
+        drain_until_converged(r3.relay.node_addr(), &user, &b, WS, &mut doc_a).await;
 
     assert!(
         converged,
@@ -163,7 +187,6 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
     );
 
     drop(a_client);
-    drop(b_client);
     drop(r1);
     drop(r2);
     drop(r3);

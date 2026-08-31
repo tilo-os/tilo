@@ -73,6 +73,11 @@ impl Policy {
     /// outlive a restart are written — a session-scoped grant surviving into
     /// the next session would be one the user never made (mirrors
     /// `shell/src/shell/persist.rs`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path`'s parent can't be created, or the
+    /// temporary file can't be written or renamed into place.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

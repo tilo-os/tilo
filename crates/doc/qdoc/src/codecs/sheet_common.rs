@@ -116,7 +116,7 @@ pub(crate) fn end_local_name<'a>(e: &'a quick_xml::events::BytesEnd<'a>) -> &'a 
 pub(crate) fn attr_local(e: &quick_xml::events::BytesStart, local: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
         if strip_prefix(a.key.as_ref()) == local {
-            return a.unescape_value().ok().map(std::borrow::Cow::into_owned);
+            return crate::codecs::unescape_attr(&a);
         }
     }
     None

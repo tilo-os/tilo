@@ -49,7 +49,12 @@ static POST_PROCESSOR: std::sync::Mutex<Option<Box<dyn FramePostProcess>>> =
 /// Called by an app before its window comes up. A no-op for apps that
 /// don't set one, so the shared render path is unchanged for everyone else.
 pub fn set_frame_post_processor(p: Box<dyn FramePostProcess>) {
-    *POST_PROCESSOR.lock().unwrap() = Some(p);
+    // A poisoned lock means some other caller already panicked while
+    // holding it; there's nothing safe left to do but skip installing the
+    // processor rather than taking this caller down too.
+    if let Ok(mut guard) = POST_PROCESSOR.lock() {
+        *guard = Some(p);
+    }
 }
 
 /// Compile-time `Send` check: if a future vello/wgpu version regresses the
@@ -118,23 +123,27 @@ impl RenderThreadHandle {
 }
 
 /// Channel capacities are documented at the module level.
+///
+/// # Errors
+///
+/// Returns an error if the OS refuses to spawn the `ui-render` thread (e.g.
+/// the process is out of resources for new threads).
 pub fn spawn_render_thread(
     render_cx: RenderContext,
     mut surface: RenderSurface<'static>,
     mut renderer: Renderer,
-) -> RenderThreadHandle {
-    let (render_tx, rx) = mpsc::sync_channel::<RenderRequest>(1);
+) -> Result<RenderThreadHandle, String> {
+    let (req_tx, rx) = mpsc::sync_channel::<RenderRequest>(1);
     let (scene_pool_tx, scene_pool) = mpsc::sync_channel::<Scene>(2);
     let (outcome_tx, frame_complete) = mpsc::sync_channel::<FrameOutcome>(8);
 
     // Seed the pool so main finds a Scene buffer ready on the first frame
-    // instead of allocating.
-    scene_pool_tx
-        .send(Scene::new())
-        .expect("seeded pool send must succeed");
-    scene_pool_tx
-        .send(Scene::new())
-        .expect("seeded pool send must succeed");
+    // instead of allocating. The receiver can't have been dropped yet (the
+    // handle that would own it isn't constructed until below), so a send
+    // failure here is unreachable; if it somehow happened anyway, skipping
+    // the seed only costs one extra allocation on an early frame.
+    let _ = scene_pool_tx.send(Scene::new());
+    let _ = scene_pool_tx.send(Scene::new());
 
     let pool_tx = scene_pool_tx.clone();
     let join = std::thread::Builder::new()
@@ -172,7 +181,7 @@ pub fn spawn_render_thread(
 
                 let outcome = render_one_frame(
                     &render_cx,
-                    &mut surface,
+                    &surface,
                     &mut renderer,
                     &scene,
                     width,
@@ -181,7 +190,9 @@ pub fn spawn_render_thread(
                     present_dbg,
                     frame_ix,
                 );
-                frame_ix += 1;
+                // A per-session frame counter; bounded by wall-clock session
+                // length at typical refresh rates, nowhere near `u64::MAX`.
+                frame_ix = frame_ix.saturating_add(1);
 
                 // `Scene::reset` clears the encoding without freeing the
                 // backing vecs, so main avoids a reallocation on reuse.
@@ -199,17 +210,17 @@ pub fn spawn_render_thread(
             // that order, which is the order wgpu requires (surface first
             // releases the swapchain on the instance `render_cx` owns).
         })
-        .expect("ui-render thread spawn must succeed");
+        .map_err(|e| format!("could not spawn the ui-render thread: {e}"))?;
     // pool_tx (the worker's clone) keeps the pool alive; main never sends
     // into it, so the original can be dropped.
     drop(scene_pool_tx);
 
-    RenderThreadHandle {
-        render_tx,
+    Ok(RenderThreadHandle {
+        render_tx: req_tx,
         scene_pool,
         frame_complete,
         join: Some(join),
-    }
+    })
 }
 
 /// `Surface::configure` returns no `Result` — failures go to the device's
@@ -225,7 +236,10 @@ fn configure_surface_checked(
     render_cx: &RenderContext,
     surface: &RenderSurface<'static>,
 ) -> Result<(), String> {
-    let scope = render_cx.devices[surface.dev_id]
+    let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
+        return Err("render device index out of range".to_string());
+    };
+    let scope = device_handle
         .device
         .push_error_scope(vello::wgpu::ErrorFilter::Validation);
     render_cx.configure_surface(surface);
@@ -243,7 +257,10 @@ fn resize_surface_checked(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    let scope = render_cx.devices[surface.dev_id]
+    let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
+        return Err("render device index out of range".to_string());
+    };
+    let scope = device_handle
         .device
         .push_error_scope(vello::wgpu::ErrorFilter::Validation);
     render_cx.resize_surface(surface, width, height);
@@ -260,7 +277,7 @@ fn resize_surface_checked(
 #[allow(clippy::too_many_arguments)]
 fn render_one_frame(
     render_cx: &RenderContext,
-    surface: &mut RenderSurface<'static>,
+    surface: &RenderSurface<'static>,
     renderer: &mut Renderer,
     scene: &Scene,
     width: u32,
@@ -271,7 +288,10 @@ fn render_one_frame(
 ) -> FrameOutcome {
     use std::time::Instant;
     let t_encode = present_dbg.then(Instant::now);
-    let device_handle = &render_cx.devices[surface.dev_id];
+    let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
+        tracing::info!("render device index out of range; stopping the render thread");
+        return FrameOutcome::SurfaceGone;
+    };
 
     if let Err(err) = renderer.render_to_texture(
         &device_handle.device,

@@ -95,9 +95,13 @@ impl QrWidget {
         self.quiet_modules
     }
 
-    /// Matrix + 2× quiet zone.
+    /// Matrix + 2× quiet zone. The QR spec caps `matrix_size` at 177
+    /// (version 40) and `quiet_modules` is a widget-construction constant, so
+    /// this can never realistically overflow; `saturating_*` keeps it
+    /// panic-free even so.
     pub fn total_modules(&self) -> usize {
-        self.matrix_size + 2 * self.quiet_modules
+        self.matrix_size
+            .saturating_add(self.quiet_modules.saturating_mul(2))
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -110,7 +114,8 @@ impl QrWidget {
         if x >= self.matrix_size || y >= self.matrix_size {
             return false;
         }
-        self.matrix[y * self.matrix_size + x]
+        let idx = y.saturating_mul(self.matrix_size).saturating_add(x);
+        self.matrix.get(idx).copied().unwrap_or(false)
     }
 }
 
@@ -146,6 +151,13 @@ impl Widget for QrWidget {
         );
     }
 
+    // The QR spec caps `matrix_size` at 177 (version 40) and `quiet_modules`
+    // is a small widget-construction constant, so every `usize -> f64` cast
+    // below stays far below f64's 52-bit mantissa limit.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "QR module counts are capped by the QR spec at 177"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -162,12 +174,20 @@ impl Widget for QrWidget {
 
         if let Some(err) = &self.error {
             let msg = format!("QR error: {err}");
+            // Affine composition: pure `f64` matrix multiply, cannot panic
+            // regardless of operand magnitude.
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition is float matrix math and cannot panic"
+            )]
+            let text_transform =
+                transform * Affine::translate((self.rect.x0 + 8.0, self.rect.y0 + 8.0));
             text_renderer.draw_text(
                 scene,
                 &msg,
                 12.0,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((self.rect.x0 + 8.0, self.rect.y0 + 8.0)),
+                text_transform,
                 None,
             );
             return;

@@ -113,6 +113,11 @@ impl PairingService {
     /// Failing to reach `BlueZ` is not fatal — a desktop with no Bluetooth is
     /// a desktop, so the caller logs and continues. What must never happen
     /// is the agent appearing registered when it isn't, since then pairings would silently fail with no prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connecting to `org.bluez` fails, or if `bluetoothd`
+    /// refuses to register the pairing agent.
     pub async fn start(handle: PairingPromptHandle) -> Result<Self, String> {
         let client = BluezClient::connect()
             .await

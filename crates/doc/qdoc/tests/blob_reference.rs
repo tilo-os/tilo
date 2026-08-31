@@ -10,6 +10,16 @@
 //! what replicates is what `save` produces: a test that only checked the model
 //! would still have passed while the wire carried the image.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use qdoc::Document;
 
 use crate::blobstore_fixture::serialised;

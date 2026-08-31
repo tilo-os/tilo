@@ -44,6 +44,10 @@ pub fn workspace_path(dir: &Path) -> PathBuf {
 
 /// Read the persisted Automerge bytes, if a store exists. `Ok(None)` on
 /// first launch (no file yet) — the caller seeds a fresh workspace.
+///
+/// # Errors
+/// Returns the underlying I/O error for anything other than the file simply
+/// not existing yet (e.g. a permissions problem reading the workspace file).
 pub fn load_bytes(dir: &Path) -> io::Result<Option<Vec<u8>>> {
     match std::fs::read(workspace_path(dir)) {
         Ok(b) => Ok(Some(b)),

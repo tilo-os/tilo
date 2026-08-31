@@ -100,6 +100,7 @@ impl Key {
     }
 
     /// Override this key's width weight (builder).
+    #[must_use]
     pub fn with_width(mut self, width: f32) -> Self {
         self.width = width;
         self
@@ -108,6 +109,7 @@ impl Key {
     /// Render this key with a vector [`Icon`] instead of its text label
     /// (the label is retained as the accessible/testable name). Used for the
     /// ⇧ / ⌫ / ⏎ keys, whose symbol glyphs are absent from the UI font.
+    #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
@@ -162,6 +164,7 @@ impl ShiftState {
     }
 
     /// Next state when the Shift key is tapped.
+    #[must_use]
     pub fn cycle(self) -> Self {
         match self {
             ShiftState::Off => ShiftState::Shift,
@@ -461,14 +464,14 @@ impl KeyboardLayout {
     /// [`KeyboardLayout::by_name`]).
     pub fn for_purpose(purpose: InputPurpose) -> &'static str {
         match purpose {
-            InputPurpose::Number => "numeric",
+            // Number entry, and date/time (no dedicated layout yet), are all
+            // entered as digits.
+            InputPurpose::Number | InputPurpose::Date | InputPurpose::Time => "numeric",
             InputPurpose::Decimal => "decimal",
             InputPurpose::Telephone => "phone",
             InputPurpose::Pin => "pin",
             InputPurpose::Email => "email",
             InputPurpose::Url => "url",
-            // A date/time is entered as numbers until dedicated layouts exist.
-            InputPurpose::Date | InputPurpose::Time => "numeric",
             // Passwords need every character, so they use the full keyboard.
             InputPurpose::Password | InputPurpose::Text => "qwerty",
         }

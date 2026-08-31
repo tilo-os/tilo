@@ -6,6 +6,16 @@
 //! [`ChannelGroup::add_member_with_commit`] /
 //! [`ChannelGroup::process_commit`] pair.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
 

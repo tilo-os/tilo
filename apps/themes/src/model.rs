@@ -75,16 +75,19 @@ pub fn parse_hex(s: &str) -> Option<Rgb> {
     match s.len() {
         3 => {
             let mut out = [0u8; 3];
-            for (i, ch) in s.chars().enumerate() {
+            for (slot, ch) in out.iter_mut().zip(s.chars()) {
                 let v = ch.to_digit(16)? as u8;
-                out[i] = v << 4 | v;
+                *slot = v << 4 | v;
             }
             Some(out)
         }
+        // `.get(range)` (rather than `&s[range]`) so a byte range that lands
+        // inside a multi-byte character — possible since `s` is arbitrary
+        // user-typed text at this point — yields `None` instead of panicking.
         6 => {
-            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
+            let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
+            let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
             Some([r, g, b])
         }
         _ => None,
@@ -300,13 +303,22 @@ impl ThemeSpec {
     /// free instead of inheriting the default's.
     pub fn to_theme(&self) -> Theme {
         if let Some(mut t) = builtin_theme(&self.id) {
-            t.name = self.name.clone();
-            t.tokens.typography.sans_family = self.font.clone();
+            t.name.clone_from(&self.name);
+            t.tokens.typography.sans_family.clone_from(&self.font);
             return t;
         }
 
-        Theme::from_custom_spec(&self.to_custom_spec())
-            .expect("Theme Studio keeps custom theme values in the shared schema's valid ranges")
+        // A custom theme's radius/spacing are always clamped into range by
+        // the customizer before they land here, so `from_custom_spec`
+        // rejecting a locally-authored spec should never happen — but this
+        // value can also arrive from a remote peer on an older or buggy
+        // client, so degrade to the dark base theme rather than let a bad
+        // shared document panic the previewer.
+        Theme::from_custom_spec(&self.to_custom_spec()).unwrap_or_else(|| {
+            let mut fallback = Theme::dark();
+            fallback.name.clone_from(&self.name);
+            fallback
+        })
     }
 
     /// Convert the editor artifact to the versioned runtime contract. Keeping

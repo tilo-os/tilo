@@ -6,6 +6,16 @@
 //! `TubeApp::apply`). No app-level shortcuts: a passing test means a real click
 //! at the real coordinates did the real thing.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 mod harness;
 
 use harness::Harness;
@@ -585,7 +595,7 @@ fn home_channel_avatars_render_the_fetched_photo() {
     let avatar_url = "http://test.local/avatar.png";
     let bytes = png_bytes();
     let fetch: ui::Fetcher = Arc::new(move |_url: &str| Some(bytes.clone()));
-    let store = ui::ImageStore::new(fetch);
+    let store = ui::ImageStore::new(&fetch);
     // Pre-warm so the single sync in the first frame resolves it immediately.
     let _ = store.get(avatar_url);
     store.block_until_idle(Duration::from_secs(5));
@@ -651,7 +661,7 @@ fn reconciled_avatars_render_on_the_majority_of_home_cards() {
     let avatar_url = "http://test.local/creator.png";
     let bytes = png_bytes();
     let fetch: ui::Fetcher = Arc::new(move |_u: &str| Some(bytes.clone()));
-    let store = ui::ImageStore::new(fetch);
+    let store = ui::ImageStore::new(&fetch);
     let _ = store.get(avatar_url);
     store.block_until_idle(Duration::from_secs(5));
 

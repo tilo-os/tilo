@@ -92,7 +92,11 @@ impl Diff {
     /// Changes hidden from [`Diff::substantive`]: package manager bookkeeping plus files a
     /// package's own manifest accounts for.
     pub fn explained_count(&self) -> usize {
-        self.changes.len() - self.substantive().count()
+        // `substantive` filters `changes`, so its count is always <= `changes.len()`;
+        // saturating just avoids spelling that invariant as an unchecked subtraction.
+        self.changes
+            .len()
+            .saturating_sub(self.substantive().count())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -147,6 +151,13 @@ fn is_pkg_metadata(path: &Path) -> bool {
 /// Walk `upper` and classify every entry against `base`. `base` is the lower directory the
 /// layer was stacked on, read only to answer "did this path already exist" — a missing base
 /// yields an all-`Added` diff rather than an error.
+///
+/// # Errors
+///
+/// Never returns an error today: a walk, stat or metadata failure on an individual entry is
+/// recorded as a change (an unreadable entry becomes an unknown-size addition) or skipped
+/// rather than failing the whole diff. The `Result` is kept for a future genuine failure, such
+/// as `upper` not existing at all.
 pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
     let mut changes = Vec::new();
 
@@ -170,14 +181,14 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
             }
         };
 
-        let rel = entry
-            .path()
-            .strip_prefix(upper)
-            .expect("walked under upper");
+        // Every entry WalkDir yields is nested under `upper`; treat an unexpected miss as
+        // unclassifiable rather than panicking on it.
+        let Ok(rel) = entry.path().strip_prefix(upper) else {
+            continue;
+        };
         let logical = Path::new("/").join(rel);
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
+        let Ok(meta) = entry.metadata() else {
+            continue;
         };
 
         if is_whiteout(&meta) {
@@ -256,11 +267,11 @@ fn getxattr(path: &Path, name: &str) -> Option<Vec<u8>> {
             buf.len(),
         )
     };
-    if n < 0 {
-        None
-    } else {
-        Some(buf[..n as usize].to_vec())
-    }
+    // A negative return is `lgetxattr`'s error signal (absent attribute, too-small buffer,
+    // ...); `try_from` folds that check into the same conversion that avoids an unchecked
+    // sign-losing cast.
+    let n = usize::try_from(n).ok()?;
+    buf.get(..n).map(<[u8]>::to_vec)
 }
 
 /// Read package names, and the files they claim, out of the package managers' own install

@@ -6,7 +6,7 @@
 //!   ([`DiffView`], [`MergeView`]).
 //! * The toolbar's buttons are drawn directly and hit-tested in `handle_event`.
 //! * Opening files goes through the **host** file chooser (the XDG Desktop
-//!   Portal, [`crate::portal`]) — the app never draws its own picker (HIG §5).
+//!   Portal, [`ui::portal`]) — the app never draws its own picker (HIG §5).
 //!   The chosen paths are read and re-seed the active mode (two files → diff;
 //!   the merge demo stays sample-driven since a three-way pick needs three
 //!   roots).
@@ -24,6 +24,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -34,6 +35,28 @@ use crate::merge_view::MergeView;
 use crate::samples;
 
 const TOOLBAR_H: f64 = 48.0;
+
+fn diff_open_request() -> PickRequest {
+    PickRequest::open("Open a file to compare", "Open")
+        .thread_name("diffmerge-portal-open")
+        .filter(
+            FileFilter::new("Text & source")
+                .mimetype("text/plain")
+                .glob("*.txt")
+                .glob("*.md")
+                .glob("*.rs")
+                .glob("*.toml")
+                .glob("*.json")
+                .glob("*.yaml")
+                .glob("*.yml")
+                .glob("*.c")
+                .glob("*.h")
+                .glob("*.py")
+                .glob("*.js")
+                .glob("*.ts"),
+        )
+        .all_files()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -72,7 +95,7 @@ pub struct DiffMergeApp {
     /// worker thread and hands the chosen path back over this channel, drained
     /// once per frame in [`Widget::sync`]. `None` when no picker is in flight —
     /// the app never draws its own picker (HIG §5).
-    portal_rx: Option<crate::portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
     /// Files chosen but not yet paired (first of a two-file diff selection).
     pending_left: Option<(String, String)>,
     /// A human-readable reason the last host-portal open failed, surfaced in
@@ -248,9 +271,9 @@ impl DiffMergeApp {
     /// ([`Widget::take_committed_action`]). The in-memory merge model was already
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::DiffmergeAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
         self.actions
-            .dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, &action);
+            .dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, action);
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -272,7 +295,7 @@ impl DiffMergeApp {
 
     /// Ask the host desktop's file chooser to open a file to compare. Per HIG
     /// §5 the app never draws its own picker: the portal round-trip runs on a
-    /// worker thread ([`crate::portal::request_open`]) and the chosen path
+    /// worker thread ([`ui::portal::PickRequest`]) and the chosen path
     /// comes back over a channel drained each frame in [`Self::drain_portal`].
     /// A diff needs two files, so the drain re-fires this once for the right
     /// file after the left is picked. A second request while one is in flight
@@ -282,7 +305,7 @@ impl DiffMergeApp {
             return;
         }
         self.load_error = None;
-        self.portal_rx = Some(crate::portal::request_open());
+        self.portal_rx = Some(diff_open_request().send());
         self.dirty = true;
     }
 
@@ -299,7 +322,7 @@ impl DiffMergeApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => {
+                    PortalOutcome::Opened(path) => {
                         // A `true` return means the left file just landed and
                         // the right one is still needed — fire a fresh request.
                         if self.consume_pick(&path) {
@@ -308,11 +331,11 @@ impl DiffMergeApp {
                         self.dirty = true;
                     }
                     // A cancel abandons an in-progress two-file selection.
-                    crate::portal::PortalOutcome::Cancelled => {
+                    PortalOutcome::Cancelled => {
                         self.pending_left = None;
                         self.dirty = true;
                     }
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Failed(reason) => {
                         self.pending_left = None;
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         self.dirty = true;
@@ -345,8 +368,9 @@ impl DiffMergeApp {
                 self.pending_left = Some((label, content));
                 true
             }
-            Some((llabel, lcontent)) => {
-                self.diff.set_inputs(&llabel, &lcontent, &label, &content);
+            Some((left_label, left_content)) => {
+                self.diff
+                    .set_inputs(&left_label, &left_content, &label, &content);
                 self.mode = Mode::Diff;
                 self.structure_dirty = true;
                 false
@@ -487,7 +511,7 @@ impl DiffMergeApp {
         // Poke only on a genuine change to the summary, never every frame.
         if label != self.last_status {
             self.status_bubble.poke(now);
-            self.last_status = label.clone();
+            self.last_status.clone_from(&label);
         }
 
         let text_size = 12.0f32;
@@ -520,6 +544,82 @@ impl DiffMergeApp {
         );
         ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
         scene.pop_layer();
+    }
+
+    /// Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
+    /// Returns `true` if the event was consumed.
+    fn handle_keyboard_shortcut(&mut self, event: &WindowEvent) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+
+        match logical_key {
+            Key::Character(ch) => match ch.as_str() {
+                "n" | "N" => {
+                    self.act(Action::NextChange);
+                    true
+                }
+                "p" | "P" => {
+                    self.act(Action::PrevChange);
+                    true
+                }
+                "1" => {
+                    self.act(Action::ModeDiff);
+                    true
+                }
+                "2" => {
+                    self.act(Action::ModeMerge);
+                    true
+                }
+                _ => false,
+            },
+            Key::Named(NamedKey::F8) => {
+                self.act(Action::NextChange);
+                true
+            }
+            Key::Named(NamedKey::F7) => {
+                self.act(Action::PrevChange);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Toolbar button clicks. Returns `true` if the event was consumed.
+    fn handle_toolbar_click(&mut self, event: &WindowEvent) -> bool {
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let hit = self
+            .tool_hits
+            .iter()
+            .find(|t| t.rect.contains(self.cursor))
+            .map(|t| t.action);
+        let Some(action) = hit else {
+            return false;
+        };
+        self.act(action);
+        true
+    }
+}
+
+impl Default for DiffMergeApp {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -648,72 +748,14 @@ impl Widget for DiffMergeApp {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
-        // Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            match logical_key {
-                Key::Character(ch) => match ch.as_str() {
-                    "n" | "N" => {
-                        self.act(Action::NextChange);
-                        *handled = true;
-                        return;
-                    }
-                    "p" | "P" => {
-                        self.act(Action::PrevChange);
-                        *handled = true;
-                        return;
-                    }
-                    "1" => {
-                        self.act(Action::ModeDiff);
-                        *handled = true;
-                        return;
-                    }
-                    "2" => {
-                        self.act(Action::ModeMerge);
-                        *handled = true;
-                        return;
-                    }
-                    _ => {}
-                },
-                Key::Named(NamedKey::F8) => {
-                    self.act(Action::NextChange);
-                    *handled = true;
-                    return;
-                }
-                Key::Named(NamedKey::F7) => {
-                    self.act(Action::PrevChange);
-                    *handled = true;
-                    return;
-                }
-                _ => {}
-            }
+        if self.handle_keyboard_shortcut(event) {
+            *handled = true;
+            return;
         }
 
-        // Toolbar clicks.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            let hit = self
-                .tool_hits
-                .iter()
-                .find(|t| t.rect.contains(self.cursor))
-                .map(|t| t.action);
-            if let Some(action) = hit {
-                self.act(action);
-                *handled = true;
-                return;
-            }
+        if self.handle_toolbar_click(event) {
+            *handled = true;
+            return;
         }
 
         // Route to the active view.
@@ -751,7 +793,7 @@ impl Widget for DiffMergeApp {
                 // it through the shared action path so the chip and Ctrl+K produce
                 // the same replayable action under one undo boundary.
                 if let Some(action) = self.merge.take_pending_action() {
-                    self.perform_action(state, action);
+                    self.perform_action(state, &action);
                     *handled = true;
                 }
             }
@@ -824,7 +866,7 @@ impl Widget for DiffMergeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portal::{PortalOutcome, inject_for_test};
+    use ui::portal::inject_for_test;
 
     fn app_with_state() -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
@@ -966,7 +1008,7 @@ mod tests {
             .merge
             .take_pending_action()
             .expect("a chip click queues a resolution");
-        app.perform_action(&mut state.doc, action);
+        app.perform_action(&mut state.doc, &action);
 
         assert!(
             app.last_dispatched().is_some(),
@@ -1051,7 +1093,7 @@ mod tests {
             .unwrap();
         let from_spec = match &spec.input {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
-            _ => panic!("take-theirs is immediate"),
+            qos_actions::ActionInput::Prompted { .. } => panic!("take-theirs is immediate"),
         };
 
         // Chip path: `resolve` queues the action a click builds.

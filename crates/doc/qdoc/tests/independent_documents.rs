@@ -13,6 +13,16 @@
 //! These fail against a schema whose containers are minted per replica, and pass
 //! once the schema comes from one genesis every replica already agrees on.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use qdoc::Document;
 
 /// A content-bearing document, built the way an import builds one.
@@ -67,10 +77,10 @@ fn independently_created_documents_keep_both_sides_blocks() {
 /// the image, so when that side loses there is no image block left to draw.
 #[test]
 fn an_image_survives_a_merge_with_a_document_that_has_none() {
+    const ROUNDS: usize = 64;
     // The bytes go through the process-wide blob store, which `blob_state.rs`
     // swaps out from under whatever else is running.
     let _guard = crate::blobstore_fixture::serialised();
-    const ROUNDS: usize = 64;
     let mut lost = 0usize;
 
     for _ in 0..ROUNDS {
@@ -152,7 +162,7 @@ fn a_third_participant_does_not_displace_the_first_two() {
 /// Applying a change into the document from underneath those has to keep them.
 #[test]
 fn adopting_the_schema_keeps_ops_already_pending() {
-    use automerge::{AutoCommit, ROOT, transaction::Transactable};
+    use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 
     let mut doc = AutoCommit::new();
     doc.put(&ROOT, "host_wrote_this", "before the schema existed")
@@ -172,7 +182,6 @@ fn adopting_the_schema_keeps_ops_already_pending() {
     };
     doc.commit();
 
-    use automerge::ReadDoc;
     assert_eq!(
         doc.get(&ROOT, "host_wrote_this")
             .unwrap()

@@ -434,8 +434,8 @@ impl BufferSizes {
         //
         // So they come from the `budget` instead, and the budget is
         // measured: `BumpAllocators` -- which the GPU already writes and
-        // `Renderer` now reads back every frame -- says what the frame
-        // actually used, and `BumpBudget::observe` grows to cover it.
+        // `Renderer` reads back when adaptive sizing needs a sample -- says
+        // what the frame used, and `BumpBudget::observe` grows to cover it.
         //
         // What the budget may not do is go below what the *viewport*
         // structurally requires, which is the floor applied here:
@@ -455,7 +455,7 @@ impl BufferSizes {
         //    which on a u32 underflows to near four billion if the buffer
         //    is ever sized below the scene's own info block.
         let n_tiles = width_in_tiles.max(1) * height_in_tiles.max(1);
-        let floor = BumpBudget::floor_for_viewport(n_tiles);
+        let floor = BumpBudget::floor_for_scene(n_tiles, layout.path_tags_size());
         let bin_data = BufferSize::new(
             layout
                 .bin_data_start
@@ -465,7 +465,7 @@ impl BufferSizes {
         let lines = BufferSize::new(budget.lines.max(floor.lines));
         let seg_counts = BufferSize::new(budget.seg_counts.max(floor.seg_counts));
         let segments = BufferSize::new(budget.segments.max(floor.segments));
-        // 16 * 16 (1 << 8) is one blend spill, so this allows for 1024 spills.
+        // One blend spill occupies 16 * 16 words.
         let blend_spill = BufferSize::new(budget.blend_spill.max(floor.blend_spill));
         let ptcl = BufferSize::new(
             n_tiles
@@ -519,7 +519,7 @@ const PTCL_INITIAL_ALLOC: u32 = 64;
 /// | lines      | 27943             | -        | 29377             | -        |
 /// | binning    | 1833              | 0.22     | 5592              | 0.17     |
 /// | tiles      | 115406            | 14.1     | 439039            | 13.5     |
-/// | seg_counts | 54177             | 6.6      | 123122            | 3.8      |
+/// | `seg_counts` | 54177           | 6.6      | 123122            | 3.8      |
 /// | segments   | 54177             | -        | 123122            | -        |
 /// | blend      | 0                 | -        | 0                 | -        |
 /// | ptcl (dyn) | 659200            | 80.8     | 1361664           | 42.0     |
@@ -555,6 +555,12 @@ const PTCL_INITIAL_ALLOC: u32 = 64;
 /// the old flat 65,536, and the overflow drops geometry silently.
 const FLOOR_LINES_PER_TILE: u32 = 16;
 const FLOOR_LINES_MIN: u32 = 1 << 16;
+// Flattening can emit more than one line for an encoded path tag. Dashed
+// strokes are the sharpest case in the test corpus: `longpathdash_butt`
+// encodes 503,706 segments and emits 1,054,848 lines on its first frame.
+// Three lines per tag covers that expansion without giving every small
+// scene the old fixed two-million-line reservation.
+const FLOOR_LINES_PER_PATH_TAG: u32 = 3;
 const FLOOR_BINNING: u32 = 1 << 14;
 const FLOOR_BLEND_SPILL: u32 = 1 << 14;
 const FLOOR_TILES_PER_TILE: u32 = 24;
@@ -624,10 +630,21 @@ impl BumpBudget {
     /// The least a viewport of `n_tiles` can be rendered with, per the
     /// measurements at the constants above.
     pub fn floor_for_viewport(n_tiles: u32) -> Self {
+        Self::floor_for_scene(n_tiles, 0)
+    }
+
+    /// The viewport floor, extended by the encoded path stream's known
+    /// first-frame complexity.
+    ///
+    /// Most buffers scale with screen area. Flattened lines also scale with
+    /// the amount of path data, especially for dashed strokes, and there is
+    /// no previous frame from which to learn on the first render.
+    pub fn floor_for_scene(n_tiles: u32, n_path_tags: u32) -> Self {
         Self {
             lines: n_tiles
                 .saturating_mul(FLOOR_LINES_PER_TILE)
-                .max(FLOOR_LINES_MIN),
+                .max(FLOOR_LINES_MIN)
+                .max(n_path_tags.saturating_mul(FLOOR_LINES_PER_PATH_TAG)),
             binning: FLOOR_BINNING,
             tiles: n_tiles.saturating_mul(FLOOR_TILES_PER_TILE),
             seg_counts: n_tiles
@@ -662,13 +679,11 @@ impl BumpBudget {
     /// Returns `true` if anything changed, which is the caller's cue to
     /// drop pooled buffers of the sizes that are no longer asked for.
     ///
-    /// The headroom matters because this check is a frame behind: on a
-    /// scene that grows steadily, reserving exactly what the last frame
-    /// used means the next one overflows. Doubling it means a scene has
-    /// to double in complexity between two consecutive frames to catch
-    /// this out -- and even then the frame after it is correct, which is
-    /// more than either upstream's constants or a blind fraction of them
-    /// can say.
+    /// The headroom matters because feedback arrives after the render that
+    /// produced it: reserving exactly the previous usage would repeatedly
+    /// under-provision a growing scene. A failure may prevent later stages
+    /// from reporting their final demand, so convergence is not guaranteed
+    /// in a single subsequent render.
     pub fn observe(&mut self, used: &BumpAllocators) -> bool {
         let mut changed = false;
         let mut grow = |field: &mut u32, used: u32, ceiling: u32| {
@@ -771,8 +786,8 @@ mod tests {
     /// screen.
     #[test]
     fn ptcl_floor_covers_a_clipped_foreign_surface_composite_first_frame() {
-        let width_in_tiles = 1600u32.div_ceil(16);
-        let height_in_tiles = 900u32.div_ceil(16);
+        let width_in_tiles = 1600_u32.div_ceil(16);
+        let height_in_tiles = 900_u32.div_ceil(16);
         let n_tiles = width_in_tiles * height_in_tiles;
         // BumpAllocators.ptcl measured on that frame; already excludes
         // the structural `n_tiles * PTCL_INITIAL_ALLOC` term (see
@@ -799,7 +814,7 @@ mod tests {
     /// likely to be measured and most likely to be somebody's actual desktop.
     #[test]
     fn lines_floor_scales_with_the_viewport_it_has_to_cover() {
-        let n_tiles = 1920u32.div_ceil(16) * 1080u32.div_ceil(16);
+        let n_tiles = 1920_u32.div_ceil(16) * 1080_u32.div_ceil(16);
         let measured_lines = 105_450;
         let floor = BumpBudget::floor_for_viewport(n_tiles);
         assert!(
@@ -810,13 +825,34 @@ mod tests {
         );
         // And the viewport is what decides: a desktop must reserve more than a
         // small window, or the floor is flat in disguise.
-        let small = BumpBudget::floor_for_viewport(320u32.div_ceil(16) * 240u32.div_ceil(16));
+        let small = BumpBudget::floor_for_viewport(320_u32.div_ceil(16) * 240_u32.div_ceil(16));
         assert!(
             floor.lines > small.lines,
             "a desktop reserves {} lines and a 320x240 window {} -- the floor is not \
              scaling with the viewport",
             floor.lines,
             small.lines,
+        );
+    }
+
+    /// A heavily dashed path expands to more flattened lines than its tiny
+    /// viewport predicts. This is the first-frame ask from the upstream
+    /// `longpathdash_butt` snapshot that exposed the missing scene term.
+    #[test]
+    fn lines_floor_covers_dashed_path_expansion_on_the_first_frame() {
+        let n_tiles = 440_u32.div_ceil(16) * 80_u32.div_ceil(16);
+        let encoded_path_tags = 503_706;
+        let measured_lines = 1_054_848;
+        let floor = BumpBudget::floor_for_scene(n_tiles, encoded_path_tags);
+        assert!(
+            floor.lines >= measured_lines,
+            "floor of {} lines does not cover the {measured_lines} emitted by a dashed path",
+            floor.lines,
+        );
+        assert!(
+            floor.lines < BumpBudget::UPSTREAM.lines,
+            "scene-derived floor {} fell back to upstream's fixed reservation",
+            floor.lines,
         );
     }
 
@@ -864,7 +900,13 @@ mod tests {
             s.bin_data.len(),
             layout.bin_data_start,
         );
-        let cfg = RenderConfig::new(&layout, 1920, 1080, &peniko::Color::BLACK, &BumpBudget::INITIAL);
+        let cfg = RenderConfig::new(
+            &layout,
+            1920,
+            1080,
+            &peniko::Color::BLACK,
+            &BumpBudget::INITIAL,
+        );
         assert!(
             cfg.gpu.binning_size < s.bin_data.len(),
             "binning_size {} underflowed",

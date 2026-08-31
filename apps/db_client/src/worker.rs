@@ -76,12 +76,22 @@ pub struct DbWorker {
 
 impl DbWorker {
     /// Spawn the worker thread.
+    ///
+    /// # Panics
+    /// Panics if the OS refuses to spawn a thread (extreme resource
+    /// exhaustion). Every app's root widget constructor is infallible, so
+    /// there is no fallible path back through [`crate::session::Session::new`]
+    /// / [`crate::app::DbClientApp::new`] to report a failure to instead.
+    #[allow(
+        clippy::expect_used,
+        reason = "thread spawn failure means the OS is out of resources; there is no fallible path back through Session::new/DbClientApp::new to report it, and no live app to hand back without a worker"
+    )]
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<DbRequest>();
         let (res_tx, res_rx) = std::sync::mpsc::channel::<DbReply>();
         let handle = std::thread::Builder::new()
             .name("db-worker".to_string())
-            .spawn(move || worker_loop(req_rx, res_tx))
+            .spawn(move || worker_loop(&req_rx, &res_tx))
             .expect("spawn db worker thread");
         Self {
             tx: req_tx,
@@ -147,7 +157,7 @@ impl Drop for DbWorker {
 
 /// The background loop: owns the single live engine handle and services one
 /// request at a time.
-fn worker_loop(rx: Receiver<DbRequest>, tx: Sender<DbReply>) {
+fn worker_loop(rx: &Receiver<DbRequest>, tx: &Sender<DbReply>) {
     let mut engine: Option<LiveEngine> = None;
     while let Ok(req) = rx.recv() {
         let reply = match req {

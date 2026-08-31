@@ -16,7 +16,22 @@ pub struct TerminalPalette {
 /// Mix two colours in straight (non-premultiplied) 8-bit sRGB. `t = 0` → `a`.
 fn mix8(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let l = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
+    let l = |x: u8, y: u8| {
+        // x, y are u8 channels and t is clamped to 0.0..=1.0, so this convex
+        // combination is already bounded to 0.0..=255.0; the explicit clamp
+        // just makes that provable to the lint (and immune to fp rounding
+        // at the edges) rather than changing the result.
+        let v = (f32::from(x) * (1.0 - t) + f32::from(y) * t)
+            .clamp(0.0, 255.0)
+            .round();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "v is clamped to 0.0..=255.0 immediately above, so this can never truncate or wrap"
+        )]
+        let channel = v as u8;
+        channel
+    };
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 

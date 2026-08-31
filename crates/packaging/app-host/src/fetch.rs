@@ -39,6 +39,12 @@ pub enum FetchError {
 /// `workspace_root`, when given, layers that workspace's
 /// `registries.toml` over the global config so a workspace can add or
 /// override registries.
+///
+/// # Errors
+///
+/// Returns [`FetchError::Resolve`] if resolving or downloading `app_id`
+/// fails, or [`FetchError::Install`] if the fetched qpkg fails to
+/// install (bad signature, unpack failure, or a store write error).
 pub async fn fetch_and_install(
     store: &Store,
     workspace_root: Option<&Path>,
@@ -56,6 +62,12 @@ pub async fn fetch_and_install(
 /// Resolve + download + verify the qpkg for `app_id` WITHOUT
 /// installing. Bytes are returned only after the blake3 hash and the
 /// publisher signature have been checked (fail-closed).
+///
+/// # Errors
+///
+/// Returns [`FetchError::Resolve`] if `app_id` cannot be resolved, the
+/// download fails, or the fetched bytes fail hash/signature
+/// verification.
 pub async fn fetch_remote(
     workspace_root: Option<&Path>,
     app_id: &str,

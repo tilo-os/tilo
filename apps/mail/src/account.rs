@@ -13,7 +13,7 @@
 //! ergonomic in-memory shapes the rest of the app works with — [`Account`]
 //! (an [`AccountConfig`] plus per-account sidebar state) and [`AccountStore`]
 //! (the list plus the active index) — and hydrates them from the shared store
-//! + vault ([`AccountStore::load`]). The type-specific connection settings
+//! and vault ([`AccountStore::load`]). The type-specific connection settings
 //! ([`AccountConfig`]) are serialised into each shared account's opaque
 //! `config`; the password is read back from the vault, never from the JSON.
 
@@ -175,6 +175,11 @@ impl AccountStore {
     /// (`$XDG_CONFIG_HOME/qos/accounts/`). The in-app account add/edit/remove
     /// flow calls this so accounts survive a restart; a no-op (Ok) when the
     /// config root can't be resolved (read-only environment / `--shots`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if writing the shared account store or the secret vault
+    /// fails (see [`AccountStore::persist_in`]).
     pub fn persist(&self) -> std::io::Result<()> {
         match accounts::config_root() {
             Some(root) => self.persist_in(&root),
@@ -187,6 +192,11 @@ impl AccountStore {
     /// the full write path: it upserts the current accounts, **reconciles
     /// removals** (an email account deleted in Mail is dropped from the shared
     /// store and its vault secret purged), and records the active selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the shared account store or the secret vault cannot
+    /// be written under `config_root`.
     pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
         let ty = AccountTypeId::from(TYPE_ID);
         let mut shared = SharedStore::load_in(config_root);
@@ -265,7 +275,10 @@ impl AccountStore {
     /// Add (or replace, by id) an account and make it active.
     pub fn upsert(&mut self, account: Account) {
         if let Some(idx) = self.accounts.iter().position(|a| a.id == account.id) {
-            self.accounts[idx] = account;
+            // `idx` came from `position` on this same vec, so the slot exists.
+            if let Some(slot) = self.accounts.get_mut(idx) {
+                *slot = account;
+            }
             self.active = idx;
         } else {
             self.accounts.push(account);

@@ -41,8 +41,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 use crate::doc::MapsDoc;
@@ -146,8 +146,17 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`MapsAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Maps action into a
 /// replayable envelope.
+///
+/// # Panics
+///
+/// Never panics: a `MapsAction` that fails to serialize (it never should —
+/// every field is a plain string, bool or finite coordinate) falls back to an
+/// empty-payload envelope rather than crashing the caller.
 pub fn encode(action: &MapsAction) -> EncodedAction {
-    EncodedAction::encode(MAPS_ACTION_TYPE, action).expect("MapsAction is always serializable")
+    EncodedAction::encode(MAPS_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: MAPS_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -155,7 +164,13 @@ pub fn encode(action: &MapsAction) -> EncodedAction {
 // ===========================================================================
 
 fn immediate(id: &str, label: impl Into<String>, action: &MapsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, MAPS_ACTION_TYPE, action).expect("encode maps action")
+    let label = label.into();
+    ActionSpec::immediate(id, label.clone(), MAPS_ACTION_TYPE, action).unwrap_or_else(|_| {
+        // The fallible builder's fallback. `ActionSpec`'s fields are
+        // private now that it carries typed parameters, so construct it
+        // through the constructor that takes an already-encoded action.
+        ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
+    })
 }
 
 /// A one-line label for the active route (its resolved endpoints when known).
@@ -277,7 +292,7 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 

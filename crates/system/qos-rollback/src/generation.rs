@@ -48,6 +48,11 @@ pub const CMDLINE_KEY: &str = "qos.generation";
 /// is absent; returns an error when present but unusable — an unparseable generation is a
 /// boot-chain defect, and treating it as "absent" would let a typo downgrade protection
 /// silently.
+///
+/// # Errors
+///
+/// Returns an error if [`CMDLINE_KEY`] appears with no value, appears more than once, or its
+/// value does not parse as a decimal `u64`.
 pub fn from_cmdline(cmdline: &str) -> Result<Option<u64>> {
     let mut found = None;
     for tok in cmdline.split_ascii_whitespace() {
@@ -79,6 +84,11 @@ pub fn from_cmdline(cmdline: &str) -> Result<Option<u64>> {
 }
 
 /// Read the running system's generation from `/proc/cmdline`.
+///
+/// # Errors
+///
+/// Returns an error if `/proc/cmdline` cannot be read, if it fails [`from_cmdline`]'s checks,
+/// or if it has no [`CMDLINE_KEY`] at all.
 pub fn running() -> Result<u64> {
     let cmdline = std::fs::read_to_string("/proc/cmdline").context("reading /proc/cmdline")?;
     from_cmdline(&cmdline)?.ok_or_else(|| {

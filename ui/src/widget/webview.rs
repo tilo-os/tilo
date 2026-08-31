@@ -36,6 +36,28 @@ use crate::widget::Widget;
 /// by the display factor before being sent to the engine).
 const WHEEL_LINE_PX: f64 = 40.0;
 
+/// Narrows a screen-space `f64` (view-relative pointer/scroll coordinate) to
+/// the `f32` the engine's command protocol expects.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "on-screen physical coordinates never approach f32::MAX; this narrowing is exact for every practical viewport size"
+)]
+fn to_f32(v: f64) -> f32 {
+    v as f32
+}
+
+/// Rounds a physical pixel extent to `u32`, clamping to `[0, u32::MAX]`
+/// first so a negative or absurdly large rect (a transient layout glitch)
+/// saturates instead of wrapping.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to u32's range immediately above, so the cast itself can never truncate or flip sign"
+)]
+fn round_to_u32_px(v: f64) -> u32 {
+    v.round().clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
 /// See module docs.
 pub struct WebView {
     rect: Rect,
@@ -68,6 +90,7 @@ impl WebView {
 
     /// Override the e2e test identifier (default `"webview"`), for a tree
     /// hosting several web views.
+    #[must_use]
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = id.to_string();
         self
@@ -94,14 +117,14 @@ impl WebView {
     /// Engine-space (physical, view-relative) coordinates for a logical point.
     fn to_engine(&self, p: Point) -> (f32, f32) {
         (
-            ((p.x - self.rect.x0) * f64::from(self.scale_factor)) as f32,
-            ((p.y - self.rect.y0) * f64::from(self.scale_factor)) as f32,
+            to_f32((p.x - self.rect.x0) * f64::from(self.scale_factor)),
+            to_f32((p.y - self.rect.y0) * f64::from(self.scale_factor)),
         )
     }
 
     fn send_resize_if_needed(&mut self) {
-        let w = (self.rect.width() * f64::from(self.scale_factor)).round() as u32;
-        let h = (self.rect.height() * f64::from(self.scale_factor)).round() as u32;
+        let w = round_to_u32_px(self.rect.width() * f64::from(self.scale_factor));
+        let h = round_to_u32_px(self.rect.height() * f64::from(self.scale_factor));
         if w == 0 || h == 0 || (w, h) == self.last_sent_size {
             return;
         }
@@ -202,7 +225,9 @@ impl Widget for WebView {
         if let Some(frame) = latest {
             let key = (Arc::as_ptr(&frame.rgba) as usize, frame.width, frame.height);
             if self.cached_image.is_none() || key != self.cached_key {
-                let expected = frame.width as usize * frame.height as usize * 4;
+                let expected = (frame.width as usize)
+                    .saturating_mul(frame.height as usize)
+                    .saturating_mul(4);
                 if frame.rgba.len() == expected && expected > 0 {
                     self.cached_image = Some(PenikoImage {
                         data: Blob::new(frame.rgba.clone()),
@@ -231,7 +256,7 @@ impl Widget for WebView {
             let sx = self.rect.width() / f64::from(iw);
             let sy = self.rect.height() / f64::from(ih);
             let brush_transform =
-                Affine::translate((self.rect.x0, self.rect.y0)) * Affine::scale_non_uniform(sx, sy);
+                Affine::translate((self.rect.x0, self.rect.y0)).pre_scale_non_uniform(sx, sy);
             let brush = vello::peniko::ImageBrush::new(img);
             scene.fill(
                 Fill::NonZero,
@@ -258,7 +283,7 @@ impl Widget for WebView {
         _taffy: &TaffyTree<()>,
     ) {
         if (f64::from(self.scale_factor) - scale_factor).abs() > f64::EPSILON {
-            self.scale_factor = scale_factor as f32;
+            self.scale_factor = to_f32(scale_factor);
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();
@@ -326,11 +351,11 @@ impl Widget for WebView {
                 }
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
-                        (f64::from(*x) * WHEEL_LINE_PX * scale_factor) as f32,
-                        (f64::from(*y) * WHEEL_LINE_PX * scale_factor) as f32,
+                        to_f32(f64::from(*x) * WHEEL_LINE_PX * scale_factor),
+                        to_f32(f64::from(*y) * WHEEL_LINE_PX * scale_factor),
                     ),
                     // PixelDelta is already physical.
-                    MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
+                    MouseScrollDelta::PixelDelta(p) => (to_f32(p.x), to_f32(p.y)),
                 };
                 let (x, y) = self.to_engine(self.last_mouse);
                 crate::webview::profile::record_input("scroll");
@@ -445,14 +470,14 @@ mod tests {
         (w, tree, node)
     }
 
-    fn dispatch(w: &mut WebView, tree: &TaffyTree<()>, node: NodeId, event: WindowEvent) {
+    fn dispatch(w: &mut WebView, tree: &TaffyTree<()>, node: NodeId, event: &WindowEvent) {
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
         let mut handled = false;
         let mut focus = None;
         let mods = winit::event::Modifiers::default();
         w.handle_event(
-            &event,
+            event,
             1.0,
             &mods,
             &mut state,
@@ -494,7 +519,7 @@ mod tests {
             &mut w,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device,
                 position: (50.0, 60.0).into(),
             },
@@ -503,7 +528,7 @@ mod tests {
             &mut w,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device,
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
@@ -528,7 +553,7 @@ mod tests {
             &mut w,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device,
                 position: (900.0, 900.0).into(),
             },
@@ -537,7 +562,7 @@ mod tests {
             &mut w,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device,
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
@@ -561,7 +586,7 @@ mod tests {
             &mut w,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device,
                 position: (10.0, 10.0).into(),
             },
@@ -570,7 +595,7 @@ mod tests {
             &mut w,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device,
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Back,
@@ -588,7 +613,7 @@ mod tests {
             &mut w,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device,
                 position: (10.0, 10.0).into(),
             },
@@ -597,7 +622,7 @@ mod tests {
             &mut w,
             &tree,
             node,
-            WindowEvent::MouseWheel {
+            &WindowEvent::MouseWheel {
                 device_id: device,
                 delta: MouseScrollDelta::LineDelta(0.0, -2.0),
                 phase: winit::event::TouchPhase::Moved,

@@ -31,6 +31,19 @@
 //! * [`installer_app`] — the root [`InstallerApp`] `Widget` + wizard
 //!   state machine.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod action_button;
 pub mod disk_row;
 pub mod disks;

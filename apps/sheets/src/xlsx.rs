@@ -99,6 +99,11 @@ impl SheetTable {
 }
 
 /// Read every sheet of an `.xlsx` workbook into tables.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened as a valid `.xlsx`
+/// workbook, or if a worksheet's cell or formula range cannot be read.
 pub fn read_xlsx(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
     let mut wb: calamine::Xlsx<_> = calamine::open_workbook(path)?;
     read_calamine(&mut wb)
@@ -183,12 +188,15 @@ fn strip_ods_bracket_refs(body: &str) -> String {
     let chars: Vec<char> = body.chars().collect();
     let mut out = String::new();
     let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '[' {
+    while let Some(&c) = chars.get(i) {
+        if c == '[' {
             let mut inner = String::new();
             let mut j = i + 1;
-            while j < chars.len() && chars[j] != ']' {
-                inner.push(chars[j]);
+            while let Some(&ch) = chars.get(j) {
+                if ch == ']' {
+                    break;
+                }
+                inner.push(ch);
                 j += 1;
             }
             // A range endpoint is `[.<sheet>.]A1`: keep only the part after the
@@ -196,14 +204,14 @@ fn strip_ods_bracket_refs(body: &str) -> String {
             let rewritten: Vec<String> = inner
                 .split(':')
                 .map(|part| match part.rfind('.') {
-                    Some(dot) => part[dot + 1..].to_string(),
+                    Some(dot) => part.get(dot + 1..).unwrap_or(part).to_string(),
                     None => part.to_string(),
                 })
                 .collect();
             out.push_str(&rewritten.join(":"));
             i = j + 1; // skip the closing ']' (or run to the end if unmatched)
         } else {
-            out.push(chars[i]);
+            out.push(c);
             i += 1;
         }
     }
@@ -240,6 +248,11 @@ fn cell_from_data(data: &Data) -> Option<ImportedCell> {
 /// `<f>` (with the last computed value cached); other numbers are written as
 /// numbers (with a number-format string for currency/percent/date) so the
 /// file opens cleanly in Excel/Sheets.
+///
+/// # Errors
+///
+/// Returns an error if a cell fails to write (e.g. an invalid formula) or
+/// the workbook cannot be saved to `path`.
 pub fn write_xlsx(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     let mut book = Workbook::new();
     for table in tables {

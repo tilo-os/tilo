@@ -51,6 +51,10 @@ pub(crate) fn mysql_opts(profile: &crate::model::ConnectionProfile) -> OptsBuild
 impl MySqlEngine {
     /// Open a real connection. A refused socket or a failed auth surfaces as
     /// the driver's own error string — never a fabricated success.
+    ///
+    /// # Errors
+    /// Returns the driver's error string if the TCP connection is refused or
+    /// authentication fails.
     pub fn connect(profile: &crate::model::ConnectionProfile) -> Result<Self, String> {
         let opts: Opts = mysql_opts(profile).into();
         let conn = Conn::new(opts).map_err(|e| e.to_string())?;
@@ -60,6 +64,11 @@ impl MySqlEngine {
     /// Introspect the connection's current database into the shared
     /// [`DatabaseSchema`] shape. `MySQL`'s schema namespace is the database, so
     /// this yields a single [`SchemaInfo`] named after it.
+    ///
+    /// # Errors
+    /// Returns the driver's error string if any of the underlying
+    /// `information_schema` queries (listing tables, or a table's columns,
+    /// foreign keys or indexes) fail.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let db: Option<String> = self
             .conn
@@ -194,6 +203,10 @@ impl MySqlEngine {
 
     /// Run a single SQL statement and collect the result. Empty column list
     /// means the statement was DML/DDL — reported via affected rows.
+    ///
+    /// # Errors
+    /// Returns the driver's error string if `sql` fails to execute, or if a
+    /// row can't be read back from the connection.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         let trimmed = sql.trim();
         if trimmed.is_empty() {
@@ -314,24 +327,26 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
             Ok(s) => Cell::Text(s),
             Err(e) => Cell::Blob(e.into_bytes().len()),
         },
-        Value::Date(y, mo, d, h, mi, s, us) => {
-            if h == 0 && mi == 0 && s == 0 && us == 0 {
-                Cell::Text(format!("{y:04}-{mo:02}-{d:02}"))
-            } else if us == 0 {
-                Cell::Text(format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}"))
+        Value::Date(year, month, day, hour, min, sec, micros) => {
+            if hour == 0 && min == 0 && sec == 0 && micros == 0 {
+                Cell::Text(format!("{year:04}-{month:02}-{day:02}"))
+            } else if micros == 0 {
+                Cell::Text(format!(
+                    "{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}"
+                ))
             } else {
                 Cell::Text(format!(
-                    "{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}.{us:06}"
+                    "{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}.{micros:06}"
                 ))
             }
         }
-        Value::Time(neg, days, h, mi, s, us) => {
+        Value::Time(neg, days, hour, min, sec, micros) => {
             let sign = if neg { "-" } else { "" };
-            let hours = days * 24 + u32::from(h);
-            if us == 0 {
-                Cell::Text(format!("{sign}{hours:02}:{mi:02}:{s:02}"))
+            let hours = days * 24 + u32::from(hour);
+            if micros == 0 {
+                Cell::Text(format!("{sign}{hours:02}:{min:02}:{sec:02}"))
             } else {
-                Cell::Text(format!("{sign}{hours:02}:{mi:02}:{s:02}.{us:06}"))
+                Cell::Text(format!("{sign}{hours:02}:{min:02}:{sec:02}.{micros:06}"))
             }
         }
     }

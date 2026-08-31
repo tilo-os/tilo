@@ -17,7 +17,8 @@ use automerge::{AutoCommit, ObjId};
 use std::time::Duration;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
@@ -32,6 +33,37 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(3);
 /// Default maximum number of simultaneous toasts. When the cap is
 /// exceeded by [`ToastStack::push`] the oldest entry is dropped.
 pub const DEFAULT_MAX: usize = 5;
+
+/// Widens a small on-screen count (toast count, card index) to `f64` for
+/// layout math.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a toast count/index is always tiny, far below f64's exact-integer range"
+)]
+fn idx_to_f64(n: usize) -> f64 {
+    n as f64
+}
+
+/// Narrows a screen-space `f64` (rect extent or coordinate) to the `f32`
+/// vello/text-layout math expects.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "on-screen layout coordinates never approach f32::MAX; this narrowing is exact for every practical UI extent"
+)]
+fn to_f32(v: f64) -> f32 {
+    v as f32
+}
+
+/// Floors an already-non-negative screen-space `f64` to a small on-screen
+/// index (a card position within the stack).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "callers check `v >= 0.0` first, and a card index never approaches usize::MAX"
+)]
+fn f64_to_idx(v: f64) -> usize {
+    v as usize
+}
 
 /// Severity / category of a toast. Maps to the semantic color ramp in
 /// [`crate::tokens::Colors`] for the left accent bar.
@@ -77,6 +109,9 @@ impl std::fmt::Debug for ToastStack {
             .field("toasts", &self.toasts)
             .field("max", &self.max)
             .field("default_ttl", &self.default_ttl)
+            .field("rect", &self.rect)
+            .field("hovered", &self.hovered)
+            .field("last_cursor", &self.last_cursor)
             .finish()
     }
 }
@@ -102,12 +137,14 @@ impl ToastStack {
     }
 
     /// Override the maximum number of simultaneous toasts.
+    #[must_use]
     pub fn with_max(mut self, max: usize) -> Self {
         self.max = max.max(1);
         self
     }
 
     /// Override the TTL applied to subsequently pushed toasts.
+    #[must_use]
     pub fn with_default_ttl(mut self, ttl: Duration) -> Self {
         self.default_ttl = ttl;
         self
@@ -157,9 +194,9 @@ impl ToastStack {
             return None;
         }
         let stride = TOAST_HEIGHT + TOAST_GAP;
-        let idx = (rel / stride) as usize;
+        let idx = f64_to_idx(rel / stride);
         // Reject the inter-card gap.
-        if rel - idx as f64 * stride > TOAST_HEIGHT {
+        if rel - idx_to_f64(idx) * stride > TOAST_HEIGHT {
             return None;
         }
         if idx < self.toasts.len() {
@@ -199,6 +236,15 @@ impl ToastStack {
     /// Current default TTL applied to subsequent [`Self::push`] calls.
     pub fn default_ttl(&self) -> Duration {
         self.default_ttl
+    }
+}
+
+impl<'a> IntoIterator for &'a ToastStack {
+    type Item = &'a Toast;
+    type IntoIter = std::slice::Iter<'a, Toast>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -269,26 +315,32 @@ impl<'a> ToastCard<'a> {
             actionable: false,
         }
     }
+    #[must_use]
     pub fn body(mut self, body: &'a str) -> Self {
         self.body = body;
         self
     }
+    #[must_use]
     pub fn caption(mut self, caption: &'a str) -> Self {
         self.caption = caption;
         self
     }
+    #[must_use]
     pub fn alpha(mut self, alpha: f32) -> Self {
         self.alpha = alpha.clamp(0.0, 1.0);
         self
     }
+    #[must_use]
     pub fn closable(mut self, v: bool) -> Self {
         self.closable = v;
         self
     }
+    #[must_use]
     pub fn close_hovered(mut self, v: bool) -> Self {
         self.close_hovered = v;
         self
     }
+    #[must_use]
     pub fn actionable(mut self, v: bool) -> Self {
         self.actionable = v;
         self
@@ -321,7 +373,7 @@ pub fn paint_card(
     rect: Rect,
     card: &ToastCard<'_>,
 ) -> ToastCardHit {
-    use vello::peniko::{BlendMode, Fill};
+    use crate::color_compat::ColorCompat;
     let mut hit = ToastCardHit::default();
     let a = card.alpha.clamp(0.0, 1.0);
     if rect.width() <= 0.0 || rect.height() <= 0.0 || a <= 0.0 {
@@ -332,7 +384,6 @@ pub fn paint_card(
 
     // Drop shadow from the elevation token (not ad-hoc literals), following
     // the card's own radius and fading with the card.
-    use crate::color_compat::ColorCompat;
     let mut elev = theme.tokens.elevation.e3;
     elev.color = elev.color.with_alpha_factor(a);
     crate::surface::shadow(scene, transform, rect, radius, &elev);
@@ -368,99 +419,27 @@ pub fn paint_card(
         &RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.sm)),
     );
 
-    // Dismiss (X) button — a ghost `Button` face, top-right. Wrapped in an
-    // alpha layer during the enter/exit fade because `Button::paint` has no
-    // opacity parameter of its own.
+    // Dismiss (X) button — a ghost `Button` face, top-right.
     let mut text_right = rect.x1 - CARD_PAD_X;
-    if card.closable {
-        let cx1 = rect.x1 - 6.0;
-        let cy0 = rect.y0 + 6.0;
-        let close_rect = Rect::new(cx1 - CARD_CLOSE_SIZE, cy0, cx1, cy0 + CARD_CLOSE_SIZE);
-        let faded = a < 0.999;
-        if faded {
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                a,
-                transform,
-                &RoundedRect::from_rect(close_rect, 6.0),
-            );
-        }
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(close_rect, "")
-                .ghost()
-                .icon(crate::icons::Icon::X)
-                .radius(6.0)
-                .hovered(card.close_hovered)
-                .accessible_name("Dismiss"),
-        );
-        if faded {
-            scene.pop_layer();
-        }
+    if let Some(close_rect) =
+        paint_dismiss_button(scene, transform, text_renderer, theme, rect, card, a)
+    {
         hit.close_rect = close_rect;
         text_right = close_rect.x0 - 6.0;
     }
 
     // Text column: optional attribution caption, then the title, then the
-    // optional body. The block is vertically centred so a single-line card
-    // and a three-line card both look balanced.
-    let text_x = rect.x0 + CARD_PAD_X;
-    let width_avail = (text_right - text_x).max(0.0) as f32;
-    let caption_size = theme.tokens.typography.scale.xs;
-    let title_size = theme.tokens.typography.scale.sm;
-    let body_size = theme.tokens.typography.scale.xs;
-
-    let has_caption = !card.caption.is_empty();
-    let has_body = !card.body.is_empty();
-    let cap_h = if has_caption {
-        f64::from(caption_size) + 4.0
-    } else {
-        0.0
-    };
-    let title_h = f64::from(title_size) + if has_body { 4.0 } else { 0.0 };
-    let body_h = if has_body { f64::from(body_size) } else { 0.0 };
-    let block_h = cap_h + title_h + body_h;
-    let mut ty = rect.y0 + ((rect.height() - block_h) / 2.0).max(CARD_PAD_Y);
-
-    let dim = theme.tokens.colors.text_dim.with_alpha(a);
-    let primary = theme.tokens.colors.text_primary.with_alpha(a);
-
-    if has_caption {
-        text_renderer.draw_text_weighted(
-            scene,
-            &card.caption.to_uppercase(),
-            caption_size,
-            dim,
-            transform * Affine::translate((text_x, ty)),
-            Some(width_avail),
-            TextWeight::Semibold,
-        );
-        ty += cap_h;
-    }
-    text_renderer.draw_text_weighted(
+    // optional body.
+    paint_card_text(
         scene,
-        card.title,
-        title_size,
-        primary,
-        transform * Affine::translate((text_x, ty)),
-        Some(width_avail),
-        TextWeight::Semibold,
+        transform,
+        text_renderer,
+        theme,
+        rect,
+        card,
+        text_right,
+        a,
     );
-    ty += title_h;
-    if has_body {
-        text_renderer.draw_text(
-            scene,
-            card.body,
-            body_size,
-            dim,
-            transform * Affine::translate((text_x, ty)),
-            Some(width_avail),
-        );
-    }
 
     // Actionable chevron at the trailing-bottom edge, keyed to severity.
     if card.actionable {
@@ -480,6 +459,127 @@ pub fn paint_card(
     hit
 }
 
+/// Paints the optional dismiss (`X`) button, top-right of `rect`, and
+/// returns its rect when the card is closable. Wrapped in an alpha layer
+/// during the enter/exit fade because `Button::paint` has no opacity
+/// parameter of its own.
+fn paint_dismiss_button(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    card: &ToastCard<'_>,
+    alpha: f32,
+) -> Option<Rect> {
+    if !card.closable {
+        return None;
+    }
+    let cx1 = rect.x1 - 6.0;
+    let cy0 = rect.y0 + 6.0;
+    let close_rect = Rect::new(cx1 - CARD_CLOSE_SIZE, cy0, cx1, cy0 + CARD_CLOSE_SIZE);
+    let faded = alpha < 0.999;
+    if faded {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            alpha,
+            transform,
+            &RoundedRect::from_rect(close_rect, 6.0),
+        );
+    }
+    Button::paint(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        &ButtonFace::new(close_rect, "")
+            .ghost()
+            .icon(crate::icons::Icon::X)
+            .radius(6.0)
+            .hovered(card.close_hovered)
+            .accessible_name("Dismiss"),
+    );
+    if faded {
+        scene.pop_layer();
+    }
+    Some(close_rect)
+}
+
+/// Paints the text column — optional attribution caption, then the title,
+/// then the optional body — vertically centred in `rect` between its left
+/// pad and `text_right` (the dismiss button's left edge, or the card's own
+/// right pad when there is none).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "private helper with a single call site in `paint_card`, forwarding that \
+              function's own draw parameters plus the two values it already computed"
+)]
+fn paint_card_text(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    card: &ToastCard<'_>,
+    text_right: f64,
+    alpha: f32,
+) {
+    let text_x = rect.x0 + CARD_PAD_X;
+    let width_avail = to_f32((text_right - text_x).max(0.0));
+    let caption_size = theme.tokens.typography.scale.xs;
+    let title_size = theme.tokens.typography.scale.sm;
+    let body_size = theme.tokens.typography.scale.xs;
+
+    let has_caption = !card.caption.is_empty();
+    let has_body = !card.body.is_empty();
+    let cap_h = if has_caption {
+        f64::from(caption_size) + 4.0
+    } else {
+        0.0
+    };
+    let title_h = f64::from(title_size) + if has_body { 4.0 } else { 0.0 };
+    let body_h = if has_body { f64::from(body_size) } else { 0.0 };
+    let block_h = cap_h + title_h + body_h;
+    let mut ty = rect.y0 + ((rect.height() - block_h) / 2.0).max(CARD_PAD_Y);
+
+    let dim = theme.tokens.colors.text_dim.with_alpha(alpha);
+    let primary = theme.tokens.colors.text_primary.with_alpha(alpha);
+
+    if has_caption {
+        text_renderer.draw_text_weighted(
+            scene,
+            &card.caption.to_uppercase(),
+            caption_size,
+            dim,
+            transform.pre_translate(Vec2::new(text_x, ty)),
+            Some(width_avail),
+            TextWeight::Semibold,
+        );
+        ty += cap_h;
+    }
+    text_renderer.draw_text_weighted(
+        scene,
+        card.title,
+        title_size,
+        primary,
+        transform.pre_translate(Vec2::new(text_x, ty)),
+        Some(width_avail),
+        TextWeight::Semibold,
+    );
+    ty += title_h;
+    if has_body {
+        text_renderer.draw_text(
+            scene,
+            card.body,
+            body_size,
+            dim,
+            transform.pre_translate(Vec2::new(text_x, ty)),
+            Some(width_avail),
+        );
+    }
+}
+
 impl Widget for ToastStack {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
@@ -493,8 +593,9 @@ impl Widget for ToastStack {
         let (w, h) = if n == 0 {
             (0.0f32, 0.0f32)
         } else {
-            let height = (TOAST_HEIGHT * n as f64) + (TOAST_GAP * (n.saturating_sub(1)) as f64);
-            (TOAST_WIDTH as f32, height as f32)
+            let height =
+                (TOAST_HEIGHT * idx_to_f64(n)) + (TOAST_GAP * idx_to_f64(n.saturating_sub(1)));
+            (to_f32(TOAST_WIDTH), to_f32(height))
         };
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -625,7 +726,7 @@ mod tests {
         tree.compute_layout(
             node,
             Size {
-                width: taffy::AvailableSpace::Definite(TOAST_WIDTH as f32),
+                width: taffy::AvailableSpace::Definite(to_f32(TOAST_WIDTH)),
                 height: taffy::AvailableSpace::Definite(1000.0),
             },
         )
@@ -637,7 +738,7 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
 
-    fn feed(s: &mut ToastStack, ev: WindowEvent) {
+    fn feed(s: &mut ToastStack, ev: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
         let node = tree.leaf_node(Style::default());
         let mut handled = false;
@@ -645,9 +746,9 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         s.handle_event(
-            &ev,
+            ev,
             1.0,
-            &Default::default(),
+            &winit::event::Modifiers::default(),
             &mut doc,
             &root,
             &mut handled,
@@ -756,14 +857,14 @@ mod tests {
         // Card 1 ("second") spans y ∈ [56, 104); centre ≈ (160, 80).
         feed(
             &mut s,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (160.0, 80.0).into(),
             },
         );
         feed(
             &mut s,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -806,7 +907,7 @@ mod tests {
         // Hover over the only card.
         feed(
             &mut s,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (160.0, 24.0).into(),
             },
@@ -818,7 +919,7 @@ mod tests {
         // Move away → expiry resumes.
         feed(
             &mut s,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (900.0, 900.0).into(),
             },

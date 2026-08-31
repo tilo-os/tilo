@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use ui::widget::{
     AppKind, TabDescriptor, TileContent, WIDTH_MAX_PERMILLE, WindowGroup, WindowWidth,
     max_group_px, min_group_px,
@@ -105,6 +115,11 @@ fn the_widest_setting_reaches_the_edge_of_every_display() {
 /// A manual resize is recorded as the fraction it landed on, so replaying
 /// it onto a different display gives the same share, not the same pixel count.
 #[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "pixel widths are bounded by the test's display sizes (at most 3840px), well \
+              within f32's exact-integer range"
+)]
 fn a_manual_resize_round_trips_across_displays_as_a_share() {
     // Drag the right edge of a Normal group on the 1600 px display from
     // its 1067 px out to 1200 px — three quarters of that display.
@@ -141,6 +156,11 @@ fn a_manual_resize_round_trips_across_displays_as_a_share() {
 /// The resize floor is a fraction too, with an absolute pixel backstop so
 /// a narrow display cannot yield an unusable sliver.
 #[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "pixel widths are bounded by the test's display sizes (at most 3840px), well \
+              within f32's exact-integer range"
+)]
 fn the_resize_floor_scales_with_the_display_but_never_goes_unusable() {
     // 15 % of 3840 is 576 px — the fraction dominates on a large display.
     assert_eq!(min_group_px(3840.0), 576.0);

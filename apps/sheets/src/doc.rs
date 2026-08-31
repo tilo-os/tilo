@@ -48,13 +48,37 @@ impl SheetsDoc {
         Some((c.parse().ok()?, r.parse().ok()?))
     }
 
+    /// `doc.put_object` cannot fail for a key written into a Map this module
+    /// just created or looked up moments before, within the same synchronous
+    /// mutation — no other actor can intervene while `&mut AutoCommit` is
+    /// held. The underlying API still returns `Result` to cover the general
+    /// case (e.g. a stale `ObjId` a peer deleted since the document loaded).
+    #[allow(
+        clippy::expect_used,
+        reason = "obj was just created or verified to exist in this same synchronous mutation"
+    )]
+    fn put_object_or_panic(doc: &mut AutoCommit, obj: &ObjId, prop: &str, ty: ObjType) -> ObjId {
+        doc.put_object(obj, prop, ty)
+            .expect("put_object on a freshly-verified object never fails")
+    }
+
+    /// `doc.insert_object` cannot fail for an index within `0..=len` of a
+    /// List this module just looked up within the same synchronous mutation.
+    /// See [`Self::put_object_or_panic`].
+    #[allow(
+        clippy::expect_used,
+        reason = "index and list were just established in this same synchronous mutation"
+    )]
+    fn insert_object_or_panic(doc: &mut AutoCommit, obj: &ObjId, idx: usize, ty: ObjType) -> ObjId {
+        doc.insert_object(obj, idx, ty)
+            .expect("insert_object at a freshly-verified index never fails")
+    }
+
     /// Get-or-create the top-level `wb` Map.
     pub fn wb_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "wb") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "wb", ObjType::Map)
-                .expect("put wb never fails"),
+            _ => Self::put_object_or_panic(doc, &ROOT, "wb", ObjType::Map),
         }
     }
 
@@ -63,9 +87,7 @@ impl SheetsDoc {
         let wb = Self::wb_map(doc);
         match doc.get(&wb, "sheets") {
             Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => doc
-                .put_object(&wb, "sheets", ObjType::List)
-                .expect("put sheets never fails"),
+            _ => Self::put_object_or_panic(doc, &wb, "sheets", ObjType::List),
         }
     }
 
@@ -110,9 +132,7 @@ impl SheetsDoc {
         let sheet = Self::sheet_map(doc, idx)?;
         Some(match doc.get(&sheet, "cells") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&sheet, "cells", ObjType::Map)
-                .expect("put cells never fails"),
+            _ => Self::put_object_or_panic(doc, &sheet, "cells", ObjType::Map),
         })
     }
 
@@ -120,9 +140,7 @@ impl SheetsDoc {
     pub fn add_sheet(doc: &mut AutoCommit, name: &str) -> usize {
         let sheets = Self::sheets_list(doc);
         let idx = doc.length(&sheets);
-        let sheet = doc
-            .insert_object(&sheets, idx, ObjType::Map)
-            .expect("insert sheet map never fails");
+        let sheet = Self::insert_object_or_panic(doc, &sheets, idx, ObjType::Map);
         let _ = doc.put(&sheet, "name", name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         idx
@@ -140,9 +158,7 @@ impl SheetsDoc {
     pub fn insert_sheet(doc: &mut AutoCommit, at: usize, name: &str) -> usize {
         let sheets = Self::sheets_list(doc);
         let at = at.min(doc.length(&sheets));
-        let sheet = doc
-            .insert_object(&sheets, at, ObjType::Map)
-            .expect("insert sheet map never fails");
+        let sheet = Self::insert_object_or_panic(doc, &sheets, at, ObjType::Map);
         let _ = doc.put(&sheet, "name", name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         at
@@ -190,9 +206,7 @@ impl SheetsDoc {
         let sheets = Self::sheets_list(doc);
         let _ = doc.delete(&sheets, from);
         let insert_at = to.min(len - 1);
-        let sheet = doc
-            .insert_object(&sheets, insert_at, ObjType::Map)
-            .expect("insert sheet map never fails");
+        let sheet = Self::insert_object_or_panic(doc, &sheets, insert_at, ObjType::Map);
         let _ = doc.put(&sheet, "name", &snap.name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         for (addr, raw) in &snap.raw {
@@ -281,9 +295,7 @@ impl SheetsDoc {
         }
         let cell = match doc.get(&cells, key.as_str()) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&cells, key.as_str(), ObjType::Map)
-                .expect("put cell map never fails"),
+            _ => Self::put_object_or_panic(doc, &cells, key.as_str(), ObjType::Map),
         };
         let _ = doc.put(&cell, "raw", raw);
     }
@@ -296,9 +308,7 @@ impl SheetsDoc {
         let key = Self::cell_key(addr);
         let cell = match doc.get(&cells, key.as_str()) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&cells, key.as_str(), ObjType::Map)
-                .expect("put cell map never fails"),
+            _ => Self::put_object_or_panic(doc, &cells, key.as_str(), ObjType::Map),
         };
         let _ = doc.put(&cell, "fmt", fmt.as_str());
     }
@@ -308,13 +318,11 @@ impl SheetsDoc {
         let wb = Self::wb_map(doc);
         match doc.get(&wb, "settings") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&wb, "settings", ObjType::Map)
-                .expect("put settings never fails"),
+            _ => Self::put_object_or_panic(doc, &wb, "settings", ObjType::Map),
         }
     }
 
-    fn read_str(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
+    fn read_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
         match doc.get(obj, key) {
             Ok(Some((Value::Scalar(v), _))) => v.to_str().map(std::string::ToString::to_string),
             _ => None,
@@ -327,8 +335,8 @@ impl SheetsDoc {
         let s = Self::settings_map(doc);
         DocSettings {
             currency: Self::read_str(doc, &s, "currency").and_then(|c| Currency::from_code(&c)),
-            date_format: Self::read_str(doc, &s, "date_format").and_then(parse_date_style),
-            time_format: Self::read_str(doc, &s, "time_format").and_then(parse_time_style),
+            date_format: Self::read_str(doc, &s, "date_format").and_then(|v| parse_date_style(&v)),
+            time_format: Self::read_str(doc, &s, "time_format").and_then(|v| parse_time_style(&v)),
         }
     }
 
@@ -399,9 +407,8 @@ impl SheetsDoc {
                 .unwrap_or_default(),
             _ => String::new(),
         };
-        let cells = match doc.get(&sheet, "cells") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return snap,
+        let Ok(Some((Value::Object(ObjType::Map), cells))) = doc.get(&sheet, "cells") else {
+            return snap;
         };
         for key in doc.keys(&cells) {
             let Some(addr) = Self::parse_cell_key(&key) else {
@@ -430,8 +437,8 @@ impl SheetsDoc {
     }
 }
 
-fn parse_date_style(s: String) -> Option<DateStyle> {
-    Some(match s.as_str() {
+fn parse_date_style(s: &str) -> Option<DateStyle> {
+    Some(match s {
         "ISO" => DateStyle::Iso,
         "US" => DateStyle::Us,
         "EU" => DateStyle::Eu,
@@ -447,8 +454,8 @@ fn date_style_code(s: DateStyle) -> &'static str {
         DateStyle::Long => "Long",
     }
 }
-fn parse_time_style(s: String) -> Option<TimeStyle> {
-    Some(match s.as_str() {
+fn parse_time_style(s: &str) -> Option<TimeStyle> {
+    Some(match s {
         "H24" => TimeStyle::H24,
         "H12" => TimeStyle::H12,
         _ => return None,

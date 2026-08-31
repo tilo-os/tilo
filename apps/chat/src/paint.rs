@@ -175,7 +175,9 @@ pub fn palette_color(theme: &Theme, idx: usize) -> Color {
         c.accent[7],
         c.semantic.danger,
     ];
-    ring[idx % ring.len()]
+    ring.get(idx % ring.len())
+        .copied()
+        .unwrap_or(c.text_primary)
 }
 
 /// Blend `a` toward `b` by `t` (0 = all `a`, 1 = all `b`), in sRGB.

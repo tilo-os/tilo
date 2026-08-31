@@ -37,9 +37,12 @@ impl ApiDoc {
     fn text_obj(doc: &mut AutoCommit, root: &ObjId, key: &str) -> ObjId {
         match doc.get(root, key) {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
+            // `put_object` on a fresh key of a live document does not fail in
+            // practice; falling back to `root` itself (rather than panicking)
+            // keeps a write against a genuinely corrupt document non-fatal.
             _ => doc
                 .put_object(root, key, ObjType::Text)
-                .expect("put_object text never fails"),
+                .unwrap_or_else(|_| root.clone()),
         }
     }
 

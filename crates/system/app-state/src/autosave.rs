@@ -60,28 +60,37 @@ pub struct Autosave {
 }
 
 impl Autosave {
-    /// Spawn the writer for `store`.
+    /// Spawn the writer for `store`. Thread creation can fail under resource
+    /// exhaustion; rather than panic on that, the handle comes back
+    /// [`Autosave::disabled`] with the OS error as its reason, the same
+    /// degraded-but-visible state a caller already gets when the state
+    /// directory itself couldn't be opened.
     pub fn spawn(store: DocStore, debounce: Duration) -> Self {
         let (tx, rx) = mpsc::channel::<Msg>();
         let document = store.document_path().to_path_buf();
         let package_id = store.package_id().to_string();
         let last_error = Arc::new(Mutex::new(None));
         let errs = Arc::clone(&last_error);
-        let join = thread::Builder::new()
+        match thread::Builder::new()
             .name("app-state-writer".into())
-            .spawn(move || writer_loop(rx, store, debounce, errs))
-            .expect("spawn app-state writer thread");
-        Self {
-            tx: Some(tx),
-            join: Some(join),
-            document,
-            package_id,
-            sent: Vec::new(),
-            appended: 0,
-            base: 0,
-            full_writes: 0,
-            appends: 0,
-            last_error,
+            .spawn(move || writer_loop(&rx, &store, debounce, &errs))
+        {
+            Ok(join) => Self {
+                tx: Some(tx),
+                join: Some(join),
+                document,
+                package_id,
+                sent: Vec::new(),
+                appended: 0,
+                base: 0,
+                full_writes: 0,
+                appends: 0,
+                last_error,
+            },
+            Err(e) => {
+                tracing::error!(error = %e, "could not spawn the app-state writer thread; persistence disabled");
+                Self::disabled(format!("could not spawn the app-state writer thread: {e}"))
+            }
         }
     }
 
@@ -125,7 +134,11 @@ impl Autosave {
             return;
         }
         self.sent = doc.get_heads();
-        self.base = std::fs::metadata(&self.document).map_or(0, |m| m.len() as usize);
+        // Only used to decide compact-vs-append (see `request`); a length too big for
+        // `usize` saturates rather than wrapping, which just biases toward compacting sooner.
+        self.base = std::fs::metadata(&self.document)
+            .map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX))
+            .unwrap_or(0);
         self.appended = 0;
     }
 
@@ -145,13 +158,13 @@ impl Autosave {
             let bytes = doc.save();
             self.base = bytes.len();
             self.appended = 0;
-            self.full_writes += 1;
+            self.full_writes = self.full_writes.saturating_add(1);
             let _ = tx.send(Msg::Full(bytes));
         } else {
             let delta = doc.save_after(&self.sent);
             if !delta.is_empty() {
-                self.appended += delta.len();
-                self.appends += 1;
+                self.appended = self.appended.saturating_add(delta.len());
+                self.appends = self.appends.saturating_add(1);
                 let _ = tx.send(Msg::Append(delta));
             }
         }
@@ -206,10 +219,10 @@ enum Pending {
 }
 
 fn writer_loop(
-    rx: Receiver<Msg>,
-    store: DocStore,
+    rx: &Receiver<Msg>,
+    store: &DocStore,
     debounce: Duration,
-    last_error: Arc<Mutex<Option<String>>>,
+    last_error: &Arc<Mutex<Option<String>>>,
 ) {
     let mut pending: Option<Pending> = None;
     let mut deadline: Option<Instant> = None;
@@ -233,12 +246,14 @@ fn writer_loop(
     loop {
         let timeout = match deadline {
             Some(d) => d.saturating_duration_since(Instant::now()),
-            None => Duration::from_hours(1),
+            None => Duration::from_secs(3600),
         };
         match rx.recv_timeout(timeout) {
             Ok(Msg::Full(bytes)) => {
                 pending = Some(Pending::Full(bytes));
-                deadline = Some(Instant::now() + debounce);
+                // On the extremely unlikely overflow, fall back to no deadline: the loop above
+                // then waits up to an hour and commits on that timeout instead of panicking.
+                deadline = Instant::now().checked_add(debounce);
             }
             Ok(Msg::Append(bytes)) => {
                 match pending.take() {
@@ -253,24 +268,21 @@ fn writer_loop(
                     }
                     None => pending = Some(Pending::Append(bytes)),
                 }
-                deadline = Some(Instant::now() + debounce);
+                deadline = Instant::now().checked_add(debounce);
             }
             Ok(Msg::Flush(ack)) => {
-                record(&last_error, commit(&mut pending));
+                record(last_error, commit(&mut pending));
                 deadline = None;
                 let _ = ack.send(());
             }
-            Ok(Msg::Stop) => {
-                record(&last_error, commit(&mut pending));
+            // Stopping and losing the peer both mean "shut down after one last commit" — same body.
+            Ok(Msg::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                record(last_error, commit(&mut pending));
                 return;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                record(&last_error, commit(&mut pending));
+                record(last_error, commit(&mut pending));
                 deadline = None;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                record(&last_error, commit(&mut pending));
-                return;
             }
         }
     }
@@ -322,7 +334,7 @@ mod tests {
         let mut store = DocStore::open_for("dev.qos.autosave-drop").unwrap();
         let mut doc = store.new_document();
         {
-            let mut saver = Autosave::spawn(store, Duration::from_mins(10));
+            let mut saver = Autosave::spawn(store, Duration::from_secs(600));
             saver.seed(&mut doc);
             doc.put(&ROOT, "k", "v").unwrap();
             saver.request(&mut doc);

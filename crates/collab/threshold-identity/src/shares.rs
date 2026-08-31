@@ -23,6 +23,7 @@
 use frost_ed25519::keys::{KeyPackage, SigningShare, VerifyingShare};
 use frost_ed25519::{Identifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use serde_bytes as serde_bytes_codec;
 
 use collab_types::Ed25519PublicKey;
 
@@ -92,7 +93,7 @@ pub struct RecoveryShare {
     pub group_public_key: Ed25519PublicKey,
     /// The 32-byte public verifying-share for this index, needed to rebuild
     /// a `KeyPackage` from the mnemonic alone.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub verifying_share_bytes: Vec<u8>,
 }
 
@@ -141,6 +142,13 @@ impl RecoveryShare {
     /// cross-checking threshold/identifier/group-key against the live
     /// `ThresholdIdentity` being restored into (see
     /// [`crate::identity::ThresholdIdentity::adopt_recovery_share`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::BadRecoveryMnemonic`] if the mnemonic
+    /// fails to parse or does not decode to exactly 32 bytes of
+    /// entropy, or a FROST-internal error if the resulting scalar
+    /// does not form a valid key package.
     pub fn into_secret_share(self) -> Result<SecretShare, ThresholdError> {
         // Decode the mnemonic into 32 bytes of entropy. `parse_normalized`
         // (not `parse`) avoids the unicode-normalization feature flag — our

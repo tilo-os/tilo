@@ -179,11 +179,13 @@ impl PermissionContext {
 
     /// Evaluate expiry against a fixed instant instead of the wall clock,
     /// so tests can prove a lapsed capability is dead.
+    #[must_use]
     pub fn at_unix_time(mut self, now: u64) -> Self {
         self.now = Some(now);
         self
     }
 
+    #[must_use]
     pub fn granting(mut self, cap: CapOverride) -> Self {
         self.caps.push(cap);
         self

@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::support::{MemoryRelay, headless_app, pump};
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::permissions::{Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb};
@@ -38,7 +48,7 @@ fn memory_relay_fans_out_presence_as_remote_presence_update() {
         path: vec![PathSegment::Field("body".into())],
     };
     alice.send(CollabRequest::Presence {
-        key: key,
+        key,
         payload: PresencePayload::Caret { pos: 42 },
     });
     relay.drain_peer_outbox(&alice);
@@ -138,7 +148,7 @@ fn two_apps_sync_presence_caret_via_memory_relay() {
 
 #[test]
 fn peer_pointer_position_follows_layout_change() {
-    let mut relay = MemoryRelay::new();
+    let relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
     let bob_peer = relay.attach("bob");
     let (_alice_app, _) = headless_app("alice", alice_peer);
@@ -186,7 +196,7 @@ fn terminal_write() -> PermissionScope {
 
 #[test]
 fn viewer_role_denies_terminal_edit_after_settings_applied() {
-    let mut relay = MemoryRelay::new();
+    let relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
     let (mut alice_app, _) = headless_app("alice", alice_peer);
 
@@ -203,7 +213,7 @@ fn viewer_role_denies_terminal_edit_after_settings_applied() {
 
 #[test]
 fn permission_change_from_peer_reflects_locally_after_sync() {
-    let mut relay = MemoryRelay::new();
+    let relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
     let bob_peer = relay.attach("bob");
     let (mut alice_app, _) = headless_app("alice", alice_peer);
@@ -223,7 +233,7 @@ fn permission_change_from_peer_reflects_locally_after_sync() {
 
 #[test]
 fn peer_caret_in_text_input_renders_on_remote_app() {
-    let mut relay = MemoryRelay::new();
+    let relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
     let bob_peer = relay.attach("bob");
     let (_alice_app, _) = headless_app("alice", alice_peer);
@@ -264,6 +274,8 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
 
 #[test]
 fn crdt_incremental_deltas_replay_on_remote_peer() {
+    use automerge::ReadDoc;
+
     // Alice makes a concrete CRDT mutation, serializes the delta via
     // `save_incremental`, and fires it through the relay; bob's app must
     // apply the bytes to his own doc so they converge.
@@ -276,8 +288,8 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
     // In production a widget would mutate the doc as part of event
     // handling — done directly here to keep the test self-contained.
     {
-        let state = alice_app.state_mut_for_test();
         use automerge::transaction::Transactable;
+        let state = alice_app.state_mut_for_test();
         state
             .doc
             .put(automerge::ROOT, "hello", "from alice")
@@ -303,7 +315,6 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
     }
     assert!(applied, "bob must receive the CRDTIncremental event");
 
-    use automerge::ReadDoc;
     let state = bob_app.state_mut_for_test();
     let got = state
         .doc
@@ -322,7 +333,7 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
 fn peer_tab_switch_moves_the_presence_dot() {
     // When a peer announces Arrived on one Tab key and then another, the
     // dot must *move*, not accumulate into a trail of ghost dots.
-    let mut relay = MemoryRelay::new();
+    let relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
     let bob_peer = relay.attach("bob");
     let (_alice_app, _) = headless_app("alice", alice_peer);

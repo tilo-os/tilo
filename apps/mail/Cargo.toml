@@ -2,6 +2,8 @@
 name = "mail"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "mail"
@@ -30,7 +32,6 @@ uuid.workspace = true
 # without ever touching the user's real account store under `~/.config/qos`.
 tempfile.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

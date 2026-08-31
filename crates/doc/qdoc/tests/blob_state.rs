@@ -9,6 +9,16 @@
 //! states rather than an `Option`, and this pins them against the real store and
 //! the real transport hook.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::sync::{Arc, Mutex};
 
 use qdoc::Document;
@@ -36,6 +46,10 @@ struct RecordingTransport {
     offered: Mutex<Vec<String>>,
 }
 
+#[allow(
+    clippy::unwrap_used,
+    reason = "test helper: a poisoned lock should propagate its panic, not be swallowed"
+)]
 impl BlobTransport for RecordingTransport {
     fn offer(&self, hash: &str, _bytes: &[u8]) {
         self.offered.lock().unwrap().push(hash.to_string());
@@ -55,7 +69,7 @@ fn a_reference_whose_content_is_coming_reads_as_pending_and_then_resolved() {
     let store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::default());
     blobstore::set_store(Arc::clone(&store));
     let transport = Arc::new(RecordingTransport::default());
-    blobstore::set_transport(Arc::clone(&transport) as Arc<dyn BlobTransport>);
+    blobstore::set_transport(&(Arc::clone(&transport) as Arc<dyn BlobTransport>));
 
     let doc = Document::new();
 
@@ -114,7 +128,7 @@ fn content_this_machine_stored_itself_is_resolved_and_offered_onward() {
     let store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::default());
     blobstore::set_store(Arc::clone(&store));
     let transport = Arc::new(RecordingTransport::default());
-    blobstore::set_transport(Arc::clone(&transport) as Arc<dyn BlobTransport>);
+    blobstore::set_transport(&(Arc::clone(&transport) as Arc<dyn BlobTransport>));
 
     let mut doc = Document::new();
     let bytes = png();

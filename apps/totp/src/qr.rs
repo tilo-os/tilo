@@ -18,6 +18,11 @@ use std::path::Path;
 /// Returns the decoded payload string — for an authenticator export this is
 /// the `otpauth://` URI. `Err` carries a short, user-facing reason: the file
 /// couldn't be read/decoded as an image, or no QR code was found in it.
+///
+/// # Errors
+/// Returns `Err` with a short, user-facing reason when `path` can't be
+/// opened or decoded as an image, when no QR grid is found in it, or when a
+/// grid is found but its content can't be decoded.
 pub fn decode_image_file(path: &Path) -> Result<String, String> {
     let img = image::open(path).map_err(|e| format!("Couldn\u{2019}t open image: {e}"))?;
     decode_luma(img.to_luma8())
@@ -28,6 +33,11 @@ pub fn decode_image_file(path: &Path) -> Result<String, String> {
 /// The shared core of the ingestion path: the file importer feeds it a
 /// decoded screenshot. Returns the payload string, or a short reason when no
 /// readable QR grid is present.
+///
+/// # Errors
+/// Returns `Err` with a short, user-facing reason when no QR grid is
+/// detected in `luma`, or when every detected grid fails to decode (or
+/// decodes to an empty payload).
 pub fn decode_luma(luma: image::GrayImage) -> Result<String, String> {
     let mut prepared = rqrr::PreparedImage::prepare(luma);
     let grids = prepared.detect_grids();

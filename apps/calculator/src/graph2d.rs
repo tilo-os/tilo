@@ -259,11 +259,11 @@ impl Graph2dScreen {
     fn measure_cards(&mut self, model: &CalcModel, tr: &mut TextRenderer) {
         self.sync_fields(model);
         self.card_heights.clear();
-        for i in 0..model.funcs.len() {
-            let content_h = if self.fields[i].is_empty() {
+        for field in &mut self.fields {
+            let content_h = if field.is_empty() {
                 crate::mathfield::CARD_MIN_H
             } else {
-                self.fields[i].content_height(tr)
+                field.content_height(tr)
             };
             let field_h = crate::mathfield::card_view_height(content_h);
             self.card_heights.push(field_h + 2.0 * CARD_PAD_Y);
@@ -346,7 +346,6 @@ impl Graph2dScreen {
         // rows before painting anything that depends on their rects.
         self.measure_cards(model, tr);
         self.layout(area, model);
-        let c = &theme.tokens.colors;
 
         // Advance the smooth-zoom ease one frame toward the model target. The
         // eased `view` (== model when settled) drives the grid + trace so they
@@ -354,15 +353,7 @@ impl Graph2dScreen {
         self.zoom.tick(model.view2d, theme.reduce_motion);
         let view = self.zoom.display();
 
-        // ----- canvas -------------------------------------------------------
-        draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
-        self.draw_grid(scene, t, tr, theme, &view);
-        self.draw_curves(scene, t, theme, model);
-        if let Some(p) = trace {
-            self.draw_trace(scene, t, tr, theme, model, p, &view);
-        }
-        // canvas frame
-        draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
+        self.draw_canvas(scene, t, tr, theme, model, (trace, &view));
 
         // Collapsed overlay: nothing but a floating toggle over the plot.
         if self.panel == Rect::ZERO {
@@ -381,7 +372,49 @@ impl Graph2dScreen {
             );
         }
 
-        // ----- function panel ----------------------------------------------
+        self.draw_panel_header(scene, t, tr, theme);
+        self.draw_function_rows(scene, t, tr, theme, model);
+        self.draw_add_button(scene, t, tr, theme);
+        self.draw_info_readout(scene, t, tr, theme, model, trace);
+
+        // Overlay drawer keeps a "Hide" chip in its header so it can be
+        // dismissed without hunting for the scrim.
+        if self.overlay {
+            self.draw_toggle(scene, t, tr, theme);
+        }
+    }
+
+    /// The plot canvas: background, grid, curves, the trace crosshair (if
+    /// any), and the frame stroke.
+    fn draw_canvas(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+        trace_view: (Option<Point>, &View2d),
+    ) {
+        let (trace, view) = trace_view;
+        let c = &theme.tokens.colors;
+        draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
+        self.draw_grid(scene, t, tr, theme, view);
+        self.draw_curves(scene, t, theme, model);
+        if let Some(p) = trace {
+            self.draw_trace(scene, t, tr, theme, model, (p, view));
+        }
+        draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
+    }
+
+    /// The function panel's background + "Functions" header.
+    fn draw_panel_header(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
         let panel_bg = if self.overlay {
             c.surfaces.raised
         } else {
@@ -430,11 +463,29 @@ impl Graph2dScreen {
             Align::Left,
             TextWeight::Regular,
         );
+    }
 
-        // Editors are already reconciled + measured by `measure_cards` above.
+    /// One row per saved function: background, colour swatch, "y =" prefix,
+    /// the math editor (or its placeholder), and the visibility dot.
+    /// Editors are already reconciled + measured by `measure_cards`.
+    fn draw_function_rows(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+    ) {
+        let c = &theme.tokens.colors;
         for i in 0..model.funcs.len() {
-            let f = &model.funcs[i];
-            let r = self.row_rects[i];
+            let (Some(f), Some(&r), Some(&edit), Some(&vr)) = (
+                model.funcs.get(i),
+                self.row_rects.get(i),
+                self.edit_rects.get(i),
+                self.vis_rects.get(i),
+            ) else {
+                continue;
+            };
             let active = i == model.active_fn;
             if active {
                 draw::fill_rrect(
@@ -485,9 +536,10 @@ impl Graph2dScreen {
                 Align::Left,
                 TextWeight::Medium,
             );
-            let edit = self.edit_rects[i];
             let visible = f.visible;
-            let empty = self.fields[i].is_empty();
+            let Some(empty) = self.fields.get(i).map(MathField::is_empty) else {
+                continue;
+            };
             if empty && !active {
                 let pr = Rect::new(edit.x0 + 4.0, edit.y0, edit.x1, edit.y1);
                 draw::text_in(
@@ -501,13 +553,12 @@ impl Graph2dScreen {
                     Align::Left,
                     TextWeight::Regular,
                 );
-            } else {
-                self.fields[i].set_rect(edit, tr);
+            } else if let Some(field) = self.fields.get_mut(i) {
+                field.set_rect(edit, tr);
                 let fld_col = if visible { txt_col } else { c.text_dim };
-                self.fields[i].draw(scene, t, tr, theme, fld_col, active);
+                field.draw(scene, t, tr, theme, fld_col, active);
             }
             // visibility dot
-            let vr = self.vis_rects[i];
             let vis_col = if f.visible { col } else { c.neutral[3] };
             draw::stroke_rrect(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
             if f.visible {
@@ -515,8 +566,11 @@ impl Graph2dScreen {
                 draw::fill_rrect(scene, t, inner, inner.height() / 2.0, vis_col);
             }
         }
+    }
 
-        // add button
+    /// The "+ Add function" button below the row list.
+    fn draw_add_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
         draw::fill_rrect(scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::stroke_rrect(scene, t, self.add_rect, 8.0, c.border_standard, 1.0);
         draw::text_in(
@@ -530,8 +584,20 @@ impl Graph2dScreen {
             Align::Center,
             TextWeight::Medium,
         );
+    }
 
-        // view + trace readout
+    /// The view/trace readout card below the add button: pan center, zoom,
+    /// and either the traced `f(x)` value or a hint line.
+    fn draw_info_readout(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+        trace: Option<Point>,
+    ) {
+        let c = &theme.tokens.colors;
         let info_y = self.add_rect.y1 + 16.0;
         let info = Rect::new(
             self.panel.x0 + 16.0,
@@ -615,12 +681,6 @@ impl Graph2dScreen {
                 Align::Left,
                 TextWeight::Regular,
             );
-        }
-
-        // Overlay drawer keeps a "Hide" chip in its header so it can be
-        // dismissed without hunting for the scrim.
-        if self.overlay {
-            self.draw_toggle(scene, t, tr, theme);
         }
     }
 
@@ -736,6 +796,7 @@ impl Graph2dScreen {
         let right = self.to_world(Point::new(self.canvas.x1, 0.0), v).x;
         let top = self.to_world(Point::new(0.0, self.canvas.y0), v).y;
         let bottom = self.to_world(Point::new(0.0, self.canvas.y1), v).y;
+        let bounds = (left, right, bottom, top);
 
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -745,61 +806,63 @@ impl Graph2dScreen {
             &self.canvas,
         );
 
-        // minor gridlines
-        let minor_col = draw::with_alpha(c.neutral[2], 120);
-        for k in line_indices(left, right, minor) {
-            let x = k as f64 * minor;
-            let p = self.to_screen(x, 0.0, v).x;
-            draw::line(
-                scene,
-                t,
-                Point::new(p, self.canvas.y0),
-                Point::new(p, self.canvas.y1),
-                minor_col,
-                1.0,
-            );
-        }
-        for k in line_indices(bottom, top, minor) {
-            let y = k as f64 * minor;
-            let p = self.to_screen(0.0, y, v).y;
-            draw::line(
-                scene,
-                t,
-                Point::new(self.canvas.x0, p),
-                Point::new(self.canvas.x1, p),
-                minor_col,
-                1.0,
-            );
-        }
-        // major gridlines
-        let major_col = c.neutral[3];
-        for k in line_indices(left, right, step) {
-            let x = k as f64 * step;
-            let p = self.to_screen(x, 0.0, v).x;
-            draw::line(
-                scene,
-                t,
-                Point::new(p, self.canvas.y0),
-                Point::new(p, self.canvas.y1),
-                major_col,
-                1.0,
-            );
-        }
-        for k in line_indices(bottom, top, step) {
-            let y = k as f64 * step;
-            let p = self.to_screen(0.0, y, v).y;
-            draw::line(
-                scene,
-                t,
-                Point::new(self.canvas.x0, p),
-                Point::new(self.canvas.x1, p),
-                major_col,
-                1.0,
-            );
-        }
+        self.draw_grid_lines(
+            scene,
+            t,
+            v,
+            draw::with_alpha(c.neutral[2], 120),
+            bounds,
+            minor,
+        );
+        self.draw_grid_lines(scene, t, v, c.neutral[3], bounds, step);
+        let origin = self.draw_grid_axes(scene, t, v, c.neutral[5]);
+        self.draw_grid_labels(scene, t, tr, (v, c.text_dim), bounds, (step, origin));
 
-        // axes
-        let axis_col = c.neutral[5];
+        scene.pop_layer();
+    }
+
+    /// One set of evenly-spaced grid lines (minor or major, depending on
+    /// `spacing`) across the world-space `bounds` (`left, right, bottom,
+    /// top`).
+    fn draw_grid_lines(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        v: &View2d,
+        color: Color,
+        bounds: (f64, f64, f64, f64),
+        spacing: f64,
+    ) {
+        let (left, right, bottom, top) = bounds;
+        for k in line_indices(left, right, spacing) {
+            let wx = k as f64 * spacing;
+            let px = self.to_screen(wx, 0.0, v).x;
+            draw::line(
+                scene,
+                t,
+                Point::new(px, self.canvas.y0),
+                Point::new(px, self.canvas.y1),
+                color,
+                1.0,
+            );
+        }
+        for k in line_indices(bottom, top, spacing) {
+            let wy = k as f64 * spacing;
+            let py = self.to_screen(0.0, wy, v).y;
+            draw::line(
+                scene,
+                t,
+                Point::new(self.canvas.x0, py),
+                Point::new(self.canvas.x1, py),
+                color,
+                1.0,
+            );
+        }
+    }
+
+    /// The x/y axis lines (only drawn where the origin falls inside the
+    /// canvas). Returns the origin in screen space, for the label pass.
+    fn draw_grid_axes(&self, scene: &mut Scene, t: Affine, v: &View2d, color: Color) -> Point {
         let origin = self.to_screen(0.0, 0.0, v);
         if origin.y >= self.canvas.y0 && origin.y <= self.canvas.y1 {
             draw::line(
@@ -807,7 +870,7 @@ impl Graph2dScreen {
                 t,
                 Point::new(self.canvas.x0, origin.y),
                 Point::new(self.canvas.x1, origin.y),
-                axis_col,
+                color,
                 1.6,
             );
         }
@@ -817,28 +880,43 @@ impl Graph2dScreen {
                 t,
                 Point::new(origin.x, self.canvas.y0),
                 Point::new(origin.x, self.canvas.y1),
-                axis_col,
+                color,
                 1.6,
             );
         }
+        origin
+    }
 
-        // numeric labels at majors
+    /// Numeric tick labels along both axes at the major grid step.
+    fn draw_grid_labels(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        view_style: (&View2d, Color),
+        bounds: (f64, f64, f64, f64),
+        grid_state: (f64, Point),
+    ) {
+        let (v, color) = view_style;
+        let (left, right, bottom, top) = bounds;
+        let (step, origin) = grid_state;
+
         let label_y = (origin.y + 4.0).clamp(self.canvas.y0 + 2.0, self.canvas.y1 - 18.0);
         for k in line_indices(left, right, step) {
             if k == 0 {
                 continue;
             }
-            let x = k as f64 * step;
-            let p = self.to_screen(x, 0.0, v).x;
-            let r = Rect::new(p + 3.0, label_y, p + 60.0, label_y + 16.0);
+            let wx = k as f64 * step;
+            let px = self.to_screen(wx, 0.0, v).x;
+            let r = Rect::new(px + 3.0, label_y, px + 60.0, label_y + 16.0);
             draw::text_in(
                 scene,
                 tr,
                 t,
                 r,
-                &fmt_tick(x, step),
+                &fmt_tick(wx, step),
                 11.0,
-                c.text_dim,
+                color,
                 Align::Left,
                 TextWeight::Regular,
             );
@@ -848,22 +926,21 @@ impl Graph2dScreen {
             if k == 0 {
                 continue;
             }
-            let y = k as f64 * step;
-            let p = self.to_screen(0.0, y, v).y;
-            let r = Rect::new(label_x, p - 16.0, label_x + 60.0, p);
+            let wy = k as f64 * step;
+            let py = self.to_screen(0.0, wy, v).y;
+            let r = Rect::new(label_x, py - 16.0, label_x + 60.0, py);
             draw::text_in(
                 scene,
                 tr,
                 t,
                 r,
-                &fmt_tick(y, step),
+                &fmt_tick(wy, step),
                 11.0,
-                c.text_dim,
+                color,
                 Align::Left,
                 TextWeight::Regular,
             );
         }
-        scene.pop_layer();
     }
 
     fn draw_curves(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
@@ -924,21 +1001,23 @@ impl Graph2dScreen {
             if !f.visible || f.expr.trim().is_empty() {
                 continue;
             }
-            let comp = match engine::compile(&f.expr, model.deg, false) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let Ok(comp) = engine::compile(&f.expr, model.deg, false) else {
+                continue;
             };
             let mut path = BezPath::new();
             let mut pen_down = false;
             let mut prev_wy = f64::NAN;
-            let mut sx = self.canvas.x0;
-            while sx <= self.canvas.x1 {
+            // Sample every 1.5px column. Iterating an integer step count
+            // (rather than a `while sx <= x1` float loop) keeps the last
+            // column reachable regardless of float rounding.
+            let steps = ((self.canvas.x1 - self.canvas.x0) / 1.5).floor().max(0.0) as usize;
+            for step in 0..=steps {
+                let sx = self.canvas.x0 + step as f64 * 1.5;
                 let wx = self.to_world(Point::new(sx, 0.0), v).x;
                 let wy = comp.eval1(wx);
                 if !wy.is_finite() {
                     pen_down = false;
                     prev_wy = f64::NAN;
-                    sx += 1.5;
                     continue;
                 }
                 // asymptote break: large jump with a sign flip
@@ -957,7 +1036,6 @@ impl Graph2dScreen {
                     pen_down = true;
                 }
                 prev_wy = wy;
-                sx += 1.5;
             }
             paths.push(CurvePath { series: i, path });
         }
@@ -973,9 +1051,9 @@ impl Graph2dScreen {
         tr: &mut TextRenderer,
         theme: &Theme,
         model: &CalcModel,
-        p: Point,
-        v: &View2d,
+        trace_at: (Point, &View2d),
     ) {
+        let (p, v) = trace_at;
         if !self.canvas.contains(p) {
             return;
         }
@@ -1002,9 +1080,9 @@ impl Graph2dScreen {
             let dot = self.to_screen(wx, wy, v);
             if dot.y >= self.canvas.y0 && dot.y <= self.canvas.y1 {
                 let col = series_color(theme, model.active_fn);
-                let r = Rect::new(dot.x - 5.0, dot.y - 5.0, dot.x + 5.0, dot.y + 5.0);
-                draw::fill_rrect(scene, t, r, 5.0, col);
-                draw::stroke_rrect(scene, t, r, 5.0, Color::WHITE, 1.5);
+                let dot_r = Rect::new(dot.x - 5.0, dot.y - 5.0, dot.x + 5.0, dot.y + 5.0);
+                draw::fill_rrect(scene, t, dot_r, 5.0, col);
+                draw::stroke_rrect(scene, t, dot_r, 5.0, Color::WHITE, 1.5);
             }
             // readout chip near the top
             let label = format!(
@@ -1012,11 +1090,11 @@ impl Graph2dScreen {
                 engine::format_number(wx),
                 engine::format_number(wy)
             );
-            let (w, _h) = tr.measure_weighted(&label, 13.0, None, TextWeight::Semibold);
+            let (label_w, _h) = tr.measure_weighted(&label, 13.0, None, TextWeight::Semibold);
             let chip = Rect::new(
                 sx + 8.0,
                 self.canvas.y0 + 10.0,
-                sx + 8.0 + f64::from(w) + 20.0,
+                sx + 8.0 + f64::from(label_w) + 20.0,
                 self.canvas.y0 + 36.0,
             );
             let chip = clamp_rect_x(chip, self.canvas);
@@ -1135,7 +1213,7 @@ mod tests {
         assert!(!s.overlay, "wide window docks the panel");
         assert!(s.panel_open);
         assert!(
-            s.panel.width() > 0.0 && s.panel.x0 == area.x0,
+            s.panel.width() > 0.0 && (s.panel.x0 - area.x0).abs() < f64::EPSILON,
             "docked panel on the left"
         );
         assert!(

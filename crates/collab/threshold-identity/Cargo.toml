@@ -4,6 +4,8 @@ autotests = false
 name = "threshold-identity"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "threshold_identity"
@@ -39,26 +41,14 @@ rand_core.workspace = true
 # Standard wire-serialisation stack (mirrors qos-collab-types).
 serde.workspace = true
 serde_bytes.workspace = true
-postcard = { workspace = true, features = ["alloc"] }
 
 # Error plumbing.
 thiserror.workspace = true
-
-# Defence-in-depth: explicit zeroize on secret-material drop. The
-# `frost-core::SigningKey`/`SecretShare` types already implement
-# `ZeroizeOnDrop`, but we add a `Drop` for the public wrapper so the
-# whole `SecretShare` newtype is wiped even if the consumer somehow
-# memcpys it.
-zeroize = { workspace = true, features = ["derive"] }
 
 # BIP39 mnemonic encoder/decoder for the paper recovery share. Default
 # wordlist is English (2048 words, 11 bits/word; 24 words → 256 bits
 # of entropy + 8-bit checksum). Fixed at 2.x to avoid breaking changes.
 bip39.workspace = true
-
-# Hex encoding for the public-metadata part of the recovery share
-# card. Tiny dep; pinned to a stable major.
-hex.workspace = true
 
 # SHA-512 for the pairing-transcript hash (matches the hash
 # function used in FROST(Ed25519, SHA-512), which is already a

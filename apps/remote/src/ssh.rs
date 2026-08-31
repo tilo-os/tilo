@@ -12,8 +12,8 @@
 //! never falls back to a fabricated terminal.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail};
@@ -54,6 +54,12 @@ pub struct SshConfig {
 ///
 /// Split out from the environment so it can be tested without mutating
 /// process-global state.
+///
+/// # Errors
+///
+/// Returns an error if key auth is requested and neither `REMOTE_SSH_KEY`
+/// nor any default identity file exists, or if password auth is requested
+/// and `REMOTE_SSH_PASSWORD` is unset.
 pub fn resolve_auth(
     prefer_key: bool,
     get: impl Fn(&str) -> Option<String>,
@@ -86,7 +92,7 @@ pub fn default_key_paths() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
-    ["id_ed25519", "id_ecdsa", "id_rsa"]
+    ["id_ed25519", "id_ecdsa"]
         .iter()
         .map(|n| home.join(".ssh").join(n))
         .collect()
@@ -107,7 +113,12 @@ impl SshSession {
     /// Start connecting. Returns immediately with a handle whose status is
     /// `Connecting`; the background thread advances it to `Connected` or
     /// `Failed(reason)`.
-    pub fn connect(cfg: SshConfig) -> SshSession {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system refuses to spawn the
+    /// background worker thread.
+    pub fn connect(cfg: SshConfig) -> anyhow::Result<SshSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let (output_tx, output_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let (input_tx, input_rx) = unbounded_channel::<Vec<u8>>();
@@ -123,7 +134,7 @@ impl SshSession {
                 {
                     Ok(rt) => rt,
                     Err(e) => {
-                        *status_worker.lock().unwrap() =
+                        *lock_recover(&status_worker) =
                             SessionStatus::Failed(format!("runtime: {e}"));
                         return;
                     }
@@ -132,40 +143,34 @@ impl SshSession {
                     if let Err(e) =
                         run_session(cfg, status_worker.clone(), output_tx, input_rx).await
                     {
-                        let mut s = status_worker.lock().unwrap();
+                        let mut s = lock_recover(&status_worker);
                         if !matches!(*s, SessionStatus::Failed(_)) {
                             *s = SessionStatus::Failed(e.to_string());
                         }
                     }
                 });
-            })
-            .expect("spawn remote-ssh worker");
+            })?;
 
-        SshSession {
+        Ok(SshSession {
             grid,
             status,
             output_rx,
             input_tx,
             _worker: worker,
-        }
+        })
     }
 
     pub fn status(&self) -> SessionStatus {
-        self.status.lock().unwrap().clone()
+        lock_recover(&self.status).clone()
     }
 
     /// Drain any pending remote output into the grid. Returns true if the
     /// grid changed (so the UI knows to repaint).
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
-        loop {
-            match self.output_rx.try_recv() {
-                Ok(bytes) => {
-                    self.grid.feed(&bytes);
-                    changed = true;
-                }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(bytes) = self.output_rx.try_recv() {
+            self.grid.feed(&bytes);
+            changed = true;
         }
         changed
     }
@@ -180,6 +185,13 @@ impl SshSession {
     }
 }
 
+/// Locks `m`, recovering a poisoned mutex instead of panicking: one
+/// worker thread's earlier panic must not cascade into every later read
+/// of shared session state.
+fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The russh client event handler. We accept the server's host key
 /// trust-on-first-use — there is no `known_hosts` verification yet, which is
 /// why live sessions stay gated behind `REMOTE_LIVE_SESSIONS`.
@@ -190,7 +202,7 @@ impl client::Handler for Handler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        _server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
@@ -205,7 +217,7 @@ async fn run_session(
     mut input_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
 ) -> anyhow::Result<()> {
     let config = Arc::new(client::Config {
-        inactivity_timeout: Some(Duration::from_hours(1)),
+        inactivity_timeout: Some(Duration::from_secs(3600)),
         ..Default::default()
     });
 
@@ -249,28 +261,24 @@ async fn run_session(
         .await?;
     channel.request_shell(true).await?;
 
-    *status.lock().unwrap() = SessionStatus::Connected;
+    *lock_recover(&status) = SessionStatus::Connected;
 
     let mut channel = channel;
     loop {
         tokio::select! {
             msg = channel.wait() => match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    if output_tx.send(data.to_vec()).is_err() { break; }
-                }
-                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
                     if output_tx.send(data.to_vec()).is_err() { break; }
                 }
                 Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
                 _ => {}
             },
-            input = input_rx.recv() => match input {
-                Some(bytes) => { channel.data(&bytes[..]).await?; }
+            input = input_rx.recv() => if let Some(bytes) = input {
+                channel.data(&bytes[..]).await?;
+            } else {
                 // UI dropped the sender → tear the session down cleanly.
-                None => {
-                    let _ = channel.eof().await;
-                    break;
-                }
+                let _ = channel.eof().await;
+                break;
             },
         }
     }
@@ -278,9 +286,11 @@ async fn run_session(
     let _ = session
         .disconnect(Disconnect::ByApplication, "", "en")
         .await;
-    let mut s = status.lock().unwrap();
-    if *s == SessionStatus::Connected {
-        *s = SessionStatus::Closed;
+    {
+        let mut s = lock_recover(&status);
+        if *s == SessionStatus::Connected {
+            *s = SessionStatus::Closed;
+        }
     }
     Ok(())
 }
@@ -294,7 +304,7 @@ mod tests {
         let env = |k: &str| (k == "REMOTE_SSH_PASSWORD").then(|| "hunter2".to_string());
         match resolve_auth(false, env, &[]).unwrap() {
             SshAuth::Password(p) => assert_eq!(p, "hunter2"),
-            other => panic!("expected password auth, got {other:?}"),
+            other @ SshAuth::Key { .. } => panic!("expected password auth, got {other:?}"),
         }
     }
 
@@ -316,7 +326,7 @@ mod tests {
                 assert_eq!(path, PathBuf::from("/keys/explicit"));
                 assert_eq!(passphrase.as_deref(), Some("pw"));
             }
-            other => panic!("expected key auth, got {other:?}"),
+            other @ SshAuth::Password(_) => panic!("expected key auth, got {other:?}"),
         }
     }
 
@@ -335,7 +345,7 @@ mod tests {
     // into the grid, and that a keystroke sent upstream is echoed back.
 
     use russh::server::{self, Auth, Msg, Server as _, Session};
-    use russh::{Channel, ChannelId, CryptoVec};
+    use russh::{Channel, ChannelId};
 
     #[derive(Clone)]
     struct TestServer;
@@ -363,9 +373,11 @@ mod tests {
         async fn channel_open_session(
             &mut self,
             _channel: Channel<Msg>,
+            reply: server::ChannelOpenHandle,
             _session: &mut Session,
-        ) -> Result<bool, Self::Error> {
-            Ok(true)
+        ) -> Result<(), Self::Error> {
+            reply.accept().await;
+            Ok(())
         }
 
         async fn shell_request(
@@ -374,7 +386,7 @@ mod tests {
             session: &mut Session,
         ) -> Result<(), Self::Error> {
             session.channel_success(channel)?;
-            session.data(channel, CryptoVec::from(b"qos-remote ready\r\n".to_vec()))?;
+            session.data(channel, b"qos-remote ready\r\n".to_vec())?;
             Ok(())
         }
 
@@ -388,7 +400,7 @@ mod tests {
             // pipe works end-to-end.
             let mut echo = b"echo:".to_vec();
             echo.extend_from_slice(data);
-            session.data(channel, CryptoVec::from(echo))?;
+            session.data(channel, echo)?;
             Ok(())
         }
     }
@@ -440,7 +452,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             auth: SshAuth::Password("secret".into()),
             cols: 80,
             rows: 24,
-        });
+        })
+        .expect("the mock ssh transport connects");
 
         // Poll to Connected.
         let mut connected = false;

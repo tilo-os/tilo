@@ -43,7 +43,7 @@ impl FeedKind {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_key(s: &str) -> Self {
         match s {
             "atom" => FeedKind::Atom,
             "json" => FeedKind::Json,
@@ -184,7 +184,7 @@ impl ReadTheme {
             ReadTheme::Dark => "dark",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_key(s: &str) -> Self {
         match s {
             "sepia" => ReadTheme::Sepia,
             "dark" => ReadTheme::Dark,
@@ -222,7 +222,7 @@ impl ReadFont {
             ReadFont::Mono => "mono",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_key(s: &str) -> Self {
         match s {
             "serif" => ReadFont::Serif,
             "mono" => ReadFont::Mono,
@@ -230,6 +230,7 @@ impl ReadFont {
         }
     }
     /// Cycle Sans → Serif → Mono → Sans (for the cycle button).
+    #[must_use]
     pub fn next(self) -> Self {
         match self {
             ReadFont::Sans => ReadFont::Serif,
@@ -277,6 +278,7 @@ impl ReadSettings {
         };
         (Self::BASE_SIZE * mult * self.font_scale).round()
     }
+    #[must_use]
     pub fn clamped(mut self) -> Self {
         self.font_scale = self.font_scale.clamp(Self::FONT_MIN, Self::FONT_MAX);
         self
@@ -375,10 +377,7 @@ impl Store {
             Filter::Unread => !a.read,
             Filter::Starred => a.starred,
             Filter::Feed(id) => a.feed_id == id,
-            Filter::Folder(fid) => self
-                .feed(a.feed_id)
-                .map(|f| f.folder == Some(fid))
-                .unwrap_or(false),
+            Filter::Folder(fid) => self.feed(a.feed_id).is_some_and(|f| f.folder == Some(fid)),
         }
     }
 
@@ -415,11 +414,11 @@ impl Store {
     // --- mutations -------------------------------------------------------
 
     pub fn mark_read(&mut self, id: Id, read: bool) -> bool {
-        if let Some(a) = self.article_mut(id) {
-            if a.read != read {
-                a.read = read;
-                return true;
-            }
+        if let Some(a) = self.article_mut(id)
+            && a.read != read
+        {
+            a.read = read;
+            return true;
         }
         false
     }
@@ -506,21 +505,20 @@ impl Store {
             .filter(|f| f.folder == folder)
             .map(|f| f.order)
             .max()
-            .map(|m| m + 1)
-            .unwrap_or(0)
+            .map_or(0, |m| m + 1)
     }
 }
 
 /// Format an epoch-seconds timestamp as a compact relative string
 /// ("3h", "2d", "Mar 14"). `now` is passed so it's testable.
 pub fn relative_time(published: i64, now: i64) -> String {
+    const MIN: i64 = 60;
+    const HOUR: i64 = 60 * MIN;
+    const DAY: i64 = 24 * HOUR;
     if published <= 0 {
         return "—".to_string();
     }
     let delta = (now - published).max(0);
-    const MIN: i64 = 60;
-    const HOUR: i64 = 60 * MIN;
-    const DAY: i64 = 24 * HOUR;
     if delta < MIN {
         "now".to_string()
     } else if delta < HOUR {
@@ -637,7 +635,7 @@ mod tests {
         s.upsert_feed(feed(f, None));
         let a = art(Uuid::new_v4(), f, false, false, 1);
         assert!(s.insert_article_dedup(a.clone()));
-        let mut a2 = a.clone();
+        let mut a2 = a;
         a2.id = Uuid::new_v4();
         assert!(!s.insert_article_dedup(a2), "same url is a dup");
     }
@@ -671,13 +669,13 @@ mod tests {
     #[test]
     fn read_settings_round_trip_strings_and_clamp() {
         for t in ReadTheme::ALL {
-            assert_eq!(ReadTheme::from_str(t.as_str()), t);
+            assert_eq!(ReadTheme::from_key(t.as_str()), t);
         }
         for f in ReadFont::ALL {
-            assert_eq!(ReadFont::from_str(f.as_str()), f);
+            assert_eq!(ReadFont::from_key(f.as_str()), f);
         }
         // Serif is a first-class option (the differentiator vs the ebook reader).
-        assert_eq!(ReadFont::from_str("serif"), ReadFont::Serif);
+        assert_eq!(ReadFont::from_key("serif"), ReadFont::Serif);
         // Cycle visits all three faces.
         assert_eq!(ReadFont::Sans.next(), ReadFont::Serif);
         assert_eq!(ReadFont::Serif.next(), ReadFont::Mono);

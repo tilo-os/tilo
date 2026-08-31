@@ -1,6 +1,16 @@
 //! Round-trip test: install a real .qpkg via the library surface,
 //! then resolve it and check the payload landed on disk.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::common;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;

@@ -34,6 +34,11 @@ pub struct MountIdentity {
 
 /// Load the device key and shape it into the mount's identity. Fails rather
 /// than falling back to a random key: a mount that can't prove which device it is has no business recording authorship.
+///
+/// # Errors
+///
+/// Returns an error when the device key at `paths.device_privkey` cannot be loaded or created
+/// (unreadable, corrupt, or the directory cannot be created).
 pub fn load_mount_identity(paths: &IdentityPaths) -> Result<MountIdentity> {
     let (signing, outcome) = load_or_create_device_key(paths).with_context(|| {
         format!(

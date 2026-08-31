@@ -73,6 +73,13 @@ impl FlatpakRef {
         })
     }
 
+    /// Read and parse a `.flatpakref` file. `Ok(None)` means the file read
+    /// fine but didn't have the required `[Flatpak Ref]` section/`Name` key;
+    /// see [`Self::parse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` can't be read.
     pub fn from_path(path: &Path) -> std::io::Result<Option<Self>> {
         let content = std::fs::read_to_string(path)?;
         Ok(Self::parse(&content, path))

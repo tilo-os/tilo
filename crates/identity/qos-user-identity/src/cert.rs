@@ -29,6 +29,15 @@ pub const DEVCERT_PREIMAGE_TAG: &[u8] = b"qos-devcert-v1\0";
 /// change over the cert's lifetime. To upgrade a device from
 /// "member" to "owner", the primary revokes the old cert and issues
 /// a new one.
+// Each field is an independently-meaningful policy bit, not a set of
+// mutually-exclusive states an enum could collapse — and this struct's
+// field layout is part of the frozen `DEVCERT_PREIMAGE_TAG` wire ABI
+// (it's embedded in `DeviceCertView`), so changing its shape to appease
+// the lint would break every certificate already issued in the field.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent policy flags, frozen as part of the DeviceCert wire ABI"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceCapabilities {
@@ -204,6 +213,13 @@ pub enum DeviceCertError {
 /// Fills the cert's `signature` field in place. Callers can call
 /// this multiple times on the same cert idempotently — the signing
 /// view omits the signature so the second call reproduces the first.
+///
+/// # Errors
+///
+/// Returns [`DeviceCertError::BadSignature`] if `cert.user_public_key`
+/// does not match the public key derived from `root_signing_key`, or
+/// [`DeviceCertError::Canonical`] if the cert cannot be canonically
+/// encoded (effectively unreachable).
 pub fn sign_device_cert(
     cert: &mut DeviceCert,
     root_signing_key: &ed25519_dalek::SigningKey,
@@ -230,6 +246,11 @@ pub fn sign_device_cert(
 /// preimage without copying the private key into another file. Callers must
 /// attach the resulting signature and validate it with [`verify_device_cert`]
 /// before persisting the certificate.
+///
+/// # Errors
+///
+/// Returns [`DeviceCertError::Canonical`] if the cert cannot be
+/// canonically encoded (effectively unreachable).
 pub fn device_cert_signing_digest(cert: &DeviceCert) -> Result<[u8; 32], DeviceCertError> {
     signing_digest(DEVCERT_PREIMAGE_TAG, &cert.view()).map_err(Into::into)
 }
@@ -247,6 +268,13 @@ pub fn device_cert_signing_digest(cert: &DeviceCert) -> Result<[u8; 32], DeviceC
 ///
 /// The convenience [`verify_device_cert_at`] bundles those checks
 /// with the signature verification.
+///
+/// # Errors
+///
+/// Returns [`DeviceCertError::InvalidUserPublicKey`] if
+/// `cert.user_public_key` is not a valid Ed25519 point, or
+/// [`DeviceCertError::BadSignature`] if the signature does not verify
+/// under it.
 pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&cert.user_public_key)
         .map_err(|_| DeviceCertError::InvalidUserPublicKey)?;
@@ -263,6 +291,12 @@ pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
 /// [`crate::RevocationList`] separately because the list lives in
 /// the user's directory CRDT, not in the cert itself. See
 /// [`crate::RevocationList::is_revoked`].
+///
+/// # Errors
+///
+/// Returns anything [`verify_device_cert`] can return, or
+/// [`DeviceCertError::Expired`] if `now_ns` is at or past
+/// `cert.expires_at_ns`.
 pub fn verify_device_cert_at(cert: &DeviceCert, now_ns: u64) -> Result<(), DeviceCertError> {
     verify_device_cert(cert)?;
     if cert.is_expired_at(now_ns) {
@@ -432,6 +466,12 @@ mod tests {
     /// (Ed25519 is deterministic and we build the preimage
     /// deterministically). Locks in the wire vectors — if this ever
     /// fails, the signing preimage has drifted.
+    // `root_sk`/`root_pk` follows this crate's established signing-key /
+    // public-key naming convention; see the reason on `directory::tests`.
+    #[allow(
+        clippy::similar_names,
+        reason = "the _sk/_pk keypair naming convention is deliberate and used throughout this crate's tests"
+    )]
     #[test]
     fn signature_vector_is_reproducible() {
         use ed25519_dalek::SigningKey;

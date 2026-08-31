@@ -167,14 +167,17 @@ pub fn start(root: &Path, query: Query) -> Job {
     let worker_cancel = cancel.clone();
     let root = root.to_path_buf();
     let worker_query = query.clone();
-    std::thread::Builder::new()
+    // The OS refusing to spawn a worker thread (resource exhaustion) is not
+    // fatal here: `tx` drops with the closure, so `rx` reports done
+    // immediately and the search just comes back empty instead of crashing
+    // the editor.
+    let _ = std::thread::Builder::new()
         .name("code-editor-search".into())
         .spawn(move || {
             walk(&root, &worker_query, &worker_cancel, &mut |msg| {
                 tx.send(msg).is_ok()
             });
-        })
-        .expect("spawn search worker thread");
+        });
     Job {
         rx,
         cancel,
@@ -252,7 +255,8 @@ pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMu
             let Ok(text) = String::from_utf8(bytes) else {
                 continue;
             };
-            if text.as_bytes()[..text.len().min(8192)].contains(&0) {
+            let sniff_len = text.len().min(8192);
+            if text.as_bytes().get(..sniff_len).unwrap_or(&[]).contains(&0) {
                 continue;
             }
             files += 1;
@@ -334,7 +338,7 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + needle.len() <= hay.len() {
-        if hay[i..i + needle.len()] == needle[..]
+        if hay.get(i..i + needle.len()) == Some(needle.as_slice())
             && (!query.whole_word || is_word_bounded(&hay, i, needle.len()))
         {
             out.push((i, needle.len()));
@@ -349,9 +353,9 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
 /// Whether the span at `start..start+len` is bounded by non-word characters on
 /// both sides — the "whole word" rule.
 fn is_word_bounded(hay: &[char], start: usize, len: usize) -> bool {
-    let before_ok = start == 0 || !is_word_char(hay[start - 1]);
+    let before_ok = start == 0 || hay.get(start - 1).is_none_or(|&c| !is_word_char(c));
     let after = start + len;
-    let after_ok = after >= hay.len() || !is_word_char(hay[after]);
+    let after_ok = after >= hay.len() || hay.get(after).is_none_or(|&c| !is_word_char(c));
     before_ok && after_ok
 }
 
@@ -375,7 +379,7 @@ fn clip_preview(line: &str, col: usize) -> (String, usize) {
         start = col - PREVIEW_LIMIT / 2;
     }
     let end = (start + PREVIEW_LIMIT).min(chars.len());
-    let preview: String = chars[start..end].iter().collect();
+    let preview: String = chars.get(start..end).unwrap_or(&[]).iter().collect();
     (preview, start)
 }
 
@@ -461,11 +465,11 @@ mod tests {
     // ---- the walk ------------------------------------------------------
 
     /// Run a walk synchronously and collect every message it emitted.
-    fn run(root: &Path, query: Query) -> (Vec<Hit>, Option<(usize, bool)>) {
+    fn run(root: &Path, query: &Query) -> (Vec<Hit>, Option<(usize, bool)>) {
         let cancel = AtomicBool::new(false);
         let mut hits = Vec::new();
         let mut done = None;
-        walk(root, &query, &cancel, &mut |msg| {
+        walk(root, query, &cancel, &mut |msg| {
             match msg {
                 Msg::Hits(h) => hits.extend(h),
                 Msg::Done { files, truncated } => done = Some((files, truncated)),
@@ -497,7 +501,7 @@ mod tests {
     #[test]
     fn searches_the_tree_and_reports_file_line_and_column() {
         let d = fixture();
-        let (hits, done) = run(d.path(), q("needle"));
+        let (hits, done) = run(d.path(), &q("needle"));
         assert_eq!(hits.len(), 2, "one in src/main.rs, one in README.md");
 
         let main_hit = hits.iter().find(|h| h.rel.ends_with("main.rs")).unwrap();
@@ -521,7 +525,7 @@ mod tests {
     #[test]
     fn build_output_and_vcs_directories_are_never_searched() {
         let d = fixture();
-        let (hits, _) = run(d.path(), q("needle"));
+        let (hits, _) = run(d.path(), &q("needle"));
         for h in &hits {
             assert!(
                 !h.rel.starts_with("target") && !h.rel.starts_with(".git"),
@@ -542,7 +546,7 @@ mod tests {
     fn binary_files_are_skipped() {
         let d = fixture();
         std::fs::write(d.path().join("src/blob.bin"), b"needle\x00\x01\x02").unwrap();
-        let (hits, _) = run(d.path(), q("needle"));
+        let (hits, _) = run(d.path(), &q("needle"));
         assert!(
             hits.iter().all(|h| !h.rel.ends_with("blob.bin")),
             "a NUL-bearing file is not text and must not produce hits"
@@ -599,7 +603,7 @@ mod tests {
     #[test]
     fn an_empty_query_finishes_immediately_without_walking() {
         let d = fixture();
-        let (hits, done) = run(d.path(), q(""));
+        let (hits, done) = run(d.path(), &q(""));
         assert!(hits.is_empty());
         assert_eq!(done, Some((0, false)), "no file was even opened");
     }

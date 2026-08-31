@@ -166,6 +166,10 @@ pub fn generate_keypair() -> (ed25519_dalek::SigningKey, Ed25519PublicKey) {
 /// through [`canonical_bytes`] so the signature covers the deterministic
 /// postcard encoding of `event`. Callers must hand in a value that omits
 /// the final `signature` field — see `event::*::signing_bytes()`.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError`] if canonicalising `event` fails.
 pub fn sign_event<T: Serialize>(
     event: &T,
     secret_key: &ed25519_dalek::SigningKey,
@@ -178,6 +182,13 @@ pub fn sign_event<T: Serialize>(
 /// Verify a signature over an arbitrary serializable value. Mirrors
 /// [`sign_event`]: the same pre-signature view must be reconstructable on
 /// the receiving side. `BadSignature` on mismatch, `InvalidPublicKey` if malformed.
+///
+/// # Errors
+///
+/// Returns [`VerifyError::Canonical`] if canonicalising `event` fails,
+/// [`VerifyError::InvalidPublicKey`] if `public_key` doesn't decode to a
+/// valid curve point, or [`VerifyError::BadSignature`] if `sig` doesn't
+/// verify.
 pub fn verify_event<T: Serialize>(
     event: &T,
     sig: &Signature,
@@ -193,6 +204,10 @@ pub fn verify_event<T: Serialize>(
 /// Sign a `SignedOp` in place via [`SignedOp::signing_bytes`], which
 /// omits the signature field — calling this twice on the same op is
 /// harmless, the second call reproduces the first.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError`] if canonicalising `op`'s signing bytes fails.
 pub fn sign_op(
     op: &mut SignedOp,
     secret_key: &ed25519_dalek::SigningKey,
@@ -206,6 +221,13 @@ pub fn sign_op(
 /// Verify a `SignedOp` against its declared author key — the
 /// cryptographic-only check. Full validation (attestation, role, replay
 /// defence, …) lives in [`crate::validator::validate_inbound_op`].
+///
+/// # Errors
+///
+/// Returns [`VerifyError::Canonical`] if canonicalising `op`'s signing
+/// bytes fails, [`VerifyError::InvalidPublicKey`] if `op.author` doesn't
+/// decode to a valid curve point, or [`VerifyError::BadSignature`] if
+/// `op.signature` doesn't verify.
 pub fn verify_op(op: &SignedOp) -> Result<(), VerifyError> {
     let bytes = op.signing_bytes()?;
     let vk = op.author.to_verifying_key()?;

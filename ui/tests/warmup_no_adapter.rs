@@ -19,6 +19,16 @@
 //! it doesn't — so a machine that happens to have a GPU fails the test
 //! loudly instead of passing vacuously.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -65,6 +75,11 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
         ])
         .env(CHILD_MARKER, "1")
         .env("WGPU_BACKEND", NO_BACKENDS)
+        // CI pins ordinary renderer tests to llvmpipe. This child is
+        // intentionally constructing an empty backend set, so inheriting an
+        // adapter requirement would make wgpu reject the contradictory
+        // configuration before `try_new` can exercise its no-adapter path.
+        .env_remove("WGPU_ADAPTER_NAME")
         // Warmup is on by default, but the parent's environment might
         // have turned it off; the child needs it on to test anything.
         .env("QOS_STARTUP_WARM", "on")
@@ -76,7 +91,7 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
 
     // Bounded wait: the child builds a throw-away FontSystem, which is
     // slow on a cold fontconfig cache but nowhere near this long.
-    let deadline = Instant::now() + Duration::from_mins(3);
+    let deadline = Instant::now() + Duration::from_secs(180);
     let status = loop {
         match child.try_wait().expect("try_wait") {
             Some(status) => break status,
@@ -113,11 +128,16 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
 }
 
 /// Runs in the re-executed child. Diverges: always exits the process.
+#[allow(
+    clippy::exit,
+    reason = "this re-executed child process communicates its outcome to the parent purely via \
+              exit code; the function returns `!`, so returning normally is not an option"
+)]
 fn child_body() -> ! {
     // Prove the simulation works, before the aborting hook is installed,
     // so a surprise here surfaces as a clean exit code rather than a signal.
     if let Err(e) = ui::offscreen::OffscreenRenderer::try_new(4, 4) {
-        eprintln!("child: no adapter, as intended: {e}")
+        eprintln!("child: no adapter, as intended: {e}");
     } else {
         eprintln!("child: an adapter was still available — cannot simulate a GPU-less machine");
         std::process::exit(EXIT_SIMULATION_FAILED);

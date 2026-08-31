@@ -1,5 +1,6 @@
 //! Root widget for the database client. Owns the [`Session`] (connections,
-//! engine, schema, results) and the [`SqlEditor`] (CRDT-backed buffer), lays
+//! engine, schema, results) and the shared [`ui::CodeEditor`] (CRDT-backed
+//! SQL buffer), lays
 //! out the two regions (connections+schema sidebar, main panel) itself, and
 //! draws everything directly into the Vello scene. Status is surfaced as a
 //! transient floating bubble rather than a permanent strip, so the content
@@ -35,11 +36,10 @@ use uuid::Uuid;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{CodeEditor, FlapState, Language, SplitLayout, Widget};
 
 use crate::connect_modal::ConnectModal;
 use crate::doc::{ConnectionsDoc, EditorDoc};
-use crate::editor::SqlEditor;
 use crate::grid::GridView;
 use crate::model::Engine;
 use crate::schema_tree::{SchemaTree, TreeClick};
@@ -57,9 +57,13 @@ const BREAKPOINT: f64 = 820.0;
 /// not fully docked-open, so a collapsed sidebar can be summoned.
 const TOGGLE_SIZE: f64 = 26.0;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent piece of widget state (seed/demo bookkeeping, hover/open toggles, shots-mode override), always set by name rather than a confusing positional constructor"
+)]
 pub struct DbClientApp {
     session: Session,
-    editor: SqlEditor,
+    editor: CodeEditor,
     grid: GridView,
     data_grid: GridView,
     tree: SchemaTree,
@@ -133,6 +137,12 @@ pub struct DbClientApp {
     shots_status: bool,
 }
 
+impl Default for DbClientApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DbClientApp {
     /// The live app: starts on the user's saved connections (empty on a fresh
     /// machine) and never fabricates a sample database or profiles.
@@ -172,10 +182,18 @@ impl DbClientApp {
     }
 
     fn build(session: Session, demo: bool) -> Self {
+        let mut editor = CodeEditor::local()
+            .with_language(Language::Sql)
+            .with_font_size(13.5)
+            .with_tab_width(2)
+            .with_id("sql-editor");
+        // Preserve the database client's type-to-query startup policy. The
+        // shared widget itself remains conservatively unfocused by default.
+        editor.set_focused(true);
         let mut app = Self {
             session,
             demo,
-            editor: SqlEditor::new(),
+            editor,
             grid: GridView::new(),
             data_grid: GridView::new(),
             tree: SchemaTree::new(),
@@ -216,14 +234,14 @@ impl DbClientApp {
     }
 
     fn run_current_query(&mut self) {
-        let sql = self.editor.buffer().to_string();
+        let sql = self.editor.value().to_string();
         self.session.run_query(&sql);
         self.dirty = true;
     }
 
     fn load_snippet(&mut self, sql: &str, doc: &mut AutoCommit) {
         EditorDoc::set_sql(doc, sql);
-        self.editor.sync(doc);
+        self.editor.pull(doc);
         self.snippets_open = false;
         self.dirty = true;
     }
@@ -441,7 +459,9 @@ impl Widget for DbClientApp {
             }
         }
 
-        self.editor.sync(state);
+        let sql_text = EditorDoc::sql_text(state);
+        self.editor.bind_text(sql_text);
+        self.editor.pull(state);
     }
 
     fn build_layout(
@@ -450,16 +470,20 @@ impl Widget for DbClientApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                flex_grow: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = match taffy.new_leaf(Style {
+            size: Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            flex_grow: 1.0,
+            ..Default::default()
+        }) {
+            Ok(node) => node,
+            // `TaffyTree::new_leaf` only ever returns `Err` when the tree is
+            // at capacity; this arm exists so a future upstream change
+            // degrades the app instead of aborting the whole session.
+            Err(_) => NodeId::from(0u64),
+        };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
@@ -486,7 +510,9 @@ impl Widget for DbClientApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -565,11 +591,11 @@ impl Widget for DbClientApp {
         scale_factor: f64,
         modifiers: &Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         // Modal swallows events while open.
         if self.modal.is_open() {
@@ -585,66 +611,10 @@ impl Widget for DbClientApp {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.run_hover = self.run_btn.contains(self.cursor);
-                // Sidebar connection hover.
-                self.conn_hover = self
-                    .conn_rects
-                    .iter()
-                    .find(|(_, r)| r.contains(self.cursor))
-                    .map(|(i, _)| *i);
-                // Grid hover.
-                if self.session.tab == MainTab::Query {
-                    self.grid.hover_row = self.grid.row_hit(self.cursor);
-                } else if self.session.tab == MainTab::Data {
-                    self.data_grid.hover_row = self.data_grid.row_hit(self.cursor);
-                }
-                self.tree.set_cursor(self.cursor);
+                self.on_cursor_moved(position.x, position.y, scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let (dx_px, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 40.0, f64::from(*y)),
-                    MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y / 24.0),
-                };
-                let step = (-dy * 3.0) as isize;
-                // Shift+wheel scrolls horizontally, as does a native x-delta.
-                let shift = modifiers.state().shift_key();
-                if self.session.tab == MainTab::Query && self.grid.rect().contains(self.cursor) {
-                    if shift {
-                        self.grid.scroll_h(-dy * 40.0);
-                    } else {
-                        let total = self
-                            .session
-                            .query_result
-                            .as_ref()
-                            .map_or(0, |r| r.rows.len());
-                        self.grid.scroll(step, total);
-                        if dx_px != 0.0 {
-                            self.grid.scroll_h(dx_px);
-                        }
-                    }
-                    *handled = true;
-                } else if self.session.tab == MainTab::Data
-                    && self.data_grid.rect().contains(self.cursor)
-                {
-                    if shift {
-                        self.data_grid.scroll_h(-dy * 40.0);
-                    } else {
-                        let total = self
-                            .session
-                            .data_result
-                            .as_ref()
-                            .map_or(0, |r| r.rows.len());
-                        self.data_grid.scroll(step, total);
-                        if dx_px != 0.0 {
-                            self.data_grid.scroll_h(dx_px);
-                        }
-                    }
-                    *handled = true;
-                } else if self.tree.rect().contains(self.cursor) {
-                    self.tree.scroll(step);
-                    *handled = true;
-                }
+                self.on_mouse_wheel(delta, *modifiers, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -662,39 +632,7 @@ impl Widget for DbClientApp {
                     },
                 ..
             } => {
-                let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                // Global shortcut: Ctrl+Enter runs regardless of focus.
-                if ctrl {
-                    if let Key::Named(NamedKey::Enter) = logical_key {
-                        self.run_current_query();
-                        *handled = true;
-                        return;
-                    }
-                    if let Key::Character(c) = logical_key
-                        && c.eq_ignore_ascii_case("n")
-                    {
-                        self.modal.open_new();
-                        *handled = true;
-                        return;
-                    }
-                }
-                // Esc closes the snippet menu, then dismisses an open overlay
-                // flap (in docked mode Esc leaves the sidebar untouched).
-                if let Key::Named(NamedKey::Escape) = logical_key {
-                    if self.snippets_open {
-                        self.snippets_open = false;
-                        *handled = true;
-                        return;
-                    }
-                    if self.split_layout() == SplitLayout::Overlay
-                        && self.flap.is_open(SplitLayout::Overlay)
-                    {
-                        self.flap.close();
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                }
+                self.on_key_pressed(logical_key, *modifiers, handled);
             }
             _ => {}
         }
@@ -704,12 +642,18 @@ impl Widget for DbClientApp {
         // toggle click, or an Esc that dismissed the overlay flap — so an open
         // sidebar doesn't leak clicks into the editor behind it.
         if self.session.tab == MainTab::Query && !*handled {
-            self.editor
-                .handle_event(event, scale_factor, modifiers, state, handled);
-            if self.editor.take_run() {
-                self.run_current_query();
-            }
-            if self.editor.take_mutated() {
+            self.editor.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if self.editor.take_dirty().is_some() {
                 self.dirty = true;
             }
         }
@@ -725,6 +669,20 @@ impl Widget for DbClientApp {
 
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.editor.set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.session.tab == MainTab::Query && self.editor.is_focused()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.cursor_shape(point))
+            .flatten()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -750,9 +708,180 @@ impl Widget for DbClientApp {
         // CRUD becomes a single undo boundary and replicates to peers.
         self.actions.take_committed()
     }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.session.tab == MainTab::Query {
+            self.editor
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        (self.session.tab == MainTab::Query && self.editor.is_focused())
+            .then(|| self.editor.ime_cursor_rect())
+            .flatten()
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        (self.session.tab == MainTab::Query && self.editor.is_focused())
+            .then(|| self.editor.ime_purpose())
+            .flatten()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.accessibility())
+            .flatten()
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.session.tab == MainTab::Query && self.editor.perform_action(action, state, path)
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.session.tab == MainTab::Query && self.editor.wants_pointer_capture()
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.editor.needs_commit()
+    }
+
+    fn on_commit(&mut self) {
+        self.editor.on_commit();
+    }
+
+    fn get_state(&self) -> Option<String> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.get_state())
+            .flatten()
+    }
+
+    fn set_state(&mut self, state: &str) {
+        self.editor.set_state(state);
+    }
+
+    fn text_review(&self) -> Option<(usize, String)> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.text_review())
+            .flatten()
+    }
 }
 
 impl DbClientApp {
+    fn on_cursor_moved(&mut self, x: f64, y: f64, scale_factor: f64) {
+        self.cursor = Point::new(x / scale_factor, y / scale_factor);
+        self.run_hover = self.run_btn.contains(self.cursor);
+        // Sidebar connection hover.
+        self.conn_hover = self
+            .conn_rects
+            .iter()
+            .find(|(_, r)| r.contains(self.cursor))
+            .map(|(i, _)| *i);
+        // Grid hover.
+        if self.session.tab == MainTab::Query {
+            self.grid.hover_row = self.grid.row_hit(self.cursor);
+        } else if self.session.tab == MainTab::Data {
+            self.data_grid.hover_row = self.data_grid.row_hit(self.cursor);
+        }
+        self.tree.set_cursor(self.cursor);
+    }
+
+    fn on_mouse_wheel(
+        &mut self,
+        delta: &MouseScrollDelta,
+        modifiers: Modifiers,
+        handled: &mut bool,
+    ) {
+        let (dx_px, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 40.0, f64::from(*y)),
+            MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y / 24.0),
+        };
+        let step = (-dy * 3.0) as isize;
+        // Shift+wheel scrolls horizontally, as does a native x-delta.
+        let shift = modifiers.state().shift_key();
+        if self.session.tab == MainTab::Query && self.grid.rect().contains(self.cursor) {
+            if shift {
+                self.grid.scroll_h(-dy * 40.0);
+            } else {
+                let total = self
+                    .session
+                    .query_result
+                    .as_ref()
+                    .map_or(0, |r| r.rows.len());
+                self.grid.scroll(step, total);
+                if dx_px != 0.0 {
+                    self.grid.scroll_h(dx_px);
+                }
+            }
+            *handled = true;
+        } else if self.session.tab == MainTab::Data && self.data_grid.rect().contains(self.cursor) {
+            if shift {
+                self.data_grid.scroll_h(-dy * 40.0);
+            } else {
+                let total = self
+                    .session
+                    .data_result
+                    .as_ref()
+                    .map_or(0, |r| r.rows.len());
+                self.data_grid.scroll(step, total);
+                if dx_px != 0.0 {
+                    self.data_grid.scroll_h(dx_px);
+                }
+            }
+            *handled = true;
+        } else if self.tree.rect().contains(self.cursor) {
+            self.tree.scroll(step);
+            *handled = true;
+        }
+    }
+
+    fn on_key_pressed(&mut self, logical_key: &Key, modifiers: Modifiers, handled: &mut bool) {
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        // Global shortcut: Ctrl+Enter runs regardless of focus.
+        if ctrl {
+            if let Key::Named(NamedKey::Enter) = logical_key {
+                self.run_current_query();
+                *handled = true;
+                return;
+            }
+            if let Key::Character(c) = logical_key
+                && c.eq_ignore_ascii_case("n")
+            {
+                self.modal.open_new();
+                *handled = true;
+                return;
+            }
+        }
+        // Esc closes the snippet menu, then dismisses an open overlay flap
+        // (in docked mode Esc leaves the sidebar untouched).
+        if let Key::Named(NamedKey::Escape) = logical_key {
+            if self.snippets_open {
+                self.snippets_open = false;
+                *handled = true;
+                return;
+            }
+            if self.split_layout() == SplitLayout::Overlay
+                && self.flap.is_open(SplitLayout::Overlay)
+            {
+                self.flap.close();
+                self.dirty = true;
+                *handled = true;
+            }
+        }
+    }
+
     /// Whether sidebar widgets (connection rows, schema tree, new-connection
     /// button) should accept clicks: always when docked, only while the flap
     /// is open when it's an overlay (so taps fall through to the content
@@ -766,13 +895,33 @@ impl DbClientApp {
 
     fn on_click(&mut self, state: &mut AutoCommit, handled: &mut bool) {
         let c = self.cursor;
+        if self.click_chrome(c, handled)
+            || self.click_sidebar(c, state, handled)
+            || self.click_tab_bar(c, handled)
+            || self.click_query_toolbar(c, state, handled)
+            || self.click_data_tab(c, handled)
+            || self.click_schema_tree(c, handled)
+        {
+            return;
+        }
 
+        // Click into the editor body focuses it (editor handles caret).
+        if self.session.tab == MainTab::Query && self.editor.rect().contains(c) {
+            self.editor.set_focused(true);
+        } else {
+            self.editor.set_focused(false);
+        }
+    }
+
+    /// Hamburger toggle, scrim dismiss, and the empty-state call to action —
+    /// chrome that isn't gated on which main tab is active.
+    fn click_chrome(&mut self, c: Point, handled: &mut bool) -> bool {
         // Hamburger toggle (summon / dismiss the sidebar).
         if self.show_toggle() && self.toggle_btn.contains(c) {
             self.flap.toggle(self.split_layout());
             self.dirty = true;
             *handled = true;
-            return;
+            return true;
         }
 
         // Scrim click while the overlay flap is open dismisses it (the click
@@ -784,48 +933,58 @@ impl DbClientApp {
             self.flap.close();
             self.dirty = true;
             *handled = true;
-            return;
+            return true;
         }
 
         // Empty-state call to action in the main panel (opens the modal).
         if self.session.connections.is_empty() && self.empty_new_conn_btn.contains(c) {
             self.modal.open_new();
             *handled = true;
-            return;
+            return true;
         }
 
-        // Sidebar widgets only when the sidebar is interactive.
-        if self.sidebar_interactive() {
-            // "New connection" button.
-            if self.new_conn_btn.contains(c) {
-                self.modal.open_new();
+        false
+    }
+
+    /// "New connection", per-row delete and connection-row selection —
+    /// only when the sidebar is interactive.
+    fn click_sidebar(&mut self, c: Point, state: &mut AutoCommit, handled: &mut bool) -> bool {
+        if !self.sidebar_interactive() {
+            return false;
+        }
+
+        // "New connection" button.
+        if self.new_conn_btn.contains(c) {
+            self.modal.open_new();
+            *handled = true;
+            return true;
+        }
+
+        // Per-row delete ("×") button, shown on hover — takes priority over
+        // selecting the row it sits on.
+        for (idx, dr) in self.conn_delete_rects.clone() {
+            if dr.contains(c) {
+                self.remove_connection(idx, state);
+                self.dirty = true;
                 *handled = true;
-                return;
-            }
-
-            // Per-row delete ("×") button, shown on hover — takes priority
-            // over selecting the row it sits on.
-            for (idx, dr) in self.conn_delete_rects.clone() {
-                if dr.contains(c) {
-                    self.remove_connection(idx, state);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-            }
-
-            // Connection rows.
-            for (idx, r) in self.conn_rects.clone() {
-                if r.contains(c) {
-                    self.session.select_connection(idx);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
+                return true;
             }
         }
 
-        // Tab bar.
+        // Connection rows.
+        for (idx, r) in self.conn_rects.clone() {
+            if r.contains(c) {
+                self.session.select_connection(idx);
+                self.dirty = true;
+                *handled = true;
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn click_tab_bar(&mut self, c: Point, handled: &mut bool) -> bool {
         for (tab, r) in self.tab_rects.clone() {
             if r.contains(c) {
                 self.session.tab = tab;
@@ -835,65 +994,83 @@ impl DbClientApp {
                 self.relayout();
                 self.dirty = true;
                 *handled = true;
-                return;
+                return true;
             }
         }
+        false
+    }
 
-        // Toolbar buttons (Query tab).
-        if self.session.tab == MainTab::Query {
-            if self.run_btn.contains(c) {
-                self.run_current_query();
-                *handled = true;
-                return;
-            }
-            if self.snippet_btn.contains(c) {
-                self.snippets_open = !self.snippets_open;
-                *handled = true;
-                return;
-            }
-            // Snippet menu items.
-            if self.snippets_open {
-                let items = crate::sample::starter_queries();
-                let mut y = self.snippet_btn.y1 + 2.0;
-                for (_, sql) in items {
-                    let item = Rect::new(
-                        self.snippet_btn.x0,
-                        y,
-                        self.snippet_btn.x0 + 240.0,
-                        y + 28.0,
-                    );
-                    if item.contains(c) {
-                        self.load_snippet(sql, state);
-                        *handled = true;
-                        return;
-                    }
-                    y += 28.0;
+    /// Run/snippet toolbar buttons, the snippet menu, and header-click sort —
+    /// all Query-tab only.
+    fn click_query_toolbar(
+        &mut self,
+        c: Point,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if self.session.tab != MainTab::Query {
+            return false;
+        }
+
+        if self.run_btn.contains(c) {
+            self.run_current_query();
+            *handled = true;
+            return true;
+        }
+        if self.snippet_btn.contains(c) {
+            self.snippets_open = !self.snippets_open;
+            *handled = true;
+            return true;
+        }
+        // Snippet menu items.
+        if self.snippets_open {
+            let items = crate::sample::starter_queries();
+            let mut y = self.snippet_btn.y1 + 2.0;
+            for (_, sql) in items {
+                let item = Rect::new(
+                    self.snippet_btn.x0,
+                    y,
+                    self.snippet_btn.x0 + 240.0,
+                    y + 28.0,
+                );
+                if item.contains(c) {
+                    self.load_snippet(sql, state);
+                    *handled = true;
+                    return true;
                 }
-                // Click elsewhere closes the menu.
-                self.snippets_open = false;
+                y += 28.0;
             }
-
-            // Header click → sort.
-            if let Some(col) = self.grid.header_hit(c)
-                && let Some(res) = &self.session.query_result
-            {
-                self.grid.sort_by(col, res);
-                *handled = true;
-                return;
-            }
+            // Click elsewhere closes the menu.
+            self.snippets_open = false;
         }
 
-        // Data tab grid sorting + paging.
+        // Header click → sort.
+        if let Some(col) = self.grid.header_hit(c)
+            && let Some(res) = &self.session.query_result
+        {
+            self.grid.sort_by(col, res);
+            *handled = true;
+            return true;
+        }
+
+        false
+    }
+
+    /// Data tab grid header-click sort.
+    fn click_data_tab(&mut self, c: Point, handled: &mut bool) -> bool {
         if self.session.tab == MainTab::Data
             && let Some(col) = self.data_grid.header_hit(c)
             && let Some(res) = &self.session.data_result
         {
             self.data_grid.sort_by(col, res);
             *handled = true;
-            return;
+            return true;
         }
+        false
+    }
 
-        // Schema tree (a sidebar widget — gated like the rest of the sidebar).
+    /// Schema tree (a sidebar widget — gated like the rest of the sidebar).
+    fn click_schema_tree(&mut self, c: Point, handled: &mut bool) -> bool {
         if self.sidebar_interactive()
             && let Some(click) = self.tree.hit(c)
         {
@@ -919,15 +1096,9 @@ impl DbClientApp {
             self.relayout();
             self.dirty = true;
             *handled = true;
-            return;
+            return true;
         }
-
-        // Click into the editor body focuses it (editor handles caret).
-        if self.session.tab == MainTab::Query && self.editor.rect().contains(c) {
-            self.editor.set_focused(true);
-        } else {
-            self.editor.set_focused(false);
-        }
+        false
     }
 }
 
@@ -963,110 +1134,160 @@ impl DbClientApp {
         self.conn_delete_rects.clear();
         let mut y = r.y0 + 32.0;
         let active = self.session.active;
-        for (idx, conn) in self.session.connections.iter().enumerate() {
-            let row = Rect::new(r.x0 + 6.0, y, r.x1 - 6.0, y + 40.0);
-            self.conn_rects.push((idx, row));
-            let is_active = idx == active;
-            if is_active {
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    p.selection,
-                    None,
-                    &row.to_rounded_rect(6.0),
-                );
-            } else if self.conn_hover == Some(idx) {
-                scene.fill(Fill::NonZero, t, p.hover, None, &row.to_rounded_rect(6.0));
-            }
-
-            // Engine chip.
-            let chip =
-                Rect::new(row.x0 + 8.0, y + 9.0, row.x0 + 38.0, y + 31.0).to_rounded_rect(5.0);
-            let chip_color = engine_color(conn.engine, theme);
-            scene.fill(Fill::NonZero, t, chip_color, None, &chip);
-            tr.draw_text(
-                scene,
-                conn.engine.glyph(),
-                10.0,
-                Color::WHITE,
-                t * Affine::translate((row.x0 + 11.0, y + 13.0)),
-                None,
-            );
-
-            tr.draw_text(
-                scene,
-                &conn.name,
-                13.0,
-                theme.text_primary,
-                t * Affine::translate((row.x0 + 46.0, y + 6.0)),
-                Some((row.width() - 56.0) as f32),
-            );
-            tr.draw_text(
-                scene,
-                &conn.subtitle(),
-                10.5,
-                theme.text_dim,
-                t * Affine::translate((row.x0 + 46.0, y + 22.0)),
-                Some((row.width() - 56.0) as f32),
-            );
-
-            // On hover, offer a delete ("×") button; otherwise show the
-            // connection status dot. The sample connection can't be deleted.
-            let hovered = self.conn_hover == Some(idx);
-            if hovered && !conn.is_sample {
-                let del = Rect::new(row.x1 - 26.0, y + 4.0, row.x1 - 6.0, y + 24.0);
-                self.conn_delete_rects.push((idx, del));
-                let dc = del.center();
-                let over = del.contains(self.cursor);
-                if over {
-                    scene.fill(Fill::NonZero, t, p.hover, None, &del.to_rounded_rect(5.0));
-                }
-                let col = if over {
-                    theme.tokens.colors.semantic.danger
-                } else {
-                    theme.text_dim
-                };
-                let a = 4.0;
-                scene.stroke(
-                    &Stroke::new(1.5),
-                    t,
-                    col,
-                    None,
-                    &Line::new(
-                        Point::new(dc.x - a, dc.y - a),
-                        Point::new(dc.x + a, dc.y + a),
-                    ),
-                );
-                scene.stroke(
-                    &Stroke::new(1.5),
-                    t,
-                    col,
-                    None,
-                    &Line::new(
-                        Point::new(dc.x + a, dc.y - a),
-                        Point::new(dc.x - a, dc.y + a),
-                    ),
-                );
-            } else {
-                let dot_c = if conn.connected {
-                    theme.tokens.colors.semantic.success
-                } else if conn.is_remote() {
-                    theme.tokens.colors.semantic.warning
-                } else {
-                    theme.text_dim
-                };
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    dot_c,
-                    None,
-                    &vello::kurbo::Circle::new(Point::new(row.x1 - 12.0, y + 12.0), 3.5),
-                );
-            }
+        let connections = self.session.connections.clone();
+        for (idx, conn) in connections.iter().enumerate() {
+            self.draw_connection_row(scene, t, tr, theme, idx, conn, active, y);
             y += 44.0;
         }
 
-        // Empty state: no saved connections yet.
+        self.draw_connections_footer(scene, t, tr, theme, y);
+
+        // Schema tree (its own region; draws db→schema→table→columns).
+        self.tree.draw(scene, t, tr, theme, &self.session);
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row's full draw context: canvas + theme + which row + its data + its y"
+    )]
+    fn draw_connection_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        idx: usize,
+        conn: &crate::model::ConnectionProfile,
+        active: usize,
+        y: f64,
+    ) {
+        let p = theme.db();
+        let r = self.sidebar_rect;
+        let row = Rect::new(r.x0 + 6.0, y, r.x1 - 6.0, y + 40.0);
+        self.conn_rects.push((idx, row));
+        let is_active = idx == active;
+        if is_active {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                p.selection,
+                None,
+                &row.to_rounded_rect(6.0),
+            );
+        } else if self.conn_hover == Some(idx) {
+            scene.fill(Fill::NonZero, t, p.hover, None, &row.to_rounded_rect(6.0));
+        }
+
+        // Engine chip.
+        let chip = Rect::new(row.x0 + 8.0, y + 9.0, row.x0 + 38.0, y + 31.0).to_rounded_rect(5.0);
+        let chip_color = engine_color(conn.engine, theme);
+        scene.fill(Fill::NonZero, t, chip_color, None, &chip);
+        tr.draw_text(
+            scene,
+            conn.engine.glyph(),
+            10.0,
+            Color::WHITE,
+            t * Affine::translate((row.x0 + 11.0, y + 13.0)),
+            None,
+        );
+
+        tr.draw_text(
+            scene,
+            &conn.name,
+            13.0,
+            theme.text_primary,
+            t * Affine::translate((row.x0 + 46.0, y + 6.0)),
+            Some((row.width() - 56.0) as f32),
+        );
+        tr.draw_text(
+            scene,
+            &conn.subtitle(),
+            10.5,
+            theme.text_dim,
+            t * Affine::translate((row.x0 + 46.0, y + 22.0)),
+            Some((row.width() - 56.0) as f32),
+        );
+
+        // On hover, offer a delete ("×") button; otherwise show the
+        // connection status dot. The sample connection can't be deleted.
+        let hovered = self.conn_hover == Some(idx);
+        if hovered && !conn.is_sample {
+            self.draw_connection_delete_button(scene, t, theme, idx, row, y);
+        } else {
+            let dot_c = if conn.connected {
+                theme.tokens.colors.semantic.success
+            } else if conn.is_remote() {
+                theme.tokens.colors.semantic.warning
+            } else {
+                theme.text_dim
+            };
+            scene.fill(
+                Fill::NonZero,
+                t,
+                dot_c,
+                None,
+                &vello::kurbo::Circle::new(Point::new(row.x1 - 12.0, y + 12.0), 3.5),
+            );
+        }
+    }
+
+    fn draw_connection_delete_button(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        idx: usize,
+        row: Rect,
+        y: f64,
+    ) {
+        let p = theme.db();
+        let del = Rect::new(row.x1 - 26.0, y + 4.0, row.x1 - 6.0, y + 24.0);
+        self.conn_delete_rects.push((idx, del));
+        let center = del.center();
+        let over = del.contains(self.cursor);
+        if over {
+            scene.fill(Fill::NonZero, t, p.hover, None, &del.to_rounded_rect(5.0));
+        }
+        let col = if over {
+            theme.tokens.colors.semantic.danger
+        } else {
+            theme.text_dim
+        };
+        let half = 4.0;
+        scene.stroke(
+            &Stroke::new(1.5),
+            t,
+            col,
+            None,
+            &Line::new(
+                Point::new(center.x - half, center.y - half),
+                Point::new(center.x + half, center.y + half),
+            ),
+        );
+        scene.stroke(
+            &Stroke::new(1.5),
+            t,
+            col,
+            None,
+            &Line::new(
+                Point::new(center.x + half, center.y - half),
+                Point::new(center.x - half, center.y + half),
+            ),
+        );
+    }
+
+    /// Empty-state hint (when no connections are saved) and the "New
+    /// connection" button beneath the row list.
+    fn draw_connections_footer(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+    ) {
+        let r = self.sidebar_rect;
+        let mut y = y;
         if self.session.connections.is_empty() {
             tr.draw_text(
                 scene,
@@ -1104,12 +1325,31 @@ impl DbClientApp {
             t * Affine::translate((btn.x0 + 12.0, btn.y0 + 8.0)),
             None,
         );
-
-        // Schema tree (its own region; draws db→schema→table→columns).
-        self.tree.draw(scene, t, tr, theme, &self.session);
     }
 
     fn draw_main(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let bar = self.draw_tab_bar(scene, t, tr, theme);
+
+        // Empty state: nothing to query until the user adds a connection.
+        if self.session.connections.is_empty() {
+            self.draw_main_empty_state(scene, t, tr, theme, bar);
+            return;
+        }
+
+        match self.session.tab {
+            MainTab::Query => self.draw_query_tab(scene, t, tr, theme),
+            MainTab::Data => self.draw_data_tab(scene, t, tr, theme),
+            MainTab::Structure => self.draw_structure_tab(scene, t, tr, theme),
+        }
+    }
+
+    fn draw_tab_bar(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Rect {
         let p = theme.db();
         // Tab bar.
         let bar = Rect::new(
@@ -1190,143 +1430,175 @@ impl DbClientApp {
             );
         }
 
-        // Empty state: nothing to query until the user adds a connection.
-        // A composed zero-state — a database mark, a clear title + hint, and a
-        // single primary action — rather than two lines of bare text.
-        if self.session.connections.is_empty() {
-            let body = Rect::new(
-                self.main_rect.x0,
-                bar.y1,
-                self.main_rect.x1,
-                self.main_rect.y1,
-            );
-            let cx = body.center().x;
-            let card_w = 380.0_f64.min(body.width() - 32.0);
-            let card_h = 250.0;
-            let card = Rect::new(
-                cx - card_w / 2.0,
-                body.center().y - card_h / 2.0,
-                cx + card_w / 2.0,
-                body.center().y + card_h / 2.0,
-            );
-            scene.fill(
-                Fill::NonZero,
-                t,
-                theme.bg_primary,
-                None,
-                &card.to_rounded_rect(14.0),
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                theme.border_standard,
-                None,
-                &card.to_rounded_rect(14.0),
-            );
+        bar
+    }
 
-            // Database-cylinder mark, drawn from the accent so it re-tints.
-            let accent = theme.accent_primary;
-            let icx = cx;
-            let icy = card.y0 + 34.0;
-            let rx = 21.0;
-            let ry = 6.5;
-            let bh = 30.0;
-            scene.fill(
-                Fill::NonZero,
-                t,
-                p.selection,
-                None,
-                &Rect::new(icx - rx, icy, icx + rx, icy + bh),
-            );
-            scene.fill(
-                Fill::NonZero,
-                t,
-                p.selection,
-                None,
-                &vello::kurbo::Ellipse::new((icx, icy + bh), (rx, ry), 0.0),
-            );
-            scene.stroke(
-                &Stroke::new(1.3),
-                t,
-                accent,
-                None,
-                &Line::new(Point::new(icx - rx, icy), Point::new(icx - rx, icy + bh)),
-            );
-            scene.stroke(
-                &Stroke::new(1.3),
-                t,
-                accent,
-                None,
-                &Line::new(Point::new(icx + rx, icy), Point::new(icx + rx, icy + bh)),
-            );
-            scene.stroke(
-                &Stroke::new(1.3),
-                t,
-                accent,
-                None,
-                &vello::kurbo::Ellipse::new((icx, icy + bh * 0.5), (rx, ry), 0.0),
-            );
-            scene.fill(
-                Fill::NonZero,
-                t,
-                accent,
-                None,
-                &vello::kurbo::Ellipse::new((icx, icy), (rx, ry), 0.0),
-            );
+    /// Composed zero-state — a database mark, a clear title + hint, and a
+    /// single primary action — shown until the user adds a connection.
+    /// `bar` is the tab bar rect, so the card centers in the space below it.
+    fn draw_main_empty_state(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bar: Rect,
+    ) {
+        let body = Rect::new(
+            self.main_rect.x0,
+            bar.y1,
+            self.main_rect.x1,
+            self.main_rect.y1,
+        );
+        let cx = body.center().x;
+        let card_w = 380.0_f64.min(body.width() - 32.0);
+        let card_h = 250.0;
+        let card = Rect::new(
+            cx - card_w / 2.0,
+            body.center().y - card_h / 2.0,
+            cx + card_w / 2.0,
+            body.center().y + card_h / 2.0,
+        );
+        Self::draw_empty_state_card_bg(scene, t, theme, card);
+        Self::draw_empty_state_db_icon(scene, t, theme, cx, card);
+        Self::draw_empty_state_text(scene, t, tr, theme, cx, card, card_w);
+        self.draw_empty_state_button(scene, t, tr, theme, cx, card);
+    }
 
-            let title = "No connection yet";
-            let hint = "Connect to a PostgreSQL, MySQL or SQLite database to browse its schema and run queries.";
-            let (tw, _) = tr.measure(title, 17.0, None);
-            tr.draw_text(
-                scene,
-                title,
-                17.0,
-                theme.text_primary,
-                t * Affine::translate((cx - f64::from(tw) / 2.0, card.y0 + 92.0)),
-                None,
-            );
-            tr.draw_text(
-                scene,
-                hint,
-                12.5,
-                theme.text_dim,
-                t * Affine::translate((card.x0 + 26.0, card.y0 + 120.0)),
-                Some((card_w - 52.0) as f32),
-            );
+    fn draw_empty_state_card_bg(scene: &mut Scene, t: Affine, theme: &Theme, card: Rect) {
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.bg_primary,
+            None,
+            &card.to_rounded_rect(14.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            theme.border_standard,
+            None,
+            &card.to_rounded_rect(14.0),
+        );
+    }
 
-            // Primary action.
-            let btn_w = 188.0;
-            let btn = Rect::new(
-                cx - btn_w / 2.0,
-                card.y1 - 54.0,
-                cx + btn_w / 2.0,
-                card.y1 - 20.0,
-            );
-            self.empty_new_conn_btn = btn;
-            let btn_bg = if btn.contains(self.cursor) {
-                theme.accent_hover
-            } else {
-                theme.accent_primary
-            };
-            scene.fill(Fill::NonZero, t, btn_bg, None, &btn.to_rounded_rect(7.0));
-            let label = "+  New connection";
-            let (lw, _) = tr.measure(label, 13.0, None);
-            tr.draw_text(
-                scene,
-                label,
-                13.0,
-                Color::WHITE,
-                t * Affine::translate((cx - f64::from(lw) / 2.0, btn.y0 + 9.0)),
-                None,
-            );
-            return;
-        }
+    /// Database-cylinder mark, drawn from the accent so it re-tints.
+    fn draw_empty_state_db_icon(scene: &mut Scene, t: Affine, theme: &Theme, cx: f64, card: Rect) {
+        let p = theme.db();
+        let accent = theme.accent_primary;
+        let icx = cx;
+        let icy = card.y0 + 34.0;
+        let rx = 21.0;
+        let ry = 6.5;
+        let bh = 30.0;
+        scene.fill(
+            Fill::NonZero,
+            t,
+            p.selection,
+            None,
+            &Rect::new(icx - rx, icy, icx + rx, icy + bh),
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            p.selection,
+            None,
+            &vello::kurbo::Ellipse::new((icx, icy + bh), (rx, ry), 0.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.3),
+            t,
+            accent,
+            None,
+            &Line::new(Point::new(icx - rx, icy), Point::new(icx - rx, icy + bh)),
+        );
+        scene.stroke(
+            &Stroke::new(1.3),
+            t,
+            accent,
+            None,
+            &Line::new(Point::new(icx + rx, icy), Point::new(icx + rx, icy + bh)),
+        );
+        scene.stroke(
+            &Stroke::new(1.3),
+            t,
+            accent,
+            None,
+            &vello::kurbo::Ellipse::new((icx, icy + bh * 0.5), (rx, ry), 0.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            accent,
+            None,
+            &vello::kurbo::Ellipse::new((icx, icy), (rx, ry), 0.0),
+        );
+    }
 
-        match self.session.tab {
-            MainTab::Query => self.draw_query_tab(scene, t, tr, theme),
-            MainTab::Data => self.draw_data_tab(scene, t, tr, theme),
-            MainTab::Structure => self.draw_structure_tab(scene, t, tr, theme),
-        }
+    #[allow(clippy::too_many_arguments)]
+    fn draw_empty_state_text(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cx: f64,
+        card: Rect,
+        card_w: f64,
+    ) {
+        let title = "No connection yet";
+        let hint = "Connect to a PostgreSQL, MySQL or SQLite database to browse its schema and run queries.";
+        let (tw, _) = tr.measure(title, 17.0, None);
+        tr.draw_text(
+            scene,
+            title,
+            17.0,
+            theme.text_primary,
+            t * Affine::translate((cx - f64::from(tw) / 2.0, card.y0 + 92.0)),
+            None,
+        );
+        tr.draw_text(
+            scene,
+            hint,
+            12.5,
+            theme.text_dim,
+            t * Affine::translate((card.x0 + 26.0, card.y0 + 120.0)),
+            Some((card_w - 52.0) as f32),
+        );
+    }
+
+    fn draw_empty_state_button(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cx: f64,
+        card: Rect,
+    ) {
+        let btn_w = 188.0;
+        let btn = Rect::new(
+            cx - btn_w / 2.0,
+            card.y1 - 54.0,
+            cx + btn_w / 2.0,
+            card.y1 - 20.0,
+        );
+        self.empty_new_conn_btn = btn;
+        let btn_bg = if btn.contains(self.cursor) {
+            theme.accent_hover
+        } else {
+            theme.accent_primary
+        };
+        scene.fill(Fill::NonZero, t, btn_bg, None, &btn.to_rounded_rect(7.0));
+        let label = "+  New connection";
+        let (lw, _) = tr.measure(label, 13.0, None);
+        tr.draw_text(
+            scene,
+            label,
+            13.0,
+            Color::WHITE,
+            t * Affine::translate((cx - f64::from(lw) / 2.0, btn.y0 + 9.0)),
+            None,
+        );
     }
 
     /// Hamburger / close toggle at the left of the tab bar. Shown whenever the
@@ -1487,7 +1759,7 @@ impl DbClientApp {
         );
 
         // Editor.
-        self.editor.draw(scene, t, tr, theme);
+        self.editor.draw_embedded(scene, t, tr, theme);
 
         // Result message strip between editor and grid.
         let strip_y = self.editor.rect().y1 + 4.0;
@@ -1564,13 +1836,7 @@ impl DbClientApp {
         }
     }
 
-    fn draw_data_tab(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_data_tab(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let p = theme.db();
         let toolbar = Rect::new(
             self.main_rect.x0,
@@ -1610,7 +1876,7 @@ impl DbClientApp {
     }
 
     fn draw_structure_tab(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1881,6 +2147,7 @@ mod behavior_tests {
     use super::*;
     use automerge::ROOT;
     use qos_actions::Action;
+    use ui::a11y::Role;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
 
@@ -1924,7 +2191,7 @@ mod behavior_tests {
         app: &mut DbClientApp,
         doc: &mut AutoCommit,
         ev: &WindowEvent,
-        mods: &Modifiers,
+        mods: Modifiers,
     ) -> bool {
         let taffy = TaffyTree::<()>::new();
         let mut handled = false;
@@ -1932,7 +2199,7 @@ mod behavior_tests {
         app.handle_event(
             ev,
             1.0,
-            mods,
+            &mods,
             doc,
             &ROOT,
             &mut handled,
@@ -1971,7 +2238,7 @@ mod behavior_tests {
             &mut app,
             &mut doc,
             &char_event("Z"),
-            &Modifiers::default()
+            Modifiers::default()
         ));
         doc.commit();
         let after = crate::doc::EditorDoc::read_sql(&doc);
@@ -1989,6 +2256,51 @@ mod behavior_tests {
         );
     }
 
+    /// The adopted editor's selection is not local-only decoration: replacing
+    /// it performs one splice on the same shared SQL `Text` object.
+    #[test]
+    fn typing_replaces_the_selected_sql_in_the_crdt() {
+        let (mut app, mut doc) = synced();
+        assert!(app.editor.value().starts_with("SELECT"));
+        app.editor.set_selection(0, "SELECT".len());
+
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &char_event("WITH"),
+            Modifiers::default()
+        ));
+
+        assert!(app.editor.value().starts_with("WITH"));
+        assert_eq!(
+            crate::doc::EditorDoc::read_sql(&doc),
+            app.editor.value(),
+            "selection replacement and CRDT text stay byte-identical"
+        );
+    }
+
+    #[test]
+    fn sync_pulls_a_collaborators_sql_edit_into_the_shared_editor() {
+        let (mut app, mut doc) = synced();
+        crate::doc::EditorDoc::set_sql(&mut doc, "SELECT * FROM remote_table");
+
+        app.sync(&mut doc, &ROOT);
+
+        assert_eq!(app.editor.value(), "SELECT * FROM remote_table");
+    }
+
+    #[test]
+    fn root_forwards_the_embedded_editors_platform_contract() {
+        let (app, _doc) = synced();
+        let a11y = app
+            .accessibility()
+            .expect("query tab exposes the editor's accessibility node");
+
+        assert_eq!(a11y.role, Role::MultilineTextInput);
+        assert!(app.is_focused(), "startup typing focus reaches the editor");
+        assert!(app.ime_purpose().is_some(), "focused editor enables IME");
+    }
+
     /// Running a query is external: Ctrl+Enter dispatches work to the engine
     /// worker and writes nothing to the shared document.
     #[test]
@@ -1999,7 +2311,7 @@ mod behavior_tests {
 
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
         assert!(
-            send(&mut app, &mut doc, &enter_event(), &ctrl),
+            send(&mut app, &mut doc, &enter_event(), ctrl),
             "Ctrl+Enter runs the query"
         );
         assert_eq!(

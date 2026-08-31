@@ -5,6 +5,16 @@
 //! actual overlay, and the assertions are on bytes that came back from `bash`
 //! running inside it.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -17,7 +27,9 @@ use ush::supervisor::{ServeRequest, ServeResponse, decide_serve, recv_with_fd};
 /// Read from a descriptor until `needle` shows up or the deadline passes.
 fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
     let mut seen = String::new();
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
     // SAFETY: `fd` is a pty master this test owns. Non-blocking so the loop can
     // give up rather than hang the suite.
     unsafe {
@@ -29,7 +41,10 @@ fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
         // SAFETY: as above; `buf` is a live local buffer.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
         if n > 0 {
-            seen.push_str(&String::from_utf8_lossy(&buf[..n as usize]));
+            // `n > 0` was just checked, so the cast below cannot lose the sign.
+            #[allow(clippy::cast_sign_loss, reason = "n > 0 was just checked above")]
+            let n = n as usize;
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
             if seen.contains(needle) {
                 return seen;
             }
@@ -168,11 +183,13 @@ fn run_handoff() {
     let serve_socket = socket.clone();
     let serve_store = store;
     std::thread::spawn(move || {
-        let _ = ush::supervisor::serve(&serve_socket, serve_store, PathBuf::from("/"));
+        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
     });
 
     // Wait for the listener rather than sleeping a fixed amount.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .unwrap_or_else(Instant::now);
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -216,7 +233,7 @@ fn run_handoff() {
 
     // Wait for a prompt before typing: the first layer mirrors ~22k
     // directories and runs `/etc/profile.d`, so early writes are lost.
-    let prompt = read_until(fd, "]#", Duration::from_mins(4));
+    let prompt = read_until(fd, "]#", Duration::from_secs(240));
     assert!(
         prompt.contains("]#"),
         "no prompt appeared within the timeout. What came back:\n{prompt}"
@@ -231,7 +248,7 @@ fn run_handoff() {
     let written = unsafe { libc::write(fd, script.as_ptr().cast::<libc::c_void>(), script.len()) };
     assert!(written > 0, "could not write to the pty");
 
-    let seen = read_until(fd, marker, Duration::from_mins(1));
+    let seen = read_until(fd, marker, Duration::from_secs(60));
     assert!(
         seen.contains(marker),
         "no shell answered on the pty within the timeout. What came back:\n{seen}"
@@ -249,7 +266,11 @@ fn run_handoff() {
     // `TempDir`'s own cleanup fails silently — tear it down like the runtime does.
     let path = dir.keep();
     ush::guest::remove_dir_all_forced(&path);
-    assert!(!path.exists(), "the test left its store behind at {path:?}");
+    assert!(
+        !path.exists(),
+        "the test left its store behind at {}",
+        path.display()
+    );
 }
 
 /// A malformed request must be refused with a reply, not by dropping the
@@ -264,7 +285,7 @@ fn a_malformed_request_is_answered() {
 
     let serve_socket = socket.clone();
     std::thread::spawn(move || {
-        let _ = ush::supervisor::serve(&serve_socket, store, PathBuf::from("/"));
+        let _ = ush::supervisor::serve(&serve_socket, &store, &PathBuf::from("/"));
     });
     let deadline = Instant::now() + Duration::from_secs(10);
     while !socket.exists() && Instant::now() < deadline {

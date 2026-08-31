@@ -15,6 +15,16 @@
 //! runs. Every assertion rides the real `SettingsApp` widget tree and the real
 //! `TextInput`/`Container`/`Row`/`NavSplit` event path; nothing is mocked.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use automerge::AutoCommit;
@@ -297,7 +307,7 @@ impl Harness {
     fn sidebar_row_count(&self) -> usize {
         fn walk(w: &dyn Widget, n: &mut usize) {
             if w.name() == "SidebarRow" {
-                *n += 1;
+                *n = n.saturating_add(1);
             }
             for c in w.children() {
                 walk(c, n);

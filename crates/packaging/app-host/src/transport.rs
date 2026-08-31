@@ -18,7 +18,14 @@ use crate::store::Store;
 /// Bind the Unix socket. Ensures the parent directory exists, drops a
 /// stale socket file from a previous run, and locks the socket to
 /// user-only permissions.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created or the
+/// socket cannot be bound.
 pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -26,13 +33,16 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     // the path already exists.
     let _ = std::fs::remove_file(socket);
     let listener = UnixListener::bind(socket)?;
-    use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
     Ok(listener)
 }
 
 /// Run an accept loop forever. Each accepted stream gets its own
 /// capnp-rpc system + service instance backed by the shared `Store`.
+///
+/// # Errors
+///
+/// Returns an error if accepting a connection off the listener fails.
 pub async fn serve(
     listener: UnixListener,
     store: Arc<Store>,
@@ -50,6 +60,19 @@ pub async fn serve(
 }
 
 /// Handle one accepted Unix stream as a capnp-rpc session.
+///
+/// # Errors
+///
+/// Returns an error if the capnp-rpc system fails (a malformed message,
+/// a protocol violation, or the peer disconnecting mid-call).
+// This future is driven via `tokio::task::spawn_local` in `serve` and is
+// never meant to cross a thread: capnp-rpc's `RpcSystem` future is
+// inherently non-`Send` (the same non-atomic `capnp::capability::Rc`
+// design as `service::AppHostServer`'s methods).
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc's RpcSystem future runs on a single-threaded LocalSet and is never Send by design"
+)]
 pub async fn handle_connection(
     stream: tokio::net::UnixStream,
     store: Arc<Store>,
@@ -62,7 +85,7 @@ pub async fn handle_connection(
         futures::io::BufReader::new(reader),
         futures::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Server,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let service = AppHostServer::new(store, max_store_bytes);
     let client: app_host::Client = capnp_rpc::new_client(service);

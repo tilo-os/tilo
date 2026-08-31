@@ -368,41 +368,68 @@ impl Catalog {
             },
         ];
 
-        // Build a week of snapshots. Helper closure keeps the table compact.
+        // Build a week of snapshots, split across a few helpers to keep this
+        // constructor under the line budget; each pushes one day's worth.
         let mut snaps: Vec<Snapshot> = Vec::new();
-        let mut push = |id: &str,
-                        src: &str,
-                        dest: &str,
-                        day: u32,
-                        time: &str,
-                        kind: SnapType,
-                        ret: Retention,
-                        size: u64,
-                        delta: u64,
-                        files: u32,
-                        status: SnapStatus| {
-            snaps.push(Snapshot {
-                id: id.into(),
-                source_id: src.into(),
-                dest_id: dest.into(),
-                day,
-                time: time.into(),
-                kind,
-                retention: ret,
-                size_bytes: size,
-                delta_bytes: delta,
-                files_changed: files,
-                status,
-                files: Vec::new(),
-            });
-        };
+        Self::sample_snapshots_today(&mut snaps);
+        Self::sample_snapshots_days_1_to_3(&mut snaps);
+        Self::sample_snapshots_days_4_to_6(&mut snaps);
 
-        use Retention::{Daily, Hourly, Keep, Monthly, Weekly};
-        use SnapStatus::{Complete, Failed, Verifying};
+        // Attach a representative indexed listing per source, so the restore
+        // browser has real (sample) contents to show in screenshots.
+        for s in &mut snaps {
+            s.files = sample_files(&s.source_id);
+        }
+
+        Self {
+            sources,
+            snapshots: snaps,
+            destinations,
+        }
+    }
+
+    /// Push one sample [`Snapshot`] built from its flattened fields — the
+    /// single place [`Self::sample`]'s per-day helpers construct one.
+    #[allow(clippy::too_many_arguments)]
+    fn push_snapshot(
+        snaps: &mut Vec<Snapshot>,
+        id: &str,
+        src: &str,
+        dest: &str,
+        day: u32,
+        time: &str,
+        kind: SnapType,
+        ret: Retention,
+        size: u64,
+        delta: u64,
+        files: u32,
+        status: SnapStatus,
+    ) {
+        snaps.push(Snapshot {
+            id: id.into(),
+            source_id: src.into(),
+            dest_id: dest.into(),
+            day,
+            time: time.into(),
+            kind,
+            retention: ret,
+            size_bytes: size,
+            delta_bytes: delta,
+            files_changed: files,
+            status,
+            files: Vec::new(),
+        });
+    }
+
+    /// Today's (day 0) sample snapshots. Split out of [`Self::sample`] to
+    /// keep it under the line budget.
+    fn sample_snapshots_today(snaps: &mut Vec<Snapshot>) {
+        use Retention::{Daily, Hourly, Keep};
+        use SnapStatus::{Complete, Verifying};
         use SnapType::{Auto, Manual};
 
-        // --- Today (day 0) ---
-        push(
+        Self::push_snapshot(
+            snaps,
             "w-0-1700",
             "workspace",
             "pool",
@@ -415,7 +442,8 @@ impl Catalog {
             312,
             Verifying,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "w-0-1600",
             "workspace",
             "pool",
@@ -428,7 +456,8 @@ impl Catalog {
             211,
             Complete,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "m-0-1422",
             "home",
             "pool",
@@ -441,7 +470,8 @@ impl Catalog {
             1840,
             Complete,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "w-0-1500",
             "workspace",
             "pool",
@@ -454,7 +484,8 @@ impl Catalog {
             142,
             Complete,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "h-0-0300",
             "home",
             "pool",
@@ -467,9 +498,25 @@ impl Catalog {
             1320,
             Complete,
         );
+    }
 
-        // --- Yesterday (day 1) ---
-        push(
+    /// Days 1–3 ago sample snapshots. Split out of [`Self::sample`] to keep
+    /// it under the line budget.
+    fn sample_snapshots_days_1_to_3(snaps: &mut Vec<Snapshot>) {
+        Self::sample_snapshots_day_1(snaps);
+        Self::sample_snapshots_days_2_to_3(snaps);
+    }
+
+    /// Yesterday's (day 1) sample snapshots. Split out of
+    /// [`Self::sample_snapshots_days_1_to_3`] to keep it under the line
+    /// budget.
+    fn sample_snapshots_day_1(snaps: &mut Vec<Snapshot>) {
+        use Retention::Daily;
+        use SnapStatus::Complete;
+        use SnapType::Auto;
+
+        Self::push_snapshot(
+            snaps,
             "h-1-0300",
             "home",
             "pool",
@@ -482,7 +529,8 @@ impl Catalog {
             980,
             Complete,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "w-1-0900",
             "workspace",
             "usb",
@@ -495,7 +543,8 @@ impl Catalog {
             88,
             Complete,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "e-1-0400",
             "etc",
             "pool",
@@ -508,9 +557,19 @@ impl Catalog {
             23,
             Complete,
         );
+    }
+
+    /// Days 2–3 ago sample snapshots. Split out of
+    /// [`Self::sample_snapshots_days_1_to_3`] to keep it under the line
+    /// budget.
+    fn sample_snapshots_days_2_to_3(snaps: &mut Vec<Snapshot>) {
+        use Retention::{Daily, Keep, Weekly};
+        use SnapStatus::Complete;
+        use SnapType::{Auto, Manual};
 
         // --- 2 days ago ---
-        push(
+        Self::push_snapshot(
+            snaps,
             "m-2-0910",
             "home",
             "usb",
@@ -523,7 +582,8 @@ impl Catalog {
             3210,
             Complete,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "h-2-0300",
             "home",
             "pool",
@@ -538,7 +598,8 @@ impl Catalog {
         );
 
         // --- 3 days ago ---
-        push(
+        Self::push_snapshot(
+            snaps,
             "h-3-0300",
             "home",
             "pool",
@@ -551,7 +612,8 @@ impl Catalog {
             870,
             Complete,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "e-3-0400",
             "etc",
             "b2",
@@ -564,9 +626,18 @@ impl Catalog {
             41,
             Complete,
         );
+    }
+
+    /// Days 4–6 ago sample snapshots. Split out of [`Self::sample`] to keep
+    /// it under the line budget.
+    fn sample_snapshots_days_4_to_6(snaps: &mut Vec<Snapshot>) {
+        use Retention::{Daily, Monthly, Weekly};
+        use SnapStatus::{Complete, Failed};
+        use SnapType::Auto;
 
         // --- 4 days ago ---
-        push(
+        Self::push_snapshot(
+            snaps,
             "h-4-0300",
             "home",
             "pool",
@@ -579,7 +650,8 @@ impl Catalog {
             760,
             Complete,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "w-4-1200",
             "workspace",
             "b2",
@@ -594,7 +666,8 @@ impl Catalog {
         );
 
         // --- 5 days ago ---
-        push(
+        Self::push_snapshot(
+            snaps,
             "h-5-0300",
             "home",
             "pool",
@@ -609,7 +682,8 @@ impl Catalog {
         );
 
         // --- 6 days ago ---
-        push(
+        Self::push_snapshot(
+            snaps,
             "h-6-0300",
             "home",
             "usb",
@@ -622,7 +696,8 @@ impl Catalog {
             610,
             Complete,
         );
-        push(
+        Self::push_snapshot(
+            snaps,
             "e-6-0400",
             "etc",
             "b2",
@@ -635,18 +710,6 @@ impl Catalog {
             33,
             Complete,
         );
-
-        // Attach a representative indexed listing per source, so the restore
-        // browser has real (sample) contents to show in screenshots.
-        for s in &mut snaps {
-            s.files = sample_files(&s.source_id);
-        }
-
-        Self {
-            sources,
-            snapshots: snaps,
-            destinations,
-        }
     }
 
     pub fn source(&self, id: &str) -> Option<&Source> {
