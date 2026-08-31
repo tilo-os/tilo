@@ -904,6 +904,8 @@ impl Highlighter for RustHighlighter {
 /// `--` line comments, `/* … */` block comments (carried), and numbers.
 pub struct SqlHighlighter {
     generic: GenericHighlighter,
+    functions: HashSet<String>,
+    types: HashSet<String>,
 }
 
 impl SqlHighlighter {
@@ -968,10 +970,73 @@ impl SqlHighlighter {
             "MIN",
             "MAX",
             "WITH",
+            "BEGIN",
+            "COMMIT",
+            "ROLLBACK",
+            "PRAGMA",
+            "EXISTS",
+            "USING",
+            "CASCADE",
+            "CHECK",
+            "AUTOINCREMENT",
+            "ASC",
+            "DESC",
         ];
         const CONST: &[&str] = &["NULL", "TRUE", "FALSE"];
+        const FUNCTIONS: &[&str] = &[
+            "COUNT",
+            "SUM",
+            "AVG",
+            "MIN",
+            "MAX",
+            "ROUND",
+            "COALESCE",
+            "IFNULL",
+            "LENGTH",
+            "LOWER",
+            "UPPER",
+            "SUBSTR",
+            "SUBSTRING",
+            "TRIM",
+            "REPLACE",
+            "ABS",
+            "CAST",
+            "DATE",
+            "TIME",
+            "DATETIME",
+            "STRFTIME",
+            "NOW",
+            "GROUP_CONCAT",
+            "TOTAL",
+            "NULLIF",
+            "INSTR",
+        ];
+        const TYPES: &[&str] = &[
+            "INTEGER",
+            "INT",
+            "BIGINT",
+            "SMALLINT",
+            "TEXT",
+            "VARCHAR",
+            "CHAR",
+            "BLOB",
+            "REAL",
+            "FLOAT",
+            "DOUBLE",
+            "NUMERIC",
+            "DECIMAL",
+            "BOOLEAN",
+            "BOOL",
+            "DATE",
+            "DATETIME",
+            "TIMESTAMP",
+            "TIME",
+            "SERIAL",
+        ];
         Self {
             generic: GenericHighlighter::new(KW, CONST, None, true),
+            functions: FUNCTIONS.iter().map(|word| (*word).to_string()).collect(),
+            types: TYPES.iter().map(|word| (*word).to_string()).collect(),
         }
     }
 }
@@ -1026,8 +1091,8 @@ impl Highlighter for SqlHighlighter {
             }
             let Some(&b) = bytes.get(i) else { break };
             let c = b as char;
-            if c == '\'' {
-                let end = string_end(line, i, '\'');
+            if c == '\'' || c == '"' {
+                let end = sql_string_end(line, i, c);
                 spans.push(Span::new(i..end, TokenKind::StringLit));
                 i = end;
                 continue;
@@ -1044,13 +1109,45 @@ impl Highlighter for SqlHighlighter {
                     i = end;
                     continue;
                 };
-                if let Some(kind) = self.generic.classify_word(word) {
+                let upper = word.to_ascii_uppercase();
+                let kind = if self.functions.contains(&upper) {
+                    Some(TokenKind::Function)
+                } else if self.types.contains(&upper) {
+                    Some(TokenKind::Type)
+                } else {
+                    self.generic.classify_word(word)
+                };
+                if let Some(kind) = kind {
                     // Don't up-case-classify identifiers as Type in SQL; only
-                    // keyword/constant matter.
-                    if matches!(kind, TokenKind::Keyword | TokenKind::Constant) {
+                    // explicitly listed SQL types receive that category.
+                    if matches!(
+                        kind,
+                        TokenKind::Keyword
+                            | TokenKind::Constant
+                            | TokenKind::Function
+                            | TokenKind::Type
+                    ) {
                         spans.push(Span::new(i..end, kind));
                     }
                 }
+                i = end;
+                continue;
+            }
+            if "+-*/%<>=!|&".contains(c) {
+                let mut end = i.saturating_add(c.len_utf8());
+                while bytes
+                    .get(end)
+                    .is_some_and(|byte| "+-*/%<>=!|&".contains(*byte as char))
+                {
+                    end = end.saturating_add(1);
+                }
+                spans.push(Span::new(i..end, TokenKind::Operator));
+                i = end;
+                continue;
+            }
+            if "(),.;".contains(c) {
+                let end = i.saturating_add(c.len_utf8());
+                spans.push(Span::new(i..end, TokenKind::Punctuation));
                 i = end;
                 continue;
             }
@@ -1061,6 +1158,32 @@ impl Highlighter for SqlHighlighter {
             carry: carry_out,
         }
     }
+}
+
+/// End of a SQL quoted literal/identifier, where a doubled quote escapes the
+/// delimiter (`'it''s'`, `"odd""name"`). Backslash escapes are accepted too
+/// for MySQL-compatible input. Unterminated strings run to the line end.
+fn sql_string_end(line: &str, start: usize, quote: char) -> usize {
+    let mut i = start.saturating_add(quote.len_utf8());
+    while i < line.len() {
+        let Some(rest) = line.get(i..) else { break };
+        let Some(c) = rest.chars().next() else { break };
+        i = i.saturating_add(c.len_utf8());
+        if c == '\\' {
+            if let Some(next) = line.get(i..).and_then(|tail| tail.chars().next()) {
+                i = i.saturating_add(next.len_utf8());
+            }
+            continue;
+        }
+        if c == quote {
+            if line.get(i..).is_some_and(|tail| tail.starts_with(quote)) {
+                i = i.saturating_add(quote.len_utf8());
+                continue;
+            }
+            break;
+        }
+    }
+    i.min(line.len())
 }
 
 /// Bit in [`HlState`] marking "the next line is inside a ```` ``` ```` fenced
@@ -1397,6 +1520,37 @@ mod tests {
         assert!(kws.contains(&"select".to_string()));
         assert!(kws.contains(&"from".to_string()));
         assert!(kws.contains(&"where".to_string()));
+    }
+
+    #[test]
+    fn sql_preserves_function_type_and_operator_categories() {
+        let hl = SqlHighlighter::new();
+        let line = "SELECT count(id)::integer >= 2";
+        let spans = hl.spans(line, 0).spans;
+        let classified = |needle: &str, kind: TokenKind| {
+            spans.iter().any(|span| {
+                span.kind == kind
+                    && line
+                        .get(span.range.clone())
+                        .is_some_and(|text| text == needle)
+            })
+        };
+        assert!(classified("count", TokenKind::Function));
+        assert!(classified("integer", TokenKind::Type));
+        assert!(classified(">=", TokenKind::Operator));
+    }
+
+    #[test]
+    fn sql_doubled_quotes_stay_inside_one_string_span() {
+        let hl = SqlHighlighter::new();
+        let line = "SELECT 'it''s valid', \"odd\"\"name\" FROM t";
+        let spans = hl.spans(line, 0).spans;
+        let strings: Vec<_> = spans
+            .iter()
+            .filter(|span| span.kind == TokenKind::StringLit)
+            .filter_map(|span| line.get(span.range.clone()))
+            .collect();
+        assert_eq!(strings, vec!["'it''s valid'", "\"odd\"\"name\""]);
     }
 
     #[test]

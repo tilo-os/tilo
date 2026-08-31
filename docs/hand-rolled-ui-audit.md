@@ -90,6 +90,14 @@ rectangular chrome, search grammar, clear button, live preview and
 Tab/Enter/Escape modal flow remain app policy; the transient values still
 create no CRDT changes, while selection, clipboard, Unicode-safe editing,
 context menus and IME come from the toolkit.
+**db_client** now binds the shared `CodeEditor` directly to its Automerge SQL
+`Text` with `Language::Sql`; query execution, snippets, result/status coupling,
+and global run shortcuts remain app policy, while selection, clipboard, undo,
+IME, shaped hit-testing, scrolling, gutter and a11y come from the toolkit. Its
+hand-rolled editor, approximate column geometry, SQL lexer, and editor-only
+document splice helpers were deleted. The built-in SQL highlighter was extended
+generically with SQL functions/types, operators and doubled-quote escaping so
+the adoption does not regress highlighting quality.
 
 ### Pure non-adoption — a fitting widget already exists (do these first)
 
@@ -125,7 +133,7 @@ context menus and IME come from the toolkit.
 | `apps/slides/src/app.rs:2310` `insert_text`, `:5742` backspace | slides | canvas text elements + speaker-notes box, hand-rolled caret/selection/splice | multiline canvas text editor | M | HIGH |
 | `apps/sheets/src/grid.rs:48` `EditState{chars,caret,sel}` | sheets | cell/formula body editor fully reimplements caret+selection; formula bar is a 2nd view | formula-aware single-line editor | L | HIGH |
 | `apps/code_editor/src/editor_view.rs` (1999 LOC) | code_editor | full multiline editor (caret/selection/completion). **Palette DONE** — the app-specific painter was replaced by a thin typed adapter over `ui::CommandPalette`, including shared IME/selection/clipboard and direct go-to-line arguments | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
-| `apps/db_client/src/editor.rs:310` SQL editor | db_client | own `caret`+`buffer`, `EditorDoc::insert`, pixel-approx column math | `ui::CodeEditor` (gap 2, **built**) w/ `Language::Sql` | L | HIGH |
+| ~~`apps/db_client/src/editor.rs` SQL editor~~ | db_client ✅ | **DONE** — CRDT-bound `ui::CodeEditor` with `Language::Sql`; app-local editor + lexer deleted, while query/snippet/results policy stays in the app | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
 | ~~`apps/typst_editor/src/editor.rs` (1198 LOC)~~ typst_editor | typst_editor ✅ | **DONE** — migrated onto `ui::CodeEditor` (`Language::Typst`); hand-rolled caret/anchor/selection/gutter/highlight + the per-line lexer deleted (~1100 LOC), thin shell keeps only the diagnostics overlay | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
 | `apps/calculator/src/model.rs:467` `expr`, `mathfield/mod.rs` | calculator | expression `String` spliced by keypad; `mathfield` is a legit **2D structured** editor | shared `MathField` (mathfield is CRDT-clean already) | M | MED |
 
@@ -465,10 +473,12 @@ themed, clipboard-correct version — do **not** keep forking.
    (gutter markers, squiggles, hover tooltip), positioned from the widget's
    public geometry (`caret_rect` / `selection_rects` / `gutter_width`). ~1100 LOC
    of duplicated editor/highlighter code removed; real selection/clipboard/undo
-   now for free. **Remaining adopters to migrate:** `code_editor/editor_view.rs`
-   (1999 LOC, + its command palette → reuse `ui` `command_palette`) and
-   `db_client/editor.rs` (SQL editor — use the built-in `Language::Sql`
-   highlighter).
+   now for free. **Adopter:** `db_client` — its CRDT-bound SQL editor now uses
+   `Language::Sql`; the app-local caret/buffer painter, approximate hit-testing,
+   lexer, and editor-only splice helpers are deleted. Query execution, snippet
+   loading, result/status interaction and Ctrl/Cmd+Enter remain host policy.
+   **Remaining adopter to migrate:** `code_editor/editor_view.rs` (1999 LOC; its
+   command palette already reuses `ui::CommandPalette`).
 
 3. **Reusable rich-text document editor.** `BlockEditor` exists (block-structured)
    but is not drop-in for a paged document with running headers
@@ -617,8 +627,8 @@ palettes, and test-only literals alone.
 
 ### Wave 7 — Larger widget builds, then adopt (MED/HIGH)
 The multi-day widget work: gap **2** (code editor) **built** as `ui::CodeEditor`
-and adopted by **typst_editor** (its editor + lexer deleted); remaining adopters
-**code_editor** and **db_client** SQL. Gap **3** (rich-text document editor) →
+and adopted by **typst_editor** and **db_client** (their app-local editor/lexer
+forks deleted); remaining adopter **code_editor**. Gap **3** (rich-text document editor) →
 word-processor, mail, slides; gap
 **4** (formula cell editor) → sheets; gap **12** (Chart/Gauge + virtualized
 DataTable) → monitor, logs; gap **10** (TreeView inline-rename) → notes; gap

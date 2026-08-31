@@ -1,5 +1,6 @@
 //! Root widget for the database client. Owns the [`Session`] (connections,
-//! engine, schema, results) and the [`SqlEditor`] (CRDT-backed buffer), lays
+//! engine, schema, results) and the shared [`ui::CodeEditor`] (CRDT-backed
+//! SQL buffer), lays
 //! out the two regions (connections+schema sidebar, main panel) itself, and
 //! draws everything directly into the Vello scene. Status is surfaced as a
 //! transient floating bubble rather than a permanent strip, so the content
@@ -35,11 +36,10 @@ use uuid::Uuid;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{CodeEditor, FlapState, Language, SplitLayout, Widget};
 
 use crate::connect_modal::ConnectModal;
 use crate::doc::{ConnectionsDoc, EditorDoc};
-use crate::editor::SqlEditor;
 use crate::grid::GridView;
 use crate::model::Engine;
 use crate::schema_tree::{SchemaTree, TreeClick};
@@ -63,7 +63,7 @@ const TOGGLE_SIZE: f64 = 26.0;
 )]
 pub struct DbClientApp {
     session: Session,
-    editor: SqlEditor,
+    editor: CodeEditor,
     grid: GridView,
     data_grid: GridView,
     tree: SchemaTree,
@@ -182,10 +182,18 @@ impl DbClientApp {
     }
 
     fn build(session: Session, demo: bool) -> Self {
+        let mut editor = CodeEditor::local()
+            .with_language(Language::Sql)
+            .with_font_size(13.5)
+            .with_tab_width(2)
+            .with_id("sql-editor");
+        // Preserve the database client's type-to-query startup policy. The
+        // shared widget itself remains conservatively unfocused by default.
+        editor.set_focused(true);
         let mut app = Self {
             session,
             demo,
-            editor: SqlEditor::new(),
+            editor,
             grid: GridView::new(),
             data_grid: GridView::new(),
             tree: SchemaTree::new(),
@@ -226,14 +234,14 @@ impl DbClientApp {
     }
 
     fn run_current_query(&mut self) {
-        let sql = self.editor.buffer().to_string();
+        let sql = self.editor.value().to_string();
         self.session.run_query(&sql);
         self.dirty = true;
     }
 
     fn load_snippet(&mut self, sql: &str, doc: &mut AutoCommit) {
         EditorDoc::set_sql(doc, sql);
-        self.editor.sync(doc);
+        self.editor.pull(doc);
         self.snippets_open = false;
         self.dirty = true;
     }
@@ -451,7 +459,9 @@ impl Widget for DbClientApp {
             }
         }
 
-        self.editor.sync(state);
+        let sql_text = EditorDoc::sql_text(state);
+        self.editor.bind_text(sql_text);
+        self.editor.pull(state);
     }
 
     fn build_layout(
@@ -581,11 +591,11 @@ impl Widget for DbClientApp {
         scale_factor: f64,
         modifiers: &Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         // Modal swallows events while open.
         if self.modal.is_open() {
@@ -632,12 +642,18 @@ impl Widget for DbClientApp {
         // toggle click, or an Esc that dismissed the overlay flap — so an open
         // sidebar doesn't leak clicks into the editor behind it.
         if self.session.tab == MainTab::Query && !*handled {
-            self.editor
-                .handle_event(event, scale_factor, modifiers, state, handled);
-            if self.editor.take_run() {
-                self.run_current_query();
-            }
-            if self.editor.take_mutated() {
+            self.editor.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if self.editor.take_dirty().is_some() {
                 self.dirty = true;
             }
         }
@@ -653,6 +669,20 @@ impl Widget for DbClientApp {
 
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.editor.set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.session.tab == MainTab::Query && self.editor.is_focused()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.cursor_shape(point))
+            .flatten()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -677,6 +707,75 @@ impl Widget for DbClientApp {
         // Hand the action model's undo bracket to the host so saved-connection
         // CRUD becomes a single undo boundary and replicates to peers.
         self.actions.take_committed()
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.session.tab == MainTab::Query {
+            self.editor
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        (self.session.tab == MainTab::Query && self.editor.is_focused())
+            .then(|| self.editor.ime_cursor_rect())
+            .flatten()
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        (self.session.tab == MainTab::Query && self.editor.is_focused())
+            .then(|| self.editor.ime_purpose())
+            .flatten()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.accessibility())
+            .flatten()
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.session.tab == MainTab::Query && self.editor.perform_action(action, state, path)
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.session.tab == MainTab::Query && self.editor.wants_pointer_capture()
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.editor.needs_commit()
+    }
+
+    fn on_commit(&mut self) {
+        self.editor.on_commit();
+    }
+
+    fn get_state(&self) -> Option<String> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.get_state())
+            .flatten()
+    }
+
+    fn set_state(&mut self, state: &str) {
+        self.editor.set_state(state);
+    }
+
+    fn text_review(&self) -> Option<(usize, String)> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.text_review())
+            .flatten()
     }
 }
 
@@ -1631,7 +1730,7 @@ impl DbClientApp {
         );
 
         // Editor.
-        self.editor.draw(scene, t, tr, theme);
+        self.editor.draw_embedded(scene, t, tr, theme);
 
         // Result message strip between editor and grid.
         let strip_y = self.editor.rect().y1 + 4.0;
@@ -2019,6 +2118,7 @@ mod behavior_tests {
     use super::*;
     use automerge::ROOT;
     use qos_actions::Action;
+    use ui::a11y::Role;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
 
@@ -2125,6 +2225,51 @@ mod behavior_tests {
             peer.get_heads(),
             "byte-identical convergence"
         );
+    }
+
+    /// The adopted editor's selection is not local-only decoration: replacing
+    /// it performs one splice on the same shared SQL `Text` object.
+    #[test]
+    fn typing_replaces_the_selected_sql_in_the_crdt() {
+        let (mut app, mut doc) = synced();
+        assert!(app.editor.value().starts_with("SELECT"));
+        app.editor.set_selection(0, "SELECT".len());
+
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &char_event("WITH"),
+            Modifiers::default()
+        ));
+
+        assert!(app.editor.value().starts_with("WITH"));
+        assert_eq!(
+            crate::doc::EditorDoc::read_sql(&doc),
+            app.editor.value(),
+            "selection replacement and CRDT text stay byte-identical"
+        );
+    }
+
+    #[test]
+    fn sync_pulls_a_collaborators_sql_edit_into_the_shared_editor() {
+        let (mut app, mut doc) = synced();
+        crate::doc::EditorDoc::set_sql(&mut doc, "SELECT * FROM remote_table");
+
+        app.sync(&mut doc, &ROOT);
+
+        assert_eq!(app.editor.value(), "SELECT * FROM remote_table");
+    }
+
+    #[test]
+    fn root_forwards_the_embedded_editors_platform_contract() {
+        let (app, _doc) = synced();
+        let a11y = app
+            .accessibility()
+            .expect("query tab exposes the editor's accessibility node");
+
+        assert_eq!(a11y.role, Role::MultilineTextInput);
+        assert!(app.is_focused(), "startup typing focus reaches the editor");
+        assert!(app.ime_purpose().is_some(), "focused editor enables IME");
     }
 
     /// Running a query is external: Ctrl+Enter dispatches work to the engine
