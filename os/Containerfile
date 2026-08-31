@@ -201,6 +201,23 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         gstreamer1-devel gstreamer1-plugins-base-devel \
     && dnf clean all
 
+# Fedora's sccache RPM is built without the S3 backend. Use the same pinned,
+# full-feature static client as the canonical CI builder so the nested image
+# build can reach the shared compiler cache without leaking credentials into a
+# layer. The archive checksum is also pinned in os/Containerfile.builder.
+ARG SCCACHE_VERSION=0.17.0
+ARG SCCACHE_SHA256=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
+ADD --checksum=sha256:${SCCACHE_SHA256} \
+    https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz \
+    /tmp/sccache.tar.gz
+RUN tar -xzf /tmp/sccache.tar.gz -C /tmp \
+    && install -m 0755 \
+       "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
+       /usr/local/bin/sccache \
+    && rm -rf /tmp/sccache.tar.gz \
+       "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl" \
+    && /usr/local/bin/sccache --version
+
 WORKDIR /build
 
 # The whole cargo workspace: in-tree crates (ui) + submodule working trees
