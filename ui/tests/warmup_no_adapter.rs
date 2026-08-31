@@ -75,6 +75,11 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
         ])
         .env(CHILD_MARKER, "1")
         .env("WGPU_BACKEND", NO_BACKENDS)
+        // CI pins ordinary renderer tests to llvmpipe. This child is
+        // intentionally constructing an empty backend set, so inheriting an
+        // adapter requirement would make wgpu reject the contradictory
+        // configuration before `try_new` can exercise its no-adapter path.
+        .env_remove("WGPU_ADAPTER_NAME")
         // Warmup is on by default, but the parent's environment might
         // have turned it off; the child needs it on to test anything.
         .env("QOS_STARTUP_WARM", "on")
