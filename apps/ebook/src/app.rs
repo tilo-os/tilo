@@ -49,6 +49,7 @@ use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Widget};
 use crate::comment_overlay::{CommentAction, CommentOverlay};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
+use crate::input_controls::{NoteAction, NoteComposer, NumberControls, NumberField};
 use crate::model::{
     AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
     Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
@@ -282,12 +283,8 @@ enum Action {
     SetComposition(CompositionStyle),
     /// Apply/toggle/replace a highlight colour over the current text selection.
     SetColor(HiColor),
-    /// Begin typing a numeric value directly (text size / line spacing / a
-    /// font's size multiplier): the value display becomes a small text field.
-    BeginEditValue(NumField),
     AddNote,
     CopySelection,
-    FinishNote,
     JumpTo(Uuid),
     Delete(Uuid),
     EditNote(Uuid),
@@ -342,8 +339,6 @@ enum Action {
     ToggleDefaultFontMenu,
     /// Enable/disable a font (whether it appears in the quick settings picker).
     ToggleFontShown(String),
-    FontMultInc(String),
-    FontMultDec(String),
     RemoveFont(String),
     OpenFontPicker,
     CloseFontPicker,
@@ -354,14 +349,6 @@ enum Action {
     ToggleSortMenu,
     SetSort(crate::model::LibrarySort),
     ToggleHideRead,
-}
-
-/// A numeric field the user can type a value into (in addition to +/− steppers).
-#[derive(Clone, PartialEq, Eq)]
-enum NumField {
-    FontScale,
-    LineSpacing,
-    FontMult(String),
 }
 
 /// What the colour picker is editing.
@@ -415,8 +402,6 @@ enum Ico {
     Toc,
     Notes,
     Bookmark(bool),
-    PlusI,
-    MinusI,
     /// A horizontal three-dot "more" glyph (opens the full settings screen).
     Dots,
     /// A downward chevron (dropdown affordance).
@@ -546,6 +531,9 @@ pub struct BooksApp {
     page_top_block: usize,
     /// The note currently being typed into (a CRDT annotation id).
     composing: Option<Uuid>,
+    /// Shared multiline input for standalone page notes. Highlight comments
+    /// keep using the comment overlay but share the same CRDT annotation model.
+    note_composer: NoteComposer,
     /// Floating highlight-comments panel. It owns open/anchor state, drawing,
     /// and its modal hit stack; the app only applies emitted domain actions.
     comment_overlay: CommentOverlay,
@@ -591,8 +579,8 @@ pub struct BooksApp {
     // --- settings screen (ephemeral) --------------------------------------
     settings_tab: SettingsTab,
     renaming: Option<Rename>,
-    /// An in-progress click-to-type numeric edit (value + live buffer), if any.
-    num_edit: Option<(NumField, String)>,
+    /// Shared spin buttons used by the quick-reading and font-manager panels.
+    number_controls: NumberControls,
     picker: Option<ColorPick>,
     /// Which picker sub-control a drag currently steers.
     pick_drag: Option<PickPart>,
@@ -750,6 +738,7 @@ impl BooksApp {
             cursor: Point::ZERO,
             page_top_block: 0,
             composing: None,
+            note_composer: NoteComposer::default(),
             comment_overlay: CommentOverlay::default(),
             press_hl_group: None,
             pending_last_page: false,
@@ -769,7 +758,7 @@ impl BooksApp {
             annotations: Vec::new(),
             settings_tab: SettingsTab::Fonts,
             renaming: None,
-            num_edit: None,
+            number_controls: NumberControls::default(),
             picker: None,
             pick_drag: None,
             pick_sv: Rect::ZERO,
@@ -1480,6 +1469,7 @@ impl BooksApp {
         BooksDoc::write_progress(doc, &id, &p);
         self.clear_selection();
         self.composing = None;
+        self.note_composer.close();
         self.comment_overlay.close();
         self.layout = None;
         self.last_persisted = None;
@@ -1611,12 +1601,8 @@ impl BooksApp {
                 s.scheme_id = String::new();
             }),
             Action::SetColor(c) => self.on_set_color(c, doc),
-            Action::BeginEditValue(field) => self.on_begin_edit_value(field, doc),
             Action::AddNote => self.on_add_note(doc),
             Action::CopySelection => self.on_copy_selection(),
-            Action::FinishNote => {
-                self.edit_note_text(doc, NoteEdit::Done);
-            }
             Action::EditNote(id) => self.on_edit_note(id),
             Action::JumpTo(id) => self.on_jump_to(id),
             Action::Delete(id) => self.on_delete_annotation(id, doc),
@@ -1654,8 +1640,6 @@ impl BooksApp {
             Action::SetDefaultFont(id) => self.on_set_default_font(&id, doc),
             Action::ToggleDefaultFontMenu => self.default_font_menu = !self.default_font_menu,
             Action::ToggleFontShown(id) => self.on_toggle_font_shown(&id, doc),
-            Action::FontMultInc(id) => self.on_font_mult_inc(&id, doc),
-            Action::FontMultDec(id) => self.on_font_mult_dec(&id, doc),
             Action::RemoveFont(id) => self.on_remove_font(&id, doc),
             Action::OpenFontPicker => self.on_open_font_picker(),
             Action::CloseFontPicker => self.font_picker = false,
@@ -1672,6 +1656,7 @@ impl BooksApp {
     fn on_back(&mut self) {
         self.view = View::Library;
         self.composing = None;
+        self.note_composer.close();
         self.comment_overlay.close();
         self.type_popover = false;
     }
@@ -1794,13 +1779,6 @@ impl BooksApp {
         }
     }
 
-    fn on_begin_edit_value(&mut self, field: NumField, doc: &mut AutoCommit) {
-        self.commit_rename(doc);
-        // Start with an empty buffer so typing replaces the value rather
-        // than appending to the current one.
-        self.num_edit = Some((field, String::new()));
-    }
-
     fn on_add_note(&mut self, doc: &mut AutoCommit) {
         // A note anchors to the live text selection; the composer
         // floats on-page near the passage rather than a separate screen.
@@ -1825,6 +1803,7 @@ impl BooksApp {
             );
             self.perform_action(doc, action);
             self.composing = Some(id);
+            self.note_composer.open(id, "");
         }
     }
 
@@ -1837,8 +1816,15 @@ impl BooksApp {
     }
 
     fn on_edit_note(&mut self, id: Uuid) {
-        self.composing = Some(id);
-        self.notes_flap.open();
+        if let Some(note) = self
+            .annotations
+            .iter()
+            .find(|a| a.id == id && a.kind == AnnoKind::Note)
+        {
+            self.composing = Some(id);
+            self.note_composer.open(id, &note.note);
+            self.notes_flap.open();
+        }
     }
 
     fn on_jump_to(&mut self, id: Uuid) {
@@ -1854,6 +1840,7 @@ impl BooksApp {
     fn on_delete_annotation(&mut self, id: Uuid, doc: &mut AutoCommit) {
         if self.composing == Some(id) {
             self.composing = None;
+            self.note_composer.close();
         }
         self.perform_action(doc, crate::actions::delete_annotation_action(id));
     }
@@ -1863,13 +1850,14 @@ impl BooksApp {
         // selection so its toolbar doesn't fight the popover.
         self.clear_selection();
         self.composing = None;
+        self.note_composer.close();
         self.comment_overlay.open(group);
     }
 
     fn on_close_comments(&mut self, doc: &mut AutoCommit) {
         // Finish any comment mid-composition so its text is saved.
         if self.composing.is_some() {
-            self.edit_note_text(doc, NoteEdit::Done);
+            self.finish_composing(doc);
         }
         self.comment_overlay.close();
     }
@@ -1880,12 +1868,13 @@ impl BooksApp {
             self.comment_overlay.close();
         }
         self.composing = None;
+        self.note_composer.close();
     }
 
     fn on_add_comment(&mut self, group: Uuid, doc: &mut AutoCommit) {
         // Anchor to the highlight's first piece so it sorts with the range.
         if self.composing.is_some() {
-            self.edit_note_text(doc, NoteEdit::Done);
+            self.finish_composing(doc);
         }
         let anchor = self
             .annotations
@@ -1917,6 +1906,7 @@ impl BooksApp {
     fn on_delete_comment(&mut self, id: Uuid, doc: &mut AutoCommit) {
         if self.composing == Some(id) {
             self.composing = None;
+            self.note_composer.close();
         }
         self.perform_action(doc, crate::actions::delete_annotation_action(id));
     }
@@ -1969,7 +1959,7 @@ impl BooksApp {
     fn on_open_settings(&mut self) {
         self.view = View::Settings;
         self.type_popover = false;
-        self.num_edit = None;
+        // Numeric controls retain their own edit state and commit on blur.
         self.font_picker = false;
         self.picker = None;
         self.default_font_menu = false;
@@ -2125,22 +2115,6 @@ impl BooksApp {
         let mut f = self.fonts.clone();
         if let Some(e) = f.iter_mut().find(|e| e.id == id) {
             e.shown = !e.shown;
-        }
-        BooksDoc::write_fonts(doc, &f);
-    }
-
-    fn on_font_mult_inc(&mut self, id: &str, doc: &mut AutoCommit) {
-        let mut f = self.fonts.clone();
-        if let Some(e) = f.iter_mut().find(|e| e.id == id) {
-            e.size_mult = (e.size_mult + 0.05).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX);
-        }
-        BooksDoc::write_fonts(doc, &f);
-    }
-
-    fn on_font_mult_dec(&mut self, id: &str, doc: &mut AutoCommit) {
-        let mut f = self.fonts.clone();
-        if let Some(e) = f.iter_mut().find(|e| e.id == id) {
-            e.size_mult = (e.size_mult - 0.05).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX);
         }
         BooksDoc::write_fonts(doc, &f);
     }
@@ -3057,6 +3031,29 @@ impl BooksApp {
         true
     }
 
+    fn set_composing_text(&mut self, doc: &mut AutoCommit, text: String) -> bool {
+        let Some(id) = self.composing else {
+            return false;
+        };
+        let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+            self.composing = None;
+            self.note_composer.close();
+            return false;
+        };
+        annotation.note = text;
+        BooksDoc::upsert_annotation(doc, &annotation);
+        true
+    }
+
+    fn finish_composing(&mut self, doc: &mut AutoCommit) -> bool {
+        let note_editor_open = self.note_composer.is_open();
+        let handled = self.edit_note_text(doc, NoteEdit::Done);
+        if note_editor_open {
+            self.note_composer.close();
+        }
+        handled
+    }
+
     // --- Hit-test helpers ----------------------------------------------------
 
     fn push_hit(&mut self, rect: Rect, action: Action) {
@@ -3180,6 +3177,7 @@ impl Widget for BooksApp {
                 let aid = a.id;
                 BooksDoc::upsert_annotation(doc, &a);
                 self.composing = Some(aid);
+                self.note_composer.open(aid, &a.note);
             }
         }
         if self.shot_comments && !self.comment_overlay.is_open() {
@@ -3270,6 +3268,7 @@ impl Widget for BooksApp {
     ) {
         self.hits.clear();
         self.comment_overlay.begin_frame();
+        self.number_controls.begin_frame();
         // Advance the rail flap transitions (reconcile first so a resize this
         // frame uses the right mode default) before laying anything out.
         self.reconcile_flaps();
@@ -3303,6 +3302,18 @@ impl Widget for BooksApp {
         taffy: &TaffyTree<()>,
     ) {
         if self.forward_rename_event(
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            node_id,
+            taffy,
+            handled,
+        ) {
+            return;
+        }
+        if self.forward_shared_input_event(
             event,
             scale_factor,
             modifiers,
@@ -3387,6 +3398,72 @@ impl Widget for BooksApp {
 }
 
 impl BooksApp {
+    #[allow(clippy::too_many_arguments)]
+    fn forward_shared_input_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+        handled: &mut bool,
+    ) -> bool {
+        let mut input_handled = false;
+        let (note_text, submit) = self.note_composer.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            node_id,
+            taffy,
+            &mut input_handled,
+        );
+        if let Some(text) = note_text {
+            self.set_composing_text(doc, text);
+        }
+        if submit {
+            self.finish_composing(doc);
+            input_handled = true;
+        }
+
+        let changes = self.number_controls.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            node_id,
+            taffy,
+            &mut input_handled,
+        );
+        for (field, value) in changes {
+            match field {
+                NumberField::FontScale => {
+                    self.bump_setting(doc, |settings| settings.font_scale = (value / 100.0) as f32);
+                }
+                NumberField::LineSpacing => {
+                    self.bump_setting(doc, |settings| settings.line_spacing = value as f32);
+                }
+                NumberField::FontMult(id) => {
+                    let mut fonts = self.fonts.clone();
+                    if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
+                        font.size_mult = value as f32;
+                    }
+                    BooksDoc::write_fonts(doc, &fonts);
+                }
+            }
+        }
+        if input_handled {
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+        }
+        input_handled
+    }
+
     /// An in-progress inline rename owns input first: forward the raw event to
     /// its embedded field, then persist any commit/cancel it produced. Returns
     /// `true` when the field consumed the event (the caller stops there); a
@@ -3505,6 +3582,19 @@ impl BooksApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        if let Some(action) = self.note_composer.hit_test(self.cursor) {
+            match action {
+                NoteAction::Swallow => {}
+                NoteAction::Save => {
+                    self.finish_composing(doc);
+                }
+                NoteAction::Delete(id) => self.on_delete_annotation(id, doc),
+            }
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
         // The comment panel owns a modal, private hit stack. Ask it
         // before the app-wide regions so its card cannot fall through
         // to page selection or rail controls underneath.
@@ -3769,49 +3859,9 @@ impl BooksApp {
         }
     }
 
-    /// Commit the click-to-type numeric edit (parsing + clamping into the
-    /// field's range). A blank/invalid buffer leaves the value unchanged.
-    fn commit_num_edit(&mut self, doc: &mut AutoCommit) {
-        let Some((field, buf)) = self.num_edit.take() else {
-            return;
-        };
-        // `f32::from_str` accepts "nan"/"inf"/"-inf" as valid text, which would
-        // otherwise slip a non-finite value into the CRDT and any serialiser
-        // downstream that (rightly) refuses non-finite floats.
-        let Ok(v) = buf.trim().parse::<f32>() else {
-            return;
-        };
-        if !v.is_finite() {
-            return;
-        }
-        match field {
-            NumField::FontScale => {
-                let scale = (v / 100.0).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
-                self.bump_setting(doc, |s| s.font_scale = scale);
-            }
-            NumField::LineSpacing => {
-                let ls = v.clamp(Settings::SPACING_MIN, Settings::SPACING_MAX);
-                self.bump_setting(doc, |s| s.line_spacing = ls);
-            }
-            NumField::FontMult(id) => {
-                let m = v.clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX);
-                let mut f = self.fonts.clone();
-                if let Some(e) = f.iter_mut().find(|e| e.id == id) {
-                    e.size_mult = m;
-                }
-                BooksDoc::write_fonts(doc, &f);
-            }
-        }
-    }
-
     /// Keyboard handling. Returns `true` if the key was consumed (so the App's
     /// focus-navigation fallback doesn't also steal the arrows).
     fn handle_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
-        // A click-to-type numeric edit captures typing first (digits + dot).
-        if self.num_edit.is_some() {
-            return self.handle_num_edit_key(key, doc);
-        }
-
         // An in-progress inline rename owns the keyboard through its embedded
         // field via `handle_event`; no key handling for it belongs here.
 
@@ -3829,35 +3879,6 @@ impl BooksApp {
         }
 
         self.handle_reader_key(key, mods, doc)
-    }
-
-    fn handle_num_edit_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
-        match key {
-            Key::Named(NamedKey::Enter) => {
-                self.commit_num_edit(doc);
-                true
-            }
-            Key::Named(NamedKey::Escape) => {
-                self.num_edit = None;
-                true
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if let Some((_, b)) = &mut self.num_edit {
-                    b.pop();
-                }
-                true
-            }
-            Key::Character(c) => {
-                if c.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
-                    && let Some((_, b)) = &mut self.num_edit
-                    && b.len() < 6
-                {
-                    b.push_str(c);
-                }
-                true
-            }
-            _ => false,
-        }
     }
 
     fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
@@ -4164,8 +4185,6 @@ impl BooksApp {
             Ico::Toc => paint::list(scene, t, inner, icon_col, w),
             Ico::Notes => paint::note(scene, t, inner, icon_col, w),
             Ico::Bookmark(filled) => paint::bookmark(scene, t, inner, icon_col, w, filled),
-            Ico::PlusI => paint::plus(scene, t, inner, icon_col, w),
-            Ico::MinusI => paint::minus(scene, t, inner, icon_col, w),
             Ico::Dots => paint::dots(scene, t, inner, icon_col),
             Ico::ChevDown => paint::chevron_down(scene, t, inner, icon_col, w),
         }
@@ -4262,10 +4281,8 @@ impl BooksApp {
         self.push_hit(track, action);
     }
 
-    /// A compact −/value/＋ size control whose value is click-to-type. Lays out
-    /// right-to-left from `right_x`; returns the left edge it consumed so a row
-    /// can align the next control. Used by the fonts manager so every row's size
-    /// control sits at the same x regardless of a trailing delete button.
+    /// A compact shared numeric control. Lays out right-to-left from `right_x`;
+    /// returns the left edge it consumed so every font row stays aligned.
     // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
     #[allow(clippy::too_many_arguments)]
     fn size_stepper(
@@ -4274,49 +4291,26 @@ impl BooksApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        c: &ui::tokens::colors::Colors,
+        _c: &ui::tokens::colors::Colors,
         right_x: f64,
         cy: f64,
-        value: &str,
-        field: NumField,
-        dec: Action,
-        inc: Action,
+        value: f64,
+        field: NumberField,
     ) -> f64 {
         let btn = 28.0;
         let vslot_w = 52.0;
         let by = cy - btn / 2.0;
-        let plus_x = right_x - btn;
-        self.icon_button(scene, t, theme, plus_x, by, btn, Ico::PlusI, false, inc);
-        let vx = plus_x - vslot_w;
-        let editing = matches!(&self.num_edit, Some((f, _)) if f == &field);
-        let disp = if editing {
-            format!(
-                "{}\u{2502}",
-                self.num_edit.as_ref().map_or("", |(_, b)| b.as_str())
-            )
-        } else {
-            value.to_string()
-        };
-        let vslot = Rect::new(vx, cy - 13.0, vx + vslot_w, cy + 13.0);
-        if editing {
-            paint::fill_round(scene, t, vslot, 6.0, theme.bg_hover);
-            paint::stroke_round(scene, t, vslot, 6.0, theme.border_focus, 1.4);
-        } else if self.is_hover(vslot) {
-            paint::fill_round(scene, t, vslot, 6.0, theme.bg_hover);
-        }
-        let (vw, _) = tr.measure_weighted(&disp, 12.5, None, TextWeight::Medium);
-        tr.draw_text_weighted(
+        let width = btn * 2.0 + vslot_w + 8.0;
+        let minus_x = right_x - width;
+        self.number_controls.draw(
+            field,
+            value,
+            Rect::new(minus_x, by, right_x, by + btn),
             scene,
-            &disp,
-            12.5,
-            c.text_primary,
-            t * Affine::translate((vx + (vslot_w - f64::from(vw)) / 2.0, cy - 7.0)),
-            None,
-            TextWeight::Medium,
+            t,
+            tr,
+            theme,
         );
-        self.push_hit(vslot, Action::BeginEditValue(field));
-        let minus_x = vx - btn;
-        self.icon_button(scene, t, theme, minus_x, by, btn, Ico::MinusI, false, dec);
         minus_x
     }
 
@@ -6870,10 +6864,12 @@ impl BooksApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        c: &ui::tokens::colors::Colors,
+        _c: &ui::tokens::colors::Colors,
         anchor_y: Option<f64>,
     ) {
-        let Some(id) = self.composing else { return };
+        let Some(id) = self.note_composer.id() else {
+            return;
+        };
         if self.view != View::Reader {
             return;
         }
@@ -6882,185 +6878,11 @@ impl BooksApp {
         if self.comment_overlay.is_open() {
             return;
         }
-        let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+        let Some(annotation) = self.annotations.iter().find(|a| a.id == id) else {
             return;
         };
-        let r = self.rect;
-
-        // Tap-away saves and closes (no dimming — the page stays the preview).
-        self.push_hit(r, Action::FinishNote);
-
-        let cw = 344.0_f64.min(r.width() - 24.0);
-        let pad = 16.0;
-        let inner_w = (cw - pad * 2.0) as f32;
-        let excerpt = if a.excerpt.trim().is_empty() {
-            "Selected passage".to_string()
-        } else {
-            format!("\u{201C}{}\u{201D}", a.excerpt)
-        };
-        let (_, eh) = tr.measure(&excerpt, 12.0, Some(inner_w));
-        let note_disp = format!("{}\u{2502}", a.note);
-        let (_, nh) = tr.measure(&note_disp, 13.5, Some(inner_w));
-        let note_h = f64::from(nh).max(20.0);
-        let ch = 34.0 + f64::from(eh) + 10.0 + note_h + 16.0 + 40.0 + pad;
-
-        let cx = f64::midpoint(r.x0, r.x1);
-        let x0 = (cx - cw / 2.0).clamp(r.x0 + 12.0, (r.x1 - 12.0 - cw).max(r.x0 + 12.0));
-        let top_lim = r.y0 + TOP_BAR + 8.0;
-        let bot_lim = r.y1 - 16.0;
-        let y0 = match anchor_y {
-            Some(ay) if ay + 22.0 + ch <= bot_lim => ay + 22.0,
-            Some(ay) if ay - 14.0 - ch >= top_lim => ay - 14.0 - ch,
-            _ => (bot_lim - ch).max(top_lim),
-        };
-        let card = Rect::new(x0, y0, x0 + cw, y0 + ch);
-        let shadow = Rect::new(card.x0 - 1.0, card.y0 + 4.0, card.x1 + 1.0, card.y1 + 7.0);
-        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
-        paint::fill_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            theme.border_focus,
-            1.4,
-        );
-        self.push_hit(card, Action::Swallow);
-
-        self.draw_note_composer_body(
-            scene, t, tr, theme, c, card, pad, &a, id, &excerpt, &note_disp, eh, note_h, inner_w,
-        );
-    }
-
-    /// Header (colour dot + "Note"), excerpt, live note text with caret, and
-    /// the Delete/Save buttons, inside the already-drawn card frame.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_note_composer_body(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        card: Rect,
-        pad: f64,
-        a: &Annotation,
-        id: Uuid,
-        excerpt: &str,
-        note_disp: &str,
-        eh: f32,
-        note_h: f64,
-        inner_w: f32,
-    ) {
-        let ix0 = card.x0 + pad;
-        let mut y = card.y0 + pad;
-        // Header: colour dot + "Note".
-        paint::circle(
-            scene,
-            t,
-            Point::new(ix0 + 6.0, y + 7.0),
-            6.0,
-            ReaderPalette::highlight_swatch(a.color),
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Note",
-            13.5,
-            c.text_primary,
-            t * Affine::translate((ix0 + 20.0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 26.0;
-        // Excerpt.
-        tr.draw_text(
-            scene,
-            excerpt,
-            12.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            Some(inner_w),
-        );
-        y += f64::from(eh) + 10.0;
-        // Live note text with caret.
-        tr.draw_text(
-            scene,
-            note_disp,
-            13.5,
-            c.text_primary,
-            t * Affine::translate((ix0, y)),
-            Some(inner_w),
-        );
-        y += note_h + 16.0;
-        self.draw_note_composer_buttons(scene, t, tr, theme, c, card, ix0, pad, y, id);
-    }
-
-    /// The Delete (left) / Save (right) button row at the bottom of the
-    /// composer card.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_note_composer_buttons(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        card: Rect,
-        ix0: f64,
-        pad: f64,
-        y: f64,
-        id: Uuid,
-    ) {
-        let del_w = f64::from(
-            tr.measure_weighted("Delete", 12.5, None, TextWeight::Medium)
-                .0,
-        ) + 24.0;
-        let del = Rect::new(ix0, y, ix0 + del_w, y + 32.0);
-        let del_hover = self.is_hover(del);
-        paint::fill_round(
-            scene,
-            t,
-            del,
-            16.0,
-            if del_hover {
-                theme.bg_hover
-            } else {
-                c.surfaces.overlay
-            },
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Delete",
-            12.5,
-            c.semantic.danger,
-            t * Affine::translate((ix0 + 12.0, y + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
-        self.push_hit(del, Action::Delete(id));
-
-        let save_w = f64::from(
-            tr.measure_weighted("Save", 13.0, None, TextWeight::Semibold)
-                .0,
-        ) + 40.0;
-        let save = Rect::new(card.x1 - pad - save_w, y, card.x1 - pad, y + 32.0);
-        paint::fill_round(scene, t, save, 16.0, theme.accent_primary);
-        tr.draw_text_weighted(
-            scene,
-            "Save",
-            13.0,
-            Color::from_rgb8(248, 248, 252),
-            t * Affine::translate((save.x0 + 20.0, y + 8.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        self.push_hit(save, Action::FinishNote);
+        self.note_composer
+            .draw(scene, t, tr, theme, self.rect, anchor_y, annotation);
     }
 
     /// Paint the contents + annotations rails: either docked (flush, page
@@ -7724,7 +7546,6 @@ impl BooksApp {
         y: f64,
         row_h: f64,
     ) -> f64 {
-        let fs = format!("{}%", (self.settings.font_scale * 100.0).round() as i32);
         self.stepper_row(
             scene,
             t,
@@ -7736,13 +7557,10 @@ impl BooksApp {
             y,
             row_h,
             "Text size",
-            &fs,
-            NumField::FontScale,
-            Action::FontDec,
-            Action::FontInc,
+            f64::from(self.settings.font_scale) * 100.0,
+            NumberField::FontScale,
         );
         let y = y + row_h + 10.0;
-        let ls = format!("{:.1}", self.settings.line_spacing);
         self.stepper_row(
             scene,
             t,
@@ -7754,10 +7572,8 @@ impl BooksApp {
             y,
             row_h,
             "Line spacing",
-            &ls,
-            NumField::LineSpacing,
-            Action::SpacingDec,
-            Action::SpacingInc,
+            f64::from(self.settings.line_spacing),
+            NumberField::LineSpacing,
         );
         y + row_h + 22.0
     }
@@ -8005,10 +7821,8 @@ impl BooksApp {
         y: f64,
         h: f64,
         label: &str,
-        value: &str,
-        field: NumField,
-        dec: Action,
-        inc: Action,
+        value: f64,
+        field: NumberField,
     ) {
         tr.draw_text_weighted(
             scene,
@@ -8019,51 +7833,16 @@ impl BooksApp {
             None,
             TextWeight::Medium,
         );
-        let btn = h;
-        let plus_x = x1 - btn;
-        let value_slot = 54.0_f64;
-        let minus_x = plus_x - value_slot - btn;
-        self.icon_button(scene, t, theme, minus_x, y, btn, Ico::MinusI, false, dec);
-
-        // The value slot: an editable field. When this field is being typed,
-        // show the live buffer with a caret and a focus ring; otherwise the
-        // value, with a hover cue so it reads as tappable.
-        let editing = matches!(&self.num_edit, Some((f, _)) if f == &field);
-        let disp = if editing {
-            format!(
-                "{}\u{2502}",
-                self.num_edit.as_ref().map_or("", |(_, b)| b.as_str())
-            )
-        } else {
-            value.to_string()
-        };
-        let vslot = Rect::new(
-            minus_x + btn,
-            y + 2.0,
-            minus_x + btn + value_slot,
-            y + h - 2.0,
-        );
-        if editing {
-            paint::fill_round(scene, t, vslot, 6.0, theme.bg_hover);
-            paint::stroke_round(scene, t, vslot, 6.0, theme.border_focus, 1.4);
-        } else if self.is_hover(vslot) {
-            paint::fill_round(scene, t, vslot, 6.0, theme.bg_hover);
-        }
-        let (vw, _) = tr.measure_weighted(&disp, 13.0, None, TextWeight::Medium);
-        tr.draw_text_weighted(
+        let width = (h * 2.0 + 62.0).min((x1 - x0) * 0.58);
+        self.number_controls.draw(
+            field,
+            value,
+            Rect::new(x1 - width, y, x1, y + h),
             scene,
-            &disp,
-            13.0,
-            c.text_primary,
-            t * Affine::translate((
-                minus_x + btn + (value_slot - f64::from(vw)) / 2.0,
-                y + (h - 13.0) / 2.0,
-            )),
-            None,
-            TextWeight::Medium,
+            t,
+            tr,
+            theme,
         );
-        self.push_hit(vslot, Action::BeginEditValue(field));
-        self.icon_button(scene, t, theme, plus_x, y, btn, Ico::PlusI, false, inc);
     }
 
     /// `panel_x0` is the rail's left edge — `r.x0` when docked, or a slid
@@ -9160,7 +8939,6 @@ impl BooksApp {
             self.push_hit(del, Action::RemoveFont(f.id.clone()));
         }
         let size_right = del_col - 12.0;
-        let mult = format!("{:.2}×", f.size_mult);
         let left = self.size_stepper(
             scene,
             t,
@@ -9169,10 +8947,8 @@ impl BooksApp {
             c,
             size_right,
             cy,
-            &mult,
-            NumField::FontMult(f.id.clone()),
-            Action::FontMultDec(f.id.clone()),
-            Action::FontMultInc(f.id.clone()),
+            f64::from(f.size_mult),
+            NumberField::FontMult(f.id.clone()),
         );
         // Enable/disable toggle (= whether it appears in quick settings).
         let tog_w = 40.0;
@@ -11308,10 +11084,7 @@ mod interaction_tests {
         );
         // The on-page composer records a Save hit (proving it's drawn on-page).
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        assert!(
-            find_hit(&app, |ac| matches!(ac, Action::FinishNote)).is_some(),
-            "on-page composer is drawn"
-        );
+        assert!(app.note_composer.is_open(), "on-page composer is drawn");
     }
 
     #[test]
@@ -12868,7 +12641,14 @@ mod interaction_tests {
         // Text-size + button grows and persists the font scale.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let base = BooksDoc::read_settings(&doc).font_scale;
-        let inc = find_hit(&app, |a| matches!(a, Action::FontInc)).expect("font + stepper");
+        let font = app
+            .number_controls
+            .rect(&NumberField::FontScale)
+            .expect("font + stepper");
+        let inc = Point::new(
+            font.x1 - font.height() / 2.0,
+            f64::midpoint(font.y0, font.y1),
+        );
         click(&mut app, &mut doc, inc);
         let grown = BooksDoc::read_settings(&doc).font_scale;
         assert!(
@@ -12879,7 +12659,14 @@ mod interaction_tests {
         // Line-spacing − button shrinks and persists the spacing.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let sbase = BooksDoc::read_settings(&doc).line_spacing;
-        let dec = find_hit(&app, |a| matches!(a, Action::SpacingDec)).expect("spacing - stepper");
+        let spacing = app
+            .number_controls
+            .rect(&NumberField::LineSpacing)
+            .expect("spacing - stepper");
+        let dec = Point::new(
+            spacing.x0 + spacing.height() / 2.0,
+            f64::midpoint(spacing.y0, spacing.y1),
+        );
         click(&mut app, &mut doc, dec);
         let shrunk = BooksDoc::read_settings(&doc).line_spacing;
         assert!(
@@ -13005,15 +12792,12 @@ mod interaction_tests {
         click(&mut app, &mut doc, aa);
         // Tap the text-size value to type a number directly.
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let val = find_hit(&app, |a| {
-            matches!(a, Action::BeginEditValue(NumField::FontScale))
-        })
-        .expect("the text-size value is a click-to-type field");
+        let val = app
+            .number_controls
+            .rect(&NumberField::FontScale)
+            .expect("the text-size value is a shared number field");
+        let val = Point::new(f64::midpoint(val.x0, val.x1), f64::midpoint(val.y0, val.y1));
         assert!(click(&mut app, &mut doc, val), "value tap handled");
-        assert!(
-            matches!(app.num_edit, Some((NumField::FontScale, _))),
-            "editing the size field"
-        );
         for ch in ["1", "5", "0"] {
             assert!(key_char(&mut app, &mut doc, ch), "digit consumed");
         }
@@ -13029,10 +12813,14 @@ mod interaction_tests {
 
         // Line spacing is click-to-type too.
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let ls_val = find_hit(&app, |a| {
-            matches!(a, Action::BeginEditValue(NumField::LineSpacing))
-        })
-        .expect("line-spacing value is click-to-type");
+        let ls_val = app
+            .number_controls
+            .rect(&NumberField::LineSpacing)
+            .expect("line spacing is a shared number field");
+        let ls_val = Point::new(
+            f64::midpoint(ls_val.x0, ls_val.x1),
+            f64::midpoint(ls_val.y0, ls_val.y1),
+        );
         click(&mut app, &mut doc, ls_val);
         for ch in ["1", ".", "4"] {
             key_char(&mut app, &mut doc, ch);
