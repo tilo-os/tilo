@@ -864,7 +864,13 @@ mod tests {
             s.bin_data.len(),
             layout.bin_data_start,
         );
-        let cfg = RenderConfig::new(&layout, 1920, 1080, &peniko::Color::BLACK, &BumpBudget::INITIAL);
+        let cfg = RenderConfig::new(
+            &layout,
+            1920,
+            1080,
+            &peniko::Color::BLACK,
+            &BumpBudget::INITIAL,
+        );
         assert!(
             cfg.gpu.binning_size < s.bin_data.len(),
             "binning_size {} underflowed",
