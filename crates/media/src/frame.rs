@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use crate::dmabuf::{ColorRange, Colorimetry, DmabufImage};
+use crate::dmabuf::{ColorRange, Colorimetry, DmabufImage, YuvMatrix};
 use crate::event::VideoFrame;
 
 /// A system-memory plane: its bytes plus the geometry needed to read them.
@@ -41,7 +41,7 @@ pub struct PlaneData {
 /// The system-memory planar layouts a hardware decoder produces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanarFormat {
-    /// 8-bit 4:2:0. Plane 0 luma `w*h`, plane 1 interleaved CbCr at half
+    /// 8-bit 4:2:0. Plane 0 luma `w*h`, plane 1 interleaved `CbCr` at half
     /// resolution in both axes.
     Nv12,
     /// 10-bit 4:2:0 in 16-bit little-endian containers, samples in the high
@@ -156,24 +156,64 @@ impl Frame {
     }
 }
 
+/// How much each chroma channel contributes to each output channel — the
+/// inverse of the RGB→YCbCr matrix a set of luma coefficients defines.
+///
+/// Cb is the blue-difference chroma channel and Cr the red-difference one, so
+/// each field reads as "this much of that". They live in a struct rather than
+/// in four locals because the four names *should* be near-identical: the
+/// symmetry is what makes the matrix checkable against the standard at a
+/// glance, and prising the names apart to make them look different would cost
+/// exactly that.
+#[derive(Clone, Copy, Debug)]
+struct ChromaMatrix {
+    red_from_cr: f32,
+    green_from_cb: f32,
+    green_from_cr: f32,
+    blue_from_cb: f32,
+}
+
+impl ChromaMatrix {
+    /// Invert the forward matrix `matrix`'s luma coefficients define.
+    fn inverse_of(matrix: YuvMatrix) -> Self {
+        let (kr, kg, kb) = matrix.luma_coefficients();
+        Self {
+            red_from_cr: 2.0 * (1.0 - kr),
+            green_from_cb: -2.0 * kb * (1.0 - kb) / kg,
+            green_from_cr: -2.0 * kr * (1.0 - kr) / kg,
+            blue_from_cb: 2.0 * (1.0 - kb),
+        }
+    }
+}
+
 /// Convert a planar YUV picture to tightly packed RGBA8.
 ///
 /// This is the CPU fallback, used when a consumer that can only paint RGBA is
 /// fed a planar frame. The GPU path in `ui` does the same maths in a shader
 /// and never runs this.
 pub fn planar_to_rgba(img: &PlanarImage, width: u32, height: u32) -> Vec<u8> {
-    let w = width as usize;
-    let h = height as usize;
-    let mut out = vec![0u8; w * h * 4];
-    if img.planes.len() < 2 {
+    let pic_width = width as usize;
+    let pic_height = height as usize;
+    // Bytes in one RGBA row, and in the whole picture. A picture whose byte
+    // count does not fit in `usize` could never be allocated, so it reads as
+    // empty rather than overflowing the size arithmetic. A zero-width picture
+    // is empty by the same route, which is also what keeps the row iteration
+    // below off a zero-length chunk.
+    let Some(row_bytes) = pic_width.checked_mul(4).filter(|n| *n > 0) else {
+        return Vec::new();
+    };
+    let Some(byte_len) = row_bytes.checked_mul(pic_height) else {
+        return Vec::new();
+    };
+    let mut out = vec![0u8; byte_len];
+
+    // NV12 and P010 are both two-plane formats. Anything shorter is not a
+    // picture this function can read, so it stays black.
+    let [luma, chroma, ..] = img.planes.as_slice() else {
         return out;
-    }
-    let (kr, kg, kb) = img.colorimetry.matrix.luma_coefficients();
-    // Inverse of the RGB→YCbCr matrix defined by the luma coefficients.
-    let r_cr = 2.0 * (1.0 - kr);
-    let b_cb = 2.0 * (1.0 - kb);
-    let g_cb = -2.0 * kb * (1.0 - kb) / kg;
-    let g_cr = -2.0 * kr * (1.0 - kr) / kg;
+    };
+
+    let chroma_matrix = ChromaMatrix::inverse_of(img.colorimetry.matrix);
 
     let (y_scale, y_offset, c_scale) = match img.colorimetry.range {
         // 16..235 luma / 16..240 chroma expanded to 0..1.
@@ -181,41 +221,67 @@ pub fn planar_to_rgba(img: &PlanarImage, width: u32, height: u32) -> Vec<u8> {
         ColorRange::Full => (1.0, 0.0, 1.0),
     };
 
-    let luma = &img.planes[0];
-    let chroma = &img.planes[1];
     let bps = img.format.bytes_per_sample() as usize;
     // 10-bit samples sit in the high bits of a 16-bit container.
+    //
+    // Every term of the byte offset is checked. `stride` and the plane
+    // dimensions come from the decoder, for a format this crate did not
+    // choose; a stride that does not match the buffer must read as black
+    // rather than overflow an offset or index past the end.
     let sample = |plane: &PlaneData, x: usize, y: usize, comp: usize, comps: usize| -> f32 {
-        let idx = y * plane.stride as usize + (x * comps + comp) * bps;
-        match plane.bytes.get(idx..idx + bps) {
-            Some(s) if bps == 1 => s[0] as f32 / 255.0,
-            Some(s) => (u16::from_le_bytes([s[0], s[1]]) >> 6) as f32 / 1023.0,
-            None => 0.0,
+        let Some(idx) = x
+            .checked_mul(comps)
+            .and_then(|col| col.checked_add(comp))
+            .and_then(|col| col.checked_mul(bps))
+            .and_then(|off| y.checked_mul(plane.stride as usize)?.checked_add(off))
+        else {
+            return 0.0;
+        };
+        let Some(end) = idx.checked_add(bps) else {
+            return 0.0;
+        };
+        // The slice pattern is the sample width: one byte for NV12, two for
+        // P010. No index is computed, so a short plane falls through to black.
+        match plane.bytes.get(idx..end) {
+            Some(&[lo]) => f32::from(lo) / 255.0,
+            Some(&[lo, hi]) => f32::from(u16::from_le_bytes([lo, hi]) >> 6) / 1023.0,
+            _ => 0.0,
         }
     };
 
-    for y in 0..h {
-        for x in 0..w {
-            let yy = (sample(luma, x, y, 0, 1) - y_offset) * y_scale;
-            let cx = (x / 2).min(chroma.width.saturating_sub(1) as usize);
-            let cy = (y / 2).min(chroma.height.saturating_sub(1) as usize);
-            let cb = (sample(chroma, cx, cy, 0, 2) - 0.5) * c_scale;
-            let cr = (sample(chroma, cx, cy, 1, 2) - 0.5) * c_scale;
+    let chroma_max_x = chroma.width.saturating_sub(1) as usize;
+    let chroma_max_y = chroma.height.saturating_sub(1) as usize;
+    for (y, row) in out.chunks_exact_mut(row_bytes).enumerate() {
+        for (x, px) in row.chunks_exact_mut(4).enumerate() {
+            let luma_sample = (sample(luma, x, y, 0, 1) - y_offset) * y_scale;
+            // 4:2:0: one chroma sample per 2x2 luma block, clamped to the
+            // plane in case the picture is odd-sized or the plane is short.
+            let chroma_x = (x / 2).min(chroma_max_x);
+            let chroma_y = (y / 2).min(chroma_max_y);
+            let cb = (sample(chroma, chroma_x, chroma_y, 0, 2) - 0.5) * c_scale;
+            let cr = (sample(chroma, chroma_x, chroma_y, 1, 2) - 0.5) * c_scale;
 
-            let r = yy + r_cr * cr;
-            let g = yy + g_cb * cb + g_cr * cr;
-            let b = yy + b_cb * cb;
+            let red = luma_sample + chroma_matrix.red_from_cr * cr;
+            let green =
+                luma_sample + chroma_matrix.green_from_cb * cb + chroma_matrix.green_from_cr * cr;
+            let blue = luma_sample + chroma_matrix.blue_from_cb * cb;
 
-            let i = (y * w + x) * 4;
-            out[i] = to_u8(r);
-            out[i + 1] = to_u8(g);
-            out[i + 2] = to_u8(b);
-            out[i + 3] = 255;
+            // `chunks_exact_mut(4)` yields exactly four bytes, which is what
+            // makes writing the pixel a copy rather than four indexed stores.
+            px.copy_from_slice(&[to_u8(red), to_u8(green), to_u8(blue), 255]);
         }
     }
     out
 }
 
+/// One colour channel, clamped to the display range and quantised to 8 bits.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the clamp on the same line bounds the product to 0.5..=255.5 — \
+              non-negative, and inside u8 once truncated. A NaN channel (a \
+              degenerate matrix) clamps to NaN, which casts to 0."
+)]
 fn to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
 }
@@ -225,26 +291,26 @@ fn to_u8(v: f32) -> u8 {
 /// consumer that can only paint RGBA gets a pipeline that ends in system
 /// memory, and one that can import GPU buffers gets a pipeline that never
 /// leaves the GPU when the hardware allows it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FrameAcceptance {
     /// System-memory RGBA8 only. The compatibility default: what every
     /// existing consumer of [`VideoFrame`] expects.
+    #[default]
     Rgba,
     /// Any of dmabuf, planar, or RGBA — best first. The video editor and any
     /// other GPU-side consumer.
     Native,
 }
 
-impl Default for FrameAcceptance {
-    fn default() -> Self {
-        FrameAcceptance::Rgba
-    }
-}
-
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "fixture arithmetic on literal picture sizes, and channel \
+              differences taken after widening to i32 — a wrong number here \
+              is a broken test, not a hazard reaching a user's footage"
+)]
 mod tests {
     use super::*;
-    use crate::dmabuf::YuvMatrix;
 
     fn nv12(width: u32, height: u32, y: u8, cb: u8, cr: u8, range: ColorRange) -> PlanarImage {
         let w = width as usize;
@@ -285,7 +351,7 @@ mod tests {
     /// wrong luma matrix, or a missed range expansion all move a channel by
     /// tens of codes.
     fn assert_near(actual: u8, expected: u8, tol: i32, what: &str) {
-        let delta = actual as i32 - expected as i32;
+        let delta = i32::from(actual) - i32::from(expected);
         assert!(
             delta.abs() <= tol,
             "{what}: expected {expected} ±{tol}, got {actual} (off by {delta})"
@@ -319,7 +385,7 @@ mod tests {
         // Without the range expansion these would come back as 16 and 235 —
         // a washed-out picture. Prove the gap really is the full scale.
         assert!(
-            white[0] as i32 - black[0] as i32 >= 250,
+            i32::from(white[0]) - i32::from(black[0]) >= 250,
             "limited range must expand to the full scale, got {} .. {}",
             black[0],
             white[0]
@@ -382,6 +448,68 @@ mod tests {
                 &format!("row 1 col {x} is black"),
             );
         }
+    }
+
+    #[test]
+    fn degenerate_geometry_converts_to_nothing_rather_than_panicking() {
+        // A decoder renegotiating mid-stream, or a container whose header
+        // disagrees with its frames, hands over dimensions that describe no
+        // picture. The converter has to answer "no pixels", because every
+        // alternative here is a panic on somebody's footage.
+        let img = nv12(4, 4, 128, 128, 128, ColorRange::Full);
+        assert!(planar_to_rgba(&img, 0, 4).is_empty(), "zero width");
+        assert!(planar_to_rgba(&img, 4, 0).is_empty(), "zero height");
+        assert!(planar_to_rgba(&img, 0, 0).is_empty(), "zero both");
+        // A byte count that cannot fit in `usize`: 2^31 x 2^31 pixels is 2^64
+        // bytes of RGBA.
+        assert!(
+            planar_to_rgba(&img, 1 << 31, 1 << 31).is_empty(),
+            "a picture too large to describe is not a picture"
+        );
+    }
+
+    #[test]
+    fn a_plane_shorter_than_its_geometry_claims_reads_as_black_not_a_panic() {
+        // The stride says 64 bytes a row; the buffer holds one row. Every
+        // sample past it must fall through to black rather than index out.
+        let img = PlanarImage {
+            format: PlanarFormat::Nv12,
+            planes: vec![
+                PlaneData {
+                    bytes: Arc::new(vec![235u8; 64]),
+                    stride: 64,
+                    width: 64,
+                    height: 8,
+                },
+                PlaneData {
+                    bytes: Arc::new(vec![128u8; 8]),
+                    stride: 64,
+                    width: 32,
+                    height: 4,
+                },
+            ],
+            colorimetry: Colorimetry {
+                matrix: YuvMatrix::Bt709,
+                range: ColorRange::Limited,
+            },
+        };
+        let rgba = planar_to_rgba(&img, 64, 8);
+        assert_eq!(rgba.len(), 64 * 8 * 4, "full picture, short plane");
+        assert_near(rgba[0], 255, 2, "the one row that exists is white");
+        // Row 1 onwards is past the end of the buffer.
+        assert_near(rgba[64 * 4], 0, 2, "a missing row is black");
+    }
+
+    #[test]
+    fn a_single_plane_image_is_not_read_as_nv12() {
+        // NV12 and P010 are two-plane. One plane is a different format the
+        // caller has mislabelled, and guessing at the chroma would invent
+        // colour that is not in the stream.
+        let mut img = nv12(4, 4, 128, 128, 128, ColorRange::Full);
+        img.planes.truncate(1);
+        let rgba = planar_to_rgba(&img, 4, 4);
+        assert_eq!(rgba.len(), 4 * 4 * 4, "still a full-size buffer");
+        assert!(rgba.iter().all(|b| *b == 0), "and it is blank");
     }
 
     #[test]
