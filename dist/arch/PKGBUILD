@@ -1,0 +1,47 @@
+# Maintainer: qOS contributors <qos@code.podesta.ai>
+pkgbase=qos-session
+pkgname=(qos-session qos-session-devel)
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='qOS collaborative compositor as a Wayland session'
+url='https://code.podesta.ai/qos/qos'
+license=('AGPL-3.0-only')
+arch=('x86_64' 'aarch64')
+makedepends=(
+  'rustup' 'clang' 'cmake' 'pkgconf' 'capnproto' 'git'
+  'libxkbcommon' 'wayland' 'libseat' 'libinput' 'systemd-libs' 'libdrm' 'mesa'
+  'pipewire' 'dbus' 'openssl' 'fontconfig' 'freetype2' 'harfbuzz' 'fuse3'
+  'gstreamer' 'gst-plugins-base-libs'
+)
+source=("qos-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "qos-$pkgver"
+  export CARGO_HOME="$srcdir/cargo-home"
+  cargo build --release --locked -p launcher -p qos-unlock-helper
+  cargo build --release --locked -p shell --no-default-features
+  ./dist/stage-payload.sh target/release "$srcdir/payload"
+}
+
+package_qos-session() {
+  depends=(
+    'glibc' 'pam' 'vulkan-icd-loader' 'libglvnd' 'libxkbcommon' 'wayland'
+    'libseat' 'libinput' 'systemd-libs' 'libdrm' 'mesa' 'pipewire' 'dbus'
+    'openssl' 'fontconfig' 'freetype2' 'harfbuzz'
+  )
+  optdepends=('vulkan-mesa-layers: Mesa Vulkan support' 'xdg-desktop-portal: sandbox portals' 'greetd: display manager')
+  cd "$srcdir/payload"
+  install -Dm755 bin/qos-shell bin/qos-launcher -t "$pkgdir/usr/bin"
+  install -Dm755 libexec/qos-unlock-helper libexec/qos-session -t "$pkgdir/usr/libexec"
+  install -Dm644 pam/qos-unlock "$pkgdir/etc/pam.d/qos-unlock"
+  install -Dm644 wayland-sessions/qos.desktop -t "$pkgdir/usr/share/wayland-sessions"
+  install -Dm644 portal/qos.portal -t "$pkgdir/usr/share/xdg-desktop-portal/portals"
+}
+
+package_qos-session-devel() {
+  depends=("qos-session=$pkgver-$pkgrel" 'coreutils' 'grep')
+  cd "$srcdir/payload"
+  install -Dm755 libexec/qos-session-dev "$pkgdir/usr/libexec/qos-session-dev"
+  install -Dm644 wayland-sessions/qos-dev.desktop -t "$pkgdir/usr/share/wayland-sessions"
+}
