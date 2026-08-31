@@ -28,7 +28,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, ToggleGroup, Widget};
+use ui::widget::{
+    Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget,
+};
 
 use crate::doc::DisksDoc;
 use crate::model::{
@@ -317,7 +319,7 @@ pub struct DisksApp {
     pending: Option<Pending>,
     /// Typed confirmation text for a destructive (Format) action. The Erase
     /// button only unlocks once this matches the target device name.
-    confirm_input: String,
+    confirm_input: TextInput,
     status: String,
     /// True in the live binary (`DISKS_LIVE`): actions actually execute.
     /// False for `--shots` and unit tests, which stay inert.
@@ -393,7 +395,7 @@ impl DisksApp {
             selected_part: None,
             tab: Tab::Overview,
             pending: None,
-            confirm_input: String::new(),
+            confirm_input: TextInput::local().with_font_size(14.0),
             status: String::new(),
             live: std::env::var("DISKS_LIVE").is_ok(),
             action_rx: None,
@@ -2632,7 +2634,7 @@ impl DisksApp {
 
     // ---- modal ---------------------------------------------------------
     fn draw_modal(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -2698,7 +2700,7 @@ impl DisksApp {
     /// (part of [`Self::draw_modal`]). Returns whether the typed text
     /// currently matches.
     fn draw_modal_input(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -2722,43 +2724,13 @@ impl DisksApp {
             None,
             TextWeight::Medium,
         );
-        Self::fill_rr(scene, t, inp, 8.0, c.surfaces.base);
-        Self::stroke_rr(
-            scene,
-            t,
-            inp,
-            8.0,
-            if ready {
-                c.semantic.success
-            } else {
-                c.border_focus
-            },
-            1.4,
-        );
-        let shown = if self.confirm_input.is_empty() {
-            expected
-        } else {
-            self.confirm_input.clone()
-        };
-        let text_c = if self.confirm_input.is_empty() {
-            with_alpha(c.text_dim, 110) // placeholder
-        } else if ready {
-            c.semantic.success
-        } else {
-            c.text_primary
-        };
-        Self::txt(
-            scene,
-            tr,
-            &shown,
-            14.0,
-            text_c,
-            inp.x0 + 12.0,
-            inp.y0 + 9.0,
-            Some((inp.width() - 24.0) as f32),
-            TextWeight::Medium,
-        );
+        self.confirm_input.set_placeholder(&expected);
+        self.confirm_input.apply_layout_external(inp);
+        self.confirm_input
+            .draw(scene, t, tr, theme, &PresenceCtx::empty());
         if ready {
+            // Keep the modal's positive match feedback around the shared field.
+            Self::stroke_rr(scene, t, inp, 8.0, c.semantic.success, 1.4);
             Self::txt_right(
                 scene,
                 tr,
@@ -2942,8 +2914,8 @@ impl DisksApp {
     fn confirm_ready(&self) -> bool {
         match self.pending {
             Some(p) => {
-                !self.confirm_input.trim().is_empty()
-                    && self.confirm_input.trim() == self.pending_target_leaf(p)
+                !self.confirm_input.value().trim().is_empty()
+                    && self.confirm_input.value().trim() == self.pending_target_leaf(p)
             }
             None => false,
         }
@@ -2970,7 +2942,8 @@ impl DisksApp {
                 drive: self.selected,
                 part,
             });
-            self.confirm_input.clear();
+            self.confirm_input.set_text("");
+            self.confirm_input.set_focus(true);
             DisksDoc::set_pending(
                 state,
                 &format!(
@@ -3048,14 +3021,16 @@ impl DisksApp {
             return;
         }
         let Some(p) = self.pending.take() else { return };
-        self.confirm_input.clear();
+        self.confirm_input.set_text("");
+        self.confirm_input.set_focus(false);
         DisksDoc::set_pending(state, "");
         self.dispatch_action(state, p.action, p.part);
     }
 
     fn cancel_pending(&mut self, state: &mut AutoCommit) {
         self.pending = None;
-        self.confirm_input.clear();
+        self.confirm_input.set_text("");
+        self.confirm_input.set_focus(false);
         DisksDoc::set_pending(state, "");
     }
 
@@ -3260,6 +3235,12 @@ impl Widget for DisksApp {
         let pending = DisksDoc::pending(state);
         let parsed = parse_pending(&pending);
         if parsed.is_some() != self.pending.is_some() {
+            if parsed.is_some() {
+                self.confirm_input.set_text("");
+                self.confirm_input.set_focus(true);
+            } else {
+                self.confirm_input.set_focus(false);
+            }
             self.pending = parsed;
             self.dirty = true;
         }
@@ -3477,15 +3458,68 @@ impl Widget for DisksApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &ui::winit::event::Modifiers,
+        modifiers: &ui::winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         let lay = self.compute_layout();
+
+        // The confirmation text is deliberately local-only: it gates a
+        // machine-local destructive operation and must never enter the CRDT.
+        // Forward the complete event stream so selection, clipboard, IME and
+        // drag behavior come from the shared editor rather than a key shim.
+        if self.pending.is_some() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.handle_cursor_moved(*position, scale_factor, &lay);
+            }
+            if let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+                && matches!(logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter))
+            {
+                self.handle_key_press(logical_key, state, &lay, handled);
+                return;
+            }
+            self.confirm_input.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if self.confirm_input.take_dirty().is_some() {
+                self.dirty = true;
+            }
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                self.handle_mouse_click(state, &lay, handled);
+            } else {
+                // The open modal is fully blocking, including IME events and
+                // clicks/releases that the editor itself did not consume.
+                *handled = true;
+            }
+            return;
+        }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -3748,9 +3782,9 @@ impl DisksApp {
         }
     }
 
-    /// A key press: while a destructive action is pending, Escape/Enter/
-    /// Backspace/Space/characters drive the type-to-confirm gate;
-    /// otherwise Escape dismisses an open overlay flap and the rest are
+    /// A key press: while a destructive action is pending, Escape cancels and
+    /// Enter confirms; the shared [`TextInput`] owns every editing key.
+    /// Otherwise Escape dismisses an open overlay flap and the rest are
     /// navigation shortcuts (part of [`Widget::handle_event`]).
     fn handle_key_press(
         &mut self,
@@ -3759,8 +3793,8 @@ impl DisksApp {
         lay: &Layout,
         handled: &mut bool,
     ) {
-        // Modal key handling — Escape cancels, Enter confirms (when the
-        // typed name matches), and characters build the confirmation.
+        // Modal key handling — editing keys were already routed through the
+        // shared field by `handle_event`.
         if self.pending.is_some() {
             match logical_key {
                 Key::Named(NamedKey::Escape) => {
@@ -3770,24 +3804,6 @@ impl DisksApp {
                 }
                 Key::Named(NamedKey::Enter) => {
                     self.confirm_pending(state);
-                    *handled = true;
-                    self.dirty = true;
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.confirm_input.pop();
-                    *handled = true;
-                    self.dirty = true;
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.confirm_input.push(' ');
-                    *handled = true;
-                    self.dirty = true;
-                }
-                Key::Character(s) => {
-                    // Device names are printable ASCII; append them.
-                    for ch in s.chars().filter(|c| !c.is_control()) {
-                        self.confirm_input.push(ch);
-                    }
                     *handled = true;
                     self.dirty = true;
                 }
@@ -3958,12 +3974,12 @@ mod tests {
         app.confirm_pending(&mut doc);
         assert!(app.pending.is_some(), "confirm is a no-op while locked");
 
-        app.confirm_input = "wrong".into();
+        app.confirm_input.set_text("wrong");
         assert!(!app.confirm_ready());
         app.confirm_pending(&mut doc);
         assert!(app.pending.is_some(), "a mismatched name stays locked");
 
-        app.confirm_input = "nvme0n1".into(); // the whole-disk device name
+        app.confirm_input.set_text("nvme0n1"); // the whole-disk device name
         assert!(app.confirm_ready(), "the exact name unlocks Erase");
         app.confirm_pending(&mut doc);
         assert!(app.pending.is_none(), "confirming clears the modal");
@@ -4175,7 +4191,10 @@ mod tests {
         }
 
         fn dispatch(&mut self, event: &WindowEvent) -> bool {
-            let mods = Modifiers::default();
+            self.dispatch_with_modifiers(event, Modifiers::default())
+        }
+
+        fn dispatch_with_modifiers(&mut self, event: &WindowEvent, mods: Modifiers) -> bool {
             let mut handled = false;
             let mut focus = None;
             self.app.handle_event(
@@ -4224,6 +4243,23 @@ mod tests {
 
     fn center(r: Rect) -> Point {
         Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
+    }
+
+    fn char_key(text: &str) -> WindowEvent {
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Character(text.into());
+        event.physical_key = ui::winit::keyboard::PhysicalKey::Unidentified(
+            ui::winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        event.location = ui::winit::keyboard::KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = Some(text.into());
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event,
+            is_synthetic: false,
+        }
     }
 
     #[test]
@@ -4445,12 +4481,54 @@ mod tests {
             "the disabled shared face remains inert until the name matches"
         );
 
-        h.app.confirm_input = h.app.pending_target_leaf(h.app.pending.unwrap());
+        let target = h.app.pending_target_leaf(h.app.pending.unwrap());
+        h.app.confirm_input.set_text(&target);
         assert!(h.app.confirm_ready());
         assert!(h.click(center(confirm)));
         assert!(
             h.app.pending.is_none(),
             "the same rect activates once the shared face is enabled"
+        );
+    }
+
+    #[test]
+    fn format_modal_routes_pointer_selection_and_ime_through_shared_input() {
+        let mut h = Harness::new(1280.0, 800.0);
+        h.app.trigger_action(&mut h.doc, ActionKind::Format);
+        h.relayout();
+        let modal = h.lay().modal.unwrap();
+
+        // Moving then clicking Cancel must use the current modal pointer, not
+        // the position cached before the overlay opened.
+        assert!(h.click(center(modal.cancel)));
+        assert!(h.app.pending.is_none());
+
+        h.app.trigger_action(&mut h.doc, ActionKind::Format);
+        h.relayout();
+        let modal = h.lay().modal.unwrap();
+        let expected = h.app.pending_target_leaf(h.app.pending.unwrap());
+
+        assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Preedit(
+            expected.clone(),
+            Some((0, expected.len())),
+        ))));
+        assert_eq!(h.app.confirm_input.value(), "", "preedit is not committed");
+        assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(
+            expected.clone(),
+        ))));
+        assert!(h.app.confirm_ready());
+
+        let control = Modifiers::from(ui::winit::keyboard::ModifiersState::CONTROL);
+        assert!(h.dispatch_with_modifiers(&char_key("a"), control));
+        assert_eq!(
+            h.app.confirm_input.selection_range_public(),
+            Some((0, expected.len()))
+        );
+        assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(expected,))));
+        assert!(h.click(center(modal.confirm)));
+        assert!(
+            h.app.pending.is_none(),
+            "Erase runs only after an exact match"
         );
     }
 
