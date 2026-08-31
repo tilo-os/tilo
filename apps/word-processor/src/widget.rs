@@ -36,6 +36,7 @@ use crate::WpFormat;
 use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
+use crate::outline_pane::{OutlinePalette, OutlinePane};
 #[cfg(test)]
 use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
 use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
@@ -1729,18 +1730,11 @@ pub struct WordProcessorWidget {
     /// Whether comment + tracked-change markup is drawn (default ON, like
     /// spell-check). View-only — never mutates the document.
     show_markup: bool,
-    /// Whether the document outline / navigation pane is shown (left side).
-    /// Toggled via the toolbar "Outline" button. Default OFF so existing layouts
-    /// are unchanged until the user opens it.
-    outline_open: bool,
-    /// The outline pane rect in screen space, cached each frame for hit-testing.
-    outline_rect: Rect,
+    /// Document-outline visibility, drawing, and frame-local hit geometry.
+    outline: OutlinePane,
     /// Version-history strip under the canvas: the document's own change graph
     /// rendered as a scrubber. Toggled from the toolbar's "History" button.
     history: crate::history_panel::HistoryPanel,
-    /// Clickable outline entries this frame: `(rect, heading_block_id)`. A click
-    /// scrolls that heading into view.
-    outline_hits: Vec<(Rect, String)>,
     /// OS-theme-driven chrome palette, resolved at the top of every `draw` from
     /// the passed-in [`Theme`]. Every chrome helper reads this instead of
     /// hard-coded colours, so the editor honours light/dark mode + the OS
@@ -1855,9 +1849,7 @@ impl WordProcessorWidget {
             comments: Vec::new(),
             changes: Vec::new(),
             show_markup: true,
-            outline_open: false,
-            outline_rect: Rect::ZERO,
-            outline_hits: Vec::new(),
+            outline: OutlinePane::default(),
             history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
@@ -4151,111 +4143,6 @@ impl WordProcessorWidget {
         best.or(first).map(|(_, id)| id)
     }
 
-    /// The document outline / navigation pane: a scroll-anchored list of every
-    /// heading, indented by level. Clicking an entry scrolls it into view; the
-    /// heading nearest the current scroll is highlighted. Mirrors the styles
-    /// panel's chrome (background, left/right edge, clipped content).
-    fn draw_outline_pane(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        panel: Rect,
-    ) {
-        let cc = self.chrome;
-        self.outline_rect = panel;
-        self.outline_hits.clear();
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &panel);
-        // Right border (the pane sits on the canvas's left edge).
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(panel.x1 - 1.0, panel.y0, panel.x1, panel.y1),
-        );
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &panel,
-        );
-
-        let pad = 14.0;
-        let x0 = panel.x0 + pad;
-        let right = panel.x1 - pad;
-        let inner_w = (right - x0).max(40.0);
-        let mut y = panel.y0 + 14.0;
-
-        tr.draw_text(
-            scene,
-            &t("outline-header"),
-            10.5,
-            cc.text_dim,
-            transform * Affine::translate((x0, y)),
-            None,
-        );
-        y += 18.0;
-
-        let entries = self.outline_entries();
-        if entries.is_empty() {
-            tr.draw_text(
-                scene,
-                &t("outline-empty"),
-                12.5,
-                cc.text_dim,
-                transform * Affine::translate((x0, y)),
-                Some(num::f32_of_f64(inner_w)),
-            );
-            scene.pop_layer();
-            return;
-        }
-        let active = self.active_outline_block();
-        let row_h = 24.0;
-        for h in &entries {
-            if y > panel.y1 - 4.0 {
-                break; // beyond the pane; the list is unscrolled for v1
-            }
-            let indent = ((h.level.max(1) - 1) as f64) * 14.0;
-            let r = Rect::new(x0, y, right, y + row_h);
-            let is_active = active.as_deref() == Some(h.id.as_str());
-            if is_active {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    cc.chip,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(r, 5.0),
-                );
-            }
-            // A small level cue: deeper headings render dimmer + smaller. The
-            // active row sits on a `chip` fill, so its ink is the primary text
-            // colour (readable on the chip), not the on-accent colour.
-            let (size, ink) = match h.level {
-                1 => (13.5, cc.text),
-                2 => (12.5, cc.text),
-                _ => (11.5, if is_active { cc.text } else { cc.text_dim }),
-            };
-            let label = if h.text.trim().is_empty() {
-                t("outline-untitled")
-            } else {
-                h.text.trim().to_string()
-            };
-            tr.draw_text(
-                scene,
-                &label,
-                size,
-                ink,
-                transform * Affine::translate((x0 + indent, y + 4.0)),
-                Some(num::f32_of_f64((inner_w - indent).max(20.0))),
-            );
-            self.outline_hits.push((r, h.id.clone()));
-            y += row_h;
-        }
-        scene.pop_layer();
-    }
-
     /// Generate (or regenerate) the table of contents from the document headings.
     /// Page numbers are read from the last frame's laid geometry (`Laid::page`);
     /// a heading not yet laid out falls back to page 1. Delegates the block
@@ -4755,7 +4642,7 @@ impl WordProcessorWidget {
         // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
         // styles panel on the right) so the page re-centers and scrolled content
         // never paints under the pane.
-        let canvas_left = if self.outline_open {
+        let canvas_left = if self.outline.is_open() {
             (full.x0 + OUTLINE_PANEL_W).min(canvas_right - 1.0)
         } else {
             full.x0
@@ -6984,7 +6871,7 @@ impl WordProcessorWidget {
             let over_body = self.pointer.y >= self.rect.y0 + tb_h
                 && self.pointer.y <= self.rect.y1 - LAYOUT_BAR_H
                 && !(self.styles_panel_open && self.panel_rect.contains(self.pointer))
-                && !(self.outline_open && self.outline_rect.contains(self.pointer));
+                && !self.outline.contains(self.pointer);
             if over_body {
                 self.caret_from_pointer(self.pointer_to_content(self.pointer), false);
             }
@@ -7122,7 +7009,7 @@ impl WordProcessorWidget {
         let in_chrome = self.pointer.y < self.rect.y0 + tb_h
             || self.pointer.y > self.rect.y1 - LAYOUT_BAR_H
             || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
-            || (self.outline_open && self.outline_rect.contains(self.pointer));
+            || self.outline.contains(self.pointer);
         if !in_chrome {
             let cp = self.pointer_to_content(self.pointer);
             let pos = [
@@ -7264,14 +7151,9 @@ impl WordProcessorWidget {
         }
         // Outline / navigation pane (left side): a click on an entry
         // scrolls that heading into view.
-        if self.outline_open && self.outline_rect.contains(self.pointer) {
-            if let Some(bid) = self
-                .outline_hits
-                .iter()
-                .find(|(r, _)| r.contains(self.pointer))
-                .map(|(_, b)| b.clone())
-            {
-                self.scroll_to_block(&bid);
+        if self.outline.contains(self.pointer) {
+            if let Some(block_id) = self.outline.heading_at(self.pointer).map(str::to_owned) {
+                self.scroll_to_block(&block_id);
             }
             self.dirty = true;
             *handled = true;
@@ -8010,13 +7892,29 @@ impl Widget for WordProcessorWidget {
         // Document outline / navigation pane on the left (between toolbar and
         // layout bar). Drawn after `self.laid` is set so the active-heading
         // highlight reflects this frame's pagination.
-        if self.outline_open {
+        if self.outline.is_open() {
             let outline_band =
                 Rect::new(full.x0, full.y0 + fg.tb_h, fg.canvas_left, fg.history_top);
-            self.draw_outline_pane(scene, transform, text_renderer, outline_band);
+            let entries = self.outline_entries();
+            let active = self.active_outline_block();
+            let cc = self.chrome;
+            self.outline.draw(
+                scene,
+                transform,
+                text_renderer,
+                outline_band,
+                &entries,
+                active.as_deref(),
+                OutlinePalette {
+                    background: cc.bar,
+                    border: cc.border,
+                    chip: cc.chip,
+                    text: cc.text,
+                    text_dim: cc.text_dim,
+                },
+            );
         } else {
-            self.outline_rect = Rect::ZERO;
-            self.outline_hits.clear();
+            self.outline.clear_frame();
         }
 
         if fg.history_h > 0.0 {
@@ -8668,7 +8566,7 @@ impl WordProcessorWidget {
             ToolAction::TableDelete => self.inner.table_delete(state),
             ToolAction::ToggleStyles => self.styles_panel_open = !self.styles_panel_open,
             ToolAction::ToggleRuler => self.ruler_on = !self.ruler_on,
-            ToolAction::ToggleOutline => self.outline_open = !self.outline_open,
+            ToolAction::ToggleOutline => self.outline.toggle(),
             ToolAction::ToggleHistory => {
                 self.history.toggle();
                 if self.history.is_open() {
@@ -9713,7 +9611,7 @@ impl WordProcessorWidget {
             ToolAction::ToggleOutline,
             &t("toolbar-outline"),
             72.0,
-            self.outline_open,
+            self.outline.is_open(),
         );
         add(
             ToolAction::ToggleHistory,
@@ -10184,7 +10082,7 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "Body text here");
         // Open the find bar + outline pane so their chrome is drawn too.
         wp.find.open(None, &wp.blocks);
-        wp.outline_open = true;
+        wp.outline.toggle();
         (state, wp)
     }
 
@@ -13183,29 +13081,25 @@ mod tests {
         let (mut wp, mut state) = doc_with_headings(1000, 700);
         // Open the outline pane and redraw so its clickable entries are built.
         wp.apply_tool(&mut state.doc, ToolAction::ToggleOutline);
-        assert!(wp.outline_open, "outline toggled on");
+        assert!(wp.outline.is_open(), "outline toggled on");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
         // The last heading ("Conclusion") is far down; it should be off-screen at
         // the top of the document.
-        let concl = wp
-            .outline_entries()
-            .into_iter()
-            .find(|h| h.text == "Conclusion")
-            .expect("conclusion heading");
-        let (rect, _) = wp
-            .outline_hits
+        let entries = wp.outline_entries();
+        let (entry_index, concl) = entries
             .iter()
-            .find(|(_, id)| id == &concl.id)
-            .expect("conclusion has a clickable outline entry")
-            .clone();
+            .enumerate()
+            .find(|(_, heading)| heading.text == "Conclusion")
+            .expect("conclusion heading");
         assert_eq!(wp.scroll_y, 0.0, "starts scrolled to the top");
 
-        // Click the entry; the production handler scrolls that heading into view.
-        let pt = Point::new(
-            f64::midpoint(rect.x0, rect.x1),
-            f64::midpoint(rect.y0, rect.y1),
-        );
+        // The pane lays entries immediately below its header. Click the centre
+        // of the selected row through the production event path rather than
+        // reaching into the component's private hit map.
+        let row_y =
+            wp.toolbar_height(1000.0) + 14.0 + 18.0 + num::f64_of_usize(entry_index) * 24.0 + 12.0;
+        let pt = Point::new(30.0, row_y);
         left_click(&mut wp, &mut state, pt);
         assert!(
             wp.scroll_y > 0.0,
@@ -13504,7 +13398,7 @@ mod tests {
                 "precondition: the default-open panel is the one under test",
             );
             assert!(
-                !wp.outline_open,
+                !wp.outline.is_open(),
                 "precondition: the left-hand outline pane is closed, so the \
                  canvas is bounded only by the panel under test",
             );
