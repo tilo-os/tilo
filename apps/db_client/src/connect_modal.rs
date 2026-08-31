@@ -199,6 +199,12 @@ impl ConnectModal {
 
     /// Handle an event while the modal is open. On Save, writes the new
     /// profile into `out`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the widget event bundle (event/scale/modifiers/state/root/node/taffy) is \
+                  fixed by `ui::Widget::handle_event`, which this forwards to; the two \
+                  out-params are the modal's own result channel"
+    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -724,7 +730,7 @@ mod tests {
         let mut out = None;
         let mut state = AutoCommit::new();
         let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Default::default()).unwrap();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         m.handle_event(
             event,
             1.0,

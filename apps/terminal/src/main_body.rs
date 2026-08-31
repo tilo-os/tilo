@@ -1147,12 +1147,11 @@ impl TerminalWidget {
                         .saturating_sub(history_offset)
                         .min(self.height.saturating_sub(1));
                 }
-            } else if let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map) {
-                if state.put(&cursor_id, "x", 0u64).is_ok()
-                    && state.put(&cursor_id, "y", 0u64).is_ok()
-                {
-                    self.cursor_id = Some(cursor_id);
-                }
+            } else if let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
+                && state.put(&cursor_id, "x", 0u64).is_ok()
+                && state.put(&cursor_id, "y", 0u64).is_ok()
+            {
+                self.cursor_id = Some(cursor_id);
             }
         }
     }

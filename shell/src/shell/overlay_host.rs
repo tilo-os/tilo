@@ -4832,7 +4832,7 @@ impl ShellOverlayHost {
         &mut self,
         logical_key: &Key,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &AutoCommit,
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {

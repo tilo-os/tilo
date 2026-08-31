@@ -5240,13 +5240,13 @@ impl BooksApp {
         );
 
         // Plus mark inside a soft accent disc.
-        let disc_cx = x + w / 2.0;
-        let disc_cy = y + cover_h * 0.40;
+        let disc_centre_x = x + w / 2.0;
+        let disc_centre_y = y + cover_h * 0.40;
         let disc_radius = 24.0;
         paint::circle(
             scene,
             t,
-            Point::new(disc_cx, disc_cy),
+            Point::new(disc_centre_x, disc_centre_y),
             disc_radius,
             theme.accent_primary.with_alpha_factor(0.16),
         );
@@ -5254,10 +5254,10 @@ impl BooksApp {
             scene,
             t,
             Rect::new(
-                disc_cx - 11.0,
-                disc_cy - 11.0,
-                disc_cx + 11.0,
-                disc_cy + 11.0,
+                disc_centre_x - 11.0,
+                disc_centre_y - 11.0,
+                disc_centre_x + 11.0,
+                disc_centre_y + 11.0,
             ),
             theme.accent_primary,
             2.2,
@@ -5272,8 +5272,8 @@ impl BooksApp {
             15.0,
             c.text_primary,
             t * Affine::translate((
-                disc_cx - f64::from(title_width) / 2.0,
-                disc_cy + disc_radius + 16.0,
+                disc_centre_x - f64::from(title_width) / 2.0,
+                disc_centre_y + disc_radius + 16.0,
             )),
             None,
             TextWeight::Semibold,
@@ -5286,8 +5286,8 @@ impl BooksApp {
             12.0,
             c.text_dim,
             t * Affine::translate((
-                disc_cx - f64::from(hint_w) / 2.0,
-                disc_cy + disc_radius + 38.0,
+                disc_centre_x - f64::from(hint_w) / 2.0,
+                disc_centre_y + disc_radius + 38.0,
             )),
             None,
         );
