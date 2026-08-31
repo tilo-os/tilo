@@ -280,7 +280,7 @@ impl Widget for MergeView {
         for (hunk, choice) in MergeDoc::resolutions(state) {
             if let (Some(h), Some(c)) = (
                 self.model.hunks.get_mut(hunk),
-                HunkChoice::from_str(&choice),
+                HunkChoice::from_tag(&choice),
             ) && h.is_change
             {
                 let res = c.to_resolution();

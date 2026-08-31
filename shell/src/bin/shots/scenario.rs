@@ -335,7 +335,7 @@ pub fn run_with<S: SnapshotSink>(
                 // `per_slice` is `total / frames`, so `per_slice * frames` never
                 // exceeds `total` — `saturating_sub` documents that instead of a
                 // bare `-` that clippy can't see is infallible here.
-                let remainder = total.saturating_sub(per_slice * frames);
+                let remainder = total.saturating_sub(per_slice.saturating_mul(frames));
                 let prefix = last_snapshot.unwrap_or("frame");
                 for i in 0..frames {
                     // Distribute the remainder over the first `remainder`

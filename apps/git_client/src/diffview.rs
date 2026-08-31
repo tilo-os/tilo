@@ -147,7 +147,6 @@ impl DiffView {
         staged_side: bool,
         armed_hunk: Option<usize>,
     ) -> Vec<HunkButton> {
-        let c = &theme.tokens.colors;
         let mut buttons: Vec<HunkButton> = Vec::new();
         let x0 = viewport.x0;
         let top = viewport.y0 - scroll;
@@ -159,24 +158,76 @@ impl DiffView {
                 continue; // cull off-screen rows
             }
             let row = Rect::new(x0, y, viewport.x1, y + ROW_H);
+            Self::draw_unified_row_background(
+                scene,
+                tr,
+                t,
+                theme,
+                row,
+                line,
+                hover_hunk,
+                staged_side,
+                armed_hunk,
+                &mut last_hunk,
+                &mut buttons,
+            );
+            Self::draw_unified_row_content(scene, tr, t, theme, diff, line, x0, y, settings);
+        }
+        buttons
+    }
 
-            match line.kind {
-                DiffLineKind::Addition => draw::fill_rect(scene, t, row, draw::add_tint(theme)),
-                DiffLineKind::Deletion => draw::fill_rect(scene, t, row, draw::del_tint(theme)),
-                DiffLineKind::Hunk => {
-                    draw::fill_rect(scene, t, row, c.surfaces.raised);
-                    // Emit the hunk action button(s) on the first row of the
-                    // hunk: always a stage/unstage toggle, plus a discard button
-                    // on the worktree (unstaged) side.
-                    if Some(line.hunk) != last_hunk {
-                        let hovered = hover_hunk == Some(line.hunk);
-                        let toggle_label = if staged_side {
-                            "Unstage hunk"
-                        } else {
-                            "Stage hunk"
-                        };
-                        let mut right = row.x1 - 8.0;
-                        let toggle = Self::draw_hunk_button(
+    /// The row's tinted background, and — on a hunk's first row — its
+    /// stage/unstage (+ worktree-side discard) buttons (part of
+    /// [`Self::draw_unified`]).
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_unified_row_background(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        row: Rect,
+        line: &DiffLine,
+        hover_hunk: Option<usize>,
+        staged_side: bool,
+        armed_hunk: Option<usize>,
+        last_hunk: &mut Option<usize>,
+        buttons: &mut Vec<HunkButton>,
+    ) {
+        let c = &theme.tokens.colors;
+        match line.kind {
+            DiffLineKind::Addition => draw::fill_rect(scene, t, row, draw::add_tint(theme)),
+            DiffLineKind::Deletion => draw::fill_rect(scene, t, row, draw::del_tint(theme)),
+            DiffLineKind::Hunk => {
+                draw::fill_rect(scene, t, row, c.surfaces.raised);
+                // Emit the hunk action button(s) on the first row of the
+                // hunk: always a stage/unstage toggle, plus a discard button
+                // on the worktree (unstaged) side.
+                if Some(line.hunk) != *last_hunk {
+                    let hovered = hover_hunk == Some(line.hunk);
+                    let toggle_label = if staged_side {
+                        "Unstage hunk"
+                    } else {
+                        "Stage hunk"
+                    };
+                    let mut right = row.x1 - 8.0;
+                    let toggle = Self::draw_hunk_button(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        &row,
+                        right,
+                        line.hunk,
+                        HunkAction::Toggle,
+                        toggle_label,
+                        hovered,
+                    );
+                    right = toggle.rect.x0 - 8.0;
+                    buttons.push(toggle);
+                    if !staged_side {
+                        let armed = armed_hunk == Some(line.hunk);
+                        let dlabel = if armed { "Discard?" } else { "Discard" };
+                        let discard = Self::draw_hunk_button(
                             scene,
                             tr,
                             t,
@@ -184,93 +235,89 @@ impl DiffView {
                             &row,
                             right,
                             line.hunk,
-                            HunkAction::Toggle,
-                            toggle_label,
-                            hovered,
+                            HunkAction::Discard,
+                            dlabel,
+                            hovered || armed,
                         );
-                        right = toggle.rect.x0 - 8.0;
-                        buttons.push(toggle);
-                        if !staged_side {
-                            let armed = armed_hunk == Some(line.hunk);
-                            let dlabel = if armed { "Discard?" } else { "Discard" };
-                            let discard = Self::draw_hunk_button(
-                                scene,
-                                tr,
-                                t,
-                                theme,
-                                &row,
-                                right,
-                                line.hunk,
-                                HunkAction::Discard,
-                                dlabel,
-                                hovered || armed,
-                            );
-                            buttons.push(discard);
-                        }
-                        last_hunk = Some(line.hunk);
+                        buttons.push(discard);
                     }
+                    *last_hunk = Some(line.hunk);
                 }
-                DiffLineKind::Meta => draw::fill_rect(scene, t, row, c.surfaces.raised),
-                DiffLineKind::Context => {}
             }
+            DiffLineKind::Meta => draw::fill_rect(scene, t, row, c.surfaces.raised),
+            DiffLineKind::Context => {}
+        }
+    }
 
-            // Line-number gutter.
-            Self::draw_linenos(scene, tr, t, theme, x0, y, line);
+    /// The line-number gutter, marker glyph, and syntax-highlighted (or
+    /// plain) content for one row (part of [`Self::draw_unified`]).
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_unified_row_content(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        diff: &FileDiff,
+        line: &DiffLine,
+        x0: f64,
+        y: f64,
+        settings: Settings,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::draw_linenos(scene, tr, t, theme, x0, y, line);
 
-            // Marker glyph + content.
-            let content_x = x0 + GUTTER_W;
-            let marker = match line.kind {
-                DiffLineKind::Addition => "+",
-                DiffLineKind::Deletion => "-",
-                _ => " ",
-            };
-            let marker_color = match line.kind {
-                DiffLineKind::Addition => draw::add_fg(theme),
-                DiffLineKind::Deletion => draw::del_fg(theme),
-                _ => c.text_dim,
-            };
-            draw::mono(scene, tr, t, marker, FONT, marker_color, content_x, y + 2.0);
+        // Marker glyph + content.
+        let content_x = x0 + GUTTER_W;
+        let marker = match line.kind {
+            DiffLineKind::Addition => "+",
+            DiffLineKind::Deletion => "-",
+            _ => " ",
+        };
+        let marker_color = match line.kind {
+            DiffLineKind::Addition => draw::add_fg(theme),
+            DiffLineKind::Deletion => draw::del_fg(theme),
+            _ => c.text_dim,
+        };
+        draw::mono(scene, tr, t, marker, FONT, marker_color, content_x, y + 2.0);
 
-            let text_x = content_x + 14.0;
-            match line.kind {
-                DiffLineKind::Hunk => {
-                    draw::mono(
-                        scene,
-                        tr,
-                        t,
-                        &line.content,
-                        FONT,
-                        c.semantic.info,
-                        content_x,
-                        y + 2.0,
-                    );
-                }
-                DiffLineKind::Meta => {
-                    draw::mono(
-                        scene,
-                        tr,
-                        t,
-                        &line.content,
-                        FONT,
-                        c.text_dim,
-                        content_x,
-                        y + 2.0,
-                    );
-                }
-                _ => Self::draw_code(
+        let text_x = content_x + 14.0;
+        match line.kind {
+            DiffLineKind::Hunk => {
+                draw::mono(
                     scene,
                     tr,
                     t,
-                    theme,
                     &line.content,
-                    &diff.language,
-                    text_x,
+                    FONT,
+                    c.semantic.info,
+                    content_x,
                     y + 2.0,
-                    settings.syntax_highlight,
-                ),
+                );
             }
+            DiffLineKind::Meta => {
+                draw::mono(
+                    scene,
+                    tr,
+                    t,
+                    &line.content,
+                    FONT,
+                    c.text_dim,
+                    content_x,
+                    y + 2.0,
+                );
+            }
+            _ => Self::draw_code(
+                scene,
+                tr,
+                t,
+                theme,
+                &line.content,
+                &diff.language,
+                text_x,
+                y + 2.0,
+                settings.syntax_highlight,
+            ),
         }
-        buttons
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -300,8 +347,13 @@ impl DiffView {
             let left = Rect::new(viewport.x0, y, mid, y + ROW_H);
             let right = Rect::new(mid, y, viewport.x1, y + ROW_H);
 
-            if let Some(li) = pr.left {
-                let line = &diff.lines[li];
+            // `pr.left`/`pr.right` are always valid indices into this same
+            // `diff.lines` (`pair_rows` builds them from it), but `.get`
+            // degrades to skipping the half-row instead of indexing blindly
+            // into text parsed from a repository someone else wrote.
+            if let Some(li) = pr.left
+                && let Some(line) = diff.lines.get(li)
+            {
                 if line.kind == DiffLineKind::Deletion {
                     draw::fill_rect(scene, t, left, draw::del_tint(theme));
                 } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
@@ -309,8 +361,9 @@ impl DiffView {
                 }
                 Self::draw_half(scene, tr, t, theme, line, viewport.x0, y, settings, true);
             }
-            if let Some(ri) = pr.right {
-                let line = &diff.lines[ri];
+            if let Some(ri) = pr.right
+                && let Some(line) = diff.lines.get(ri)
+            {
                 if line.kind == DiffLineKind::Addition {
                     draw::fill_rect(scene, t, right, draw::add_tint(theme));
                 } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
@@ -531,8 +584,11 @@ struct PairRow {
 fn pair_rows(lines: &[DiffLine]) -> Vec<PairRow> {
     let mut rows: Vec<PairRow> = Vec::new();
     let mut i = 0;
-    while i < lines.len() {
-        match lines[i].kind {
+    // `.get`/`is_some_and` rather than `i < lines.len()` + `lines[i]` — this
+    // walks text parsed from a repository someone else wrote, so the bound
+    // is re-checked at every step instead of trusted across statements.
+    while let Some(cur) = lines.get(i) {
+        match cur.kind {
             DiffLineKind::Context | DiffLineKind::Hunk | DiffLineKind::Meta => {
                 rows.push(PairRow {
                     left: Some(i),
@@ -543,12 +599,18 @@ fn pair_rows(lines: &[DiffLine]) -> Vec<PairRow> {
             DiffLineKind::Deletion => {
                 // Gather the run of deletions, then the run of additions.
                 let del_start = i;
-                while i < lines.len() && lines[i].kind == DiffLineKind::Deletion {
+                while lines
+                    .get(i)
+                    .is_some_and(|l| l.kind == DiffLineKind::Deletion)
+                {
                     i += 1;
                 }
                 let del_end = i;
                 let add_start = i;
-                while i < lines.len() && lines[i].kind == DiffLineKind::Addition {
+                while lines
+                    .get(i)
+                    .is_some_and(|l| l.kind == DiffLineKind::Addition)
+                {
                     i += 1;
                 }
                 let add_end = i;

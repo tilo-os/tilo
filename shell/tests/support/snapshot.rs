@@ -151,7 +151,9 @@ fn decode_png(path: &Path) -> DecodedPng {
         png::ColorType::Rgb => {
             // Expand RGB → RGBA so the diff routine below only has to
             // handle one layout. Opaque alpha.
-            let mut out = Vec::with_capacity((info.width * info.height * 4) as usize);
+            let mut out = Vec::with_capacity(
+                info.width.saturating_mul(info.height).saturating_mul(4) as usize,
+            );
             for px in buf.chunks_exact(3) {
                 out.extend_from_slice(px);
                 out.push(0xFF);
@@ -188,7 +190,7 @@ fn diff_rgba(a: &[u8], b: &[u8], tolerance: u8) -> DiffResult {
         let da = pa[3].abs_diff(pb[3]);
         let d = dr.max(dg).max(db).max(da);
         if d > tolerance {
-            mismatching += 1;
+            mismatching = mismatching.saturating_add(1);
         }
         if d > max_delta {
             max_delta = d;
@@ -237,8 +239,8 @@ mod tests {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
-        let mut data = Vec::with_capacity((width * height * 4) as usize);
-        for _ in 0..(width * height) {
+        let mut data = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4) as usize);
+        for _ in 0..(width.saturating_mul(height)) {
             data.extend_from_slice(&rgba_fill);
         }
         write_png_bytes(path, width, height, &data);

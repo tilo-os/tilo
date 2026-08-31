@@ -210,8 +210,11 @@ fn accept_label(prompt: &PairingPrompt) -> &'static str {
 
 /// `123456` → `123 456`. Six digits in one run is read as a number; split in half it's read as two triples, how people actually compare them.
 fn spaced(code: &str) -> String {
-    if code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) {
-        format!("{} {}", &code[..3], &code[3..])
+    if code.len() == 6
+        && code.chars().all(|c| c.is_ascii_digit())
+        && let (Some(first), Some(second)) = (code.get(..3), code.get(3..))
+    {
+        format!("{first} {second}")
     } else {
         code.to_string()
     }
@@ -296,13 +299,13 @@ impl Widget for PairingPromptView {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

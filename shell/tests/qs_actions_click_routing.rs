@@ -418,7 +418,8 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     let rect = host.quick_settings_rect_for_tests();
     let click_x = rect.x0 + rect.width() / 2.0;
     // Header is 56 px, rows are 56 px, so +28 into a row lands mid-row.
-    let row_y = |i: usize| rect.y0 + 56.0 + i as f64 * 56.0 + 28.0;
+    let row_y =
+        |i: usize| rect.y0 + 56.0 + f64::from(u32::try_from(i).unwrap_or(u32::MAX)) * 56.0 + 28.0;
 
     // Row 0 — secured, not joined: must prompt for a passphrase rather than
     // firing a connect that would fail silently.
