@@ -74,7 +74,9 @@ async fn read_async_frame<T: DeserializeOwned>(
     postcard::from_bytes(&data).map_err(std::io::Error::other)
 }
 
-async fn write_async_frame<T: Serialize>(
+// `T: Sync` so `&T` is `Send` — required for the future this returns to be
+// usable from the `tokio::spawn`ed connection task in `serve`.
+async fn write_async_frame<T: Serialize + Sync>(
     stream: &mut tokio::net::UnixStream,
     value: &T,
 ) -> std::io::Result<()> {
@@ -82,7 +84,9 @@ async fn write_async_frame<T: Serialize>(
     if data.len() > MAX_FRAME {
         return Err(std::io::Error::other("storage frame too large"));
     }
-    stream.write_u32_le(data.len() as u32).await?;
+    let len = u32::try_from(data.len())
+        .map_err(|_| std::io::Error::other("storage frame too large to length-prefix"))?;
+    stream.write_u32_le(len).await?;
     stream.write_all(&data).await
 }
 
@@ -90,6 +94,16 @@ async fn write_async_frame<T: Serialize>(
 struct FileBlobs {
     state: SyncedFileState,
     blobs: Vec<Hash>,
+}
+
+/// A live file as seen through the namespace, before residency is looked up.
+struct LogicalFile {
+    identity: String,
+    inode: u64,
+    path: String,
+    logical_bytes: u64,
+    hash: Option<Hash>,
+    mtime: u64,
 }
 
 impl StorageAuthority {
@@ -113,7 +127,10 @@ impl StorageAuthority {
 
     pub fn set_pinned(&self, identity: impl Into<String>, pinned: bool) {
         let identity = identity.into();
-        let mut pins = self.pinned.write().unwrap();
+        let mut pins = self
+            .pinned
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if pinned {
             pins.insert(identity);
         } else {
@@ -121,112 +138,129 @@ impl StorageAuthority {
         }
     }
 
-    pub async fn snapshot(&self) -> SyncStorageSnapshot {
-        let logical = {
-            let mut ns = self.namespace.lock().unwrap();
-            ns.live_node_ids()
-                .into_iter()
-                .filter_map(|identity| {
-                    let entry = ns.entry_for_node(&identity)?;
-                    if entry.kind != NodeKind::File {
-                        return None;
-                    }
-                    let inode = ns.inode_for_node(&identity)?;
-                    let path = ns.path_for(inode)?;
-                    Some((identity, inode, path, entry.size, entry.hash, entry.mtime))
+    /// The live files the namespace knows about, filtered to regular files.
+    fn logical_files(&self) -> Vec<LogicalFile> {
+        let mut ns = self
+            .namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ns.live_node_ids()
+            .into_iter()
+            .filter_map(|identity| {
+                let entry = ns.entry_for_node(&identity)?;
+                if entry.kind != NodeKind::File {
+                    return None;
+                }
+                let inode = ns.inode_for_node(&identity)?;
+                let path = ns.path_for(inode)?;
+                Some(LogicalFile {
+                    identity,
+                    inode,
+                    path,
+                    logical_bytes: entry.size,
+                    hash: entry.hash,
+                    mtime: entry.mtime,
                 })
-                .collect::<Vec<_>>()
-        };
+            })
+            .collect()
+    }
 
+    /// The accounting entry for one logical file: content-less files (never
+    /// written) report their logical size as already hydrated; the rest ask
+    /// the hydrator for real residency.
+    async fn file_blobs(
+        &self,
+        file: LogicalFile,
+        online: bool,
+        dirty: &HashSet<u64>,
+        pinned: &HashSet<String>,
+    ) -> FileBlobs {
+        let LogicalFile {
+            identity,
+            inode,
+            path,
+            logical_bytes,
+            hash,
+            mtime,
+        } = file;
+        let is_dirty = dirty.contains(&inode);
+        let is_pinned = pinned.contains(&identity);
+        let Some(hash) = hash else {
+            return FileBlobs {
+                state: SyncedFileState {
+                    workspace: self.workspace.clone(),
+                    app: app_from_path(&path),
+                    logical_path: path,
+                    identity,
+                    inode,
+                    version: format!("namespace-{mtime}"),
+                    logical_bytes,
+                    hydrated_bytes: logical_bytes,
+                    remote_only: false,
+                    dirty: is_dirty,
+                    pinned: is_pinned,
+                    in_flight: false,
+                    remotely_durable: false,
+                    reclaimable_bytes: 0,
+                },
+                blobs: Vec::new(),
+            };
+        };
+        let residence = self.hydrator.residency(hash).await;
+        let reclaimable = eligible(Eligibility {
+            online,
+            bytes: residence.hydrated_bytes,
+            dirty: is_dirty,
+            pinned: is_pinned,
+            in_flight: residence.in_flight,
+            durable: residence.remotely_durable,
+        });
+        FileBlobs {
+            state: SyncedFileState {
+                workspace: self.workspace.clone(),
+                app: app_from_path(&path),
+                logical_path: path,
+                identity,
+                inode,
+                version: hex::encode(hash.as_bytes()),
+                logical_bytes,
+                hydrated_bytes: residence.hydrated_bytes,
+                remote_only: residence.remote_only,
+                dirty: is_dirty,
+                pinned: is_pinned,
+                in_flight: residence.in_flight,
+                remotely_durable: residence.remotely_durable,
+                reclaimable_bytes: if reclaimable {
+                    residence.hydrated_bytes
+                } else {
+                    0
+                },
+            },
+            blobs: residence.blobs,
+        }
+    }
+
+    pub async fn snapshot(&self) -> SyncStorageSnapshot {
+        let logical = self.logical_files();
         let online = !self.hydrator.known_peers().is_empty();
         let dirty = self
             .dirty
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
             .copied()
             .collect::<HashSet<_>>();
-        let pinned = self.pinned.read().unwrap().clone();
-        let mut details = Vec::new();
-        for (identity, inode, path, logical_bytes, hash, mtime) in logical {
-            let Some(hash) = hash else {
-                let is_dirty = dirty.contains(&inode);
-                let is_pinned = pinned.contains(&identity);
-                details.push(FileBlobs {
-                    state: SyncedFileState {
-                        workspace: self.workspace.clone(),
-                        app: app_from_path(&path),
-                        logical_path: path,
-                        identity,
-                        inode,
-                        version: format!("namespace-{mtime}"),
-                        logical_bytes,
-                        hydrated_bytes: logical_bytes,
-                        remote_only: false,
-                        dirty: is_dirty,
-                        pinned: is_pinned,
-                        in_flight: false,
-                        remotely_durable: false,
-                        reclaimable_bytes: 0,
-                    },
-                    blobs: Vec::new(),
-                });
-                continue;
-            };
-            let residence = self.hydrator.residency(hash).await;
-            let app = app_from_path(&path);
-            let is_dirty = dirty.contains(&inode);
-            let is_pinned = pinned.contains(&identity);
-            let reclaimable = eligible(
-                online,
-                residence.hydrated_bytes,
-                is_dirty,
-                is_pinned,
-                residence.in_flight,
-                residence.remotely_durable,
-            );
-            details.push(FileBlobs {
-                state: SyncedFileState {
-                    workspace: self.workspace.clone(),
-                    app,
-                    logical_path: path,
-                    identity,
-                    inode,
-                    version: hex::encode(hash.as_bytes()),
-                    logical_bytes,
-                    hydrated_bytes: residence.hydrated_bytes,
-                    remote_only: residence.remote_only,
-                    dirty: is_dirty,
-                    pinned: is_pinned,
-                    in_flight: residence.in_flight,
-                    remotely_durable: residence.remotely_durable,
-                    reclaimable_bytes: if reclaimable {
-                        residence.hydrated_bytes
-                    } else {
-                        0
-                    },
-                },
-                blobs: residence.blobs,
-            });
-        }
+        let pinned = self
+            .pinned
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
 
-        // A chunk used by any other logical file must remain local.  Being
-        // conservative here avoids misleading per-file reclaim estimates.
-        let mut refs = HashMap::<Hash, usize>::new();
-        for file in &details {
-            for hash in file.blobs.iter().copied().collect::<HashSet<_>>() {
-                *refs.entry(hash).or_default() += 1;
-            }
+        let mut details = Vec::with_capacity(logical.len());
+        for file in logical {
+            details.push(self.file_blobs(file, online, &dirty, &pinned).await);
         }
-        for file in &mut details {
-            if file
-                .blobs
-                .iter()
-                .any(|hash| refs.get(hash).copied().unwrap_or(0) > 1)
-            {
-                file.state.reclaimable_bytes = 0;
-            }
-        }
+        zero_out_shared_blob_reclaim(&mut details);
 
         let files = details.into_iter().map(|f| f.state).collect::<Vec<_>>();
         SyncStorageSnapshot {
@@ -237,6 +271,11 @@ impl StorageAuthority {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the mount is offline, a selected file's version can't be parsed,
+    /// the workspace changed underneath the selection during revalidation, or eviction fails
+    /// against the underlying store.
     pub async fn evict(&self, selected: Vec<EvictionSelection>) -> Result<EvictionReport> {
         let _exclusive = self.eviction.lock().await;
         if self.hydrator.known_peers().is_empty() {
@@ -302,13 +341,26 @@ impl StorageAuthority {
         // Final identity/inode/version/dirty revalidation after network I/O.
         for file in &accepted {
             let current = {
-                let ns = self.namespace.lock().unwrap();
+                let ns = self
+                    .namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 ns.entry_for_node(&file.identity)
                     .and_then(|entry| entry.hash)
             };
+            let still_dirty = self
+                .dirty
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&file.inode);
+            let still_pinned = self
+                .pinned
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&file.identity);
             if current.map(|h| hex::encode(h.as_bytes())).as_deref() != Some(&file.version)
-                || self.dirty.lock().unwrap().contains_key(&file.inode)
-                || self.pinned.read().unwrap().contains(&file.identity)
+                || still_dirty
+                || still_pinned
             {
                 return Err(anyhow!(
                     "workspace changed during revalidation; nothing was evicted"
@@ -318,26 +370,55 @@ impl StorageAuthority {
         self.store.evict_blobs(&selected_blobs).await?;
         for file in &accepted {
             let current = self.hydrator.residency(parse_hash(&file.version)?).await;
-            report.freed_bytes += file
-                .reclaimable_bytes
-                .saturating_sub(current.hydrated_bytes);
+            report.freed_bytes = report.freed_bytes.saturating_add(
+                file.reclaimable_bytes
+                    .saturating_sub(current.hydrated_bytes),
+            );
             if current.hydrated_bytes == 0 {
-                report.evicted_files += 1;
+                report.evicted_files = report.evicted_files.saturating_add(1);
             }
         }
         Ok(report)
     }
 }
 
-fn eligible(
+/// Eviction-eligibility inputs, grouped so the call site names each flag
+/// rather than passing an easily-transposed run of `bool`s.
+struct Eligibility {
     online: bool,
     bytes: u64,
     dirty: bool,
     pinned: bool,
     in_flight: bool,
     durable: bool,
-) -> bool {
-    online && bytes > 0 && !dirty && !pinned && !in_flight && durable
+}
+
+fn eligible(e: Eligibility) -> bool {
+    e.online && e.bytes > 0 && !e.dirty && !e.pinned && !e.in_flight && e.durable
+}
+
+/// A chunk used by any other logical file must remain local. Being
+/// conservative here avoids misleading per-file reclaim estimates.
+fn zero_out_shared_blob_reclaim(details: &mut [FileBlobs]) {
+    let mut refs = HashMap::<Hash, usize>::new();
+    for file in details.iter() {
+        let mut seen = HashSet::new();
+        for hash in file.blobs.iter().copied() {
+            if seen.insert(hash) {
+                let count = refs.entry(hash).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+    }
+    for file in details.iter_mut() {
+        if file
+            .blobs
+            .iter()
+            .any(|hash| refs.get(hash).copied().unwrap_or(0) > 1)
+        {
+            file.state.reclaimable_bytes = 0;
+        }
+    }
 }
 
 fn matches_selection(file: &SyncedFileState, request: &EvictionSelection) -> bool {
@@ -373,11 +454,15 @@ fn aggregate<'a>(
                 owner: owner.clone(),
                 ..StorageAggregate::default()
             });
-        item.logical_bytes += file.logical_bytes;
-        item.local_bytes += file.hydrated_bytes;
-        item.remote_only_bytes += file.logical_bytes.saturating_sub(file.hydrated_bytes);
-        item.reclaimable_bytes += file.reclaimable_bytes;
-        item.files += 1;
+        item.logical_bytes = item.logical_bytes.saturating_add(file.logical_bytes);
+        item.local_bytes = item.local_bytes.saturating_add(file.hydrated_bytes);
+        item.remote_only_bytes = item
+            .remote_only_bytes
+            .saturating_add(file.logical_bytes.saturating_sub(file.hydrated_bytes));
+        item.reclaimable_bytes = item
+            .reclaimable_bytes
+            .saturating_add(file.reclaimable_bytes);
+        item.files = item.files.saturating_add(1);
     }
     let mut out = out.into_values().collect::<Vec<_>>();
     out.sort_by(|a, b| a.owner.cmp(&b.owner));
@@ -390,12 +475,35 @@ mod tests {
 
     #[test]
     fn dirty_pinned_inflight_and_offline_are_never_reclaimable() {
-        assert!(eligible(true, 42, false, false, false, true));
-        assert!(!eligible(false, 42, false, false, false, true));
-        assert!(!eligible(true, 42, true, false, false, true));
-        assert!(!eligible(true, 42, false, true, false, true));
-        assert!(!eligible(true, 42, false, false, true, true));
-        assert!(!eligible(true, 42, false, false, false, false));
+        let base = || Eligibility {
+            online: true,
+            bytes: 42,
+            dirty: false,
+            pinned: false,
+            in_flight: false,
+            durable: true,
+        };
+        assert!(eligible(base()));
+        assert!(!eligible(Eligibility {
+            online: false,
+            ..base()
+        }));
+        assert!(!eligible(Eligibility {
+            dirty: true,
+            ..base()
+        }));
+        assert!(!eligible(Eligibility {
+            pinned: true,
+            ..base()
+        }));
+        assert!(!eligible(Eligibility {
+            in_flight: true,
+            ..base()
+        }));
+        assert!(!eligible(Eligibility {
+            durable: false,
+            ..base()
+        }));
     }
 
     #[test]

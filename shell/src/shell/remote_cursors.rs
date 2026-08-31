@@ -186,11 +186,11 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             );
             let chip_left = apex.x + CARET_SIZE + CHIP_OFFSET;
             let chip_top = apex.y + CARET_SIZE + CHIP_OFFSET;
-            let chip_rect = vello::kurbo::Rect::from_origin_size(
+            let chip_bounds = vello::kurbo::Rect::from_origin_size(
                 vello::kurbo::Point::new(chip_left, chip_top),
                 chip_size,
             );
-            let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, chip_radius);
+            let chip = vello::kurbo::RoundedRect::from_rect(chip_bounds, chip_radius);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -207,10 +207,10 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             );
             // Peer-colored underline so the chip's owner is obvious.
             let underline = vello::kurbo::Rect::new(
-                chip_rect.x0,
-                chip_rect.y1 - 2.0,
-                chip_rect.x1,
-                chip_rect.y1,
+                chip_bounds.x0,
+                chip_bounds.y1 - 2.0,
+                chip_bounds.x1,
+                chip_bounds.y1,
             );
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -220,14 +220,14 @@ impl ui::widget::Widget for RemoteCursorOverlay {
                 &underline,
             );
 
-            let text_y = chip_rect.y0 + CHIP_PADDING_Y;
+            let text_y = chip_bounds.y0 + CHIP_PADDING_Y;
             text_renderer.draw_text(
                 scene,
                 &cursor.label,
                 label_size,
                 label_color,
                 transform.pre_translate(vello::kurbo::Vec2::new(
-                    chip_rect.x0 + CHIP_PADDING_X,
+                    chip_bounds.x0 + CHIP_PADDING_X,
                     text_y,
                 )),
                 None,

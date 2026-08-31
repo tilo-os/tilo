@@ -499,7 +499,7 @@ impl Widget for TimePicker {
                 self.handle_mouse_press(handled, focus_target, node_id);
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.handle_keyboard_input(event, modifiers, handled);
+                self.handle_keyboard_input(event, *modifiers, handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(*delta, handled);
@@ -615,7 +615,7 @@ impl TimePicker {
     fn handle_keyboard_input(
         &mut self,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         handled: &mut bool,
     ) {
         let WindowEvent::KeyboardInput {

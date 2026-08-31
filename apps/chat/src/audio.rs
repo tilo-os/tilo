@@ -67,7 +67,9 @@ fn pcm_to_bytes(pcm: &[i16]) -> Vec<u8> {
 fn bytes_to_pcm(bytes: &[u8]) -> Vec<i16> {
     bytes
         .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        // `chunks_exact(2)` guarantees each chunk is exactly 2 bytes, so this
+        // conversion never actually falls to its fallback.
+        .map(|c| <[u8; 2]>::try_from(c).map_or(0, i16::from_le_bytes))
         .collect()
 }
 
@@ -91,20 +93,13 @@ pub fn test_tone(rate: i32, channels: i32, ms: u64) -> Vec<i16> {
 /// timeout. Never blocks longer than `per_pull` per empty poll.
 fn drain_appsink(sink: &gst_app::AppSink, per_pull: gst::ClockTime) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
-    loop {
-        match sink.try_pull_sample(per_pull) {
-            Some(sample) => {
-                if let Some(buffer) = sample.buffer()
-                    && let Ok(map) = buffer.map_readable()
-                {
-                    out.push(map.as_slice().to_vec());
-                }
-            }
-            None => {
-                // No sample within the timeout: either the stream has ended and
-                // fully drained, or nothing more is coming — either way, done.
-                break;
-            }
+    // No sample within the timeout means either the stream has ended and
+    // fully drained, or nothing more is coming — either way, done.
+    while let Some(sample) = sink.try_pull_sample(per_pull) {
+        if let Some(buffer) = sample.buffer()
+            && let Ok(map) = buffer.map_readable()
+        {
+            out.push(map.as_slice().to_vec());
         }
     }
     out
@@ -140,13 +135,13 @@ impl OpusEncoder {
     /// `opusenc` frames it cleanly; each returned `Vec<u8>` is one Opus packet.
     /// Returns empty on any pipeline failure — never panics.
     pub fn encode(&mut self, pcm: &[i16]) -> Vec<Vec<u8>> {
-        let Some(packets) = self.try_encode(pcm) else {
+        let Some(packets) = Self::try_encode(pcm) else {
             return Vec::new();
         };
         packets
     }
 
-    fn try_encode(&mut self, pcm: &[i16]) -> Option<Vec<Vec<u8>>> {
+    fn try_encode(pcm: &[i16]) -> Option<Vec<Vec<u8>>> {
         let pipeline = gst::parse::launch(
             "appsrc name=src is-live=false format=time ! audioconvert ! audioresample \
              ! opusenc ! appsink name=sink sync=false",
@@ -167,13 +162,13 @@ impl OpusEncoder {
         let mut i = 0usize;
         while i < pcm.len() {
             let end = (i + per_frame).min(pcm.len());
-            let mut frame = pcm[i..end].to_vec();
+            let mut frame = pcm.get(i..end)?.to_vec();
             if frame.len() < per_frame {
                 frame.resize(per_frame, 0); // pad tail with silence
             }
             let mut buffer = gst::Buffer::from_slice(pcm_to_bytes(&frame));
             {
-                let b = buffer.get_mut().unwrap();
+                let b = buffer.get_mut()?;
                 b.set_pts(gst::ClockTime::from_mseconds(idx * FRAME_MS));
                 b.set_duration(gst::ClockTime::from_mseconds(FRAME_MS));
             }
@@ -207,10 +202,10 @@ impl OpusDecoder {
     /// Decode one Opus packet into interleaved i16 PCM. Returns empty on any
     /// failure — never panics.
     pub fn decode(&mut self, packet: &[u8]) -> Vec<i16> {
-        self.try_decode(packet).unwrap_or_default()
+        Self::try_decode(packet).unwrap_or_default()
     }
 
-    fn try_decode(&mut self, packet: &[u8]) -> Option<Vec<i16>> {
+    fn try_decode(packet: &[u8]) -> Option<Vec<i16>> {
         if packet.is_empty() {
             return Some(Vec::new());
         }
@@ -231,7 +226,7 @@ impl OpusDecoder {
 
         let mut buffer = gst::Buffer::from_slice(packet.to_vec());
         {
-            let b = buffer.get_mut().unwrap();
+            let b = buffer.get_mut()?;
             b.set_pts(gst::ClockTime::ZERO);
             b.set_duration(gst::ClockTime::from_mseconds(FRAME_MS));
         }
@@ -329,17 +324,20 @@ impl SpeakerPlayback {
         })
     }
 
-    /// Push one received Opus packet to the speakers.
+    /// Push one received Opus packet to the speakers. A packet that can't be
+    /// buffered (a freshly-created buffer with no other reference should
+    /// always accept a mutable borrow, but this never panics either way) is
+    /// silently dropped rather than disrupting playback.
     pub fn play(&mut self, packet: &[u8]) {
         if packet.is_empty() {
             return;
         }
         let mut buffer = gst::Buffer::from_slice(packet.to_vec());
-        {
-            let b = buffer.get_mut().unwrap();
-            b.set_pts(gst::ClockTime::from_mseconds(self.pts_ms));
-            b.set_duration(gst::ClockTime::from_mseconds(FRAME_MS));
-        }
+        let Some(b) = buffer.get_mut() else {
+            return;
+        };
+        b.set_pts(gst::ClockTime::from_mseconds(self.pts_ms));
+        b.set_duration(gst::ClockTime::from_mseconds(FRAME_MS));
         self.pts_ms += FRAME_MS;
         let _ = self.src.push_buffer(buffer);
     }

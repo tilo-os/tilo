@@ -65,21 +65,21 @@ pub fn text_centered(
     color: Color,
     weight: TextWeight,
 ) {
-    let (w, h) = tr.measure_weighted(s, font, None, weight);
-    let x = rect.x0 + (rect.width() - f64::from(w)) / 2.0;
-    let y = rect.y0 + (rect.height() - f64::from(h)) / 2.0;
+    let (text_w, text_h) = tr.measure_weighted(s, font, None, weight);
+    let pos_x = rect.x0 + (rect.width() - f64::from(text_w)) / 2.0;
+    let pos_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
     tr.draw_text_weighted(
         scene,
         s,
         font,
         color,
-        t * Affine::translate((x, y)),
+        t * Affine::translate((pos_x, pos_y)),
         None,
         weight,
     );
 }
 
-/// Draw a line of text vertically centred, left-aligned at `x`.
+/// Draw a line of text vertically centred, left-aligned at `left_x`.
 #[allow(clippy::too_many_arguments)]
 pub fn text_vcenter(
     scene: &mut Scene,
@@ -87,19 +87,19 @@ pub fn text_vcenter(
     tr: &mut TextRenderer,
     s: &str,
     rect: Rect,
-    x: f64,
+    left_x: f64,
     font: f32,
     color: Color,
     weight: TextWeight,
 ) {
-    let (_, h) = tr.measure_weighted(s, font, None, weight);
-    let y = rect.y0 + (rect.height() - f64::from(h)) / 2.0;
+    let (_, text_h) = tr.measure_weighted(s, font, None, weight);
+    let pos_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
     tr.draw_text_weighted(
         scene,
         s,
         font,
         color,
-        t * Affine::translate((x, y)),
+        t * Affine::translate((left_x, pos_y)),
         None,
         weight,
     );

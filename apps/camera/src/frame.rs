@@ -21,6 +21,15 @@ pub struct FrameBuf {
     pub h: u32,
 }
 
+/// A pixel-space rectangle, `x0..x1` × `y0..y1` (half-open). May extend past
+/// the buffer edges — `put`/`blend` clip each pixel.
+struct Rect {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+}
+
 impl FrameBuf {
     fn new(w: u32, h: u32) -> Self {
         Self {
@@ -31,35 +40,57 @@ impl FrameBuf {
     }
 
     #[inline]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "x/y pixel coords and r/g/b color channels are the standard names for a pixel setter"
+    )]
     fn put(&mut self, x: i32, y: i32, r: u8, g: u8, b: u8) {
         if x < 0 || y < 0 || x as u32 >= self.w || y as u32 >= self.h {
             return;
         }
         let i = ((y as u32 * self.w + x as u32) * 4) as usize;
-        self.rgba[i] = r;
-        self.rgba[i + 1] = g;
-        self.rgba[i + 2] = b;
-        self.rgba[i + 3] = 255;
+        let Some(px) = self
+            .rgba
+            .get_mut(i..i + 4)
+            .and_then(|s| <&mut [u8; 4]>::try_from(s).ok())
+        else {
+            return;
+        };
+        px[0] = r;
+        px[1] = g;
+        px[2] = b;
+        px[3] = 255;
     }
 
     #[inline]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "x/y pixel coords and r/g/b color channels are the standard names for a pixel blend"
+    )]
     fn blend(&mut self, x: i32, y: i32, r: u8, g: u8, b: u8, a: f32) {
         if x < 0 || y < 0 || x as u32 >= self.w || y as u32 >= self.h {
             return;
         }
         let i = ((y as u32 * self.w + x as u32) * 4) as usize;
+        let Some(px) = self
+            .rgba
+            .get_mut(i..i + 4)
+            .and_then(|s| <&mut [u8; 4]>::try_from(s).ok())
+        else {
+            return;
+        };
         let a = a.clamp(0.0, 1.0);
         let inv = 1.0 - a;
-        self.rgba[i] = (f32::from(self.rgba[i]) * inv + f32::from(r) * a) as u8;
-        self.rgba[i + 1] = (f32::from(self.rgba[i + 1]) * inv + f32::from(g) * a) as u8;
-        self.rgba[i + 2] = (f32::from(self.rgba[i + 2]) * inv + f32::from(b) * a) as u8;
-        self.rgba[i + 3] = 255;
+        px[0] = (f32::from(px[0]) * inv + f32::from(r) * a) as u8;
+        px[1] = (f32::from(px[1]) * inv + f32::from(g) * a) as u8;
+        px[2] = (f32::from(px[2]) * inv + f32::from(b) * a) as u8;
+        px[3] = 255;
     }
 
-    fn fill_rect(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, r: u8, g: u8, b: u8) {
-        for y in y0..y1 {
-            for x in x0..x1 {
-                self.put(x, y, r, g, b);
+    fn fill_rect(&mut self, rect: Rect, color: Rgb) {
+        for y in rect.y0..rect.y1 {
+            for x in rect.x0..rect.x1 {
+                self.put(x, y, color.0, color.1, color.2);
             }
         }
     }
@@ -80,10 +111,10 @@ fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
 fn hash01(mut n: u32) -> f32 {
     n = (n << 13) ^ n;
     let m = (n
-        .wrapping_mul(n.wrapping_mul(n).wrapping_mul(15731).wrapping_add(789221))
-        .wrapping_add(1376312589))
-        & 0x7fffffff;
-    1.0 - (m as f32 / 1073741824.0)
+        .wrapping_mul(n.wrapping_mul(n).wrapping_mul(15731).wrapping_add(789_221))
+        .wrapping_add(1_376_312_589))
+        & 0x7fff_ffff;
+    1.0 - (m as f32 / 1_073_741_824.0)
 }
 
 struct Palette {
@@ -95,11 +126,11 @@ struct Palette {
     style: u8,
 }
 
+/// Six distinct looks, selected by `seed`. `style` selects the composition
+/// (0 landscape, 1 sunset, 2 city, 3 portrait bokeh, 4 forest, 5 desert).
 fn palette(seed: u8) -> Palette {
-    // Six distinct looks. `style` selects the composition (0 landscape,
-    // 1 sunset, 2 city, 3 portrait bokeh, 4 forest, 5 desert).
-    let table: [Palette; 6] = [
-        Palette {
+    match seed % 6 {
+        0 => Palette {
             sky_top: (96, 165, 250),
             sky_bot: (191, 219, 254),
             ground: (52, 96, 64),
@@ -107,7 +138,7 @@ fn palette(seed: u8) -> Palette {
             accent: (250, 250, 240),
             style: 0,
         },
-        Palette {
+        1 => Palette {
             sky_top: (244, 114, 90),
             sky_bot: (252, 211, 77),
             ground: (60, 40, 60),
@@ -115,7 +146,7 @@ fn palette(seed: u8) -> Palette {
             accent: (255, 237, 200),
             style: 1,
         },
-        Palette {
+        2 => Palette {
             sky_top: (30, 41, 59),
             sky_bot: (71, 85, 105),
             ground: (15, 18, 28),
@@ -123,7 +154,7 @@ fn palette(seed: u8) -> Palette {
             accent: (250, 204, 21),
             style: 2,
         },
-        Palette {
+        3 => Palette {
             sky_top: (60, 50, 70),
             sky_bot: (120, 90, 110),
             ground: (40, 30, 45),
@@ -131,7 +162,7 @@ fn palette(seed: u8) -> Palette {
             accent: (244, 211, 188),
             style: 3,
         },
-        Palette {
+        4 => Palette {
             sky_top: (134, 192, 160),
             sky_bot: (214, 232, 200),
             ground: (34, 70, 48),
@@ -139,7 +170,7 @@ fn palette(seed: u8) -> Palette {
             accent: (245, 245, 225),
             style: 4,
         },
-        Palette {
+        _ => Palette {
             sky_top: (250, 200, 140),
             sky_bot: (252, 232, 196),
             ground: (176, 124, 78),
@@ -147,28 +178,11 @@ fn palette(seed: u8) -> Palette {
             accent: (255, 244, 222),
             style: 5,
         },
-    ];
-    let idx = (seed as usize) % table.len();
-    // Cheap clone via field copy (Palette is small + Copy-ish ints).
-    let p = &table[idx];
-    Palette {
-        sky_top: p.sky_top,
-        sky_bot: p.sky_bot,
-        ground: p.ground,
-        ridge: p.ridge,
-        accent: p.accent,
-        style: p.style,
     }
 }
 
-/// Paint a deterministic scene into `buf` using seed `seed`.
-fn paint_scene(buf: &mut FrameBuf, seed: u8) {
-    let w = buf.w as i32;
-    let h = buf.h as i32;
-    let pal = palette(seed);
-    let horizon = (h as f32 * 0.62) as i32;
-
-    // Sky gradient + ground base.
+/// Sky gradient above the horizon, darkened ground gradient below it.
+fn paint_sky_and_ground(buf: &mut FrameBuf, pal: &Palette, w: i32, h: i32, horizon: i32) {
     for y in 0..h {
         if y < horizon {
             let t = y as f32 / horizon.max(1) as f32;
@@ -184,94 +198,121 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
             }
         }
     }
+}
 
-    match pal.style {
-        1 | 5 => {
-            // Sun disc with glow above the horizon.
-            let cx = w as f32 * 0.5;
-            let cy = horizon as f32 - h as f32 * 0.12;
-            let rad = h as f32 * 0.10;
-            for y in 0..horizon {
-                for x in 0..w {
-                    let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
-                    if d < rad {
-                        buf.blend(x, y, pal.accent.0, pal.accent.1, pal.accent.2, 0.95);
-                    } else if d < rad * 3.0 {
-                        let a = 1.0 - (d - rad) / (rad * 2.0);
-                        buf.blend(x, y, pal.accent.0, pal.accent.1, pal.accent.2, a * 0.35);
-                    }
-                }
+/// Sun disc with glow above the horizon (styles 1 and 5).
+fn paint_sun_glow(buf: &mut FrameBuf, pal: &Palette, w: i32, h: i32, horizon: i32) {
+    let cx = w as f32 * 0.5;
+    let cy = horizon as f32 - h as f32 * 0.12;
+    let rad = h as f32 * 0.10;
+    for y in 0..horizon {
+        for x in 0..w {
+            let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
+            if d < rad {
+                buf.blend(x, y, pal.accent.0, pal.accent.1, pal.accent.2, 0.95);
+            } else if d < rad * 3.0 {
+                let a = 1.0 - (d - rad) / (rad * 2.0);
+                buf.blend(x, y, pal.accent.0, pal.accent.1, pal.accent.2, a * 0.35);
             }
         }
-        2 => {
-            // City skyline: vertical building blocks with lit windows.
-            let mut x = 0;
-            let mut col = 0u32;
-            while x < w {
-                let bw = 24 + (hash01(col * 7 + u32::from(seed) * 31) * 46.0) as i32;
-                let bh = (h as f32 * (0.18 + hash01(col * 13 + 3) * 0.34)) as i32;
-                let top = horizon - bh;
-                let shade = lerp(pal.ridge, (12, 14, 22), hash01(col * 5) * 0.6);
-                buf.fill_rect(x, top, (x + bw).min(w), horizon, shade.0, shade.1, shade.2);
-                // windows
-                let mut wy = top + 8;
-                while wy < horizon - 6 {
-                    let mut wx = x + 5;
-                    while wx < x + bw - 5 {
-                        if hash01((wx * 131 + wy * 57 + col as i32) as u32) > 0.45 {
-                            buf.blend(wx, wy, pal.accent.0, pal.accent.1, pal.accent.2, 0.85);
-                            buf.blend(wx + 1, wy, pal.accent.0, pal.accent.1, pal.accent.2, 0.85);
-                            buf.blend(wx, wy + 1, pal.accent.0, pal.accent.1, pal.accent.2, 0.6);
-                        }
-                        wx += 9;
-                    }
-                    wy += 11;
+    }
+}
+
+/// City skyline: vertical building blocks with lit windows (style 2).
+fn paint_city_skyline(buf: &mut FrameBuf, pal: &Palette, seed: u8, w: i32, h: i32, horizon: i32) {
+    let mut x = 0;
+    let mut col = 0u32;
+    while x < w {
+        let bw = 24 + (hash01(col * 7 + u32::from(seed) * 31) * 46.0) as i32;
+        let bh = (h as f32 * (0.18 + hash01(col * 13 + 3) * 0.34)) as i32;
+        let top = horizon - bh;
+        let shade = lerp(pal.ridge, (12, 14, 22), hash01(col * 5) * 0.6);
+        buf.fill_rect(
+            Rect {
+                x0: x,
+                y0: top,
+                x1: (x + bw).min(w),
+                y1: horizon,
+            },
+            shade,
+        );
+        // windows
+        let mut wy = top + 8;
+        while wy < horizon - 6 {
+            let mut wx = x + 5;
+            while wx < x + bw - 5 {
+                if hash01((wx * 131 + wy * 57 + col as i32) as u32) > 0.45 {
+                    buf.blend(wx, wy, pal.accent.0, pal.accent.1, pal.accent.2, 0.85);
+                    buf.blend(wx + 1, wy, pal.accent.0, pal.accent.1, pal.accent.2, 0.85);
+                    buf.blend(wx, wy + 1, pal.accent.0, pal.accent.1, pal.accent.2, 0.6);
                 }
-                x += bw + 4;
-                col += 1;
+                wx += 9;
             }
+            wy += 11;
         }
-        3 => {
-            // Portrait: soft bokeh circles in the upper area.
-            for i in 0..26u32 {
-                let bx = (hash01(i * 17 + u32::from(seed)) * w as f32) as i32;
-                let by = (hash01(i * 31 + 7) * horizon as f32) as i32;
-                let br = 10.0 + hash01(i * 13 + 3) * 34.0;
-                let tint = lerp(pal.accent, pal.sky_top, hash01(i * 5));
-                for y in (by - br as i32)..(by + br as i32) {
-                    for xx in (bx - br as i32)..(bx + br as i32) {
-                        let d = (((xx - bx).pow(2) + (y - by).pow(2)) as f32).sqrt();
-                        if d < br {
-                            let a = (1.0 - d / br) * 0.25;
-                            buf.blend(xx, y, tint.0, tint.1, tint.2, a);
-                        }
-                    }
-                }
-            }
-        }
-        _ => {
-            // Layered mountain ridges.
-            for layer in 0..3 {
-                let base = horizon - (3 - layer) * (h / 18);
-                let amp = h as f32 * (0.05 + layer as f32 * 0.02);
-                let shade = lerp(pal.ridge, pal.ground, layer as f32 / 3.0);
-                for x in 0..w {
-                    let t = x as f32 / w as f32 * std::f32::consts::PI * (2.0 + layer as f32);
-                    let ridge = base as f32
-                        - (t + f32::from(seed)).sin() * amp
-                        - (t * 1.7).cos() * amp * 0.4;
-                    for y in (ridge as i32)..horizon {
-                        buf.put(x, y, shade.0, shade.1, shade.2);
-                    }
+        x += bw + 4;
+        col += 1;
+    }
+}
+
+/// Soft bokeh circles in the upper area (style 3).
+fn paint_bokeh(buf: &mut FrameBuf, pal: &Palette, seed: u8, w: i32, horizon: i32) {
+    for i in 0..26u32 {
+        let bx = (hash01(i * 17 + u32::from(seed)) * w as f32) as i32;
+        let by = (hash01(i * 31 + 7) * horizon as f32) as i32;
+        let br = 10.0 + hash01(i * 13 + 3) * 34.0;
+        let tint = lerp(pal.accent, pal.sky_top, hash01(i * 5));
+        for y in (by - br as i32)..(by + br as i32) {
+            for xx in (bx - br as i32)..(bx + br as i32) {
+                let d = (((xx - bx).pow(2) + (y - by).pow(2)) as f32).sqrt();
+                if d < br {
+                    let a = (1.0 - d / br) * 0.25;
+                    buf.blend(xx, y, tint.0, tint.1, tint.2, a);
                 }
             }
         }
     }
+}
 
-    // Subtle film grain + corner vignette so it reads as a photo.
+/// Layered mountain ridges (the default style).
+fn paint_mountain_ridges(
+    buf: &mut FrameBuf,
+    pal: &Palette,
+    seed: u8,
+    w: i32,
+    h: i32,
+    horizon: i32,
+) {
+    for layer in 0..3 {
+        let base = horizon - (3 - layer) * (h / 18);
+        let amp = h as f32 * (0.05 + layer as f32 * 0.02);
+        let shade = lerp(pal.ridge, pal.ground, layer as f32 / 3.0);
+        for x in 0..w {
+            let t = x as f32 / w as f32 * std::f32::consts::PI * (2.0 + layer as f32);
+            let ridge =
+                base as f32 - (t + f32::from(seed)).sin() * amp - (t * 1.7).cos() * amp * 0.4;
+            for y in (ridge as i32)..horizon {
+                buf.put(x, y, shade.0, shade.1, shade.2);
+            }
+        }
+    }
+}
+
+/// Dispatches to the composition matching the palette's `style`.
+fn paint_style(buf: &mut FrameBuf, pal: &Palette, seed: u8, w: i32, h: i32, horizon: i32) {
+    match pal.style {
+        1 | 5 => paint_sun_glow(buf, pal, w, h, horizon),
+        2 => paint_city_skyline(buf, pal, seed, w, h, horizon),
+        3 => paint_bokeh(buf, pal, seed, w, horizon),
+        _ => paint_mountain_ridges(buf, pal, seed, w, h, horizon),
+    }
+}
+
+/// Subtle film grain + corner vignette so it reads as a photo.
+fn paint_grain_and_vignette(buf: &mut FrameBuf, seed: u8, w: i32, h: i32) {
     for y in 0..h {
         for x in 0..w {
-            let n = hash01((x * 374761 + y * 668265 + i32::from(seed) * 9176) as u32);
+            let n = hash01((x * 374_761 + y * 668_265 + i32::from(seed) * 9176) as u32);
             if n > 0.93 {
                 buf.blend(x, y, 255, 255, 255, 0.04);
             }
@@ -283,6 +324,18 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
             }
         }
     }
+}
+
+/// Paint a deterministic scene into `buf` using seed `seed`.
+fn paint_scene(buf: &mut FrameBuf, seed: u8) {
+    let w = buf.w as i32;
+    let h = buf.h as i32;
+    let pal = palette(seed);
+    let horizon = (h as f32 * 0.62) as i32;
+
+    paint_sky_and_ground(buf, &pal, w, h, horizon);
+    paint_style(buf, &pal, seed, w, h, horizon);
+    paint_grain_and_vignette(buf, seed, w, h);
 }
 
 /// Live-preview viewfinder for the Camera screen (no code in frame).
@@ -308,9 +361,8 @@ pub fn scanner_frame(seed: u8, w: u32, h: u32, payload: &str) -> (FrameBuf, Opti
     paint_scene(&mut buf, seed);
 
     // Poster geometry: a white card a bit right-of-center.
-    let qr = match scan::encode(payload) {
-        Some(m) => m,
-        None => return (buf, None),
+    let Some(qr) = scan::encode(payload) else {
+        return (buf, None);
     };
     let modules = qr.size as i32;
     let quiet = 4i32; // module quiet zone
@@ -327,24 +379,24 @@ pub fn scanner_frame(seed: u8, w: u32, h: u32, payload: &str) -> (FrameBuf, Opti
     for sy in 0..10 {
         let a = 0.12 - sy as f32 * 0.011;
         buf.fill_rect_blend(
-            px0 - pad + sy,
-            py0 - pad + sy,
-            px0 + poster + pad + sy,
-            py0 + poster + pad + sy,
-            0,
-            0,
-            0,
+            Rect {
+                x0: px0 - pad + sy,
+                y0: py0 - pad + sy,
+                x1: px0 + poster + pad + sy,
+                y1: py0 + poster + pad + sy,
+            },
+            (0, 0, 0),
             a,
         );
     }
     buf.fill_rect(
-        px0 - pad,
-        py0 - pad,
-        px0 + poster + pad,
-        py0 + poster + pad,
-        250,
-        250,
-        250,
+        Rect {
+            x0: px0 - pad,
+            y0: py0 - pad,
+            x1: px0 + poster + pad,
+            y1: py0 + poster + pad,
+        },
+        (250, 250, 250),
     );
 
     // QR modules (dark on the card's white quiet zone).
@@ -355,7 +407,15 @@ pub fn scanner_frame(seed: u8, w: u32, h: u32, payload: &str) -> (FrameBuf, Opti
             }
             let x0 = px0 + (mx + quiet) * mscale;
             let y0 = py0 + (my + quiet) * mscale;
-            buf.fill_rect(x0, y0, x0 + mscale, y0 + mscale, 17, 17, 17);
+            buf.fill_rect(
+                Rect {
+                    x0,
+                    y0,
+                    x1: x0 + mscale,
+                    y1: y0 + mscale,
+                },
+                (17, 17, 17),
+            );
         }
     }
 
@@ -367,10 +427,10 @@ pub fn scanner_frame(seed: u8, w: u32, h: u32, payload: &str) -> (FrameBuf, Opti
 }
 
 impl FrameBuf {
-    fn fill_rect_blend(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, r: u8, g: u8, b: u8, a: f32) {
-        for y in y0..y1 {
-            for x in x0..x1 {
-                self.blend(x, y, r, g, b, a);
+    fn fill_rect_blend(&mut self, rect: Rect, color: Rgb, a: f32) {
+        for y in rect.y0..rect.y1 {
+            for x in rect.x0..rect.x1 {
+                self.blend(x, y, color.0, color.1, color.2, a);
             }
         }
     }
@@ -386,9 +446,11 @@ pub fn luma(buf: &FrameBuf) -> Vec<u8> {
 pub fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgba.len() / 4 * 3);
     for px in rgba.chunks_exact(4) {
-        out.push(px[0]);
-        out.push(px[1]);
-        out.push(px[2]);
+        if let [r, g, b, _a] = px {
+            out.push(*r);
+            out.push(*g);
+            out.push(*b);
+        }
     }
     out
 }
@@ -397,11 +459,13 @@ pub fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
 fn to_luma(buf: &FrameBuf) -> Vec<u8> {
     let n = (buf.w * buf.h) as usize;
     let mut out = vec![0u8; n];
-    for i in 0..n {
-        let r = f32::from(buf.rgba[i * 4]);
-        let g = f32::from(buf.rgba[i * 4 + 1]);
-        let b = f32::from(buf.rgba[i * 4 + 2]);
-        out[i] = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+    for (px, luma) in buf.rgba.chunks_exact(4).zip(out.iter_mut()) {
+        if let [r, g, b, _a] = px {
+            let r = f32::from(*r);
+            let g = f32::from(*g);
+            let b = f32::from(*b);
+            *luma = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+        }
     }
     out
 }

@@ -44,9 +44,15 @@ pub mod testing {
 
     impl RecordingDispatcher {
         /// Snapshot the recorded calls. Returns a fresh `Vec` so the
-        /// caller can iterate / index without holding a borrow.
+        /// caller can iterate / index without holding a borrow. A poisoned
+        /// lock (another test thread panicked while holding it) still
+        /// yields whatever calls were recorded, rather than panicking here
+        /// too and hiding the original failure.
         pub fn calls(&self) -> Vec<String> {
-            self.calls.lock().expect("recorder lock poisoned").clone()
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
         }
 
         pub fn set_fail_power_profile(&self, fail: bool) {

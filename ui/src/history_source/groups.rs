@@ -65,11 +65,15 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         };
         let end = str_at(doc, &rec, "end").and_then(|s| from_hex16(&s));
         let by = str_at(doc, &rec, "by");
+        // `filter` above guarantees `ms > 0` by the time the cast below runs,
+        // so the conversion never loses a sign; `checked_add` only guards
+        // the (unreachable for a real timestamp) case of overflowing
+        // `SystemTime`'s own representation.
         let created = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
-            .map_or(UNIX_EPOCH, |ms| {
-                UNIX_EPOCH + Duration::from_millis(ms as u64)
-            });
+            .and_then(|ms| u64::try_from(ms).ok())
+            .and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms)))
+            .unwrap_or(UNIX_EPOCH);
         out.push(NamedRange {
             id: key.clone(),
             label,
@@ -99,7 +103,7 @@ pub fn name_range(
     let by = doc.get_actor().to_hex_string();
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
     // Replacing the whole record rather than patching fields keeps a rename and
     // a re-scope atomic: a peer never observes the new label against the old
     // range.
@@ -167,7 +171,7 @@ fn int_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::Int(n) => Some(*n),
-            ScalarValue::Uint(n) => Some(*n as i64),
+            ScalarValue::Uint(n) => Some(i64::try_from(*n).unwrap_or(i64::MAX)),
             _ => None,
         },
         _ => None,

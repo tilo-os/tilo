@@ -268,13 +268,13 @@ impl Widget for RegionPane {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

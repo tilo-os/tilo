@@ -228,6 +228,16 @@ pub struct WindowGroup {
     closing_at: Option<Instant>,
 }
 
+/// Shared layout numbers for the maximized-chrome pill row, computed once in
+/// [`WindowGroup::draw_maximized_chrome`] and threaded through its two child
+/// painters — keeps both well under clippy's argument-count limit.
+#[derive(Clone, Copy)]
+struct ChromePillLayout {
+    pad: f64,
+    pill_h: f64,
+    y0: f64,
+}
+
 impl WindowGroup {
     pub fn new(
         id: u64,
@@ -592,7 +602,7 @@ impl WindowGroup {
             idx.checked_add(1).filter(|&i| i < n).unwrap_or(0)
         } else {
             // Wrap backward: before the first tab goes to the last.
-            idx.checked_sub(1).unwrap_or(n.saturating_sub(1))
+            idx.checked_sub(1).unwrap_or_else(|| n.saturating_sub(1))
         };
         let Some(new_id) = self.bar.tabs().get(new_idx).map(|t| t.id) else {
             return false;
@@ -747,7 +757,7 @@ impl WindowGroup {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        m: &winit::event::Modifiers,
+        m: winit::event::Modifiers,
         handle_rect: Rect,
     ) -> bool {
         match event {
@@ -1037,6 +1047,11 @@ impl WindowGroup {
         };
         let total_h = self.rect.height();
         let grip_h = (total_h * 0.25).clamp(24.0, 80.0);
+        #[allow(
+            clippy::similar_names,
+            reason = "cx/cy is the standard center-x/center-y coordinate naming convention; \
+                      distinguishing them further would reduce clarity"
+        )]
         let grip_cx = self.rect.x1 - 3.0;
         let grip_cy = self.rect.center().y;
         let bar = |dx: f64| {
@@ -1083,10 +1098,13 @@ impl WindowGroup {
         }
         // `[app title]  …  [Restore][×]`, matching the concept layout.
         let pad = 6.0_f64;
-        let pill_h = 22.0_f64;
-        let y0 = self.rect.y0 + pad;
-        self.draw_maximized_title_chip(scene, transform, tr, theme, pad, pill_h, y0);
-        self.draw_maximized_buttons(scene, transform, tr, theme, pad, pill_h, y0);
+        let layout = ChromePillLayout {
+            pad,
+            pill_h: 22.0_f64,
+            y0: self.rect.y0 + pad,
+        };
+        self.draw_maximized_title_chip(scene, transform, tr, theme, layout);
+        self.draw_maximized_buttons(scene, transform, tr, theme, layout);
     }
 
     /// The `[app title]` chip at the left of the maximized-chrome pill row.
@@ -1096,10 +1114,9 @@ impl WindowGroup {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        pad: f64,
-        pill_h: f64,
-        y0: f64,
+        layout: ChromePillLayout,
     ) {
+        let ChromePillLayout { pad, pill_h, y0 } = layout;
         let active_title = self
             .bar
             .tabs()
@@ -1156,10 +1173,9 @@ impl WindowGroup {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        pad: f64,
-        pill_h: f64,
-        y0: f64,
+        layout: ChromePillLayout,
     ) {
+        let ChromePillLayout { pad, pill_h, y0 } = layout;
         let title_size = theme.tokens.typography.scale.xs;
         let close_w = 22.0_f64;
         let close_x0 = self.rect.x1 - close_w - pad;
@@ -1359,6 +1375,10 @@ impl Widget for WindowGroup {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Tolerance rather than exact float equality: this only gates a
+        // no-op-transform fast path, so a value merely close to identity
+        // is close enough to skip composing it.
+        const FADE_EPS: f64 = 1e-9;
         // An indicator that flashes in and out before an app has time to
         // draw would just be a flicker, so nothing paints until either
         // something has drawn or the wait is long enough to say so.
@@ -1404,10 +1424,6 @@ impl Widget for WindowGroup {
             clippy::arithmetic_side_effects,
             reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
         )]
-        // Tolerance rather than exact float equality: this only gates a
-        // no-op-transform fast path, so a value merely close to identity
-        // is close enough to skip composing it.
-        const FADE_EPS: f64 = 1e-9;
         let transform = if fade_x.abs() > FADE_EPS
             || fade_y.abs() > FADE_EPS
             || (fade_scale - 1.0).abs() > FADE_EPS
@@ -1483,7 +1499,7 @@ impl Widget for WindowGroup {
             self.rect.x1,
             self.rect.y1,
         );
-        if self.handle_direct_input(event, scale_factor, m, handle_rect) {
+        if self.handle_direct_input(event, scale_factor, *m, handle_rect) {
             *handled = true;
             return;
         }

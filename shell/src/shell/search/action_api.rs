@@ -17,7 +17,7 @@ use automerge::{AutoCommit, ObjId};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 
-use super::{ResourceKind, SearchRegistry, SearchResult};
+use super::{QueryArgs, ResourceKind, SearchRegistry, SearchResult};
 
 /// The type of one action parameter — deliberately small.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -329,7 +329,15 @@ impl ActionCatalog {
         visibility: &dyn ActionVisibility,
     ) -> Self {
         // Empty `wanted_kinds` ⇒ "any kind" — surveys the whole exported surface.
-        let results = registry.query(query, scope, active_provider_id, &[], chrome, doc, doc_root);
+        let results = registry.query(QueryArgs {
+            needle: query,
+            scope,
+            active_provider_id,
+            wanted_kinds: &[],
+            chrome,
+            doc,
+            doc_root,
+        });
         let visible = results
             .iter()
             .enumerate()

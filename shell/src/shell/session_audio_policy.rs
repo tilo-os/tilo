@@ -1,8 +1,8 @@
 //! One session-lifetime owner for persistent audio transforms.
 //!
 //! Settings writes intent to the shared settings store. This worker reads it,
-//! observes PipeWire off the render thread, and owns any virtual mono node
-//! until the desktop session ends. It is intentionally not a DBus service:
+//! observes `PipeWire` off the render thread, and owns any virtual mono node
+//! until the desktop session ends. It is intentionally not a `DBus` service:
 //! neither operation is privileged, and one owner per graphical session is the
 //! security/correctness boundary we need.
 
@@ -22,7 +22,14 @@ pub struct SessionAudioPolicyOwner {
 }
 
 impl SessionAudioPolicyOwner {
-    pub fn spawn() -> Self {
+    /// Spawns the worker thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if the thread could not be spawned (resource
+    /// exhaustion) — the caller runs the session without persistent audio
+    /// transforms rather than tearing the whole desktop down over it.
+    pub fn spawn() -> std::io::Result<Self> {
         let (stop, rx) = mpsc::channel();
         let worker = std::thread::Builder::new()
             .name("qos-session-audio-policy".into())
@@ -54,12 +61,11 @@ impl SessionAudioPolicyOwner {
                 }
                 // `policy` drops here: its bounded mono session restores the
                 // physical default before the compositor exits.
-            })
-            .expect("spawn session audio policy worker");
-        Self {
+            })?;
+        Ok(Self {
             stop,
             worker: Some(worker),
-        }
+        })
     }
 }
 
@@ -80,8 +86,15 @@ fn load_preferences() -> PersistentAudioPreferences {
 fn preferences_from(
     doc: &serde_json::Map<String, serde_json::Value>,
 ) -> PersistentAudioPreferences {
+    // Clamped to 0.0..=1.0 above; f32's precision loss over that tiny
+    // range is imperceptible for a pan-balance control.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "value is clamped to 0.0..=1.0 by f64_in; narrowing loses no meaningful precision"
+    )]
+    let balance = settings_store::f64_in(doc, "audio", "balance", 0.0..=1.0, 0.5) as f32;
     PersistentAudioPreferences {
-        balance: settings_store::f64_in(doc, "audio", "balance", 0.0..=1.0, 0.5) as f32,
+        balance,
         mono_output: settings_store::bool_at(doc, "audio", "mono_output").unwrap_or(false),
     }
 }

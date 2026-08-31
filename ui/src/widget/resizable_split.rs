@@ -176,7 +176,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -204,7 +204,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
                     self.left.handle_event(
                         event,
                         scale_factor,
-                        modifiers,
+                        &modifiers,
                         state,
                         path,
                         handled,
@@ -213,20 +213,20 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
                         taffy,
                     );
                 }
-            } else if right_rect.contains(pt) {
-                if let Some(n) = right_node {
-                    self.right.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
-                }
+            } else if right_rect.contains(pt)
+                && let Some(n) = right_node
+            {
+                self.right.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
             }
             return;
         }
@@ -237,7 +237,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             self.left.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -253,7 +253,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             self.right.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -480,7 +480,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         self.forward_to_children(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,

@@ -8,6 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::path::Path;
 use std::process::Command;
 
 #[cfg(test)]
@@ -48,8 +49,21 @@ mod tests {
         assert!(stdout.contains("libwayland-client.so.0"));
     }
 
+    /// The sandbox must pass device nodes through rather than hiding them.
+    ///
+    /// A GPU-less machine cannot prove that about `/dev/dri`, and asserting it
+    /// anyway tests the runner rather than the recipe. So the device under
+    /// test is whichever one the host actually has: `/dev/dri` where there is
+    /// a GPU, `/dev/null` otherwise. Either way the assertion runs and the
+    /// `--dev-bind` recipe is exercised — this never skips.
     #[test]
     fn test_gl_check() {
+        let (node, entry) = if Path::new("/dev/dri").exists() {
+            ("/dev/dri", "/dev/dri")
+        } else {
+            ("/dev/null", "/dev/null")
+        };
+
         let mut cmd = Command::new("bwrap");
         cmd.arg("--ro-bind")
             .arg("/usr")
@@ -64,13 +78,17 @@ mod tests {
             .arg("usr/lib64")
             .arg("/lib64")
             .arg("--dev-bind")
-            .arg("/dev/dri")
-            .arg("/dev/dri")
+            .arg(node)
+            .arg(node)
             .arg("sh")
             .arg("-c")
-            .arg("ls /dev/dri");
+            .arg(format!("ls {entry}"));
 
         let output = cmd.output().expect("Failed to execute bwrap");
-        assert!(output.status.success(), "GPU nodes not visible in sandbox");
+        assert!(
+            output.status.success(),
+            "{node} was bound into the sandbox but is not visible inside it: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
 }

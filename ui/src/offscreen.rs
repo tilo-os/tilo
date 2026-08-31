@@ -96,6 +96,15 @@ impl OffscreenRenderer {
     /// sets `panic = "abort"`, under which a panic kills the process at the
     /// panic site and `catch_unwind` never sees it. Callers that need a
     /// soft-fail path must use [`try_new`](Self::try_new).
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`try_new`](Self::try_new) returns an [`OffscreenError`] —
+    /// see its variants for exactly when that happens.
+    #[allow(
+        clippy::panic,
+        reason = "new() is the deliberate panicking convenience constructor paired with the fallible try_new(); removing the panic would defeat the reason both exist"
+    )]
     pub fn new(width: u32, height: u32) -> Self {
         match Self::try_new(width, height) {
             Ok(renderer) => renderer,
@@ -106,6 +115,24 @@ impl OffscreenRenderer {
     /// For any code path that has to survive a GPU-less machine, since
     /// `catch_unwind` can't (see [`new`](Self::new)). Still asserts on a
     /// zero width or height — that's a caller bug, not an environment one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OffscreenError::NoAdapter`] when no wgpu adapter is
+    /// available (a headless machine typically needs llvmpipe/lavapipe
+    /// installed), [`OffscreenError::Renderer`] when vello fails to build a
+    /// renderer for the adapter, and [`OffscreenError::ContextPoisoned`]
+    /// when the shared `RenderContext` mutex was poisoned by a panic on
+    /// another thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `width` or `height` is zero — that's a caller bug, not a
+    /// recoverable environment failure.
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "the width/height assert is a caller-bug panic, not a recoverable failure — every real failure mode already has its own OffscreenError variant"
+    )]
     pub fn try_new(width: u32, height: u32) -> Result<Self, OffscreenError> {
         assert!(width > 0 && height > 0, "width and height must be > 0");
 
@@ -117,7 +144,8 @@ impl OffscreenRenderer {
             .device(None)
             .block_on()
             .ok_or(OffscreenError::NoAdapter)?;
-        let device = &ctx.devices[dev_id].device;
+        let handle = ctx.devices.get(dev_id).ok_or(OffscreenError::NoAdapter)?;
+        let device = &handle.device;
 
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -138,10 +166,10 @@ impl OffscreenRenderer {
 
         // See the row-pitch alignment note in the module docs.
         let bytes_per_pixel = 4u32;
-        let unpadded = width * bytes_per_pixel;
+        let unpadded = width.saturating_mul(bytes_per_pixel);
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = unpadded.div_ceil(align) * align;
-        let readback_size = u64::from(padded_bytes_per_row * height);
+        let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
+        let readback_size = u64::from(padded_bytes_per_row.saturating_mul(height));
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quick-ui-offscreen-readback"),
             size: readback_size,
@@ -180,17 +208,39 @@ impl OffscreenRenderer {
     /// Returns raw RGBA pixels, tight-packed at `4 * width` bytes per row
     /// (the texture format is `Rgba8Unorm`, so **R, G, B, A** order, not
     /// BGRA).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared `RenderContext` mutex is poisoned, if this
+    /// renderer's device entry has gone missing from it, if vello fails to
+    /// render the scene, or if the GPU readback fails (the `map_async`
+    /// channel drops or the mapping itself errors). Every one of these is
+    /// an environment failure this headless test/screenshot harness has no
+    /// meaningful fallback for — it fails loudly rather than handing back a
+    /// silently-empty buffer a comparison could misread as a real frame.
+    #[allow(
+        clippy::expect_used,
+        reason = "render() is the harness's core primitive, called only from tests/shots; every expect() here guards an environment failure (poisoned lock, missing device, GPU/readback error) with no recoverable fallback — matching render_png's existing panic-on-failure contract below"
+    )]
     pub fn render(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
-        // The lock guards host-side DeviceHandle indexing, not rendering —
-        // vello's kernels run GPU-side.
-        let ctx = self.context.lock().expect("shared RenderContext poisoned");
-        let device = &ctx.devices[self.dev_id].device;
-        let queue = &ctx.devices[self.dev_id].queue;
+        // The lock only guards host-side DeviceHandle bookkeeping, not
+        // rendering — vello's kernels run GPU-side. Clone the cheap,
+        // Arc-backed `Device`/`Queue` handles out and drop the guard
+        // immediately, rather than holding the shared context locked for
+        // every other `OffscreenRenderer` through the whole render + readback.
+        let (device, queue) = {
+            let ctx = self.context.lock().expect("shared RenderContext poisoned");
+            let handle = ctx
+                .devices
+                .get(self.dev_id)
+                .expect("this renderer's device entry is missing from the shared RenderContext");
+            (handle.device.clone(), handle.queue.clone())
+        };
 
         self.renderer
             .render_to_texture(
-                device,
-                queue,
+                &device,
+                &queue,
                 scene,
                 &self.view,
                 &RenderParams {
@@ -240,11 +290,15 @@ impl OffscreenRenderer {
             .expect("buffer map failed");
 
         let mapped = slice.get_mapped_range();
-        let mut tight = Vec::with_capacity((self.width * self.height * 4) as usize);
-        let row_bytes = (self.width * 4) as usize;
+        let row_bytes = (self.width as usize).saturating_mul(4);
+        let mut tight = Vec::with_capacity((self.height as usize).saturating_mul(row_bytes));
         for row in 0..self.height as usize {
-            let start = row * self.padded_bytes_per_row as usize;
-            tight.extend_from_slice(&mapped[start..start + row_bytes]);
+            let start = row.saturating_mul(self.padded_bytes_per_row as usize);
+            let end = start.saturating_add(row_bytes);
+            let row_slice = mapped
+                .get(start..end)
+                .expect("readback row out of range of the mapped buffer");
+            tight.extend_from_slice(row_slice);
         }
         drop(mapped);
         self.readback_buf.unmap();
@@ -258,6 +312,17 @@ impl OffscreenRenderer {
 
     /// Convenience: render `scene` and write the result to `path` as a
     /// PNG. Creates parent dirs if they don't exist.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `path`'s file cannot be created or PNG encoding fails —
+    /// both are dev/test-environment problems (disk full, bad permissions)
+    /// with no recoverable action for this infallible, shots/test-only
+    /// helper to take.
+    #[allow(
+        clippy::expect_used,
+        reason = "render_png is a debug/test screenshot helper called as infallible from shots and test call sites across the workspace; a write/encode failure is a dev-environment problem worth crashing loudly on, not a Result this signature can propagate without a wide API change"
+    )]
     pub fn render_png<P: AsRef<Path>>(&mut self, scene: &Scene, bg: Color, path: P) {
         let rgba = self.render(scene, bg);
         let path = path.as_ref();
@@ -275,9 +340,25 @@ impl OffscreenRenderer {
 
     /// Sample the RGBA at `(x, y)` from a tight-packed buffer (4 *
     /// width bytes per row). Returns `(r, g, b, a)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `(x, y)` is outside `rgba`. Every real call site is test
+    /// code asserting against known-valid coordinates (see the crate's
+    /// render tests), so an out-of-range sample is a test bug that should
+    /// fail loudly rather than silently read back `0`.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "sample() exists only for test pixel assertions; an out-of-range coordinate is a test bug that should panic, not silently return 0"
+    )]
     pub fn sample(rgba: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
-        let idx = ((y * width + x) * 4) as usize;
-        (rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3])
+        let idx = (y.saturating_mul(width).saturating_add(x)).saturating_mul(4) as usize;
+        (
+            rgba[idx],
+            rgba[idx.saturating_add(1)],
+            rgba[idx.saturating_add(2)],
+            rgba[idx.saturating_add(3)],
+        )
     }
 
     /// Tolerates the ±1 antialiasing wobble described in the module docs;
@@ -290,7 +371,7 @@ impl OffscreenRenderer {
             .filter(|(x, y)| x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > 1))
             .count();
         let unmatched = a.len().abs_diff(b.len()).div_ceil(4);
-        overlapping + unmatched
+        overlapping.saturating_add(unmatched)
     }
 }
 

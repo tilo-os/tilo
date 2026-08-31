@@ -97,45 +97,47 @@ fn specimen_pair(
 ///
 /// Kept as its own builder so the offscreen regression test renders exactly
 /// the same widget developers inspect in the full component gallery.
-pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
-    card(
-        None,
-        "Typography & Scripts",
-        Box::new(
-            col(9.0)
-                .push(Box::new(
-                    Text::new("A clear hierarchy makes dense interfaces feel calm.")
-                        .with_role(TextRole::Heading, theme),
-                ))
-                .push(Box::new(
-                    Text::new("A quiet page gives every letter room to speak.").with_style(
-                        TextStyle::new(28.0)
-                            .with_line_height(1.25)
-                            .with_weight(TextWeight::Semibold)
-                            .with_family(FontChoice::Serif),
-                    ),
-                ))
-                .push(Box::new(
-                    Text::new(
-                        "Serif specimen — AVATAR · WAVE · To · Ta · Yo · office · affinity · ffi · naïve café.",
-                    )
-                    .with_style(
-                        TextStyle::new(18.0)
-                            .with_line_height(1.5)
-                            .with_family(FontChoice::Serif),
-                    ),
-                ))
-                .push(Box::new(
-                    Text::new(
-                        "Italic serif — Typography should feel composed, never merely typeset.",
-                    )
-                    .with_style(
-                        TextStyle::new(17.0)
-                            .with_line_height(1.5)
-                            .with_italic(true)
-                            .with_family(FontChoice::Serif),
-                    ),
-                ))
+/// Heading, lede and serif specimens. Split out of
+/// `build_typography_showcase` to keep that under the line cap.
+fn typography_intro_and_serif(column: Column, theme: &Theme) -> Column {
+    column.push(Box::new(
+        Text::new("A clear hierarchy makes dense interfaces feel calm.")
+            .with_role(TextRole::Heading, theme),
+    ))
+    .push(Box::new(
+        Text::new("A quiet page gives every letter room to speak.").with_style(
+            TextStyle::new(28.0)
+                .with_line_height(1.25)
+                .with_weight(TextWeight::Semibold)
+                .with_family(FontChoice::Serif),
+        ),
+    ))
+    .push(Box::new(
+        Text::new(
+            "Serif specimen — AVATAR · WAVE · To · Ta · Yo · office · affinity · ffi · naïve café.",
+        )
+        .with_style(
+            TextStyle::new(18.0)
+                .with_line_height(1.5)
+                .with_family(FontChoice::Serif),
+        ),
+    ))
+    .push(Box::new(
+        Text::new("Italic serif — Typography should feel composed, never merely typeset.")
+            .with_style(
+                TextStyle::new(17.0)
+                    .with_line_height(1.5)
+                    .with_italic(true)
+                    .with_family(FontChoice::Serif),
+            ),
+    ))
+}
+
+/// The seven BEFORE/AFTER typography-feature specimen pairs (kerning
+/// through hanging punctuation), plus the pagination note. Split out of
+/// `build_typography_showcase` to keep that under the line cap.
+fn typography_feature_pairs(column: Column, theme: &Theme) -> Column {
+    column
                 .push(specimen_pair(
                     theme,
                     "BEFORE · kerning disabled",
@@ -277,6 +279,13 @@ pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
                     "PAGINATION · RichTextLayout enforces configurable 2-line widow/orphan minima at page and column breaks.",
                     theme,
                 ))
+}
+
+/// Code sample, multilingual scripts, hyphenation demo, BiDi text and
+/// emoji clusters. Split out of `build_typography_showcase` to keep that
+/// under the line cap.
+fn typography_scripts_and_bidi(column: Column, theme: &Theme) -> Column {
+    column
                 .push(Box::new(
                     Text::new("const greeting = \"Hello, 世界\";")
                         .with_role(TextRole::Code, theme),
@@ -324,26 +333,32 @@ pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
                 .push(Box::new(
                     Text::new("Emoji clusters: 👩🏽‍💻  👨‍👩‍👧‍👦  🏳️‍🌈  🇪🇺")
                         .with_role(TextRole::Body, theme),
-                )),
-        ),
-    )
+                ))
 }
 
-/// Build the whole showcase, seeding `state.doc`. `theme` selects dimmed-text
-/// colours so a per-theme rebuild renders correctly in both light and dark.
-pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
-    // ---- Seed interactive state -------------------------------------------
+pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
+    let column = typography_intro_and_serif(col(9.0), theme);
+    let column = typography_feature_pairs(column, theme);
+    let column = typography_scripts_and_bidi(column, theme);
+    card(None, "Typography & Scripts", Box::new(column))
+}
+
+/// Seeds `state.doc` with the toggle/checkbox/slider/text/dropdown values
+/// the interactive controls read, plus a small editable table. Split out
+/// of `build_showcase` to keep that under the line cap.
+fn seed_gallery_state(state: &mut State) {
     let root = state.root.clone();
     let _ = state.doc.put(&root, "sw_wifi", true);
     let _ = state.doc.put(&root, "sw_bt", false);
     let _ = state.doc.put(&root, "cb_updates", true);
     let _ = state.doc.put(&root, "sld_vol", 0.65);
     let _ = state.doc.put(&root, "dd_quality", "High");
-    let ti = state
+    if let Ok(ti) = state
         .doc
         .put_object(&root, "ti_name", automerge::ObjType::Text)
-        .unwrap();
-    let _ = state.doc.splice_text(&ti, 0, 0, "Ada Lovelace");
+    {
+        let _ = state.doc.splice_text(&ti, 0, 0, "Ada Lovelace");
+    }
 
     // Editable table model (lives directly under root, like the old gallery).
     for _ in 0..3 {
@@ -364,17 +379,12 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
             table::set_cell_text(&mut state.doc, &root, r, c, cell);
         }
     }
+}
 
-    let accent = theme.accent_primary;
-
-    // ---- Header -----------------------------------------------------------
-    let header = col(4.0).push(title("qOS UI Toolkit")).push(dim(
-        "Component gallery — one showcase of every general-purpose widget, light & dark",
-        theme,
-    ));
-
-    // ---- Row 1: controls | inputs -----------------------------------------
-    let controls = card(
+/// Buttons, switches, checkbox, slider and toggle-group. Split out of
+/// `build_showcase` to keep that under the line cap.
+fn build_controls_card(theme: &Theme) -> Box<dyn Widget> {
+    card(
         Some(CARD_W),
         "Buttons & Controls",
         Box::new(
@@ -408,9 +418,13 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                     1,
                 ))),
         ),
-    );
+    )
+}
 
-    let inputs = card(
+/// Text field, search field, dropdown, stepper and breadcrumb. Split out
+/// of `build_showcase` to keep that under the line cap.
+fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
+    card(
         Some(CARD_W),
         "Text & Selection",
         Box::new(
@@ -446,10 +460,14 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                     "ui".into(),
                 ]))),
         ),
-    );
+    )
+}
 
-    // ---- Row 2: tags | feedback -------------------------------------------
-    let tags = card(
+/// Badges, chips and avatars. Split out of `build_showcase` to keep that
+/// under the line cap.
+fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
+    let accent = theme.accent_primary;
+    card(
         Some(CARD_W),
         "Badges, Chips & Avatars",
         Box::new(
@@ -482,9 +500,13 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                         .push(Box::new(Avatar::from_initials("DB", 34.0))),
                 )),
         ),
-    );
+    )
+}
 
-    let feedback = card(
+/// Progress bars and a spinner. Split out of `build_showcase` to keep
+/// that under the line cap.
+fn build_feedback_card(theme: &Theme) -> Box<dyn Widget> {
+    card(
         Some(CARD_W),
         "Feedback & Loading",
         Box::new(
@@ -502,10 +524,13 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                         .push(label("Loading…")),
                 )),
         ),
-    );
+    )
+}
 
-    // ---- Metrics (full width) ---------------------------------------------
-    let metrics = card(
+/// The full-width stat-tile row. Split out of `build_showcase` to keep
+/// that under the line cap.
+fn build_metrics_card(theme: &Theme) -> Box<dyn Widget> {
+    card(
         None,
         "Metrics",
         Box::new(
@@ -533,10 +558,14 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                         .with_value_color(theme.tokens.colors.semantic.success),
                 )),
         ),
-    );
+    )
+}
 
-    // ---- Row 3: charts | navigation ---------------------------------------
-    let charts = card(
+/// Ring gauge, sparkline, bar gauge and area chart. Split out of
+/// `build_showcase` to keep that under the line cap.
+fn build_charts_card(theme: &Theme) -> Box<dyn Widget> {
+    let accent = theme.accent_primary;
+    card(
         Some(CARD_W),
         "Charts & Gauges",
         Box::new(
@@ -568,9 +597,13 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                     .with_height(96.0),
                 )),
         ),
-    );
+    )
+}
 
-    let navigation = card(
+/// Tab bar and toolbar. Split out of `build_showcase` to keep that under
+/// the line cap.
+fn build_navigation_card(theme: &Theme) -> Box<dyn Widget> {
+    card(
         Some(CARD_W),
         "Navigation & Toolbar",
         Box::new(
@@ -595,10 +628,13 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                         .push_button("Code", || {}),
                 )),
         ),
-    );
+    )
+}
 
-    // ---- Banners (full width) ---------------------------------------------
-    let banners = card(
+/// The four inline-banner severities. Split out of `build_showcase` to
+/// keep that under the line cap.
+fn build_banners_card() -> Box<dyn Widget> {
+    card(
         None,
         "Inline Banners",
         Box::new(
@@ -619,15 +655,12 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                         .dismissible(),
                 )),
         ),
-    );
+    )
+}
 
-    // ---- Typography conformance (full width) -----------------------------
-    // Keep the multilingual corpus visible in the ordinary gallery so font
-    // policy, fallback, shaping, metrics and BiDi regressions are reviewable
-    // in the same light/dark screenshots as every other component.
-    let typography = build_typography_showcase(theme);
-
-    // ---- Empty state (full width, fixed height) ---------------------------
+/// The empty-state and editable-table cards. Split out of `build_showcase`
+/// to keep that under the line cap.
+fn build_empty_and_table_cards() -> (Box<dyn Widget>, Box<dyn Widget>) {
     let empty = card(
         None,
         "Empty State",
@@ -643,13 +676,51 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
                 )),
         ),
     );
-
-    // ---- Data table (full width) ------------------------------------------
     let table_card = card(
         None,
         "Editable Table",
         Box::new(Table::new("gallery_table")),
     );
+    (empty, table_card)
+}
+
+/// Build the whole showcase, seeding `state.doc`. `theme` selects dimmed-text
+/// colours so a per-theme rebuild renders correctly in both light and dark.
+pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
+    seed_gallery_state(state);
+
+    // ---- Header -----------------------------------------------------------
+    let header = col(4.0).push(title("qOS UI Toolkit")).push(dim(
+        "Component gallery — one showcase of every general-purpose widget, light & dark",
+        theme,
+    ));
+
+    // ---- Row 1: controls | inputs -----------------------------------------
+    let controls = build_controls_card(theme);
+    let inputs = build_inputs_card(theme);
+
+    // ---- Row 2: tags | feedback -------------------------------------------
+    let tags = build_tags_card(theme);
+    let feedback = build_feedback_card(theme);
+
+    // ---- Metrics (full width) ---------------------------------------------
+    let metrics = build_metrics_card(theme);
+
+    // ---- Row 3: charts | navigation -----------------------------------------
+    let charts = build_charts_card(theme);
+    let navigation = build_navigation_card(theme);
+
+    // ---- Banners (full width) ---------------------------------------------
+    let banners = build_banners_card();
+
+    // ---- Typography conformance (full width) -----------------------------
+    // Keep the multilingual corpus visible in the ordinary gallery so font
+    // policy, fallback, shaping, metrics and BiDi regressions are reviewable
+    // in the same light/dark screenshots as every other component.
+    let typography = build_typography_showcase(theme);
+
+    // ---- Empty state + data table (full width) -----------------------------
+    let (empty, table_card) = build_empty_and_table_cards();
 
     // ---- Assemble ---------------------------------------------------------
     Box::new(

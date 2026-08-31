@@ -261,7 +261,11 @@ impl PeerPresence {
             let mut arrived = handles_seen_in(presence, &ws.room.to_string());
             arrived.extend(replica.participants_in(ws.room));
             let rows = room_roster(ws, &labels, &arrived, local);
-            if tree.collaborators == rows {
+            let unchanged = tree.collaborators == rows;
+            // Drop the read guard as soon as it's no longer needed, rather
+            // than holding it to the end of the block below.
+            drop(tree);
+            if unchanged {
                 return false;
             }
             rows

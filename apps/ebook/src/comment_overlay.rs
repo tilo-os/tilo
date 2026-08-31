@@ -42,6 +42,72 @@ pub(crate) struct CommentOverlay {
     hits: Vec<Hit>,
 }
 
+/// Highlight color, quoted excerpt, and note comments belonging to `group`.
+fn gather_content(
+    annotations: &[Annotation],
+    group: Uuid,
+    default_color: HiColor,
+) -> (HiColor, String, Vec<Annotation>) {
+    let (color, excerpt) = {
+        let mut rows: Vec<&Annotation> = annotations
+            .iter()
+            .filter(|a| a.kind == AnnoKind::Highlight && a.group == group)
+            .collect();
+        rows.sort_by_key(|a| (a.block, a.start));
+        let color = rows.first().map_or(default_color, |a| a.color);
+        let excerpt = rows
+            .iter()
+            .map(|a| a.excerpt.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        (color, excerpt)
+    };
+    let excerpt = if excerpt.is_empty() {
+        "Highlighted passage".to_string()
+    } else {
+        format!("\u{201C}{excerpt}\u{201D}")
+    };
+    let mut comments: Vec<Annotation> = annotations
+        .iter()
+        .filter(|a| a.kind == AnnoKind::Note && a.group == group)
+        .cloned()
+        .collect();
+    comments.sort_by_key(|a| a.created);
+    (color, excerpt, comments)
+}
+
+/// Text shown for a note row: the live composing caret, an empty-state label, or the note itself.
+fn comment_display(a: &Annotation, composing: Option<Uuid>) -> String {
+    if composing == Some(a.id) {
+        format!("{}\u{2502}", a.note)
+    } else if a.note.trim().is_empty() {
+        "Empty comment".to_string()
+    } else {
+        a.note.clone()
+    }
+}
+
+/// Wrapped height of each comment row, in reading order.
+fn comment_row_heights(
+    tr: &mut TextRenderer,
+    comments: &[Annotation],
+    composing: Option<Uuid>,
+    text_w: f32,
+) -> Vec<f64> {
+    comments
+        .iter()
+        .map(|a| {
+            f64::from(
+                tr.measure(&comment_display(a, composing), 13.0, Some(text_w))
+                    .1,
+            )
+            .max(18.0)
+                + 16.0
+        })
+        .collect()
+}
+
 impl CommentOverlay {
     pub(crate) fn open(&mut self, group: Uuid) {
         self.group = Some(group);
@@ -84,77 +150,9 @@ impl CommentOverlay {
         self.hits.push(Hit { rect, action });
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        viewport: Rect,
-        cursor: Point,
-        annotations: &[Annotation],
-        default_color: HiColor,
-        composing: Option<Uuid>,
-    ) {
-        self.begin_frame();
-        let Some(group) = self.group else { return };
-
-        // Tap-away closes. It is deliberately behind the card and its controls.
-        self.push_hit(viewport, CommentAction::Close);
-
-        let (color, excerpt) = {
-            let mut rows: Vec<&Annotation> = annotations
-                .iter()
-                .filter(|a| a.kind == AnnoKind::Highlight && a.group == group)
-                .collect();
-            rows.sort_by_key(|a| (a.block, a.start));
-            let color = rows.first().map_or(default_color, |a| a.color);
-            let excerpt = rows
-                .iter()
-                .map(|a| a.excerpt.trim())
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-            (color, excerpt)
-        };
-        let excerpt = if excerpt.is_empty() {
-            "Highlighted passage".to_string()
-        } else {
-            format!("\u{201C}{excerpt}\u{201D}")
-        };
-        let mut comments: Vec<Annotation> = annotations
-            .iter()
-            .filter(|a| a.kind == AnnoKind::Note && a.group == group)
-            .cloned()
-            .collect();
-        comments.sort_by_key(|a| a.created);
-
-        let colors = &theme.tokens.colors;
-        let cw = 360.0_f64.min(viewport.width() - 24.0);
-        let pad = 16.0;
-        let inner_w = (cw - pad * 2.0) as f32;
-        let text_w = inner_w - 52.0;
-        let (_, excerpt_h) = tr.measure(&excerpt, 12.0, Some(inner_w));
-        let display = |a: &Annotation| {
-            if composing == Some(a.id) {
-                format!("{}\u{2502}", a.note)
-            } else if a.note.trim().is_empty() {
-                "Empty comment".to_string()
-            } else {
-                a.note.clone()
-            }
-        };
-        let row_heights: Vec<f64> = comments
-            .iter()
-            .map(|a| f64::from(tr.measure(&display(a), 13.0, Some(text_w)).1).max(18.0) + 16.0)
-            .collect();
-
-        let header_h = 28.0;
-        let gap = 8.0;
-        let add_h = 34.0;
-        let comments_h = row_heights.iter().sum::<f64>() + gap * comments.len().max(1) as f64;
-        let ch = pad + header_h + 8.0 + f64::from(excerpt_h) + 12.0 + comments_h + add_h + pad;
+    /// Card rect sized to its content, anchored beside `self.anchor` (or the
+    /// viewport center) and clamped inside `viewport`.
+    fn card_rect(&self, viewport: Rect, cw: f64, ch: f64) -> Rect {
         let (ax, atop, abot) = self.anchor.map_or_else(
             || {
                 let c = viewport.center();
@@ -175,7 +173,27 @@ impl CommentOverlay {
         } else {
             (bottom - ch).max(top)
         };
-        let card = Rect::new(x0, y0, x0 + cw, y0 + ch);
+        Rect::new(x0, y0, x0 + cw, y0 + ch)
+    }
+
+    /// Draws the card shadow/background/border and the "Highlight" header row
+    /// (color swatch, label, delete-highlight trash); records their hits.
+    /// Returns the y-coordinate immediately below the header.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_card_and_header(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cursor: Point,
+        card: Rect,
+        pad: f64,
+        header_h: f64,
+        color: HiColor,
+        group: Uuid,
+    ) -> f64 {
+        let colors = &theme.tokens.colors;
         let shadow = Rect::new(card.x0 - 1.0, card.y0 + 4.0, card.x1 + 1.0, card.y1 + 7.0);
         paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
         paint::fill_round(
@@ -195,9 +213,9 @@ impl CommentOverlay {
         );
         self.push_hit(card, CommentAction::Swallow);
 
-        let ix0 = x0 + pad;
-        let ix1 = x0 + cw - pad;
-        let mut y = y0 + pad;
+        let ix0 = card.x0 + pad;
+        let ix1 = card.x1 - pad;
+        let y = card.y0 + pad;
         paint::circle(
             scene,
             t,
@@ -231,25 +249,37 @@ impl CommentOverlay {
             1.5,
         );
         self.push_hit(trash, CommentAction::DeleteHighlight(group));
-        y += header_h;
+        y + header_h
+    }
 
-        tr.draw_text(
-            scene,
-            &excerpt,
-            12.0,
-            colors.text_dim,
-            t * Affine::translate((ix0, y)),
-            Some(inner_w),
-        );
-        y += f64::from(excerpt_h) + 12.0;
-
+    /// Draws each comment row (text, delete/edit affordances) and records
+    /// their hits. Returns the y-coordinate immediately below the last row.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_comment_rows(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cursor: Point,
+        ix0: f64,
+        ix1: f64,
+        mut y: f64,
+        comments: &[Annotation],
+        row_heights: &[f64],
+        composing: Option<Uuid>,
+        text_w: f32,
+        gap: f64,
+    ) -> f64 {
+        let colors = &theme.tokens.colors;
         for (annotation, height) in comments.iter().zip(row_heights) {
+            let height = *height;
             let row = Rect::new(ix0, y, ix1, y + height);
             paint::fill_round(scene, t, row, 8.0, colors.surfaces.overlay);
             if composing == Some(annotation.id) {
                 paint::stroke_round(scene, t, row, 8.0, theme.border_focus, 1.4);
             }
-            let text = display(annotation);
+            let text = comment_display(annotation, composing);
             tr.draw_text(
                 scene,
                 &text,
@@ -293,7 +323,24 @@ impl CommentOverlay {
             }
             y += height + gap;
         }
+        y
+    }
 
+    /// Draws the "Add comment" button and records its hit.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_add_button(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cursor: Point,
+        ix0: f64,
+        ix1: f64,
+        y: f64,
+        add_h: f64,
+        group: Uuid,
+    ) {
         let add = Rect::new(ix0, y, ix1, y + add_h - 4.0);
         let add_hover = add.contains(cursor);
         paint::fill_round(
@@ -321,6 +368,77 @@ impl CommentOverlay {
             TextWeight::Semibold,
         );
         self.push_hit(add, CommentAction::Add(group));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        viewport: Rect,
+        cursor: Point,
+        annotations: &[Annotation],
+        default_color: HiColor,
+        composing: Option<Uuid>,
+    ) {
+        self.begin_frame();
+        let Some(group) = self.group else { return };
+
+        // Tap-away closes. It is deliberately behind the card and its controls.
+        self.push_hit(viewport, CommentAction::Close);
+
+        let (color, excerpt, comments) = gather_content(annotations, group, default_color);
+
+        let cw = 360.0_f64.min(viewport.width() - 24.0);
+        let pad = 16.0;
+        let inner_w = (cw - pad * 2.0) as f32;
+        let text_w = inner_w - 52.0;
+        let (_, excerpt_h) = tr.measure(&excerpt, 12.0, Some(inner_w));
+        let row_heights = comment_row_heights(tr, &comments, composing, text_w);
+
+        let header_h = 28.0;
+        let gap = 8.0;
+        let add_h = 34.0;
+        let comments_h = row_heights.iter().sum::<f64>() + gap * comments.len().max(1) as f64;
+        let ch = pad + header_h + 8.0 + f64::from(excerpt_h) + 12.0 + comments_h + add_h + pad;
+
+        let card = self.card_rect(viewport, cw, ch);
+        let ix0 = card.x0 + pad;
+        let ix1 = card.x1 - pad;
+
+        let y = self.draw_card_and_header(
+            scene, t, tr, theme, cursor, card, pad, header_h, color, group,
+        );
+
+        tr.draw_text(
+            scene,
+            &excerpt,
+            12.0,
+            theme.tokens.colors.text_dim,
+            t * Affine::translate((ix0, y)),
+            Some(inner_w),
+        );
+        let y = y + f64::from(excerpt_h) + 12.0;
+
+        let y = self.draw_comment_rows(
+            scene,
+            t,
+            tr,
+            theme,
+            cursor,
+            ix0,
+            ix1,
+            y,
+            &comments,
+            &row_heights,
+            composing,
+            text_w,
+            gap,
+        );
+
+        self.draw_add_button(scene, t, tr, theme, cursor, ix0, ix1, y, add_h, group);
     }
 
     #[cfg(test)]

@@ -1258,7 +1258,7 @@ impl Widget for HistoryScrubber {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        if self.handle_naming_event(event, modifiers, handled) {
+        if self.handle_naming_event(event, *modifiers, handled) {
             return;
         }
 
@@ -1358,7 +1358,7 @@ impl HistoryScrubber {
     fn handle_naming_event(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
         if !(self.naming.is_some()
@@ -1373,7 +1373,7 @@ impl HistoryScrubber {
             .naming
             .as_mut()
             .map_or(NameFieldOutcome::Ignored, |(_, f)| {
-                f.handle_event(event, modifiers)
+                f.handle_event(event, &modifiers)
             });
         match outcome {
             NameFieldOutcome::Commit(_) => {

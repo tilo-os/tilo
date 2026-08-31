@@ -764,34 +764,35 @@ impl RustHighlighter {
     }
 }
 
-impl Default for RustHighlighter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Highlighter for RustHighlighter {
-    fn spans(&self, line: &str, carry: HlState) -> LineSpans {
+impl RustHighlighter {
+    /// `spans` when the carried state says we're still inside a `/* … */`
+    /// block comment: look for the close marker and recurse on the
+    /// remainder. Split out of `spans` to keep that under the line cap.
+    fn spans_in_block_comment(&self, line: &str) -> LineSpans {
         let n = line.len();
-        if carry & IN_BLOCK_COMMENT != 0 {
-            if let Some(close) = line.find("*/") {
-                let end = close.saturating_add(2);
-                let rest = line.get(end..).unwrap_or_default();
-                let mut ls = self.spans(rest, 0);
-                shift_spans(&mut ls.spans, end);
-                let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
-                spans.append(&mut ls.spans);
-                return LineSpans {
-                    spans,
-                    carry: ls.carry,
-                };
-            }
+        if let Some(close) = line.find("*/") {
+            let end = close.saturating_add(2);
+            let rest = line.get(end..).unwrap_or_default();
+            let mut ls = self.spans(rest, 0);
+            shift_spans(&mut ls.spans, end);
+            let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
+            spans.append(&mut ls.spans);
             return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Comment)],
-                carry: IN_BLOCK_COMMENT,
+                spans,
+                carry: ls.carry,
             };
         }
+        LineSpans {
+            spans: vec![Span::new(0..n, TokenKind::Comment)],
+            carry: IN_BLOCK_COMMENT,
+        }
+    }
 
+    /// `spans` when not already inside a block comment: the main
+    /// character-by-character tokenizer. Split out of `spans` to keep that
+    /// under the line cap.
+    fn tokenize_rust_line(&self, line: &str) -> LineSpans {
+        let n = line.len();
         let mut spans = Vec::new();
         let bytes = line.as_bytes();
         let mut i = 0usize;
@@ -881,6 +882,21 @@ impl Highlighter for RustHighlighter {
             spans,
             carry: carry_out,
         }
+    }
+}
+
+impl Default for RustHighlighter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Highlighter for RustHighlighter {
+    fn spans(&self, line: &str, carry: HlState) -> LineSpans {
+        if carry & IN_BLOCK_COMMENT != 0 {
+            return self.spans_in_block_comment(line);
+        }
+        self.tokenize_rust_line(line)
     }
 }
 
@@ -1059,113 +1075,129 @@ pub struct TypstHighlighter;
 
 impl Highlighter for TypstHighlighter {
     fn spans(&self, line: &str, carry: HlState) -> LineSpans {
-        let n = line.len();
-        let trimmed = line.trim_start();
-        // Fence delimiter line toggles the fenced state; it renders as raw.
-        if trimmed.starts_with("```") {
-            let next = if carry & IN_FENCE != 0 { 0 } else { IN_FENCE };
-            return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Raw)],
-                carry: next,
-            };
+        let len = line.len();
+        if let Some(early) = typst_fence_or_heading_spans(line, len, carry) {
+            return early;
         }
-        if carry & IN_FENCE != 0 {
-            return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Raw)],
-                carry: IN_FENCE,
-            };
-        }
-        if trimmed.starts_with('=') {
-            return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Heading)],
-                carry: 0,
-            };
-        }
-        let mut spans = Vec::new();
-        let bytes = line.as_bytes();
-        let mut i = 0usize;
-        while i < n {
-            let Some(&b) = bytes.get(i) else { break };
-            let c = b as char;
-            if line.get(i..).is_some_and(|s| s.starts_with("//")) {
-                spans.push(Span::new(i..n, TokenKind::Comment));
-                break;
-            }
-            if c == '"' {
-                let end =
-                    find_from(line, i.saturating_add(1), '"').map_or(n, |e| e.saturating_add(1));
-                spans.push(Span::new(i..end, TokenKind::StringLit));
-                i = end;
-                continue;
-            }
-            if c == '`' {
-                let end =
-                    find_from(line, i.saturating_add(1), '`').map_or(n, |e| e.saturating_add(1));
-                spans.push(Span::new(i..end, TokenKind::Raw));
-                i = end;
-                continue;
-            }
-            if c == '$' {
-                let end =
-                    find_from(line, i.saturating_add(1), '$').map_or(n, |e| e.saturating_add(1));
-                spans.push(Span::new(i..end, TokenKind::Math));
-                i = end;
-                continue;
-            }
-            if c == '#' {
-                let mut j = i.saturating_add(1);
-                while let Some(&bj) = bytes.get(j) {
-                    let cj = bj as char;
-                    if cj.is_alphanumeric() || cj == '_' || cj == '.' {
-                        j = j.saturating_add(1);
-                    } else {
-                        break;
-                    }
-                }
-                let end = j.max(i.saturating_add(1));
-                spans.push(Span::new(i..end, TokenKind::Function));
-                i = end;
-                continue;
-            }
-            if c == '*'
-                && let Some(close) = find_from(line, i.saturating_add(1), '*')
-                && close > i.saturating_add(1)
-            {
-                spans.push(Span::new(i..close.saturating_add(1), TokenKind::Strong));
-                i = close.saturating_add(1);
-                continue;
-            }
-            if c == '_'
-                && let Some(close) = find_from(line, i.saturating_add(1), '_')
-                && close > i.saturating_add(1)
-            {
-                spans.push(Span::new(i..close.saturating_add(1), TokenKind::Emphasis));
-                i = close.saturating_add(1);
-                continue;
-            }
-            // Number with optional unit suffix (12pt, 1.5cm, 80%).
-            if c.is_ascii_digit() {
-                let mut j = i;
-                while bytes
-                    .get(j)
-                    .is_some_and(|&b| b.is_ascii_digit() || b == b'.')
-                {
-                    j = j.saturating_add(1);
-                }
-                while bytes
-                    .get(j)
-                    .is_some_and(|&b| (b as char).is_ascii_alphabetic() || b == b'%')
-                {
-                    j = j.saturating_add(1);
-                }
-                spans.push(Span::new(i..j, TokenKind::Number));
-                i = j;
-                continue;
-            }
-            i = i.saturating_add(next_char_len(line, i));
-        }
-        LineSpans { spans, carry: 0 }
+        tokenize_typst_line(line, len)
     }
+}
+
+/// [`TypstHighlighter::spans`]'s fast paths: fence delimiter, inside a
+/// fence, heading. `None` means "none of these apply, fall through to the
+/// character tokenizer." Split out to keep that under the line cap.
+fn typst_fence_or_heading_spans(line: &str, len: usize, carry: HlState) -> Option<LineSpans> {
+    let trimmed = line.trim_start();
+    // Fence delimiter line toggles the fenced state; it renders as raw.
+    if trimmed.starts_with("```") {
+        let next = if carry & IN_FENCE != 0 { 0 } else { IN_FENCE };
+        return Some(LineSpans {
+            spans: vec![Span::new(0..len, TokenKind::Raw)],
+            carry: next,
+        });
+    }
+    if carry & IN_FENCE != 0 {
+        return Some(LineSpans {
+            spans: vec![Span::new(0..len, TokenKind::Raw)],
+            carry: IN_FENCE,
+        });
+    }
+    if trimmed.starts_with('=') {
+        return Some(LineSpans {
+            spans: vec![Span::new(0..len, TokenKind::Heading)],
+            carry: 0,
+        });
+    }
+    None
+}
+
+/// [`TypstHighlighter::spans`]'s character-by-character tokenizer, once the
+/// fast paths in [`typst_fence_or_heading_spans`] don't apply. Split out to
+/// keep that under the line cap.
+fn tokenize_typst_line(line: &str, len: usize) -> LineSpans {
+    let mut spans = Vec::new();
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i < len {
+        let Some(&byte) = bytes.get(i) else { break };
+        let c = byte as char;
+        if line.get(i..).is_some_and(|s| s.starts_with("//")) {
+            spans.push(Span::new(i..len, TokenKind::Comment));
+            break;
+        }
+        if c == '"' {
+            let end =
+                find_from(line, i.saturating_add(1), '"').map_or(len, |e| e.saturating_add(1));
+            spans.push(Span::new(i..end, TokenKind::StringLit));
+            i = end;
+            continue;
+        }
+        if c == '`' {
+            let end =
+                find_from(line, i.saturating_add(1), '`').map_or(len, |e| e.saturating_add(1));
+            spans.push(Span::new(i..end, TokenKind::Raw));
+            i = end;
+            continue;
+        }
+        if c == '$' {
+            let end =
+                find_from(line, i.saturating_add(1), '$').map_or(len, |e| e.saturating_add(1));
+            spans.push(Span::new(i..end, TokenKind::Math));
+            i = end;
+            continue;
+        }
+        if c == '#' {
+            let mut pos = i.saturating_add(1);
+            while let Some(&next_byte) = bytes.get(pos) {
+                let next_char = next_byte as char;
+                if next_char.is_alphanumeric() || next_char == '_' || next_char == '.' {
+                    pos = pos.saturating_add(1);
+                } else {
+                    break;
+                }
+            }
+            let end = pos.max(i.saturating_add(1));
+            spans.push(Span::new(i..end, TokenKind::Function));
+            i = end;
+            continue;
+        }
+        if c == '*'
+            && let Some(close) = find_from(line, i.saturating_add(1), '*')
+            && close > i.saturating_add(1)
+        {
+            spans.push(Span::new(i..close.saturating_add(1), TokenKind::Strong));
+            i = close.saturating_add(1);
+            continue;
+        }
+        if c == '_'
+            && let Some(close) = find_from(line, i.saturating_add(1), '_')
+            && close > i.saturating_add(1)
+        {
+            spans.push(Span::new(i..close.saturating_add(1), TokenKind::Emphasis));
+            i = close.saturating_add(1);
+            continue;
+        }
+        // Number with optional unit suffix (12pt, 1.5cm, 80%).
+        if c.is_ascii_digit() {
+            let mut pos = i;
+            while bytes
+                .get(pos)
+                .is_some_and(|&next_byte| next_byte.is_ascii_digit() || next_byte == b'.')
+            {
+                pos = pos.saturating_add(1);
+            }
+            while bytes.get(pos).is_some_and(|&next_byte| {
+                (next_byte as char).is_ascii_alphabetic() || next_byte == b'%'
+            }) {
+                pos = pos.saturating_add(1);
+            }
+            spans.push(Span::new(i..pos, TokenKind::Number));
+            i = pos;
+            continue;
+        }
+        i = i.saturating_add(next_char_len(line, i));
+    }
+    LineSpans { spans, carry: 0 }
 }
 
 // ---------------------------------------------------------------------------

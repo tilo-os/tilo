@@ -104,6 +104,7 @@ pub enum RepeatMode {
 }
 
 impl RepeatMode {
+    #[must_use]
     pub fn next(self) -> Self {
         match self {
             RepeatMode::Off => RepeatMode::All,

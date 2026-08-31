@@ -100,6 +100,16 @@ pub(crate) fn ensure_text_object(
         },
         _ => String::new(),
     };
+    // `put_object` only fails when `root` doesn't exist or isn't a keyed
+    // (Map/Table) object; every caller passes either the document root or a
+    // map key resolved earlier in the same synchronous `sync`, so neither
+    // case is reachable here. There is no meaningful fallback `ObjId` to
+    // return instead — `automerge::ROOT` would silently redirect the
+    // caller's later `splice_text` onto the wrong (non-Text) object.
+    #[allow(
+        clippy::expect_used,
+        reason = "root is always a live keyed object in the current transaction; see comment above"
+    )]
     let obj = state
         .put_object(root, key, ObjType::Text)
         .expect("seed a Text object for an editable field");

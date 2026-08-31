@@ -29,6 +29,17 @@ pub(super) struct PickerEvent {
     pub(super) changed: Option<[u8; 3]>,
 }
 
+/// The shared per-frame draw arguments for [`StyleColorPicker::draw`],
+/// bundled the same way `ui`'s widget `*DrawCtx` structs are so the method
+/// stays under clippy's argument-count limit.
+pub(super) struct DrawArgs<'a> {
+    pub(super) scene: &'a mut Scene,
+    pub(super) transform: Affine,
+    pub(super) text_renderer: &'a mut TextRenderer,
+    pub(super) theme: &'a Theme,
+    pub(super) presence: &'a PresenceCtx,
+}
+
 /// A shared [`ColorPicker`] hosted in a modal-ish floating card.
 #[derive(Default)]
 pub(super) struct StyleColorPicker {
@@ -84,11 +95,7 @@ impl StyleColorPicker {
 
     pub(super) fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
+        args: DrawArgs,
         host: Rect,
         panel: Rect,
         surface: Color,
@@ -101,6 +108,13 @@ impl StyleColorPicker {
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
+        let DrawArgs {
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        } = args;
         let rect = picker.get_rect();
         let card = Rect::new(
             rect.x0 - 10.0,
@@ -135,7 +149,7 @@ impl StyleColorPicker {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         host: Rect,
@@ -161,19 +175,18 @@ impl StyleColorPicker {
                 ..
             } if rect.contains(self.pointer) => true,
             WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.picker = None;
-                false
-            }
-            WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => true,
-            WindowEvent::KeyboardInput {
+            // A click outside the popover, or Escape, both dismiss it the
+            // same way — no forwarded event, just a close.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+            | WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key: Key::Named(NamedKey::Escape),
@@ -197,7 +210,7 @@ impl StyleColorPicker {
                 picker.handle_event(
                     event,
                     scale,
-                    modifiers,
+                    &modifiers,
                     state,
                     root,
                     &mut handled,

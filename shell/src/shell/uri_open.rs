@@ -20,6 +20,12 @@ pub enum UriOpenError {
     Launch(LaunchError),
 }
 
+/// # Errors
+///
+/// Returns [`UriOpenError::InvalidUri`] if `uri` is empty, exceeds
+/// [`MAX_URI_BYTES`], carries leading/trailing whitespace, contains a
+/// control character, or has no `scheme:` prefix `desktop_policy`
+/// recognizes.
 pub fn resource_for_uri(uri: &str) -> Result<ResourceKind, UriOpenError> {
     if uri.is_empty()
         || uri.len() > MAX_URI_BYTES
@@ -35,6 +41,11 @@ pub fn resource_for_uri(uri: &str) -> Result<ResourceKind, UriOpenError> {
     ResourceKind::scheme(scheme).map_err(|_| UriOpenError::InvalidUri)
 }
 
+/// # Errors
+///
+/// Propagates [`resource_for_uri`]'s error for a malformed `uri`, or
+/// returns [`UriOpenError::NoHandler`] if no app claims the URI's scheme
+/// under `user_id`'s or `workspace`'s policy.
 pub fn resolve_for(
     uri: &str,
     user_id: &str,
@@ -48,8 +59,23 @@ pub fn resolve_for(
     })
 }
 
+/// # Errors
+///
+/// Returns [`UriOpenError::InvalidUri`] for a malformed `uri`,
+/// [`UriOpenError::NoHandler`] if no app claims (or still claims) the
+/// scheme, [`UriOpenError::NoWorkspace`] if there is no active workspace
+/// to open into, or [`UriOpenError::Launch`] if starting the app failed.
 pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<InstalledApp, UriOpenError> {
     let resource = resource_for_uri(uri)?;
+    // The guard's only use is the borrow passed into
+    // `app_for_resource_with_policy`, released the moment that call
+    // returns; cloning the workspace policy out just to drop the guard a
+    // statement earlier would cost more than the lookup it's guarding.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "guard feeds one immediate borrow into app_for_resource_with_policy and is \
+                  released right after; nothing to tighten without cloning workspace policy"
+    )]
     let app = {
         let state = chrome.borrow();
         let tree = state.tree();
@@ -70,10 +96,17 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<InstalledApp, Uri
         });
     }
 
-    let state = chrome.borrow();
-    let tree = state.tree();
-    let workspace = tree.active_workspace().ok_or(UriOpenError::NoWorkspace)?;
-    launcher::launch_uri_in_workspace(&app.package_id, workspace, uri).map_err(UriOpenError::Launch)
+    // Read just the room and capabilities out of the tree and drop the
+    // guard before the launch's file I/O and process spawn, rather than
+    // holding a read lock on the whole workspace tree through them.
+    let (room, capabilities) = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let workspace = tree.active_workspace().ok_or(UriOpenError::NoWorkspace)?;
+        (workspace.room, workspace.capabilities.clone())
+    };
+    launcher::launch_uri_in_room(&app.package_id, room, capabilities, uri)
+        .map_err(UriOpenError::Launch)
 }
 
 #[cfg(test)]

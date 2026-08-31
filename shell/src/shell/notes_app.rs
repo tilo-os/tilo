@@ -323,10 +323,13 @@ impl Widget for NotesApp {
         }
         self.empty_action_rect = Rect::ZERO;
 
+        let body_layout = BodyLayout {
+            content_x,
+            body_top,
+            wrap_w,
+        };
         if !self.selection.is_collapsed() {
-            self.draw_selection_highlight(
-                scene, transform, tr, sel_color, content_x, body_top, wrap_w,
-            );
+            self.draw_selection_highlight(scene, transform, tr, sel_color, body_layout);
         }
 
         #[allow(
@@ -344,7 +347,7 @@ impl Widget for NotesApp {
         );
 
         if self.focused {
-            self.draw_caret(scene, transform, tr, accent, content_x, body_top, wrap_w);
+            self.draw_caret(scene, transform, tr, accent, body_layout);
         }
     }
 
@@ -370,12 +373,12 @@ impl Widget for NotesApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse_input(*es, modifiers, handled, focus_target, node_id);
+                self.handle_mouse_input(*es, *modifiers, handled, focus_target, node_id);
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.handle_keyboard_input(key_event, modifiers, state, root, handled);
+                self.handle_keyboard_input(key_event, *modifiers, state, root, handled);
             }
             _ => {}
         }
@@ -455,6 +458,15 @@ impl Widget for NotesApp {
     }
 }
 
+/// Where the note body starts and how wide it wraps — shared by every
+/// helper that paints something positioned relative to the body text.
+#[derive(Clone, Copy)]
+struct BodyLayout {
+    content_x: f64,
+    body_top: f64,
+    wrap_w: f32,
+}
+
 impl NotesApp {
     /// The selection-highlight rects painted per visual line, including
     /// the trailing-newline sliver when the selection spans a line break.
@@ -464,10 +476,13 @@ impl NotesApp {
         transform: Affine,
         tr: &mut TextRenderer,
         sel_color: vello::peniko::Color,
-        content_x: f64,
-        body_top: f64,
-        wrap_w: f32,
+        layout: BodyLayout,
     ) {
+        let BodyLayout {
+            content_x,
+            body_top,
+            wrap_w,
+        } = layout;
         let sel_lo = self.selection.min();
         let sel_hi = self.selection.max();
         let mut line_start = 0usize;
@@ -513,10 +528,13 @@ impl NotesApp {
         transform: Affine,
         tr: &mut TextRenderer,
         accent: vello::peniko::Color,
-        content_x: f64,
-        body_top: f64,
-        wrap_w: f32,
+        layout: BodyLayout,
     ) {
+        let BodyLayout {
+            content_x,
+            body_top,
+            wrap_w,
+        } = layout;
         let cur = self.selection.cursor;
         let prefix = self.body.text.get(..cur).unwrap_or("");
         let nl_count = prefix.matches('\n').count();
@@ -618,7 +636,7 @@ impl NotesApp {
     fn handle_mouse_input(
         &mut self,
         es: ElementState,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
@@ -675,7 +693,7 @@ impl NotesApp {
     fn handle_keyboard_input(
         &mut self,
         key_event: &KeyEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,

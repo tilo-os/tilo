@@ -1021,7 +1021,7 @@ impl TopBarChrome {
         transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
-        spec: MetricLabelSpec<'_>,
+        spec: &MetricLabelSpec<'_>,
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -1105,7 +1105,7 @@ impl TopBarChrome {
             transform,
             theme,
             text_renderer,
-            MetricLabelSpec {
+            &MetricLabelSpec {
                 center_y,
                 label_x: content_x0,
                 value_x: content_x0 + 26.0,
@@ -1120,7 +1120,7 @@ impl TopBarChrome {
             transform,
             theme,
             text_renderer,
-            MetricLabelSpec {
+            &MetricLabelSpec {
                 center_y,
                 label_x: content_x1 - 96.0,
                 value_x: content_x1 - 70.0,
@@ -1134,7 +1134,7 @@ impl TopBarChrome {
             transform,
             theme,
             text_renderer,
-            MetricLabelSpec {
+            &MetricLabelSpec {
                 center_y,
                 label_x: content_x1 - 40.0,
                 value_x: content_x1 - 18.0,
@@ -1146,7 +1146,6 @@ impl TopBarChrome {
     }
 
     fn draw_calendar_widget(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -1250,7 +1249,7 @@ impl TopBarChrome {
             slots = slots.saturating_add(1);
         }
         if self.notification_badge > 0 {
-            slots += 1;
+            slots = slots.saturating_add(1);
         }
         let mut tray_w = if slots == 0 {
             // Still the quick-settings trigger, so keep one slot for
@@ -1370,11 +1369,13 @@ impl TopBarChrome {
             &label,
             label_size,
             Color::WHITE,
-            transform
-                * Affine::translate((
+            at(
+                transform,
+                (
                     badge.x0 + (badge.width() - f64::from(label_w)) / 2.0,
                     badge.y0 + (badge.height() - f64::from(label_h)) / 2.0,
-                )),
+                ),
+            ),
             None,
         );
         sx + layout.tray_slot + 20.0 + layout.tray_gap
@@ -1567,7 +1568,7 @@ impl TopBarChrome {
     /// announced as a named pill for four seconds, then settles into a
     /// quiet dot; hovering that exact dot expands the same verified app
     /// label again. Clicking opens Quick Settings, whose privacy action
-    /// can disconnect the active PipeWire clients. Returns the x cursor
+    /// can disconnect the active `PipeWire` clients. Returns the x cursor
     /// position the avatar stack should grow leftward from.
     fn draw_media_indicator(
         &mut self,
@@ -1601,15 +1602,15 @@ impl TopBarChrome {
         let indicator_h = 22.0;
         if self.media_expanded {
             let suffix = if labels.len() > 1 {
-                format!(" +{}", labels.len() - 1)
+                format!(" +{}", labels.len().saturating_sub(1))
             } else {
                 String::new()
             };
-            let label = format!("{}{suffix}", labels[0]);
+            let label = format!("{}{suffix}", labels.first().copied().unwrap_or_default());
             let size = tokens.typography.scale.xs;
             let (label_w, label_h) =
                 text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
-            let icon_count = usize::from(has_mic) + usize::from(has_camera);
+            let icon_count = usize::from(has_mic).saturating_add(usize::from(has_camera));
             let width = 16.0 + small_count_to_f64(icon_count) * 15.0 + f64::from(label_w);
             self.media_indicator_rect = Rect::new(
                 rx - width,
@@ -1651,7 +1652,7 @@ impl TopBarChrome {
                 &label,
                 size,
                 colors.text_primary,
-                transform * Affine::translate((ix + 2.0, center_y - f64::from(label_h) / 2.0)),
+                at(transform, (ix + 2.0, center_y - f64::from(label_h) / 2.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -1885,6 +1886,93 @@ impl TopBarChrome {
             *handled = true;
         }
     }
+
+    /// Pulled at the top of [`Widget::draw`], not pushed by `update`, so a
+    /// just-dropped battery percent is drawn and counted as a change in the
+    /// same pass. Also tracks the media-use signature so a newly-started
+    /// capture announces itself as a named pill before settling into a dot.
+    fn refresh_status_and_media_state(&mut self) {
+        self.status = self.live_status();
+        self.notification_badge = self
+            .chrome
+            .as_ref()
+            .map_or(0, |chrome| chrome.borrow().notification_badge_total());
+        let signature: Vec<(u32, u8, String)> = self
+            .status
+            .media
+            .iter()
+            .map(|use_| {
+                (
+                    use_.client_id,
+                    match use_.kind {
+                        os_actions::MediaKind::Microphone => 0,
+                        os_actions::MediaKind::Camera => 1,
+                    },
+                    use_.label.clone(),
+                )
+            })
+            .collect();
+        if signature != self.media_signature {
+            self.media_signature = signature;
+            self.media_started = (!self.media_signature.is_empty()).then(Instant::now);
+        }
+        let media_hovered = self
+            .last_cursor
+            .is_some_and(|p| self.media_indicator_rect.contains(p));
+        self.media_expanded = !self.media_signature.is_empty()
+            && (media_hovered
+                || self
+                    .media_started
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(4)));
+    }
+
+    /// Sizes the center band, then dispatches to whichever center widget
+    /// is currently selected. Split out of [`Widget::draw`] to stay under
+    /// clippy's line budget — the three arms don't share state beyond the
+    /// band's geometry, which none of them need after this call returns.
+    fn draw_center_widget(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+    ) {
+        let (content_x0, content_x1, content_cx) =
+            self.draw_center_band(scene, transform, theme, center_y);
+        match self.center_widget {
+            CenterWidget::Clock => {
+                self.draw_clock_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    content_cx,
+                );
+            }
+            CenterWidget::SystemMonitor => {
+                self.draw_system_monitor_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    (content_x0, content_x1),
+                );
+            }
+            CenterWidget::Calendar => {
+                Self::draw_calendar_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    content_cx,
+                );
+            }
+        }
+    }
 }
 
 impl Widget for TopBarChrome {
@@ -1983,38 +2071,7 @@ impl Widget for TopBarChrome {
         }
         // Pulled here, not pushed by update, so a just-dropped battery
         // percent is drawn and counted as a change in the same pass.
-        self.status = self.live_status();
-        self.notification_badge = self
-            .chrome
-            .as_ref()
-            .map_or(0, |chrome| chrome.borrow().notification_badge_total());
-        let signature: Vec<(u32, u8, String)> = self
-            .status
-            .media
-            .iter()
-            .map(|use_| {
-                (
-                    use_.client_id,
-                    match use_.kind {
-                        os_actions::MediaKind::Microphone => 0,
-                        os_actions::MediaKind::Camera => 1,
-                    },
-                    use_.label.clone(),
-                )
-            })
-            .collect();
-        if signature != self.media_signature {
-            self.media_signature = signature;
-            self.media_started = (!self.media_signature.is_empty()).then(Instant::now);
-        }
-        let media_hovered = self
-            .last_cursor
-            .is_some_and(|p| self.media_indicator_rect.contains(p));
-        self.media_expanded = !self.media_signature.is_empty()
-            && (media_hovered
-                || self
-                    .media_started
-                    .is_some_and(|at| at.elapsed() < Duration::from_secs(4)));
+        self.refresh_status_and_media_state();
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && fp.rect_px.2 > 0 {
             out_scene.append(&self.cached, Some(out_transform));
@@ -2040,40 +2097,7 @@ impl Widget for TopBarChrome {
             after_chevrons,
         );
 
-        let (content_x0, content_x1, content_cx) =
-            self.draw_center_band(scene, transform, theme, center_y);
-        match self.center_widget {
-            CenterWidget::Clock => {
-                self.draw_clock_widget(
-                    scene,
-                    transform,
-                    theme,
-                    text_renderer,
-                    center_y,
-                    content_cx,
-                );
-            }
-            CenterWidget::SystemMonitor => {
-                self.draw_system_monitor_widget(
-                    scene,
-                    transform,
-                    theme,
-                    text_renderer,
-                    center_y,
-                    (content_x0, content_x1),
-                );
-            }
-            CenterWidget::Calendar => {
-                self.draw_calendar_widget(
-                    scene,
-                    transform,
-                    theme,
-                    text_renderer,
-                    center_y,
-                    content_cx,
-                );
-            }
-        }
+        self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
 
         let layout = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
         self.draw_tray_icons(scene, transform, theme, text_renderer, &layout);

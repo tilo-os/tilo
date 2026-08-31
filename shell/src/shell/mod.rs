@@ -111,6 +111,15 @@ use terminal::TerminalWidget;
 /// `Box<dyn AppWidget>`s in [`tile::TileContent::App`] instead of
 /// `AppPlaceholder` symbols — and the single Automerge document shared
 /// across every hosted app.
+// Each overlay's visibility is toggled independently (they are not
+// mutually exclusive — e.g. quick settings can open over the overview),
+// so collapsing them into one enum/flags field would misrepresent the
+// state space rather than simplify it; 41 call sites across the crate
+// read/write these individually.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent overlay-visibility flags, not mutually exclusive states"
+)]
 pub struct Shell {
     tree: RuntimeTree,
     state: ui::state::State,
@@ -354,6 +363,14 @@ impl Shell {
     /// ([`shell::test_support::key_press`]) funnel through here. Returns
     /// `true` if the press matched a global binding, `false` if it should
     /// fall through to the focused widget tree.
+    // `press` is only ever read here, but narrowing to `&KeyPress` would
+    // touch `shell/tests/shell_chrome_test.rs`'s call sites, outside this
+    // pass's scope (only shell/src/shell/ is ours to edit).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "press is only ever borrowed here, but narrowing the signature would touch \
+                  shell/tests call sites outside this pass's scope"
+    )]
     pub fn dispatch_key(&mut self, press: test_support::KeyPress) -> bool {
         use test_support::Mods;
         // Normalize to lowercase so `Cmd+K` and `Cmd+k` hit the same branch.
@@ -1091,6 +1108,16 @@ pub fn build_workspace_root(
 
 /// As [`build_nirios_overlay_host_with_handle`], but with the store the
 /// open tabs' documents live in named by the caller.
+// `tree_handle` is only ever read here (`.clone()`/`.read()`), never
+// moved, so `&WorkspaceTreeHandle` would be the tighter signature — but
+// its callers outside this module (`compositor::frame`,
+// `compositor::hosted`) already hold their own owned handle at the call
+// site, so narrowing here is not this pass's call to make.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "tree_handle is only ever borrowed here, but narrowing the signature would touch \
+              call sites in shell::compositor, outside this pass's scope"
+)]
 pub fn build_nirios_overlay_host_with_records(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,

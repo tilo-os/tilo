@@ -1337,7 +1337,7 @@ impl ActivityTimeline {
             full_row.x1,
             full_row.y1,
         );
-        self.draw_row_chrome(
+        Self::draw_row_chrome(
             scene,
             transform,
             theme,
@@ -1349,14 +1349,14 @@ impl ActivityTimeline {
         );
 
         let cy = f64::midpoint(row.y0, row.y1);
-        let dot_x = self.draw_row_avatar(scene, transform, row, cy, entry);
+        let dot_x = Self::draw_row_avatar(scene, transform, row, cy, entry);
 
         let text_size = theme.tokens.typography.scale.sm;
         // The indent comes out of the author cluster, not the summary — the
         // summary is what the reader is here for.
         let author_slot_w = (self.author_slot_w() - px(depth) * INDENT).max(72.0);
         let compact = self.is_compact();
-        self.draw_row_author(
+        Self::draw_row_author(
             scene,
             transform,
             text_renderer,
@@ -1411,7 +1411,6 @@ impl ActivityTimeline {
     /// The avatar dot; returns its center x so the author cluster can start
     /// just past it.
     fn draw_row_avatar(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         row: Rect,
@@ -1436,7 +1435,6 @@ impl ActivityTimeline {
     /// else in the row.
     #[allow(clippy::too_many_arguments)]
     fn draw_row_chrome(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -1496,7 +1494,6 @@ impl ActivityTimeline {
     /// The author name, and its identity-hash suffix when there's room for it.
     #[allow(clippy::too_many_arguments)]
     fn draw_row_author(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -1723,19 +1720,19 @@ impl ActivityTimeline {
             full_row.x1,
             full_row.y1 - 2.0,
         );
-        self.draw_group_row_chrome(scene, transform, theme, full_row, row, rg, is_hovered);
+        Self::draw_group_row_chrome(scene, transform, theme, full_row, row, rg, is_hovered);
 
         let title_size = theme.tokens.typography.scale.sm;
         let title_x = row.x0 + 26.0;
         let chips = self.group_chip_rects_local(row, rg);
-        self.draw_group_row_title(
+        Self::draw_group_row_title(
             scene, transform, tr, theme, row, rg, is_hovered, naming, title_x, title_size,
             chips.0.x0,
         );
 
         // Line two: who and how much, plus — right-aligned — when.
         let meta_y = row.y0 + 27.0;
-        self.draw_group_row_meta(
+        Self::draw_group_row_meta(
             scene, transform, tr, theme, row, rg, now, title_x, meta_y, title_size,
         );
 
@@ -1763,7 +1760,6 @@ impl ActivityTimeline {
     /// triangle — everything drawn before any text.
     #[allow(clippy::too_many_arguments)]
     fn draw_group_row_chrome(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -1838,7 +1834,6 @@ impl ActivityTimeline {
     /// plus the "still open" dot.
     #[allow(clippy::too_many_arguments)]
     fn draw_group_row_title(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -1904,7 +1899,6 @@ impl ActivityTimeline {
     /// author dots between them.
     #[allow(clippy::too_many_arguments)]
     fn draw_group_row_meta(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -2348,7 +2342,7 @@ impl Widget for ActivityTimeline {
     ) {
         match event {
             WindowEvent::Ime(_) if self.naming.is_some() => {
-                self.handle_naming_ime(event, modifiers, handled);
+                self.handle_naming_ime(event, *modifiers, handled);
             }
             // A name field owns the keyboard while it is up, so a version
             // called "edits" cannot accidentally re-filter the pane.
@@ -2363,7 +2357,7 @@ impl Widget for ActivityTimeline {
                 && !modifiers.state().control_key()
                 && !modifiers.state().super_key() =>
             {
-                self.handle_naming_key(event, modifiers, handled);
+                self.handle_naming_key(event, *modifiers, handled);
             }
             // Author typeahead. Chorded keys are left alone so the host's
             // own shortcuts still work while the pane has the keyboard.
@@ -2389,7 +2383,7 @@ impl Widget for ActivityTimeline {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_click(handled, focus_target, node_id, modifiers);
+                self.handle_left_click(handled, focus_target, node_id, *modifiers);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(delta, handled);
@@ -2541,7 +2535,7 @@ impl ActivityTimeline {
     /// Paints only the lines the viewport can show, so a room with ten
     /// thousand entries costs the same per frame as one with ten.
     fn draw_rows(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -2621,11 +2615,11 @@ impl ActivityTimeline {
     fn handle_naming_ime(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
         let outcome = self.naming.as_mut().map_or(NameFieldOutcome::Ignored, |n| {
-            n.field.handle_event(event, modifiers)
+            n.field.handle_event(event, &modifiers)
         });
         if outcome == NameFieldOutcome::Edited {
             self.dirty = true;
@@ -2636,11 +2630,11 @@ impl ActivityTimeline {
     fn handle_naming_key(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
         let outcome = self.naming.as_mut().map_or(NameFieldOutcome::Ignored, |n| {
-            n.field.handle_event(event, modifiers)
+            n.field.handle_event(event, &modifiers)
         });
         match outcome {
             NameFieldOutcome::Commit(_) => {
@@ -2729,7 +2723,7 @@ impl ActivityTimeline {
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) {
         // `clear_chip_rect` is zeroed the moment the empty state is
         // not painted, so this can never fire on a stale hit zone.
@@ -2855,7 +2849,7 @@ impl ActivityTimeline {
         i: usize,
         e: usize,
         handled: &mut bool,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) {
         if let Some(chip) = self.revert_chip_rect(i)
             && chip.contains(self.last_cursor)
