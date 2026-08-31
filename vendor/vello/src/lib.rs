@@ -751,7 +751,8 @@ impl Renderer {
         // next frame comes from this one, exactly as in the sync path.
         // (Upstream gated this on `debug_layers`, when the counters were
         // only ever used for debug visualisation.)
-        let robust = true;
+        let measure_bump = true;
+        let capture_debug = cfg!(feature = "debug_layers");
         let recording = render.render_encoding_coarse(
             encoding,
             &mut self.resolver,
@@ -759,7 +760,8 @@ impl Renderer {
             &mut self.image_atlas,
             params,
             self.budget.budget(),
-            robust,
+            measure_bump,
+            capture_debug,
         );
         let target = render.out_image();
         let bump_buf = render.bump_buf();

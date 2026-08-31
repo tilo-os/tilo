@@ -9,10 +9,11 @@ sources; every following commit is a reviewable topic change:
 - `vendor-upstream/vello-0.9` contains `vello` and `vello_encoding` together,
   because the adaptive allocator API crosses the crate boundary. Its baseline
   is crates.io `vello` 0.9.0 plus `vello_encoding` 0.9.0. The series is split
-  into six dependency-ordered review commits rather than one qOS-sized patch:
+  into seven dependency-ordered review commits rather than one qOS-sized patch:
   encoding budget/accounting, renderer measurement, atlas diagnostics, the
   clipped-image PTCL floor, the viewport-scaled line floor, and compatibility
-  lint cleanup. The code is now ported onto current upstream `main` as three
+  lint cleanup, and separation of budget readback from debug-buffer capture.
+  The code is now ported onto current upstream `main` as three
   independently reviewable draft pull requests:
   [adaptive bump budgets and safety floors](https://github.com/linebender/vello/pull/1861),
   [atlas-drop diagnostics](https://github.com/linebender/vello/pull/1862), and
