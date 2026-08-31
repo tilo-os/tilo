@@ -4,6 +4,7 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
+script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 vello_branch=vendor-upstream/vello-0.9
 vello_base=f21d2c703175f5387315506865343c52f69b5b39
@@ -63,7 +64,15 @@ verify_ref() {
 verify() {
     verify_ref "$vello_branch" "$vello_base" "$vello_tip"
     verify_ref "$winit_branch" "$winit_base" "$winit_tip"
-    echo "vendor histories match their recorded roots and tips"
+    local vello_ref winit_ref
+    vello_ref=$(resolve_ref "$vello_branch" "$vello_tip")
+    winit_ref=$(resolve_ref "$winit_branch" "$winit_tip")
+    if test "${QOS_VENDOR_REFS_ONLY:-0}" != 1; then
+        python3 "$script_root/tools/verify-vendor-trees.py" \
+            --vello-ref "$vello_ref" \
+            --winit-ref "$winit_ref"
+    fi
+    echo "vendor histories match their recorded roots, tips, and checked-in sources"
 }
 
 export_histories() {
@@ -90,6 +99,8 @@ export_histories() {
     git -C "$repo_root" format-patch --quiet \
         --output-directory "$output/winit-0.30.13-patches" \
         "$winit_base..$winit_ref"
+
+    cp "$script_root/docs/vendor-forks.md" "$output/README.md"
 
     echo "exported bundles and topic patches to $output"
 }
