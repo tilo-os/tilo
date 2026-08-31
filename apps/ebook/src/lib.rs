@@ -40,6 +40,7 @@
 
 pub mod actions;
 pub mod app;
+mod color_picker;
 mod comment_overlay;
 pub mod content;
 pub mod doc;
