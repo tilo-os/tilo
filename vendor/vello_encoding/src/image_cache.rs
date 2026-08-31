@@ -20,6 +20,10 @@ pub struct Images<'a> {
     ///
     /// This is only used for renderer-side debug logging.
     pub evicted: usize,
+    /// Images omitted because they could not be allocated this resolve pass.
+    pub omitted: usize,
+    /// Images omitted over the lifetime of this cache.
+    pub omitted_total: u64,
     /// Images that must be uploaded in the current resolve pass, with atlas locations.
     pub images: &'a [(ImageData, u32, u32)],
 }
@@ -45,6 +49,10 @@ pub(crate) struct ImageCache {
     /// This is exposed through [`Images::evicted`] for renderer-side debug logging, and also
     /// prevents repeated stale-eviction scans during the same resolve pass.
     evicted_in_resolve: usize,
+    /// Images omitted during the current resolve pass.
+    omitted_in_resolve: usize,
+    /// Images omitted over the lifetime of this cache.
+    omitted_total: u64,
     /// Map from image blob id to atlas residency.
     map: HashMap<u64, ResidentImage>,
     /// Images that must be uploaded in the current resolve pass, with atlas locations.
@@ -68,6 +76,8 @@ impl ImageCache {
             max_size,
             generation: 0,
             evicted_in_resolve: 0,
+            omitted_in_resolve: 0,
+            omitted_total: 0,
             map: HashMap::default(),
             images: Vec::default(),
         }
@@ -76,6 +86,7 @@ impl ImageCache {
     pub(crate) fn begin_resolve(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.evicted_in_resolve = 0;
+        self.omitted_in_resolve = 0;
         self.images.clear();
     }
 
@@ -94,6 +105,8 @@ impl ImageCache {
             width: self.atlas.size().width as u32,
             height: self.atlas.size().height as u32,
             evicted: self.evicted_in_resolve,
+            omitted: self.omitted_in_resolve,
+            omitted_total: self.omitted_total,
             images: &self.images,
         }
     }
@@ -164,13 +177,9 @@ impl ImageCache {
             && image.height <= self.atlas.size().height as u32
     }
 
-    /// Current side length of the square atlas texture.
-    ///
-    /// Exists so the caller can say how big the atlas already was when it
-    /// gave up on an image, which is the difference between "this image is
-    /// absurd" and "the atlas is full of other things".
-    pub(crate) fn atlas_size(&self) -> u32 {
-        self.atlas.size().width as u32
+    pub(crate) fn record_omission(&mut self) {
+        self.omitted_in_resolve += 1;
+        self.omitted_total = self.omitted_total.saturating_add(1);
     }
 
     pub(crate) fn evict_stale_entries(&mut self) -> bool {
@@ -241,21 +250,18 @@ mod tests {
         assert_eq!(cache.atlas.size().width, 32);
     }
 
-    /// `atlas_size` is what the drop report quotes when an image will
-    /// not fit, so it has to be the atlas's real current side length
-    /// rather than the size it was constructed with.
     #[test]
-    fn atlas_size_reports_the_live_size() {
-        let mut cache = ImageCache::new_with_sizes(16, 64);
-        assert_eq!(cache.atlas_size(), 16);
-        assert!(cache.bump_size());
-        assert_eq!(cache.atlas_size(), 32);
-        assert!(cache.bump_size());
-        assert_eq!(cache.atlas_size(), 64);
-        // At the maximum, growth stops and the size stays truthful --
-        // this is the state in which images start being dropped.
-        assert!(!cache.bump_size());
-        assert_eq!(cache.atlas_size(), 64);
+    fn omission_count_is_per_pass_and_cumulative() {
+        let mut cache = ImageCache::new_with_sizes(16, 16);
+        cache.begin_resolve();
+        cache.record_omission();
+        cache.record_omission();
+        assert_eq!(cache.images().omitted, 2);
+        assert_eq!(cache.images().omitted_total, 2);
+
+        cache.begin_resolve();
+        assert_eq!(cache.images().omitted, 0);
+        assert_eq!(cache.images().omitted_total, 2);
     }
 
     #[test]

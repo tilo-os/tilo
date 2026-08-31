@@ -15,7 +15,7 @@ git init --quiet "$isolated_repo"
 source_objects=$(git -C "$repo_root" rev-parse --path-format=absolute --git-path objects)
 printf '%s\n' "$source_objects" >"$isolated_repo/.git/objects/info/alternates"
 
-vello_tip=92f96aff358bd01034d50bfd0de8d97b59dde028
+vello_tip=cc8bb71173fc746f340aa36f0da580b7a8f95b1c
 winit_tip=b4ea19a1c6cccfe268ae2fb30f098629d926e5da
 git -C "$isolated_repo" update-ref \
     refs/remotes/origin/vendor-upstream/vello-0.9 "$vello_tip"
@@ -35,7 +35,7 @@ git -C "$isolated_repo" update-ref \
     "$repo_root/tools/vendor-history.sh" export "$export_dir"
 )
 
-test "$(find "$export_dir/vello-0.9-patches" -type f -name '*.patch' | wc -l)" -eq 4
+test "$(find "$export_dir/vello-0.9-patches" -type f -name '*.patch' | wc -l)" -eq 3
 test "$(find "$export_dir/winit-0.30.13-patches" -type f -name '*.patch' | wc -l)" -eq 6
 git bundle verify "$export_dir/vello-0.9.bundle" >/dev/null
 git bundle verify "$export_dir/winit-0.30.13.bundle" >/dev/null

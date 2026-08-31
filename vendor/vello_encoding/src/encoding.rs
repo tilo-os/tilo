@@ -273,7 +273,7 @@ impl Encoding {
     /// Encodes a brush with an optional alpha modifier.
     #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255 —                   fixed in the pinned toolchain, so `expect` goes unfulfilled;                   `allow` is correct whether or not it returns"
+        reason = "False positive on older compilers; fixed by rust-lang/rust#129255"
     )]
     pub fn encode_brush<'b>(&mut self, brush: impl Into<BrushRef<'b>>, alpha: f32) {
         use super::math::point_to_f32;
