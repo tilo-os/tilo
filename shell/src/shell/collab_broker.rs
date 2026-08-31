@@ -308,7 +308,7 @@ impl RoomSubscription {
 }
 
 impl FanoutState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             peer_id_counter: AtomicU64::new(0),
             capnp: Mutex::new(None),
@@ -492,10 +492,17 @@ impl Drop for BrokerHandle {
 pub fn spawn_native(
     capnp_socket_path: PathBuf,
     peer_sync: &Option<Arc<ShellNetwork>>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
     let identity = LocalIdentity::from_network(peer_sync.clone());
     let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(capnp_socket_path, peer_sync.as_ref(), &identity, &publisher)
+    spawn_inner(
+        capnp_socket_path,
+        peer_sync.as_ref(),
+        &identity,
+        &publisher,
+        Some(membership),
+    )
 }
 
 /// Test-only variant of [`spawn_native`] that takes an explicit
@@ -512,7 +519,13 @@ pub fn spawn_native_with_identity(
     identity: &Arc<LocalIdentity>,
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(capnp_socket_path, peer_sync.as_ref(), identity, &publisher)
+    spawn_inner(
+        capnp_socket_path,
+        peer_sync.as_ref(),
+        identity,
+        &publisher,
+        None,
+    )
 }
 
 /// Test-only variant of [`spawn_native`] that takes an explicit
@@ -528,7 +541,7 @@ pub fn spawn_native_with_publisher(
     publisher: &Arc<PeerPublisher>,
 ) -> std::io::Result<BrokerHandle> {
     let identity = LocalIdentity::from_network(None);
-    spawn_inner(capnp_socket_path, None, &identity, publisher)
+    spawn_inner(capnp_socket_path, None, &identity, publisher, None)
 }
 
 /// Inbound queues + shared fanout state the drain thread polls each
@@ -877,6 +890,7 @@ fn spawn_inner(
     peer_sync: Option<&Arc<ShellNetwork>>,
     identity: &Arc<LocalIdentity>,
     publisher: &Arc<PeerPublisher>,
+    membership: Option<crate::shell::state::WorkspaceTreeHandle>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
@@ -936,6 +950,7 @@ fn spawn_inner(
         Arc::clone(&channels),
         Arc::clone(publisher),
         Arc::clone(identity),
+        membership,
         Arc::clone(&capnp_quit),
     )?;
 
