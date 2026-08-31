@@ -136,15 +136,19 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // The portal must NOT bypass the existing sandbox / grant enforcement — `flow::resolve` is the
     // only entry point that mutates the workspace's `grants` map, consulting the same store the
     // chrome's permission-prompt pump uses. Failures downgrade to a warning so a broken session bus never wedges the shell.
-    let (_portal_runtime, _portal_handle) =
-        match bring_up_portal(enable_portals, tree_handle, portal_prompts, portal_pickers) {
-            PortalBringup::Disabled => (None, None),
-            PortalBringup::RuntimeUnavailable => {
-                app.run();
-                return;
-            }
-            PortalBringup::Started { runtime, handle } => (runtime, handle),
-        };
+    let (_portal_runtime, _portal_handle) = match bring_up_portal(
+        enable_portals,
+        tree_handle.clone(),
+        portal_prompts,
+        portal_pickers,
+    ) {
+        PortalBringup::Disabled => (None, None),
+        PortalBringup::RuntimeUnavailable => {
+            app.run();
+            return;
+        }
+        PortalBringup::Started { runtime, handle } => (runtime, handle),
+    };
 
     let _peer_sync = peer_sync.clone(); // keep alive for lifetime of `app.run()`
 

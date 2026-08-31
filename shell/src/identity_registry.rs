@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 use std::os::unix::fs::PermissionsExt;
 
 use serde::{Deserialize, Serialize};
-use ui::widget::identity_flow::IdentityRecord;
 
 const REGISTRY_SCHEMA_VERSION: u32 = 1;
 const REGISTRY_FILE: &str = "registry.json";
+#[cfg(test)]
 const LEGACY_PRIMARY_FILE: &str = "primary.json";
 
 /// Public metadata for one locally available signing identity.
@@ -71,13 +71,14 @@ impl Default for IdentityRegistry {
 impl IdentityRegistry {
     /// Register a validated record already stored at `record_path`.
     pub fn register_record(&mut self, record_path: &Path) -> io::Result<&IdentityProfile> {
-        let record = read_valid_record(record_path)?;
-        let public_key = record.threshold_identity.group_public_key;
+        let record = runtime_identity::load_from_path(record_path.to_path_buf())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        let public_key = record.group_public_key();
         let id = hex_encode(&public_key);
-        let display_name = if record.display_name.trim().is_empty() {
+        let display_name = if record.display_name().trim().is_empty() {
             format!("Identity {}", short_fingerprint(&id))
         } else {
-            record.display_name.trim().to_string()
+            record.display_name().trim().to_string()
         };
         let profile = IdentityProfile {
             id: id.clone(),
@@ -100,15 +101,36 @@ impl IdentityRegistry {
         source: &Path,
         identity_dir: &Path,
     ) -> io::Result<&IdentityProfile> {
-        let record = read_valid_record(source)?;
-        let id = hex_encode(&record.threshold_identity.group_public_key);
+        let bytes = fs::read(source)?;
+        let record = runtime_identity::load_from_bytes(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        let id = hex_encode(&record.group_public_key());
+        // Runtime store ids are capped at 64 characters and must begin with a
+        // letter. Keep 220 fingerprint bits; the full key remains the registry
+        // id and is rechecked before accepting an existing destination.
+        let store_id = format!("identity-{}", &id[..55]);
         fs::create_dir_all(identity_dir)?;
         set_private_dir_mode(identity_dir)?;
-        let destination = identity_dir.join(format!("{id}.json"));
-        let bytes = record
-            .to_json_bytes()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-        atomic_file::write_with_mode(&destination, &bytes, 0o600)?;
+        if let Some(existing) = runtime_identity::list_identities(identity_dir)?
+            .into_iter()
+            .find(|summary| summary.public_key == record.group_public_key())
+        {
+            runtime_identity::secure_identity(identity_dir, &existing.id)?;
+            return self.register_record(&identity_dir.join(format!("{}.json", existing.id)));
+        }
+        let destination = identity_dir.join(format!("{store_id}.json"));
+        if destination.exists() {
+            let existing = runtime_identity::load_from_path(destination.clone())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+            if existing.group_public_key() != record.group_public_key() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "identity id is already used by another record",
+                ));
+            }
+        } else {
+            runtime_identity::import_identity(identity_dir, &store_id, &bytes)?;
+        }
         self.register_record(&destination)
     }
 
@@ -209,16 +231,39 @@ impl IdentityRegistryStore {
     /// Register the old single-record layout on first load. Idempotent.
     pub fn migrate_legacy_primary(&self) -> io::Result<IdentityRegistry> {
         let mut registry = self.load()?;
-        let legacy = self.identity_dir.join(LEGACY_PRIMARY_FILE);
-        if legacy.exists() {
-            let public_key = read_valid_record(&legacy)?
-                .threshold_identity
-                .group_public_key;
-            let id = hex_encode(&public_key);
-            if !registry.identities.contains_key(&id) {
-                registry.register_record(&legacy)?;
-                self.save(&registry)?;
+        fs::create_dir_all(&self.identity_dir)?;
+        set_private_dir_mode(&self.identity_dir)?;
+        let mut changed = false;
+        for summary in runtime_identity::list_identities(&self.identity_dir)? {
+            let id = hex_encode(&summary.public_key);
+            let path = self.identity_dir.join(format!("{}.json", summary.id));
+            let profile = IdentityProfile {
+                id: id.clone(),
+                display_name: if summary.display_name.trim().is_empty() {
+                    format!("Identity {}", short_fingerprint(&id))
+                } else {
+                    summary.display_name.trim().to_string()
+                },
+                record_path: absolute_path(&path)?,
+                user_public_key: summary.public_key,
+            };
+            if registry.identities.get(&id) != Some(&profile) {
+                registry.identities.insert(id.clone(), profile);
+                changed = true;
             }
+            if summary.active && registry.default_identity.as_deref() != Some(id.as_str()) {
+                registry.default_identity = Some(id);
+                changed = true;
+            }
+        }
+        if registry.default_identity.is_none()
+            && let Some(id) = registry.identities.keys().next().cloned()
+        {
+            registry.default_identity = Some(id);
+            changed = true;
+        }
+        if changed {
+            self.save(&registry)?;
         }
         Ok(registry)
     }
@@ -286,17 +331,6 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
     Ok(profile)
 }
 
-fn read_valid_record(path: &Path) -> io::Result<IdentityRecord> {
-    let bytes = fs::read(path)?;
-    let record = IdentityRecord::from_json_bytes(&bytes)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-    record
-        .clone()
-        .into_threshold_identity()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-    Ok(record)
-}
-
 fn resolve_identity_dir() -> io::Result<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
         && !xdg.is_empty()
@@ -348,6 +382,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use threshold_identity::ThresholdIdentity;
+    use ui::widget::identity_flow::IdentityRecord;
 
     fn record(name: &str, seed: u8) -> IdentityRecord {
         let identity = ThresholdIdentity::from_single_device_seed(&[seed; 32]);
@@ -375,6 +410,8 @@ mod tests {
 
     fn write_record(path: &Path, record: &IdentityRecord) {
         fs::write(path, record.to_json_bytes().expect("encode")).expect("write");
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("private record");
     }
 
     #[test]

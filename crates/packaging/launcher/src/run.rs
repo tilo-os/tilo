@@ -4,7 +4,6 @@
 //! `pre_exec` installing Landlock (best-effort) and the seccomp fd; wait
 //! and relay the exit code.
 
-use std::io::Write;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -359,41 +358,6 @@ fn stop_identity_broker(control: Option<UnixStream>, thread: Option<std::thread:
     if let Some(thread) = thread {
         let _ = thread.join();
     }
-}
-
-/// Stage the non-secret portion of an identity record for an app sandbox.
-///
-/// Apps need stable attribution metadata, not the user's root signing seed.
-/// Authored operations are mediated by qOS services; handing every app the
-/// root would let one compromised package impersonate the user everywhere.
-fn stage_identity_projection(source: &Path) -> Result<tempfile::NamedTempFile, RunError> {
-    let bytes = std::fs::read(source)?;
-    let mut record: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let threshold = record
-        .get_mut("threshold_identity")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "identity record has no threshold_identity object",
-            )
-        })?;
-    threshold.insert("secret_bytes".to_string(), serde_json::json!([]));
-    record
-        .as_object_mut()
-        .expect("identity record with an object child is an object")
-        .insert(
-            "signing_available".to_string(),
-            serde_json::Value::Bool(false),
-        );
-    let mut projected = tempfile::NamedTempFile::new()?;
-    projected.write_all(
-        &serde_json::to_vec_pretty(&record)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-    )?;
-    projected.flush()?;
-    Ok(projected)
 }
 
 /// Derive GPU pinning, or `None` when nothing to pin. Every decline is
@@ -1702,52 +1666,6 @@ mod identity_resolution_tests {
         let resolved = resolve_identity_host_path(&opts);
         restore(saved.0, saved.1);
         assert_eq!(resolved, None);
-    }
-}
-
-#[cfg(test)]
-mod identity_projection_tests {
-    use super::*;
-
-    #[test]
-    fn app_projection_contains_identity_metadata_but_no_root_secret() {
-        let source = tempfile::NamedTempFile::new().expect("source");
-        let secret = vec![37_u8; 32];
-        std::fs::write(
-            source.path(),
-            serde_json::to_vec(&serde_json::json!({
-                "display_name": "Alice",
-                "avatar_color": [1, 2, 3],
-                "threshold_identity": {
-                    "single_device": true,
-                    "group_public_key": vec![9_u8; 32],
-                    "threshold": 1,
-                    "total_shares": 1,
-                    "share_index": 1,
-                    "secret_bytes": secret,
-                },
-                "schema_version": 1,
-            }))
-            .expect("encode"),
-        )
-        .expect("write");
-
-        let projection = stage_identity_projection(source.path()).expect("projection");
-        let projected: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(projection.path()).expect("read"))
-                .expect("decode");
-        assert_eq!(projected["display_name"], "Alice");
-        assert_eq!(
-            projected["threshold_identity"]["secret_bytes"],
-            serde_json::json!([])
-        );
-        assert_eq!(projected["signing_available"], false);
-        assert!(
-            !std::fs::read(projection.path())
-                .expect("bytes")
-                .windows(32)
-                .any(|window| window == [37_u8; 32])
-        );
     }
 }
 

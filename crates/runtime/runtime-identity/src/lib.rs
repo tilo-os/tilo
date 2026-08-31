@@ -46,7 +46,8 @@
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -780,6 +781,7 @@ pub struct SigningIdentity {
 enum SigningSource {
     Local(Option<SigningKey>),
     Broker(Mutex<std::os::unix::net::UnixStream>),
+    ActionBroker(Mutex<UnixStream>),
 }
 
 impl std::fmt::Debug for SigningIdentity {
@@ -862,6 +864,19 @@ impl SigningIdentity {
                  use qos-threshold-identity + the multi-device orchestrator instead",
             ))),
             SigningSource::Broker(stream) => broker::sign(stream, message),
+            SigningSource::ActionBroker(stream) => {
+                sign_via_action_broker(stream, "generic", message)
+            }
+        }
+    }
+
+    /// Ask the workspace identity broker to sign one named app action. The
+    /// shell binds the package and workspace before the app inherits this
+    /// connection, then evaluates the exact action capability.
+    pub fn sign_for(&self, action: &str, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
+        match &self.source {
+            SigningSource::ActionBroker(stream) => sign_via_action_broker(stream, action, message),
+            _ => self.sign(message),
         }
     }
 
@@ -873,6 +888,10 @@ impl SigningIdentity {
                 "threshold signing requires the multi-device orchestrator",
             )),
             SigningSource::Broker(_) => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "refusing to chain identity brokers",
+            )),
+            SigningSource::ActionBroker(_) => Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "refusing to chain identity brokers",
             )),
@@ -892,6 +911,8 @@ impl SigningIdentity {
             display_name,
             avatar_color,
             group_public_key,
+            signing_public_key: group_public_key,
+            device_certificate: None,
             threshold,
             total_shares,
             share_index,
@@ -907,6 +928,9 @@ impl SigningIdentity {
 /// `Err(NotAvailable::ConnectionFailed(_))` when the file is missing,
 /// unreadable, or malformed, and `Ok(SigningIdentity)` on success.
 pub fn load() -> Result<SigningIdentity, NotAvailable> {
+    if let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) {
+        return load_from_service(fd);
+    }
     if std::env::var_os(broker::BROKER_ENV_VAR).is_some() {
         return broker::connect_from_env();
     }
@@ -940,8 +964,8 @@ fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvail
             threshold,
             total_shares,
             share_index,
-            signing_key: None,
-            broker: Some(Mutex::new(stream)),
+            source: SigningSource::ActionBroker(Mutex::new(stream)),
+            single_device: threshold == 1 && total_shares == 1,
         }),
         wire::Response::Denied(reason) | wire::Response::Error(reason) => Err(
             NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::PermissionDenied, reason)),
@@ -949,6 +973,41 @@ fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvail
         _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
             io::ErrorKind::InvalidData,
             "identity broker returned an invalid metadata response",
+        ))),
+    }
+}
+
+fn sign_via_action_broker(
+    stream: &Mutex<UnixStream>,
+    action: &str,
+    message: &[u8],
+) -> Result<[u8; 64], NotAvailable> {
+    let mut stream = stream.lock().map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
+    })?;
+    write_frame(
+        &mut stream,
+        &wire::Request::Sign {
+            action: action.to_string(),
+            message: message.to_vec(),
+        },
+    )?;
+    match read_frame::<wire::Response>(&mut stream)? {
+        wire::Response::Signature(bytes) if bytes.len() == 64 => {
+            let mut signature = [0_u8; 64];
+            signature.copy_from_slice(&bytes);
+            Ok(signature)
+        }
+        wire::Response::Denied(reason) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            reason,
+        ))),
+        wire::Response::Error(reason) => {
+            Err(NotAvailable::ConnectionFailed(io::Error::other(reason)))
+        }
+        _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity broker returned an invalid signature response",
         ))),
     }
 }
@@ -1112,11 +1171,11 @@ fn identity_from_record(
     let ti = record.threshold_identity;
     let secret = external_secret.unwrap_or(&ti.secret_bytes);
 
-    if secret.len() != 32 {
+    if !secret.is_empty() && secret.len() != 32 {
         return Err(LoadFailure::SecretSizeMismatch { got: secret.len() }.into_not_available());
     }
 
-    let signing_key = if ti.single_device && !ti.secret_bytes.is_empty() {
+    let signing_key = if ti.single_device && !secret.is_empty() {
         let mut scalar = [0u8; 32];
         scalar.copy_from_slice(secret);
         // SigningKey::from_bytes is infallible today; if a future dalek revision
