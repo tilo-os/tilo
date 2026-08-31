@@ -31,6 +31,17 @@ const HEADER_H: f64 = 34.0;
 const FONT_SIZE: f32 = 13.0;
 const PAD_X: f64 = 8.0;
 
+/// Build a single-leaf taffy node. `new_leaf` only fails when the tree itself
+/// is corrupted, which cannot happen for a tree we just built in this same
+/// function — mirrors the established `TaffyTreeExt` convention used by `ui`.
+#[allow(
+    clippy::unwrap_used,
+    reason = "new_leaf cannot fail for a freshly-built tree; see doc comment"
+)]
+fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
+    taffy.new_leaf(style).unwrap()
+}
+
 /// Side-by-side diff panel.
 pub struct DiffView {
     model: DiffModel,
@@ -179,22 +190,25 @@ impl Widget for DiffView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
+        let node = leaf_node(
+            taffy,
+            Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
                 flex_grow: 1.0,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -243,104 +257,14 @@ impl Widget for DiffView {
             transform,
             &body_clip,
         );
-
-        let first_row = (self.scroll_y / ROW_H).floor() as usize;
-        let visible_rows = (self.body_height() / ROW_H).ceil() as usize + 2;
-        let last_row = (first_row + visible_rows).min(self.model.rows.len());
-
-        for ri in first_row..last_row {
-            let row = &self.model.rows[ri];
-            let y = body_top + ri as f64 * ROW_H - self.scroll_y;
-            let row_rect_l = Rect::new(left_col.x0, y, left_col.x1, y + ROW_H);
-            let row_rect_r = Rect::new(right_col.x0, y, right_col.x1, y + ROW_H);
-
-            // Left side tint.
-            if let Some(tint) = Self::row_tint(row.kind, row.left.is_some(), true, theme) {
-                scene.fill(Fill::NonZero, transform, tint, None, &row_rect_l);
-            }
-            // Right side tint.
-            if let Some(tint) = Self::row_tint(row.kind, row.right.is_some(), false, theme) {
-                scene.fill(Fill::NonZero, transform, tint, None, &row_rect_r);
-            }
-
-            // Active block highlight ring (left edge accent bar).
-            if row.block.is_some() && row.block == self.active_block {
-                let bar = Rect::new(r.x0, y, r.x0 + 3.0, y + ROW_H);
-                scene.fill(Fill::NonZero, transform, c.accent[5], None, &bar);
-            }
-
-            // Gutter numbers.
-            draw_gutter_number(scene, transform, tr, theme, left_col.x0, y, row.left_no);
-            draw_gutter_number(scene, transform, tr, theme, right_col.x0, y, row.right_no);
-
-            // Change glyph in the left gutter margin between number and text.
-            let glyph = match row.kind {
-                RowKind::Insert => Some(("+", c.semantic.success)),
-                RowKind::Delete => Some(("-", c.semantic.danger)),
-                RowKind::Modify => Some(("~", c.semantic.warning)),
-                RowKind::Equal => None,
-            };
-            if let Some((g, gc)) = glyph {
-                tr.draw_text(
-                    scene,
-                    g,
-                    FONT_SIZE,
-                    gc,
-                    transform * Affine::translate((right_col.x0 + 4.0, y + 2.0)),
-                    None,
-                );
-            }
-
-            // Line text, syntax-highlighted.
-            if let Some(text) = &row.left {
-                draw_code_line(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    left_col.x0 + GUTTER_W + PAD_X,
-                    y,
-                    text,
-                );
-            }
-            if let Some(text) = &row.right {
-                draw_code_line(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    right_col.x0 + GUTTER_W + PAD_X,
-                    y,
-                    text,
-                );
-            }
-        }
-
+        self.draw_visible_rows(scene, transform, tr, theme);
         scene.pop_layer();
 
         // --- Minimap on the right edge ---
         self.draw_minimap(scene, transform, theme);
 
         // --- Empty state ---
-        if self.model.rows.is_empty() {
-            tr.draw_text(
-                scene,
-                "No file loaded",
-                15.0,
-                c.text_dim,
-                transform * Affine::translate((r.x0 + 24.0, body_top + 24.0)),
-                None,
-            );
-        } else if self.model.is_identical() {
-            tr.draw_text(
-                scene,
-                "Files are identical",
-                14.0,
-                c.semantic.success,
-                transform * Affine::translate((r.x0 + 24.0, body_top + 8.0)),
-                None,
-            );
-        }
+        self.draw_empty_state(scene, transform, tr, theme, r, body_top);
         self.dirty = false;
     }
 
@@ -409,6 +333,141 @@ impl Widget for DiffView {
 }
 
 impl DiffView {
+    /// Column rects for the two source panes, excluding the minimap strip.
+    fn column_rects(&self) -> (Rect, Rect) {
+        let r = self.rect;
+        let mid_x = (r.x0 + r.x1 - MINIMAP_W) / 2.0;
+        (
+            Rect::new(r.x0, r.y0, mid_x, r.y1),
+            Rect::new(mid_x, r.y0, r.x1 - MINIMAP_W, r.y1),
+        )
+    }
+
+    /// Draw the scrolled window of visible rows into the already-clipped body
+    /// layer. `ri` is bounds-checked via `get` rather than indexed directly:
+    /// `last_row` is derived from `self.model.rows.len()` so it is always in
+    /// range today, but a future change to that arithmetic must degrade
+    /// (skip the row) rather than panic on a third-party diff's row count.
+    fn draw_visible_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let r = self.rect;
+        let (left_col, right_col) = self.column_rects();
+        let body_top = r.y0 + HEADER_H;
+
+        let first_row = (self.scroll_y / ROW_H).floor() as usize;
+        let visible_rows = (self.body_height() / ROW_H).ceil() as usize + 2;
+        let last_row = (first_row + visible_rows).min(self.model.rows.len());
+
+        for ri in first_row..last_row {
+            let Some(row) = self.model.rows.get(ri) else {
+                continue;
+            };
+            let y = body_top + ri as f64 * ROW_H - self.scroll_y;
+            let row_rect_l = Rect::new(left_col.x0, y, left_col.x1, y + ROW_H);
+            let row_rect_r = Rect::new(right_col.x0, y, right_col.x1, y + ROW_H);
+
+            // Left side tint.
+            if let Some(tint) = Self::row_tint(row.kind, row.left.is_some(), true, theme) {
+                scene.fill(Fill::NonZero, transform, tint, None, &row_rect_l);
+            }
+            // Right side tint.
+            if let Some(tint) = Self::row_tint(row.kind, row.right.is_some(), false, theme) {
+                scene.fill(Fill::NonZero, transform, tint, None, &row_rect_r);
+            }
+
+            // Active block highlight ring (left edge accent bar).
+            if row.block.is_some() && row.block == self.active_block {
+                let bar = Rect::new(r.x0, y, r.x0 + 3.0, y + ROW_H);
+                scene.fill(Fill::NonZero, transform, c.accent[5], None, &bar);
+            }
+
+            // Gutter numbers.
+            draw_gutter_number(scene, transform, tr, theme, left_col.x0, y, row.left_no);
+            draw_gutter_number(scene, transform, tr, theme, right_col.x0, y, row.right_no);
+
+            // Change glyph in the left gutter margin between number and text.
+            let glyph = match row.kind {
+                RowKind::Insert => Some(("+", c.semantic.success)),
+                RowKind::Delete => Some(("-", c.semantic.danger)),
+                RowKind::Modify => Some(("~", c.semantic.warning)),
+                RowKind::Equal => None,
+            };
+            if let Some((g, gc)) = glyph {
+                tr.draw_text(
+                    scene,
+                    g,
+                    FONT_SIZE,
+                    gc,
+                    transform * Affine::translate((right_col.x0 + 4.0, y + 2.0)),
+                    None,
+                );
+            }
+
+            // Line text, syntax-highlighted.
+            if let Some(text) = &row.left {
+                draw_code_line(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    left_col.x0 + GUTTER_W + PAD_X,
+                    y,
+                    text,
+                );
+            }
+            if let Some(text) = &row.right {
+                draw_code_line(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    right_col.x0 + GUTTER_W + PAD_X,
+                    y,
+                    text,
+                );
+            }
+        }
+    }
+
+    /// The "no file loaded" / "files are identical" placeholder, shown only
+    /// when there is nothing else in the body to look at.
+    fn draw_empty_state(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        body_top: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        if self.model.rows.is_empty() {
+            tr.draw_text(
+                scene,
+                "No file loaded",
+                15.0,
+                c.text_dim,
+                transform * Affine::translate((r.x0 + 24.0, body_top + 24.0)),
+                None,
+            );
+        } else if self.model.is_identical() {
+            tr.draw_text(
+                scene,
+                "Files are identical",
+                14.0,
+                c.semantic.success,
+                transform * Affine::translate((r.x0 + 24.0, body_top + 8.0)),
+                None,
+            );
+        }
+    }
+
     fn draw_minimap(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let c = &theme.tokens.colors;
         let r = self.rect;

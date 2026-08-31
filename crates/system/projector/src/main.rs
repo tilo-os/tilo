@@ -1140,6 +1140,14 @@ fn terminate_process_group(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// `(device, connected session, receiver-message channel)` — the result of
+/// [`connect_cast_device`].
+type CastConnection = (
+    Arc<dyn fcast_sender_sdk::device::CastingDevice>,
+    ConnectedSession,
+    mpsc::Receiver<String>,
+);
+
 /// Opens the receiver connection for a cast session and waits for the
 /// receiver's `Connected` event.
 ///
@@ -1152,14 +1160,7 @@ fn connect_cast_device(
     address: std::net::IpAddr,
     port: u16,
     name: String,
-) -> Result<
-    (
-        Arc<dyn fcast_sender_sdk::device::CastingDevice>,
-        ConnectedSession,
-        mpsc::Receiver<String>,
-    ),
-    String,
-> {
+) -> Result<CastConnection, String> {
     let context = fcast_sender_sdk::context::CastContext::new()
         .map_err(|error| format!("cannot initialise Cast session: {error}"))?;
     let info = DeviceInfo {
@@ -1720,7 +1721,7 @@ mod tests {
 
     fn write_fcast_packet(stream: &mut TcpStream, opcode: u8, body: &[u8]) {
         let body_len = u32::try_from(body.len()).unwrap_or(u32::MAX);
-        let size = body_len.checked_add(1).unwrap_or(u32::MAX);
+        let size = body_len.saturating_add(1);
         stream
             .write_all(&size.to_le_bytes())
             .expect("write FCast size");

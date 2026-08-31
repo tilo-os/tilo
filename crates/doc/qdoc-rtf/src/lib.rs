@@ -568,7 +568,7 @@ fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
             // #abc → #aabbcc
             let d = |i: usize| {
                 let c = u8::from_str_radix(h.get(i..=i)?, 16).ok()?;
-                Some(c.checked_mul(16)?.checked_add(c)?)
+                c.checked_mul(16)?.checked_add(c)
             };
             Some((d(0)?, d(1)?, d(2)?))
         }

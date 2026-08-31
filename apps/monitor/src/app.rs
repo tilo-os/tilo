@@ -833,11 +833,11 @@ impl MonitorApp {
     /// Apply the interval option the popover just yielded (drained via
     /// `take_selection`) to the prefs + CRDT.
     fn apply_interval_selection(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        if let Some(sel) = self.interval_popover.take_selection() {
-            if let Some(&ms) = INTERVAL_OPTIONS.get(sel) {
-                self.prefs.interval_ms = ms;
-                self.prefs.store(doc, path);
-            }
+        if let Some(sel) = self.interval_popover.take_selection()
+            && let Some(&ms) = INTERVAL_OPTIONS.get(sel)
+        {
+            self.prefs.interval_ms = ms;
+            self.prefs.store(doc, path);
         }
     }
 
@@ -2780,9 +2780,9 @@ impl MonitorApp {
         let c = &theme.tokens.colors;
         let bar = Rect::new(inner.x0, inner.y1 - DETAIL_ACTION_H, inner.x1, inner.y1);
         let content = Rect::new(inner.x0, inner.y0, inner.x1, bar.y0 - 12.0);
-        let y = self.draw_detail_header(scene, t, tr, theme, content, p);
+        let y = Self::draw_detail_header(scene, t, tr, theme, content, p);
         let y = self.draw_detail_sparkline(scene, t, tr, theme, content, p, y);
-        self.draw_detail_stat_grid(scene, t, tr, theme, content, p, y);
+        Self::draw_detail_stat_grid(scene, t, tr, theme, content, p, y);
 
         // Reserved action bar: hairline top, right-aligned Stop + Kill.
         scene.stroke(
@@ -2798,7 +2798,6 @@ impl MonitorApp {
     /// Name + identity + command header. Returns the y position for whatever
     /// draws next.
     fn draw_detail_header(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2869,6 +2868,7 @@ impl MonitorApp {
     /// whatever vertical slack remains above the stat grid so a tall pane
     /// fills top-to-bottom cleanly instead of leaving gaps. Returns the y
     /// position for the stat grid.
+    #[allow(clippy::too_many_arguments)]
     fn draw_detail_sparkline(
         &self,
         scene: &mut Scene,
@@ -2938,7 +2938,6 @@ impl MonitorApp {
     /// The two-column MEMORY/VIRTUAL/THREADS/OPEN FILES/STATUS/RUNNING FOR
     /// stat grid, starting at `y`.
     fn draw_detail_stat_grid(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -4349,6 +4348,7 @@ impl MonitorApp {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_page_scrollbar(
         &mut self,
         scene: &mut Scene,
@@ -4467,6 +4467,7 @@ impl MonitorApp {
         self.context.draw(scene, t, text_renderer, theme, presence);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn route_search(
         &mut self,
         event: &WindowEvent,

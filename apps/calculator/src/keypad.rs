@@ -396,12 +396,11 @@ impl CalcScreen {
             TextWeight::Regular,
         );
 
-        self.draw_display_expr_and_result(scene, t, tr, theme, model, display);
+        Self::draw_display_expr_and_result(scene, t, tr, theme, model, display);
     }
 
     /// The display panel's expression line and its result/preview line.
     fn draw_display_expr_and_result(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,

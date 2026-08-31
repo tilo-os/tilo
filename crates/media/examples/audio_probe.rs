@@ -62,6 +62,10 @@ fn dump() {
 /// Parse `args[i]` as `T`, or print a usage error and exit — this is a
 /// probe's CLI arg handling, not a library API, so "tell the operator and
 /// stop" is the right failure mode rather than propagating a `Result`.
+#[allow(
+    clippy::exit,
+    reason = "a CLI probe's argument parsing: printing a usage error and stopping immediately is the intended failure mode, not a Result a caller would ever handle"
+)]
 fn parse_arg<T: std::str::FromStr>(args: &[String], i: usize, name: &str) -> T
 where
     T::Err: std::fmt::Display,

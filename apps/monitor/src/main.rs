@@ -279,6 +279,11 @@ fn bench_actions() -> Vec<(&'static str, BenchAction)> {
     ]
 }
 
+/// [`BenchHarness::frame`]'s result: the drawn scene, the live taffy tree +
+/// root child node (to dispatch events into the just-laid-out tree), and
+/// per-pass microseconds `[sync, build, layout, apply, draw]`.
+type FramePass = (Scene, TaffyTree<()>, NodeId, [f64; 5]);
+
 /// Bundles the rig `--bench-interact` drives frames and events through, so
 /// each step's dependency on "the whole app" doesn't spill into a long
 /// parameter list on every helper.
@@ -314,9 +319,7 @@ impl BenchHarness {
     /// draw), mirroring `ui::App`. Returns the drawn scene, the live taffy
     /// tree + root child node (to dispatch events into the just-laid-out
     /// tree) and per-pass microseconds `[sync, build, layout, apply, draw]`.
-    fn frame(
-        &mut self,
-    ) -> Result<(Scene, TaffyTree<()>, NodeId, [f64; 5]), Box<dyn std::error::Error>> {
+    fn frame(&mut self) -> Result<FramePass, Box<dyn std::error::Error>> {
         let (w, h) = self.viewport;
         let us = |t: Instant| t.elapsed().as_secs_f64() * 1e6;
 
