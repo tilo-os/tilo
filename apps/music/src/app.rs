@@ -4726,7 +4726,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
         let first = live_search_top_result(&mut app);
-        let url = live_play_and_resolve_stream(&mut app, &mut doc, &first);
+        let _url = live_play_and_resolve_stream(&mut app, &mut doc, &first);
 
         // …and, when this build can actually reach a sound sink, prove the real
         // stream *renders* — decoded PCM buffers reach a real audio sink and the
@@ -4735,9 +4735,7 @@ mod tests {
         // (rangeable) source to a temp file with bounded reqwest ranges and plays
         // that.
         #[cfg(feature = "audio")]
-        live_audio_render_proof(&mut app, &url);
-        #[cfg(not(feature = "audio"))]
-        let _ = url;
+        live_audio_render_proof(&mut app);
     }
 
     /// Submit a real YouTube-Music search, pump the worker until real hits
@@ -4835,7 +4833,7 @@ mod tests {
         let url = loaded_url.expect("app resolved + loaded a rangeable audio URL");
         assert!(
             is_streamable(&url),
-            "resolved a rangeable, itag-bearing audio URL: {url}"
+            "resolved a rangeable, itag-bearing audio URL"
         );
         url
     }
@@ -4845,7 +4843,7 @@ mod tests {
     /// and the transport advances off the stream clock. Part of
     /// [`live_search_and_stream_resolve_through_the_app`].
     #[cfg(all(feature = "live", feature = "audio"))]
-    fn live_audio_render_proof(app: &mut MusicApp, url: &str) {
+    fn live_audio_render_proof(app: &mut MusicApp) {
         use std::time::Duration;
 
         if audio_server_present() && decode_plugins_present() {
@@ -4876,10 +4874,9 @@ mod tests {
                 "the playhead advanced with real playback"
             );
             eprintln!(
-                "[live audio] PLAYING: sink={:?} frames={frames} playhead={:.0}ms url={}",
+                "[live audio] PLAYING: sink={:?} frames={frames} playhead={:.0}ms",
                 app.audio.actual_audio_sink_name(),
-                app.playhead_ms,
-                url
+                app.playhead_ms
             );
 
             // …and it keeps *advancing*: sample the transport clock over the next
