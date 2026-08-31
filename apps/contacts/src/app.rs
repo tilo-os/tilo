@@ -26,6 +26,10 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
+use ui::portal::{
+    FileFilter, MultiChannel as ImportChannel, MultiOutcome as ImportOutcome, PickRequest,
+    PortalChannel as ExportChannel, PortalOutcome as ExportOutcome,
+};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -40,12 +44,36 @@ use crate::doc::ContactsDoc;
 use crate::model::{
     Address, Birthday, Contact, ContactId, ContactStore, Labeled, SortKey, sample_contacts,
 };
-use crate::portal::{self, ExportOutcome, ImportOutcome};
 use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
 
 /// Suggested file name for the export Save dialog.
 const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
+
+fn contacts_import_request() -> PickRequest {
+    PickRequest::open_multiple("Import contacts", "Import")
+        .thread_name("contacts-portal-import")
+        .filter(
+            FileFilter::new("vCard")
+                .mimetype("text/vcard")
+                .mimetype("text/x-vcard")
+                .mimetype("text/directory")
+                .glob("*.vcf")
+                .glob("*.vcard"),
+        )
+        .all_files()
+}
+
+fn contacts_export_request(current_name: &str) -> PickRequest {
+    PickRequest::save("Export contacts", "Export", current_name)
+        .thread_name("contacts-portal-export")
+        .filter(
+            FileFilter::new("vCard")
+                .mimetype("text/vcard")
+                .glob("*.vcf")
+                .glob("*.vcard"),
+        )
+}
 
 const TOOLBAR_H: f64 = 48.0;
 const ROW_H: f64 = 62.0;
@@ -461,9 +489,9 @@ pub struct ContactsApp {
 
     /// In-flight import file-chooser: the portal worker's receiver, drained
     /// once per frame. `Some` ⇒ the host's multi-select Open dialog is up.
-    import_rx: Option<portal::ImportChannel>,
+    import_rx: Option<ImportChannel>,
     /// In-flight export Save dialog: the portal worker's receiver.
-    export_rx: Option<portal::ExportChannel>,
+    export_rx: Option<ExportChannel>,
     /// The contacts + vCard version parked while the export Save dialog is up,
     /// written to the chosen destination when the portal returns a path.
     pending_export: Option<(Vec<ContactId>, VCardVersion)>,
@@ -901,7 +929,7 @@ impl ContactsApp {
         if self.import_rx.is_some() {
             return;
         }
-        self.import_rx = Some(portal::request_import());
+        self.import_rx = Some(contacts_import_request().send_multiple());
     }
 
     /// Read, parse, and merge every vCard file in `paths` into the address
@@ -1039,7 +1067,7 @@ impl ContactsApp {
             return false;
         }
         self.pending_export = Some((ids, version));
-        self.export_rx = Some(portal::request_export(EXPORT_FILE_NAME));
+        self.export_rx = Some(contacts_export_request(EXPORT_FILE_NAME).send());
         true
     }
 
@@ -7120,7 +7148,7 @@ mod tests {
 
         // Deliver the destination the Save portal would return, then drain it
         // through one real frame's sync — which writes the file.
-        h.app.export_rx = Some(portal::inject_export_for_test(ExportOutcome::Opened(
+        h.app.export_rx = Some(ui::portal::inject_for_test(ExportOutcome::Opened(
             vcf.clone(),
         )));
         h.app.sync(&mut h.doc, &ROOT);
@@ -7537,7 +7565,7 @@ mod tests {
 
         // Install the outcome the portal worker would deliver, then run one
         // real frame's sync — which drains it.
-        app.import_rx = Some(portal::inject_import_for_test(ImportOutcome::Selected(
+        app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Selected(
             vec![vcf],
         )));
         assert!(
@@ -7569,7 +7597,7 @@ mod tests {
         // Empty selection.
         assert_eq!(app.import_paths(&mut doc, &[]), 0);
         // A cancelled picker drained through the real path.
-        app.import_rx = Some(portal::inject_import_for_test(ImportOutcome::Cancelled));
+        app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Cancelled));
         app.sync(&mut doc, &ROOT);
 
         assert!(app.store.is_empty(), "import of nothing adds nothing");
