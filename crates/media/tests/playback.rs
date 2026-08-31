@@ -34,13 +34,15 @@ mod real {
     /// Pump for `dur`, returning every distinct frame timestamp seen.
     fn pump(e: &mut MediaEngine, dur: Duration) -> Vec<u64> {
         let mut seen: Vec<u64> = Vec::new();
-        let deadline = Instant::now() + dur;
-        while Instant::now() < deadline {
+        // `Instant + Duration` panics on overflow; `None` means no deadline is
+        // representable, which for a pump loop is "keep pumping".
+        let deadline = Instant::now().checked_add(dur);
+        while deadline.is_none_or(|d| Instant::now() < d) {
             e.poll();
-            if let Some(f) = e.latest() {
-                if seen.last() != Some(&f.pts_ms) {
-                    seen.push(f.pts_ms);
-                }
+            if let Some(f) = e.latest()
+                && seen.last() != Some(&f.pts_ms)
+            {
+                seen.push(f.pts_ms);
             }
             std::thread::sleep(Duration::from_millis(4));
         }
@@ -95,7 +97,7 @@ mod real {
 
         let wall_start = Instant::now();
         pump(&mut e, Duration::from_millis(1_000));
-        let elapsed = wall_start.elapsed().as_millis() as u64;
+        let elapsed = u64::try_from(wall_start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let advanced = e.position_ms().saturating_sub(before);
         e.pause();
 
@@ -145,6 +147,10 @@ mod real {
 
     #[test]
     fn the_audio_chain_exists_and_its_gain_is_controllable() {
+        // `prelude` brings `name()` in; the re-export is what lets a consumer
+        // use the returned element at all without its own gstreamer dep.
+        use media::gst::prelude::*;
+
         // The editor needs a place to attach per-source gain and monitoring.
         // Volume moves a dedicated `volume` element rather than playbin's own
         // property, so changing it does not re-negotiate the stream.
@@ -152,15 +158,16 @@ mod real {
         let sink = e
             .audio_sink()
             .expect("a real audio sink must be built, not a fakesink");
-        // `prelude` brings `name()` in; the re-export is what lets a consumer
-        // use the returned element at all without its own gstreamer dep.
-        use media::gst::prelude::*;
         println!("audio sink: {}", sink.name());
 
         e.set_volume(0.25);
         assert!((e.volume() - 0.25).abs() < 1e-6);
         e.set_volume(2.0);
-        assert_eq!(e.volume(), 1.0, "volume is clamped to the valid range");
+        assert!(
+            (e.volume() - 1.0).abs() < 1e-6,
+            "volume is clamped to the valid range, got {}",
+            e.volume()
+        );
 
         // Muting must not destroy the level it silences.
         e.set_volume(0.6);

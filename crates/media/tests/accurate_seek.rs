@@ -53,14 +53,14 @@ mod real {
         println!("decoder: {}", e.hw_report().describe());
 
         let expected = MID_GOP_MS + base;
-        let delta = frame.pts_ms as i64 - expected as i64;
+        let delta = Drift::between(frame.pts_ms, expected);
         println!(
             "requested {MID_GOP_MS}ms (stream base {base}ms → expect {expected}ms), \
              got pts {}ms, delta {delta}ms",
             frame.pts_ms
         );
         assert!(
-            delta.unsigned_abs() <= FRAME_MS,
+            delta.ms <= FRAME_MS,
             "an accurate seek to {MID_GOP_MS}ms returned the picture at {}ms, \
              {delta}ms from the expected {expected}ms — more than one {FRAME_MS}ms \
              frame. Decoder: {}",
@@ -93,17 +93,17 @@ mod real {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             coarse.poll();
-            if let Some(f) = coarse.latest() {
-                if f.pts_ms != base {
-                    landed = Some(f.pts_ms);
-                    break;
-                }
+            if let Some(f) = coarse.latest()
+                && f.pts_ms != base
+            {
+                landed = Some(f.pts_ms);
+                break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let keyframe_pts = landed.expect("the keyframe seek produced no new picture within 10s");
         let expected = MID_GOP_MS + base;
-        let keyframe_err = (keyframe_pts as i64 - expected as i64).abs();
+        let keyframe_err = Drift::between(keyframe_pts, expected).ms;
         println!(
             "keyframe seek to {MID_GOP_MS}ms landed at {keyframe_pts}ms ({keyframe_err}ms off)"
         );
@@ -111,18 +111,18 @@ mod real {
         // The accurate path on the same request.
         let mut exact = engine();
         let f = decode_frame_at(&mut exact, MID_GOP_MS, "accurate comparison");
-        let exact_err = (f.pts_ms as i64 - expected as i64).abs();
+        let exact_err = Drift::between(f.pts_ms, expected).ms;
         println!(
             "accurate seek to {MID_GOP_MS}ms landed at {}ms ({exact_err}ms off)",
             f.pts_ms
         );
 
         assert!(
-            exact_err <= FRAME_MS as i64,
+            exact_err <= FRAME_MS,
             "the accurate seek should be within a frame, was {exact_err}ms off"
         );
         assert!(
-            keyframe_err > FRAME_MS as i64 * 10,
+            keyframe_err > FRAME_MS * 10,
             "the keyframe seek landed {keyframe_err}ms away — close enough that this \
              comparison proves nothing. With an {FIXTURE_GOP_MS}ms GOP it should be \
              seconds off; check the fixture still has the expected keyframe spacing."
@@ -166,7 +166,7 @@ mod real {
             .expect("RGBA acceptance yields a paintable buffer");
         assert_eq!(pa.len(), pb.len());
         let differing = pa.iter().zip(pb.iter()).filter(|(x, y)| x != y).count();
-        let pct = differing as f64 / pa.len() as f64 * 100.0;
+        let pct = percent_of(differing, pa.len());
         println!(
             "500ms apart: {differing} of {} bytes differ ({pct:.3}%)",
             pa.len()
@@ -182,7 +182,7 @@ mod real {
         let far = decode_frame_at(&mut e, MID_GOP_MS + 2_000, "frame C");
         let pc = far.to_rgba().expect("paintable");
         let far_diff = pa.iter().zip(pc.iter()).filter(|(x, y)| x != y).count();
-        let far_pct = far_diff as f64 / pa.len() as f64 * 100.0;
+        let far_pct = percent_of(far_diff, pa.len());
         println!(
             "2s apart: {far_diff} of {} bytes differ ({far_pct:.3}%)",
             pa.len()
@@ -205,9 +205,9 @@ mod real {
         // Forward past the keyframe at 16.667s, then back across it.
         let _ = decode_frame_at(&mut e, 20_000, "forward");
         let back = decode_frame_at(&mut e, MID_GOP_MS, "backward across the keyframe");
-        let delta = back.pts_ms as i64 - (MID_GOP_MS + base) as i64;
+        let delta = Drift::between(back.pts_ms, MID_GOP_MS + base);
         assert!(
-            delta.unsigned_abs() <= FRAME_MS,
+            delta.ms <= FRAME_MS,
             "seeking back to {MID_GOP_MS}ms landed at {}ms ({delta}ms off)",
             back.pts_ms
         );
@@ -220,10 +220,10 @@ mod real {
         let mut e = engine();
         let a = decode_frame_at(&mut e, MID_GOP_MS, "step from");
         let b = decode_frame_at(&mut e, MID_GOP_MS + FRAME_MS + 1, "step to");
-        let step = b.pts_ms as i64 - a.pts_ms as i64;
+        let step = Drift::between(b.pts_ms, a.pts_ms);
         println!("one-frame step: {}ms → {}ms ({step}ms)", a.pts_ms, b.pts_ms);
         assert!(
-            step > 0 && step <= FRAME_MS as i64 * 2,
+            !step.early && step.ms > 0 && step.ms <= FRAME_MS * 2,
             "a one-frame step moved {step}ms; it must advance by about one \
              {FRAME_MS}ms frame, not stand still and not jump"
         );
