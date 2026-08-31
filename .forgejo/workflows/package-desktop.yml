@@ -38,18 +38,31 @@ env:
 jobs:
   validate:
     runs-on: runner
+    outputs:
+      diagnostic: ${{ steps.preflight.outputs.diagnostic }}
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Validate packaging inputs before allocating native builders
+        id: preflight
+        shell: bash
         run: |
-          set -euo pipefail
-          bash -n dist/*.sh dist/*/*.sh
-          test "$(<dist/VERSION)" = "$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)"
-          grep -Fxq "%{!?qos_version:%global qos_version $(<dist/VERSION)}" dist/rpm/qos-session.spec
-          dist/session/tests/dev-session-refusals.sh
-          os/tests/portal_config_validity.sh
+          set -uo pipefail
+          diagnostic=success
+          if ! bash -n dist/*.sh dist/*/*.sh; then
+            diagnostic=bash-syntax
+          elif ! test "$(<dist/VERSION)" = "$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)"; then
+            diagnostic=arch-version-drift
+          elif ! grep -Fxq "%{!?qos_version:%global qos_version $(<dist/VERSION)}" dist/rpm/qos-session.spec; then
+            diagnostic=rpm-version-drift
+          elif ! dist/session/tests/dev-session-refusals.sh; then
+            diagnostic=dev-session-contract
+          elif ! os/tests/portal_config_validity.sh; then
+            diagnostic=portal-contract
+          fi
+          echo "diagnostic=$diagnostic" >> "$GITHUB_OUTPUT"
+          [[ $diagnostic == success ]]
 
   package:
     needs: validate
@@ -143,6 +156,7 @@ jobs:
       contents: write
     env:
       VALIDATE_RESULT: ${{ needs.validate.result }}
+      VALIDATE_DIAGNOSTIC: ${{ needs.validate.outputs.diagnostic }}
       PACKAGE_RESULT: ${{ needs.package.result }}
     steps:
       - uses: actions/checkout@v4
@@ -155,7 +169,7 @@ jobs:
           git config user.email 'qos@noreply.code.podesta.ai'
           git fetch origin refs/notes/qos-package-ci:refs/notes/qos-package-ci || true
           git notes --ref=qos-package-ci add -f \
-            -m "validate=$VALIDATE_RESULT package=$PACKAGE_RESULT run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
+            -m "validate=$VALIDATE_RESULT diagnostic=$VALIDATE_DIAGNOSTIC package=$PACKAGE_RESULT run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
             "$GITHUB_SHA"
           git push origin refs/notes/qos-package-ci
 
