@@ -8,10 +8,10 @@
 //! Answers the `runtime-collab` schema on the shell's collaboration socket.
 //!
 //! `join_channel` uses the caller's `channel_id` verbatim as the routing
-//! key. `sendUnsigned*` skip role enforcement —
-//! use `send` with a signed op for that. `fetchScrollback*` answer from
-//! the in-memory op log; an exhausted-but-empty batch triggers no
-//! fallback push, callers repeat the fetch instead.
+//! key. `sendUnsigned*` skip role enforcement — use `send` with a signed op
+//! for that. `fetchScrollbackFor` answers from the in-memory op log; an
+//! exhausted-but-empty batch triggers no fallback push, callers repeat the
+//! fetch instead.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,8 +31,8 @@ use collab_types::{
     ArtifactId, OpClass, RedactedMarker, SignedOp, ValidationError, validate_inbound_op,
 };
 use runtime_collab::raw::{
-    OpKind, channel_handle, collab_service, context_stream, cursor_stream, presence_event,
-    presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
+    OpKind, channel_handle, collab_service, context_stream, presence_event, presence_handle,
+    presence_payload, presence_stream, scrollback_batch, stream,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -62,14 +62,6 @@ struct PresenceEnvelope {
     payload: PresencePayload,
 }
 
-/// Envelope pushed onto a [`CursorStreamServer`]'s queue.
-#[derive(Clone, Debug)]
-struct CursorEnvelope {
-    user_id: String,
-    x: f32,
-    y: f32,
-}
-
 /// Envelope pushed onto a [`ContextStreamServer`]'s queue.
 #[derive(Clone, Debug)]
 struct ContextEnvelope {
@@ -88,10 +80,6 @@ struct PresenceSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<PresenceEnvelope>,
 }
-struct CursorSub {
-    peer_id: u64,
-    tx: mpsc::UnboundedSender<CursorEnvelope>,
-}
 struct ContextSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<ContextEnvelope>,
@@ -105,7 +93,6 @@ struct ContextSub {
 struct ChannelSubscribers {
     op: Vec<OpSub>,
     presence: Vec<PresenceSub>,
-    cursor: Vec<CursorSub>,
     context: Vec<ContextSub>,
 }
 
@@ -283,9 +270,8 @@ impl CapnpBrokerState {
         }
     }
 
-    /// One arm of [`Self::fanout_to_route`]: a keyless cursor move, which
-    /// fans out onto both the general presence stream and the cursor-only
-    /// stream.
+    /// One arm of [`Self::fanout_to_route`]: a keyless cursor move, translated
+    /// onto the sole general presence stream.
     fn fanout_cursor_moved<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
@@ -299,23 +285,12 @@ impl CapnpBrokerState {
             key_bytes,
             payload: PresencePayload::Pointer { x, y },
         };
-        let cursor_env = CursorEnvelope {
-            user_id: user_id.to_owned(),
-            x,
-            y,
-        };
         for subs in channels {
             subs.presence.retain(|s| {
                 if s.peer_id == except {
                     return true;
                 }
                 s.tx.send(presence_env.clone()).is_ok()
-            });
-            subs.cursor.retain(|s| {
-                if s.peer_id == except {
-                    return true;
-                }
-                s.tx.send(cursor_env.clone()).is_ok()
             });
         }
     }
@@ -402,21 +377,6 @@ impl CapnpBrokerState {
                 .or_insert_with(ChannelSubscribers::default)
                 .presence
                 .push(PresenceSub { peer_id, tx });
-        }
-        rx
-    }
-
-    fn subscribe_cursors(
-        &self,
-        channel_id: &str,
-        peer_id: u64,
-    ) -> mpsc::UnboundedReceiver<CursorEnvelope> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        if let Ok(mut m) = self.channels.lock() {
-            m.entry(channel_id.to_owned())
-                .or_insert_with(ChannelSubscribers::default)
-                .cursor
-                .push(CursorSub { peer_id, tx });
         }
         rx
     }
@@ -622,25 +582,6 @@ impl channel_handle::Server for CapnpChannelHandle {
         let client: context_stream::Client = capnp_rpc::new_client(server);
         results.get().set_stream(client);
         Promise::ok(())
-    }
-
-    fn fetch_scrollback(
-        self: Rc<Self>,
-        params: channel_handle::FetchScrollbackParams,
-        mut results: channel_handle::FetchScrollbackResults,
-    ) -> Promise<(), capnp::Error> {
-        // Schema v1 method: no artifact id, so nil-uuid stands in.
-        let broker_channels = self.state.broker_channels.clone();
-        Promise::from_future(async move {
-            let p = params.get()?;
-            let before_seq = p.get_before_seq();
-            let max = p.get_max();
-            let artifact = ArtifactId(uuid::Uuid::nil());
-            let (ops, exhausted) = read_scrollback(&broker_channels, artifact, before_seq, max);
-            let batch = results.get().init_batch();
-            fill_scrollback_batch(batch, &ops, exhausted)?;
-            Ok(())
-        })
     }
 
     fn fetch_scrollback_for(
@@ -859,20 +800,6 @@ impl presence_handle::Server for CapnpPresenceHandle {
             }
             Ok(())
         })
-    }
-
-    fn subscribe_remote_cursors(
-        self: Rc<Self>,
-        _params: presence_handle::SubscribeRemoteCursorsParams,
-        mut results: presence_handle::SubscribeRemoteCursorsResults,
-    ) -> Promise<(), capnp::Error> {
-        let rx = self.state.subscribe_cursors(&self.channel_id, self.peer_id);
-        let server = CursorStreamServer {
-            rx: Rc::new(AsyncMutex::new(rx)),
-        };
-        let client: cursor_stream::Client = capnp_rpc::new_client(server);
-        results.get().set_stream(client);
-        Promise::ok(())
     }
 
     fn publish_caret(
@@ -1117,34 +1044,6 @@ impl presence_stream::Server for PresenceStreamServer {
                 PresencePayload::Arrived => payload.set_arrived(()),
                 PresencePayload::Left => payload.set_left(()),
             }
-            Ok(())
-        })
-    }
-}
-
-struct CursorStreamServer {
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<CursorEnvelope>>>,
-}
-
-impl cursor_stream::Server for CursorStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: cursor_stream::ReadParams,
-        mut results: cursor_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
-        Promise::from_future(async move {
-            let mut guard = rx.lock().await;
-            let Some(env) = guard.recv().await else {
-                return Err(capnp::Error::disconnected(
-                    "cursor stream fanout closed".into(),
-                ));
-            };
-            drop(guard);
-            let mut r = results.get();
-            r.set_user_id(&env.user_id);
-            r.set_x(env.x);
-            r.set_y(env.y);
             Ok(())
         })
     }

@@ -63,7 +63,6 @@ pub use collab_capnp::action_stream::Client as ActionStreamClient;
 pub use collab_capnp::blob_stream::Client as BlobStreamClient;
 pub use collab_capnp::collab_service::Client as CollabServiceClient;
 pub use collab_capnp::context_stream::Client as ContextStreamClient;
-pub use collab_capnp::cursor_stream::Client as CursorStreamClient;
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
@@ -487,43 +486,6 @@ impl ChannelHandle {
         Ok(())
     }
 
-    /// Fetch a page of previously-validated signed ops with `seq <
-    /// before_seq`. See [`ScrollbackBatch`] for the response shape.
-    ///
-    /// LEGACY — doesn't carry an artifact id (the broker keys the read on
-    /// `ArtifactId::default()`). Prefer [`Self::fetch_scrollback_for`] when
-    /// a specific artifact is available.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn fetch_scrollback(
-        &self,
-        before_seq: u64,
-        max: u32,
-    ) -> Result<ScrollbackBatch, NotAvailable> {
-        let mut req = self.inner.fetch_scrollback_request();
-        {
-            let mut b = req.get();
-            b.set_before_seq(before_seq);
-            b.set_max(max);
-        }
-        let reply = req.send().promise.await?;
-        let batch = reply.get()?.get_batch()?;
-        let ops_reader = batch.get_ops()?;
-        let mut ops = Vec::with_capacity(ops_reader.len() as usize);
-        for i in 0..ops_reader.len() {
-            ops.push(ops_reader.get(i)?.to_vec());
-        }
-        Ok(ScrollbackBatch {
-            ops,
-            earliest_seq: batch.get_earliest_seq(),
-            latest_seq: batch.get_latest_seq(),
-            done: batch.get_done(),
-        })
-    }
-
     /// Fetch a page of previously-validated signed ops on a specific
     /// artifact. `artifact_id` is the 16-byte little-endian encoding
     /// of the artifact uuid used by `collab-types`.
@@ -936,23 +898,6 @@ impl PresenceHandle {
         Ok(())
     }
 
-    /// LEGACY — subscribe to only remote-cursor updates. Kept so
-    /// clients built against schema v1 keep compiling; new code
-    /// uses [`Self::subscribe_all`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn subscribe_remote_cursors(&self) -> Result<CursorStream, NotAvailable> {
-        let req = self.inner.subscribe_remote_cursors_request();
-        let reply = req.send().promise.await?;
-        let stream = reply.get()?.get_stream()?;
-        Ok(CursorStream {
-            inner: Rc::new(stream),
-        })
-    }
-
     /// Subscribe to every kind of remote presence update in one
     /// stream. Each event carries the full [`PresencePayload`]
     /// union; clients discriminate on payload variant.
@@ -967,45 +912,6 @@ impl PresenceHandle {
         let stream = reply.get()?.get_stream()?;
         Ok(PresenceStream {
             inner: Rc::new(stream),
-        })
-    }
-}
-
-/// A single remote-cursor update.
-#[derive(Debug, Clone)]
-pub struct CursorUpdate {
-    pub user_id: String,
-    pub x: f32,
-    pub y: f32,
-}
-
-/// Client-pulled remote-cursor stream.
-#[derive(Clone)]
-pub struct CursorStream {
-    inner: Rc<CursorStreamClient>,
-}
-
-impl CursorStream {
-    /// Pull the next remote-cursor update.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or the reply carries a `user_id` that isn't
-    /// valid UTF-8.
-    pub async fn read(&self) -> Result<CursorUpdate, NotAvailable> {
-        let req = self.inner.read_request();
-        let reply = req.send().promise.await?;
-        let r = reply.get()?;
-        let user_id = r
-            .get_user_id()?
-            .to_str()
-            .map_err(|e| capnp::Error::failed(format!("invalid utf8 user_id: {e}")))?
-            .to_owned();
-        Ok(CursorUpdate {
-            user_id,
-            x: r.get_x(),
-            y: r.get_y(),
         })
     }
 }
@@ -1195,7 +1101,7 @@ impl ContextStream {
 }
 
 /// A page of previously-validated signed ops returned by
-/// [`ChannelHandle::fetch_scrollback`].
+/// [`ChannelHandle::fetch_scrollback_for`].
 #[derive(Debug, Clone)]
 pub struct ScrollbackBatch {
     /// Postcard-encoded `SignedOp` blobs in ascending `seq` order.
