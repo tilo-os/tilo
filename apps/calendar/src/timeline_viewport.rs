@@ -72,9 +72,20 @@ impl TimelineViewport {
     }
 
     pub fn column_at(area: Rect, days_len: usize, geom: TimelineGeom, x: f64) -> usize {
+        // An empty range has no column to land on, and `clamp(0, -1)` is a
+        // panic — `min` above `max` — not a saturating no-op. Callers read the
+        // result through `.get()`, so 0 resolves to `None` for them.
+        let Some(last) = days_len.checked_sub(1) else {
+            return 0;
+        };
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, days_len, geom);
-        (((x - grid_x0) / col_w).floor() as i64).clamp(0, days_len as i64 - 1) as usize
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "column_width floors at 1.0, so the quotient is bounded by the grid width"
+        )]
+        let col = ((x - grid_x0) / col_w).floor() as i64;
+        usize::try_from(col.clamp(0, last as i64)).unwrap_or(0)
     }
 
     pub fn minute_at(&self, geom: TimelineGeom, y: f64) -> i64 {
