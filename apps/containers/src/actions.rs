@@ -224,10 +224,10 @@ mod tests {
     fn create_draft_is_native_text_and_replicates_byte_identically() {
         let mut app = ContainersApp::new(false);
         let mut doc = AutoCommit::new();
-        // Open the create modal on the Name field (index 0) — a plain text field,
+        // Open the create modal on the Name field — a plain text field,
         // not the image combobox — so a keystroke lands straight on the text path.
         app.create_open = true;
-        app.create_focus = CreateField::Name.index();
+        app.create_focus = CreateField::Name;
 
         // A base both replicas share, with the create draft materialised.
         let before = ViewDoc::create_field(&mut doc, CreateField::Name);
