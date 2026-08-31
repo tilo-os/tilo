@@ -178,12 +178,17 @@ pub fn area(scene: &mut Scene, t: Affine, pts: &[Point], baseline_y: f64, color:
     if pts.len() < 2 {
         return;
     }
+    // `first`/`last` are only `None` for an empty slice, already ruled out
+    // by the length check above.
+    let (Some(first), Some(last)) = (pts.first(), pts.last()) else {
+        return;
+    };
     let mut path = BezPath::new();
-    path.push(PathEl::MoveTo(Point::new(pts[0].x, baseline_y)));
+    path.push(PathEl::MoveTo(Point::new(first.x, baseline_y)));
     for p in pts {
         path.push(PathEl::LineTo(*p));
     }
-    path.push(PathEl::LineTo(Point::new(pts[pts.len() - 1].x, baseline_y)));
+    path.push(PathEl::LineTo(Point::new(last.x, baseline_y)));
     path.push(PathEl::ClosePath);
     scene.fill(Fill::NonZero, t, color, None, &path);
 }
@@ -193,9 +198,14 @@ pub fn polyline(scene: &mut Scene, t: Affine, pts: &[Point], color: Color, width
     if pts.len() < 2 {
         return;
     }
+    // `split_first` is only `None` for an empty slice, already ruled out by
+    // the length check above.
+    let Some((first, rest)) = pts.split_first() else {
+        return;
+    };
     let mut path = BezPath::new();
-    path.push(PathEl::MoveTo(pts[0]));
-    for p in &pts[1..] {
+    path.push(PathEl::MoveTo(*first));
+    for p in rest {
         path.push(PathEl::LineTo(*p));
     }
     scene.stroke(&Stroke::new(width), t, color, None, &path);
