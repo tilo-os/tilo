@@ -131,6 +131,10 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
         let resources = provide_resources(&VideoResourceCtx {
             project,
             playhead: 10.0,
+            // No mixer has run in this process — nothing here has played a
+            // frame — so the meter is at rest, which is what the driver of a
+            // windowless editor would see.
+            mix: video_editor::audio::MixSnapshot::default(),
         });
 
         // Surveyed, not guessed. Asserting the address is offered *before*
