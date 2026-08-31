@@ -50,6 +50,7 @@ use ui::widget::{TextInput, Widget};
 
 use crate::customize::CustomizePanel;
 use crate::doc::ImagerDoc;
+use crate::export_dialog::ExportDialog;
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, QosRelease, Source, SourceKind, Step, TargetDrive,
     TargetKind, fmt_eta, fmt_rate, fmt_size,
@@ -128,7 +129,10 @@ pub struct ImagerApp {
     /// never be selected without this — the guard against picking it by
     /// accident. Reset whenever the drive inventory changes.
     system_ack: bool,
-    export_text: Option<String>,
+    export_dialog: ExportDialog,
+    /// Stages the read-only export modal after the demo document has synced.
+    /// Used only by the deterministic `export` screenshot scenario.
+    export_after_sync: bool,
     // ---- render caches ----
     seeded: bool,
     rect: Rect,
@@ -177,7 +181,8 @@ impl ImagerApp {
             portal_rx: None,
             show_internal: false,
             system_ack: false,
-            export_text: None,
+            export_dialog: ExportDialog::new(),
+            export_after_sync: false,
             seeded: false,
             rect: Rect::ZERO,
             dirty: true,
@@ -2883,11 +2888,15 @@ impl ImagerApp {
     }
 
     fn export_config(&mut self, _state: &mut AutoCommit) {
-        self.export_text = Some(
-            self.profile
-                .to_headless_config(self.source.as_ref(), self.target()),
-        );
+        let text = self
+            .profile
+            .to_headless_config(self.source.as_ref(), self.target());
+        self.export_dialog.show(text);
         self.dirty = true;
+    }
+
+    pub(crate) fn seed_export_for_shot(&mut self) {
+        self.export_after_sync = true;
     }
 
     fn do_rescan(&mut self, state: &mut AutoCommit) {
@@ -3023,6 +3032,10 @@ impl Widget for ImagerApp {
         // (each unfocused field mirrors the stored value; a focused one stays
         // the source of truth).
         self.customize.sync(&self.profile);
+        if self.export_after_sync {
+            self.export_after_sync = false;
+            self.export_config(state);
+        }
         self.dirty = true;
     }
 
@@ -3103,8 +3116,10 @@ impl Widget for ImagerApp {
         }
         self.draw_footer(scene, tr, theme, transform, &lay);
 
-        if let Some(text) = self.export_text.clone() {
-            self.draw_export(scene, tr, theme, transform, &text);
+        if self.export_dialog.is_open() {
+            self.export_dialog.layout_in(self.rect, theme, tr);
+            self.export_dialog
+                .draw_detached(scene, transform, tr, theme, presence);
         }
     }
 
@@ -3124,9 +3139,20 @@ impl Widget for ImagerApp {
 
         let lay = self.compute_layout();
 
+        // The detached shared modal owns capture and dismissal before any
+        // wizard field or shortcut sees the event.
+        if self
+            .export_dialog
+            .handle_detached(event, scale_factor, *modifiers, state, path)
+        {
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+
         // Destructive consent is peer-local and goes through the toolkit's
         // real editor before any wizard shortcut sees the event.
-        if self.step == Step::Confirm && self.export_text.is_none() {
+        if self.step == Step::Confirm && !self.export_dialog.is_open() {
             let mut input_handled = false;
             let mut focus_target = None;
             self.confirm_input.handle_event(
@@ -3230,6 +3256,10 @@ impl Widget for ImagerApp {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.export_dialog.accessibility()
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -3273,7 +3303,7 @@ impl ImagerApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
-        if !(self.step == Step::Customize && self.customizable() && self.export_text.is_none()) {
+        if !(self.step == Step::Customize && self.customizable() && !self.export_dialog.is_open()) {
             return false;
         }
         let removable = self.target().is_some_and(|d| d.removable);
@@ -3310,17 +3340,10 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    /// A left click in the content area: dismiss the export dialog, dispatch
-    /// a hit-tested affordance, or (on empty space) drop the confirm field's
-    /// focus.
+    /// A left click in the content area dispatches a hit-tested affordance or,
+    /// on empty space, drops the confirm field's focus.
     fn handle_left_click(&mut self, state: &mut AutoCommit, lay: &Layout, handled: &mut bool) {
         let p = self.last_mouse;
-        if self.export_text.is_some() {
-            self.export_text = None;
-            *handled = true;
-            self.dirty = true;
-            return;
-        }
         let hit = lay
             .hits
             .iter()
@@ -3335,8 +3358,8 @@ impl ImagerApp {
         self.confirm_input.set_focus(false);
     }
 
-    /// Keyboard handling: export-dialog dismissal, the Confirm step's typed
-    /// device-name field, and global shortcuts.
+    /// Keyboard handling for the Confirm step's typed device-name field and
+    /// global shortcuts. The export dialog captures input before this path.
     fn handle_key_pressed(
         &mut self,
         logical_key: &winit::keyboard::Key,
@@ -3345,14 +3368,6 @@ impl ImagerApp {
     ) {
         use winit::keyboard::{Key, NamedKey};
 
-        if self.export_text.is_some() {
-            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                self.export_text = None;
-                *handled = true;
-                self.dirty = true;
-            }
-            return;
-        }
         // The Confirm step's typed device-name field (a transient arming
         // gesture, not a profile edit).
         if self.confirm_input.is_focused() && self.step == Step::Confirm {
@@ -3389,90 +3404,6 @@ impl ImagerApp {
             }
             _ => {}
         }
-    }
-}
-
-// ---- overlay: exported config ------------------------------------------
-impl ImagerApp {
-    fn draw_export(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        text: &str,
-    ) {
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
-        let card_w = (self.rect.width() * 0.62).min(640.0);
-        let card_h = (self.rect.height() * 0.8).min(620.0);
-        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
-        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
-        let card = Rect::new(
-            cx - card_w / 2.0,
-            cy - card_h / 2.0,
-            cx + card_w / 2.0,
-            cy + card_h / 2.0,
-        );
-        Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
-        Self::stroke_rr(scene, t, card, 14.0, c.border_standard, 1.0);
-        Self::txt(
-            scene,
-            tr,
-            "Unattended install config",
-            18.0,
-            c.text_primary,
-            card.x0 + 20.0,
-            card.y0 + 16.0,
-            None,
-            TextWeight::Bold,
-        );
-        Self::txt(
-            scene,
-            tr,
-            "qos-install.conf — the same options this wizard sets; secrets are referenced, not embedded.",
-            11.5,
-            c.text_dim,
-            card.x0 + 20.0,
-            card.y0 + 42.0,
-            Some((card.width() - 40.0) as f32),
-            TextWeight::Regular,
-        );
-        let mut y = card.y0 + 70.0;
-        for line in text.lines() {
-            if y > card.y1 - 56.0 {
-                break;
-            }
-            let col = if line.starts_with('#') {
-                c.neutral[6]
-            } else if line.starts_with('[') {
-                c.accent[6]
-            } else {
-                c.text_primary
-            };
-            Self::txt(
-                scene,
-                tr,
-                line,
-                12.0,
-                col,
-                card.x0 + 20.0,
-                y,
-                Some((card.width() - 40.0) as f32),
-                TextWeight::Regular,
-            );
-            y += 17.0;
-        }
-        Self::txt_center(
-            scene,
-            tr,
-            "click anywhere or press Esc to close",
-            11.0,
-            c.neutral[6],
-            cx,
-            card.y1 - 26.0,
-            TextWeight::Regular,
-        );
     }
 }
 
@@ -3930,9 +3861,10 @@ mod tests {
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 1);
         app.export_config(&mut doc);
-        let text = app.export_text.clone().unwrap();
+        let text = app.export_dialog.text();
         assert!(text.contains("[install]"));
         assert!(text.contains("$QOS_USER_PASSWORD"));
+        assert!(app.export_dialog.is_open());
     }
 
     #[test]
