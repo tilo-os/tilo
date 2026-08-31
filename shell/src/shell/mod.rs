@@ -63,6 +63,7 @@ pub mod qs_actions;
 pub mod qs_refresh;
 pub mod quick_settings;
 mod quick_settings_vpn;
+mod quick_settings_wifi;
 pub mod remote_cursors;
 pub mod room_activity;
 pub mod room_records;
