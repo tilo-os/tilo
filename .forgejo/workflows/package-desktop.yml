@@ -2,8 +2,8 @@ name: Package the qOS desktop session
 
 # Native builds are intentional: the compositor links the distribution's
 # graphics/input stack and cannot be safely produced by a generic cross image.
-# Register runners with both `runner` and `amd64`/`arm64` labels; see
-# docs/packaging.md. Pull requests build and install-test everything. Version
+# The existing `runner` pool supplies amd64; register native ARM machines with
+# the `arm64` label (docs/packaging.md). Pull requests build and install-test everything. Version
 # tags additionally publish the verified artifacts to a Forgejo release.
 on:
   pull_request:
@@ -54,8 +54,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
-    runs-on: [runner, "${{ matrix.arch }}"]
+        include:
+          - arch: amd64
+            runner: runner
+          - arch: arm64
+            runner: arm64
+    runs-on: ${{ matrix.runner }}
     container: ubuntu:24.04
     steps:
       - name: Install build dependencies
@@ -87,8 +91,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
-    runs-on: [runner, "${{ matrix.arch }}"]
+        include:
+          - arch: amd64
+            runner: runner
+          - arch: arm64
+            runner: arm64
+    runs-on: ${{ matrix.runner }}
     container: registry.fedoraproject.org/fedora:42
     steps:
       - name: Install checkout dependencies
@@ -115,8 +123,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
-    runs-on: [runner, "${{ matrix.arch }}"]
+        include:
+          - arch: amd64
+            runner: runner
+          - arch: arm64
+            runner: arm64
+    runs-on: ${{ matrix.runner }}
     # Arch itself is x86-64-only. This pinned multi-arch image uses Arch on
     # amd64 and the matching Arch Linux ARM repositories on aarch64.
     container: menci/archlinuxarm@sha256:730b232affd3cf553c2e416824ea696b1f07ab8fc4e43190d0658a027f94fb22
@@ -151,8 +163,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
-    runs-on: [runner, "${{ matrix.arch }}"]
+        include:
+          - arch: amd64
+            runner: runner
+          - arch: arm64
+            runner: arm64
+    runs-on: ${{ matrix.runner }}
     container: nixos/nix:2.24.9
     steps:
       - name: Install checkout dependencies
