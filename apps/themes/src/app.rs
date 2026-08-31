@@ -954,7 +954,9 @@ impl ThemesApp {
             origin.x + f64::from(tbl.location.x),
             origin.y + f64::from(tbl.location.y),
         );
-        let Ok(al) = taffy.layout(actions) else { return };
+        let Ok(al) = taffy.layout(actions) else {
+            return;
+        };
         let a_o = Point::new(
             tb_o.x + f64::from(al.location.x),
             tb_o.y + f64::from(al.location.y),
@@ -972,7 +974,9 @@ impl ThemesApp {
         let Some(content) = self.content_node else {
             return;
         };
-        let Ok(cl) = taffy.layout(content) else { return };
+        let Ok(cl) = taffy.layout(content) else {
+            return;
+        };
         let c_o = Point::new(
             origin.x + f64::from(cl.location.x),
             origin.y + f64::from(cl.location.y),

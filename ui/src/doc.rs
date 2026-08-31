@@ -64,7 +64,10 @@ pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> T
         .count();
 
     // `suffix_len` never exceeds either tail's length, so none of these underflow.
-    let del = cur_chars.len().saturating_sub(prefix_len).saturating_sub(suffix_len);
+    let del = cur_chars
+        .len()
+        .saturating_sub(prefix_len)
+        .saturating_sub(suffix_len);
     let ins_end = new_chars.len().saturating_sub(suffix_len);
     let ins: String = new_chars
         .get(prefix_len..ins_end)
