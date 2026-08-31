@@ -40,7 +40,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::TextInput;
+use ui::widget::{TextInput, TextInputKind};
 
 use crate::doc::HexDoc;
 use crate::inspector::{self, Interpretation};
@@ -167,6 +167,7 @@ impl HexView {
             dirty: true,
             overlay: Overlay::None,
             search_input: TextInput::local()
+                .with_kind(TextInputKind::Code)
                 .with_id("hex.search")
                 .with_placeholder("search…")
                 .with_plain_chrome()
@@ -175,6 +176,7 @@ impl HexView {
             matches: Vec::new(),
             match_idx: None,
             goto_input: TextInput::local()
+                .with_kind(TextInputKind::Number)
                 .with_id("hex.goto")
                 .with_placeholder("0x… or decimal")
                 .with_plain_chrome()

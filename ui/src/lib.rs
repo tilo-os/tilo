@@ -77,6 +77,7 @@ pub mod presence;
 pub mod profiling;
 pub mod query_text;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
+pub mod text_assistance;
 pub mod text_break;
 pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod reader_hud;

@@ -125,6 +125,10 @@ const MOUSE_KEYBOARD_KEYWORDS: &[&str] = &[
     "key repeat",
     "layout",
     "cursor",
+    "spell checker",
+    "spelling",
+    "autocorrect",
+    "auto-correct",
 ];
 const TIME_DATE_KEYWORDS: &[&str] = &[
     "clock",
@@ -376,7 +380,7 @@ impl Category {
             Category::Bluetooth => "Pair and manage Bluetooth devices",
             Category::Sound => "Output, input, volume, and system sounds",
             Category::Displays => "Resolution, scale, arrangement, and brightness",
-            Category::MouseKeyboard => "Pointer speed, scrolling, and input sources",
+            Category::MouseKeyboard => "Typing, spelling, input sources, and pointer behaviour",
             Category::KeyboardShortcuts => "System and workspace keyboard shortcuts",
             Category::TimeDate => "Clock, time zone, and how dates display",
             Category::Users => "Accounts on this device and their roles",

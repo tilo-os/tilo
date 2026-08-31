@@ -567,7 +567,7 @@ pub use image::{Image, ImageDecodeError, ImageFit};
 mod slider;
 pub use slider::Slider;
 mod text_input;
-pub use text_input::TextInput;
+pub use text_input::{TextActionRequest, TextInput, TextInputKind};
 pub mod code_editor;
 pub use code_editor::{
     CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color,

@@ -26,7 +26,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
-use crate::widget::{TextInput, Widget};
+use crate::widget::{TextInput, TextInputKind, Widget};
 
 const HEIGHT: f64 = 38.0;
 const ICON_GUTTER: f64 = 34.0;
@@ -62,6 +62,7 @@ impl SearchField {
         Self {
             input: TextInput::local()
                 .with_plain_chrome()
+                .with_kind(TextInputKind::Search)
                 .with_placeholder("Search"),
             leading: Icon::Search,
             clearable: true,
@@ -113,6 +114,7 @@ impl SearchField {
     pub fn bound(mut self, path: &str) -> Self {
         self.input = std::mem::replace(&mut self.input, TextInput::local())
             .with_plain_chrome()
+            .with_kind(TextInputKind::Search)
             .with_on_change_path(path);
         self
     }

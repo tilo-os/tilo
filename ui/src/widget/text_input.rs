@@ -5,6 +5,7 @@
 //! 1.25` band (see `text_baseline_centred_with_caret`) so glyphs don't drift
 //! below the caret.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,19 +28,89 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transac
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum CtxAction {
     Cut,
     Copy,
     Paste,
     SelectAll,
+    ApplySpelling {
+        start: usize,
+        end: usize,
+        replacement: String,
+    },
+    AddToDictionary(String),
+    IgnoreInField(String),
+    UndoAutocorrection,
+    TextAction(usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RegisteredTextAction {
+    id: String,
+    label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Autocorrection {
+    start: usize,
+    end: usize,
+    boundary_end: usize,
+    original: String,
+    replacement: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AutocorrectionPreview {
+    language: String,
+    start: usize,
+    end: usize,
+    original: String,
+    replacement: String,
+}
+
+/// A selected-text command requested from a field's context menu. The host can
+/// execute this asynchronously (translate, rewrite, explain, grammar review)
+/// without putting model or network work in the widget's input path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextActionRequest {
+    pub id: String,
+    pub text: String,
+    pub range: (usize, usize),
+}
+
+/// Semantic intent of a field. Ordinary [`TextInput`] construction defaults to
+/// Prose, so apps opt out only for the smaller set of structured fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextInputKind {
+    #[default]
+    Prose,
+    Name,
+    Search,
+    Username,
+    Email,
+    Url,
+    Path,
+    Code,
+    Number,
+    Password,
+}
+
+impl TextInputKind {
+    fn checks_spelling(self) -> bool {
+        matches!(self, Self::Prose)
+    }
+}
+
+fn is_autocorrect_boundary(character: char) -> bool {
+    character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
 }
 
 const FONT_SIZE: f32 = 16.0;
@@ -49,6 +120,13 @@ const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// 400 ms matches the GTK / Qt default.
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 const MULTI_CLICK_RADIUS: f64 = 4.0;
+/// Spellcheck runs immediately, but the word containing the caret stays
+/// visually quiet for this long after an edit so its underline does not
+/// flicker while the user is still forming it.
+const SPELL_EDIT_SETTLE: Duration = Duration::from_millis(250);
+/// External Hunspell sessions are persistent but still use IPC. Coalesce the
+/// prefixes of a rapidly typed non-English word while preserving prior spans.
+const EXTERNAL_SPELLCHECK_DELAY: Duration = Duration::from_millis(100);
 const ML_PAD_X: f64 = 10.0;
 const ML_PAD_Y: f64 = 8.0;
 /// Approximate glyph advance; used identically for gutter geometry and
@@ -132,6 +210,32 @@ pub struct TextInput {
     /// `self.text` stays the real value; only the render substitutes bullets.
     secret: bool,
     disabled: bool,
+    kind: TextInputKind,
+    /// Prose fields check spelling by default. Purpose-specific wrappers such
+    /// as search/code/number inputs opt out explicitly.
+    /// `None` follows semantic intent; `Some` is the app author's explicit
+    /// opt-in/out. The user's global off switch still wins.
+    spellcheck: Option<bool>,
+    /// Per-field override for automatic replacement. `None` follows Settings.
+    autocorrect: Option<bool>,
+    /// Untouched form fields do no dictionary work. Focus/edit/right-click
+    /// activates checking for the rest of the widget's lifetime.
+    spell_active: bool,
+    /// Hunspell dictionary name / BCP-47-ish language tag.
+    spell_language: String,
+    /// Cached by (language, text), so drawing idle fields never starts work.
+    spell_cache_key: Option<(String, String)>,
+    spell_spans: Vec<(usize, usize)>,
+    /// Per-user vocabulary layered over every installed language.
+    spell_dictionary: Option<spellcheck::Dictionary>,
+    ignored_spellings: HashSet<String>,
+    /// Caches both preview hits and misses so idle redraws never re-query a
+    /// dictionary for the same caret word.
+    autocorrection_preview_key: Option<(String, String, usize, usize)>,
+    autocorrection_preview: Option<AutocorrectionPreview>,
+    last_autocorrection: Option<Autocorrection>,
+    text_actions: Vec<RegisteredTextAction>,
+    pending_text_action: Option<TextActionRequest>,
     /// Reuses [`ContextMenu`]; rendered via the overlay pass so it floats above the field.
     context_menu: ContextMenu,
     /// Per-row action parallel to `context_menu`'s items (separators → `None`).
@@ -206,6 +310,8 @@ type GutterNums = Vec<(f64, String, bool)>;
 impl TextInput {
     /// Empty `path` opts the widget out of presence rendering.
     pub fn new(path: Vec<PathSegment>) -> Self {
+        let spell_language = spellcheck::default_language();
+        spellcheck::warm_up_language(&spell_language);
         Self {
             id: String::new(),
             path,
@@ -242,6 +348,20 @@ impl TextInput {
             local_author: None,
             secret: false,
             disabled: false,
+            kind: TextInputKind::Prose,
+            spellcheck: None,
+            autocorrect: None,
+            spell_active: false,
+            spell_language,
+            spell_cache_key: None,
+            spell_spans: Vec::new(),
+            spell_dictionary: None,
+            ignored_spellings: HashSet::new(),
+            autocorrection_preview_key: None,
+            autocorrection_preview: None,
+            last_autocorrection: None,
+            text_actions: Vec::new(),
+            pending_text_action: None,
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
             placeholder: String::new(),
@@ -319,15 +439,122 @@ impl TextInput {
     #[must_use]
     pub fn with_mono(mut self) -> Self {
         self.mono = true;
+        self.kind = TextInputKind::Code;
         self
     }
 
     pub fn set_mono(&mut self, mono: bool) {
         self.mono = mono;
+        if mono {
+            self.set_kind(TextInputKind::Code);
+        }
     }
 
     pub fn is_mono(&self) -> bool {
         self.mono
+    }
+
+    /// Declare the exceptional structured intent of a field. Natural-language
+    /// prose is already the default and never needs an annotation.
+    #[must_use]
+    pub fn with_kind(mut self, kind: TextInputKind) -> Self {
+        self.set_kind(kind);
+        self
+    }
+
+    pub fn set_kind(&mut self, kind: TextInputKind) {
+        self.kind = kind;
+        self.spell_cache_key = None;
+        self.spell_spans.clear();
+    }
+
+    pub fn kind(&self) -> TextInputKind {
+        self.kind
+    }
+
+    /// Enable or disable spelling assistance for this field. It defaults on
+    /// for ordinary text and is automatically suppressed for secret and
+    /// code-like fields.
+    #[must_use]
+    pub fn with_spellcheck(mut self, on: bool) -> Self {
+        self.spellcheck = Some(on);
+        self.spell_cache_key = None;
+        self
+    }
+
+    pub fn set_spellcheck(&mut self, on: bool) {
+        self.spellcheck = Some(on);
+        self.spell_cache_key = None;
+    }
+
+    pub fn spellcheck_enabled(&self) -> bool {
+        self.checks_spelling()
+    }
+
+    /// Override automatic correction for this field. Without an override the
+    /// user-wide Spell checker setting applies.
+    #[must_use]
+    pub fn with_autocorrect(mut self, on: bool) -> Self {
+        self.autocorrect = Some(on);
+        self
+    }
+
+    pub fn set_autocorrect(&mut self, on: bool) {
+        self.autocorrect = Some(on);
+    }
+
+    pub fn autocorrect_enabled(&self) -> bool {
+        self.field_allows_spelling()
+            && self
+                .autocorrect
+                .unwrap_or_else(|| crate::text_assistance::preferences().auto_correct)
+    }
+
+    /// Select a language dictionary, accepting both en-US and `en_US` style
+    /// tags. If that Hunspell dictionary is unavailable, non-English checking
+    /// quietly disables itself; English retains the embedded fallback.
+    #[must_use]
+    pub fn with_spell_language(mut self, language: &str) -> Self {
+        self.set_spell_language(language);
+        self
+    }
+
+    pub fn set_spell_language(&mut self, language: &str) {
+        self.spell_language = language.to_string();
+        self.spell_cache_key = None;
+        self.autocorrection_preview_key = None;
+        self.autocorrection_preview = None;
+    }
+
+    pub fn spell_language(&self) -> &str {
+        &self.spell_language
+    }
+
+    /// Add a host-owned action to the selection context menu. Activating it
+    /// produces a request drained by `take_text_action_request`; the widget
+    /// never blocks on the action itself.
+    #[must_use]
+    pub fn with_text_action(mut self, id: &str, label: &str) -> Self {
+        self.add_text_action(id, label);
+        self
+    }
+
+    pub fn add_text_action(&mut self, id: &str, label: &str) {
+        if id.is_empty() || label.is_empty() {
+            return;
+        }
+        self.text_actions.push(RegisteredTextAction {
+            id: id.to_string(),
+            label: label.to_string(),
+        });
+    }
+
+    pub fn clear_text_actions(&mut self) {
+        self.text_actions.clear();
+    }
+
+    pub fn take_text_action_request(&mut self) -> Option<TextActionRequest> {
+        self.pending_text_action.take()
     }
 
     /// Wins over the mono flag.
@@ -1828,11 +2055,17 @@ impl TextInput {
     #[must_use]
     pub fn with_secret(mut self, on: bool) -> Self {
         self.secret = on;
+        if on {
+            self.kind = TextInputKind::Password;
+        }
         self
     }
 
     pub fn set_secret(&mut self, on: bool) {
         self.secret = on;
+        if on {
+            self.set_kind(TextInputKind::Password);
+        }
     }
 
     pub fn is_secret(&self) -> bool {
@@ -2209,6 +2442,7 @@ impl TextInput {
         if s.is_empty() {
             return;
         }
+        self.last_autocorrection = None;
         // Char index the inserted text lands at, to stamp the authorship mark over it.
         let insert_char_at;
         if let Some((start, end)) = self.selection_range() {
@@ -2377,9 +2611,367 @@ impl TextInput {
         self.do_select_all();
     }
 
+    fn field_allows_spelling(&self) -> bool {
+        !self.secret
+            && self.kind != TextInputKind::Password
+            && self.spellcheck.unwrap_or_else(|| {
+                self.kind.checks_spelling()
+                    && !self.mono
+                    && self.highlighter.is_none()
+                    && self.tab_spaces.is_none()
+            })
+    }
+
+    fn checks_spelling(&self) -> bool {
+        self.field_allows_spelling() && crate::text_assistance::preferences().check_spelling
+    }
+
+    fn autocorrect_previous_word(
+        &mut self,
+        state: &mut AutoCommit,
+        obj_id: Option<&ObjId>,
+    ) -> Option<Autocorrection> {
+        if !self.autocorrect_enabled() || self.has_selection() || self.cursor_pos == 0 {
+            return None;
+        }
+        self.refresh_autocorrection_preview();
+        // The visual preview is deliberately debounced (and only painted for a
+        // focused field), but committing a boundary must not depend on whether
+        // that preview has already had a frame in which to appear. This also
+        // keeps fast typists from outrunning an external-language checker.
+        let preview = self
+            .autocorrection_preview
+            .clone()
+            .or_else(|| self.autocorrection_candidate())?;
+        let (start, end) = (preview.start, preview.end);
+        let (original, replacement) = (preview.original, preview.replacement);
+        self.selection_anchor = Some(start);
+        self.cursor_pos = end;
+        self.insert_str(&replacement, state, obj_id);
+        let replacement_end = start.saturating_add(replacement.len());
+        Some(Autocorrection {
+            start,
+            end: replacement_end,
+            boundary_end: replacement_end,
+            original,
+            replacement,
+        })
+    }
+
+    fn word_ending_at_caret(&self) -> Option<(usize, usize)> {
+        if self.has_selection() || self.cursor_pos == 0 {
+            return None;
+        }
+        let probe = prev_char_boundary(&self.text, self.cursor_pos);
+        let (start, end) = word_boundaries(&self.text, probe);
+        (start < end && end == self.cursor_pos).then_some((start, end))
+    }
+
+    fn refresh_autocorrection_preview(&mut self) {
+        if !self.autocorrect_enabled() || !self.is_focused || !self.preedit.is_empty() {
+            self.autocorrection_preview_key = None;
+            self.autocorrection_preview = None;
+            return;
+        }
+        if !spellcheck::checks_in_process(&self.spell_language)
+            && self
+                .last_edit_time
+                .is_some_and(|edited| edited.elapsed() < EXTERNAL_SPELLCHECK_DELAY)
+        {
+            self.autocorrection_preview_key = None;
+            self.autocorrection_preview = None;
+            return;
+        }
+        let Some((start, end)) = self.word_ending_at_caret() else {
+            self.autocorrection_preview_key = None;
+            self.autocorrection_preview = None;
+            return;
+        };
+        let Some(original) = self.text.get(start..end) else {
+            self.autocorrection_preview_key = None;
+            self.autocorrection_preview = None;
+            return;
+        };
+        let key = (
+            self.spell_language.clone(),
+            original.to_string(),
+            start,
+            end,
+        );
+        if self.autocorrection_preview_key.as_ref() == Some(&key) {
+            return;
+        }
+        let preview = self.autocorrection_candidate();
+        self.autocorrection_preview_key = Some(key);
+        self.autocorrection_preview = preview;
+    }
+
+    fn autocorrection_candidate(&mut self) -> Option<AutocorrectionPreview> {
+        let (start, end) = self.word_ending_at_caret()?;
+        let original = self.text.get(start..end)?.to_string();
+        let dictionary = self
+            .spell_dictionary
+            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+        if dictionary.contains(&original) {
+            return None;
+        }
+        let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
+        (replacement != original).then(|| AutocorrectionPreview {
+            language: self.spell_language.clone(),
+            start,
+            end,
+            original,
+            replacement,
+        })
+    }
+
+    fn insert_word_boundary(
+        &mut self,
+        boundary: &str,
+        state: &mut AutoCommit,
+        obj_id: Option<&ObjId>,
+    ) {
+        let correction = self.autocorrect_previous_word(state, obj_id);
+        self.insert_str(boundary, state, obj_id);
+        if let Some(mut correction) = correction {
+            correction.boundary_end = self.cursor_pos;
+            self.last_autocorrection = Some(correction);
+        }
+    }
+
+    fn undo_last_autocorrection(
+        &mut self,
+        remove_boundary: bool,
+        state: &mut AutoCommit,
+        obj_id: Option<&ObjId>,
+    ) -> bool {
+        let Some(correction) = self.last_autocorrection.clone() else {
+            return false;
+        };
+        if self.text.get(correction.start..correction.end) != Some(&correction.replacement) {
+            self.last_autocorrection = None;
+            return false;
+        }
+        let replace_end = if remove_boundary {
+            if self.cursor_pos != correction.boundary_end {
+                return false;
+            }
+            let Some(boundary) = self.text.get(correction.end..correction.boundary_end) else {
+                return false;
+            };
+            if boundary.chars().count() > 1 || boundary.chars().any(char::is_alphanumeric) {
+                return false;
+            }
+            correction.boundary_end
+        } else {
+            correction.end
+        };
+        self.selection_anchor = Some(correction.start);
+        self.cursor_pos = replace_end;
+        self.insert_str(&correction.original, state, obj_id);
+        true
+    }
+
+    fn refresh_spelling(&mut self) {
+        if !self.checks_spelling() || self.text.is_empty() {
+            self.spell_spans.clear();
+            self.spell_cache_key = None;
+            return;
+        }
+        if !self.spell_active {
+            self.spell_spans.clear();
+            return;
+        }
+        if !spellcheck::checks_in_process(&self.spell_language)
+            && self.is_focused
+            && self
+                .last_edit_time
+                .is_some_and(|edited| edited.elapsed() < EXTERNAL_SPELLCHECK_DELAY)
+        {
+            return;
+        }
+        let key = (self.spell_language.clone(), self.text.clone());
+        if self.spell_cache_key.as_ref() == Some(&key) {
+            return;
+        }
+
+        let mut spans = spellcheck::spans_for_language(&self.spell_language, &self.text);
+        let dictionary = self
+            .spell_dictionary
+            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+        spans.retain(|&(start, end)| {
+            self.text.get(start..end).is_some_and(|word| {
+                !dictionary.contains(word) && !self.ignored_spellings.contains(&word.to_lowercase())
+            })
+        });
+        self.spell_spans = spans;
+        self.spell_cache_key = Some(key);
+    }
+
+    /// The word currently being formed. Checking is immediate, but its result
+    /// is hidden briefly; all completed words remain visible during typing.
+    fn actively_edited_word(&self) -> Option<(usize, usize)> {
+        if !self.is_focused
+            || self.has_selection()
+            || self
+                .last_edit_time
+                .is_none_or(|edited| edited.elapsed() >= SPELL_EDIT_SETTLE)
+        {
+            return None;
+        }
+
+        let is_word_char =
+            |character: char| character.is_alphabetic() || matches!(character, '\'' | '\u{2019}');
+        let at_caret = self
+            .text
+            .get(self.cursor_pos..)
+            .and_then(|tail| tail.chars().next())
+            .filter(|character| is_word_char(*character))
+            .map(|_| self.cursor_pos);
+        let before_caret = self
+            .text
+            .get(..self.cursor_pos)
+            .and_then(|head| head.char_indices().next_back())
+            .filter(|(_, character)| is_word_char(*character))
+            .map(|(byte, _)| byte);
+        let probe = at_caret.or(before_caret)?;
+        let range = word_boundaries(&self.text, probe);
+        (range.0 < range.1).then_some(range)
+    }
+
+    fn spelling_span_is_visible(&self, start: usize, end: usize) -> bool {
+        if self
+            .autocorrection_preview
+            .as_ref()
+            .is_some_and(|preview| end > preview.start && start < preview.end)
+        {
+            return false;
+        }
+        self.actively_edited_word()
+            .is_none_or(|(active_start, active_end)| end <= active_start || start >= active_end)
+    }
+
+    /// Draw a theme-aware wavy underline using the same range geometry as
+    /// selection, so it follows shaping, `BiDi`, and soft wrapping.
+    #[allow(
+        clippy::while_float,
+        reason = "x advances by a fixed positive 2px and is clamped to x1"
+    )]
+    fn draw_spelling(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        self.refresh_autocorrection_preview();
+        self.refresh_spelling();
+        let color = theme.tokens.colors.semantic.danger;
+        for &(start, end) in &self.spell_spans {
+            if !self.spelling_span_is_visible(start, end) {
+                continue;
+            }
+            for rect in self.selection_rects(theme, start, end) {
+                let x0 = rect.x0.max(self.rect.x0);
+                let x1 = rect.x1.min(self.rect.x1);
+                if x1 <= x0 || rect.y1 < self.rect.y0 || rect.y1 > self.rect.y1 {
+                    continue;
+                }
+                let y = rect.y1 - 1.0;
+                let mut path = vello::kurbo::BezPath::new();
+                path.move_to((x0, y));
+                let mut x = x0;
+                let mut up = false;
+                while x < x1 {
+                    x = (x + 2.0).min(x1);
+                    path.line_to((x, y + if up { -1.0 } else { 1.0 }));
+                    up = !up;
+                }
+                scene.stroke(&Stroke::new(1.0), transform, color, None, &path);
+            }
+        }
+    }
+
+    /// A quiet solid underline marks the most recent automatic replacement.
+    /// It disappears on the next edit, but remains long enough to explain what
+    /// changed and to invite Backspace or the context-menu undo action.
+    fn draw_autocorrection(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let Some(correction) = self.last_autocorrection.as_ref() else {
+            return;
+        };
+        if self.text.get(correction.start..correction.end) != Some(&correction.replacement) {
+            return;
+        }
+        let (start, end) = (correction.start, correction.end);
+        for rect in self.selection_rects(theme, start, end) {
+            let line = vello::kurbo::Line::new(
+                (rect.x0.max(self.rect.x0), rect.y1 - 0.5),
+                (rect.x1.min(self.rect.x1), rect.y1 - 0.5),
+            );
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                theme.accent_primary,
+                None,
+                &line,
+            );
+        }
+    }
+
+    /// Show the exact high-confidence replacement before Space/punctuation
+    /// applies it. The compact chip floats above the field like an IME
+    /// candidate, leaving the text and caret unobscured.
+    fn draw_autocorrection_preview(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.refresh_autocorrection_preview();
+        let Some(preview) = self.autocorrection_preview.as_ref() else {
+            return;
+        };
+        let label = format!("Space → {}", preview.replacement);
+        let size = theme.tokens.typography.scale.sm;
+        let (text_width, text_height) = text_renderer.measure(&label, size, None);
+        let pad_x = 8.0_f64;
+        let pad_y = 4.0_f64;
+        let width = f64::from(text_width) + pad_x * 2.0;
+        let height = f64::from(text_height) + pad_y * 2.0;
+        let caret = self.ime_cursor_rect().unwrap_or(self.rect);
+        let max_x = (self.rect.x1 - width).max(self.rect.x0);
+        let x = caret.x0.clamp(self.rect.x0, max_x);
+        let below = caret.y1 + 4.0;
+        let y = if below + height <= self.rect.y1 - 4.0 {
+            below
+        } else {
+            self.rect.y0 - height - 4.0
+        };
+        let rect = Rect::new(x, y, x + width, y + height);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.overlay,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.accent_primary,
+            None,
+            &shape,
+        );
+        text_renderer.draw_text(
+            scene,
+            &label,
+            size,
+            theme.tokens.colors.text_primary,
+            transform.pre_translate(Vec2::new(rect.x0 + pad_x, rect.y0 + pad_y)),
+            None,
+        );
+    }
+
     /// If nothing is selected, the word under the click is selected first
     /// (matches every native editor's right-click-on-a-word behaviour).
     fn open_context_menu(&mut self, pos: [f32; 2]) {
+        self.spell_active = true;
         if !self.has_selection() {
             let byte = self.resolve_cursor(Point::new(f64::from(pos[0]), f64::from(pos[1])));
             let (start, end) = word_boundaries(&self.text, byte);
@@ -2397,6 +2989,52 @@ impl TextInput {
 
         let mut menu = ContextMenu::new();
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
+        self.refresh_spelling();
+        if let (Some((start, end)), Some(correction)) =
+            (self.selection_range(), self.last_autocorrection.as_ref())
+            && start == correction.start
+            && end == correction.end
+        {
+            menu.push(MenuItem::action(
+                format!("Undo autocorrection to ‘{}’", correction.original),
+                || {},
+            ));
+            actions.push(Some(CtxAction::UndoAutocorrection));
+            menu.push(MenuItem::separator());
+            actions.push(None);
+        }
+        if let Some((start, end)) = self.selection_range()
+            && self.spell_spans.contains(&(start, end))
+            && let Some(word) = self.text.get(start..end)
+        {
+            let word = word.to_string();
+            for replacement in spellcheck::suggestions_for_language(&self.spell_language, &word, 3)
+            {
+                menu.push(MenuItem::action(replacement.clone(), || {}));
+                actions.push(Some(CtxAction::ApplySpelling {
+                    start,
+                    end,
+                    replacement,
+                }));
+            }
+            menu.push(MenuItem::action(
+                format!("Add ‘{word}’ to dictionary"),
+                || {},
+            ));
+            actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+            menu.push(MenuItem::action("Ignore in this field", || {}));
+            actions.push(Some(CtxAction::IgnoreInField(word)));
+            menu.push(MenuItem::separator());
+            actions.push(None);
+        }
+        if has_sel && !self.text_actions.is_empty() {
+            for (index, action) in self.text_actions.iter().enumerate() {
+                menu.push(MenuItem::action(action.label.clone(), || {}));
+                actions.push(Some(CtxAction::TextAction(index)));
+            }
+            menu.push(MenuItem::separator());
+            actions.push(None);
+        }
         if has_sel {
             menu.push(MenuItem::action("Cut", || {}));
             actions.push(Some(CtxAction::Cut));
@@ -2419,6 +3057,13 @@ impl TextInput {
         self.context_actions = actions;
     }
 
+    /// Open the native text menu at a logical-pixel position. Hosts use this
+    /// for keyboard menu keys, accessibility actions, and deterministic UI
+    /// previews; pointer right-clicks route here automatically.
+    pub fn open_text_menu_at(&mut self, pos: [f32; 2]) {
+        self.open_context_menu(pos);
+    }
+
     /// Out-of-range / separator rows are ignored.
     fn dispatch_context_action(
         &mut self,
@@ -2426,7 +3071,7 @@ impl TextInput {
         state: &mut AutoCommit,
         obj_id: Option<&ObjId>,
     ) -> bool {
-        let Some(Some(action)) = self.context_actions.get(idx).copied() else {
+        let Some(Some(action)) = self.context_actions.get(idx).cloned() else {
             return false;
         };
         match action {
@@ -2434,6 +3079,46 @@ impl TextInput {
             CtxAction::Copy => self.do_copy(),
             CtxAction::Paste => self.do_paste(state, obj_id),
             CtxAction::SelectAll => self.do_select_all(),
+            CtxAction::ApplySpelling {
+                start,
+                end,
+                replacement,
+            } => {
+                self.selection_anchor = Some(start);
+                self.cursor_pos = end;
+                self.insert_str(&replacement, state, obj_id);
+                self.spell_cache_key = None;
+            }
+            CtxAction::AddToDictionary(word) => {
+                let dictionary = self
+                    .spell_dictionary
+                    .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+                if dictionary.add_word(&word) {
+                    let _ = dictionary.save_user_dict();
+                }
+                self.spell_cache_key = None;
+                self.refresh_spelling();
+            }
+            CtxAction::IgnoreInField(word) => {
+                self.ignored_spellings.insert(word.to_lowercase());
+                self.spell_cache_key = None;
+                self.refresh_spelling();
+            }
+            CtxAction::UndoAutocorrection => {
+                let _ = self.undo_last_autocorrection(false, state, obj_id);
+            }
+            CtxAction::TextAction(index) => {
+                if let (Some(action), Some((start, end))) =
+                    (self.text_actions.get(index), self.selection_range())
+                    && let Some(selected) = self.text.get(start..end)
+                {
+                    self.pending_text_action = Some(TextActionRequest {
+                        id: action.id.clone(),
+                        text: selected.to_string(),
+                        range: (start, end),
+                    });
+                }
+            }
         }
         self.context_menu.close();
         true
@@ -2635,6 +3320,9 @@ impl Widget for TextInput {
             } else {
                 self.draw_multiline_shaped(scene, transform, text_renderer, theme, &shape);
             }
+            self.draw_spelling(scene, transform, theme);
+            self.draw_autocorrection(scene, transform, theme);
+            self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
             return;
         }
         self.multiline_shaped = false;
@@ -2692,6 +3380,9 @@ impl Widget for TextInput {
         }
 
         scene.pop_layer();
+        self.draw_spelling(scene, transform, theme);
+        self.draw_autocorrection(scene, transform, theme);
+        self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -2811,6 +3502,9 @@ impl Widget for TextInput {
     }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
+        if focused {
+            self.spell_active = true;
+        }
         if !focused {
             self.preedit.clear();
             self.preedit_cursor = None;
@@ -2946,6 +3640,15 @@ impl Widget for TextInput {
     /// into a sibling widget.
     fn wants_pointer_capture(&self) -> bool {
         self.is_dragging
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.checks_spelling()
+            && self.spell_active
+            && self.is_focused
+            && self
+                .last_edit_time
+                .is_some_and(|edited| edited.elapsed() < SPELL_EDIT_SETTLE)
     }
 
     fn needs_commit(&self) -> bool {
@@ -3650,12 +4353,19 @@ impl TextInput {
         obj_id: Option<&ObjId>,
         handled: &mut bool,
     ) {
+        let correction = (self.enter_submits || self.multiline)
+            .then(|| self.autocorrect_previous_word(state, obj_id))
+            .flatten();
         if self.enter_submits && !shift {
             self.submit_requested = true;
             *handled = true;
         } else if self.multiline {
             self.insert_str("\n", state, obj_id);
             *handled = true;
+        }
+        if let Some(mut correction) = correction {
+            correction.boundary_end = self.cursor_pos;
+            self.last_autocorrection = Some(correction);
         }
     }
 
@@ -3686,6 +4396,11 @@ impl TextInput {
         obj_id: Option<&ObjId>,
         handled: &mut bool,
     ) {
+        if !ctrl && self.undo_last_autocorrection(true, state, obj_id) {
+            *handled = true;
+            return;
+        }
+        self.last_autocorrection = None;
         if self.has_selection() {
             self.delete_selection(state, obj_id);
         } else if self.cursor_pos > 0 {
@@ -3826,7 +4541,7 @@ impl TextInput {
             }
             Key::Named(NamedKey::Delete) => self.handle_delete_key(ctrl, state, obj_id, handled),
             Key::Named(NamedKey::Space) => {
-                self.insert_str(" ", state, obj_id);
+                self.insert_word_boundary(" ", state, obj_id);
                 *handled = true;
             }
             Key::Character(c) if ctrl => {
@@ -3836,7 +4551,11 @@ impl TextInput {
                 if let Some(t) = text
                     && !t.chars().all(char::is_control)
                 {
-                    self.insert_str(t, state, obj_id);
+                    if t.chars().next().is_some_and(is_autocorrect_boundary) {
+                        self.insert_word_boundary(t, state, obj_id);
+                    } else {
+                        self.insert_str(t, state, obj_id);
+                    }
                     *handled = true;
                 }
             }
@@ -3857,7 +4576,23 @@ impl TextInput {
         self.preedit_cursor = None;
         let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
         if !t.chars().all(char::is_control) {
-            self.insert_str(t, state, obj_id_opt.as_ref());
+            if let Some((boundary_at, boundary)) = t.char_indices().next_back()
+                && is_autocorrect_boundary(boundary)
+            {
+                if let Some(prefix) = t.get(..boundary_at)
+                    && !prefix.is_empty()
+                {
+                    self.insert_str(prefix, state, obj_id_opt.as_ref());
+                }
+                let mut encoded = [0; 4];
+                self.insert_word_boundary(
+                    boundary.encode_utf8(&mut encoded),
+                    state,
+                    obj_id_opt.as_ref(),
+                );
+            } else {
+                self.insert_str(t, state, obj_id_opt.as_ref());
+            }
             *handled = true;
         }
     }
@@ -4518,6 +5253,289 @@ mod tests {
         assert!(labels.contains(&"Cut".to_string()), "got {labels:?}");
         assert!(labels.contains(&"Copy".to_string()), "got {labels:?}");
         assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
+    }
+
+    #[test]
+    fn spelling_defaults_on_and_can_be_disabled_per_field() {
+        let mut prose = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        prose.set_focus(true);
+        prose.refresh_spelling();
+        assert!(prose.spellcheck_enabled());
+        assert_eq!(prose.spell_spans, vec![(0, 3)]);
+
+        let mut search_or_identifier = TextInput::local()
+            .with_kind(TextInputKind::Search)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        search_or_identifier.set_focus(true);
+        search_or_identifier.refresh_spelling();
+        assert!(search_or_identifier.spell_spans.is_empty());
+
+        for kind in [
+            TextInputKind::Name,
+            TextInputKind::Search,
+            TextInputKind::Username,
+            TextInputKind::Email,
+            TextInputKind::Url,
+            TextInputKind::Path,
+            TextInputKind::Code,
+            TextInputKind::Number,
+            TextInputKind::Password,
+        ] {
+            let mut structured = TextInput::local()
+                .with_kind(kind)
+                .with_spell_language("en_US")
+                .with_initial_value("teh");
+            structured.set_focus(true);
+            structured.refresh_spelling();
+            assert!(structured.spell_spans.is_empty(), "kind {kind:?}");
+        }
+
+        let mut opted_in = TextInput::local()
+            .with_kind(TextInputKind::Search)
+            .with_spellcheck(true)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        opted_in.set_focus(true);
+        opted_in.refresh_spelling();
+        assert_eq!(opted_in.spell_spans, vec![(0, 3)]);
+
+        let mut secret = TextInput::local()
+            .with_secret(true)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        secret.refresh_spelling();
+        assert!(
+            secret.spell_spans.is_empty(),
+            "secret contents must never reach a checker"
+        );
+    }
+
+    #[test]
+    fn custom_vocabulary_suppresses_a_squiggle() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("qwordz");
+        ti.set_focus(true);
+        ti.spell_dictionary = Some(spellcheck::Dictionary::from_words(["qwordz"]));
+        ti.refresh_spelling();
+        assert!(ti.spell_spans.is_empty());
+    }
+
+    #[test]
+    fn spelling_checks_immediately_but_only_hides_the_word_being_typed() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("teh wrold");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+        ti.last_edit_time = Some(Instant::now());
+
+        ti.refresh_spelling();
+        // Dictionary warm-up can dominate this unit test in an unoptimised
+        // build. Model a fresh edit after checking to test presentation timing.
+        ti.last_edit_time = Some(Instant::now());
+
+        assert_eq!(ti.spell_spans, vec![(0, 3), (4, 9)]);
+        assert!(ti.spelling_span_is_visible(0, 3));
+        assert!(!ti.spelling_span_is_visible(4, 9));
+        assert!(Widget::needs_animation_frame(&ti));
+    }
+
+    #[test]
+    fn a_word_becomes_visible_immediately_when_a_boundary_is_typed() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("wrold ");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+        ti.last_edit_time = Some(Instant::now());
+
+        ti.refresh_spelling();
+
+        assert_eq!(ti.spell_spans, vec![(0, 5)]);
+        assert!(ti.actively_edited_word().is_none());
+        assert!(ti.spelling_span_is_visible(0, 5));
+    }
+
+    #[test]
+    fn active_word_is_revealed_after_the_short_settle_period() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("wrold");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+        ti.last_edit_time = Some(Instant::now() - SPELL_EDIT_SETTLE - Duration::from_millis(1));
+
+        ti.refresh_spelling();
+
+        assert_eq!(ti.spell_spans, vec![(0, 5)]);
+        assert!(ti.spelling_span_is_visible(0, 5));
+        assert!(!Widget::needs_animation_frame(&ti));
+    }
+
+    #[test]
+    fn external_language_check_coalesces_rapid_prefixes_without_dropping_old_spans() {
+        let mut ti = TextInput::local()
+            .with_spellcheck(true)
+            .with_spell_language("de_DE")
+            .with_initial_value("alt neu");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+        ti.spell_spans = vec![(0, 3)];
+        ti.spell_cache_key = Some(("de_DE".to_string(), "alt".to_string()));
+        ti.last_edit_time = Some(Instant::now());
+
+        ti.refresh_spelling();
+
+        assert_eq!(ti.spell_spans, vec![(0, 3)]);
+        assert_eq!(
+            ti.spell_cache_key,
+            Some(("de_DE".to_string(), "alt".to_string()))
+        );
+        assert!(Widget::needs_animation_frame(&ti));
+    }
+
+    #[test]
+    fn field_language_override_is_independent_of_session_default() {
+        let english = TextInput::local().with_spell_language("en-US");
+        let german = TextInput::local().with_spell_language("de-DE");
+        assert_eq!(english.spell_language(), "en-US");
+        assert_eq!(german.spell_language(), "de-DE");
+    }
+
+    #[test]
+    fn obvious_typo_autocorrects_at_boundary_and_backspace_restores_it() {
+        let mut ti = TextInput::local()
+            .with_spellcheck(true)
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        ti.cursor_pos = ti.text.len();
+        let mut doc = AutoCommit::new();
+        ti.insert_word_boundary(" ", &mut doc, None);
+        assert_eq!(ti.value(), "the ");
+        assert!(ti.last_autocorrection.is_some());
+
+        let mut handled = false;
+        ti.handle_backspace_key(false, &mut doc, None, &mut handled);
+        assert!(handled);
+        assert_eq!(ti.value(), "teh");
+        assert!(ti.last_autocorrection.is_none());
+    }
+
+    #[test]
+    fn autocorrection_is_previewed_before_the_boundary_applies_it() {
+        let mut ti = TextInput::local()
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value("adress");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+
+        ti.refresh_autocorrection_preview();
+        ti.refresh_spelling();
+
+        let preview = ti
+            .autocorrection_preview
+            .as_ref()
+            .expect("a high-confidence correction is previewed");
+        assert_eq!(preview.original, "adress");
+        assert_eq!(preview.replacement, "address");
+        assert!(!ti.spelling_span_is_visible(0, 6));
+
+        let mut doc = AutoCommit::new();
+        ti.insert_word_boundary(" ", &mut doc, None);
+        assert_eq!(ti.value(), "address ");
+    }
+
+    #[test]
+    fn autocorrect_respects_field_opt_out_and_personal_vocabulary() {
+        let mut off = TextInput::local()
+            .with_autocorrect(false)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        off.cursor_pos = off.text.len();
+        let mut doc = AutoCommit::new();
+        off.insert_word_boundary(" ", &mut doc, None);
+        assert_eq!(off.value(), "teh ");
+
+        let mut known = TextInput::local()
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        known.cursor_pos = known.text.len();
+        known.spell_dictionary = Some(spellcheck::Dictionary::from_words(["teh"]));
+        known.insert_word_boundary(" ", &mut doc, None);
+        assert_eq!(known.value(), "teh ");
+    }
+
+    #[test]
+    fn untouched_inactive_field_does_no_spellcheck_work() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        ti.refresh_spelling();
+        assert!(ti.spell_spans.is_empty());
+        assert!(
+            ti.spell_cache_key.is_none(),
+            "inactive initial values must not populate the checker cache"
+        );
+    }
+
+    #[test]
+    fn misspelling_context_action_replaces_the_selected_word() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        ti.selection_anchor = Some(0);
+        ti.cursor_pos = 3;
+        ti.open_context_menu([10.0, 10.0]);
+
+        let item_idx = ti
+            .context_actions
+            .iter()
+            .position(|action| {
+                matches!(
+                    action,
+                    Some(CtxAction::ApplySpelling { replacement, .. })
+                        if replacement == "the"
+                )
+            })
+            .expect("the correction is offered");
+        let mut doc = AutoCommit::new();
+        assert!(ti.dispatch_context_action(item_idx, &mut doc, None));
+        assert_eq!(ti.value(), "the");
+    }
+
+    #[test]
+    fn selected_text_action_is_reported_without_blocking_the_widget() {
+        let mut ti = TextInput::local()
+            .with_spellcheck(false)
+            .with_text_action("translate", "Translate")
+            .with_initial_value("hello world");
+        ti.selection_anchor = Some(0);
+        ti.cursor_pos = 5;
+        ti.open_context_menu([10.0, 10.0]);
+        let item_idx = ti
+            .context_actions
+            .iter()
+            .position(|action| matches!(action, Some(CtxAction::TextAction(0))))
+            .expect("registered action is in the context menu");
+
+        let mut doc = AutoCommit::new();
+        assert!(ti.dispatch_context_action(item_idx, &mut doc, None));
+        assert_eq!(
+            ti.take_text_action_request(),
+            Some(TextActionRequest {
+                id: "translate".to_string(),
+                text: "hello".to_string(),
+                range: (0, 5),
+            })
+        );
+        assert_eq!(ti.value(), "hello world", "dispatch itself is read-only");
     }
 
     #[test]

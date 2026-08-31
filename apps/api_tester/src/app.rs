@@ -61,8 +61,8 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, Checkbox, CheckboxFace, Dropdown, SidebarDrawer, SplitLayout, TextInput, ToggleGroup,
-    Widget,
+    Button, Checkbox, CheckboxFace, Dropdown, SidebarDrawer, SplitLayout, TextInput, TextInputKind,
+    ToggleGroup, Widget,
 };
 
 use crate::actions::{self, API_TESTER_ACTION_TYPE, ApiTesterAction};
@@ -365,7 +365,7 @@ impl ApiTesterApp {
     /// The real child widgets for a fresh app, wired to `model`'s starting
     /// values. Split out of [`Self::build`] to keep it under the line budget.
     fn build_widgets(model: &BuiltModel) -> BuiltWidgets {
-        let mut url_input = TextInput::local();
+        let mut url_input = TextInput::local().with_kind(TextInputKind::Url);
         url_input.set_plain_chrome(true);
         url_input.set_text(&model.request.url);
         let url_input = url_input.with_id("api.url");
