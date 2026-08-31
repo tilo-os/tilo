@@ -387,9 +387,7 @@ fn fuzzy_score(haystack: &str, needle: &str) -> Option<f64> {
 
     // Start strength: prefix (index 0) beats a word-boundary start, which
     // beats a mid-word start.
-    let Some(&first) = matched.first() else {
-        return None;
-    };
+    let &first = matched.first()?;
     let start_bonus = if first == 0 {
         1.0
     } else if hay.get(first - 1).is_some_and(|&c| is_boundary(c)) {

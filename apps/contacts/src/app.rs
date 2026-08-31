@@ -1796,7 +1796,7 @@ impl ContactsApp {
                 continue;
             };
             let selected = self.selected == Some(*id);
-            self.draw_list_row(scene, t, tr, theme, contact, *rr, selected);
+            Self::draw_list_row(scene, t, tr, theme, contact, *rr, selected);
         }
         if self.list_rows.is_empty() {
             self.draw_list_empty_state(scene, t, tr, theme);
@@ -1808,7 +1808,6 @@ impl ContactsApp {
     /// Draw one contact row: selection highlight, avatar, name/subtitle
     /// (elided to fit), favourite star, and the bottom separator.
     fn draw_list_row(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2633,6 +2632,7 @@ impl ContactsApp {
     /// The birthday calendar popup: month/year header with prev/next
     /// chevrons, the weekday header row, and every day cell (hover +
     /// selected-day highlight).
+    #[allow(clippy::too_many_arguments)]
     fn draw_popup_calendar(
         &self,
         scene: &mut Scene,
@@ -2740,7 +2740,7 @@ impl ContactsApp {
     /// with a per-row checkbox, Select all / Select none, and the two vCard
     /// version export actions. The user exports exactly the ticked set.
     fn draw_export_dialog(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,

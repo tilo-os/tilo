@@ -368,6 +368,10 @@ pub struct Outcome {
     pub unapproved_steps: Vec<u64>,
 }
 
+/// Refreshed token list, plus the newly-enrolled `(keyslot, token id)` if
+/// [`ensure_generation_enrolled`] performed an enrollment.
+type EnrolledTokens = (Vec<(u32, RollbackToken)>, Option<(u32, u32)>);
+
 /// Ensure `req.generation` has an enrolled keyslot, enrolling one if it does not. Mirrors the
 /// original inline step exactly: the "no signed prediction" check runs even under
 /// `req.dry_run` (a dry run still reports whether confirmation would be possible at all), and
@@ -375,6 +379,10 @@ pub struct Outcome {
 ///
 /// Returns the token list (refreshed if enrollment happened) and, if enrollment happened,
 /// its `(keyslot, token id)`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors the original inline confirmation step exactly; each parameter is a distinct piece of that step's context (runner/workspace/device/config/request/floor/authorising-secret/tokens)"
+)]
 fn ensure_generation_enrolled(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -384,7 +392,7 @@ fn ensure_generation_enrolled(
     floor: FloorState,
     authorising: &[u8],
     tokens: Vec<(u32, RollbackToken)>,
-) -> Result<(Vec<(u32, RollbackToken)>, Option<(u32, u32)>)> {
+) -> Result<EnrolledTokens> {
     if tokens.iter().any(|(_, t)| t.generation == req.generation) {
         return Ok((tokens, None));
     }

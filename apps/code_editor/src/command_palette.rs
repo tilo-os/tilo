@@ -267,7 +267,9 @@ impl CommandPalette {
         let mut handled = false;
         let mut focus = None;
         let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).expect("leaf layout");
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return false;
+        };
         Widget::handle_event(
             &mut self.shared,
             event,

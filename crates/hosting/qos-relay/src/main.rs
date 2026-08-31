@@ -22,7 +22,7 @@
     )
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -111,7 +111,7 @@ fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_bind(path: &PathBuf, id: u64, pin: bool) -> anyhow::Result<()> {
+fn cmd_bind(path: &Path, id: u64, pin: bool) -> anyhow::Result<()> {
     let mut cfg = load_or_default(path)?;
     let added = cfg.add_workspace(id, pin);
     cfg.save(path)?;
@@ -123,7 +123,7 @@ fn cmd_bind(path: &PathBuf, id: u64, pin: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_unbind(path: &PathBuf, id: u64) -> anyhow::Result<()> {
+fn cmd_unbind(path: &Path, id: u64) -> anyhow::Result<()> {
     let mut cfg = load_or_default(path)?;
     let removed = cfg.remove_workspace(id);
     cfg.save(path)?;
@@ -135,7 +135,7 @@ fn cmd_unbind(path: &PathBuf, id: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_status(path: &PathBuf) -> anyhow::Result<()> {
+fn cmd_status(path: &Path) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     println!(
         "qos-relay {} (config: {})",
@@ -164,7 +164,7 @@ fn cmd_status(path: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_run(path: &PathBuf) -> anyhow::Result<()> {
+fn cmd_run(path: &Path) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
