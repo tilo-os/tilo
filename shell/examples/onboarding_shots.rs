@@ -13,7 +13,7 @@
 //! machine and its copy are the production ones.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use automerge::{ScalarValue, transaction::Transactable};
 use shell::onboarding::MintedIdentity;
@@ -43,7 +43,7 @@ const WIDTH_F32: f32 = WIDTH as f32;
 )]
 const HEIGHT_F32: f32 = HEIGHT as f32;
 
-fn shoot(theme: &Theme, out: PathBuf, steps: &[&str]) {
+fn shoot(theme: &Theme, out: &Path, steps: &[&str]) -> Result<(), String> {
     let mut state = State::new();
     let mut view = OnboardingView::with_minter(Box::new(|| {
         Ok(MintedIdentity {
@@ -78,7 +78,7 @@ fn shoot(theme: &Theme, out: PathBuf, steps: &[&str]) {
                 })
             },
         )
-        .unwrap_or_else(|e| panic!("compute_layout_with_measure: {e}"));
+        .map_err(|e| format!("compute_layout_with_measure: {e}"))?;
     view.apply_layout(&taffy, node, Point::ZERO);
 
     // `build_layout` rebuilds the child widgets, so they have not pulled
@@ -93,34 +93,36 @@ fn shoot(theme: &Theme, out: PathBuf, steps: &[&str]) {
     view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
+    Ok(())
 }
 
-fn main() {
+fn main() -> Result<(), String> {
     ui::i18n::I18nManager::init("en-US");
     let dir = std::env::var("ONBOARDING_SHOTS_OUT")
         .unwrap_or_else(|_| "target/onboarding-shots".to_string());
-    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create_dir_all({dir}): {e}"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create_dir_all({dir}): {e}"))?;
     let dir = PathBuf::from(dir);
 
     for (theme, suffix) in [(Theme::dark(), "dark"), (Theme::light(), "light")] {
-        shoot(&theme, dir.join(format!("1-intro-{suffix}.png")), &[]);
+        shoot(&theme, &dir.join(format!("1-intro-{suffix}.png")), &[])?;
         shoot(
             &theme,
-            dir.join(format!("2-no-recovery-{suffix}.png")),
+            &dir.join(format!("2-no-recovery-{suffix}.png")),
             &[KEY_BEGIN],
-        );
+        )?;
         // The gate, ticked — the primary action becomes available only here.
         shoot(
             &theme,
-            dir.join(format!("3-acknowledged-{suffix}.png")),
+            &dir.join(format!("3-acknowledged-{suffix}.png")),
             &[KEY_BEGIN, KEY_UNDERSTOOD],
-        );
+        )?;
         shoot(
             &theme,
-            dir.join(format!("4-done-{suffix}.png")),
+            &dir.join(format!("4-done-{suffix}.png")),
             &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE],
-        );
+        )?;
     }
+    Ok(())
 }

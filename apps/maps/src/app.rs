@@ -2476,7 +2476,7 @@ impl MapsApp {
             t,
             tr,
             theme,
-            SearchOverlay {
+            &SearchOverlay {
                 rect,
                 query: &self.model.query,
                 selected_id: self.model.selected.as_deref(),

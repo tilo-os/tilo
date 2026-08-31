@@ -951,19 +951,16 @@ where
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
-        match request {
-            wp_image_description_v1::Request::GetInformation { information } => {
-                // Parametric descriptions from our creator DO NOT
-                // permit get_information per spec (see the request's
-                // documentation in the XML). Follow the spec: post
-                // the `no_information` error.
-                let _ = information;
-                obj.post_error(
-                    wp_image_description_v1::Error::NoInformation,
-                    "get_information is not allowed on this image description",
-                );
-            }
-            _ => {}
+        if let wp_image_description_v1::Request::GetInformation { information } = request {
+            // Parametric descriptions from our creator DO NOT
+            // permit get_information per spec (see the request's
+            // documentation in the XML). Follow the spec: post
+            // the `no_information` error.
+            let _ = information;
+            obj.post_error(
+                wp_image_description_v1::Error::NoInformation,
+                "get_information is not allowed on this image description",
+            );
         }
     }
 }
@@ -1109,15 +1106,14 @@ where
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
-        match request {
-            wp_color_management_output_v1::Request::GetImageDescription { image_description } => {
-                let desc = data.snapshot();
-                let identity_hi = desc.identity_hi();
-                let identity_lo = desc.identity_lo();
-                let obj = data_init.init(image_description, desc);
-                let () = obj.ready2(identity_hi, identity_lo);
-            }
-            _ => {}
+        if let wp_color_management_output_v1::Request::GetImageDescription { image_description } =
+            request
+        {
+            let desc = data.snapshot();
+            let identity_hi = desc.identity_hi();
+            let identity_lo = desc.identity_lo();
+            let obj = data_init.init(image_description, desc);
+            let () = obj.ready2(identity_hi, identity_lo);
         }
     }
 }

@@ -868,8 +868,11 @@ impl BackupsApp {
         let all_sel = self.ui.sel_source.is_none();
         self.draw_source_row(scene, t, tr, theme, rail, &mut y, None, all_sel);
         for i in 0..self.catalog.sources.len() {
-            let sel = self.ui.sel_source.as_deref() == Some(self.catalog.sources[i].id.as_str());
-            let src = self.catalog.sources[i].clone();
+            let Some(src) = self.catalog.sources.get(i) else {
+                continue;
+            };
+            let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
+            let src = src.clone();
             self.draw_source_row_real(scene, t, tr, theme, rail, &mut y, &src, sel);
         }
 
@@ -896,7 +899,9 @@ impl BackupsApp {
         );
         y += 22.0;
         for i in 0..self.catalog.destinations.len() {
-            let d = self.catalog.destinations[i].clone();
+            let Some(d) = self.catalog.destinations.get(i).cloned() else {
+                continue;
+            };
             self.draw_dest_compact(scene, t, tr, theme, rail, &mut y, &d);
         }
         scene.pop_layer();
@@ -1519,7 +1524,9 @@ impl BackupsApp {
         let mut y = content.y0 + 50.0;
         let card_h = if narrow { 104.0 } else { 96.0 };
         for i in 0..self.catalog.sources.len() {
-            let src = self.catalog.sources[i].clone();
+            let Some(src) = self.catalog.sources.get(i).cloned() else {
+                continue;
+            };
             self.draw_source_card(scene, t, tr, theme, content, y, card_h, narrow, &src);
             y += card_h + 12.0;
         }
@@ -2047,7 +2054,9 @@ impl BackupsApp {
         let row_gap = 16.0;
         let mut rows_used = 1usize;
         for i in 0..n {
-            let d = self.catalog.destinations[i].clone();
+            let Some(d) = self.catalog.destinations.get(i).cloned() else {
+                continue;
+            };
             let col = i % cols;
             let row = i / cols;
             rows_used = row + 1;
@@ -2644,7 +2653,9 @@ impl BackupsApp {
     ) {
         let vals = [p.hourly, p.daily, p.weekly, p.monthly];
         for (i, field) in PolicyField::ALL.iter().enumerate() {
-            self.draw_schedules_editor_row(scene, t, tr, theme, panel, i, *field, vals[i]);
+            // `vals` and `PolicyField::ALL` both have exactly 4 entries.
+            let value = vals.get(i).copied().unwrap_or(0);
+            self.draw_schedules_editor_row(scene, t, tr, theme, panel, i, *field, value);
         }
     }
 
@@ -3702,7 +3713,10 @@ impl BackupsApp {
             .unwrap_or(0) as i32;
         let n = View::ALL.len() as i32;
         let next = ((idx + dir) % n + n) % n;
-        BackupsDoc::set_view(doc, root, View::ALL[next as usize]);
+        // `next` is always in `0..n` by construction of the double-modulo above.
+        if let Some(&view) = View::ALL.get(next as usize) {
+            BackupsDoc::set_view(doc, root, view);
+        }
         self.load_cache(doc, root);
     }
 
@@ -3726,7 +3740,10 @@ impl BackupsApp {
                 }
             }
         };
-        let id = snaps[next].id.clone();
+        let Some(snap) = snaps.get(next) else {
+            return;
+        };
+        let id = snap.id.clone();
         BackupsDoc::set_selected_snapshot(doc, root, Some(&id));
         self.load_cache(doc, root);
     }
@@ -3790,6 +3807,7 @@ impl Widget for BackupsApp {
     ) -> NodeId {
         // `new_leaf` only fails on tree-internal bookkeeping errors, never on
         // caller input; there is none to report here.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -3807,7 +3825,9 @@ impl Widget for BackupsApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         // `node` was created by `build_layout` in this same tree, so a lookup
         // miss would mean the frame cycle called these out of order.
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -3973,9 +3993,11 @@ impl BackupsApp {
             }
             Key::Named(NamedKey::ArrowLeft) => {
                 if self.ui.view == View::Schedules {
-                    let f = PolicyField::ALL[self.policy_focus];
-                    self.bump_retention(doc, root, f, -1);
-                    self.load_cache(doc, root);
+                    // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                    if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                        self.bump_retention(doc, root, f, -1);
+                        self.load_cache(doc, root);
+                    }
                 } else {
                     self.cycle_view(-1, doc, root);
                 }
@@ -3983,9 +4005,11 @@ impl BackupsApp {
             }
             Key::Named(NamedKey::ArrowRight) => {
                 if self.ui.view == View::Schedules {
-                    let f = PolicyField::ALL[self.policy_focus];
-                    self.bump_retention(doc, root, f, 1);
-                    self.load_cache(doc, root);
+                    // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                    if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                        self.bump_retention(doc, root, f, 1);
+                        self.load_cache(doc, root);
+                    }
                 } else {
                     self.cycle_view(1, doc, root);
                 }
@@ -4025,13 +4049,19 @@ impl BackupsApp {
                     *handled = true;
                 }
                 "+" | "=" if self.ui.view == View::Schedules => {
-                    self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], 1);
-                    self.load_cache(doc, root);
+                    // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                    if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                        self.bump_retention(doc, root, f, 1);
+                        self.load_cache(doc, root);
+                    }
                     *handled = true;
                 }
                 "-" | "_" if self.ui.view == View::Schedules => {
-                    self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], -1);
-                    self.load_cache(doc, root);
+                    // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                    if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                        self.bump_retention(doc, root, f, -1);
+                        self.load_cache(doc, root);
+                    }
                     *handled = true;
                 }
                 _ => {}
