@@ -186,7 +186,8 @@ gaining real hover/press feedback and one consistent button look. Converted:
 **db_client** (connect-modal Cancel/Save), **video-player** (floating Open
 pill), **monitor** (detail Stop/Kill, incl. the danger style), **diffmerge**
 (toolbar Open/Load/Next/Prev), **store** cards/actions, and ordinary **disks**/
-**vpn** controls, plus the **backups** restore footer. Keyboard/AT activation
+**vpn** controls, plus the **backups** restore footer and **containers** create
+footer. Keyboard/AT activation
 and per-button a11y nodes
 remain bounded by these apps' monolithic immediate-mode architecture (a separate
 retained-tree refactor), not by the button primitive.
@@ -235,7 +236,7 @@ widget, tracked separately).
 | `apps/snippets/src/app.rs:1545` `toolbar_button`, `expand.rs:249` copy/cancel | snippets ✅ | painted rect + hover-only hit-test | `Button` | S | MED |
 | `apps/backups/src/app.rs` restore footer + `Hit::BackupNow` | backups ✅ | **DONE where ordinary** — Restore/Cancel use shared faces; Backup Now retains its progress sliver and custom compact glyph | `ButtonFace` | S | MED |
 | `apps/notes/src/sidebar.rs:672` button chip | notes | one hand-drawn hover chip (otherwise a model app) | `Button` | S | MED |
-| `apps/containers/src/panels.rs:1280` `draw_confirm` action rects | containers | create/confirm/prompt buttons hit-tested | `Button` | M | MED |
+| `apps/containers/src/panels.rs` create/confirm/prompt actions | containers ✅ | **DONE where ordinary** — Create/Cancel use shared faces; confirmation/prompt actions come from `ModalDialog` | `ButtonFace`/`ModalDialog` | M | MED |
 | `apps/video-player/src/app.rs:375` `open_button_rect` | video-player ✅ | floating "Open" pill (only leftover) | `Button` | S | MED |
 
 ---
@@ -268,7 +269,7 @@ also use the widget elsewhere.
 | `apps/disks/src/app.rs:1275` `draw_modal` | disks | **DEFER** — a gated *type-the-device-name-to-confirm* dialog with a locked primary; needs a gated-primary `ModalDialog` capability first |
 | `apps/music/src/app/render.rs` `draw_name_prompt` | music | **DONE** — create/rename playlist prompt → `ModalDialog<PromptBody>` (real `TextInput`, kills the hand-rolled `name_input` char-splice); `name_input` kept only as the submit value-carrier |
 | `apps/video_editor/src/app.rs:2292` `draw_export_modal` | video_editor | **DEFER** — embeds interactive segmented controls (resolution/format/fps); belongs with the controls wave (5a), then wrap in `ModalDialog` |
-| `apps/imager/src/app.rs:1578` `export_text` overlay | imager | **REMAINING** — read-only config sheet with per-line syntax colouring; wrap in a no-footer `ModalDialog` + a small coloured-config body |
+| `apps/imager/src/export_dialog.rs` config preview | imager ✅ | **DONE** — extracted component preserves the responsive size and per-line syntax colours; shared `ModalDialog` owns framing, capture, focus trap, a11y role, and dismissal |
 | `apps/snippets/src/expand.rs` `ExpandModal` | snippets | **DEFER** — multiple per-variable text fields; belongs with the text-input wave |
 | `apps/git_client/src/app.rs:149` `armed_discard` | git_client | **DEFER** — an inline two-click "arm then confirm" affordance, not an overlay; converting to a dialog is a behaviour change, not a drop-in |
 | `apps/sheets/src/app.rs:2582` own scrim | sheets | **LEAVE** — scrim-only behind the already-shared command palette; low value, and wrapping the palette would fight its own layout |
@@ -558,12 +559,13 @@ themed, clipboard-correct version — do **not** keep forking.
 The broad mechanical waves are complete enough that a shorter, contextual
 queue is safer than old app counts:
 
-1. **Exact button faces:** containers Create/Cancel fit `ButtonFace` without
-   semantic loss. Do not fold progress, ghost, keypad, canvas, or media controls
-   into an ordinary button merely to lower a count.
+1. **Exact button faces:** audit the remaining immediate-mode apps for truly
+   ordinary actions. Do not fold progress, ghost, keypad, canvas, or media
+   controls into an ordinary button merely to lower a count.
 2. **Component boundaries:** continue extracting cohesive surfaces from large
-   app modules. The component must own its state, layout/drawing, hit-testing,
-   event routing, and focused tests; domain persistence stays in the host.
+   app modules. Maps' information sheet, Imager's export dialog, and Word
+   Processor's review overlay now own their state, layout/drawing, hit-testing,
+   event routing, and focused tests while domain persistence stays in the host.
 3. **Domain editors:** design formula-aware Sheets and transformed-canvas Slides
    adapters around the shared editor core. These are not plain `TextInput`
    migrations.
