@@ -333,7 +333,8 @@ fn exec_real_command(command: &[String]) -> ! {
     let Ok(cargs) = command
         .iter()
         .map(|a| CString::new(a.as_bytes()))
-        .collect::<Result<Vec<_>, _>>() else {
+        .collect::<Result<Vec<_>, _>>()
+    else {
         eprintln!("qos-sandbox-exec: argument contains an interior NUL");
         std::process::exit(2);
     };
