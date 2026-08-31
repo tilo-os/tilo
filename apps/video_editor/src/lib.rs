@@ -63,6 +63,7 @@ pub mod portal;
 pub mod presence;
 pub mod preview;
 pub mod probe;
+pub mod search_provider;
 pub mod project_file;
 pub mod shot;
 pub mod thumbnail;
