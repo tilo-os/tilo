@@ -59,6 +59,7 @@ use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_
 use crate::paint;
 use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
+use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 
 const TOP_BAR: f64 = 54.0;
 
@@ -357,11 +358,7 @@ enum Action {
     CloseFontPicker,
     AddSystemFont(String),
     BeginRenameFont(String),
-
     // --- library shelf ---------------------------------------------------
-    ToggleSortMenu,
-    SetSort(crate::model::LibrarySort),
-    ToggleHideRead,
 }
 
 /// What the colour picker is editing.
@@ -591,7 +588,9 @@ pub struct BooksApp {
     default_font_menu: bool,
     library_prefs: crate::model::LibraryPrefs,
     watched_folders: Vec<PathBuf>,
-    sort_menu: bool,
+    /// Library shelf sort/filter cluster. Owns dropdown state, drawing, and
+    /// its topmost hit stack; the app persists emitted preference actions.
+    shelf_controls: ShelfControls,
     /// Scheme id currently open in the colour editor, if any.
     editing_scheme: Option<String>,
     /// Whether the "add a system font" family picker is open.
@@ -762,7 +761,7 @@ impl BooksApp {
             default_font_menu: false,
             library_prefs: crate::model::LibraryPrefs::default(),
             watched_folders: Vec::new(),
-            sort_menu: false,
+            shelf_controls: ShelfControls::default(),
             editing_scheme: None,
             font_picker: false,
             picker_scroll: 0.0,
@@ -1640,11 +1639,6 @@ impl BooksApp {
             Action::CloseFontPicker => self.font_picker = false,
             Action::AddSystemFont(family) => self.on_add_system_font(&family, doc),
             Action::BeginRenameFont(id) => self.on_begin_rename_font(id, doc),
-
-            // --- library shelf -------------------------------------------
-            Action::ToggleSortMenu => self.sort_menu = !self.sort_menu,
-            Action::SetSort(sort) => self.on_set_sort(sort, doc),
-            Action::ToggleHideRead => self.on_toggle_hide_read(doc),
         }
     }
 
@@ -2173,7 +2167,7 @@ impl BooksApp {
         p.sort = sort;
         self.library_prefs = p;
         BooksDoc::write_library_prefs(doc, &p);
-        self.sort_menu = false;
+        self.shelf_controls.close_sort_menu();
     }
 
     fn on_toggle_hide_read(&mut self, doc: &mut AutoCommit) {
@@ -2181,6 +2175,15 @@ impl BooksApp {
         p.hide_read = !p.hide_read;
         self.library_prefs = p;
         BooksDoc::write_library_prefs(doc, &p);
+    }
+
+    fn dispatch_shelf_control(&mut self, action: ShelfControlAction, doc: &mut AutoCommit) {
+        match action {
+            ShelfControlAction::ToggleSortMenu => self.shelf_controls.toggle_sort_menu(),
+            ShelfControlAction::SetSort(sort) => self.on_set_sort(sort, doc),
+            ShelfControlAction::ToggleHideRead => self.on_toggle_hide_read(doc),
+            ShelfControlAction::Swallow => {}
+        }
     }
 
     fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut AutoCommit) {
@@ -3594,8 +3597,13 @@ impl BooksApp {
         // before the app-wide regions so its card cannot fall through
         // to page selection or rail controls underneath.
         let comment_action = self.comment_overlay.hit_test(self.cursor);
+        let shelf_action = if comment_action.is_none() && self.view == View::Library {
+            self.shelf_controls.hit_test(self.cursor)
+        } else {
+            None
+        };
         // Topmost wins: later-recorded hits draw on top.
-        let top = if comment_action.is_none() {
+        let top = if comment_action.is_none() && shelf_action.is_none() {
             self.hits
                 .iter()
                 .rev()
@@ -3606,7 +3614,7 @@ impl BooksApp {
         };
         // The bubble is drawn below subsequent reader overlays. Their app-wide
         // hits therefore keep precedence when geometry ever overlaps.
-        let bubble_action = if comment_action.is_none() && top.is_none() {
+        let bubble_action = if comment_action.is_none() && shelf_action.is_none() && top.is_none() {
             self.reader_bubble.hit_test(self.cursor)
         } else {
             None
@@ -3666,6 +3674,11 @@ impl BooksApp {
             self.dispatch_comment_action(action, doc);
             self.refresh_from_doc(doc);
             self.persist_progress(doc);
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(action) = shelf_action {
+            self.dispatch_shelf_control(action, doc);
+            self.refresh_from_doc(doc);
             self.dirty = true;
             *handled = true;
         } else if let Some(action) = bubble_action {
@@ -4409,6 +4422,7 @@ struct ShelfGrid {
 
 impl BooksApp {
     fn draw_library(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        self.shelf_controls.begin_frame();
         let lib = std::mem::take(&mut self.library);
         let c = theme.tokens.colors.clone();
         let r = self.rect;
@@ -4422,7 +4436,16 @@ impl BooksApp {
             return;
         }
 
-        let sort_btn = self.draw_library_shelf_controls(scene, t, tr, theme, &c, r, open_x);
+        let sort_btn = self.shelf_controls.draw_bar(
+            scene,
+            t,
+            tr,
+            theme,
+            r,
+            open_x,
+            self.cursor,
+            self.library_prefs,
+        );
 
         // --- filter + sort the display order ------------------------------
         let order = self.shelf_display_order(&lib);
@@ -4431,14 +4454,31 @@ impl BooksApp {
         // Everything hidden by the "hide read" filter.
         if order.is_empty() {
             Self::draw_all_read_empty_state(scene, t, tr, &c, r);
-            if self.sort_menu {
-                self.draw_sort_menu(scene, t, tr, theme, &c, sort_btn);
-            }
+            self.shelf_controls.draw_menu(
+                scene,
+                t,
+                tr,
+                theme,
+                r,
+                sort_btn,
+                self.cursor,
+                self.library_prefs.sort,
+            );
             self.library = lib;
             return;
         }
 
-        self.draw_library_grid(scene, t, tr, theme, &lib, &order, &c, r, sort_btn);
+        self.draw_library_grid(scene, t, tr, theme, &lib, &order, &c, r);
+        self.shelf_controls.draw_menu(
+            scene,
+            t,
+            tr,
+            theme,
+            r,
+            sort_btn,
+            self.cursor,
+            self.library_prefs.sort,
+        );
         self.library = lib;
     }
 
@@ -4510,102 +4550,6 @@ impl BooksApp {
             Action::OpenViaPortal,
         );
         open_x
-    }
-
-    /// Sort dropdown + hide-read toggle, left of the "Open book" button —
-    /// only drawn once the shelf has books. Returns the sort button's rect
-    /// (the dropdown menu, drawn later, anchors to it).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_library_shelf_controls(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        r: Rect,
-        open_x: f64,
-    ) -> Rect {
-        let cy = r.y0 + (TOP_BAR - 30.0) / 2.0;
-        let mut rx = open_x - 16.0;
-        // Sort dropdown.
-        let sort_label = format!("Sort · {}", self.library_prefs.sort.label());
-        let (slw, _) = tr.measure_weighted(&sort_label, 13.0, None, TextWeight::Medium);
-        let sb_w = f64::from(slw) + 26.0 + 20.0;
-        rx -= sb_w;
-        let sbtn = Rect::new(rx, cy, rx + sb_w, cy + 30.0);
-        let shover = self.sort_menu || self.is_hover(sbtn);
-        paint::fill_round(
-            scene,
-            t,
-            sbtn,
-            15.0,
-            if shover {
-                theme.bg_hover
-            } else {
-                c.surfaces.overlay
-            },
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            sbtn,
-            15.0,
-            if self.sort_menu {
-                theme.border_focus
-            } else {
-                c.border_standard
-            },
-            1.0,
-        );
-        tr.draw_text_weighted(
-            scene,
-            &sort_label,
-            13.0,
-            c.text_primary,
-            t * Affine::translate((rx + 13.0, cy + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
-        paint::chevron_down(
-            scene,
-            t,
-            Rect::new(rx + sb_w - 26.0, cy + 3.0, rx + sb_w - 4.0, cy + 27.0),
-            c.text_dim,
-            1.7,
-        );
-        self.push_hit(sbtn, Action::ToggleSortMenu);
-        let sort_btn = sbtn;
-        rx -= 18.0;
-        // Hide-read toggle + label.
-        let tog_w = 40.0;
-        let tog_h = 22.0;
-        rx -= tog_w;
-        self.switch(
-            scene,
-            t,
-            theme,
-            c,
-            rx,
-            cy + (30.0 - tog_h) / 2.0,
-            tog_w,
-            tog_h,
-            self.library_prefs.hide_read,
-            Action::ToggleHideRead,
-        );
-        let hl = "Hide read";
-        let (hlw, _) = tr.measure_weighted(hl, 13.0, None, TextWeight::Medium);
-        rx -= 8.0 + f64::from(hlw);
-        tr.draw_text_weighted(
-            scene,
-            hl,
-            13.0,
-            c.text_dim,
-            t * Affine::translate((rx, cy + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
-        sort_btn
     }
 
     /// Everything hidden by the "hide read" filter: an empty-shelf message
@@ -4723,7 +4667,6 @@ impl BooksApp {
         order: &[usize],
         c: &ui::tokens::colors::Colors,
         r: Rect,
-        sort_btn: Rect,
     ) {
         let grid = self.shelf_grid_geometry(r, order.len());
 
@@ -4787,11 +4730,6 @@ impl BooksApp {
             let thumb_y = track_y0 + frac * (track_h - thumb_h);
             let thumb = Rect::new(track_x, thumb_y, track_x + 4.0, thumb_y + thumb_h);
             paint::fill_round(scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.5));
-        }
-
-        // Sort dropdown menu floats above the shelf.
-        if self.sort_menu {
-            self.draw_sort_menu(scene, t, tr, theme, c, sort_btn);
         }
     }
 
@@ -4947,84 +4885,6 @@ impl BooksApp {
             }),
         }
         idx
-    }
-
-    /// The sort-order dropdown menu, anchored under the sort button.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_sort_menu(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        anchor: Rect,
-    ) {
-        use crate::model::LibrarySort;
-        let w = 190.0_f64.max(anchor.width());
-        let row_h = 34.0;
-        let x0 = (anchor.x1 - w).max(self.rect.x0 + 8.0);
-        let top = anchor.y1 + 6.0;
-        let menu = Rect::new(
-            x0,
-            top,
-            x0 + w,
-            top + LibrarySort::ALL.len() as f64 * row_h + 8.0,
-        );
-        let shadow = Rect::new(menu.x0 - 1.0, menu.y0 + 3.0, menu.x1 + 1.0, menu.y1 + 6.0);
-        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
-        paint::fill_round(
-            scene,
-            t,
-            menu,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            menu,
-            f64::from(theme.tokens.radii.lg),
-            c.border_standard,
-            1.0,
-        );
-        self.push_hit(menu, Action::Swallow);
-        let mut my = top + 4.0;
-        for choice in LibrarySort::ALL {
-            let row = Rect::new(x0 + 6.0, my, x0 + w - 6.0, my + row_h - 4.0);
-            let sel = self.library_prefs.sort == choice;
-            if sel {
-                paint::fill_round(
-                    scene,
-                    t,
-                    row,
-                    8.0,
-                    theme.accent_primary.with_alpha_factor(0.16),
-                );
-            } else if self.is_hover(row) {
-                paint::fill_round(scene, t, row, 8.0, theme.bg_hover);
-            }
-            tr.draw_text_weighted(
-                scene,
-                choice.label(),
-                13.0,
-                if sel {
-                    theme.accent_primary
-                } else {
-                    c.text_primary
-                },
-                t * Affine::translate((x0 + 16.0, my + 8.0)),
-                None,
-                if sel {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Medium
-                },
-            );
-            self.push_hit(row, Action::SetSort(choice));
-            my += row_h;
-        }
     }
 
     /// Resolve a book's decoded cover into a cached, GPU-ready image handle.
@@ -12798,10 +12658,16 @@ mod interaction_tests {
         );
 
         // The sort control + hide-read toggle are reachable in the shelf chrome.
-        let sort = find_hit(&app, |a| matches!(a, Action::ToggleSortMenu));
-        assert!(sort.is_some(), "a sort control is present");
-        let hide = find_hit(&app, |a| matches!(a, Action::ToggleHideRead));
-        assert!(hide.is_some(), "a hide-read toggle is present");
+        assert!(
+            app.shelf_controls
+                .has_action(ShelfControlAction::ToggleSortMenu),
+            "a sort control is present"
+        );
+        assert!(
+            app.shelf_controls
+                .has_action(ShelfControlAction::ToggleHideRead),
+            "a hide-read toggle is present"
+        );
     }
 
     /// Drive a real drag that starts *inside* a paragraph and ends in a later
