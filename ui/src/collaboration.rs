@@ -418,6 +418,39 @@ impl SdkConnectSource {
     }
 }
 
+/// Build the identity presentation for a launcher-bound collaboration join.
+///
+/// Identities without a device certificate predate certified joins and keep
+/// using their public key during the migration. Once a certificate exists,
+/// however, signing or encoding failure is fatal: silently falling back would
+/// let a revoked or otherwise denied device bypass certified verification.
+fn sdk_join_identity_bytes(cluster_id: Uuid) -> Result<Vec<u8>, runtime_portal::NotAvailable> {
+    let identity = match runtime_identity::load() {
+        Ok(identity) => identity,
+        Err(runtime_portal::NotAvailable::ServiceFdMissing) => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+
+    let Some(device_certificate) = identity.device_certificate() else {
+        return Ok(identity.group_public_key().to_vec());
+    };
+
+    let workspace_id = cluster_id.to_string();
+    let proof = identity.sign_collaboration_join(&workspace_id)?;
+    runtime_collab::CertifiedJoinIdentity {
+        workspace_id,
+        device_certificate: device_certificate.to_vec(),
+        proof: proof.to_vec(),
+    }
+    .encode()
+    .map_err(|error| {
+        runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("encoding certified collaboration join failed: {error}"),
+        ))
+    })
+}
+
 pub struct CollaborationManager {
     backend: Backend,
     /// When `Some`, [`Self::send_signed_op`] mints a signed envelope and
@@ -452,6 +485,9 @@ impl CollaborationManager {
 
     /// Explicit typed endpoint for diagnostics and headless harnesses that
     /// are not launched through the app launcher. Takes ownership of `fd`.
+    /// Because this path has no launcher-bound identity broker, it remains on
+    /// the transitional legacy join until callers can supply a certificate
+    /// and workspace-scoped device proof explicitly.
     ///
     /// # Errors
     ///
@@ -480,7 +516,12 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        let sdk = Self::spawn_sdk(source, Vec::new())?;
+        let identity_bytes = if matches!(&source, SdkConnectSource::Env) {
+            sdk_join_identity_bytes(cluster_id)?
+        } else {
+            Vec::new()
+        };
+        let sdk = Self::spawn_sdk(source, identity_bytes)?;
         let mut manager = Self {
             backend: Backend::Sdk(sdk),
             identity: None,
@@ -522,28 +563,20 @@ impl CollaborationManager {
     }
 
     fn new_scoped(record: Option<String>) -> Self {
-        // Pubkey bytes ride along on the join_channel call below, so presence
-        // is authored on connect. `ServiceFdMissing` (not a qOS session) is
-        // expected and quiet; any other failure gets a debug line so
-        // `RUST_LOG=ui=debug` can answer "why does presence look anonymous?".
-        let runtime_identity = match runtime_identity::load() {
-            Ok(id) => Some(id),
-            Err(runtime_portal::NotAvailable::ServiceFdMissing) => {
-                tracing::debug!(
-                    "runtime-identity: env var unset — collab join will use empty identity bytes"
+        let (app_id, cluster_id) = auto_hello_env();
+        let identity_bytes = match sdk_join_identity_bytes(cluster_id) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "collab: workspace join identity unavailable; disabling SDK collaboration"
                 );
-                None
-            }
-            Err(e) => {
-                tracing::debug!(
-                    "runtime-identity: load failed ({e:?}); collab join will use empty identity bytes"
-                );
-                None
+                return Self {
+                    backend: Backend::Disabled,
+                    identity: None,
+                };
             }
         };
-        let identity_bytes = runtime_identity
-            .map(|id| id.group_public_key().to_vec())
-            .unwrap_or_default();
 
         match Self::spawn_sdk(SdkConnectSource::Env, identity_bytes) {
             Ok(sdk) => {
@@ -551,7 +584,6 @@ impl CollaborationManager {
                     backend: Backend::Sdk(sdk),
                     identity: None,
                 };
-                let (app_id, cluster_id) = auto_hello_env();
                 manager.send(CollabRequest::Hello {
                     app_id,
                     cluster_id,
