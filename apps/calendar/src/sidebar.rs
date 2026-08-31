@@ -12,9 +12,9 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::app::{
-    center_text, draw_chevron, draw_cross, draw_download, draw_icon_button, draw_upload, fill_rect,
-    fill_round, stroke_line, stroke_round,
+    center_text, draw_chevron, draw_cross, draw_download, draw_icon_button, draw_upload,
 };
+use crate::draw_util::{fill_rect, fill_round, stroke_line, stroke_round};
 use crate::model::View;
 
 const WIDTH: f64 = 252.0;
