@@ -51,7 +51,10 @@ path_is_trusted() {
     _uid=${_info% *}
     _mode=${_info#* }
     [ "$_uid" -eq "$ME" ] || [ "$_uid" -eq 0 ] || return 1
-    [ $(( 0"$_mode" & 0022 )) -eq 0 ] || return 1
+    # Prefix the stat digits with 0 so POSIX shells parse them as octal. Keep
+    # the expansion unquoted inside arithmetic syntax: Dash rejects the Bash-
+    # accepted `0"$_mode"` form used here previously.
+    [ $(( 0$_mode & 0022 )) -eq 0 ] || return 1
     return 0
 }
 

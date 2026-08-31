@@ -9,6 +9,12 @@
 # saves any existing config and puts it back on the way out.
 set -uo pipefail
 
+# The production wrapper deliberately rejects group-writable configuration
+# directories. Distro defaults vary between 0022 and user-private-group 0002,
+# so make the accepting fixture private instead of inheriting the test host's
+# policy.
+umask 0077
+
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 wrapper=$here/../qos-session-dev
 home=$(getent passwd "$(id -u)" | cut -d: -f6)
