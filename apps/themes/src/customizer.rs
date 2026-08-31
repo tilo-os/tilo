@@ -379,7 +379,16 @@ impl Widget for Customizer {
         }
 
         if self.editable
-            && self.handle_pointer_capture(event, scale, m, state, path, handled, focus_target, taffy)
+            && self.handle_pointer_capture(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                taffy,
+            )
         {
             return;
         }
@@ -389,7 +398,16 @@ impl Widget for Customizer {
         }
 
         if self.editable
-            && self.handle_control_events(event, scale, m, state, path, handled, focus_target, taffy)
+            && self.handle_control_events(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                taffy,
+            )
         {
             return;
         }
