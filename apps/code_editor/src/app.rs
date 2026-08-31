@@ -2773,12 +2773,13 @@ impl CodeApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
         if self.palette.is_visible()
             && let WindowEvent::KeyboardInput { .. } = event
-            && self.palette.handle_key(event)
+            && self.palette.handle_key(event, modifiers, state)
         {
             *handled = true;
             self.drain_child_events(state);
@@ -3558,7 +3559,7 @@ impl Widget for CodeApp {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if self.handle_palette_and_prompt_cursor(event, scale_factor, state, handled) {
+        if self.handle_palette_and_prompt_cursor(event, scale_factor, modifiers, state, handled) {
             return;
         }
 
