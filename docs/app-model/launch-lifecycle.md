@@ -12,12 +12,13 @@ pipeline behind the runner's custom-shot hook.
 
 ## Adopted
 
-The following 27 applications use the shared lifecycle:
+The following 29 applications use the shared lifecycle:
 
 `api_tester`, `backups`, `calendar`, `chat`, `code_editor`, `contacts`,
 `containers`, `db_client`, `diffmerge`, `disks`, `feeds`, `file-explorer`,
-`firewall`, `hex_editor`, `logs`, `mail`, `maps`, `music`, `notes`, `remote`,
-`settings`, `sheets`, `slides`, `snippets`, `themes`, `totp`, and `vpn`.
+`firewall`, `hex_editor`, `logs`, `mail`, `maps`, `music`, `notes`, `photos`,
+`remote`, `settings`, `sheets`, `slides`, `snippets`, `themes`, `totp`,
+`video-player`, and `vpn`.
 
 Their `main.rs` files now contain only app-specific root/action setup and, where
 needed, scenario-specific capture setup. Chat and Contacts use the shared
@@ -47,12 +48,10 @@ one of these concrete reasons:
 | `monitor` | Runs interaction benchmarks and drives capture scenarios through multiple frames. |
 | `osk` | Installs the input-method bridge and its event-loop waker; it also has a no-bridge diagnostic mode. |
 | `pdf_viewer` | Opens a selected PDF into a per-record document and room index rather than the ordinary single store. |
-| `photos` | Opens a selected image/library and stages decoded-image captures after synchronization. |
 | `store` | Owns a background Flatpak worker whose event-loop wake and shutdown lifetime is tied to the live app. |
 | `terminal` | Owns PTY/session wake integration installed through `run_with_setup`. |
 | `tube` | Has extraction/network/media probes, live shots, and benchmark modes in addition to its window. |
 | `typst_editor` | Supports an explicit per-shot theme argument and a separate compiled-document capture pipeline. |
-| `video-player` | Accepts a media path and pumps asynchronous decode until the first real frame is ready. |
 | `video_editor` | Imports and probes media, then pumps asynchronous decode into the same state used for the captured frame. |
 | `weather` | Includes a live network probe with its own timeout and response loop. |
 | `word-processor` | Opens a positional document, assigns a unique CRDT actor, and installs per-document record routing. |
