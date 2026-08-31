@@ -43,6 +43,10 @@ impl Router {
     /// Replace the current provider set with `reg` — loads new components,
     /// drops removed ones, reuses unchanged ones (matched by package + wasm
     /// path). Used both on initial startup and on every inotify hot-reload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading a component from its WASM path fails.
     pub fn apply_registry(&self, reg: &Registry) -> anyhow::Result<()> {
         let mut next: HashMap<String, ActiveProvider> = HashMap::new();
         let current = self.providers.read().clone();
@@ -158,6 +162,11 @@ impl Router {
         }
     }
 
+    /// Import a document in a provider's native format and return canonical CRDT bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `CodecError` if the provider is not found or if importing fails.
     pub fn import_as(&self, bytes: &[u8], provider_id: &str) -> Result<Vec<u8>, CodecError> {
         let p = self
             .get(provider_id)
@@ -165,6 +174,11 @@ impl Router {
         p.component.import_doc(bytes)
     }
 
+    /// Export canonical CRDT bytes to a provider's native format.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `CodecError` if the provider is not found or if exporting fails.
     pub fn export_as(&self, canonical: &[u8], provider_id: &str) -> Result<Vec<u8>, CodecError> {
         let p = self
             .get(provider_id)
@@ -174,6 +188,11 @@ impl Router {
 }
 
 /// Load + apply a registry file in one shot.
+///
+/// # Errors
+///
+/// Returns an error if loading or parsing the registry file fails, or if applying
+/// the registry to the router fails.
 pub fn load_into(router: &Router, path: &Path) -> anyhow::Result<()> {
     let reg = Registry::load(path)?;
     router.apply_registry(&reg)

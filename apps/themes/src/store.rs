@@ -127,6 +127,10 @@ pub fn active_spec(text: &str) -> Option<ThemeSpec> {
 /// sections, and write it back. Creates the parent directory if needed.
 /// The path-explicit core of [`save`], factored out so it can be tested
 /// against a temp file without mutating process-global environment.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created or the file cannot be written.
 pub fn save_to(path: &std::path::Path, spec: &ThemeSpec) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -142,6 +146,10 @@ pub fn load_active_id_from(path: &std::path::Path) -> Option<String> {
 
 /// Persist `spec` as the active OS theme, preserving foreign sections.
 /// Creates the `qos` config directory if needed. Returns the path written.
+///
+/// # Errors
+///
+/// Returns an error if the config directory cannot be determined or the file cannot be written.
 pub fn save(spec: &ThemeSpec) -> std::io::Result<PathBuf> {
     let path = store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
     save_to(&path, spec)?;

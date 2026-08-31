@@ -102,11 +102,13 @@ pub struct PrintSpoolerHandle {
 }
 
 impl PrintSpoolerHandle {
+    #[must_use]
     pub fn new(inner: Arc<dyn PrintSpooler>) -> Self {
         Self { inner }
     }
 
     /// The real thing: `lp` against the local CUPS.
+    #[must_use]
     pub fn cups() -> Self {
         Self {
             inner: Arc::new(LpSpooler),
@@ -114,6 +116,7 @@ impl PrintSpoolerHandle {
     }
 
     /// A handle with no print system behind it — every submission fails and the destination list is empty, surfacing as "no printers".
+    #[must_use]
     pub fn null() -> Self {
         Self {
             inner: Arc::new(NullPrintSpooler),
@@ -542,6 +545,10 @@ impl PrintBackend {
 /// socket with no writer blocks forever; a character device can be
 /// infinite), seek to the start (the app may have left the offset at
 /// EOF), and read one byte past the cap so an oversize document is *detected*, not silently truncated.
+///
+/// # Errors
+///
+/// Returns an error if the descriptor is not a regular file, exceeds the size limit, or cannot be read.
 pub(super) fn spool_from_fd(fd: zbus::zvariant::OwnedFd) -> Result<Vec<u8>, String> {
     let std_fd: std::os::fd::OwnedFd = fd.into();
     let mut file = std::fs::File::from(std_fd);

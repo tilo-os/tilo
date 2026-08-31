@@ -82,7 +82,12 @@ impl ImageStore {
         if url.is_empty() {
             return None;
         }
-        let mut slots = self.shared.slots.lock().unwrap();
+        // A poisoned lock means some other thread already panicked while
+        // holding it; there is nothing sane left to cache, so degrade to
+        // "no image yet" rather than taking the caller down with it.
+        let Ok(mut slots) = self.shared.slots.lock() else {
+            return None;
+        };
         if let Some(slot) = slots.get(url) {
             return match slot {
                 Slot::Ready(img) => Some(img.clone()),
@@ -101,7 +106,12 @@ impl ImageStore {
 
     /// Whether `url` has been requested yet (Ready/Loading/Failed all count).
     pub fn is_known(&self, url: &str) -> bool {
-        self.shared.slots.lock().unwrap().contains_key(url)
+        // Same poisoned-lock degrade as `get`: unknown is the safe answer.
+        self.shared
+            .slots
+            .lock()
+            .map(|slots| slots.contains_key(url))
+            .unwrap_or(false)
     }
 
     /// Number of in-flight loads (queued or decoding).
@@ -203,6 +213,12 @@ pub fn paint_image_cover(
     let dh = ih * scale;
     let dx = rect.x0 + (rw - dw) * 0.5;
     let dy = rect.y0 + (rh - dh) * 0.5;
+    // `Affine`'s `Mul` composes two transforms; it has no failure mode, but
+    // clippy can't see that for a non-primitive operator overload.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+    )]
     let brush_transform = Affine::translate((dx, dy)) * Affine::scale(scale);
 
     let clip = RoundedRect::from_rect(rect, radius);
@@ -225,8 +241,9 @@ mod tests {
     /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's
     /// fetch+decode+cache path is exercised deterministically.
     fn png_bytes(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
-        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-        for _ in 0..(w * h) {
+        let pixels = w.saturating_mul(h);
+        let mut rgba = Vec::with_capacity(pixels.saturating_mul(4) as usize);
+        for _ in 0..pixels {
             rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
         }
         let mut out = Vec::new();

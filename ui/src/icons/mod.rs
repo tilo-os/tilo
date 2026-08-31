@@ -132,11 +132,12 @@ pub const LUCIDE_DEFAULT_STROKE_PX: f64 = 1.5;
 
 /// Parse a lucide `d="…"` string into a [`BezPath`].
 ///
-/// Panics if the supplied string is malformed. All paths shipped in
-/// this module are unit-tested to parse into non-empty bez paths, so a
-/// panic here flags a bad hand-edit rather than a runtime bug.
+/// Degrades to an empty path if the supplied string is malformed — an
+/// invisible icon is a bad hand-edit surviving to draw time, not a crash.
+/// All paths shipped in this module are unit-tested to parse into
+/// non-empty bez paths, so CI still catches the mistake.
 fn path_from_d(d: &str) -> BezPath {
-    BezPath::from_svg(d).expect("lucide path literal must parse")
+    BezPath::from_svg(d).unwrap_or_default()
 }
 
 /// Build the stroked outline of a lucide `<rect>`, with optional corner radius.

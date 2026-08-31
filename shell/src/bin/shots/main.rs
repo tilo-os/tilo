@@ -72,27 +72,39 @@ struct Args {
     max_diff_pixels: u64,
 }
 
+/// Consume the next argv value for `flag`, erroring if there isn't one.
+fn take_value(argv: &mut Vec<String>, flag: &str) -> Result<String, String> {
+    let v = argv
+        .first()
+        .ok_or_else(|| format!("{flag} needs a value"))?
+        .clone();
+    argv.remove(0);
+    Ok(v)
+}
+
 impl Args {
     fn parse() -> Result<Self, String> {
-        let mut mode = Mode::Offscreen;
-        let mut scenario: Option<String> = None;
-        let mut scenes: Vec<String> = ShellDriver::ALL_SCENES
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
+        let mut args = Args {
+            mode: Mode::Offscreen,
+            scenario: None,
+            scenes: ShellDriver::ALL_SCENES
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            out: PathBuf::from("target/nirios-shots"),
+            width: 1600,
+            height: 900,
+            fps: 30,
+            step_duration: 1.0,
+            list_scenarios: false,
+            sweep: None,
+            per_frame: None,
+            subcommand: None,
+            baseline: None,
+            diff_threshold: 4,
+            max_diff_pixels: 0,
+        };
         let mut scenes_explicit = false;
-        let mut out = PathBuf::from("target/nirios-shots");
-        let mut width = 1600u32;
-        let mut height = 900u32;
-        let mut fps = 30u32;
-        let mut step_duration = 1.0f32;
-        let mut list_scenarios = false;
-        let mut sweep: Option<Vec<(u32, u32)>> = None;
-        let mut per_frame: Option<u32> = None;
-        let mut subcommand: Option<String> = None;
-        let mut baseline: Option<PathBuf> = None;
-        let mut diff_threshold: u8 = 4;
-        let mut max_diff_pixels: u64 = 0;
 
         let mut argv: Vec<String> = std::env::args().skip(1).collect();
         // Subcommand detection — `shots check ...` runs the baseline
@@ -100,217 +112,179 @@ impl Args {
         if let Some(first) = argv.first()
             && first == "check"
         {
-            subcommand = Some("check".to_string());
+            args.subcommand = Some("check".to_string());
             argv.remove(0);
         }
         while let Some(arg) = argv.first().cloned() {
             argv.remove(0);
-            match arg.as_str() {
-                "--help" | "-h" => {
-                    print_help();
-                    std::process::exit(0);
-                }
-                "--mode" => {
-                    let v = argv.first().ok_or("--mode needs a value")?.clone();
-                    argv.remove(0);
-                    mode = match v.as_str() {
-                        "window" => Mode::Window,
-                        "offscreen" => Mode::Offscreen,
-                        "headless" => Mode::Headless,
-                        "recording" => Mode::Recording,
-                        other => {
-                            return Err(format!(
-                                "--mode: unknown value '{other}' \
-                             (expected window|offscreen|headless|recording)"
-                            ));
-                        }
-                    };
-                }
-                "--scenario" => {
-                    let v = argv.first().ok_or("--scenario needs a value")?.clone();
-                    argv.remove(0);
-                    scenario = Some(v);
-                }
-                "--scenes" => {
-                    let v = argv.first().ok_or("--scenes needs a value")?.clone();
-                    argv.remove(0);
-                    scenes = v.split(',').map(|s| s.trim().to_string()).collect();
-                    for s in &scenes {
-                        if !ShellDriver::ALL_SCENES.contains(&s.as_str()) {
-                            return Err(format!(
-                                "unknown scene '{s}'. Valid: {}",
-                                ShellDriver::ALL_SCENES.join(", ")
-                            ));
-                        }
-                    }
-                    scenes_explicit = true;
-                }
-                "--out" => {
-                    let v = argv.first().ok_or("--out needs a value")?.clone();
-                    argv.remove(0);
-                    out = PathBuf::from(v);
-                }
-                "--width" => {
-                    let v = argv
-                        .first()
-                        .ok_or("--width needs a value")?
-                        .parse::<u32>()
-                        .map_err(|e| format!("--width: {e}"))?;
-                    argv.remove(0);
-                    width = v;
-                }
-                "--height" => {
-                    let v = argv
-                        .first()
-                        .ok_or("--height needs a value")?
-                        .parse::<u32>()
-                        .map_err(|e| format!("--height: {e}"))?;
-                    argv.remove(0);
-                    height = v;
-                }
-                "--fps" => {
-                    let v = argv
-                        .first()
-                        .ok_or("--fps needs a value")?
-                        .parse::<u32>()
-                        .map_err(|e| format!("--fps: {e}"))?;
-                    argv.remove(0);
-                    fps = v;
-                }
-                "--step-duration" => {
-                    let v = argv
-                        .first()
-                        .ok_or("--step-duration needs a value")?
-                        .parse::<f32>()
-                        .map_err(|e| format!("--step-duration: {e}"))?;
-                    argv.remove(0);
-                    step_duration = v;
-                }
-                "--list-scenarios" => list_scenarios = true,
-                "--sweep" => {
-                    // Optional value. If the next arg looks like a flag
-                    // (or there isn't one) we use the default set;
-                    // otherwise parse a comma-separated WxH list.
-                    let next = argv.first().cloned();
-                    let resolutions: Vec<(u32, u32)> = match next {
-                        Some(v) if !v.starts_with("--") => {
-                            argv.remove(0);
-                            parse_sweep_list(&v)?
-                        }
-                        _ => DEFAULT_SWEEP.to_vec(),
-                    };
-                    if resolutions.is_empty() {
-                        return Err("--sweep: at least one resolution required".into());
-                    }
-                    sweep = Some(resolutions);
-                }
-                "--per-frame" => {
-                    let v = argv
-                        .first()
-                        .ok_or("--per-frame needs a value")?
-                        .parse::<u32>()
-                        .map_err(|e| format!("--per-frame: {e}"))?;
-                    argv.remove(0);
-                    if v == 0 {
-                        return Err("--per-frame must be > 0".into());
-                    }
-                    per_frame = Some(v);
-                }
-                "--baseline" => {
-                    let v = argv.first().ok_or("--baseline needs a value")?.clone();
-                    argv.remove(0);
-                    baseline = Some(PathBuf::from(v));
-                }
-                "--diff-threshold" => {
-                    let v = argv
-                        .first()
-                        .ok_or("--diff-threshold needs a value")?
-                        .parse::<u8>()
-                        .map_err(|e| format!("--diff-threshold: {e}"))?;
-                    argv.remove(0);
-                    diff_threshold = v;
-                }
-                "--max-diff-pixels" => {
-                    let v = argv
-                        .first()
-                        .ok_or("--max-diff-pixels needs a value")?
-                        .parse::<u64>()
-                        .map_err(|e| format!("--max-diff-pixels: {e}"))?;
-                    argv.remove(0);
-                    max_diff_pixels = v;
-                }
-                other => return Err(format!("unknown arg '{other}' (try --help)")),
-            }
+            Self::apply_flag(&mut args, &arg, &mut argv, &mut scenes_explicit)?;
         }
+        Self::validate(&mut args, scenes_explicit)?;
+        Ok(args)
+    }
 
-        if width == 0 || height == 0 {
+    /// Handle one `--flag [value]` argument, consuming its value(s) from
+    /// `argv` and updating `args` in place. Split out of `parse` to keep
+    /// the top-level loop short.
+    fn apply_flag(
+        args: &mut Args,
+        arg: &str,
+        argv: &mut Vec<String>,
+        scenes_explicit: &mut bool,
+    ) -> Result<(), String> {
+        match arg {
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
+            "--mode" => {
+                args.mode = match take_value(argv, "--mode")?.as_str() {
+                    "window" => Mode::Window,
+                    "offscreen" => Mode::Offscreen,
+                    "headless" => Mode::Headless,
+                    "recording" => Mode::Recording,
+                    other => {
+                        return Err(format!(
+                            "--mode: unknown value '{other}' (expected window|offscreen|headless|recording)"
+                        ));
+                    }
+                };
+            }
+            "--scenario" => args.scenario = Some(take_value(argv, "--scenario")?),
+            "--scenes" => {
+                let v = take_value(argv, "--scenes")?;
+                args.scenes = v.split(',').map(|s| s.trim().to_string()).collect();
+                for s in &args.scenes {
+                    if !ShellDriver::ALL_SCENES.contains(&s.as_str()) {
+                        return Err(format!(
+                            "unknown scene '{s}'. Valid: {}",
+                            ShellDriver::ALL_SCENES.join(", ")
+                        ));
+                    }
+                }
+                *scenes_explicit = true;
+            }
+            "--out" => args.out = PathBuf::from(take_value(argv, "--out")?),
+            "--width" => {
+                args.width = take_value(argv, "--width")?
+                    .parse()
+                    .map_err(|e| format!("--width: {e}"))?;
+            }
+            "--height" => {
+                args.height = take_value(argv, "--height")?
+                    .parse()
+                    .map_err(|e| format!("--height: {e}"))?;
+            }
+            "--fps" => {
+                args.fps = take_value(argv, "--fps")?
+                    .parse()
+                    .map_err(|e| format!("--fps: {e}"))?;
+            }
+            "--step-duration" => {
+                args.step_duration = take_value(argv, "--step-duration")?
+                    .parse()
+                    .map_err(|e| format!("--step-duration: {e}"))?;
+            }
+            "--list-scenarios" => args.list_scenarios = true,
+            "--sweep" => {
+                // Optional value. If the next arg looks like a flag
+                // (or there isn't one) we use the default set;
+                // otherwise parse a comma-separated WxH list.
+                let next = argv.first().cloned();
+                let resolutions: Vec<(u32, u32)> = match next {
+                    Some(v) if !v.starts_with("--") => {
+                        argv.remove(0);
+                        parse_sweep_list(&v)?
+                    }
+                    _ => DEFAULT_SWEEP.to_vec(),
+                };
+                if resolutions.is_empty() {
+                    return Err("--sweep: at least one resolution required".into());
+                }
+                args.sweep = Some(resolutions);
+            }
+            "--per-frame" => {
+                let v: u32 = take_value(argv, "--per-frame")?
+                    .parse()
+                    .map_err(|e| format!("--per-frame: {e}"))?;
+                if v == 0 {
+                    return Err("--per-frame must be > 0".into());
+                }
+                args.per_frame = Some(v);
+            }
+            "--baseline" => args.baseline = Some(PathBuf::from(take_value(argv, "--baseline")?)),
+            "--diff-threshold" => {
+                args.diff_threshold = take_value(argv, "--diff-threshold")?
+                    .parse()
+                    .map_err(|e| format!("--diff-threshold: {e}"))?;
+            }
+            "--max-diff-pixels" => {
+                args.max_diff_pixels = take_value(argv, "--max-diff-pixels")?
+                    .parse()
+                    .map_err(|e| format!("--max-diff-pixels: {e}"))?;
+            }
+            other => return Err(format!("unknown arg '{other}' (try --help)")),
+        }
+        Ok(())
+    }
+
+    /// Cross-flag validation once the whole argv has been consumed, plus
+    /// the mode-specific `out` default (recording mode writes a single
+    /// file, not a directory). Split out of `parse` to keep it short.
+    fn validate(args: &mut Args, scenes_explicit: bool) -> Result<(), String> {
+        if args.width == 0 || args.height == 0 {
             return Err("width and height must be > 0".into());
         }
-        if fps == 0 {
+        if args.fps == 0 {
             return Err("--fps must be > 0".into());
         }
-        if !(step_duration > 0.0) {
+        if !(args.step_duration > 0.0) {
             return Err("--step-duration must be > 0".into());
         }
-        if subcommand.as_deref() == Some("check") {
-            if baseline.is_none() {
+        if args.subcommand.as_deref() == Some("check") {
+            if args.baseline.is_none() {
                 return Err("shots check: --baseline DIR is required".into());
             }
             // `check` always runs through the offscreen path — it needs
             // PNGs to diff. Reject mode mismatches explicitly so the
             // failure mode is obvious.
-            if mode != Mode::Offscreen {
+            if args.mode != Mode::Offscreen {
                 return Err(format!(
-                    "shots check: --mode {mode:?} is not supported (offscreen only)"
+                    "shots check: --mode {:?} is not supported (offscreen only)",
+                    args.mode
                 ));
             }
         }
         // Headless rejects --scenes (no rendering); require --scenario.
-        if mode == Mode::Headless {
+        if args.mode == Mode::Headless {
             if scenes_explicit {
                 eprintln!("shots: --scenes is ignored in headless mode (no rendering)");
             }
-            if scenario.is_none() {
+            if args.scenario.is_none() {
                 return Err("--mode headless requires --scenario NAME".into());
             }
         }
-        if mode == Mode::Recording {
-            if scenario.is_none() {
+        if args.mode == Mode::Recording {
+            if args.scenario.is_none() {
                 return Err("--mode recording requires --scenario NAME".into());
             }
-            if sweep.is_some() {
+            if args.sweep.is_some() {
                 return Err("--sweep is not supported in recording mode".into());
             }
-            if per_frame.is_some() {
+            if args.per_frame.is_some() {
                 return Err("--per-frame is not supported in recording mode".into());
             }
             // Default `out` is a directory; in recording mode we write a
             // single file. Switch the default to a `.h264` path if the
             // caller didn't supply one.
-            if out == *"target/nirios-shots" {
-                out = PathBuf::from("target/nirios-shots.h264");
+            if args.out == *"target/nirios-shots" {
+                args.out = PathBuf::from("target/nirios-shots.h264");
             }
         }
-        if mode == Mode::Window && (sweep.is_some() || per_frame.is_some()) {
+        if args.mode == Mode::Window && (args.sweep.is_some() || args.per_frame.is_some()) {
             return Err("--sweep / --per-frame are not supported in window mode".into());
         }
-        Ok(Args {
-            mode,
-            scenario,
-            scenes,
-            out,
-            width,
-            height,
-            fps,
-            step_duration,
-            list_scenarios,
-            sweep,
-            per_frame,
-            subcommand,
-            baseline,
-            diff_threshold,
-            max_diff_pixels,
-        })
+        Ok(())
     }
 }
 
@@ -414,7 +388,7 @@ Examples:\n\
     );
 }
 
-fn main() {
+fn main() -> Result<(), String> {
     // Same env-var contract as `shell`: QOS_STARTUP_METRICS_PATH=/tmp/x.json
     // dumps JSON timings on exit; without it every `mark` is a no-op.
     // `shots` is the harness that measures the cold-start warmup win.
@@ -448,24 +422,24 @@ fn main() {
         for s in catalogue() {
             println!("{:18} {}", s.name, s.description);
         }
-        return;
+        return Ok(());
     }
 
     if args.subcommand.as_deref() == Some("check") {
-        let baseline = args
-            .baseline
-            .as_ref()
-            .expect("Args::parse enforces --baseline for `check`");
+        let Some(baseline) = args.baseline.as_ref() else {
+            // `Args::validate` rejects the `check` subcommand without `--baseline`.
+            return Ok(());
+        };
         let exit_code = run_check(&args, baseline);
         std::process::exit(exit_code);
     }
 
-    run_capture(&args);
+    run_capture(&args)
 }
 
 /// Capture the configured scenes / scenarios to disk. Honours `--sweep`
 /// (multi-resolution) and `--per-frame` (animation step expansion).
-fn run_capture(args: &Args) {
+fn run_capture(args: &Args) -> Result<(), String> {
     let viewports: Vec<(u32, u32)> = match &args.sweep {
         Some(list) => list.clone(),
         None => vec![(args.width, args.height)],
@@ -476,35 +450,40 @@ fn run_capture(args: &Args) {
         } else {
             args.out.clone()
         };
-        run_capture_one(args, *vp, &out);
+        run_capture_one(args, *vp, &out)?;
     }
+    Ok(())
 }
 
-fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) {
+fn run_capture_one(
+    args: &Args,
+    viewport: (u32, u32),
+    out: &std::path::Path,
+) -> Result<(), String> {
     match args.mode {
         Mode::Offscreen => match args.scenario.as_deref() {
             Some(name) => {
                 let scenario = require_scenario(name);
                 let mut driver = ShellDriver::new(viewport);
-                mode::offscreen::run_scenario(&mut driver, &scenario, out, args.per_frame);
+                mode::offscreen::run_scenario(&mut driver, &scenario, out, args.per_frame)?;
             }
-            None => mode::offscreen::run_scenes(&args.scenes, out, viewport),
+            None => mode::offscreen::run_scenes(&args.scenes, out, viewport)?,
         },
         Mode::Headless => {
-            let scenario = require_scenario(
-                args.scenario
-                    .as_deref()
-                    .expect("Args::parse enforces --scenario for headless"),
-            );
+            let Some(name) = args.scenario.as_deref() else {
+                // `Args::validate` requires `--scenario` for headless mode.
+                return Ok(());
+            };
+            let scenario = require_scenario(name);
             let mut driver = ShellDriver::new(viewport);
-            mode::headless::run_scenario(&mut driver, &scenario, out, args.per_frame);
+            mode::headless::run_scenario(&mut driver, &scenario, out, args.per_frame)?;
         }
         Mode::Recording => {
-            let scenario = require_scenario(
-                args.scenario
-                    .as_deref()
-                    .expect("Args::parse enforces --scenario for recording"),
-            );
+            let Some(name) = args.scenario.as_deref() else {
+                // `Args::validate` requires `--scenario` for recording mode.
+                return Ok(());
+            };
+            let scenario = require_scenario(name);
             let mut driver = ShellDriver::new(viewport);
             mode::recording::run_scenario(
                 &mut driver,
@@ -512,13 +491,14 @@ fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) {
                 out,
                 args.fps,
                 args.step_duration,
-            );
+            )?;
         }
         Mode::Window => {
             let pre_roll = args.scenario.as_deref().map(require_scenario);
             mode::window::run(pre_roll.as_ref());
         }
     }
+    Ok(())
 }
 
 /// Drive the `check` subcommand: capture current outputs (under a temp
@@ -540,7 +520,10 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
         "shots check: capturing current state to {}",
         current.display(),
     );
-    run_capture(args);
+    if let Err(e) = run_capture(args) {
+        eprintln!("shots check: capture failed: {e}");
+        return 2;
+    }
     println!(
         "shots check: comparing against baseline {}",
         baseline.display(),
@@ -553,7 +536,7 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
             for entry in &report.entries {
                 match entry.kind {
                     diff::DiffKind::Ok => {
-                        ok_count += 1;
+                        ok_count = ok_count.saturating_add(1);
                         println!("OK   {}", entry.path.display());
                     }
                     diff::DiffKind::Diff(px) => {
@@ -562,22 +545,22 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                         // data, so a small per-frame delta is the
                         // expected steady state.
                         if px <= args.max_diff_pixels {
-                            ok_count += 1;
+                            ok_count = ok_count.saturating_add(1);
                             println!("OK   {} ({} px within tolerance)", entry.path.display(), px);
                         } else {
                             any_diff = true;
-                            diff_count += 1;
+                            diff_count = diff_count.saturating_add(1);
                             println!("DIFF {} {} pixels differ", entry.path.display(), px);
                         }
                     }
                     diff::DiffKind::Missing => {
                         any_diff = true;
-                        diff_count += 1;
+                        diff_count = diff_count.saturating_add(1);
                         println!("MISS {} (no current capture)", entry.path.display());
                     }
                     diff::DiffKind::SizeMismatch { baseline, current } => {
                         any_diff = true;
-                        diff_count += 1;
+                        diff_count = diff_count.saturating_add(1);
                         println!(
                             "SIZE {} baseline={}x{} current={}x{}",
                             entry.path.display(),
@@ -589,7 +572,7 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                     }
                     diff::DiffKind::ReadError(ref msg) => {
                         any_diff = true;
-                        diff_count += 1;
+                        diff_count = diff_count.saturating_add(1);
                         println!("READ {} {}", entry.path.display(), msg);
                     }
                 }

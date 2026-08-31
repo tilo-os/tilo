@@ -1129,7 +1129,7 @@ mod tests {
             let node = taffy
                 .new_with_children(taffy::Style::default(), &kids)
                 .unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: vello::kurbo::Point) {
@@ -1157,9 +1157,9 @@ mod tests {
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
-            self.kids.iter().map(|c| c.as_ref()).collect()
+            self.kids.iter().map(Box::as_ref).collect()
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "tw"
         }
         fn get_rect(&self) -> vello::kurbo::Rect {

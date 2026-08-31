@@ -112,7 +112,7 @@ impl DiffView {
         );
 
         let result = if settings.diff_layout == DiffLayout::SideBySide {
-            Self::draw_split(scene, tr, t, theme, viewport, diff, scroll, settings)
+            Self::draw_split(scene, tr, t, theme, viewport, diff, scroll, *settings)
         } else {
             Self::draw_unified(
                 scene,
@@ -122,7 +122,7 @@ impl DiffView {
                 viewport,
                 diff,
                 scroll,
-                settings,
+                *settings,
                 hover_hunk,
                 staged_side,
                 armed_hunk,
@@ -142,7 +142,7 @@ impl DiffView {
         viewport: Rect,
         diff: &FileDiff,
         scroll: f64,
-        settings: &Settings,
+        settings: Settings,
         hover_hunk: Option<usize>,
         staged_side: bool,
         armed_hunk: Option<usize>,
@@ -282,7 +282,7 @@ impl DiffView {
         viewport: Rect,
         diff: &FileDiff,
         scroll: f64,
-        settings: &Settings,
+        settings: Settings,
     ) -> Vec<HunkButton> {
         let c = &theme.tokens.colors;
         let mid = f64::midpoint(viewport.x0, viewport.x1);
@@ -331,7 +331,7 @@ impl DiffView {
         line: &DiffLine,
         x0: f64,
         y: f64,
-        settings: &Settings,
+        settings: Settings,
         is_left: bool,
     ) {
         let c = &theme.tokens.colors;

@@ -104,10 +104,10 @@ pub fn assign_peer_colors(
 
     let mut taken = [false; PEER_PALETTE.len()];
     for c in reserved {
-        if let Some(i) = PEER_PALETTE.iter().position(|p| p == c) {
-            if let Some(slot) = taken.get_mut(i) {
-                *slot = true;
-            }
+        if let Some(i) = PEER_PALETTE.iter().position(|p| p == c)
+            && let Some(slot) = taken.get_mut(i)
+        {
+            *slot = true;
         }
     }
 
