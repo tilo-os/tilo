@@ -121,21 +121,23 @@ test, download the artifacts, require all 16 unique outputs, and only then
 publish the apt, RPM, pacman, and generic Nix registries plus a checksummed
 Forgejo release. Ubuntu 24.04 and Debian 13 are independent build/test jobs.
 
-The workflow uses these native Forgejo runner labels:
+The workflow uses the existing `runner` Forgejo label for every job. amd64
+containers run directly; ARM64 jobs register QEMU binfmt support with
+`docker/setup-qemu-action` and then run the same target-architecture container
+under user-mode emulation. This avoids requiring an otherwise-unused ARM
+runner and keeps every emulated build in CI rather than on developer machines.
 
-- `runner` for the existing x86-64 pool;
-- `arm64` on an AArch64 machine.
-
-Native runners are required because qOS links the distribution's DRM, input,
-seat, graphics, PipeWire, and portal libraries. QEMU builds would be much slower
-and would not test the package against the actual target ABI. Each runner must
-support job containers. No publishing secret beyond the existing
+The build is not a generic cross-compile: Cargo and the target package manager
+both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,
+so dependency resolution, ELF linkage, package metadata, installation, and
+`ldd` verification all exercise the target ABI. The runner must expose Docker
+and allow binfmt registration. No publishing secret beyond the existing
 `REGISTRY_TOKEN` is introduced; it must have repository and package write
 permission for tag releases.
 
-Every distro job first rejects a mismatched runner architecture, builds inside
-its target distribution, and then installs the result with that distribution's
-package manager. The Nix job builds the flake, checks the session entry and ELF
-architecture, and exports the complete store closure as a `.nar.gz`. Tagged
-release assets therefore contain only artifacts that passed their native
-install test.
+Every distro job first checks the architecture visible inside its container,
+builds inside its target distribution, and then installs the result with that
+distribution's package manager. The Nix job builds the flake, checks the session
+entry and ELF architecture, and exports the complete store closure as a
+`.nar.gz`. Tagged release assets therefore contain only artifacts that passed
+their target-architecture install test.
