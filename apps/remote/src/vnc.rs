@@ -12,7 +12,7 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::rfb::{self, Framebuffer, PixelFormat, ServerInit};
@@ -46,7 +46,12 @@ pub struct VncSession {
 
 impl VncSession {
     /// Start connecting; returns immediately with status `Connecting`.
-    pub fn connect(cfg: VncConfig) -> VncSession {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system refuses to spawn the
+    /// background worker thread.
+    pub fn connect(cfg: VncConfig) -> io::Result<VncSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let frame: Arc<Mutex<Option<Framebuffer>>> = Arc::new(Mutex::new(None));
         let (input_tx, input_rx) = channel::<VncInput>();
@@ -56,8 +61,8 @@ impl VncSession {
         let worker = std::thread::Builder::new()
             .name("remote-vnc".into())
             .spawn(move || {
-                if let Err(e) = run_client(cfg, status_worker.clone(), frame_worker, input_rx) {
-                    let mut s = status_worker.lock().unwrap();
+                if let Err(e) = run_client(&cfg, &status_worker, &frame_worker, &input_rx) {
+                    let mut s = lock_recover(&status_worker);
                     if !matches!(*s, SessionStatus::Failed(_)) {
                         // A clean server close reads as EOF; anything else is
                         // an honest failure.
@@ -70,40 +75,39 @@ impl VncSession {
                         }
                     }
                 }
-            })
-            .expect("spawn remote-vnc worker");
+            })?;
 
-        VncSession {
+        Ok(VncSession {
             status,
             frame,
             input_tx,
             last_seen_gen: None,
             _worker: worker,
-        }
+        })
     }
 
     pub fn status(&self) -> SessionStatus {
-        self.status.lock().unwrap().clone()
+        lock_recover(&self.status).clone()
     }
 
     /// Return the framebuffer if it has a newer generation than last taken.
     /// Clones only when there is genuinely a new frame to paint.
     pub fn take_frame(&mut self) -> Option<Framebuffer> {
-        let guard = self.frame.lock().unwrap();
-        let fb = guard.as_ref()?;
+        let fb = {
+            let guard = lock_recover(&self.frame);
+            guard.clone()?
+        };
         if self.last_seen_gen == Some(fb.generation) {
             None
         } else {
             self.last_seen_gen = Some(fb.generation);
-            Some(fb.clone())
+            Some(fb)
         }
     }
 
     /// The remote framebuffer size, once known.
     pub fn size(&self) -> Option<(u16, u16)> {
-        self.frame
-            .lock()
-            .unwrap()
+        lock_recover(&self.frame)
             .as_ref()
             .map(|fb| (fb.width, fb.height))
     }
@@ -111,6 +115,13 @@ impl VncSession {
     pub fn send_input(&self, input: VncInput) {
         let _ = self.input_tx.send(input);
     }
+}
+
+/// Locks `m`, recovering a poisoned mutex instead of panicking: one
+/// worker thread's earlier panic must not cascade into every later read
+/// of shared session state.
+fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn friendly(e: &io::Error) -> String {
@@ -132,10 +143,10 @@ fn write_input(stream: &mut TcpStream, input: VncInput) -> io::Result<()> {
 
 /// The full client body: handshake, then the read/apply/input loop.
 fn run_client(
-    cfg: VncConfig,
-    status: Arc<Mutex<SessionStatus>>,
-    frame: Arc<Mutex<Option<Framebuffer>>>,
-    input_rx: Receiver<VncInput>,
+    cfg: &VncConfig,
+    status: &Arc<Mutex<SessionStatus>>,
+    frame: &Arc<Mutex<Option<Framebuffer>>>,
+    input_rx: &Receiver<VncInput>,
 ) -> io::Result<()> {
     let mut stream = TcpStream::connect((cfg.host.as_str(), cfg.port))?;
     stream.set_nodelay(true).ok();
@@ -169,8 +180,8 @@ fn run_client(
     // 6. Kick off with a full (non-incremental) update request.
     request_update(&mut stream, false, &fb)?;
 
-    *status.lock().unwrap() = SessionStatus::Connected;
-    *frame.lock().unwrap() = Some(fb.clone());
+    *lock_recover(status) = SessionStatus::Connected;
+    *lock_recover(frame) = Some(fb.clone());
 
     let mut last_request = Instant::now();
     loop {
@@ -207,7 +218,7 @@ fn run_client(
             0 => {
                 // FramebufferUpdate — decode straight from the socket.
                 rfb::decode_framebuffer_update(&mut stream, &mut fb, &fmt)?;
-                *frame.lock().unwrap() = Some(fb.clone());
+                *lock_recover(frame) = Some(fb.clone());
                 request_update(&mut stream, true, &fb)?;
                 last_request = Instant::now();
             }
@@ -416,7 +427,8 @@ mod tests {
             host: "127.0.0.1".into(),
             port,
             password: None,
-        });
+        })
+        .unwrap();
 
         let mut got: Option<Framebuffer> = None;
         for _ in 0..200 {
@@ -452,7 +464,8 @@ mod tests {
             host: "127.0.0.1".into(),
             port,
             password: None,
-        });
+        })
+        .unwrap();
         let mut failed = false;
         for _ in 0..100 {
             if let SessionStatus::Failed(_) = vnc.status() {

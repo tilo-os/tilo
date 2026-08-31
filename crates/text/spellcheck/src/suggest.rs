@@ -35,7 +35,7 @@ pub fn suggest(dict: &Dictionary, word: &str, max: usize) -> Vec<String> {
     let needle = word.to_lowercase();
     let needle_len = needle.chars().count();
     let min_len = needle_len.saturating_sub(MAX_EDIT_DISTANCE);
-    let max_len = needle_len + MAX_EDIT_DISTANCE;
+    let max_len = needle_len.saturating_add(MAX_EDIT_DISTANCE);
 
     // (weighted_cost, length, word) — collected then sorted by the ranking above.
     let mut scored: Vec<(f64, usize, &str)> = Vec::new();

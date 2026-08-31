@@ -57,7 +57,7 @@ pub struct SurfaceFrame {
 impl SurfaceFrame {
     /// Serialises into the wire format above (one allocation).
     pub fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(FRAME_HEADER_LEN + self.payload.len());
+        let mut buf = Vec::with_capacity(FRAME_HEADER_LEN.saturating_add(self.payload.len()));
         buf.extend_from_slice(&self.sequence.to_be_bytes());
         let len: u32 = self.payload.len().try_into().unwrap_or(u32::MAX);
         buf.extend_from_slice(&len.to_be_bytes());
@@ -69,21 +69,44 @@ impl SurfaceFrame {
 
     /// Parses one frame off the front of `input`. Returns the frame and bytes
     /// consumed, or `None` if `input` doesn't yet hold a full frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::LengthOverflow`] if the header's length prefix,
+    /// read as a `usize`, is greater than `u32::MAX`.
     pub fn decode(input: &[u8]) -> Result<Option<(SurfaceFrame, usize)>, FrameError> {
         if input.len() < FRAME_HEADER_LEN {
             return Ok(None);
         }
-        let sequence = u64::from_be_bytes(input[0..8].try_into().unwrap());
-        let length = u32::from_be_bytes(input[8..12].try_into().unwrap()) as usize;
-        let flags = input[12];
-        let total = FRAME_HEADER_LEN + length;
+        // Every slice below is inside the just-checked `FRAME_HEADER_LEN`
+        // prefix (or, for the payload, the `total <= input.len()` checked
+        // further down) — `input` is untrusted network data, so each access
+        // still goes through `.get()` rather than trusting that bound.
+        let Some(sequence_bytes) = input.get(0..8).and_then(|s| <[u8; 8]>::try_from(s).ok()) else {
+            return Ok(None);
+        };
+        let sequence = u64::from_be_bytes(sequence_bytes);
+
+        let Some(length_bytes) = input.get(8..12).and_then(|s| <[u8; 4]>::try_from(s).ok()) else {
+            return Ok(None);
+        };
+        let length = u32::from_be_bytes(length_bytes) as usize;
+
+        let Some(&flags) = input.get(12) else {
+            return Ok(None);
+        };
+
+        let total = FRAME_HEADER_LEN.saturating_add(length);
         if length > (u32::MAX as usize) {
             return Err(FrameError::LengthOverflow(length));
         }
         if input.len() < total {
             return Ok(None);
         }
-        let payload = input[FRAME_HEADER_LEN..total].to_vec();
+        let Some(payload_slice) = input.get(FRAME_HEADER_LEN..total) else {
+            return Ok(None);
+        };
+        let payload = payload_slice.to_vec();
         Ok(Some((
             SurfaceFrame {
                 sequence,
@@ -124,7 +147,7 @@ impl SubscriberQueue {
     fn push(&mut self, frame: SurfaceFrame) {
         while self.frames.len() >= self.cap {
             self.frames.pop_front();
-            self.drops += 1;
+            self.drops = self.drops.saturating_add(1);
         }
         self.frames.push_back(frame);
     }
@@ -167,17 +190,26 @@ impl SurfaceStreamSender {
 
     /// Registers a viewer; idempotent — resets the drop counter and empties the queue if already subscribed.
     pub fn subscribe(&self, peer: PeerId) {
-        let mut subs = self.subscribers.lock().expect("subscribers");
+        let mut subs = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.insert(peer, SubscriberQueue::new(self.queue_cap));
     }
 
     pub fn unsubscribe(&self, peer: PeerId) {
-        let mut subs = self.subscribers.lock().expect("subscribers");
+        let mut subs = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.remove(&peer);
     }
 
     pub fn subscriber_count(&self) -> usize {
-        self.subscribers.lock().expect("subscribers").len()
+        self.subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Ships one frame to every subscribed viewer. The sequence counter
@@ -189,32 +221,51 @@ impl SurfaceStreamSender {
             keyframe,
             payload,
         };
-        let mut subs = self.subscribers.lock().expect("subscribers");
-        for queue in subs.values_mut() {
-            queue.push(frame.clone());
+        // Scoped so the lock is released as soon as delivery is done, rather
+        // than held until the function returns.
+        {
+            let mut subs = self
+                .subscribers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for queue in subs.values_mut() {
+                queue.push(frame.clone());
+            }
         }
         sequence
     }
 
     /// Pops the front frame for `peer`, or `None` if unsubscribed / empty.
     pub fn poll(&self, peer: PeerId) -> Option<SurfaceFrame> {
-        let mut subs = self.subscribers.lock().expect("subscribers");
+        let mut subs = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.get_mut(&peer)?.pop()
     }
 
     /// Cumulative drop count for a subscriber; 0 if not subscribed.
     pub fn drops_for(&self, peer: PeerId) -> u64 {
-        let subs = self.subscribers.lock().expect("subscribers");
+        let subs = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.get(&peer).map_or(0, SubscriberQueue::drops)
     }
 
     pub fn total_drops(&self) -> u64 {
-        let subs = self.subscribers.lock().expect("subscribers");
+        let subs = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.values().map(SubscriberQueue::drops).sum()
     }
 
     pub fn pending_for(&self, peer: PeerId) -> usize {
-        let subs = self.subscribers.lock().expect("subscribers");
+        let subs = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.get(&peer).map_or(0, |q| q.frames.len())
     }
 }

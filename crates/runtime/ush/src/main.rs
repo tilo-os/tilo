@@ -32,29 +32,39 @@ use ush::supervisor::{Session, SessionOptions};
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
-    let arg0 = Path::new(&argv[0])
-        .file_name()
+    let prog_name = argv
+        .first()
+        .map(Path::new)
+        .and_then(Path::file_name)
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let rest = argv.get(1..).unwrap_or(&[]);
 
     // Inside a guest the runtime is reached through its own name. Outside it,
     // `ush` and `dsh` are the two profiles of the same program.
-    let result = match arg0.as_str() {
-        "pkg" => guest::pkg(&argv[1..]),
-        "perm" => guest::perm(&argv[1..]),
-        "scan" => guest::scan(&argv[1..]),
-        "guard" => guest::guard(&argv[1..]),
-        "quarantine" => guest::quarantine(&argv[1..]),
+    let result = match prog_name.as_str() {
+        "pkg" => guest::pkg(rest),
+        "perm" => guest::perm(rest),
+        "scan" => guest::scan(rest),
+        "guard" => guest::guard(rest),
+        "quarantine" => guest::quarantine(rest),
         "restart" => guest::restart(),
-        "ush" => host(Profile::Ush, &argv[1..]),
-        "dsh" => host(Profile::Dsh, &argv[1..]),
-        _ => dispatch(&argv[1..]),
+        "ush" => host(Profile::Ush, rest),
+        "dsh" => host(Profile::Dsh, rest),
+        _ => dispatch(rest),
     };
 
     match result {
-        Ok(code) => ExitCode::from(code as u8),
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(u8::MAX)),
         Err(e) => {
-            eprintln!("{}: {e:#}", if arg0.is_empty() { "ush" } else { &arg0 });
+            eprintln!(
+                "{}: {e:#}",
+                if prog_name.is_empty() {
+                    "ush"
+                } else {
+                    &prog_name
+                }
+            );
             ExitCode::from(1)
         }
     }
@@ -63,16 +73,17 @@ fn main() -> ExitCode {
 /// `qos-ush <subcommand>` — the spelling used when the binary is invoked by
 /// its own name rather than through a shim.
 fn dispatch(args: &[String]) -> anyhow::Result<i32> {
+    let rest = args.get(1..).unwrap_or(&[]);
     match args.first().map(String::as_str) {
-        Some("serve") => cmd_serve(&args[1..]),
-        Some("guest-init") => guest::init(&args[1..]),
-        Some("dsh") => host(Profile::Dsh, &args[1..]),
-        Some("ush" | "run") => host(Profile::Ush, &args[1..]),
-        Some("pkg") => guest::pkg(&args[1..]),
-        Some("perm") => guest::perm(&args[1..]),
-        Some("scan") => guest::scan(&args[1..]),
-        Some("guard") => guest::guard(&args[1..]),
-        Some("quarantine") => guest::quarantine(&args[1..]),
+        Some("serve") => cmd_serve(rest),
+        Some("guest-init") => guest::init(rest),
+        Some("dsh") => host(Profile::Dsh, rest),
+        Some("ush" | "run") => host(Profile::Ush, rest),
+        Some("pkg") => guest::pkg(rest),
+        Some("perm") => guest::perm(rest),
+        Some("scan") => guest::scan(rest),
+        Some("guard") => guest::guard(rest),
+        Some("quarantine") => guest::quarantine(rest),
         Some("--help" | "-h") | None => {
             print!("{USAGE}");
             Ok(0)
@@ -107,12 +118,13 @@ fn host(profile: Profile, args: &[String]) -> anyhow::Result<i32> {
         profile,
         ..SessionOptions::default()
     };
-    let mut i = 0;
+    let mut i: usize = 0;
     while i < args.len() {
-        match args[i].as_str() {
+        let Some(arg) = args.get(i) else { break };
+        match arg.as_str() {
             "-c" => {
                 let script = args
-                    .get(i + 1)
+                    .get(i.saturating_add(1))
                     .ok_or_else(|| anyhow::anyhow!("-c needs a command"))?;
                 // Matching `sh -c`: everything after it is one script, run by
                 // the guest's shell, not split into an argv here.
@@ -123,22 +135,22 @@ fn host(profile: Profile, args: &[String]) -> anyhow::Result<i32> {
                     "-c".into(),
                     script.clone(),
                 ];
-                i += 2;
+                i = i.saturating_add(2);
             }
             "-v" | "--verbose" => {
                 opts.verbose = true;
-                i += 1;
+                i = i.saturating_add(1);
             }
             "--ephemeral" => {
                 opts.ephemeral = true;
-                i += 1;
+                i = i.saturating_add(1);
             }
             "--base" => {
                 opts.base = PathBuf::from(
-                    args.get(i + 1)
+                    args.get(i.saturating_add(1))
                         .ok_or_else(|| anyhow::anyhow!("--base needs a path"))?,
                 );
-                i += 2;
+                i = i.saturating_add(2);
             }
             "-h" | "--help" => {
                 print!("{USAGE}");
@@ -163,28 +175,29 @@ fn host(profile: Profile, args: &[String]) -> anyhow::Result<i32> {
 fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
     let mut socket = default_service_socket();
     let mut base = PathBuf::from("/");
-    let mut i = 0;
+    let mut i: usize = 0;
     while i < args.len() {
-        match args[i].as_str() {
+        let Some(arg) = args.get(i) else { break };
+        match arg.as_str() {
             "--socket" => {
                 socket = PathBuf::from(
-                    args.get(i + 1)
+                    args.get(i.saturating_add(1))
                         .ok_or_else(|| anyhow::anyhow!("--socket needs a path"))?,
                 );
-                i += 2;
+                i = i.saturating_add(2);
             }
             "--base" => {
                 base = PathBuf::from(
-                    args.get(i + 1)
+                    args.get(i.saturating_add(1))
                         .ok_or_else(|| anyhow::anyhow!("--base needs a path"))?,
                 );
-                i += 2;
+                i = i.saturating_add(2);
             }
             other => anyhow::bail!("unknown option `{other}`"),
         }
     }
     init_tracing(true);
-    ush::supervisor::serve(&socket, Store::discover(), base)?;
+    ush::supervisor::serve(&socket, &Store::discover(), &base)?;
     Ok(0)
 }
 
@@ -230,20 +243,20 @@ mod guest {
         })
     }
 
-    fn report(resp: Response) -> anyhow::Result<i32> {
+    fn report(resp: Response) -> i32 {
         match resp {
-            Response::Ok => Ok(0),
+            Response::Ok => 0,
             Response::NeedsRestart { detail } => {
                 println!("{detail}");
-                Ok(0)
+                0
             }
             Response::Denied { reason } => {
                 eprintln!("refused: {reason}");
-                Ok(1)
+                1
             }
             other => {
                 println!("{other:?}");
-                Ok(0)
+                0
             }
         }
     }
@@ -272,33 +285,36 @@ mod guest {
         // The root is readable, not writable — without a rule for it the ruleset
         // denies `stat("/")`, and `ls /` fails looking like a broken system.
         let mut ro: Vec<PathBuf> = vec![PathBuf::from("/")];
-        match ask(&Request::Status) {
-            Ok(Response::Status { status }) => {
-                rw.extend(status.trusted_dirs.iter().map(PathBuf::from));
-                ro.extend(status.readable_dirs.iter().map(PathBuf::from));
-            }
+        if let Ok(Response::Status { status }) = ask(&Request::Status) {
+            rw.extend(status.trusted_dirs.iter().map(PathBuf::from));
+            ro.extend(status.readable_dirs.iter().map(PathBuf::from));
+        } else {
             // No broker means no policy to read, which means no grants — the
             // restriction is *tighter*, not skipped.
-            _ => tracing::debug!("no broker; restricting to the base set only"),
+            tracing::debug!("no broker; restricting to the base set only");
         }
         let outcome = ush::guard::restrict_self(&rw, &ro);
         tracing::debug!("landlock: {}", outcome.describe());
 
-        Err(std::process::Command::new(&rest[0])
-            .args(&rest[1..])
+        let cmd = rest
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("guest-init needs a command after `--`"))?;
+        Err(std::process::Command::new(cmd)
+            .args(rest.get(1..).unwrap_or(&[]))
             .exec()
             .into())
     }
 
     pub fn pkg(args: &[String]) -> anyhow::Result<i32> {
+        let rest = args.get(1..).unwrap_or(&[]);
         match args.first().map(String::as_str) {
-            Some("install") => pkg_install(&args[1..]),
-            Some("remove") => pkg_remove(&args[1..]),
-            Some("list") => pkg_list(),
+            Some("install") => pkg_install(rest),
+            Some("remove") => pkg_remove(rest),
+            Some("list") => Ok(pkg_list()),
             Some("diff") => pkg_diff(),
-            Some("inspect") => pkg_inspect(&args[1..]),
+            Some("inspect") => pkg_inspect(rest),
             Some("freeze") => pkg_freeze(),
-            Some("burn") => report(ask(&Request::Burn)?),
+            Some("burn") => Ok(report(ask(&Request::Burn)?)),
             _ => {
                 eprintln!(
                     "pkg install [--one-time] PKG… | remove PKG… | list | diff | \
@@ -339,10 +355,11 @@ mod guest {
         }
         let packages = wanted;
 
-        let argv = ush::pkg::install_argv(&packages, &ush::pkg::releasever());
-        let status = std::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .status()?;
+        let cmd_argv = ush::pkg::install_argv(&packages, &ush::pkg::releasever());
+        let (prog, prog_args) = cmd_argv
+            .split_first()
+            .ok_or_else(|| anyhow::anyhow!("pkg: install_argv returned no command"))?;
+        let status = std::process::Command::new(prog).args(prog_args).status()?;
         if !status.success() {
             eprintln!(
                 "pkg: the transaction failed. If it was refused while writing \
@@ -384,10 +401,11 @@ mod guest {
             .cloned()
             .collect();
         anyhow::ensure!(!packages.is_empty(), "pkg remove needs a package name");
-        let argv = ush::pkg::remove_argv(&packages, &ush::pkg::releasever());
-        let status = std::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .status()?;
+        let cmd_argv = ush::pkg::remove_argv(&packages, &ush::pkg::releasever());
+        let (prog, prog_args) = cmd_argv
+            .split_first()
+            .ok_or_else(|| anyhow::anyhow!("pkg: remove_argv returned no command"))?;
+        let status = std::process::Command::new(prog).args(prog_args).status()?;
         if !status.success() {
             return Ok(status.code().unwrap_or(1));
         }
@@ -404,11 +422,11 @@ mod guest {
         Ok(0)
     }
 
-    fn pkg_list() -> anyhow::Result<i32> {
+    fn pkg_list() -> i32 {
         let manifest = Manifest::load(&manifest_path());
         if manifest.packages.is_empty() {
             println!("no packages in this layer; the base is what you see.");
-            return Ok(0);
+            return 0;
         }
         for p in &manifest.packages {
             println!(
@@ -417,7 +435,7 @@ mod guest {
                 if p.one_time { "one-time" } else { "" }
             );
         }
-        Ok(0)
+        0
     }
 
     fn pkg_diff() -> anyhow::Result<i32> {
@@ -496,15 +514,15 @@ mod guest {
                 let dir = args
                     .get(1)
                     .ok_or_else(|| anyhow::anyhow!("perm trust-dir needs a directory"))?;
-                report(ask(&Request::TrustDir {
+                Ok(report(ask(&Request::TrustDir {
                     path: PathBuf::from(dir),
-                })?)
+                })?))
             }
             Some("revoke") => {
                 let id = args
                     .get(1)
                     .ok_or_else(|| anyhow::anyhow!("perm revoke needs a capability id"))?;
-                report(ask(&Request::Revoke { id: id.clone() })?)
+                Ok(report(ask(&Request::Revoke { id: id.clone() })?))
             }
             Some("list") | None => {
                 let Response::Perms { entries } = ask(&Request::ListPerms)? else {
@@ -689,10 +707,10 @@ mod guest {
         // the sandbox's own init; outside one this fails with EPERM and the
         // fallback below applies.
         if unsafe { libc::kill(1, libc::SIGTERM) } == 0 {
-            std::process::exit(0);
+            return Ok(0);
         }
         // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
         unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
-        std::process::exit(0);
+        Ok(0)
     }
 }

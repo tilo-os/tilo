@@ -24,18 +24,24 @@ enum Stream {
 
 impl OutputBuilder {
     /// Force hyperlinks on; default is auto-detect via [`io::IsTerminal`].
+    #[must_use]
     pub fn hyperlinks(mut self, on: bool) -> Self {
         self.hyperlinks = on;
         self
     }
 
     /// Route to stderr instead of stdout.
+    #[must_use]
     pub fn stderr(mut self) -> Self {
         self.stream = Stream::Stderr;
         self
     }
 
     /// Write a bare line to the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error if the write to the stream fails.
     pub fn line<S: fmt::Display>(&self, text: S) -> io::Result<()> {
         self.write(|w| writeln!(w, "{text}"))
     }
@@ -43,6 +49,10 @@ impl OutputBuilder {
     /// Write text and a clickable hyperlink (OSC 8) on the same line; pipes
     /// and files fall back to `<label> [<url>]`. An empty label renders the
     /// URL itself as the anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error if the write to the stream fails.
     pub fn hyperlink(&self, label: &str, url: &str) -> io::Result<()> {
         self.write(|w| {
             if self.hyperlinks_active(w) {
@@ -59,6 +69,10 @@ impl OutputBuilder {
 
     /// Emit a `file://` hyperlink for the given path — a convenience wrapper
     /// over [`OutputBuilder::hyperlink`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error if the write to the stream fails.
     pub fn hyperlink_path<P: AsRef<std::path::Path>>(
         &self,
         label: &str,

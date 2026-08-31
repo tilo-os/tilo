@@ -62,6 +62,12 @@ pub const MAX_READ_CHUNK: u32 = 1 << 20;
 /// fd. Returns [`NotAvailable`] when the env var is unset (e.g. running as
 /// a Flatpak) or the fd isn't open. Call from a `tokio::task::LocalSet` —
 /// capnp-rpc futures are `!Send`.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ServiceFdMissing`] if the launcher didn't pass a
+/// service fd, or [`NotAvailable::ConnectionFailed`] if the fd can't be
+/// lifted to an RPC connection.
 pub fn try_connect() -> Result<FsClient, NotAvailable> {
     let fd = service_fd("fs").ok_or(NotAvailable::ServiceFdMissing)?;
     let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
@@ -124,21 +130,21 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    fn from_reader(r: fs_capnp::metadata::Reader<'_>) -> Result<Self, NotAvailable> {
+    // An unknown wire value for `kind` collapses to `Other` rather than
+    // erroring, since schema evolution must not break clients — so this
+    // never fails and doesn't need to return `Result`.
+    fn from_reader(r: fs_capnp::metadata::Reader<'_>) -> Self {
         let secs = r.get_modified_unix_seconds();
-        // Funnel `get_kind()`'s NotInSchema through capnp::Error for a uniform `?`;
-        // an unknown wire value collapses to `Other` since schema evolution must
-        // not break clients.
         let kind = match r.get_kind() {
             Ok(k) => k.into(),
             Err(_) => EntryKind::Other,
         };
-        Ok(Self {
+        Self {
             kind,
             size: r.get_size(),
             modified_unix_seconds: if secs == 0 { None } else { Some(secs) },
             needs_hydration: r.get_needs_hydration(),
-        })
+        }
     }
 }
 
@@ -193,7 +199,7 @@ impl FsClient {
                 .to_str()
                 .map_err(|e| capnp::Error::failed(format!("invalid utf8 name: {e}")))?
                 .to_owned();
-            let metadata = Metadata::from_reader(entry.get_metadata()?)?;
+            let metadata = Metadata::from_reader(entry.get_metadata()?);
             out.push(DirEntry { name, metadata });
         }
         Ok(out)
@@ -204,7 +210,7 @@ impl FsClient {
         let mut req = self.inner.stat_request();
         req.get().set_path(path);
         let reply = req.send().promise.await?;
-        Metadata::from_reader(reply.get()?.get_metadata()?)
+        Ok(Metadata::from_reader(reply.get()?.get_metadata()?))
     }
 
     /// Create a directory (with intermediate mkdirs); idempotent if it already exists.
@@ -281,7 +287,7 @@ impl FileHandle {
     pub async fn metadata(&self) -> Result<Metadata, NotAvailable> {
         let req = self.inner.metadata_request();
         let reply = req.send().promise.await?;
-        Metadata::from_reader(reply.get()?.get_metadata()?)
+        Ok(Metadata::from_reader(reply.get()?.get_metadata()?))
     }
 }
 
