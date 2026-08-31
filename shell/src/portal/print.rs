@@ -20,6 +20,14 @@
 //! could otherwise harvest without ever calling `Print`. See
 //! [`PrintBackend::prepare_print`].
 
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "the D-Bus method signatures below require unused positional parameters (handle, \
+              parent_window, ...); zbus's #[interface] macro deserialises them into these named \
+              parameters and forwards them by identifier into its generated dispatcher, so the \
+              lint fires on macro-generated code a per-function #[allow] cannot reach"
+)]
+
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
@@ -413,8 +421,7 @@ impl PrintBackend {
     /// Costs the honest app nothing: `flow::resolve` fast-paths a standing `Always` grant.
     #[allow(
         clippy::too_many_arguments,
-        clippy::used_underscore_binding,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.PreparePrint D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.PreparePrint D-Bus signature"
     )]
     async fn prepare_print(
         &self,
@@ -473,8 +480,7 @@ impl PrintBackend {
     /// treat every property as a claim: read only after consent, only if a regular file, only up to [`MAX_SPOOL_BYTES`].
     #[allow(
         clippy::too_many_arguments,
-        clippy::used_underscore_binding,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.Print D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.Print D-Bus signature"
     )]
     async fn print(
         &self,

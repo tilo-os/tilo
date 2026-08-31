@@ -200,7 +200,11 @@ impl MergeView {
                 }
             }
         };
-        let hunk = changes[next_pos];
+        // `next_pos` is derived from `pos` (a valid index into `changes`) via
+        // `min`/`saturating_sub`, so it always stays in bounds.
+        let Some(&hunk) = changes.get(next_pos) else {
+            return false;
+        };
         self.active_hunk = Some(hunk);
         self.scroll_hunk_into_view(hunk);
         self.dirty = true;
@@ -488,7 +492,12 @@ impl MergeView {
         let band_bot = band_top + self.source_band_height();
 
         for (hi, h) in self.model.hunks.iter().enumerate() {
-            let (top, _bot) = self.hunk_spans[hi];
+            // `hunk_spans` is rebuilt one-for-one with `model.hunks` in
+            // `recompute_spans`; skip drawing rather than panic if that ever
+            // drifts out of sync.
+            let Some(&(top, _bot)) = self.hunk_spans.get(hi) else {
+                continue;
+            };
             let y = band_top + top - self.scroll_y;
             let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
             let block_h = rows as f64 * ROW_H;
@@ -662,6 +671,8 @@ impl Widget for MergeView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -677,7 +688,9 @@ impl Widget for MergeView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

@@ -1154,6 +1154,8 @@ impl Widget for RemoteApp {
     ) -> NodeId {
         // The app draws itself; we just need a single full-bleed node so
         // the host can size us. No child widgets participate in taffy.
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
@@ -1168,7 +1170,9 @@ impl Widget for RemoteApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1762,7 +1766,10 @@ impl RemoteApp {
         } else {
             cur.saturating_sub(1)
         };
-        self.selected = Some(filtered[next]);
+        // `next` is derived from `cur` (in bounds, or 0) via `min`/`saturating_sub`.
+        if let Some(&id) = filtered.get(next) {
+            self.selected = Some(id);
+        }
         self.dirty = true;
     }
 
@@ -3806,15 +3813,30 @@ impl RemoteApp {
             // Draw cells run-by-run (group consecutive same-style cells).
             let mut x = surface.x0 + pad;
             let mut i = 0;
-            while i < line.cells.len() {
-                let style = (line.cells[i].color, line.cells[i].bold);
+            while let Some(cell) = line.cells.get(i) {
+                let style = (cell.color, cell.bold);
                 let start = i;
-                while i < line.cells.len() && (line.cells[i].color, line.cells[i].bold) == style {
+                while line
+                    .cells
+                    .get(i)
+                    .is_some_and(|c| (c.color, c.bold) == style)
+                {
                     i += 1;
                 }
-                let run: String = line.cells[start..i].iter().map(|c| c.ch).collect();
+                let run: String = line
+                    .cells
+                    .get(start..i)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|c| c.ch)
+                    .collect();
                 let color = match style.0 {
-                    Some(idx) => palette.ansi[idx.min(15)],
+                    // `ansi` is a fixed `[Color; 16]`; `idx.min(15)` is always in range.
+                    Some(idx) => palette
+                        .ansi
+                        .get(idx.min(15))
+                        .copied()
+                        .unwrap_or(palette.fg_default),
                     None => palette.fg_default,
                 };
                 let weight = if style.1 {
@@ -3971,9 +3993,13 @@ fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
     match cur {
         Some(f) => {
             let idx = order.iter().position(|x| *x == f).unwrap_or(0);
-            order[(idx + 1) % order.len()]
+            // `order` is never empty, and the modulo keeps the index in range.
+            order
+                .get((idx + 1) % order.len())
+                .copied()
+                .unwrap_or(Field::Name)
         }
-        None => order[0],
+        None => order.first().copied().unwrap_or(Field::Name),
     }
 }
 

@@ -1507,7 +1507,7 @@ impl Grid {
     pub fn edit_selected_text(&self) -> Option<String> {
         let e = self.edit.as_ref()?;
         let (start, end) = e.selection()?;
-        Some(e.chars[start..end].iter().collect())
+        Some(e.chars.get(start..end)?.iter().collect())
     }
 
     /// Cut: return the selected text and remove it from the buffer.
@@ -2234,10 +2234,10 @@ impl Grid {
         // Selection highlight behind the text.
         if let Some((sel_s, sel_e)) = e.selection() {
             let chars: Vec<char> = text.chars().collect();
-            let pre: String = chars[..sel_s.min(chars.len())].iter().collect();
-            let mid: String = chars[sel_s.min(chars.len())..sel_e.min(chars.len())]
-                .iter()
-                .collect();
+            let sel_s = sel_s.min(chars.len());
+            let sel_e = sel_e.min(chars.len());
+            let pre: String = chars.get(..sel_s).unwrap_or_default().iter().collect();
+            let mid: String = chars.get(sel_s..sel_e).unwrap_or_default().iter().collect();
             let (x0w, _) = tr.measure(&pre, size, None);
             let (midw, _) = tr.measure(&mid, size, None);
             let sel_rect = Rect::new(
@@ -2293,7 +2293,11 @@ pub(crate) fn reference_color(slot: usize) -> Color {
         Color::from_rgb8(0x1f, 0xbd, 0xa8), // teal
         Color::from_rgb8(0xe2, 0x63, 0xb0), // pink
     ];
-    palette[slot % palette.len()]
+    // The modulo above always keeps the index in range.
+    palette
+        .get(slot % palette.len())
+        .copied()
+        .unwrap_or(palette[0])
 }
 
 /// Draw a formula string with each cell/range reference tinted its assigned
@@ -2317,7 +2321,7 @@ pub(crate) fn draw_formula_line(
     // (start_char, end_char, colour) segments in full-text char space.
     let mut segs: Vec<(usize, usize, Color)> = Vec::new();
     if chars.first() == Some(&'=') {
-        let body: String = chars[1..].iter().collect();
+        let body: String = chars.get(1..).unwrap_or_default().iter().collect();
         let spans = crate::formula::references(&body);
         let slots = crate::formula::ref_color_slots(&spans);
         let mut cursor = 0usize;
@@ -2344,11 +2348,11 @@ pub(crate) fn draw_formula_line(
             && c >= s
             && c <= e
         {
-            let prefix: String = chars[s..c].iter().collect();
+            let prefix: String = chars.get(s..c).unwrap_or_default().iter().collect();
             let (pw, _) = tr.measure(&prefix, size, None);
             caret_x = x + f64::from(pw);
         }
-        let seg: String = chars[s..e].iter().collect();
+        let seg: String = chars.get(s..e).unwrap_or_default().iter().collect();
         tr.draw_text(
             scene,
             &seg,

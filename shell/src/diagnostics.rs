@@ -388,7 +388,10 @@ fn percentile_50_99(ring: &[u64]) -> (u64, u64) {
         .saturating_mul(99)
         .saturating_div(100)
         .min(sorted.len().saturating_sub(1));
-    (sorted[p50_idx], sorted[p99_idx])
+    (
+        sorted.get(p50_idx).copied().unwrap_or(0),
+        sorted.get(p99_idx).copied().unwrap_or(0),
+    )
 }
 
 impl Default for PeerSurfaceMetrics {

@@ -1138,6 +1138,12 @@ impl Widget for GreeterApp {
         self.composed = Some(composed);
 
         // Root fills the screen and centers the card both axes.
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `card_node` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "card_node was just created in this same tree"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -1160,7 +1166,9 @@ impl Widget for GreeterApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

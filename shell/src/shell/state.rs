@@ -3884,11 +3884,14 @@ impl WorkspaceTree {
                     let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == ws_id) else {
                         continue;
                     };
-                    let strip = if let Some(s) = ws.strips.iter_mut().find(|s| s.id == strip_id) {
-                        s
+                    let strip = if let Some(pos) = ws.strips.iter().position(|s| s.id == strip_id) {
+                        ws.strips.get_mut(pos)
                     } else {
                         ws.strips.push(Strip::new(strip_id, "Main"));
-                        ws.strips.last_mut().expect("strip just pushed")
+                        ws.strips.last_mut()
+                    };
+                    let Some(strip) = strip else {
+                        continue;
                     };
                     // Tabs missing from the doc fall back to the
                     // cache; new ids get synthesized entries.

@@ -1641,6 +1641,8 @@ impl Widget for HexView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -1655,7 +1657,9 @@ impl Widget for HexView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -2186,7 +2190,9 @@ fn human_size(n: usize) -> String {
     if u == 0 {
         format!("{n} B")
     } else {
-        format!("{v:.1} {}", UNITS[u])
+        // `u` is bounded above by `UNITS.len() - 1` by the loop condition;
+        // `unwrap_or` just documents that instead of asserting it.
+        format!("{v:.1} {}", UNITS.get(u).copied().unwrap_or("TB"))
     }
 }
 
