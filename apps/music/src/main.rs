@@ -216,7 +216,9 @@ fn probe_stream(
         "   API content-length: {} bytes ({mib:.2} MiB)",
         stream.size_bytes
     );
-    println!("   URL: {}", stream.url);
+    // Signed media URLs contain short-lived query credentials. Keep them out of
+    // local and CI logs while still verifying the exact URL below.
+    println!("   source URL resolved (redacted)");
 
     // Independent proof the URL actually serves audio bytes.
     verify_stream_http(&stream.url)?;
