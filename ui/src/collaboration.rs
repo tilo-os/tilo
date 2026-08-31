@@ -995,8 +995,17 @@ fn person_id_from_key(key: [u8; 32]) -> String {
     ) {
         crate::permissions::Principal::Person(id) => id,
         // `person_from_key` constructs `Person` unconditionally; this arm
-        // exists only because the return type is the whole enum.
-        _ => unreachable!("person_from_key returns a person"),
+        // exists only because the return type is the whole enum. Recompute
+        // the same canonical lowercase-hex form directly rather than panic
+        // on a branch that should never run.
+        _ => {
+            let mut s = String::with_capacity(64);
+            for b in &key {
+                use std::fmt::Write as _;
+                let _ = write!(s, "{b:02x}");
+            }
+            s
+        }
     }
 }
 
@@ -1642,8 +1651,11 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                 runtime_collab::PresencePayload::Pointer { x, y } => {
                     PresencePayload::Pointer { x, y }
                 }
-                // Handled in the outer arm; make match exhaustive.
-                runtime_collab::PresencePayload::Cursor { .. } => unreachable!(),
+                // Cursor is fully handled (and returned) in the outer match
+                // above, so `other` is never actually this variant; `Left`
+                // is a harmless placeholder to keep this match exhaustive
+                // without panicking on a branch that cannot run.
+                runtime_collab::PresencePayload::Cursor { .. } => PresencePayload::Left,
             };
             CollabEvent::RemotePresenceUpdate {
                 user_id: evt.user_id,

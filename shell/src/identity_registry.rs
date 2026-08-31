@@ -119,7 +119,7 @@ impl IdentityRegistry {
         // Runtime store ids are capped at 64 characters and must begin with a
         // letter. Keep 220 fingerprint bits; the full key remains the registry
         // id and is rechecked before accepting an existing destination.
-        let store_id = format!("identity-{}", &id[..55]);
+        let store_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
         fs::create_dir_all(identity_dir)?;
         set_private_dir_mode(identity_dir)?;
         if let Some(existing) = runtime_identity::list_identities(identity_dir)?
@@ -397,7 +397,9 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
         .map_or(0, |index| {
             index.wrapping_add(1).checked_rem(ids.len()).unwrap_or(0)
         });
-    let next_id = &ids[next_index];
+    let Some(next_id) = ids.get(next_index) else {
+        return Ok(None);
+    };
     registry.bind_workspace(room.to_string(), next_id)?;
     let profile = registry.identities.get(next_id).cloned();
     store.save(&registry)?;
@@ -457,11 +459,10 @@ fn short_fingerprint(hex: &str) -> String {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
+        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
     }
     out
 }

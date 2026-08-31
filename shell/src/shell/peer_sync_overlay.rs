@@ -574,7 +574,7 @@ fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> 
 
 fn peer_fingerprint(peer_id: &str) -> String {
     let chars: Vec<char> = peer_id.chars().collect();
-    let tail = &chars[chars.len().saturating_sub(8)..];
+    let tail = chars.get(chars.len().saturating_sub(8)..).unwrap_or(&[]);
     if tail.len() <= 4 {
         return tail.iter().collect();
     }
@@ -606,8 +606,10 @@ fn elide_token(token: &str) -> String {
     }
     format!(
         "{}…{}",
-        chars[..10].iter().collect::<String>(),
-        chars[chars.len().saturating_sub(6)..]
+        chars.get(..10).unwrap_or(&[]).iter().collect::<String>(),
+        chars
+            .get(chars.len().saturating_sub(6)..)
+            .unwrap_or(&[])
             .iter()
             .collect::<String>()
     )

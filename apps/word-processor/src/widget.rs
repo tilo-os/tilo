@@ -2818,8 +2818,7 @@ impl WordProcessorWidget {
                 ink,
             );
             let h = f64::from(layout.height());
-            if editing {
-                let b = &blocks[idx];
+            if editing && let Some(b) = blocks.get(idx) {
                 laid.push(RegionLaid {
                     id: b.id.clone(),
                     text: b.text.clone(),
@@ -4447,18 +4446,16 @@ impl WordProcessorWidget {
 
         let mut children: Vec<A11yTreeNode> = Vec::new();
         let mut i = 0usize;
-        while i < self.blocks.len() {
-            let b = &self.blocks[i];
+        while let Some(b) = self.blocks.get(i) {
             if b.kind == "cell" {
                 // Coalesce a run of consecutive cells sharing a `table` id into a
                 // single Table node with the cells as Cell children.
                 let table_id = cell_table(b);
                 let mut cells: Vec<A11yTreeNode> = Vec::new();
-                while i < self.blocks.len()
-                    && self.blocks[i].kind == "cell"
-                    && cell_table(&self.blocks[i]) == table_id
-                {
-                    let c = &self.blocks[i];
+                while let Some(c) = self.blocks.get(i) {
+                    if c.kind != "cell" || cell_table(c) != table_id {
+                        break;
+                    }
                     cells.push(A11yTreeNode::leaf(
                         AccessNode::new(Role::Cell).with_value(c.text.clone()),
                     ));
@@ -4836,8 +4833,7 @@ impl WordProcessorWidget {
             ol_counts: Vec::new(),
         };
         let mut bi = 0;
-        while bi < blocks.len() {
-            let b = &blocks[bi];
+        while let Some(b) = blocks.get(bi) {
             // Coarse-wrap only narrows *paragraph* blocks beside a float. A table or
             // another image cannot share the float column, so before laying one out
             // push the cursor below the active float and retire it — they stack under
@@ -4909,20 +4905,19 @@ impl WordProcessorWidget {
         laid: &mut Vec<Laid>,
         cur: &mut PageCursor,
     ) -> usize {
-        let b = &blocks[bi];
-        let Some(tid) = cell_table(b) else {
+        let Some(tid) = blocks.get(bi).and_then(cell_table) else {
             // The caller only calls this when `cell_table(b).is_some()`; if
-            // that ever changes, skip this one block rather than losing the
-            // pagination cursor.
+            // that ever changes (or `bi` is out of range), skip this one
+            // block rather than losing the pagination cursor.
             return bi + 1;
         };
         let mut bi = bi;
         cur.ol_counts.clear();
         let start = bi;
-        while bi < blocks.len() && cell_table(&blocks[bi]).as_deref() == Some(tid.as_str()) {
+        while blocks.get(bi).and_then(cell_table).as_deref() == Some(tid.as_str()) {
             bi += 1;
         }
-        let cells = &blocks[start..bi];
+        let cells = blocks.get(start..bi).unwrap_or(&[]);
         let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
         let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
         let col_w = f64::from(fg.content_w) / num::f64_of_usize(ncols);
@@ -5253,10 +5248,15 @@ impl WordProcessorWidget {
                 cur.ol_counts.resize(level + 1, 0);
             }
             let bullet = if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
-                cur.ol_counts[level] += 1;
-                format!("{}.", cur.ol_counts[level])
+                let n = cur.ol_counts.get_mut(level).map_or(0, |c| {
+                    *c += 1;
+                    *c
+                });
+                format!("{n}.")
             } else {
-                cur.ol_counts[level] = 0; // a bullet item resets this level's number
+                if let Some(c) = cur.ol_counts.get_mut(level) {
+                    *c = 0; // a bullet item resets this level's number
+                }
                 bullet_glyph(level).to_string()
             };
             (indent, Some(bullet))
@@ -5463,15 +5463,13 @@ impl WordProcessorWidget {
         let mut li = 0usize;
         let mut slice_top = item_top; // on-screen top of the current slice
         let mut first_slice = true;
-        while li < lines.len() {
+        while let Some(&(first_line_top, _)) = lines.get(li) {
             let bottom = page_content_bottom(fg, cur.cur_page);
-            let (first_line_top, _) = lines[li];
             // layout_y maps line `li`'s internal top to `slice_top`.
             let layout_y = slice_top - first_line_top;
             // Take every subsequent line that still fits on this page.
             let mut last = li;
-            while last + 1 < lines.len() {
-                let (nt, nh) = lines[last + 1];
+            while let Some(&(nt, nh)) = lines.get(last + 1) {
                 if layout_y + nt + nh > bottom + 0.5 {
                     break;
                 }
@@ -5491,7 +5489,12 @@ impl WordProcessorWidget {
             }
             let allowed = allowed.max(1).min(available);
             last = li + allowed - 1;
-            let (lt, lh) = lines[last];
+            let Some(&(lt, lh)) = lines.get(last) else {
+                // `last` is bounded above by the loop that grew it from
+                // `li` (already a valid index) one lookahead at a time, so
+                // this is unreachable; break defensively rather than panic.
+                break;
+            };
             let slice_bottom = layout_y + lt + lh;
             let band = Rect::new(pl.text_x, slice_top, pl.text_x + pl.width, slice_bottom);
             laid.push(Laid {
@@ -6695,8 +6698,9 @@ impl WordProcessorWidget {
         first: Option<&Laid>,
     ) {
         if self.blocks.len() == 1
-            && self.blocks[0].kind == "paragraph"
-            && self.blocks[0].text.is_empty()
+            && let Some(only) = self.blocks.first()
+            && only.kind == "paragraph"
+            && only.text.is_empty()
             && let Some(l) = first
         {
             let placeholder = t("canvas-empty-placeholder");
@@ -7764,6 +7768,15 @@ impl Widget for WordProcessorWidget {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see the
+        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
+        // `Widget::build_layout` returns a bare `NodeId` across every
+        // implementor, so there is nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -7778,7 +7791,7 @@ impl Widget for WordProcessorWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -8287,12 +8300,12 @@ impl WordProcessorWidget {
             return vec![];
         };
         (si..=ei)
-            .map(|i| {
-                let b = &self.blocks[i];
+            .filter_map(|i| {
+                let b = self.blocks.get(i)?;
                 let blen = b.text.chars().count();
                 let s = if i == si { start.offset } else { 0 };
                 let e = if i == ei { end.offset } else { blen };
-                (b.id.clone(), s, e)
+                Some((b.id.clone(), s, e))
             })
             .collect()
     }
@@ -8941,11 +8954,11 @@ impl WordProcessorWidget {
         let off = off.min(chars.len());
         let is_word = |c: char| !c.is_whitespace();
         let mut s = off;
-        while s > 0 && is_word(chars[s - 1]) {
+        while s > 0 && chars.get(s - 1).is_some_and(|&c| is_word(c)) {
             s -= 1;
         }
         let mut e = off;
-        while e < chars.len() && is_word(chars[e]) {
+        while chars.get(e).is_some_and(|&c| is_word(c)) {
             e += 1;
         }
         (s, e)
@@ -9667,9 +9680,10 @@ impl WordProcessorWidget {
             // The trailing swatch reservation is a phantom (index == items.len()),
             // drawn separately below — clamp it out of the real button slice.
             let e_btn = (*e).min(items.len());
-            if *s < e_btn {
-                let rects =
-                    chrome::toolbar::draw(scene, transform, tr, theme, row_rect, &items[*s..e_btn]);
+            if *s < e_btn
+                && let Some(row_items) = items.get(*s..e_btn)
+            {
+                let rects = chrome::toolbar::draw(scene, transform, tr, theme, row_rect, row_items);
                 all_rects.extend(rects);
             }
         }

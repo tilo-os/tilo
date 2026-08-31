@@ -16,6 +16,14 @@
 //! (`Option<Vec<PathBuf>>`) becomes a `uris` array, with `None` treated
 //! as `response=1` (cancelled). On `Deny`, returns response=1 with an empty results dict.
 
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "the D-Bus method signatures below require unused positional parameters (handle, \
+              parent_window, ...); zbus's #[interface] macro deserialises them into these named \
+              parameters and forwards them by identifier into its generated dispatcher, so the \
+              lint fires on macro-generated code a per-function #[allow] cannot reach"
+)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -65,8 +73,7 @@ impl FileChooserBackend {
     /// `OpenFile` — request one or more existing files.
     #[allow(
         clippy::too_many_arguments,
-        clippy::used_underscore_binding,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.OpenFile D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.OpenFile D-Bus signature"
     )]
     async fn open_file(
         &self,
@@ -94,8 +101,7 @@ impl FileChooserBackend {
     /// `SaveFile` — request a destination for one new file.
     #[allow(
         clippy::too_many_arguments,
-        clippy::used_underscore_binding,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFile D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFile D-Bus signature"
     )]
     async fn save_file(
         &self,
@@ -123,8 +129,7 @@ impl FileChooserBackend {
     /// `SaveFiles` — request a folder + multiple destination filenames.
     #[allow(
         clippy::too_many_arguments,
-        clippy::used_underscore_binding,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFiles D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFiles D-Bus signature"
     )]
     async fn save_files(
         &self,

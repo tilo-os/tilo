@@ -94,11 +94,6 @@ impl WorkspaceTreeReplica {
     /// Stash one `SyncReq` per room this machine is in, each carrying that
     /// room's current heads — asked room by room so an answer can't merge
     /// several rooms into one undifferentiated document.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `pending_outgoing`'s mutex is poisoned (a prior holder
-    /// panicked while holding the lock).
     pub fn request_sync(&self) {
         let mut tree = self.tree.write();
         let rooms = tree.rooms();
@@ -123,17 +118,20 @@ impl WorkspaceTreeReplica {
             });
         }
         drop(tree);
-        self.pending_outgoing.lock().unwrap().extend(msgs);
+        self.pending_outgoing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(msgs);
     }
 
     /// Drain pending outbound messages so a test (or Hub-driver) can broadcast them; stable FIFO order.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `pending_outgoing`'s mutex is poisoned (a prior holder
-    /// panicked while holding the lock).
     pub fn drain_outgoing(&self) -> Vec<NeighbourMsg> {
-        std::mem::take(&mut *self.pending_outgoing.lock().unwrap())
+        std::mem::take(
+            &mut *self
+                .pending_outgoing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 }
 
@@ -158,11 +156,6 @@ impl WorkspaceTreeReplica {
     /// governance based on **who** sent it, and the hub's `u64` id (a
     /// `DefaultHasher` digest in production) isn't safe for that. Live wiring
     /// calls this with the peer's own identity ([`PeerOrigin::peer`]).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `pending_outgoing`'s mutex is poisoned (a prior holder
-    /// panicked while holding the lock).
     pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
         let sender = from;
         match msg {
@@ -190,7 +183,7 @@ impl WorkspaceTreeReplica {
                 }
                 self.pending_outgoing
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(NeighbourMsg::SyncResp {
                         changes,
                         room: room_id.to_string(),
