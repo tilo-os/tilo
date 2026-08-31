@@ -243,12 +243,6 @@ impl std::fmt::Debug for RenderSurface<'_> {
     }
 }
 
-struct NullWake;
-
-impl std::task::Wake for NullWake {
-    fn wake(self: std::sync::Arc<Self>) {}
-}
-
 /// Block on a future, polling the device as needed.
 ///
 /// This will deadlock if the future is awaiting anything other than GPU progress.
@@ -257,8 +251,7 @@ pub fn block_on_wgpu<F: Future>(device: &Device, fut: F) -> F::Output {
     if cfg!(target_arch = "wasm32") {
         panic!("Blocking can't work on WASM, so don't try");
     }
-    let waker = std::task::Waker::from(std::sync::Arc::new(NullWake));
-    let mut context = std::task::Context::from_waker(&waker);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     // Same logic as `pin_mut!` macro from `pin_utils`.
     let mut fut = std::pin::pin!(fut);
     loop {

@@ -434,8 +434,8 @@ impl BufferSizes {
         //
         // So they come from the `budget` instead, and the budget is
         // measured: `BumpAllocators` -- which the GPU already writes and
-        // `Renderer` now reads back every frame -- says what the frame
-        // actually used, and `BumpBudget::observe` grows to cover it.
+        // `Renderer` reads back when adaptive sizing needs a sample -- says
+        // what the frame used, and `BumpBudget::observe` grows to cover it.
         //
         // What the budget may not do is go below what the *viewport*
         // structurally requires, which is the floor applied here:
@@ -465,7 +465,7 @@ impl BufferSizes {
         let lines = BufferSize::new(budget.lines.max(floor.lines));
         let seg_counts = BufferSize::new(budget.seg_counts.max(floor.seg_counts));
         let segments = BufferSize::new(budget.segments.max(floor.segments));
-        // 16 * 16 (1 << 8) is one blend spill, so this allows for 1024 spills.
+        // One blend spill occupies 16 * 16 words.
         let blend_spill = BufferSize::new(budget.blend_spill.max(floor.blend_spill));
         let ptcl = BufferSize::new(
             n_tiles
@@ -519,7 +519,7 @@ const PTCL_INITIAL_ALLOC: u32 = 64;
 /// | lines      | 27943             | -        | 29377             | -        |
 /// | binning    | 1833              | 0.22     | 5592              | 0.17     |
 /// | tiles      | 115406            | 14.1     | 439039            | 13.5     |
-/// | seg_counts | 54177             | 6.6      | 123122            | 3.8      |
+/// | `seg_counts` | 54177           | 6.6      | 123122            | 3.8      |
 /// | segments   | 54177             | -        | 123122            | -        |
 /// | blend      | 0                 | -        | 0                 | -        |
 /// | ptcl (dyn) | 659200            | 80.8     | 1361664           | 42.0     |
@@ -679,13 +679,11 @@ impl BumpBudget {
     /// Returns `true` if anything changed, which is the caller's cue to
     /// drop pooled buffers of the sizes that are no longer asked for.
     ///
-    /// The headroom matters because this check is a frame behind: on a
-    /// scene that grows steadily, reserving exactly what the last frame
-    /// used means the next one overflows. Doubling it means a scene has
-    /// to double in complexity between two consecutive frames to catch
-    /// this out -- and even then the frame after it is correct, which is
-    /// more than either upstream's constants or a blind fraction of them
-    /// can say.
+    /// The headroom matters because feedback arrives after the render that
+    /// produced it: reserving exactly the previous usage would repeatedly
+    /// under-provision a growing scene. A failure may prevent later stages
+    /// from reporting their final demand, so convergence is not guaranteed
+    /// in a single subsequent render.
     pub fn observe(&mut self, used: &BumpAllocators) -> bool {
         let mut changed = false;
         let mut grow = |field: &mut u32, used: u32, ceiling: u32| {
