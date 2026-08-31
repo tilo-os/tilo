@@ -494,7 +494,11 @@ impl Renderer {
         if self.budget.collect(device, &mut self.engine) {
             self.engine.clear_pool();
         }
-        let measure = self.budget.wants_readback();
+        // Downloads inside a recording are not supported by the CPU-dispatch
+        // engine. The CPU path still uses the GPU for the fine pass, but its
+        // coarse buffers are host allocations and do not need GPU-side bump
+        // measurement.
+        let measure = !self.options.use_cpu && self.budget.wants_readback();
         let (recording, target, bump_buf) = render::render_full(
             scene,
             &mut self.resolver,
