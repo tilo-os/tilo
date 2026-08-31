@@ -7045,6 +7045,9 @@ impl Widget for VideoEditorApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // Before the press, while the layout still describes what the
+                // user was actually looking at when they clicked.
+                self.place_cursor_at(&r, self.last_mouse);
                 self.handle_press(state, &r, modifiers.state().shift_key());
                 // Take the keyboard, the way every shared widget in `ui` does
                 // on a press. Without it the editor only ever held focus after
@@ -8936,6 +8939,50 @@ impl VideoEditorApp {
     /// not where the keyboard is.
     fn shows_focus_cursor(&self, pane: Pane) -> bool {
         self.has_focus && self.focus.pane == pane
+    }
+
+    /// Move the keyboard cursor to whatever a press landed on.
+    ///
+    /// A press claims the keyboard, but until now it left the cursor wherever
+    /// it already was — so clicking a bin row and then pressing Down carried
+    /// on from some other row entirely, and the ring appeared somewhere the
+    /// user had not been looking. The pointer and the keyboard address the
+    /// same controls; a click is the plainest possible statement of which one
+    /// you mean next.
+    ///
+    /// Resolved through the same geometry the ring and the hit test read, and
+    /// the bin is matched by media id rather than by position so the painted
+    /// order and the walked order cannot drift into disagreeing.
+    fn place_cursor_at(&mut self, r: &Regions, p: Point) {
+        if let Some((mid, _)) = self
+            .bin_item_rects(r)
+            .into_iter()
+            .find(|(_, rect)| rect.contains(p))
+            && let Some(i) = self.a11y_bin_items().iter().position(|m| *m == mid)
+        {
+            self.focus.pane = Pane::Bin;
+            self.focus.bin = i;
+            return;
+        }
+        if let Some(i) = self
+            .transport_buttons(r)
+            .iter()
+            .position(|(_, rect)| rect.contains(p))
+        {
+            self.focus.pane = Pane::Transport;
+            self.focus.transport = i;
+            return;
+        }
+        if r.inspector.contains(p) {
+            let l = self.inspector_layout(r);
+            let rows = self.a11y_inspector_rows();
+            if let Some(i) = rows.iter().position(|row| {
+                Self::inspector_row_rect(&l, *row).is_some_and(|rect| rect.contains(p))
+            }) {
+                self.focus.pane = Pane::Inspector;
+                self.focus.inspector = i;
+            }
+        }
     }
 
     /// The box the keyboard cursor's ring is drawn in for one inspector row,
@@ -17942,6 +17989,58 @@ mod tests {
              keyed to 100%, so the lane is drawing the constant `opacity` \
              rather than the value the preview is showing",
         );
+    }
+
+    /// Clicking a control puts the keyboard cursor on it.
+    ///
+    /// A press claimed the keyboard but left the cursor where it already was,
+    /// so clicking a bin row and then pressing Down carried on from somewhere
+    /// else and the ring appeared away from where the user was looking. The
+    /// pointer and the keyboard address the same controls.
+    #[test]
+    fn clicking_a_control_moves_the_keyboard_cursor_to_it() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+
+        let rows = app.bin_item_rects(&r);
+        assert!(
+            rows.len() >= 3,
+            "the seeded bin needs a few rows to tell one from another",
+        );
+        let (third_id, third_rect) = rows[2];
+        let want = app
+            .a11y_bin_items()
+            .iter()
+            .position(|m| *m == third_id)
+            .expect("the clicked row is on the walk");
+
+        // Start the cursor somewhere else entirely.
+        app.focus.pane = Pane::Inspector;
+        app.focus.bin = 0;
+        assert_ne!(
+            want, 0,
+            "the fixture must move the cursor to prove anything"
+        );
+
+        app.last_mouse = third_rect.center();
+        app.place_cursor_at(&r, app.last_mouse);
+
+        assert_eq!(
+            app.focus.pane,
+            Pane::Bin,
+            "the clicked pane holds the cursor"
+        );
+        assert_eq!(
+            app.focus.bin, want,
+            "the cursor is on the row that was clicked, not the one it was on",
+        );
+
+        // And a transport press moves it there instead.
+        let (_, play) = app.transport_buttons(&r)[2];
+        app.place_cursor_at(&r, play.center());
+        assert_eq!(app.focus.pane, Pane::Transport);
+
+        let _ = &mut doc;
     }
 
     fn app_and_doc() -> (VideoEditorApp, AutoCommit) {
