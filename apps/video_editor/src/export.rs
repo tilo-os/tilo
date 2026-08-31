@@ -350,6 +350,50 @@ pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<Strin
     ))
 }
 
+/// Whether the muxer is still writing the file out.
+///
+/// The flush after the last frame is real work — on a long timeline the
+/// muxer has an index to write — and it used to be bounded by a flat two
+/// minutes from when the flush began. That is a duration a big export can
+/// legitimately exceed, and exceeding it deleted the file, throwing away a
+/// render that had taken minutes. What actually distinguishes a wedged
+/// pipeline from a slow one is whether anything is *happening*, so this
+/// watches for the output growing and gives up only on silence.
+#[derive(Debug)]
+struct FlushWatch {
+    last_len: u64,
+    last_progress: std::time::Instant,
+}
+
+impl FlushWatch {
+    fn new(len: u64, now: std::time::Instant) -> Self {
+        Self {
+            last_len: len,
+            last_progress: now,
+        }
+    }
+
+    /// Record the output's current length. Returns whether it had grown,
+    /// which is also what resets the clock.
+    fn observe_len(&mut self, len: u64, now: std::time::Instant) -> bool {
+        if len == self.last_len {
+            return false;
+        }
+        self.last_len = len;
+        self.last_progress = now;
+        true
+    }
+
+    /// Anything on the pipeline's bus is the pipeline being alive.
+    fn observe_activity(&mut self, now: std::time::Instant) {
+        self.last_progress = now;
+    }
+
+    fn stalled(&self, now: std::time::Instant, limit: std::time::Duration) -> bool {
+        now.duration_since(self.last_progress) >= limit
+    }
+}
+
 /// Build the `gst-launch`-style pipeline description the export runs: a raw
 /// RGBA `appsrc` (fed the composited frames) through `videoconvert`, the
 /// container's encode chain, and a `filesink`. Pure, so the exact graph is
@@ -895,14 +939,34 @@ mod gst_pipeline {
             .bus()
             .ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        // An **inactivity** timeout, not a total one. This used to be a flat
+        // two minutes from the start of the flush, which is a duration a long
+        // 4K mux can legitimately exceed — and exceeding it deleted the file,
+        // throwing away a render that had taken minutes. "Nothing has
+        // happened for two minutes" is a wedged pipeline; "this has taken two
+        // minutes" is just a big timeline.
+        //
+        // Progress is the muxer's own output growing, which is the direct
+        // evidence it is still working, plus any bus traffic. Both reset the
+        // clock.
+        const QUIET_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+        let mut watch = FlushWatch::new(
+            std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0),
+            std::time::Instant::now(),
+        );
         loop {
             if state.cancel.load(Ordering::Relaxed) {
                 result = Err(super::CANCELLED.to_string());
                 break;
             }
-            if std::time::Instant::now() >= deadline {
-                result = Err("export timed out waiting for the muxer".to_string());
+            if let Ok(len) = std::fs::metadata(&out).map(|m| m.len()) {
+                watch.observe_len(len, std::time::Instant::now());
+            }
+            if watch.stalled(std::time::Instant::now(), QUIET_LIMIT) {
+                result = Err(format!(
+                    "the muxer stopped writing {}s ago; giving up on the export",
+                    QUIET_LIMIT.as_secs(),
+                ));
                 break;
             }
             // Short waits rather than one long one, so a cancel arriving
@@ -910,6 +974,7 @@ mod gst_pipeline {
             let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(200)) else {
                 continue;
             };
+            watch.observe_activity(std::time::Instant::now());
             use gst::MessageView;
             match msg.view() {
                 MessageView::Eos(_) => break,
@@ -953,6 +1018,50 @@ mod gst_pipeline {
 
 #[cfg(test)]
 mod tests {
+
+    /// A muxer that is still writing is never given up on, however long it
+    /// takes; one that has gone quiet is.
+    ///
+    /// The old rule was a flat two minutes from the start of the flush, and
+    /// it deleted the file on expiry — so a long export whose mux genuinely
+    /// took longer lost a render that had already succeeded. What separates a
+    /// wedged pipeline from a slow one is whether anything is happening.
+    #[test]
+    fn a_muxer_still_writing_is_not_given_up_on() {
+        use std::time::{Duration, Instant};
+
+        let limit = Duration::from_secs(120);
+        let t0 = Instant::now();
+        let mut w = FlushWatch::new(0, t0);
+
+        // Four minutes of steady writing — twice the old cap — never stalls.
+        let mut now = t0;
+        for step in 1..=4u64 {
+            now += Duration::from_secs(60);
+            assert!(
+                w.observe_len(step * 4_000_000, now),
+                "a growing file is progress",
+            );
+            assert!(
+                !w.stalled(now, limit),
+                "a muxer that wrote {}s in is not stalled",
+                step * 60,
+            );
+        }
+
+        // Then it stops. Short of the limit it is still given the benefit of
+        // the doubt; past it, it is not.
+        let quiet = now;
+        assert!(!w.observe_len(16_000_000, quiet + Duration::from_secs(60)));
+        assert!(!w.stalled(quiet + Duration::from_secs(119), limit));
+        assert!(w.stalled(quiet + Duration::from_secs(121), limit));
+
+        // Bus traffic counts as being alive even with the file unchanged —
+        // a muxer can work for a while before its next write lands.
+        w.observe_activity(quiet + Duration::from_secs(121));
+        assert!(!w.stalled(quiet + Duration::from_secs(122), limit));
+    }
+
     use super::*;
 
     /// The progress bar used to be dead code: nothing ever constructed
