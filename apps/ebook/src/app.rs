@@ -5264,15 +5264,15 @@ impl BooksApp {
         );
 
         // Title + hint, centred under the mark.
-        let title = "Add a book";
-        let (title_width, _) = tr.measure_weighted(title, 15.0, None, TextWeight::Semibold);
+        let label = "Add a book";
+        let (label_w, _) = tr.measure_weighted(label, 15.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
-            title,
+            label,
             15.0,
             c.text_primary,
             t * Affine::translate((
-                disc_centre_x - f64::from(title_width) / 2.0,
+                disc_centre_x - f64::from(label_w) / 2.0,
                 disc_centre_y + disc_radius + 16.0,
             )),
             None,
