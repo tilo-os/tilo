@@ -205,7 +205,7 @@ impl PdfApp {
                 match hit {
                     SearchHit::ToggleWholeWord => self.search_whole_word = !self.search_whole_word,
                     SearchHit::ToggleCaseSensitive => {
-                        self.search_case_sensitive = !self.search_case_sensitive
+                        self.search_case_sensitive = !self.search_case_sensitive;
                     }
                 }
                 self.recompute_matches();
@@ -440,7 +440,7 @@ impl PdfApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
@@ -448,122 +448,7 @@ impl PdfApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_mouse = p;
-
-                // Drawing a signature on the pad: extend the in-progress stroke.
-                if self.sig_stroke.is_some() {
-                    let n = self.sig_pad_norm(p);
-                    if let Some(st) = self.sig_stroke.as_mut() {
-                        let far = st
-                            .last()
-                            .is_none_or(|l| (l.0 - n.0).abs() + (l.1 - n.1).abs() > 0.004);
-                        if far {
-                            st.push(n);
-                        }
-                    }
-                    self.dirty = true;
-                    return;
-                }
-
-                // Route motion to the inline editor so its hover tracks (for a
-                // click-to-caret) and a press-drag extends its selection.
-                // Consume the move while it is actively drag-selecting so the
-                // page doesn't pan under the selection.
-                if self.editing.is_some() {
-                    self.drive_editor(event, scale_factor, modifiers, state);
-                    if self.editing.as_ref().is_some_and(|e| e.input.is_dragging()) {
-                        self.dirty = true;
-                        return;
-                    }
-                }
-
-                // Dragging a sticky-note marker: move it live (local only; the
-                // CRDT is written once on release so a drag is one undo step).
-                if let Some(mut mdrag) = self.marker_drag.take() {
-                    if let Some(page) = self.anno_page(&mdrag.id) {
-                        let pt = self.page_point(page, p);
-                        let (nx, ny) = mdrag.update(pt);
-                        self.move_note_local(&mdrag.id, nx, ny);
-                    }
-                    self.marker_drag = Some(mdrag);
-                    self.dirty = true;
-                    return;
-                }
-
-                // Rail resize drag takes priority over everything else.
-                if let Some(grip_x) = self.rail_drag {
-                    let _ = grip_x;
-                    let new_w = (p.x - self.rect.x0).clamp(RAIL_W_MIN, RAIL_W_MAX);
-                    self.rail_w = new_w;
-                    self.reflow();
-                    self.dirty = true;
-                    return;
-                }
-
-                // A live page-rail reorder drag (or an open rail menu) owns the
-                // pointer while it lasts.
-                if self.show_rail
-                    && (self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open())
-                {
-                    if self.page_sidebar.on_motion(p) {
-                        self.dirty = true;
-                    }
-                    return;
-                }
-
-                // Image-region marquee drag (Shift + Select).
-                if let Some(region) = self.region {
-                    let pt = self.page_point(region.page, p);
-                    if let Some(r) = self.region.as_mut() {
-                        r.cur = pt;
-                    }
-                    self.dirty = true;
-                    return;
-                }
-
-                // Text selection drag (Select tool over real text). Map the
-                // pointer onto the selection's page even past the card edge so
-                // the drag can reach the end of a line.
-                if let Some(sel) = self.selection
-                    && sel.dragging
-                {
-                    let pt = self.page_point(sel.page, p);
-                    self.update_selection(sel.page, pt);
-                    return;
-                }
-
-                // Drag-to-pan (Select tool).
-                if let Some(pan) = self.pan {
-                    let dx = p.x - pan.start.x;
-                    let dy = p.y - pan.start.y;
-                    if dx.hypot(dy) > PAN_SLOP {
-                        self.viewport
-                            .set_scroll(pan.scroll_x0 - dx, pan.scroll_y0 - dy);
-                        self.current_page = self.nearest_page();
-                        if let Some(pan) = self.pan.as_mut() {
-                            pan.moved = true;
-                        }
-                    }
-                    self.dirty = true;
-                    return;
-                }
-
-                if let Some(page) = self.drag.as_ref().map(|d| d.page) {
-                    let pt = self.page_point(page, p);
-                    if let Some(d) = self.drag.as_mut() {
-                        d.cur = pt;
-                        if d.tool == Tool::Ink {
-                            let push = d
-                                .points
-                                .last()
-                                .is_none_or(|l| (l.0 - pt.0).hypot(l.1 - pt.1) > 1.5);
-                            if push {
-                                d.points.push(pt);
-                            }
-                        }
-                    }
-                }
-                self.dirty = true;
+                self.on_cursor_moved(event, p, scale_factor, modifiers, state);
             }
 
             WindowEvent::MouseInput {
@@ -571,101 +456,7 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                let p = self.last_mouse;
-                // A click inside the active inline editor keeps focus; a click
-                // anywhere else commits the edit first, then falls through so
-                // the click still performs its normal action.
-                if self.editing.is_some() {
-                    if self.edit_rect.contains(p) {
-                        // Place the caret (or begin a drag-selection) in the
-                        // inline editor at the click point.
-                        self.drive_editor(event, scale_factor, modifiers, state);
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                    self.commit_edit(state);
-                }
-                // An open context menu intercepts the next click.
-                if self.context_menu.is_some() {
-                    let menu = self.context_menu.clone().unwrap();
-                    if menu.item_rect.contains(p) {
-                        self.delete_target(&menu.target, state);
-                    } else {
-                        self.context_menu = None;
-                        self.dirty = true;
-                    }
-                    *handled = true;
-                    return;
-                }
-                if let Some(hit) = self.toolbar_hit(p) {
-                    self.apply_toolbar(&hit, state);
-                    *handled = true;
-                    return;
-                }
-                if self.search_active && self.search_rect.contains(p) {
-                    self.apply_search_strip(p);
-                    *handled = true;
-                    return;
-                }
-                if self.apply_page_bubble(p) {
-                    *handled = true;
-                    return;
-                }
-                if self.apply_sidebar(p, state) {
-                    *handled = true;
-                    return;
-                }
-                // The page rail: its resize grip (a thin strip on the right
-                // edge) first, then the shared rail widget (select, begin a
-                // reorder drag, the "Import…" button, or a click that dismisses
-                // an open menu).
-                if self.show_rail {
-                    let rail = self.rail_rect;
-                    if (p.x - rail.x1).abs() <= RAIL_GRIP && p.y >= rail.y0 && p.y <= rail.y1 {
-                        self.rail_drag = Some(p.x);
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                    if rail.contains(p) || self.page_sidebar.menu_open() {
-                        self.page_sidebar.on_press(p);
-                        self.apply_sidebar_events(state);
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                }
-                // On a narrow window a click on the scrim (canvas area not
-                // covered by an open overlay panel) dismisses the panels.
-                if self.overlay_mode
-                    && (self.show_rail || self.show_sidebar)
-                    && self.canvas_rect.contains(p)
-                {
-                    self.show_rail = false;
-                    self.show_sidebar = false;
-                    self.reflow();
-                    *handled = true;
-                    return;
-                }
-                // The floating selection HUD (Copy / highlight / Note) intercepts
-                // the click before it reaches the page — the same bar the ebook
-                // reader draws, via the shared `ui` component.
-                if let Some(action) = self.sel_hud.as_ref().and_then(|h| h.hit(p)) {
-                    self.apply_hud_action(action, state);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                if self.sel_hud.as_ref().is_some_and(|h| h.contains(p)) {
-                    // A tap on the bar body (between controls) is swallowed so it
-                    // doesn't fall through and clear the selection.
-                    *handled = true;
-                    return;
-                }
-                if self.apply_canvas_press(p, state) {
-                    *handled = true;
-                }
+                self.on_left_press(event, scale_factor, modifiers, state, handled);
             }
 
             WindowEvent::MouseInput {
@@ -673,92 +464,7 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                // Finish a signature pad stroke: commit it if it has real ink.
-                if let Some(stroke) = self.sig_stroke.take() {
-                    if stroke.len() >= 2 {
-                        self.sig_strokes.push(stroke);
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // End an inline-editor drag-selection.
-                if self.editing.as_ref().is_some_and(|e| e.input.is_dragging()) {
-                    self.drive_editor(event, scale_factor, modifiers, state);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // End a sticky-note marker drag: persist the new anchor once (a
-                // no-move release is a plain select, already applied on press).
-                if let Some(mdrag) = self.marker_drag.take() {
-                    if mdrag.moved() {
-                        if let Some((x, y)) = self.note_pos(&mdrag.id) {
-                            self.perform_action(
-                                state,
-                                &crate::actions::set_annotation_position_action(&mdrag.id, x, y),
-                            );
-                            self.reload(state);
-                        }
-                    } else {
-                        // A tap on the marker reveals its comment thread.
-                        if let Some(c) = self
-                            .comments
-                            .iter()
-                            .find(|c| c.anno_id.as_deref() == Some(mdrag.id.as_str()))
-                        {
-                            let cid = c.id.clone();
-                            self.focus_sidebar(SidebarTab::Comments, cid);
-                        }
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // End an image-region marquee: crop + copy the region.
-                if self.region.is_some() {
-                    self.copy_region();
-                    self.region = None;
-                    *handled = true;
-                    return;
-                }
-                // Commit a page-rail reorder drag (or clear its pending press).
-                if self.page_sidebar.is_pending_drag() {
-                    if self.page_sidebar.on_release() {
-                        self.dirty = true;
-                    }
-                    self.apply_sidebar_events(state);
-                    *handled = true;
-                    return;
-                }
-                if self.selection.is_some_and(|s| s.dragging) {
-                    // End a text-selection drag. A bare click (no drag) selects
-                    // nothing textual, so also let it pick markup underneath.
-                    let was_active = self.selection.is_some_and(|s| s.is_active());
-                    self.finish_selection();
-                    if !was_active && let Some((page, pt)) = self.hit_page(self.last_mouse) {
-                        self.select_at(page, pt);
-                    }
-                    *handled = true;
-                } else if self.rail_drag.take().is_some() {
-                    self.dirty = true;
-                    *handled = true;
-                } else if let Some(pan) = self.pan.take() {
-                    // A press that never moved is a selection click.
-                    if !pan.moved {
-                        if let Some((page, pt)) = self.hit_page(pan.start) {
-                            self.select_at(page, pt);
-                        } else {
-                            self.selected_anno = None;
-                            self.selected_sig = None;
-                        }
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                } else if self.drag.is_some() {
-                    self.commit_drag(state);
-                    *handled = true;
-                }
+                self.on_left_release(event, scale_factor, modifiers, state, handled);
             }
 
             WindowEvent::MouseInput {
@@ -766,88 +472,11 @@ impl PdfApp {
                 button: MouseButton::Right,
                 ..
             } => {
-                let p = self.last_mouse;
-                // Right-click a page thumbnail → the shared rail's duplicate /
-                // move / delete menu.
-                if self.show_rail && self.rail_rect.contains(p) {
-                    self.page_sidebar.on_right_press(p);
-                    self.apply_sidebar_events(state);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                if self.canvas_rect.contains(p) {
-                    self.open_context_menu(p);
-                    *handled = true;
-                }
+                self.on_right_press(state, handled);
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
-                let p = self.last_mouse;
-                let (raw_x, raw_y) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => {
-                        (f64::from(*x) * 56.0, f64::from(*y) * 56.0)
-                    }
-                    MouseScrollDelta::PixelDelta(pos) => {
-                        (pos.x / scale_factor, pos.y / scale_factor)
-                    }
-                };
-                let mods = modifiers.state();
-                let ctrl = mods.control_key() || mods.super_key();
-                tracing::debug!(
-                    kind = match delta {
-                        MouseScrollDelta::LineDelta(..) => "line",
-                        MouseScrollDelta::PixelDelta(..) => "pixel",
-                    },
-                    raw_x,
-                    raw_y,
-                    ctrl,
-                    shift = mods.shift_key(),
-                    "pdf MouseWheel"
-                );
-
-                // Wheel over the page rail scrolls its thumbnail list.
-                if self.show_rail && self.rail_rect.contains(p) {
-                    if self.page_sidebar.on_wheel(-raw_y) {
-                        self.dirty = true;
-                    }
-                    *handled = true;
-                    return;
-                }
-
-                // Wheel over the sidebar scrolls its list.
-                if self.show_sidebar && self.sidebar_rect.contains(p) {
-                    // (sidebar_max_scroll needs the text renderer, so just
-                    // nudge and let the next draw clamp it.)
-                    self.sidebar_scroll = (self.sidebar_scroll - raw_y).max(0.0);
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-
-                if ctrl {
-                    // Ctrl+wheel zooms, centred on the cursor.
-                    let factor = if raw_y > 0.0 {
-                        1.0 + raw_y / 240.0
-                    } else {
-                        1.0 / (1.0 - raw_y / 240.0)
-                    };
-                    self.zoom_at(factor, p);
-                    *handled = true;
-                    return;
-                }
-
-                // Shift+wheel (or a horizontal wheel) pans horizontally;
-                // otherwise vertical. Either axis only moves if it can. The
-                // clamp lives in the shared kernel's `pan_by`.
-                if mods.shift_key() && self.is_overflowing_x() {
-                    self.viewport.pan_by(-raw_y, 0.0);
-                } else {
-                    self.viewport.pan_by(-raw_x, -raw_y);
-                }
-                self.current_page = self.nearest_page();
-                self.dirty = true;
-                *handled = true;
+                self.on_mouse_wheel(delta, scale_factor, modifiers, handled);
             }
 
             // Touchpad pinch: zoom toward the cursor. Upstream winit emits
@@ -876,6 +505,488 @@ impl PdfApp {
         }
     }
 
+    /// `WindowEvent::CursorMoved`: routes to whichever live drag currently
+    /// owns the pointer (signature stroke, inline-editor selection, marker
+    /// drag, rail resize, rail reorder, region marquee, text selection,
+    /// canvas pan, or an in-progress highlight/ink drag), first match wins.
+    fn on_cursor_moved(
+        &mut self,
+        event: &WindowEvent,
+        p: Point,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+    ) {
+        self.last_mouse = p;
+        if self.on_cursor_moved_chrome_drags(event, p, scale_factor, modifiers, state) {
+            return;
+        }
+        self.on_cursor_moved_page_drags(p);
+    }
+
+    /// The signature pad, the inline editor, a sticky-note marker drag, and
+    /// the rail resize grip — each owns the pointer exclusively while
+    /// active. Returns whether one of them already consumed the move.
+    fn on_cursor_moved_chrome_drags(
+        &mut self,
+        event: &WindowEvent,
+        p: Point,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+    ) -> bool {
+        // Drawing a signature on the pad: extend the in-progress stroke.
+        if self.sig_stroke.is_some() {
+            let n = self.sig_pad_norm(p);
+            if let Some(st) = self.sig_stroke.as_mut() {
+                let far = st
+                    .last()
+                    .is_none_or(|l| (l.0 - n.0).abs() + (l.1 - n.1).abs() > 0.004);
+                if far {
+                    st.push(n);
+                }
+            }
+            self.dirty = true;
+            return true;
+        }
+
+        // Route motion to the inline editor so its hover tracks (for a
+        // click-to-caret) and a press-drag extends its selection.
+        // Consume the move while it is actively drag-selecting so the
+        // page doesn't pan under the selection.
+        if self.editing.is_some() {
+            self.drive_editor(event, scale_factor, modifiers, state);
+            if self.editing.as_ref().is_some_and(|e| e.input.is_dragging()) {
+                self.dirty = true;
+                return true;
+            }
+        }
+
+        // Dragging a sticky-note marker: move it live (local only; the
+        // CRDT is written once on release so a drag is one undo step).
+        if let Some(mut mdrag) = self.marker_drag.take() {
+            if let Some(page) = self.anno_page(&mdrag.id) {
+                let pt = self.page_point(page, p);
+                let (nx, ny) = mdrag.update(pt);
+                self.move_note_local(&mdrag.id, nx, ny);
+            }
+            self.marker_drag = Some(mdrag);
+            self.dirty = true;
+            return true;
+        }
+
+        // Rail resize drag takes priority over everything else.
+        if let Some(grip_x) = self.rail_drag {
+            let _ = grip_x;
+            let new_w = (p.x - self.rect.x0).clamp(RAIL_W_MIN, RAIL_W_MAX);
+            self.rail_w = new_w;
+            self.reflow();
+            self.dirty = true;
+            return true;
+        }
+
+        false
+    }
+
+    /// The page-rail reorder drag, an image-region marquee, a text-selection
+    /// drag, canvas pan, and an in-progress highlight/ink drag — the
+    /// page-level motion handling once no chrome drag owns the pointer.
+    fn on_cursor_moved_page_drags(&mut self, p: Point) {
+        // A live page-rail reorder drag (or an open rail menu) owns the
+        // pointer while it lasts.
+        if self.show_rail && (self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open())
+        {
+            if self.page_sidebar.on_motion(p) {
+                self.dirty = true;
+            }
+            return;
+        }
+
+        // Image-region marquee drag (Shift + Select).
+        if let Some(region) = self.region {
+            let pt = self.page_point(region.page, p);
+            if let Some(r) = self.region.as_mut() {
+                r.cur = pt;
+            }
+            self.dirty = true;
+            return;
+        }
+
+        // Text selection drag (Select tool over real text). Map the
+        // pointer onto the selection's page even past the card edge so
+        // the drag can reach the end of a line.
+        if let Some(sel) = self.selection
+            && sel.dragging
+        {
+            let pt = self.page_point(sel.page, p);
+            self.update_selection(sel.page, pt);
+            return;
+        }
+
+        // Drag-to-pan (Select tool).
+        if let Some(pan) = self.pan {
+            let dx = p.x - pan.start.x;
+            let dy = p.y - pan.start.y;
+            if dx.hypot(dy) > PAN_SLOP {
+                self.viewport
+                    .set_scroll(pan.scroll_x0 - dx, pan.scroll_y0 - dy);
+                self.current_page = self.nearest_page();
+                if let Some(pan) = self.pan.as_mut() {
+                    pan.moved = true;
+                }
+            }
+            self.dirty = true;
+            return;
+        }
+
+        if let Some(page) = self.drag.as_ref().map(|d| d.page) {
+            let pt = self.page_point(page, p);
+            if let Some(d) = self.drag.as_mut() {
+                d.cur = pt;
+                if d.tool == Tool::Ink {
+                    let push = d
+                        .points
+                        .last()
+                        .is_none_or(|l| (l.0 - pt.0).hypot(l.1 - pt.1) > 1.5);
+                    if push {
+                        d.points.push(pt);
+                    }
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// `WindowEvent::MouseInput` (left, pressed): the inline editor / open
+    /// menus / chrome first, then the page rail / overlay scrim / selection
+    /// HUD / canvas — first match consumes the click.
+    fn on_left_press(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let p = self.last_mouse;
+        if self.on_left_press_editor_and_menus(event, p, scale_factor, modifiers, state, handled) {
+            return;
+        }
+        self.on_left_press_rail_and_canvas(p, state, handled);
+    }
+
+    /// The inline editor, an open context menu, the toolbar, the find bar,
+    /// the page bubble and the sidebar — each intercepts a left press before
+    /// it reaches the rail or the canvas. Returns whether one of them already
+    /// consumed the click.
+    fn on_left_press_editor_and_menus(
+        &mut self,
+        event: &WindowEvent,
+        p: Point,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        // A click inside the active inline editor keeps focus; a click
+        // anywhere else commits the edit first, then falls through so
+        // the click still performs its normal action.
+        if self.editing.is_some() {
+            if self.edit_rect.contains(p) {
+                // Place the caret (or begin a drag-selection) in the
+                // inline editor at the click point.
+                self.drive_editor(event, scale_factor, modifiers, state);
+                self.dirty = true;
+                *handled = true;
+                return true;
+            }
+            self.commit_edit(state);
+        }
+        // An open context menu intercepts the next click.
+        if let Some(menu) = self.context_menu.clone() {
+            if menu.item_rect.contains(p) {
+                self.delete_target(&menu.target, state);
+            } else {
+                self.context_menu = None;
+                self.dirty = true;
+            }
+            *handled = true;
+            return true;
+        }
+        if let Some(hit) = self.toolbar_hit(p) {
+            self.apply_toolbar(&hit, state);
+            *handled = true;
+            return true;
+        }
+        if self.search_active && self.search_rect.contains(p) {
+            self.apply_search_strip(p);
+            *handled = true;
+            return true;
+        }
+        if self.apply_page_bubble(p) {
+            *handled = true;
+            return true;
+        }
+        if self.apply_sidebar(p, state) {
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// The page rail (resize grip, then the shared rail widget), the
+    /// narrow-window overlay scrim, the floating selection HUD, and finally
+    /// the canvas itself — the rest of a left press once the editor/menu/
+    /// chrome stage above has passed it through.
+    fn on_left_press_rail_and_canvas(
+        &mut self,
+        p: Point,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        // The page rail: its resize grip (a thin strip on the right
+        // edge) first, then the shared rail widget (select, begin a
+        // reorder drag, the "Import…" button, or a click that dismisses
+        // an open menu).
+        if self.show_rail {
+            let rail = self.rail_rect;
+            if (p.x - rail.x1).abs() <= RAIL_GRIP && p.y >= rail.y0 && p.y <= rail.y1 {
+                self.rail_drag = Some(p.x);
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+            if rail.contains(p) || self.page_sidebar.menu_open() {
+                self.page_sidebar.on_press(p);
+                self.apply_sidebar_events(state);
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+        }
+        // On a narrow window a click on the scrim (canvas area not
+        // covered by an open overlay panel) dismisses the panels.
+        if self.overlay_mode
+            && (self.show_rail || self.show_sidebar)
+            && self.canvas_rect.contains(p)
+        {
+            self.show_rail = false;
+            self.show_sidebar = false;
+            self.reflow();
+            *handled = true;
+            return;
+        }
+        // The floating selection HUD (Copy / highlight / Note) intercepts
+        // the click before it reaches the page — the same bar the ebook
+        // reader draws, via the shared `ui` component.
+        if let Some(action) = self.sel_hud.as_ref().and_then(|h| h.hit(p)) {
+            self.apply_hud_action(action, state);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        if self.sel_hud.as_ref().is_some_and(|h| h.contains(p)) {
+            // A tap on the bar body (between controls) is swallowed so it
+            // doesn't fall through and clear the selection.
+            *handled = true;
+            return;
+        }
+        if self.apply_canvas_press(p, state) {
+            *handled = true;
+        }
+    }
+
+    /// `WindowEvent::MouseInput` (left, released): finishes whichever drag or
+    /// pending gesture from the press is still live (signature stroke,
+    /// inline-editor selection, marker drag, region marquee, rail reorder,
+    /// text selection, pan, or a highlight/ink drag).
+    fn on_left_release(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        // Finish a signature pad stroke: commit it if it has real ink.
+        if let Some(stroke) = self.sig_stroke.take() {
+            if stroke.len() >= 2 {
+                self.sig_strokes.push(stroke);
+            }
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        // End an inline-editor drag-selection.
+        if self.editing.as_ref().is_some_and(|e| e.input.is_dragging()) {
+            self.drive_editor(event, scale_factor, modifiers, state);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        // End a sticky-note marker drag: persist the new anchor once (a
+        // no-move release is a plain select, already applied on press).
+        if let Some(mdrag) = self.marker_drag.take() {
+            if mdrag.moved() {
+                if let Some((x, y)) = self.note_pos(&mdrag.id) {
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_annotation_position_action(&mdrag.id, x, y),
+                    );
+                    self.reload(state);
+                }
+            } else {
+                // A tap on the marker reveals its comment thread.
+                if let Some(c) = self
+                    .comments
+                    .iter()
+                    .find(|c| c.anno_id.as_deref() == Some(mdrag.id.as_str()))
+                {
+                    let cid = c.id.clone();
+                    self.focus_sidebar(SidebarTab::Comments, cid);
+                }
+            }
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        // End an image-region marquee: crop + copy the region.
+        if self.region.is_some() {
+            self.copy_region();
+            self.region = None;
+            *handled = true;
+            return;
+        }
+        // Commit a page-rail reorder drag (or clear its pending press).
+        if self.page_sidebar.is_pending_drag() {
+            if self.page_sidebar.on_release() {
+                self.dirty = true;
+            }
+            self.apply_sidebar_events(state);
+            *handled = true;
+            return;
+        }
+        if self.selection.is_some_and(|s| s.dragging) {
+            // End a text-selection drag. A bare click (no drag) selects
+            // nothing textual, so also let it pick markup underneath.
+            let was_active = self.selection.is_some_and(|s| s.is_active());
+            self.finish_selection();
+            if !was_active && let Some((page, pt)) = self.hit_page(self.last_mouse) {
+                self.select_at(page, pt);
+            }
+            *handled = true;
+        } else if self.rail_drag.take().is_some() {
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(pan) = self.pan.take() {
+            // A press that never moved is a selection click.
+            if !pan.moved {
+                if let Some((page, pt)) = self.hit_page(pan.start) {
+                    self.select_at(page, pt);
+                } else {
+                    self.selected_anno = None;
+                    self.selected_sig = None;
+                }
+            }
+            self.dirty = true;
+            *handled = true;
+        } else if self.drag.is_some() {
+            self.commit_drag(state);
+            *handled = true;
+        }
+    }
+
+    /// `WindowEvent::MouseInput` (right, pressed): the page rail's
+    /// duplicate/move/delete menu, else the canvas context menu.
+    fn on_right_press(&mut self, state: &mut AutoCommit, handled: &mut bool) {
+        let p = self.last_mouse;
+        // Right-click a page thumbnail → the shared rail's duplicate /
+        // move / delete menu.
+        if self.show_rail && self.rail_rect.contains(p) {
+            self.page_sidebar.on_right_press(p);
+            self.apply_sidebar_events(state);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        if self.canvas_rect.contains(p) {
+            self.open_context_menu(p);
+            *handled = true;
+        }
+    }
+
+    /// `WindowEvent::MouseWheel`: the page rail / sidebar scroll it under the
+    /// pointer, Ctrl+wheel zooms, otherwise it pans the canvas.
+    fn on_mouse_wheel(
+        &mut self,
+        delta: &MouseScrollDelta,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
+        let p = self.last_mouse;
+        let (raw_x, raw_y) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
+            MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
+        };
+        let mods = modifiers.state();
+        let ctrl = mods.control_key() || mods.super_key();
+        tracing::debug!(
+            kind = match delta {
+                MouseScrollDelta::LineDelta(..) => "line",
+                MouseScrollDelta::PixelDelta(..) => "pixel",
+            },
+            raw_x,
+            raw_y,
+            ctrl,
+            shift = mods.shift_key(),
+            "pdf MouseWheel"
+        );
+
+        // Wheel over the page rail scrolls its thumbnail list.
+        if self.show_rail && self.rail_rect.contains(p) {
+            if self.page_sidebar.on_wheel(-raw_y) {
+                self.dirty = true;
+            }
+            *handled = true;
+            return;
+        }
+
+        // Wheel over the sidebar scrolls its list.
+        if self.show_sidebar && self.sidebar_rect.contains(p) {
+            // (sidebar_max_scroll needs the text renderer, so just
+            // nudge and let the next draw clamp it.)
+            self.sidebar_scroll = (self.sidebar_scroll - raw_y).max(0.0);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+
+        if ctrl {
+            // Ctrl+wheel zooms, centred on the cursor.
+            let factor = if raw_y > 0.0 {
+                1.0 + raw_y / 240.0
+            } else {
+                1.0 / (1.0 - raw_y / 240.0)
+            };
+            self.zoom_at(factor, p);
+            *handled = true;
+            return;
+        }
+
+        // Shift+wheel (or a horizontal wheel) pans horizontally;
+        // otherwise vertical. Either axis only moves if it can. The
+        // clamp lives in the shared kernel's `pan_by`.
+        if mods.shift_key() && self.is_overflowing_x() {
+            self.viewport.pan_by(-raw_y, 0.0);
+        } else {
+            self.viewport.pan_by(-raw_x, -raw_y);
+        }
+        self.current_page = self.nearest_page();
+        self.dirty = true;
+        *handled = true;
+    }
+
     /// Feed one raw winit event into the active inline-editor [`TextInput`].
     /// The editor lives outside the taffy tree (drawn by hand into the
     /// sidebar), so a throwaway leaf node satisfies the `Widget` signature; the
@@ -884,18 +995,20 @@ impl PdfApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
     ) {
         if let Some(e) = self.editing.as_mut() {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
+            let Ok(node) = taffy.new_leaf(Style::default()) else {
+                return;
+            };
             let mut handled = false;
             let mut ft: Option<NodeId> = None;
             e.input.handle_event(
                 event,
                 scale,
-                modifiers,
+                &modifiers,
                 state,
                 &automerge::ROOT,
                 &mut handled,
@@ -910,172 +1023,230 @@ impl PdfApp {
         &mut self,
         event: &WindowEvent,
         key_event: &winit::event::KeyEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         scale: f64,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        if self.on_key_editing(event, key_event, modifiers, scale, state, handled) {
+            return;
+        }
+
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
 
-        // While an inline text field is focused it owns the keyboard, so tool
-        // hotkeys and page navigation don't fire mid-sentence. The field is a
-        // shared TextInput: Escape cancels; every other key routes to the
-        // widget — caret motion, selection (shift+arrows), clipboard
-        // (Ctrl+C/V/X), and Enter (which submits → commit).
-        if self.editing.is_some() {
-            if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
-                self.cancel_edit();
-                *handled = true;
-                return;
-            }
-            self.drive_editor(event, scale, modifiers, state);
-            let submitted = self.editing.as_mut().is_some_and(|e| e.input.take_submit());
-            if submitted {
-                self.commit_edit(state);
-            }
-            self.dirty = true;
-            *handled = true;
+        if self.on_key_search(key_event, mods, ctrl, handled) {
             return;
         }
+        if self.on_key_ctrl_shortcuts(key_event, ctrl, handled) {
+            return;
+        }
+        self.on_key_navigation(key_event, state, handled);
+    }
 
-        // While the search strip is open it owns the keyboard.
-        if self.search_active {
-            match &key_event.logical_key {
-                Key::Named(NamedKey::Escape) => self.close_search(),
-                Key::Named(NamedKey::Enter) => {
-                    self.step_match(if mods.shift_key() { -1 } else { 1 });
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.query.pop();
-                    self.recompute_matches();
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.query.push(' ');
-                    self.recompute_matches();
-                }
-                Key::Character(c) => {
-                    if ctrl && c.as_str().eq_ignore_ascii_case("f") {
-                        self.close_search();
-                    } else if !ctrl {
-                        for ch in c.chars() {
-                            if !ch.is_control() {
-                                self.query.push(ch);
-                            }
+    /// While an inline text field is focused it owns the keyboard, so tool
+    /// hotkeys and page navigation don't fire mid-sentence. The field is a
+    /// shared TextInput: Escape cancels; every other key routes to the
+    /// widget — caret motion, selection (shift+arrows), clipboard
+    /// (Ctrl+C/V/X), and Enter (which submits → commit). Returns whether it
+    /// consumed this key.
+    fn on_key_editing(
+        &mut self,
+        event: &WindowEvent,
+        key_event: &winit::event::KeyEvent,
+        modifiers: winit::event::Modifiers,
+        scale: f64,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if self.editing.is_none() {
+            return false;
+        }
+        if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
+            self.cancel_edit();
+            *handled = true;
+            return true;
+        }
+        self.drive_editor(event, scale, modifiers, state);
+        let submitted = self.editing.as_mut().is_some_and(|e| e.input.take_submit());
+        if submitted {
+            self.commit_edit(state);
+        }
+        self.dirty = true;
+        *handled = true;
+        true
+    }
+
+    /// While the search strip is open it owns the keyboard. Returns whether
+    /// it consumed this key.
+    fn on_key_search(
+        &mut self,
+        key_event: &winit::event::KeyEvent,
+        mods: winit::keyboard::ModifiersState,
+        ctrl: bool,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.search_active {
+            return false;
+        }
+        match &key_event.logical_key {
+            Key::Named(NamedKey::Escape) => self.close_search(),
+            Key::Named(NamedKey::Enter) => {
+                self.step_match(if mods.shift_key() { -1 } else { 1 });
+            }
+            Key::Named(NamedKey::Backspace) => {
+                self.query.pop();
+                self.recompute_matches();
+            }
+            Key::Named(NamedKey::Space) => {
+                self.query.push(' ');
+                self.recompute_matches();
+            }
+            Key::Character(c) => {
+                if ctrl && c.as_str().eq_ignore_ascii_case("f") {
+                    self.close_search();
+                } else if !ctrl {
+                    for ch in c.chars() {
+                        if !ch.is_control() {
+                            self.query.push(ch);
                         }
-                        self.recompute_matches();
                     }
+                    self.recompute_matches();
                 }
-                _ => {}
             }
-            *handled = true;
-            return;
+            _ => {}
         }
+        *handled = true;
+        true
+    }
 
-        // Ctrl/Cmd shortcuts: find, and zoom (+ / − / 0). Handled up front so
-        // the bare-key fallbacks below can keep their own meanings.
-        if ctrl && let Key::Character(c) = &key_event.logical_key {
-            match c.as_str() {
-                "o" | "O" => {
-                    self.request_open_via_portal();
-                    *handled = true;
-                    return;
-                }
-                "f" | "F" => {
-                    self.open_search();
-                    *handled = true;
-                    return;
-                }
-                "+" | "=" => {
-                    self.zoom_by(1.15);
-                    *handled = true;
-                    return;
-                }
-                "-" | "_" => {
-                    self.zoom_by(1.0 / 1.15);
-                    *handled = true;
-                    return;
-                }
-                "0" => {
-                    self.reset_zoom();
-                    *handled = true;
-                    return;
-                }
-                "c" | "C" => {
-                    // Copy the live text selection, if any. Falls through
-                    // when nothing is selected so the key is a harmless no-op.
-                    if self.copy_selection() {
-                        *handled = true;
-                        return;
-                    }
-                }
-                "s" | "S" => {
-                    self.request_save_via_portal();
-                    *handled = true;
-                    return;
-                }
-                _ => {}
+    /// Ctrl/Cmd shortcuts: open, find, zoom (+ / − / 0), copy, save. Handled
+    /// up front so the bare-key fallbacks below can keep their own meanings.
+    /// Returns whether one of them consumed this key.
+    fn on_key_ctrl_shortcuts(
+        &mut self,
+        key_event: &winit::event::KeyEvent,
+        ctrl: bool,
+        handled: &mut bool,
+    ) -> bool {
+        let Key::Character(c) = &key_event.logical_key else {
+            return false;
+        };
+        if !ctrl {
+            return false;
+        }
+        match c.as_str() {
+            "o" | "O" => {
+                self.request_open_via_portal();
+                *handled = true;
+                true
             }
+            "f" | "F" => {
+                self.open_search();
+                *handled = true;
+                true
+            }
+            "+" | "=" => {
+                self.zoom_by(1.15);
+                *handled = true;
+                true
+            }
+            "-" | "_" => {
+                self.zoom_by(1.0 / 1.15);
+                *handled = true;
+                true
+            }
+            "0" => {
+                self.reset_zoom();
+                *handled = true;
+                true
+            }
+            "c" | "C" => {
+                // Copy the live text selection, if any. Falls through
+                // when nothing is selected so the key is a harmless no-op.
+                if self.copy_selection() {
+                    *handled = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            "s" | "S" => {
+                self.request_save_via_portal();
+                *handled = true;
+                true
+            }
+            _ => false,
         }
+    }
 
+    /// Bare-character tool/zoom/navigation hotkeys (no modifier held).
+    /// Returns whether `key` matched one.
+    fn on_key_char_shortcut(&mut self, key: &str) -> bool {
+        match key {
+            "1" => {
+                self.set_tool(Tool::Select);
+                true
+            }
+            "2" => {
+                self.set_tool(Tool::Highlight);
+                true
+            }
+            "3" => {
+                self.set_tool(Tool::Ink);
+                true
+            }
+            "4" => {
+                self.set_tool(Tool::Note);
+                true
+            }
+            "5" => {
+                self.set_tool(Tool::Sign);
+                true
+            }
+            "+" | "=" => {
+                self.zoom_by(1.15);
+                true
+            }
+            "-" | "_" => {
+                self.zoom_by(1.0 / 1.15);
+                true
+            }
+            "0" => {
+                self.reset_zoom();
+                true
+            }
+            "w" | "W" => {
+                self.fit_width();
+                true
+            }
+            "b" | "B" => {
+                self.toggle_sidebar();
+                true
+            }
+            "[" => {
+                self.prev_page();
+                true
+            }
+            "]" | " " => {
+                self.next_page();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Bare-key fallbacks once no modal input, search, or Ctrl shortcut has
+    /// claimed the key: tool hotkeys, zoom/fit, page navigation and delete.
+    fn on_key_navigation(
+        &mut self,
+        key_event: &winit::event::KeyEvent,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
         match &key_event.logical_key {
             Key::Character(c) => {
-                let consumed = match c.as_str() {
-                    "1" => {
-                        self.set_tool(Tool::Select);
-                        true
-                    }
-                    "2" => {
-                        self.set_tool(Tool::Highlight);
-                        true
-                    }
-                    "3" => {
-                        self.set_tool(Tool::Ink);
-                        true
-                    }
-                    "4" => {
-                        self.set_tool(Tool::Note);
-                        true
-                    }
-                    "5" => {
-                        self.set_tool(Tool::Sign);
-                        true
-                    }
-                    "+" | "=" => {
-                        self.zoom_by(1.15);
-                        true
-                    }
-                    "-" | "_" => {
-                        self.zoom_by(1.0 / 1.15);
-                        true
-                    }
-                    "0" => {
-                        self.reset_zoom();
-                        true
-                    }
-                    "w" | "W" => {
-                        self.fit_width();
-                        true
-                    }
-                    "b" | "B" => {
-                        self.toggle_sidebar();
-                        true
-                    }
-                    "[" => {
-                        self.prev_page();
-                        true
-                    }
-                    "]" => {
-                        self.next_page();
-                        true
-                    }
-                    " " => {
-                        self.next_page();
-                        true
-                    }
-                    _ => false,
-                };
-                if consumed {
+                if self.on_key_char_shortcut(c.as_str()) {
                     *handled = true;
                 }
             }
@@ -1205,7 +1376,7 @@ mod event_tests {
         let spec = res.actions.iter().find(|a| a.id == "delete").unwrap();
         let spec_encoded = match &spec.input {
             ActionInput::Immediate(e) => e.clone(),
-            _ => panic!("delete is an immediate action"),
+            ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
         };
 
         // The real affordance path (Delete key / rail button / context menu).
@@ -1559,9 +1730,86 @@ mod event_tests {
         unsafe { std::mem::zeroed() }
     }
 
+    /// Feed one real `WindowEvent` through `PdfApp::handle_event`, the same
+    /// entry point the live widget tree drives. Shared by the direct
+    /// event-path tests below so each one reads as its own scenario rather
+    /// than reproducing the taffy/harness plumbing.
+    fn feed_event(
+        app: &mut PdfApp,
+        st: &mut ui::State,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+        mods: &winit::event::Modifiers,
+        ev: &winit::event::WindowEvent,
+    ) {
+        use ui::Widget as _;
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            ev,
+            1.0,
+            mods,
+            &mut st.doc,
+            &st.root,
+            &mut handled,
+            &mut focus,
+            node,
+            taffy,
+        );
+    }
+
+    /// Arm the Highlight tool by clicking its real toolbar button, and assert
+    /// the click landed.
+    fn arm_highlight_tool_via_toolbar(
+        app: &mut PdfApp,
+        st: &mut ui::State,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+        mods: &winit::event::Modifiers,
+        dev: winit::event::DeviceId,
+    ) {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+
+        let lay = app.toolbar_layout();
+        let (_, hb) = lay
+            .tools
+            .iter()
+            .find(|(t, _)| *t == Tool::Highlight)
+            .unwrap();
+        let btn = (f64::midpoint(hb.x0, hb.x1), f64::midpoint(hb.y0, hb.y1));
+        feed_event(
+            app,
+            st,
+            taffy,
+            node,
+            mods,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(btn.0, btn.1),
+            },
+        );
+        feed_event(
+            app,
+            st,
+            taffy,
+            node,
+            mods,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(
+            app.tool,
+            Tool::Highlight,
+            "clicking the toolbar arms the tool"
+        );
+    }
+
     #[test]
     fn highlight_drag_through_real_event_path_adds_annotation() {
-        use ui::Widget as _;
         use winit::dpi::PhysicalPosition;
         use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -1577,86 +1825,53 @@ mod event_tests {
         let mods = winit::event::Modifiers::default();
         let dev = dummy_device_id();
 
-        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                ev,
-                1.0,
-                &mods,
-                &mut st.doc,
-                &st.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
-            );
-        };
-
-        // Arm the Highlight tool by clicking its real toolbar button.
-        let lay = app.toolbar_layout();
-        let (_, hb) = lay
-            .tools
-            .iter()
-            .find(|(t, _)| *t == Tool::Highlight)
-            .unwrap();
-        let btn = (f64::midpoint(hb.x0, hb.x1), f64::midpoint(hb.y0, hb.y1));
-        feed(
-            &mut app,
-            &mut st,
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: PhysicalPosition::new(btn.0, btn.1),
-            },
-        );
-        feed(
-            &mut app,
-            &mut st,
-            &WindowEvent::MouseInput {
-                device_id: dev,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        assert_eq!(
-            app.tool,
-            Tool::Highlight,
-            "clicking the toolbar arms the tool"
-        );
+        arm_highlight_tool_via_toolbar(&mut app, &mut st, &taffy, node, &mods, dev);
 
         // Drag across page one to lay down a highlight.
         let origin = app.page_origins()[0];
         let p0 = (origin.x + 80.0 * app.zoom(), origin.y + 200.0 * app.zoom());
         let p1 = (origin.x + 320.0 * app.zoom(), origin.y + 214.0 * app.zoom());
         let before = app.annotations.len();
-        feed(
+        feed_event(
             &mut app,
             &mut st,
+            &taffy,
+            node,
+            &mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(p0.0, p0.1),
             },
         );
-        feed(
+        feed_event(
             &mut app,
             &mut st,
+            &taffy,
+            node,
+            &mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
         );
-        feed(
+        feed_event(
             &mut app,
             &mut st,
+            &taffy,
+            node,
+            &mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(p1.0, p1.1),
             },
         );
-        feed(
+        feed_event(
             &mut app,
             &mut st,
+            &taffy,
+            node,
+            &mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Released,
@@ -2095,69 +2310,48 @@ mod event_tests {
         winit::event::Modifiers::from(s)
     }
 
-    /// Right-click a placed annotation, then click the context menu's Delete
-    /// item — all through the real `handle_event` path — and confirm the item
-    /// is removed from the shared document.
-    #[test]
-    fn right_click_delete_removes_item_through_event_path() {
-        use ui::Widget as _;
+    /// Right-click the seeded sticky note through the real event path,
+    /// asserting the context menu opens targeting it. Returns its id.
+    fn right_click_seeded_note(
+        app: &mut PdfApp,
+        st: &mut ui::State,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+        mods: &winit::event::Modifiers,
+        dev: winit::event::DeviceId,
+    ) -> String {
         use winit::dpi::PhysicalPosition;
+        use winit::event::{ElementState, MouseButton, WindowEvent};
 
-        let mut app = PdfApp::sample();
-        let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.recompute_regions();
-        app.sync_viewport_frame();
-        app.go_to_page(1);
-
-        // The seeded sticky note to right-click + delete.
-        let note = app
+        let sticky = app
             .annotations
             .iter()
             .find(|a| matches!(a.kind, AnnoKind::Note { .. }))
             .unwrap()
             .clone();
-        let (nx, ny) = match note.kind {
-            AnnoKind::Note { x, y } => (x, y),
-            _ => unreachable!(),
+        let AnnoKind::Note { x: nx, y: ny } = sticky.kind else {
+            unreachable!()
         };
-
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
-        let dev = dummy_device_id();
-        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                ev,
-                1.0,
-                &mods,
-                &mut st.doc,
-                &st.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
-            );
-        };
-
         let origin = app.page_origins()[0];
         let screen = (origin.x + nx * app.zoom(), origin.y + ny * app.zoom());
 
-        // Right-click over the note opens the context menu targeting it.
-        feed(
-            &mut app,
-            &mut st,
+        feed_event(
+            app,
+            st,
+            taffy,
+            node,
+            mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(screen.0, screen.1),
             },
         );
-        feed(
-            &mut app,
-            &mut st,
+        feed_event(
+            app,
+            st,
+            taffy,
+            node,
+            mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,
@@ -2168,6 +2362,31 @@ mod event_tests {
             app.context_menu.is_some(),
             "right-click over the note opens its delete menu"
         );
+        sticky.id
+    }
+
+    /// Right-click a placed annotation, then click the context menu's Delete
+    /// item — all through the real `handle_event` path — and confirm the item
+    /// is removed from the shared document.
+    #[test]
+    fn right_click_delete_removes_item_through_event_path() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.go_to_page(1);
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+
+        let note_id = right_click_seeded_note(&mut app, &mut st, &taffy, node, &mods, dev);
 
         // A draw pass captures the Delete item rect (exactly as it does live).
         let theme = ui::theme::Theme::dark();
@@ -2183,17 +2402,23 @@ mod event_tests {
             f64::midpoint(item.x0, item.x1),
             f64::midpoint(item.y0, item.y1),
         );
-        feed(
+        feed_event(
             &mut app,
             &mut st,
+            &taffy,
+            node,
+            &mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(ic.0, ic.1),
             },
         );
-        feed(
+        feed_event(
             &mut app,
             &mut st,
+            &taffy,
+            node,
+            &mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,
@@ -2211,21 +2436,21 @@ mod event_tests {
             "the targeted annotation is removed"
         );
         assert!(
-            !app.annotations.iter().any(|a| a.id == note.id),
+            !app.annotations.iter().any(|a| a.id == note_id),
             "specifically the right-clicked note"
         );
         assert!(
             !PdfDoc::list_annotations(&st.doc)
                 .iter()
-                .any(|a| a.id == note.id),
+                .any(|a| a.id == note_id),
             "and it is gone from the shared document"
         );
     }
 
-    /// The Select tool discriminates a press-move-release (pan) from a
-    /// press-release (click-to-select), both driven through `handle_event`.
+    /// A Select-tool press-move-release past `PAN_SLOP` pans the canvas and
+    /// selects nothing, driven through `handle_event`.
     #[test]
-    fn select_tool_drag_pans_while_a_click_selects() {
+    fn select_tool_drag_pans_the_canvas() {
         use ui::Widget as _;
         use winit::dpi::PhysicalPosition;
 
@@ -2258,9 +2483,9 @@ mod event_tests {
             );
         };
 
-        // --- press + drag upward past PAN_SLOP = pan (scroll moves, nothing selected). ---
-        // The sample seeds a pre-selected note; clear it so we can prove a pan
-        // never triggers a click-selection of its own.
+        // Press + drag upward past PAN_SLOP = pan (scroll moves, nothing
+        // selected). The sample seeds a pre-selected note; clear it so we can
+        // prove a pan never triggers a click-selection of its own.
         app.selected_anno = None;
         let a = (app.canvas_rect.x0 + 200.0, app.canvas_rect.y0 + 300.0);
         let b = (a.0, a.1 - 200.0); // drag up -> content scrolls down
@@ -2308,18 +2533,52 @@ mod event_tests {
             app.selected_anno.is_none(),
             "a pan does not select an annotation"
         );
+    }
 
-        // --- press + release without moving, over the seeded highlight = select. ---
+    /// A Select-tool press + release without moving, over an annotation,
+    /// selects it — driven through `handle_event`.
+    #[test]
+    fn select_tool_click_selects_the_annotation_under_it() {
+        use ui::Widget as _;
+        use winit::dpi::PhysicalPosition;
+
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.tool = Tool::Select;
         app.go_to_page(1);
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let dev = dummy_device_id();
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+        };
+
         let hl = app
             .annotations
             .iter()
             .find(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
             .unwrap()
             .clone();
-        let rect = match hl.kind {
-            AnnoKind::Highlight { rect } => rect,
-            _ => unreachable!(),
+        let AnnoKind::Highlight { rect } = hl.kind else {
+            unreachable!()
         };
         let origin = app.page_origins()[0];
         let (cx, cy) = rect.center();

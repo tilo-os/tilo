@@ -112,9 +112,8 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
     // 7-day outlook: vary code + temps a little each day.
     let week_codes = [spec.code_day, 2, 61, 80, 3, 1, spec.code_day];
     let mut daily = Vec::new();
-    for d in 0..7usize {
+    for (d, &code) in week_codes.iter().enumerate() {
         let drift = (d as f64 - 3.0) * 0.8;
-        let code = week_codes[d];
         let wet = crate::wxcode::Sky::from_code(code).is_wet();
         daily.push(DayForecast {
             // Placeholder; the clean rolling date sequence is assigned in
@@ -144,8 +143,8 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
         "2026-07-05",
         "2026-07-06",
     ];
-    for (d, day) in daily.iter_mut().enumerate() {
-        day.date = dates[d].to_string();
+    for (day, date) in daily.iter_mut().zip(dates) {
+        day.date = date.to_string();
     }
 
     WeatherSnapshot {
@@ -185,118 +184,10 @@ pub fn sample_model() -> WeatherModel {
     };
 
     let specs: Vec<(SavedLocation, DaySpec)> = vec![
-        (
-            SavedLocation::new(
-                "San Francisco",
-                "California",
-                "United States",
-                "US",
-                37.7749,
-                -122.4194,
-                "America/Los_Angeles",
-            ),
-            DaySpec {
-                low: 13.0,
-                high: 21.0,
-                code_day: 2,
-                code_night: 1,
-                humidity: 68.0,
-                wind: 18.0,
-                wind_dir: 250.0,
-                pressure: 1016.0,
-                uv: 6.0,
-                now_hour: 14,
-                is_day_now: true,
-                sunrise_h: 6,
-                sunset_h: 20,
-                precip_peak: None,
-                aqi: 24.0,
-            },
-        ),
-        (
-            SavedLocation::new(
-                "Tokyo",
-                "Tokyo",
-                "Japan",
-                "JP",
-                35.6762,
-                139.6503,
-                "Asia/Tokyo",
-            ),
-            DaySpec {
-                low: 24.0,
-                high: 31.0,
-                code_day: 63,
-                code_night: 61,
-                humidity: 84.0,
-                wind: 14.0,
-                wind_dir: 160.0,
-                pressure: 1004.0,
-                uv: 8.0,
-                now_hour: 18,
-                is_day_now: true,
-                sunrise_h: 4,
-                sunset_h: 19,
-                precip_peak: Some((19, 85.0)),
-                aqi: 58.0,
-            },
-        ),
-        (
-            SavedLocation::new(
-                "Reykjavík",
-                "Capital Region",
-                "Iceland",
-                "IS",
-                64.1466,
-                -21.9426,
-                "Atlantic/Reykjavik",
-            ),
-            DaySpec {
-                low: 4.0,
-                high: 9.0,
-                code_day: 85,
-                code_night: 71,
-                humidity: 90.0,
-                wind: 34.0,
-                wind_dir: 300.0,
-                pressure: 995.0,
-                uv: 2.0,
-                now_hour: 23,
-                is_day_now: false,
-                sunrise_h: 3,
-                sunset_h: 23,
-                precip_peak: Some((22, 70.0)),
-                aqi: 12.0,
-            },
-        ),
-        (
-            SavedLocation::new(
-                "Cairo",
-                "Cairo Governorate",
-                "Egypt",
-                "EG",
-                30.0444,
-                31.2357,
-                "Africa/Cairo",
-            ),
-            DaySpec {
-                low: 26.0,
-                high: 39.0,
-                code_day: 0,
-                code_night: 0,
-                humidity: 22.0,
-                wind: 11.0,
-                wind_dir: 20.0,
-                pressure: 1011.0,
-                uv: 11.0,
-                now_hour: 13,
-                is_day_now: true,
-                sunrise_h: 5,
-                sunset_h: 19,
-                precip_peak: None,
-                aqi: 96.0,
-            },
-        ),
+        san_francisco_spec(),
+        tokyo_spec(),
+        reykjavik_spec(),
+        cairo_spec(),
     ];
 
     for (loc, spec) in specs {
@@ -308,6 +199,130 @@ pub fn sample_model() -> WeatherModel {
     }
     model.selected = 0;
     model
+}
+
+fn san_francisco_spec() -> (SavedLocation, DaySpec) {
+    (
+        SavedLocation::new(
+            "San Francisco",
+            "California",
+            "United States",
+            "US",
+            37.7749,
+            -122.4194,
+            "America/Los_Angeles",
+        ),
+        DaySpec {
+            low: 13.0,
+            high: 21.0,
+            code_day: 2,
+            code_night: 1,
+            humidity: 68.0,
+            wind: 18.0,
+            wind_dir: 250.0,
+            pressure: 1016.0,
+            uv: 6.0,
+            now_hour: 14,
+            is_day_now: true,
+            sunrise_h: 6,
+            sunset_h: 20,
+            precip_peak: None,
+            aqi: 24.0,
+        },
+    )
+}
+
+fn tokyo_spec() -> (SavedLocation, DaySpec) {
+    (
+        SavedLocation::new(
+            "Tokyo",
+            "Tokyo",
+            "Japan",
+            "JP",
+            35.6762,
+            139.6503,
+            "Asia/Tokyo",
+        ),
+        DaySpec {
+            low: 24.0,
+            high: 31.0,
+            code_day: 63,
+            code_night: 61,
+            humidity: 84.0,
+            wind: 14.0,
+            wind_dir: 160.0,
+            pressure: 1004.0,
+            uv: 8.0,
+            now_hour: 18,
+            is_day_now: true,
+            sunrise_h: 4,
+            sunset_h: 19,
+            precip_peak: Some((19, 85.0)),
+            aqi: 58.0,
+        },
+    )
+}
+
+fn reykjavik_spec() -> (SavedLocation, DaySpec) {
+    (
+        SavedLocation::new(
+            "Reykjavík",
+            "Capital Region",
+            "Iceland",
+            "IS",
+            64.1466,
+            -21.9426,
+            "Atlantic/Reykjavik",
+        ),
+        DaySpec {
+            low: 4.0,
+            high: 9.0,
+            code_day: 85,
+            code_night: 71,
+            humidity: 90.0,
+            wind: 34.0,
+            wind_dir: 300.0,
+            pressure: 995.0,
+            uv: 2.0,
+            now_hour: 23,
+            is_day_now: false,
+            sunrise_h: 3,
+            sunset_h: 23,
+            precip_peak: Some((22, 70.0)),
+            aqi: 12.0,
+        },
+    )
+}
+
+fn cairo_spec() -> (SavedLocation, DaySpec) {
+    (
+        SavedLocation::new(
+            "Cairo",
+            "Cairo Governorate",
+            "Egypt",
+            "EG",
+            30.0444,
+            31.2357,
+            "Africa/Cairo",
+        ),
+        DaySpec {
+            low: 26.0,
+            high: 39.0,
+            code_day: 0,
+            code_night: 0,
+            humidity: 22.0,
+            wind: 11.0,
+            wind_dir: 20.0,
+            pressure: 1011.0,
+            uv: 11.0,
+            now_hour: 13,
+            is_day_now: true,
+            sunrise_h: 5,
+            sunset_h: 19,
+            precip_peak: None,
+            aqi: 96.0,
+        },
+    )
 }
 
 /// A representative geocode result set (a "Par…" query) for the offscreen

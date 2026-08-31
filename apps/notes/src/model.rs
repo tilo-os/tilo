@@ -298,9 +298,7 @@ impl Workspace {
             map.insert(*old, new);
             mapping.push((*old, new));
         }
-        let Some(&new_root) = map.get(&id) else {
-            return None;
-        };
+        let &new_root = map.get(&id)?;
         // The sibling `id` currently sits before in its group — insert the
         // copy right after it (before the sibling that follows `id`).
         let after_sibling = {
@@ -313,12 +311,8 @@ impl Workspace {
         // Materialise every cloned meta, then append them in one pass.
         let mut new_metas: Vec<PageMeta> = Vec::with_capacity(order_list.len());
         for old in &order_list {
-            let Some(meta) = self.get(*old) else {
-                return None;
-            };
-            let Some(&new_id) = map.get(old) else {
-                return None;
-            };
+            let meta = self.get(*old)?;
+            let &new_id = map.get(old)?;
             let new_parent = if *old == id {
                 src.parent
             } else {

@@ -195,7 +195,7 @@ impl Default for Sampler {
 fn count_open_files(pid: u32) -> Option<usize> {
     std::fs::read_dir(format!("/proc/{pid}/fd"))
         .ok()
-        .map(|it| it.filter(std::result::Result::is_ok).count())
+        .map(|it| it.flatten().count())
 }
 
 #[cfg(not(target_os = "linux"))]

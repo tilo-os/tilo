@@ -34,7 +34,7 @@ use ui::widget::{
 };
 use ui::{App, State};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
@@ -57,6 +57,15 @@ impl LabelTile {
 }
 impl Widget for LabelTile {
     fn sync(&mut self, _: &mut AutoCommit, _: &automerge::ObjId) {}
+    // taffy 0.10's `new_leaf` is typed `-> TaffyResult<NodeId>` for API
+    // generality but cannot actually return `Err` for a leaf with no
+    // children (see `ui::widget::TaffyTreeExt`'s doc comment, which documents
+    // the same invariant for the crate's own widgets); `Widget::build_layout`
+    // returns a bare `NodeId`, so there is no `Result` to thread it through.
+    #[allow(
+        clippy::unwrap_used,
+        reason = "new_leaf cannot fail for a leaf with no children in taffy 0.10; build_layout returns a bare NodeId"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -88,7 +97,7 @@ impl Widget for LabelTile {
         }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -116,7 +125,7 @@ impl Widget for LabelTile {
             &self.text,
             theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.rect.x0 + 8.0, self.rect.y0 + 6.0)),
+            transform.pre_translate(Vec2::new(self.rect.x0 + 8.0, self.rect.y0 + 6.0)),
             None,
         );
     }
@@ -143,20 +152,17 @@ impl Widget for LabelTile {
 
 fn placeholder_image() -> PenikoImage {
     let mut buf = vec![0u8; 4 * 16 * 16];
-    for y in 0..16 {
-        for x in 0..16 {
-            let i = (y * 16 + x) * 4;
-            let on = ((x / 4) + (y / 4)) % 2 == 0;
+    for y in 0..16usize {
+        for x in 0..16usize {
+            let i = y.saturating_mul(16).saturating_add(x).saturating_mul(4);
+            let on = (x / 4).saturating_add(y / 4) % 2 == 0;
+            let Some(pixel) = buf.get_mut(i..i.saturating_add(4)) else {
+                continue;
+            };
             if on {
-                buf[i] = 99;
-                buf[i + 1] = 102;
-                buf[i + 2] = 241;
-                buf[i + 3] = 255;
+                pixel.copy_from_slice(&[99, 102, 241, 255]);
             } else {
-                buf[i] = 30;
-                buf[i + 1] = 41;
-                buf[i + 2] = 59;
-                buf[i + 3] = 255;
+                pixel.copy_from_slice(&[30, 41, 59, 255]);
             }
         }
     }
@@ -204,34 +210,20 @@ pub fn run(_args: &[String]) {
         let _ = state.doc.put(&state.root, "toggle_1", true);
         let _ = state.doc.put(&state.root, "check_1", false);
         let _ = state.doc.put(&state.root, "slider_1", 0.5);
-        let text_id = state
+        match state
             .doc
             .put_object(&state.root, "text_1", automerge::ObjType::Text)
-            .unwrap();
-        let _ = state.doc.splice_text(&text_id, 0, 0, "Edit me");
+        {
+            Ok(text_id) => {
+                let _ = state.doc.splice_text(&text_id, 0, 0, "Edit me");
+            }
+            Err(err) => {
+                eprintln!("widget_showcase: failed to seed text_1: {err}");
+            }
+        }
     }
 
-    // Build the project tree once so we can pre-expand it.
-    let tree_root = TreeNode::branch(
-        1u64,
-        "project",
-        (),
-        vec![
-            TreeNode::branch(
-                2u64,
-                "src",
-                (),
-                vec![
-                    TreeNode::leaf(3u64, "main.rs", ()),
-                    TreeNode::leaf(4u64, "lib.rs", ()),
-                ],
-            ),
-            TreeNode::leaf(5u64, "README.md", ()),
-        ],
-    );
-    let mut tree = TreeView::new(tree_root);
-    tree.toggle_expand(1);
-    tree.toggle_expand(2);
+    let tree = build_tree();
 
     // Anchored popover (always open). Anchor coords are picked to land
     // roughly where the row appears once the layout settles; the flip
@@ -252,7 +244,46 @@ pub fn run(_args: &[String]) {
     .primary_action("Save", || {})
     .secondary_action("Discard", || {});
 
-    let column_inner = Box::new(
+    let column_inner = build_column_inner(tree);
+    let _ = popover; // silence unused warnings — kept above for inline
+    let _ = modal; // documentation of the construction shape.
+
+    let root: Box<dyn Widget> =
+        Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(column_inner));
+
+    let app = App::new(state, root);
+    app.run();
+}
+
+/// Build the project tree once so we can pre-expand it.
+fn build_tree() -> TreeView<()> {
+    let tree_root = TreeNode::branch(
+        1u64,
+        "project",
+        (),
+        vec![
+            TreeNode::branch(
+                2u64,
+                "src",
+                (),
+                vec![
+                    TreeNode::leaf(3u64, "main.rs", ()),
+                    TreeNode::leaf(4u64, "lib.rs", ()),
+                ],
+            ),
+            TreeNode::leaf(5u64, "README.md", ()),
+        ],
+    );
+    let mut tree = TreeView::new(tree_root);
+    tree.toggle_expand(1);
+    tree.toggle_expand(2);
+    tree
+}
+
+/// Build the showcase's scrollable column of every "existing + new" widget
+/// row, ending with `tree` (pre-expanded by [`build_tree`]).
+fn build_column_inner(tree: TreeView<()>) -> Box<dyn Widget> {
+    Box::new(
         Column::new()
             .with_intrinsic_height()
             .push(caption("title"))
@@ -315,7 +346,7 @@ pub fn run(_args: &[String]) {
             .push(Box::new(
                 Row::new()
                     .push(Box::new(DatePicker::new(
-                        NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+                        NaiveDate::from_ymd_opt(2026, 5, 22).unwrap_or_default(),
                     )))
                     .push(Box::new(TimePicker::new(14, 30)))
                     .push(Box::new(TimePicker::new(9, 15).with_seconds(45))),
@@ -332,13 +363,5 @@ pub fn run(_args: &[String]) {
                                    // including them here would either collapse them to zero
                                    // height (Image/Video) or overlap chrome at scene origin
                                    // (Popover/Modal anchor in absolute coords).
-    );
-    let _ = popover; // silence unused warnings — kept above for inline
-    let _ = modal; // documentation of the construction shape.
-
-    let root: Box<dyn Widget> =
-        Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(column_inner));
-
-    let app = App::new(state, root);
-    app.run();
+    )
 }

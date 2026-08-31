@@ -97,9 +97,8 @@ fn from_zoneinfo(root: &Path) -> Option<Vec<String>> {
         let entries = std::fs::read_dir(&dir).ok()?;
         for entry in entries.flatten() {
             let path = entry.path();
-            let ft = match entry.file_type() {
-                Ok(ft) => ft,
-                Err(_) => continue,
+            let Ok(ft) = entry.file_type() else {
+                continue;
             };
             if ft.is_dir() {
                 stack.push(path);

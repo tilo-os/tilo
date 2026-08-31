@@ -103,6 +103,11 @@ extern "C" fn converse(
     // Allocate the response array PAM expects (`num_msg` entries). PAM frees
     // this array and each `resp` with `free`, so it must come from the same
     // C allocator.
+    // `num_msg <= 0` already returned above, so `num_msg` is provably positive here.
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "num_msg > 0 is checked just above; the sign can't be lost"
+    )]
     let n = num_msg as usize;
     let arr = unsafe { libc::calloc(n, std::mem::size_of::<PamResponse>()).cast::<PamResponse>() };
     if arr.is_null() {
@@ -214,7 +219,7 @@ pub fn authenticate(lib: &str, service: &str, user: &str, password: &str) -> Out
     // `appdata_ptr` during `pam_authenticate`.
     let conv = PamConv {
         conv: Some(converse),
-        appdata_ptr: c_pass.as_ptr() as *mut c_void,
+        appdata_ptr: c_pass.as_ptr().cast_mut().cast::<c_void>(),
     };
     let mut pamh: PamHandle = ptr::null_mut();
     let rc = unsafe {

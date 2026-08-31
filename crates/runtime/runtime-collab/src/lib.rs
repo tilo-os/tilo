@@ -34,6 +34,13 @@
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
+#![allow(
+    clippy::future_not_send,
+    reason = "every future here wraps an Rc-held capnp-rpc capability; capnp-rpc futures \
+              are inherently !Send and every call is documented to require a \
+              tokio::task::LocalSet-driven context, so this is not fixable without \
+              redesigning around the RPC library"
+)]
 
 use std::rc::Rc;
 
@@ -69,6 +76,12 @@ pub use collab_capnp::stream::Client as StreamClient;
 /// [`CollabClient`] for the idiomatic Rust surface. Must be called from
 /// within a `tokio::task::LocalSet`-driven context — capnp-rpc futures
 /// are `!Send`.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ServiceFdMissing`] if the launcher didn't hand
+/// this process a collab service fd, or another [`NotAvailable`] variant
+/// if the connection fails to establish.
 pub fn try_connect() -> Result<CollabClient, NotAvailable> {
     let fd = service_fd("collab").ok_or(NotAvailable::ServiceFdMissing)?;
     let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
@@ -95,6 +108,11 @@ impl CollabClient {
     /// given opaque identity blob. `identity` is the postcard
     /// encoding of a `collab-types` identity record — opaque
     /// from the broker's perspective.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn join_channel(
         &self,
         channel_id: &str,
@@ -105,6 +123,11 @@ impl CollabClient {
 
     /// Join a channel while announcing the participant's display handle.
     /// Empty handles retain the broker's room/local-identity fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn join_channel_as(
         &self,
         channel_id: &str,
@@ -137,6 +160,11 @@ pub struct ChannelHandle {
 impl ChannelHandle {
     /// Submit a single signed op into the channel. The op blob is
     /// a postcard-encoded `collab-types::SignedOp`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn send(&self, op: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_request();
         req.get().set_op(op);
@@ -147,6 +175,11 @@ impl ChannelHandle {
     /// LEGACY — publish an unsigned full-document snapshot, for apps not yet
     /// provisioned with a signing identity (removed once the whole fleet is
     /// provisioned). Prefer [`Self::send`] with a signed op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn send_unsigned_snapshot(&self, data: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_unsigned_snapshot_request();
         req.get().set_data(data);
@@ -157,6 +190,11 @@ impl ChannelHandle {
     /// LEGACY — publish an unsigned incremental Automerge change
     /// blob. Same transitional contract as
     /// [`Self::send_unsigned_snapshot`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn send_unsigned_incremental(&self, data: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_unsigned_incremental_request();
         req.get().set_data(data);
@@ -168,6 +206,11 @@ impl ChannelHandle {
     /// [`OpStream`] yields one op per `read` call; the consumer is
     /// expected to drive it in a loop. Stream lifetime is bounded
     /// by the parent channel handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe(&self) -> Result<OpStream, NotAvailable> {
         let req = self.inner.subscribe_request();
         let reply = req.send().promise.await?;
@@ -178,6 +221,11 @@ impl ChannelHandle {
     }
 
     /// Open the channel's presence sub-handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn presence(&self) -> Result<PresenceHandle, NotAvailable> {
         let req = self.inner.presence_request();
         let reply = req.send().promise.await?;
@@ -191,6 +239,11 @@ impl ChannelHandle {
     /// fresh [`ChannelContext`] whenever its view changes; the
     /// stream is client-pulled like every other stream in this
     /// schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe_context(&self) -> Result<ContextStream, NotAvailable> {
         let req = self.inner.subscribe_context_request();
         let reply = req.send().promise.await?;
@@ -206,6 +259,11 @@ impl ChannelHandle {
     /// this is the only way the content behind a reference leaves the
     /// process that produced it — an app's blob store lives inside its
     /// sandbox, so the shell cannot go and read it directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn offer_blob(&self, hash: &str, bytes: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.offer_blob_request();
         {
@@ -221,6 +279,11 @@ impl ChannelHandle {
     /// Returns as soon as the broker has the request, not when the content
     /// lands — the answer arrives on [`Self::subscribe_blobs`], so a caller
     /// doesn't block a frame on a transfer that may take several round trips.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn want_blob(&self, hash: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.want_blob_request();
         req.get().set_hash(hash);
@@ -230,6 +293,11 @@ impl ChannelHandle {
 
     /// Open a server-pulled stream of arrived content — answers to
     /// [`Self::want_blob`], and content a peer offered the room.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe_blobs(&self) -> Result<BlobStream, NotAvailable> {
         let req = self.inner.subscribe_blobs_request();
         let reply = req.send().promise.await?;
@@ -248,6 +316,11 @@ impl ChannelHandle {
     /// it says what should happen, and the owning app decides whether it
     /// recognises the request. Fanned out at cluster scope; a receiver
     /// applies it only if its own registry knows `type_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn send_action(&self, type_id: &str, payload: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_action_request();
         {
@@ -261,6 +334,11 @@ impl ChannelHandle {
 
     /// Open a server-pulled stream of actions other apps published into
     /// this room.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe_actions(&self) -> Result<ActionStream, NotAvailable> {
         let req = self.inner.subscribe_actions_request();
         let reply = req.send().promise.await?;
@@ -280,6 +358,12 @@ impl ChannelHandle {
     /// process that built it, so nothing published here can be fired by
     /// whoever reads it, only requested back through
     /// [`Self::subscribe_invocations`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call, or if `actions` is longer than a capnp list
+    /// can address (`u32::MAX` entries).
     pub async fn publish_actions(
         &self,
         app_id: &str,
@@ -289,9 +373,14 @@ impl ChannelHandle {
         {
             let mut b = req.get();
             b.set_app_id(app_id);
-            let mut list = b.init_actions(actions.len() as u32);
+            let action_count = u32::try_from(actions.len())
+                .map_err(|_| capnp::Error::failed("too many actions to publish".to_string()))?;
+            let mut list = b.init_actions(action_count);
             for (i, a) in actions.iter().enumerate() {
-                let mut row = list.reborrow().get(i as u32);
+                // `action_count` above already proved `actions.len()` fits in
+                // u32, so every index here does too.
+                let idx = u32::try_from(i).unwrap_or(u32::MAX);
+                let mut row = list.reborrow().get(idx);
                 row.set_resource(&a.resource);
                 row.set_action(&a.action);
                 row.set_resource_kind(&a.resource_kind);
@@ -322,6 +411,11 @@ impl ChannelHandle {
     /// to *this* application — distinct from [`Self::subscribe_actions`]
     /// (room-wide fan-out): an invocation names one connection, an
     /// instruction to one app to perform one operation it published.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe_invocations(&self) -> Result<InvocationStream, NotAvailable> {
         let req = self.inner.subscribe_invocations_request();
         let reply = req.send().promise.await?;
@@ -335,6 +429,11 @@ impl ChannelHandle {
     /// anything else is a refusal, reported to whoever asked rather than
     /// swallowed — a caller that can't see the screen has no other way to
     /// tell a completed operation from one that quietly did nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn complete_invocation(
         &self,
         id: u64,
@@ -360,6 +459,16 @@ impl ChannelHandle {
     /// window sits on a desktop. The panel can't be drawn here: it opens
     /// beside the app's context menu, and a Wayland client has no way to
     /// paint outside its own window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "beside carries on-screen window coordinates, always well within f32's \
+                  range; the wire schema is f32 and only sub-pixel precision is lost"
+    )]
     pub async fn compose_remark(
         &self,
         reference: &str,
@@ -384,6 +493,11 @@ impl ChannelHandle {
     /// LEGACY — doesn't carry an artifact id (the broker keys the read on
     /// `ArtifactId::default()`). Prefer [`Self::fetch_scrollback_for`] when
     /// a specific artifact is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn fetch_scrollback(
         &self,
         before_seq: u64,
@@ -413,6 +527,11 @@ impl ChannelHandle {
     /// Fetch a page of previously-validated signed ops on a specific
     /// artifact. `artifact_id` is the 16-byte little-endian encoding
     /// of the artifact uuid used by `collab-types`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn fetch_scrollback_for(
         &self,
         artifact_id: &[u8],
@@ -478,6 +597,12 @@ pub struct OpStream {
 impl OpStream {
     /// Pull the next op along with the broker's attribution string
     /// for its author. Resolves when the broker has one available.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or the reply carries a `from_user_id` that
+    /// isn't valid UTF-8.
     pub async fn read(&self) -> Result<OpEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -493,10 +618,9 @@ impl OpStream {
         // raw bytes to the envelope decoder; leaving it unmapped and letting
         // the caller ignore it is the honest direction.
         let kind = match r.get_kind() {
-            Ok(collab_capnp::OpKind::Signed) => OpKind::Signed,
+            Ok(collab_capnp::OpKind::Signed) | Err(_) => OpKind::Signed,
             Ok(collab_capnp::OpKind::UnsignedIncremental) => OpKind::UnsignedIncremental,
             Ok(collab_capnp::OpKind::UnsignedSnapshot) => OpKind::UnsignedSnapshot,
-            Err(_) => OpKind::Signed,
         };
         Ok(OpEvent {
             op,
@@ -526,6 +650,12 @@ impl BlobStream {
     /// Pull the next piece of arrived content. The caller MUST verify the
     /// bytes against `hash` before storing them — the key is the content's
     /// identity, so bytes hashing to something else aren't what was asked for.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or the reply carries a `hash` that isn't
+    /// valid UTF-8.
     pub async fn read(&self) -> Result<BlobEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -563,6 +693,12 @@ pub struct ActionStream {
 
 impl ActionStream {
     /// Pull the next action published into this room.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or the reply carries a string field that
+    /// isn't valid UTF-8.
     pub async fn read(&self) -> Result<ActionEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -645,6 +781,12 @@ pub struct InvocationStream {
 
 impl InvocationStream {
     /// Pull the next invocation addressed to this application.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or the reply carries a string field that
+    /// isn't valid UTF-8.
     pub async fn read(&self) -> Result<Invocation, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -680,6 +822,11 @@ pub struct PresenceHandle {
 
 impl PresenceHandle {
     /// Publish a cursor position. The broker fan-outs to peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn publish_cursor(&self, x: f32, y: f32) -> Result<(), NotAvailable> {
         let mut req = self.inner.publish_cursor_request();
         {
@@ -696,6 +843,11 @@ impl PresenceHandle {
     /// `key_bytes` is a postcard-encoded `ui::PresenceKey`
     /// (`PresenceKey::Pointer` for a pointer); the broker relays those bytes
     /// untouched, so the receiver reads the space its publisher chose.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn publish_pointer(
         &self,
         key_bytes: &[u8],
@@ -717,6 +869,11 @@ impl PresenceHandle {
     /// by `key_bytes`. `key_bytes` is a postcard-encoded
     /// `ui::PresenceKey`; the broker treats it as an opaque routing
     /// tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn publish_caret(&self, key_bytes: &[u8], pos: u64) -> Result<(), NotAvailable> {
         let mut req = self.inner.publish_caret_request();
         {
@@ -731,6 +888,11 @@ impl PresenceHandle {
     /// Publish a selection range on the keyed artifact. `start ==
     /// end` MAY be used to represent a caret; either publish path
     /// is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn publish_selection(
         &self,
         key_bytes: &[u8],
@@ -749,6 +911,11 @@ impl PresenceHandle {
     }
 
     /// Publish "the local user has arrived at the keyed object".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn publish_arrived(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.publish_arrived_request();
         req.get().set_key_bytes(key_bytes);
@@ -757,6 +924,11 @@ impl PresenceHandle {
     }
 
     /// Publish "the local user has left the keyed object".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn publish_left(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.publish_left_request();
         req.get().set_key_bytes(key_bytes);
@@ -767,6 +939,11 @@ impl PresenceHandle {
     /// LEGACY — subscribe to only remote-cursor updates. Kept so
     /// clients built against schema v1 keep compiling; new code
     /// uses [`Self::subscribe_all`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe_remote_cursors(&self) -> Result<CursorStream, NotAvailable> {
         let req = self.inner.subscribe_remote_cursors_request();
         let reply = req.send().promise.await?;
@@ -779,6 +956,11 @@ impl PresenceHandle {
     /// Subscribe to every kind of remote presence update in one
     /// stream. Each event carries the full [`PresencePayload`]
     /// union; clients discriminate on payload variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe_all(&self) -> Result<PresenceStream, NotAvailable> {
         let req = self.inner.subscribe_all_request();
         let reply = req.send().promise.await?;
@@ -805,6 +987,12 @@ pub struct CursorStream {
 
 impl CursorStream {
     /// Pull the next remote-cursor update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or the reply carries a `user_id` that isn't
+    /// valid UTF-8.
     pub async fn read(&self) -> Result<CursorUpdate, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -870,6 +1058,12 @@ pub struct PresenceStream {
 
 impl PresenceStream {
     /// Pull the next presence event across all payload kinds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, the reply carries a `user_id` that isn't
+    /// valid UTF-8, or the payload union's discriminant is unrecognised.
     pub async fn read(&self) -> Result<PresenceEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -949,6 +1143,12 @@ pub struct ContextStream {
 
 impl ContextStream {
     /// Pull the next roster / permission snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or the reply carries a string field that
+    /// isn't valid UTF-8.
     pub async fn read(&self) -> Result<ChannelContext, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;

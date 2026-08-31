@@ -26,13 +26,15 @@ fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let path = args.get(1).cloned().unwrap_or_else(|| {
         eprintln!("usage: open_profile <FILE.pdf> [WxH]");
         std::process::exit(2);
     });
-    let (w, h): (u32, u32) = args
+    // u16 (not u32): a profiler viewport is a pixel size, always well under
+    // 65536, and it keeps the width/height -> f32 conversion below lossless.
+    let (w, h): (u16, u16) = args
         .get(2)
         .and_then(|s| s.split_once('x'))
         .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
@@ -58,40 +60,36 @@ fn main() {
 
     let t = Instant::now();
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
+    let root = taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(f32::from(w)),
+                height: Dimension::length(f32::from(h)),
             },
-            &[child],
-        )
-        .unwrap();
+            ..Default::default()
+        },
+        &[child],
+    )?;
     let build_ms = ms(t);
 
     let t = Instant::now();
     {
         let measure_map = node_map.clone();
         let tr = &mut text_renderer;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
+        taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(f32::from(w)),
+                height: AvailableSpace::Definite(f32::from(h)),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
     let layout_ms = ms(t);
@@ -133,4 +131,5 @@ fn main() {
     println!("  ------------------------------------------");
     println!("  OPEN -> FIRST PAINT         : {first_paint:8.1} ms");
     println!("  second draw (warm cache)    : {draw2_ms:8.1} ms");
+    Ok(())
 }

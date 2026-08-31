@@ -259,6 +259,12 @@ pub fn spawn_plan(plan: &SpawnPlan) -> (i32, String) {
 /// re-verifies the content hash + publisher signature before it
 /// extracts anything, so a truncated or tampered download fails
 /// closed at the install step.
+///
+/// # Errors
+///
+/// Returns an error message if the HTTP client can't be built, the request
+/// fails or comes back with a non-success status or an empty body, or `dest`
+/// (or its parent directory) can't be written.
 pub fn download_qpkg(url: &str, dest: &Path) -> Result<u64, String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("qos-store/0.1")

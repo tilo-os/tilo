@@ -871,27 +871,26 @@ impl DrmScanout {
         // The in-flight flip died with the master lock; clearing this first lets the next frame present at all.
         self.flip_pending = false;
         // Re-binding the mode is what the kernel needs to scan out again.
-        match self.fb_at(self.front) {
-            Some(fb) => {
-                if let Err(e) = self.card.set_crtc(
-                    self.crtc,
-                    Some(fb),
-                    (0, 0),
-                    &[self.connector],
-                    Some(self.mode),
-                ) {
-                    tracing::warn!("DRM scanout: modeset on resume failed: {e}");
-                } else {
-                    tracing::info!(
-                        width = self.width,
-                        height = self.height,
-                        "DRM scanout: re-modeset after session resume"
-                    );
-                }
+        if let Some(fb) = self.fb_at(self.front) {
+            if let Err(e) = self.card.set_crtc(
+                self.crtc,
+                Some(fb),
+                (0, 0),
+                &[self.connector],
+                Some(self.mode),
+            ) {
+                tracing::warn!("DRM scanout: modeset on resume failed: {e}");
+            } else {
+                tracing::info!(
+                    width = self.width,
+                    height = self.height,
+                    "DRM scanout: re-modeset after session resume"
+                );
             }
-            None => tracing::warn!(
+        } else {
+            tracing::warn!(
                 "DRM scanout: front buffer index out of range on resume; skipping re-modeset"
-            ),
+            );
         }
         // Per-CRTC state, gone with the rest — without this the pointer is invisible after every VT switch.
         if self.hw_cursor_active

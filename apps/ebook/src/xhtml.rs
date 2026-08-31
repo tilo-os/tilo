@@ -170,7 +170,7 @@ fn push_math_block(node: Node, out: &mut Vec<Block>) {
     });
 }
 
-/// Concatenated text of `node`'s text-node descendants — MathML tokens
+/// Concatenated text of `node`'s text-node descendants — `MathML` tokens
 /// (`<mi>`/`<mn>`/`<mo>`/`<mtext>`) carry their content as flat text
 /// regardless of nesting depth.
 fn node_text(node: Node) -> String {
@@ -196,7 +196,7 @@ fn mathml_table_rows(element_children: &[Node]) -> Vec<Vec<Row>> {
         .collect()
 }
 
-/// The first non-annotation child of a `<semantics>` wrapper — MathML's
+/// The first non-annotation child of a `<semantics>` wrapper — `MathML`'s
 /// presentation form, skipping the parallel `<annotation>`/`<annotation-xml>`.
 fn mathml_semantics(element_children: Vec<Node>) -> Row {
     element_children

@@ -44,7 +44,9 @@ impl BlobHash {
 
 impl std::fmt::Debug for BlobHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "blake3:{}…", &self.to_hex()[..8])
+        let hex = self.to_hex();
+        let short = hex.get(..8).unwrap_or(&hex);
+        write!(f, "blake3:{short}…")
     }
 }
 
@@ -58,9 +60,19 @@ impl std::fmt::Display for BlobHash {
 /// in-memory impl suffices for tests + CLI, the loader provides an iroh-blobs adapter.
 pub trait BlobStore {
     /// Insert `bytes`; return the BLAKE3 hash. Idempotent — re-inserting the same bytes returns the same hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobStoreError::Io`] if a disk-backed implementation fails
+    /// to write the blob. The in-memory implementation never fails.
     fn put(&mut self, bytes: &[u8]) -> Result<BlobHash, BlobStoreError>;
 
     /// Borrow the bytes for `hash`; `None` if not present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobStoreError::Io`] if a disk-backed implementation fails
+    /// to read the blob. The in-memory implementation never fails.
     fn get(&self, hash: &BlobHash) -> Result<Option<Vec<u8>>, BlobStoreError>;
 
     /// Whether `hash` is present.
@@ -158,42 +170,81 @@ impl Collection {
     ///
     /// Hand-rolled (not postcard/serde) so the wire format doesn't churn with serde framework versions.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + 4 + self.entries.len() * (4 + 32));
+        let mut out =
+            Vec::with_capacity(12usize.saturating_add(self.entries.len().saturating_mul(36)));
         out.extend_from_slice(b"QOSCOL\0\0");
-        out.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+        out.extend_from_slice(
+            &u32::try_from(self.entries.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
         for (path, hash) in &self.entries {
             let pb = path.as_bytes();
-            out.extend_from_slice(&(pb.len() as u32).to_le_bytes());
+            out.extend_from_slice(&u32::try_from(pb.len()).unwrap_or(u32::MAX).to_le_bytes());
             out.extend_from_slice(pb);
             out.extend_from_slice(&hash.0);
         }
         out
     }
 
-    /// Decode bytes produced by [`Self::encode`]; strict — extra trailing bytes or malformed lengths are rejected.
+    /// Decode bytes produced by [`Self::encode`]; strict — extra trailing
+    /// bytes or malformed lengths are rejected rather than truncated or
+    /// silently accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectionDecodeError::BadMagic`] if the header doesn't
+    /// match, [`CollectionDecodeError::Truncated`] if a declared length runs
+    /// past the end of `bytes`, [`CollectionDecodeError::BadPath`] if a path
+    /// is not valid UTF-8, [`CollectionDecodeError::DuplicatePath`] if the
+    /// same path appears twice, and [`CollectionDecodeError::Trailing`] if
+    /// bytes remain after the declared entries.
     pub fn decode(bytes: &[u8]) -> Result<Self, CollectionDecodeError> {
-        if bytes.len() < 12 || &bytes[0..8] != b"QOSCOL\0\0" {
+        let header = bytes.get(0..8).ok_or(CollectionDecodeError::BadMagic)?;
+        if header != b"QOSCOL\0\0" {
             return Err(CollectionDecodeError::BadMagic);
         }
-        let count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-        let mut cursor = 12usize;
+        let count_bytes = bytes.get(8..12).ok_or(CollectionDecodeError::Truncated)?;
+        let count_arr: [u8; 4] = count_bytes
+            .try_into()
+            .map_err(|_| CollectionDecodeError::Truncated)?;
+        let count = u32::from_le_bytes(count_arr) as usize;
+        let mut cursor: usize = 12;
         let mut out: BTreeMap<String, BlobHash> = BTreeMap::new();
         for _ in 0..count {
-            if cursor + 4 > bytes.len() {
-                return Err(CollectionDecodeError::Truncated);
-            }
-            let plen = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
-            cursor += 4;
-            if cursor + plen + 32 > bytes.len() {
-                return Err(CollectionDecodeError::Truncated);
-            }
-            let path = std::str::from_utf8(&bytes[cursor..cursor + plen])
+            let len_end = cursor
+                .checked_add(4)
+                .ok_or(CollectionDecodeError::Truncated)?;
+            let plen_bytes = bytes
+                .get(cursor..len_end)
+                .ok_or(CollectionDecodeError::Truncated)?;
+            let plen_arr: [u8; 4] = plen_bytes
+                .try_into()
+                .map_err(|_| CollectionDecodeError::Truncated)?;
+            let plen = u32::from_le_bytes(plen_arr) as usize;
+            cursor = len_end;
+
+            let path_end = cursor
+                .checked_add(plen)
+                .ok_or(CollectionDecodeError::Truncated)?;
+            let hash_end = path_end
+                .checked_add(32)
+                .ok_or(CollectionDecodeError::Truncated)?;
+            let path_bytes = bytes
+                .get(cursor..path_end)
+                .ok_or(CollectionDecodeError::Truncated)?;
+            let path = std::str::from_utf8(path_bytes)
                 .map_err(|_| CollectionDecodeError::BadPath)?
                 .to_string();
-            cursor += plen;
+            cursor = path_end;
+
+            let hash_bytes = bytes
+                .get(cursor..hash_end)
+                .ok_or(CollectionDecodeError::Truncated)?;
             let mut h = [0u8; 32];
-            h.copy_from_slice(&bytes[cursor..cursor + 32]);
-            cursor += 32;
+            h.copy_from_slice(hash_bytes);
+            cursor = hash_end;
+
             if out.insert(path, BlobHash(h)).is_some() {
                 return Err(CollectionDecodeError::DuplicatePath);
             }

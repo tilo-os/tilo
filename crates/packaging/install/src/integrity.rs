@@ -137,6 +137,11 @@ fn sanitise(raw: &str) -> String {
 /// The three blobs are the *verified* ones the installer already
 /// held, not a re-derivation from disk — recording what was checked
 /// is what makes a later check meaningful.
+///
+/// # Errors
+///
+/// Returns [`IntegrityError::Write`] if the record directory or any of
+/// the three recorded blobs can't be written.
 pub fn record(
     data_root: &Path,
     package_id: &str,
@@ -174,6 +179,19 @@ pub fn has_record(data_root: &Path, package_id: &str) -> bool {
 }
 
 /// Replay the whole chain: recorded root → recorded manifest and collection → every payload file on disk.
+///
+/// # Errors
+///
+/// Returns [`IntegrityError::NoRecord`] if no record exists for
+/// `package_id`; [`IntegrityError::Read`] if a recorded blob can't be
+/// read; [`IntegrityError::RootIdMismatch`] if the recorded root
+/// doesn't hash to `package_id_hex`; [`IntegrityError::RootMalformed`]/
+/// [`CollectionMalformed`] if the recorded root or collection can't be
+/// decoded; and [`IntegrityError::ManifestMismatch`]/[`CollectionMismatch`]
+/// if a recorded blob's hash disagrees with what the signed root covers.
+///
+/// [`CollectionMalformed`]: IntegrityError::CollectionMalformed
+/// [`CollectionMismatch`]: IntegrityError::CollectionMismatch
 pub fn verify(
     data_root: &Path,
     package_id: &str,

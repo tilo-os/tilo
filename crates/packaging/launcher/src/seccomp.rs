@@ -277,7 +277,7 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
 }
 
 fn bpf_to_bytes(prog: &BpfProgram) -> Vec<u8> {
-    let mut out = Vec::with_capacity(prog.len() * 8);
+    let mut out = Vec::with_capacity(prog.len().saturating_mul(8));
     for stmt in prog {
         out.extend_from_slice(&stmt.code.to_ne_bytes());
         out.push(stmt.jt);
@@ -291,6 +291,11 @@ fn bpf_to_bytes(prog: &BpfProgram) -> Vec<u8> {
 ///
 /// Takes the profile explicitly rather than defaulting, so every call
 /// site has decided whether the program is allowed to generate code.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] if the filter's rules or its BPF compilation
+/// fail to build.
 pub fn compile_baseline(profile: SeccompProfile) -> Result<Vec<u8>, SeccompError> {
     let filter = build_baseline_filter(profile)?;
     let program: BpfProgram = filter.try_into()?;
@@ -299,6 +304,11 @@ pub fn compile_baseline(profile: SeccompProfile) -> Result<Vec<u8>, SeccompError
 
 /// Write the compiled blob to a path inside `dir`, returning that path.
 /// Caller is responsible for opening it and handing the fd to bwrap.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] if `dir` cannot be created, the filter cannot be
+/// compiled, or the blob cannot be written.
 pub fn write_baseline_to(dir: &Path, profile: SeccompProfile) -> Result<PathBuf, SeccompError> {
     std::fs::create_dir_all(dir)?;
     let bytes = compile_baseline(profile)?;

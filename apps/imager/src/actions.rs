@@ -51,8 +51,8 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 use crate::doc::ImagerDoc;
@@ -105,12 +105,12 @@ impl Action for ImagerAction {
             ImagerAction::SetInstallMode { mode } => p.mode = InstallMode::from_key(mode),
             ImagerAction::SetEncrypt { on } => p.encrypt = *on,
             ImagerAction::SetAutologin { on } => p.user.autologin = *on,
-            ImagerAction::SetHostname { value } => p.hostname = value.clone(),
-            ImagerAction::SetFullName { value } => p.user.full_name = value.clone(),
-            ImagerAction::SetUsername { value } => p.user.username = value.clone(),
-            ImagerAction::SetPassword { value } => p.user.password = value.clone(),
-            ImagerAction::SetTimezone { value } => p.timezone = value.clone(),
-            ImagerAction::SetKeyboard { value } => p.keyboard = value.clone(),
+            ImagerAction::SetHostname { value } => p.hostname.clone_from(value),
+            ImagerAction::SetFullName { value } => p.user.full_name.clone_from(value),
+            ImagerAction::SetUsername { value } => p.user.username.clone_from(value),
+            ImagerAction::SetPassword { value } => p.user.password.clone_from(value),
+            ImagerAction::SetTimezone { value } => p.timezone.clone_from(value),
+            ImagerAction::SetKeyboard { value } => p.keyboard.clone_from(value),
         }
         ImagerDoc::set_profile(doc, &p);
         Ok(())
@@ -132,8 +132,17 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`ImagerAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch — the single point that turns an imager action into
 /// a replayable envelope.
+///
+/// # Panics
+///
+/// Never panics: an `ImagerAction` that fails to serialize (it never should —
+/// every field is a plain string or bool) falls back to an empty-payload
+/// envelope rather than crashing the caller.
 pub fn encode(action: &ImagerAction) -> EncodedAction {
-    EncodedAction::encode(IMAGER_ACTION_TYPE, action).expect("ImagerAction is always serializable")
+    EncodedAction::encode(IMAGER_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: IMAGER_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 /// The install mode the on-screen "persistent" toggle flips to from `current`:
@@ -152,79 +161,26 @@ pub fn toggled_install_mode(current: InstallMode) -> InstallMode {
 // Resource tree
 // ===========================================================================
 
-/// The install-profile toggles + fields, exported as Ctrl+K actions on the open
-/// customizable image. The three toggles are immediate actions that set their
-/// field to the *opposite* of its current document value, so choosing one in the
-/// palette flips it exactly as the on-screen control does; the identity / region
-/// fields are prompted actions that set the typed value. Level-triggered:
-/// recomputed from `profile` each frame, so the labels and target values always
-/// track the live state.
-pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Resource> {
-    let label = if source_label.trim().is_empty() {
-        "qOS install options".to_string()
-    } else {
-        format!("Customize {source_label}")
-    };
-    let mut res = Resource::new(
-        format!("imager.customization:{source_label}"),
-        "imager.customization",
-        label,
-    );
+/// [`ActionSpec::immediate`] for an [`ImagerAction`], falling back to the same
+/// infallible envelope [`encode`] uses instead of panicking — see its
+/// `# Panics` note. `ImagerAction`'s fields are plain strings/bools, so this
+/// fallback path is never actually exercised.
+fn immediate_spec(id: &str, label: &str, action: &ImagerAction) -> ActionSpec {
+    ActionSpec::immediate(id, label, IMAGER_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: None,
+        locus: action.locus(),
+        input: ActionInput::Immediate(encode(action)),
+    })
+}
 
-    // Install mode — flip live ⇄ persistent (matches the Customize toggle).
-    let next_mode = toggled_install_mode(profile.mode);
-    res = res.with_action(
-        ActionSpec::immediate(
-            "install-mode",
-            match next_mode {
-                InstallMode::Persistent => "Switch to a persistent USB install",
-                _ => "Switch to a live / installer stick",
-            },
-            IMAGER_ACTION_TYPE,
-            &ImagerAction::SetInstallMode {
-                mode: next_mode.key().to_string(),
-            },
-        )
-        .expect("encode install-mode action"),
-    );
-
-    // Disk encryption.
-    res = res.with_action(
-        ActionSpec::immediate(
-            "encrypt",
-            if profile.encrypt {
-                "Disable disk encryption"
-            } else {
-                "Enable disk encryption"
-            },
-            IMAGER_ACTION_TYPE,
-            &ImagerAction::SetEncrypt {
-                on: !profile.encrypt,
-            },
-        )
-        .expect("encode encrypt action"),
-    );
-
-    // First-user autologin.
-    res = res.with_action(
-        ActionSpec::immediate(
-            "autologin",
-            if profile.user.autologin {
-                "Turn off autologin"
-            } else {
-                "Turn on autologin"
-            },
-            IMAGER_ACTION_TYPE,
-            &ImagerAction::SetAutologin {
-                on: !profile.user.autologin,
-            },
-        )
-        .expect("encode autologin action"),
-    );
-
-    // Identity / region fields — prompted (the palette collects the new value).
-    // The password is intentionally absent: a secret must never be echoed
-    // through a palette prompt.
+/// Add the identity/region prompted fields — hostname, full name, username,
+/// timezone, keyboard — to `res` in order. Split out of [`provide_resources`]
+/// to keep it under the line budget; these five don't depend on `profile`,
+/// only on the shape of [`ImagerAction`]. The password is intentionally
+/// absent: a secret must never be echoed through a palette prompt.
+fn with_identity_fields(mut res: Resource) -> Resource {
     res = res.with_action(ActionSpec::prompted(
         "hostname",
         "Set hostname",
@@ -285,6 +241,69 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
             })
         },
     ));
+    res
+}
+
+/// The install-profile toggles + fields, exported as Ctrl+K actions on the open
+/// customizable image. The three toggles are immediate actions that set their
+/// field to the *opposite* of its current document value, so choosing one in the
+/// palette flips it exactly as the on-screen control does; the identity / region
+/// fields are prompted actions that set the typed value. Level-triggered:
+/// recomputed from `profile` each frame, so the labels and target values always
+/// track the live state.
+pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Resource> {
+    let label = if source_label.trim().is_empty() {
+        "qOS install options".to_string()
+    } else {
+        format!("Customize {source_label}")
+    };
+    let mut res = Resource::new(
+        format!("imager.customization:{source_label}"),
+        "imager.customization",
+        label,
+    );
+
+    // Install mode — flip live ⇄ persistent (matches the Customize toggle).
+    let next_mode = toggled_install_mode(profile.mode);
+    res = res.with_action(immediate_spec(
+        "install-mode",
+        match next_mode {
+            InstallMode::Persistent => "Switch to a persistent USB install",
+            _ => "Switch to a live / installer stick",
+        },
+        &ImagerAction::SetInstallMode {
+            mode: next_mode.key().to_string(),
+        },
+    ));
+
+    // Disk encryption.
+    res = res.with_action(immediate_spec(
+        "encrypt",
+        if profile.encrypt {
+            "Disable disk encryption"
+        } else {
+            "Enable disk encryption"
+        },
+        &ImagerAction::SetEncrypt {
+            on: !profile.encrypt,
+        },
+    ));
+
+    // First-user autologin.
+    res = res.with_action(immediate_spec(
+        "autologin",
+        if profile.user.autologin {
+            "Turn off autologin"
+        } else {
+            "Turn on autologin"
+        },
+        &ImagerAction::SetAutologin {
+            on: !profile.user.autologin,
+        },
+    ));
+
+    // Identity / region fields — prompted (the palette collects the new value).
+    res = with_identity_fields(res);
 
     vec![res]
 }
@@ -326,7 +345,7 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
@@ -515,9 +534,11 @@ mod tests {
     /// current value.
     #[test]
     fn palette_actions_target_the_opposite_of_current_state() {
-        let mut profile = InstallProfile::default();
-        profile.mode = InstallMode::Persistent;
-        profile.encrypt = true;
+        let profile = InstallProfile {
+            mode: InstallMode::Persistent,
+            encrypt: true,
+            ..InstallProfile::default()
+        };
         let resources = provide_resources("qOS 1.0", &profile);
 
         let mode = resources[0]
@@ -555,7 +576,7 @@ mod tests {
             .unwrap();
         let built = match &hostname.input {
             ActionInput::Prompted { build, .. } => build("lab01"),
-            _ => panic!("hostname is a prompted action"),
+            ActionInput::Immediate(_) => panic!("hostname is a prompted action"),
         };
         assert_eq!(
             built,

@@ -89,6 +89,11 @@ pub struct ThumbnailService {
 impl ThumbnailService {
     /// Open a service backed by a cache at `cache_dir`, with `workers` decode
     /// threads and the default [`DEFAULT_EDGE`] target size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`ThumbCache::open`] fails to open or create the
+    /// cache directory at `cache_dir`.
     pub fn open(cache_dir: impl AsRef<std::path::Path>, workers: usize) -> std::io::Result<Self> {
         Ok(Self::new(
             ThumbCache::open(cache_dir)?,
@@ -112,7 +117,7 @@ impl ThumbnailService {
             let shared = shared.clone();
             let _ = std::thread::Builder::new()
                 .name(format!("qos-thumb-{i}"))
-                .spawn(move || worker_loop(rx, shared));
+                .spawn(move || worker_loop(&rx, &shared));
         }
         Self { shared, tx, edge }
     }
@@ -160,7 +165,11 @@ impl ThumbnailService {
 
     /// Current state of `key` without scheduling anything.
     fn peek(&self, key: &ThumbKey) -> Option<ThumbState> {
-        let slots = self.shared.slots.lock().unwrap();
+        let slots = self
+            .shared
+            .slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         slots.get(key).map(slot_to_state)
     }
 
@@ -171,7 +180,11 @@ impl ThumbnailService {
         make_kind: impl FnOnce() -> JobKind,
     ) -> ThumbState {
         {
-            let mut slots = self.shared.slots.lock().unwrap();
+            let mut slots = self
+                .shared
+                .slots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(slot) = slots.get(&key) {
                 return slot_to_state(slot);
             }
@@ -190,7 +203,7 @@ impl ThumbnailService {
             self.shared
                 .slots
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(key, Slot::Badge(category));
             return ThumbState::Badge(category);
         }
@@ -225,20 +238,23 @@ fn slot_to_state(slot: &Slot) -> ThumbState {
     }
 }
 
-fn worker_loop(rx: Arc<Mutex<Receiver<Job>>>, shared: Arc<Shared>) {
+fn worker_loop(rx: &Arc<Mutex<Receiver<Job>>>, shared: &Arc<Shared>) {
     loop {
         let job = {
-            let guard = match rx.lock() {
-                Ok(g) => g,
-                Err(_) => break,
+            let Ok(guard) = rx.lock() else {
+                break;
             };
-            match guard.recv() {
-                Ok(j) => j,
-                Err(_) => break, // service dropped
-            }
+            let Ok(j) = guard.recv() else {
+                break; // service dropped
+            };
+            j
         };
         let slot = run_job(&shared.cache, &job);
-        shared.slots.lock().unwrap().insert(job.key, slot);
+        shared
+            .slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(job.key, slot);
         shared.pending.fetch_sub(1, Ordering::SeqCst);
     }
 }

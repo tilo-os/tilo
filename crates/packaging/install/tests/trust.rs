@@ -135,15 +135,16 @@ fn build_qpkg(
     publisher_sk: &SigningKey,
     payload_dir: &Path,
 ) {
-    let mut store = MemoryBlobStore::new();
-    let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
-    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
-
     #[derive(Serialize)]
     struct QpkgHeader {
         package_id: String,
         format: u32,
     }
+
+    let mut store = MemoryBlobStore::new();
+    let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
+    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
+
     let header = QpkgHeader {
         package_id: id.to_string(),
         format: 1,

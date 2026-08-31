@@ -10,10 +10,10 @@
 //! rotate" cue.
 //!
 //! It implements the full `Widget` trait so it is a first-class toolkit
-//! widget, but [`crate::list::AccountList`] drives it imperatively
-//! (one shared instance, repositioned per row) via [`CountdownRing::place`]
-//! + [`CountdownRing::draw_arc`] rather than through the taffy tree —
-//! the list needs a different fraction/colour per row each frame.
+//! widget, but [`crate::list::AccountList`] drives it imperatively (one
+//! shared instance, repositioned per row) via [`CountdownRing::place`] and
+//! [`CountdownRing::draw_arc`] rather than through the taffy tree — the
+//! list needs a different fraction/colour per row each frame.
 
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -201,6 +201,10 @@ impl Widget for CountdownRing {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let d = self.radius as f32 * 2.0;
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -216,7 +220,7 @@ impl Widget for CountdownRing {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let x0 = origin.x + f64::from(layout.location.x);
         let y0 = origin.y + f64::from(layout.location.y);
         let w = f64::from(layout.size.width);

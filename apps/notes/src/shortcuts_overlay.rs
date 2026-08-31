@@ -416,6 +416,10 @@ impl Widget for ShortcutsOverlay {
         // Reserve a zero-height leaf — the overlay never participates
         // in the layout pass, it just needs to be addressable from the
         // host's draw chain. (Same pattern `link_popover` follows.)
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_leaf on a fresh style cannot fail — see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {

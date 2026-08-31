@@ -46,6 +46,7 @@ impl Rect01 {
 
     /// Clamp into the unit square, keeping a non-negative extent. A rect
     /// arriving from a peer is untrusted input like any other.
+    #[must_use]
     pub fn clamped(&self) -> Self {
         let x = self.x.clamp(0.0, 1.0);
         let y = self.y.clamp(0.0, 1.0);
@@ -60,6 +61,7 @@ impl Rect01 {
     /// This is what makes a second crop mean "crop what I can currently see"
     /// rather than "crop the original again", which is the behaviour anyone
     /// cropping twice expects.
+    #[must_use]
     pub fn compose(&self, inner: Rect01) -> Self {
         let outer = self.clamped();
         let inner = inner.clamped();
@@ -91,6 +93,7 @@ impl Edits {
     }
 
     /// Turn clockwise.
+    #[must_use]
     pub fn rotated_right(&self) -> Self {
         Self {
             rotate_quarters: (self.rotate_quarters + 1) % 4,
@@ -99,6 +102,7 @@ impl Edits {
     }
 
     /// Turn anticlockwise.
+    #[must_use]
     pub fn rotated_left(&self) -> Self {
         Self {
             rotate_quarters: (self.rotate_quarters + 3) % 4,
@@ -110,6 +114,7 @@ impl Edits {
     ///
     /// The rect arrives in the rotated frame, is mapped back through the
     /// rotation, and is then composed onto whatever crop is already in force.
+    #[must_use]
     pub fn cropped_from_view(&self, view_rect: Rect01) -> Self {
         let in_original = crate::pixels::unrotate_rect(view_rect, self.rotate_quarters);
         Self {
@@ -173,6 +178,7 @@ impl OpenImage {
     /// is also where those bytes are put into the content store — the two go
     /// together, because a hash in a document that no participant can resolve
     /// is worth less than the path it replaced.
+    #[must_use]
     pub fn with_content(mut self, hash: impl Into<String>) -> Self {
         self.content = Some(hash.into());
         self

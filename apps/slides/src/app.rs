@@ -1194,7 +1194,7 @@ impl SlidesApp {
         let mut labels = Vec::new();
 
         // Toolbar -----------------------------------------------------------
-        let title_x = self.toolbar_hamburger(toolbar, panels.layout, panels.reveal, &mut buttons);
+        let title_x = Self::toolbar_hamburger(toolbar, panels.layout, panels.reveal, &mut buttons);
         let by = toolbar.y0 + (TOOLBAR_H - 34.0) / 2.0;
         let bh = 34.0;
 
@@ -1345,7 +1345,6 @@ impl SlidesApp {
     /// overlay flap, or docked but closed). Sits at the far left toolbar edge;
     /// returns the x the title block should start at, past it.
     fn toolbar_hamburger(
-        &self,
         toolbar: Rect,
         layout: SplitLayout,
         reveal: f64,
@@ -2950,12 +2949,12 @@ impl SlidesApp {
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
-                        logical_key,
+                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Escape),
                         state: ElementState::Pressed,
                         ..
                     },
                 ..
-            } if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+            } => {
                 self.commit_title_edit(state);
                 return true;
             }
@@ -3540,7 +3539,7 @@ impl SlidesApp {
         self.draw_editor_rail_thumbnails(scene, t, tr, theme, chrome, pal);
     }
 
-    /// Scrolling thumbnail list — the shared PageSidebar paints the
+    /// Scrolling thumbnail list — the shared `PageSidebar` paints the
     /// thumbnails, selection ring, index numbers, the live reorder ghost +
     /// reflow gap, its scrollbar and its own right-click menu, all clipped to
     /// the rail viewport it was given in `begin_frame`. It renders each slide
@@ -5352,7 +5351,7 @@ impl SlidesApp {
             TextWeight::Regular,
         );
 
-        self.draw_help_rows(scene, t, tr, c, &pal, card, px);
+        Self::draw_help_rows(scene, t, tr, c, &pal, card, px);
     }
 
     /// The keyboard-shortcut rows (key(s) → description), including the
@@ -5364,7 +5363,6 @@ impl SlidesApp {
                   would only re-create this argument list as a throwaway struct"
     )]
     fn draw_help_rows(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -7013,8 +7011,7 @@ impl SlidesApp {
         self.active_guides.clear();
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         let id = match drag {
-            Drag::Move { id, .. } => Some(id),
-            Drag::Resize { id, .. } => Some(id),
+            Drag::Move { id, .. } | Drag::Resize { id, .. } => Some(id),
             // Scroll drags were already resolved above; `None` writes nothing.
             _ => None,
         };
@@ -8968,31 +8965,31 @@ mod tests {
     /// whose rows map to the reorder / duplicate / delete actions.
     #[test]
     fn right_click_element_opens_menu_and_actions_apply() {
-        let mut s = Slide::new(Layout::Blank);
-        let a = s.add(Element::shape(
+        let mut slide = Slide::new(Layout::Blank);
+        let a = slide.add(Element::shape(
             ElementKind::Rect,
             100.0,
             100.0,
             300.0,
             200.0,
         ));
-        let b = s.add(Element::shape(
+        let b = slide.add(Element::shape(
             ElementKind::Ellipse,
             500.0,
             300.0,
             200.0,
             200.0,
         ));
-        let (mut app, mut doc) = app_doc(s);
+        let (mut app, mut doc) = app_doc(slide);
         sized(&mut app, 1280.0, 800.0);
 
         // Right-click element `a`.
         let chrome = app.compute_chrome();
         let ea = app.slide().unwrap().element(&a).unwrap().clone();
-        let p = crate::render::element_dest(chrome.slide_dest, chrome.scale, &ea).center();
+        let pt = crate::render::element_dest(chrome.slide_dest, chrome.scale, &ea).center();
         let mut h = false;
-        app.last_mouse = p;
-        app.on_right_press(&mut doc, p, &mut h);
+        app.last_mouse = pt;
+        app.on_right_press(&mut doc, pt, &mut h);
         assert!(app.ctx_menu.is_open(), "right-click opens the element menu");
         assert_eq!(
             app.sel.as_deref(),

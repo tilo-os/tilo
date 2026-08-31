@@ -347,7 +347,7 @@ impl CommandPalette {
 
     /// Draw the palette as an overlay. No-op when hidden.
     pub fn draw_overlay(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,

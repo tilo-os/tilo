@@ -55,6 +55,14 @@ const OVERVIEW_WIDTH: f64 = 340.0;
 /// the overview to its rail rendering with no separate flag to keep in sync.
 const OVERVIEW_RAIL_WIDTH: f64 = 68.0;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, orthogonal flag (rail-collapsed overview, a \
+              pending shell rebuild, live network vs. bundled sample data, the one-shot \
+              initial fetch, and whether the shared doc has been seeded yet); they aren't a \
+              state machine, and grouping them would mean churning every field access \
+              across this widget for no behavioural gain"
+)]
 pub struct WeatherApp {
     core: Rc<RefCell<Core>>,
     nav: NavShell,
@@ -608,12 +616,12 @@ mod interaction_tests {
             );
         }
 
-        fn dispatch(&mut self, ev: WindowEvent) {
+        fn dispatch(&mut self, ev: &WindowEvent) {
             let mods = Modifiers::default();
             let mut handled = false;
             let mut focus = None;
             self.app.handle_event(
-                &ev,
+                ev,
                 1.0,
                 &mods,
                 &mut self.state.doc,
@@ -626,7 +634,7 @@ mod interaction_tests {
         }
 
         fn move_to(&mut self, x: f64, y: f64) {
-            self.dispatch(WindowEvent::CursorMoved {
+            self.dispatch(&WindowEvent::CursorMoved {
                 device_id: synth_device(),
                 position: PhysicalPosition::new(x, y),
             });
@@ -634,12 +642,12 @@ mod interaction_tests {
 
         fn click(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
-            self.dispatch(WindowEvent::MouseInput {
+            self.dispatch(&WindowEvent::MouseInput {
                 device_id: synth_device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             });
-            self.dispatch(WindowEvent::MouseInput {
+            self.dispatch(&WindowEvent::MouseInput {
                 device_id: synth_device(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -648,7 +656,7 @@ mod interaction_tests {
 
         fn press(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
-            self.dispatch(WindowEvent::MouseInput {
+            self.dispatch(&WindowEvent::MouseInput {
                 device_id: synth_device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -656,7 +664,7 @@ mod interaction_tests {
         }
 
         fn release(&mut self) {
-            self.dispatch(WindowEvent::MouseInput {
+            self.dispatch(&WindowEvent::MouseInput {
                 device_id: synth_device(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -665,7 +673,7 @@ mod interaction_tests {
 
         fn right_click(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
-            self.dispatch(WindowEvent::MouseInput {
+            self.dispatch(&WindowEvent::MouseInput {
                 device_id: synth_device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
@@ -673,7 +681,7 @@ mod interaction_tests {
         }
 
         fn key(&mut self, logical_key: Key, text: Option<&str>) {
-            self.dispatch(key_event(logical_key, text));
+            self.dispatch(&key_event(logical_key, text));
         }
 
         /// Centre-y of the saved-place chip at `i`, from the live list origin.
@@ -755,7 +763,7 @@ mod interaction_tests {
         assert_eq!(h.app.core.borrow().scroll(), 0.0);
         // Point over the detail (right) panel, not the overview list.
         h.move_to(900.0, 400.0);
-        h.dispatch(WindowEvent::MouseWheel {
+        h.dispatch(&WindowEvent::MouseWheel {
             device_id: synth_device(),
             delta: MouseScrollDelta::LineDelta(0.0, -1.0),
             phase: TouchPhase::Moved,
@@ -1019,7 +1027,7 @@ mod interaction_tests {
         let vp = h.app.core.borrow().hourly_viewport_rect();
         let p = vp.center();
         h.move_to(p.x, p.y);
-        h.dispatch(WindowEvent::MouseWheel {
+        h.dispatch(&WindowEvent::MouseWheel {
             device_id: synth_device(),
             delta: MouseScrollDelta::LineDelta(-2.0, 0.0),
             phase: TouchPhase::Moved,

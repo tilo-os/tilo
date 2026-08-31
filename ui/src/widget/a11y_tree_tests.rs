@@ -412,9 +412,8 @@ fn screen_reader_announces_focus_and_value_change_for_new_widgets() {
     let mut reader = ScreenReader::with_speaker(Box::new(rec.clone()));
     reader.announce_focus(&gnode);
     reader.announce_value_change("90%");
-    let spoken = rec.0.lock().unwrap();
     assert_eq!(
-        spoken.spoken(),
+        rec.0.lock().unwrap().spoken(),
         &["CPU, progress bar, 42%".to_string(), "90%".to_string()]
     );
 }

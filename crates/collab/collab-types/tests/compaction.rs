@@ -34,18 +34,20 @@ fn minimal_state() -> (
     ArtifactId,
     AttestationId,
 ) {
-    let (owner_sk, owner_pk) = generate_keypair();
-    let (author_sk, author_pk) = generate_keypair();
+    let (owner_sk, owner_pub) = generate_keypair();
+    let (author_sk, author_pub) = generate_keypair();
     let artifact = ArtifactId::new();
 
     // Mint + sign the Editor attestation against the owner.
     let mut att = collab_types::Attestation {
         id: AttestationId::new(),
-        issued_by: owner_pk,
-        subject: author_pk,
+        issued_by: owner_pub,
+        subject: author_pub,
         claims: vec![],
         valid_from: SystemTime::UNIX_EPOCH,
-        valid_until: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100_000),
+        valid_until: SystemTime::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(100_000))
+            .expect("valid_until in range"),
         signature: collab_types::Signature::from_bytes([0u8; 64]),
     };
     let bytes = att.signing_bytes().expect("signing_bytes");
@@ -58,11 +60,11 @@ fn minimal_state() -> (
     let att_id = att.id;
 
     let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pk);
+    state.authorised_signers.push(owner_pub);
     state.artifacts.insert(artifact, ArtifactKind::Note);
     state.register_attestation(ra);
 
-    (state, author_sk, author_pk, artifact, att_id)
+    (state, author_sk, author_pub, artifact, att_id)
 }
 
 fn make_signed_op(
@@ -78,7 +80,9 @@ fn make_signed_op(
         author,
         att_id,
         OpClass::Splice,
-        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seq),
+        SystemTime::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(seq))
+            .expect("timestamp in range"),
         seq,
     );
     sign_op(&mut op, sk).expect("sign");

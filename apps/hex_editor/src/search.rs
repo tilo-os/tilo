@@ -10,6 +10,7 @@ pub enum SearchKind {
 }
 
 impl SearchKind {
+    #[must_use]
     pub fn toggle(self) -> Self {
         match self {
             SearchKind::Hex => SearchKind::Text,
@@ -37,13 +38,10 @@ pub fn parse_hex_query(query: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut out = Vec::with_capacity(cleaned.len() / 2);
-    let bytes = cleaned.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let hi = (bytes[i] as char).to_digit(16)?;
-        let lo = (bytes[i + 1] as char).to_digit(16)?;
+    for pair in cleaned.as_bytes().chunks_exact(2) {
+        let hi = (*pair.first()? as char).to_digit(16)?;
+        let lo = (*pair.get(1)? as char).to_digit(16)?;
         out.push(((hi << 4) | lo) as u8);
-        i += 2;
     }
     Some(out)
 }
@@ -68,16 +66,11 @@ pub fn find_all(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return Vec::new();
     }
-    let mut hits = Vec::new();
-    let last = haystack.len() - needle.len();
-    let mut i = 0;
-    while i <= last {
-        if &haystack[i..i + needle.len()] == needle {
-            hits.push(i);
-        }
-        i += 1;
-    }
-    hits
+    haystack
+        .windows(needle.len())
+        .enumerate()
+        .filter_map(|(i, w)| (w == needle).then_some(i))
+        .collect()
 }
 
 /// The first match at or after `from`, wrapping to the start of the

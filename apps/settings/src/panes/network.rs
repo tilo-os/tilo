@@ -582,7 +582,7 @@ impl NetworkPane {
             self.profile_card(),
             card("Connection diagnostics", rows(self.diagnostic_rows())),
             card("VPN", rows(self.vpn_rows())),
-            self.airplane_card(),
+            Self::airplane_card(),
             self.hotspot_card(),
         ];
         if self.radios.wwan_available {
@@ -675,7 +675,7 @@ impl NetworkPane {
         }
     }
 
-    fn airplane_card(&self) -> El {
+    fn airplane_card() -> El {
         card_with_action(
             "Airplane mode",
             Box::new(Toggle::new("settings.network.airplane", AIRPLANE_KEY)),
@@ -1464,7 +1464,7 @@ impl NetworkPane {
         }
     }
 
-    fn seed_hotspot_and_profile_selection(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn seed_hotspot_and_profile_selection(&self, state: &mut AutoCommit, root: &ObjId) {
         let _ = state.put(root, Self::VPN_STUDIO_OVERVIEW_KEY, false);
         let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
         let _ = state.put(root, HOTSPOT_QR_KEY, false);
@@ -1489,7 +1489,7 @@ impl NetworkPane {
         }
     }
 
-    fn seed_text_and_command_keys(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn seed_text_and_command_keys(&self, state: &mut AutoCommit, root: &ObjId) {
         for key in [
             MOBILE_PROFILE_KEY,
             MOBILE_APN_KEY,
@@ -1521,7 +1521,7 @@ impl NetworkPane {
         }
     }
 
-    fn seed_profile_settings(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn seed_profile_settings(&self, state: &mut AutoCommit, root: &ObjId) {
         for profile in &self.profiles {
             let _ = state.put(
                 root,
@@ -1768,7 +1768,7 @@ impl NetworkPane {
         self.structure_dirty = true;
     }
 
-    fn sync_profile_selectors(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync_profile_selectors(&mut self, state: &AutoCommit, root: &ObjId) {
         for selector in [ADVANCED_PROFILE_KEY, WIRED_PROFILE_KEY] {
             if let Some(label) = read_str(state, root, selector)
                 && let Some(profile) = self.profiles.iter().find(|p| profile_label(p) == label)
@@ -2094,7 +2094,7 @@ impl NetworkPane {
     /// Contextual handoff: Settings owns daily status/toggles; VPN Studio
     /// owns profile editing. Reset each command bit before requesting the
     /// shell so a failed launch cannot loop every frame.
-    fn sync_vpn_studio_handoff(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync_vpn_studio_handoff(&self, state: &mut AutoCommit, root: &ObjId) {
         let requested_profiles: Vec<String> = self
             .vpns
             .iter()

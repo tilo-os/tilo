@@ -215,7 +215,7 @@ fn cmd_pack(
     identity_path: Option<&Path>,
 ) -> Result<()> {
     let manifest_src = std::fs::read_to_string(manifest_path)
-        .with_context(|| format!("read manifest {manifest_path:?}"))?;
+        .with_context(|| format!("read manifest {}", manifest_path.display()))?;
     let mut manifest = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
 
     let identity = match identity_path {
@@ -280,6 +280,13 @@ fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
     Ok(())
 }
 
+#[allow(
+    clippy::exit,
+    reason = "the verify subcommand's contract is a 3-way exit code (0 trusted, 1 failed, 2 \
+              signature-ok-but-untrusted), which anyhow's Result<()> exit mapping in main can't \
+              express; this is the CLI's terminal command handler, nothing here holds a resource \
+              that needs Drop-based cleanup"
+)]
 fn cmd_verify(trusted_hex: &[String], file: &Path) -> Result<()> {
     let (id, store) = read_qpkg(file)?;
     // Trust set: caller's keys + (if empty) the embedded publisher key for convenience.
@@ -373,7 +380,7 @@ fn cmd_unpack(dest: &Path, file: &Path) -> Result<()> {
         .to_toml_string()
         .map_err(|e| anyhow!("re-encode manifest: {e}"))?;
     std::fs::write(dest.join("manifest.toml"), toml).context("write manifest.toml")?;
-    eprintln!("unpacked {id} -> {dest:?}");
+    eprintln!("unpacked {id} -> {}", dest.display());
     Ok(())
 }
 
@@ -388,7 +395,7 @@ fn cmd_publish(
     dry_run: bool,
     serve: bool,
 ) -> Result<()> {
-    let qpkg_bytes = std::fs::read(file).with_context(|| format!("read {file:?}"))?;
+    let qpkg_bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let arch = match arch {
         None => None,
         Some("x86_64") => Some(pkg::manifest::Arch::X86_64),
@@ -485,7 +492,7 @@ fn cmd_publish(
 // .qpkg I/O
 
 fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()> {
-    let file = File::create(path).with_context(|| format!("create {path:?}"))?;
+    let file = File::create(path).with_context(|| format!("create {}", path.display()))?;
     let mut tar = tar::Builder::new(file);
 
     let header = QpkgHeader {
@@ -528,7 +535,7 @@ fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()>
 }
 
 fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore)> {
-    let file = File::open(path).with_context(|| format!("open {path:?}"))?;
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut ar = tar::Archive::new(file);
     let mut header: Option<QpkgHeader> = None;
     let mut store = MemoryBlobStore::new();
@@ -593,7 +600,7 @@ struct IdentityFile {
 }
 
 fn load_identity(path: &Path) -> Result<SigningIdentity> {
-    let bytes = std::fs::read(path).with_context(|| format!("read identity {path:?}"))?;
+    let bytes = std::fs::read(path).with_context(|| format!("read identity {}", path.display()))?;
     let f: IdentityFile = serde_json::from_slice(&bytes).context("parse identity JSON")?;
     let raw = hex::decode(&f.secret_key_hex).context("identity secret-key hex")?;
     let raw_arr: [u8; 32] = raw
@@ -607,7 +614,7 @@ fn load_identity(path: &Path) -> Result<SigningIdentity> {
 /// The raw signing key behind an identity file — for signatures that
 /// aren't package signatures (registry entries).
 fn load_signing_key(path: &Path) -> Result<SigningKey> {
-    let bytes = std::fs::read(path).with_context(|| format!("read identity {path:?}"))?;
+    let bytes = std::fs::read(path).with_context(|| format!("read identity {}", path.display()))?;
     let f: IdentityFile = serde_json::from_slice(&bytes).context("parse identity JSON")?;
     let raw = hex::decode(&f.secret_key_hex).context("identity secret-key hex")?;
     let raw_arr: [u8; 32] = raw
@@ -619,20 +626,23 @@ fn load_signing_key(path: &Path) -> Result<SigningKey> {
 
 fn cmd_keygen(out: &Path) -> Result<()> {
     if out.exists() {
-        bail!("{out:?} exists; refusing to overwrite a signing identity");
+        bail!(
+            "{} exists; refusing to overwrite a signing identity",
+            out.display()
+        );
     }
     let sk = SigningKey::generate(&mut rand::rngs::OsRng);
     let file = IdentityFile {
         secret_key_hex: hex::encode(sk.to_bytes()),
     };
     if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
     }
     std::fs::write(
         out,
         serde_json::to_vec_pretty(&file).context("encode identity")?,
     )
-    .with_context(|| format!("write {out:?}"))?;
+    .with_context(|| format!("write {}", out.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -680,7 +690,7 @@ fn registry_entry_for(
 }
 
 fn cmd_entry(file: &Path, url: &str, identity: Option<&Path>) -> Result<()> {
-    let qpkg_bytes = std::fs::read(file).with_context(|| format!("read {file:?}"))?;
+    let qpkg_bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let signer = match identity {
         Some(p) => load_signing_key(p)?,
         None => SigningKey::generate(&mut rand::rngs::OsRng),
@@ -690,9 +700,9 @@ fn cmd_entry(file: &Path, url: &str, identity: Option<&Path>) -> Result<()> {
         "{}",
         serde_json::to_string_pretty(&entry).context("encode entry")?
     );
-    eprintln!(
-        "entry: {}@{} -> {url}",
-        entry.package_id, entry.versions[0].version
-    );
+    // `registry_entry_for` always builds exactly one version; `.first()`
+    // avoids indexing so a future refactor there can't turn this into a panic.
+    let version = entry.versions.first().map_or("?", |v| v.version.as_str());
+    eprintln!("entry: {}@{version} -> {url}", entry.package_id);
     Ok(())
 }

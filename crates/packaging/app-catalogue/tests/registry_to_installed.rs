@@ -178,9 +178,12 @@ fn serve_one(mut stream: TcpStream, entries: &str, qpkg: &[u8]) {
         }
     }
     let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+    let is_qpkg = std::path::Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("qpkg"));
     let (status, content_type, body): (&str, &str, Vec<u8>) = if path.starts_with("/entries") {
         ("200 OK", "application/json", entries.as_bytes().to_vec())
-    } else if path.ends_with(".qpkg") {
+    } else if is_qpkg {
         ("200 OK", "application/octet-stream", qpkg.to_vec())
     } else {
         ("404 Not Found", "text/plain", b"no".to_vec())
@@ -265,12 +268,12 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     )
     .unwrap();
 
-    let installer = qos_install_bin();
+    let installer_bin = qos_install_bin();
     let _env = Env::set(&[
         ("QOS_STORE_CONFIG_DIR", config_dir.path()),
         ("QOS_STORE_CACHE_DIR", cache_dir.path()),
         ("QOS_APPS_DATA_DIR", apps_dir.path()),
-        ("QOS_INSTALL_BIN", &installer),
+        ("QOS_INSTALL_BIN", &installer_bin),
     ]);
 
     // 1. The registry's entry shows up as available.
@@ -510,7 +513,8 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
         &root.join("bin/word-processor"),
         None,
         &publisher,
-    );
+    )
+    .unwrap();
     assert_eq!(
         authored.source,
         authoring::ManifestSource::Package(root.join("manifest.toml")),
@@ -564,6 +568,6 @@ fn a_payload_with_no_manifest_is_published_as_declaring_no_services() {
     std::fs::write(&bin, b"#!/bin/true\n").unwrap();
 
     let publisher = SigningIdentity::generate();
-    let authored = authoring::author("dev.qos.bare", "Bare", &bin, None, &publisher);
+    let authored = authoring::author("dev.qos.bare", "Bare", &bin, None, &publisher).unwrap();
     assert_eq!(authored.source, authoring::ManifestSource::Synthesised);
 }

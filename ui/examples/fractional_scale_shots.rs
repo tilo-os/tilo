@@ -94,7 +94,8 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: &
         },
     );
     if let Err(e) = layout_result {
-        panic!("layout failed: {e}");
+        eprintln!("fractional_scale_shots: layout failed: {e}");
+        return;
     }
     root.apply_layout(&taffy, node, Point::ZERO);
 

@@ -67,6 +67,7 @@ impl Remark {
         }
     }
 
+    #[must_use]
     pub fn with_mentions(mut self, mentions: Vec<MentionRef>) -> Self {
         self.mentions = mentions;
         self
@@ -83,6 +84,13 @@ impl Remark {
     /// every qOS action requires, so the change replays byte-identically on every
     /// peer. A delivery the action cannot express is [`Undeliverable`] rather
     /// than downgraded — see the module docs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Undeliverable::PrivateNeedsDirectTransport`] if this
+    /// remark's delivery resolves to [`Delivery::Private`] — chat's
+    /// `SendMessage` action has no channel to encode that into; use
+    /// [`to_direct_action`](Self::to_direct_action) instead.
     pub fn to_chat_action(
         &self,
         id: impl Into<Id>,
@@ -114,6 +122,12 @@ impl Remark {
     /// Fails closed on a delivery that is not private (the caller holds two
     /// answers about where this goes), on a room that is not `(author, to)`'s,
     /// and on an author who is not a member of the room they write into.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Undeliverable::NotPrivate`] if this remark's delivery
+    /// isn't [`Delivery::Private`], or [`Undeliverable::NotThisPairsRoom`]
+    /// if `room` isn't the `(author, to)` pair's shared room.
     pub fn to_direct_action(
         &self,
         room: &DirectRoom,
@@ -141,6 +155,11 @@ impl Remark {
 
     /// Shared by both encoders, so a remark is the same message however it was
     /// routed and there is one place the payload can drift from chat's struct.
+    #[allow(
+        clippy::expect_used,
+        reason = "ResourceRef/Delivery/MentionRef/the payload map are all plain derive(Serialize) \
+                  data with no floats or non-string keys, so encoding cannot actually fail here"
+    )]
     fn encode_into(
         &self,
         channel: &str,

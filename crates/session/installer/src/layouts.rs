@@ -282,9 +282,25 @@ pub fn by_display_name(name: &str) -> Option<&'static Layout> {
     LAYOUTS.iter().find(|l| l.display_name == name)
 }
 
+/// Absolute fallback for [`default_layout`] if `LAYOUTS` were ever empty —
+/// which it never is (`dataset_is_non_trivial` below asserts ~15-25
+/// curated entries) — so the lookup can return a plain value instead of
+/// indexing into or unwrapping data a future edit could in principle shrink
+/// to zero.
+static EMPTY_LAYOUT: Layout = Layout {
+    id: "us",
+    xkb_layout: "us",
+    xkb_variant: None,
+    display_name: DEFAULT_DISPLAY_NAME,
+    rows: [&[], &[], &[], &[]],
+    number_shift: &[],
+};
+
 /// The default layout (English / US). Always present.
 pub fn default_layout() -> &'static Layout {
-    by_display_name(DEFAULT_DISPLAY_NAME).unwrap_or(&LAYOUTS[0])
+    by_display_name(DEFAULT_DISPLAY_NAME)
+        .or_else(|| LAYOUTS.first())
+        .unwrap_or(&EMPTY_LAYOUT)
 }
 
 #[cfg(test)]

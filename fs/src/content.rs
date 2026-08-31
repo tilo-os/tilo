@@ -82,10 +82,10 @@ pub fn split(data: &[u8]) -> Vec<&[u8]> {
             hash = 0;
         }
     }
-    if start < data.len() {
-        if let Some(rest) = data.get(start..) {
-            chunks.push(rest);
-        }
+    if start < data.len()
+        && let Some(rest) = data.get(start..)
+    {
+        chunks.push(rest);
     }
     chunks
 }

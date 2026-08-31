@@ -12,8 +12,8 @@
 //! `TPMS_ATTEST` structure and a signature over it, with the counter value and NV index Name
 //! inside, plus a caller-supplied qualifying nonce so a verifier can defeat replay.
 //!
-//! The attestation key is created under the endorsement hierarchy and is restricted (`sign`
-//! + `restricted`), which is what makes a `TPM2_NV_Certify` signature meaningful: a
+//! The attestation key is created under the endorsement hierarchy and is restricted
+//! (`sign` + `restricted`), which is what makes a `TPM2_NV_Certify` signature meaningful: a
 //! restricted signing key cannot be used to sign arbitrary attacker-chosen data, so a valid
 //! signature really does mean the TPM produced the attestation itself.
 
@@ -62,6 +62,10 @@ pub struct FloorAttestation {
 ///   the scheme *and* an explicit null symmetric algorithm (`ecc256:ecdsa-sha256:null`) —
 ///   leave the symmetric part off and tpm2-tools fills in a default a signing key can't
 ///   carry, which the TPM rejects as "unsupported symmetric algorithm".
+/// # Errors
+///
+/// Returns an error if any `tpm2_*` step (creating the parent, creating or loading the
+/// attestation key) fails, or if the key's public area cannot be read back.
 pub fn attestation_key(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -130,6 +134,12 @@ pub fn attestation_key(
 
 /// Sign the counter's current contents. `qualification` is the verifier's nonce; it lands
 /// in the attestation's `extraData` and is what stops a captured attestation being replayed.
+///
+/// # Errors
+///
+/// Returns an error if the attestation key cannot be created/loaded, if `tpm2_nvcertify`
+/// fails, if the counter has never been incremented, or if the resulting attestation/signature
+/// files cannot be read back.
 pub fn certify_floor(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -179,7 +189,12 @@ pub fn certify_floor(
         signature: std::fs::read(&sig).with_context(|| format!("reading {}", sig.display()))?,
         key_public,
         counter,
-        floor_generation: u64::try_from((i128::from(counter) - i128::from(base)).max(0))
-            .unwrap_or(u64::MAX),
+        floor_generation: u64::try_from(
+            i128::from(counter)
+                .checked_sub(i128::from(base))
+                .unwrap_or(0)
+                .max(0),
+        )
+        .unwrap_or(u64::MAX),
     })
 }

@@ -43,6 +43,8 @@
 //! absent, [`default_injector`] silently degrades to [`NullInjector`] and the
 //! OSK still runs (no injection).
 
+use std::fmt::Write as _;
+
 use crate::layout::KeyAction;
 
 /// A sink for committed keyboard input. Implementors push text / key actions
@@ -164,10 +166,12 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
 
     // --- keycodes: name every code we use; <I N> = code N. ---
     keymap.push_str("xkb_keycodes \"qos-osk\" {\n");
-    keymap.push_str(&format!("minimum = {KEYCODE_BASE};\n"));
-    keymap.push_str(&format!("maximum = {};\n", max_code.max(KEYCODE_BASE)));
+    // `write!` into a `String` is infallible; the `Result` is intentionally
+    // discarded rather than `unwrap()`-ed.
+    let _ = writeln!(keymap, "minimum = {KEYCODE_BASE};");
+    let _ = writeln!(keymap, "maximum = {};", max_code.max(KEYCODE_BASE));
     for (_, code) in &assigned {
-        keymap.push_str(&format!("<I{code}> = {code};\n"));
+        let _ = writeln!(keymap, "<I{code}> = {code};");
     }
     keymap.push_str("};\n");
 
@@ -178,7 +182,7 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
     // --- symbols: one single-level key per code → exactly one keysym. ---
     keymap.push_str("xkb_symbols \"qos-osk\" {\n");
     for (sym, code) in &assigned {
-        keymap.push_str(&format!("key <I{code}> {{ [ {} ] }};\n", sym.keysym_name()));
+        let _ = writeln!(keymap, "key <I{code}> {{ [ {} ] }};", sym.keysym_name());
     }
     keymap.push_str("};\n");
 
@@ -429,7 +433,7 @@ mod wayland {
         }
 
         /// Flush queued requests to the compositor.
-        fn flush(&mut self) -> Option<()> {
+        fn flush(&self) -> Option<()> {
             self.queue.flush().ok()?;
             // A blocking dispatch isn't needed to *send*; a flush suffices.
             let _ = self.conn;

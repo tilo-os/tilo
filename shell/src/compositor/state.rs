@@ -1958,6 +1958,10 @@ mod tick_hook_tests {
         assert_eq!(state.surface_scale(42), 1.5);
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "w.max(1)/h.max(1) guarantee non-zero divisors"
+    )]
     fn gradient(w: u32, h: u32) -> Vec<u8> {
         let mut v = Vec::with_capacity(w.saturating_mul(h).saturating_mul(4) as usize);
         for y in 0..h {

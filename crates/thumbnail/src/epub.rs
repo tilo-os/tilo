@@ -38,6 +38,12 @@ fn find_opf_path(archive: &mut Archive) -> Option<String> {
 }
 
 /// The cover href, resolved relative to the OPF base, in descending confidence.
+#[allow(
+    clippy::suspicious_operation_groupings,
+    reason = "`id.to_ascii_lowercase().contains(\"cover\") || href...contains(\"cover\")` \
+              deliberately checks the same substring against two different fields (id, href), \
+              not a mismatched-pair typo"
+)]
 fn resolve_cover_href(opf: &str, base: &str) -> Option<String> {
     let doc = Document::parse(opf).ok()?;
 
@@ -98,14 +104,16 @@ fn read_binary(archive: &mut Archive, name: &str) -> Option<Vec<u8>> {
 
 fn parent_dir(path: &str) -> String {
     match path.rfind('/') {
-        Some(i) => path[..i].to_string(),
+        // `/` is ASCII, so `i` is always a char boundary; `.get()` avoids
+        // slicing on that trust anyway.
+        Some(i) => path.get(..i).unwrap_or(path).to_string(),
         None => String::new(),
     }
 }
 
 fn join(base: &str, href: &str) -> String {
-    if href.starts_with('/') {
-        return normalize(&href[1..]);
+    if let Some(rest) = href.strip_prefix('/') {
+        return normalize(rest);
     }
     if base.is_empty() {
         return normalize(href);

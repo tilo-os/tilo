@@ -902,6 +902,12 @@ impl Filesystem for QuickFS {
         );
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lock is already scoped to its own block, after the blocking hydration \
+                  read and offset validation happen outside it; what remains inside is the \
+                  buffer lookup/resize/write itself, which needs the lock held throughout"
+    )]
     fn write(
         &self,
         _req: &Request,

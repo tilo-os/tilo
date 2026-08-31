@@ -259,9 +259,9 @@ impl SnippetsApp {
     /// from it so the panes reflect the change this frame. The heads captured
     /// just before the first action of the event are stashed so the host records
     /// **one** undo boundary bracketing it.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: SnippetsAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &SnippetsAction) {
         self.actions
-            .dispatch(doc, actions::SNIPPETS_ACTION_TYPE, &action);
+            .dispatch(doc, actions::SNIPPETS_ACTION_TYPE, action);
         self.refresh_from_doc(doc);
     }
 
@@ -292,7 +292,7 @@ impl SnippetsApp {
         // payload so replay reproduces the identical row.
         let s = Snippet::blank(&folder);
         let id = s.id;
-        self.perform_action(doc, actions::create_snippet_action(s));
+        self.perform_action(doc, &actions::create_snippet_action(s));
         self.recompute_visible();
         self.open = Some(id);
         self.toast("New snippet created");
@@ -321,7 +321,7 @@ impl SnippetsApp {
     /// Record one use of a snippet (drives "Most Used" + the usage hint) through
     /// the action path, so the bump replicates and is undoable like any mutation.
     fn record_use(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.perform_action(doc, actions::record_use_action(id));
+        self.perform_action(doc, &actions::record_use_action(id));
     }
 
     fn start_expand(&mut self, id: SnippetId) {
@@ -332,7 +332,7 @@ impl SnippetsApp {
 
     fn toggle_favorite(&mut self, id: SnippetId, doc: &mut AutoCommit) {
         let cur = self.library.get(id).is_some_and(|s| s.favorite);
-        self.perform_action(doc, actions::set_favorite_action(id, !cur));
+        self.perform_action(doc, &actions::set_favorite_action(id, !cur));
         self.recompute_visible();
     }
 
@@ -344,7 +344,7 @@ impl SnippetsApp {
             copy.favorite = false;
             copy.uses = 0;
             let new_id = copy.id;
-            self.perform_action(doc, actions::create_snippet_action(copy));
+            self.perform_action(doc, &actions::create_snippet_action(copy));
             self.recompute_visible();
             self.open = Some(new_id);
             self.toast("Duplicated");
@@ -352,7 +352,7 @@ impl SnippetsApp {
     }
 
     fn delete(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.perform_action(doc, actions::delete_snippet_action(id));
+        self.perform_action(doc, &actions::delete_snippet_action(id));
         if self.open == Some(id) {
             self.open = None;
         }
@@ -361,7 +361,7 @@ impl SnippetsApp {
     }
 
     fn set_language(&mut self, id: SnippetId, lang: Language, doc: &mut AutoCommit) {
-        self.perform_action(doc, actions::set_language_action(id, lang));
+        self.perform_action(doc, &actions::set_language_action(id, lang));
         self.recompute_visible();
     }
 
@@ -591,22 +591,24 @@ impl SnippetsApp {
     /// Lay the app out at `width` x 800 through the real `build_layout` /
     /// `apply_layout` passes (so `rect` + the layout reconcile run exactly as
     /// in a live frame), then settle any pending reveal animation.
+    ///
+    /// # Errors
+    /// Propagates [`taffy::TaffyError`] if `compute_layout` fails — never in
+    /// practice, since `node` was just created in the same tree.
     #[doc(hidden)]
-    pub fn layout_at_width_for_test(&mut self, width: f64) {
+    pub fn layout_at_width_for_test(&mut self, width: f64) -> taffy::TaffyResult<()> {
         use ui::widget::Widget;
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = self.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(width as f32),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .unwrap();
+        taffy.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width as f32),
+                height: taffy::AvailableSpace::Definite(800.0),
+            },
+        )?;
         self.apply_layout(&taffy, node, Point::ZERO);
         // Settle the reveal so `sidebar_open`/reveal reflect the target.
         let mut doc = AutoCommit::new();
@@ -616,6 +618,7 @@ impl SnippetsApp {
                 break;
             }
         }
+        Ok(())
     }
 
     #[doc(hidden)]
@@ -704,6 +707,16 @@ impl ui::widget::Widget for SnippetsApp {
         }
     }
 
+    // `Widget::build_layout`/`apply_layout` return `NodeId`/`()`, not a
+    // `Result` — the trait is shared by every widget in `ui`, so its
+    // signature isn't ours to change here. `TaffyTree::new_leaf` and
+    // `::layout` both wrap an infallible operation in this taffy version
+    // (`new_leaf` always inserts; `layout` always finds the node we just
+    // registered) — the `Result` is vestigial, not a real failure mode.
+    #[allow(
+        clippy::unwrap_used,
+        reason = "TaffyTree::new_leaf never fails in this taffy version, and the Widget trait's build_layout signature isn't ours to change to Result"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -724,6 +737,10 @@ impl ui::widget::Widget for SnippetsApp {
         node
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        reason = "node is the id this same build_layout registered moments earlier, so TaffyTree::layout always finds it, and the Widget trait's apply_layout signature isn't ours to change to Result"
+    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
@@ -832,222 +849,45 @@ impl ui::widget::Widget for SnippetsApp {
         }
 
         // The expand modal is modal: it owns all input while open.
-        if let Some(mut modal) = self.expand.take() {
-            let outcome = modal.handle_event(
-                event,
-                scale_factor,
-                self.last_mouse,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            match outcome {
-                ExpandOutcome::Stay => {
-                    self.expand = Some(modal);
-                    *handled = true;
-                    return;
-                }
-                ExpandOutcome::Cancel => {
-                    *handled = true;
-                    return;
-                }
-                ExpandOutcome::Copy(text, id) => {
-                    ui::clipboard_copy(&text);
-                    self.record_use(id, state);
-                    self.toast("Expanded and copied");
-                    *handled = true;
-                    return;
-                }
-            }
-        }
-
-        // The search editor is embedded in this canvas-style widget rather
-        // than mounted as a taffy child. Feed it pointer motion explicitly so
-        // its selection, hover and context-menu hit testing use the same
-        // geometry painted above.
-        if matches!(event, WindowEvent::CursorMoved { .. }) {
-            let _ = self.route_search_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-        if matches!(
+        if self.handle_expand_event(
             event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            }
-        ) && self.search_rect.contains(self.last_mouse)
-        {
-            self.search_input.set_focus(true);
-        }
-        if matches!(event, WindowEvent::MouseInput { .. })
-            && (self.search_input.is_focused() || self.search_rect.contains(self.last_mouse))
-            && self.route_search_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            )
-        {
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
             *handled = true;
             return;
         }
 
-        match event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(action) = self.action_at(self.last_mouse) {
-                    // Clicking anywhere that isn't the search field blurs it.
-                    if !matches!(action, Action::FocusSearch) {
-                        self.search_input.set_focus(false);
-                    }
-                    let search_click = matches!(action, Action::FocusSearch);
-                    self.apply(action, state);
-                    if search_click {
-                        let _ = self.route_search_event(
-                            event,
-                            scale_factor,
-                            modifiers,
-                            state,
-                            path,
-                            focus_target,
-                            node_id,
-                            taffy,
-                        );
-                    }
-                    *handled = true;
-                } else {
-                    self.search_input.set_focus(false);
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * BODY_LINE,
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
-                };
-                self.scroll = (self.scroll - dy).max(0.0);
-                *handled = true;
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                let mods = modifiers.state();
-                // Cmd/Ctrl-F focuses search; Cmd/Ctrl-N new snippet;
-                // Cmd/Ctrl-C copies the open snippet.
-                if (mods.control_key() || mods.super_key())
-                    && let Key::Character(ch) = logical_key
-                {
-                    match ch.to_lowercase().as_str() {
-                        "f" => {
-                            self.search_input.set_focus(true);
-                            self.search_input
-                                .set_cursor_pos(self.search_input.value().len());
-                            *handled = true;
-                            return;
-                        }
-                        "n" => {
-                            self.new_snippet(state);
-                            *handled = true;
-                            return;
-                        }
-                        "c" if !self.search_input.is_focused() => {
-                            if let Some(id) = self.open {
-                                self.copy(id, state);
-                            }
-                            *handled = true;
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-
-                if self.search_input.is_focused() {
-                    match logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            self.search_input.set_text("");
-                            self.search_input.set_focus(false);
-                            self.recompute_visible();
-                            *handled = true;
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            self.search_input.set_focus(false);
-                            *handled = true;
-                        }
-                        _ => {
-                            if self.route_search_event(
-                                event,
-                                scale_factor,
-                                modifiers,
-                                state,
-                                path,
-                                focus_target,
-                                node_id,
-                                taffy,
-                            ) {
-                                *handled = true;
-                            }
-                        }
-                    }
-                    return;
-                }
-
-                // Escape walks back through the responsive layers, then
-                // finally clears the search. In single-pane push showing the
-                // detail it returns to the list; with the overlay sidebar
-                // open it dismisses the flap; otherwise it clears the search.
-                if let Key::Named(NamedKey::Escape) = logical_key {
-                    if self.is_push_layout() && self.push.reveal() > 0.5 {
-                        self.apply(Action::PushBack, state);
-                        *handled = true;
-                    } else if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_open() {
-                        self.apply(Action::DismissSidebar, state);
-                        *handled = true;
-                    } else if !self.search_input.value().is_empty() {
-                        self.search_input.set_text("");
-                        self.recompute_visible();
-                        *handled = true;
-                    }
-                }
-            }
-            WindowEvent::Ime(_) if self.search_input.is_focused() => {
-                if self.route_search_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    focus_target,
-                    node_id,
-                    taffy,
-                ) {
-                    *handled = true;
-                }
-            }
-            _ => {}
+        if self.route_pointer_to_search(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            *handled = true;
+            return;
         }
+
+        self.dispatch_event(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1314,12 +1154,341 @@ impl SnippetsApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// The per-`WindowEvent`-kind dispatch, once the expand modal and the
+    /// embedded search editor have both had first refusal.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
+    )]
+    fn dispatch_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.handle_left_click(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * BODY_LINE,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                };
+                self.scroll = (self.scroll - dy).max(0.0);
+                *handled = true;
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                self.handle_keyboard_input(
+                    logical_key,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+            }
+            WindowEvent::Ime(_)
+                if self.search_input.is_focused()
+                    && self.route_search_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        focus_target,
+                        node_id,
+                        taffy,
+                    ) =>
+            {
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Route input to the expand-with-variables modal while it's open — it
+    /// owns all input, so the panes beneath and the rest of `handle_event`
+    /// are never consulted. Returns `true` once a modal was open and has
+    /// consumed the event (closing, copying and toasting side effects are
+    /// already applied); `false` when there is no modal to route to.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
+    )]
+    fn handle_expand_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let Some(mut modal) = self.expand.take() else {
+            return false;
+        };
+        let outcome = modal.handle_event(
+            event,
+            scale_factor,
+            self.last_mouse,
+            &modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        match outcome {
+            ExpandOutcome::Stay => {
+                self.expand = Some(modal);
+            }
+            ExpandOutcome::Cancel => {}
+            ExpandOutcome::Copy(text, id) => {
+                ui::clipboard_copy(&text);
+                self.record_use(id, state);
+                self.toast("Expanded and copied");
+            }
+        }
+        true
+    }
+
+    /// Feed pointer motion and clicks to the embedded search editor. The
+    /// editor isn't mounted as a taffy child, so its hit testing needs this
+    /// explicit routing rather than the normal event-tree dispatch. Returns
+    /// `true` when the editor consumed a click and the caller should stop
+    /// routing the event further.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
+    )]
+    fn route_pointer_to_search(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            let _ = self.route_search_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) && self.search_rect.contains(self.last_mouse)
+        {
+            self.search_input.set_focus(true);
+        }
+        matches!(event, WindowEvent::MouseInput { .. })
+            && (self.search_input.is_focused() || self.search_rect.contains(self.last_mouse))
+            && self.route_search_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
+    )]
+    fn handle_left_click(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let Some(action) = self.action_at(self.last_mouse) {
+            // Clicking anywhere that isn't the search field blurs it.
+            if !matches!(action, Action::FocusSearch) {
+                self.search_input.set_focus(false);
+            }
+            let search_click = matches!(action, Action::FocusSearch);
+            self.apply(action, state);
+            if search_click {
+                let _ = self.route_search_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+            }
+            *handled = true;
+        } else {
+            self.search_input.set_focus(false);
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
+    )]
+    fn handle_keyboard_input(
+        &mut self,
+        logical_key: &Key,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let mods = modifiers.state();
+        // Cmd/Ctrl-F focuses search; Cmd/Ctrl-N new snippet;
+        // Cmd/Ctrl-C copies the open snippet.
+        if (mods.control_key() || mods.super_key())
+            && let Key::Character(ch) = logical_key
+        {
+            match ch.to_lowercase().as_str() {
+                "f" => {
+                    self.search_input.set_focus(true);
+                    self.search_input
+                        .set_cursor_pos(self.search_input.value().len());
+                    *handled = true;
+                    return;
+                }
+                "n" => {
+                    self.new_snippet(state);
+                    *handled = true;
+                    return;
+                }
+                "c" if !self.search_input.is_focused() => {
+                    if let Some(id) = self.open {
+                        self.copy(id, state);
+                    }
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.search_input.is_focused() {
+            match logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.search_input.set_text("");
+                    self.search_input.set_focus(false);
+                    self.recompute_visible();
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.search_input.set_focus(false);
+                    *handled = true;
+                }
+                _ => {
+                    if self.route_search_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        focus_target,
+                        node_id,
+                        taffy,
+                    ) {
+                        *handled = true;
+                    }
+                }
+            }
+            return;
+        }
+
+        // Escape walks back through the responsive layers, then
+        // finally clears the search. In single-pane push showing the
+        // detail it returns to the list; with the overlay sidebar
+        // open it dismisses the flap; otherwise it clears the search.
+        if let Key::Named(NamedKey::Escape) = logical_key {
+            if self.is_push_layout() && self.push.reveal() > 0.5 {
+                self.apply(Action::PushBack, state);
+                *handled = true;
+            } else if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_open() {
+                self.apply(Action::DismissSidebar, state);
+                *handled = true;
+            } else if !self.search_input.value().is_empty() {
+                self.search_input.set_text("");
+                self.recompute_visible();
+                *handled = true;
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
+    )]
     fn route_search_event(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
@@ -1330,7 +1499,7 @@ impl SnippetsApp {
         self.search_input.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut input_handled,
@@ -1455,16 +1624,16 @@ impl SnippetsApp {
         let x = row.x0 + pad + f64::from(indent) * 12.0;
         let ty = y + (SIDEBAR_ROW_H - 4.0 - 15.0) / 2.0;
         draw::text(scene, tr, t, label, x, ty, 14.0, fg, TextWeight::Medium);
-        if let Some(n) = count {
-            let s = n.to_string();
-            let w = f64::from(tr.measure(&s, 12.0, None).0);
+        if let Some(shown) = count {
+            let count_label = shown.to_string();
+            let count_w = f64::from(tr.measure(&count_label, 12.0, None).0);
             let cfg = if active { c.accent[8] } else { c.text_dim };
             draw::text(
                 scene,
                 tr,
                 t,
-                &s,
-                row.x1 - pad - w,
+                &count_label,
+                row.x1 - pad - count_w,
                 ty + 1.0,
                 12.0,
                 cfg,
@@ -1587,7 +1756,7 @@ impl SnippetsApp {
             // Cull rows scrolled out of view but still record the hit so
             // clicks resolve; skip drawing if fully off-pane.
             if row.y1 >= list_top - 4.0 && row.y0 <= area.y1 {
-                self.draw_list_row(scene, t, tr, theme, row, &s, self.open == Some(id));
+                self.draw_list_row(scene, t, tr, theme, row, &s);
             }
             self.record(row, Action::OpenSnippet(id));
             y += ROW_H;
@@ -1611,6 +1780,27 @@ impl SnippetsApp {
         area: Rect,
         list_top: f64,
     ) {
+        let cx = area.x0 + area.width() / 2.0;
+        let library_empty = self.library.snippets.is_empty();
+        let y = Self::draw_empty_glyph_and_copy(scene, t, tr, theme, area, list_top, library_empty);
+        if library_empty {
+            self.draw_empty_new_snippet_cta(scene, t, tr, theme, cx, y);
+        } else {
+            self.draw_empty_clear_search_cta(scene, t, tr, theme, cx, y);
+        }
+    }
+
+    /// The glyph tile, headline and wrapped sub-copy shown above the call
+    /// to action. Returns the y cursor the CTA should start from.
+    fn draw_empty_glyph_and_copy(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        list_top: f64,
+        library_empty: bool,
+    ) -> f64 {
         let c = &theme.tokens.colors;
         let cx = area.x0 + area.width() / 2.0;
         let top = list_top + (area.y1 - list_top).min(360.0) * 0.16;
@@ -1648,7 +1838,6 @@ impl SnippetsApp {
         );
         let mut y = tile_rect.y1 + 20.0;
 
-        let library_empty = self.library.snippets.is_empty();
         let (headline, sub) = if library_empty {
             (
                 "No snippets yet",
@@ -1689,80 +1878,103 @@ impl SnippetsApp {
             );
             y += 19.0;
         }
-        y += 12.0;
+        y + 12.0
+    }
 
-        if library_empty {
-            // Primary call to action, centred.
-            let label = "New snippet";
-            let lw = f64::from(tr.measure(label, 13.5, None).0);
-            let bw = lw + 34.0;
-            let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 36.0);
-            let hovered = btn.contains(self.last_mouse);
-            draw::fill_round(
-                scene,
-                t,
-                btn,
-                theme.radii_md(),
-                if hovered { c.accent[4] } else { c.accent[5] },
-            );
-            draw::text(
-                scene,
-                tr,
-                t,
-                label,
-                btn.x0 + 17.0,
-                btn.y0 + (36.0 - 14.0) / 2.0,
-                13.5,
-                c.text_primary,
-                TextWeight::Semibold,
-            );
-            self.record(btn, Action::NewSnippet);
-            // A quiet hint at the search grammar.
-            y = btn.y1 + 22.0;
-            let hint = "Tip: filter with  language:rust  or  tag:k8s";
-            let hw2 = f64::from(tr.measure(hint, 11.5, None).0);
-            draw::text(
-                scene,
-                tr,
-                t,
-                hint,
-                cx - hw2 / 2.0,
-                y,
-                11.5,
-                c.text_dim,
-                TextWeight::Regular,
-            );
-        } else {
-            let label = "Clear search";
-            let lw = f64::from(tr.measure(label, 13.0, None).0);
-            let bw = lw + 30.0;
-            let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 34.0);
-            let hovered = btn.contains(self.last_mouse);
-            draw::fill_round(
-                scene,
-                t,
-                btn,
-                theme.radii_md(),
-                if hovered {
-                    c.surfaces.raised
-                } else {
-                    c.neutral[2]
-                },
-            );
-            draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
-            draw::text(
-                scene,
-                tr,
-                t,
-                label,
-                btn.x0 + 15.0,
-                btn.y0 + (34.0 - 14.0) / 2.0,
-                13.0,
-                c.text_primary,
-                TextWeight::Semibold,
-            );
-            self.record(btn, Action::ClearSearch);
-        }
+    /// The "New snippet" primary call to action shown when the whole
+    /// library is empty, plus a quiet hint at the search grammar beneath it.
+    fn draw_empty_new_snippet_cta(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cx: f64,
+        y: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let label = "New snippet";
+        let lw = f64::from(tr.measure(label, 13.5, None).0);
+        let bw = lw + 34.0;
+        let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 36.0);
+        let hovered = btn.contains(self.last_mouse);
+        draw::fill_round(
+            scene,
+            t,
+            btn,
+            theme.radii_md(),
+            if hovered { c.accent[4] } else { c.accent[5] },
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            label,
+            btn.x0 + 17.0,
+            btn.y0 + (36.0 - 14.0) / 2.0,
+            13.5,
+            c.text_primary,
+            TextWeight::Semibold,
+        );
+        self.record(btn, Action::NewSnippet);
+        // A quiet hint at the search grammar.
+        let hint_y = btn.y1 + 22.0;
+        let hint = "Tip: filter with  language:rust  or  tag:k8s";
+        let hw = f64::from(tr.measure(hint, 11.5, None).0);
+        draw::text(
+            scene,
+            tr,
+            t,
+            hint,
+            cx - hw / 2.0,
+            hint_y,
+            11.5,
+            c.text_dim,
+            TextWeight::Regular,
+        );
+    }
+
+    /// The "Clear search" call to action shown when a search/filter has
+    /// hidden every snippet in an otherwise non-empty library.
+    fn draw_empty_clear_search_cta(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cx: f64,
+        y: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let label = "Clear search";
+        let lw = f64::from(tr.measure(label, 13.0, None).0);
+        let bw = lw + 30.0;
+        let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 34.0);
+        let hovered = btn.contains(self.last_mouse);
+        draw::fill_round(
+            scene,
+            t,
+            btn,
+            theme.radii_md(),
+            if hovered {
+                c.surfaces.raised
+            } else {
+                c.neutral[2]
+            },
+        );
+        draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
+        draw::text(
+            scene,
+            tr,
+            t,
+            label,
+            btn.x0 + 15.0,
+            btn.y0 + (34.0 - 14.0) / 2.0,
+            13.0,
+            c.text_primary,
+            TextWeight::Semibold,
+        );
+        self.record(btn, Action::ClearSearch);
     }
 
     fn draw_list_row(
@@ -1773,9 +1985,9 @@ impl SnippetsApp {
         theme: &Theme,
         row: Rect,
         s: &Snippet,
-        active: bool,
     ) {
         let c = &theme.tokens.colors;
+        let active = self.open == Some(s.id);
         if active {
             draw::fill_round(scene, t, row, theme.radii_md(), c.surfaces.raised);
             draw::stroke_round(scene, t, row, theme.radii_md(), 1.0, c.accent[5]);
@@ -1881,28 +2093,69 @@ impl SnippetsApp {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.base);
         let Some(open) = self.open else {
-            let msg = if self.library.snippets.is_empty() {
-                "Your snippets will appear here."
-            } else {
-                "Select a snippet to preview it."
-            };
-            let mw = f64::from(tr.measure(msg, 15.0, None).0);
-            draw::text(
-                scene,
-                tr,
-                t,
-                msg,
-                area.x0 + (area.width() - mw) / 2.0,
-                area.y0 + area.height() * 0.4,
-                15.0,
-                c.text_dim,
-                TextWeight::Regular,
-            );
+            self.draw_detail_placeholder(scene, t, tr, theme, area);
             return;
         };
-        let Some(s) = self.library.get(open).cloned() else {
+        let Some(snippet) = self.library.get(open).cloned() else {
             return;
         };
+        let y = self.draw_detail_header(scene, t, tr, theme, area, open, &snippet);
+        let y = self.draw_detail_toolbar(scene, t, tr, theme, area, y, open, &snippet);
+
+        // Code card with syntax-highlighted body.
+        let pad = 28.0;
+        let card = Rect::new(area.x0 + pad, y, area.x1 - pad, area.y1 - 20.0);
+        draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
+        draw::stroke_round(scene, t, card, theme.radii_md(), 1.0, c.border_standard);
+        Self::draw_code(scene, t, tr, theme, card, &snippet);
+    }
+
+    /// The empty-detail placeholder shown when nothing is selected.
+    fn draw_detail_placeholder(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let msg = if self.library.snippets.is_empty() {
+            "Your snippets will appear here."
+        } else {
+            "Select a snippet to preview it."
+        };
+        let mw = f64::from(tr.measure(msg, 15.0, None).0);
+        draw::text(
+            scene,
+            tr,
+            t,
+            msg,
+            area.x0 + (area.width() - mw) / 2.0,
+            area.y0 + area.height() * 0.4,
+            15.0,
+            c.text_dim,
+            TextWeight::Regular,
+        );
+    }
+
+    /// Title, then the language/folder/tag pill row, then the free-text
+    /// description. Returns the y cursor the action toolbar starts from.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus area/open/snippet identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
+    )]
+    fn draw_detail_header(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        open: SnippetId,
+        snippet: &Snippet,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         let pad = 28.0;
         let mut y = area.y0 + 24.0;
 
@@ -1918,7 +2171,7 @@ impl SnippetsApp {
             scene,
             tr,
             t,
-            &s.title,
+            &snippet.title,
             title_x,
             y,
             24.0,
@@ -1927,30 +2180,68 @@ impl SnippetsApp {
         );
         y += 36.0;
 
-        // Meta row: language pill + folder + tags.
+        y = self.draw_detail_meta_row(scene, t, tr, theme, area, y, open, snippet);
+
+        // Description.
+        if !snippet.description.is_empty() {
+            draw::text(
+                scene,
+                tr,
+                t,
+                &snippet.description,
+                area.x0 + pad,
+                y,
+                14.0,
+                c.text_dim,
+                TextWeight::Regular,
+            );
+            y += 26.0;
+        }
+        y
+    }
+
+    /// The language pill (cycles the language on click) + folder pill +
+    /// one pill per tag. Returns the y cursor beneath the row.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus area/y/open/snippet identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
+    )]
+    fn draw_detail_meta_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        y: f64,
+        open: SnippetId,
+        snippet: &Snippet,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let pad = 28.0;
         let mut x = area.x0 + pad;
         let lp = draw::pill(
             scene,
             tr,
             t,
-            s.language.label(),
+            snippet.language.label(),
             x,
             y,
             22.0,
             12.0,
             c.neutral[0],
-            lang_tint(theme, s.language),
+            lang_tint(theme, snippet.language),
         );
         // Clicking the language pill cycles to the next language.
-        let next = next_language(s.language);
+        let next = next_language(snippet.language);
         self.record(lp, Action::SetLanguage(open, next));
         x = lp.x1 + 8.0;
-        if !s.folder.is_empty() {
+        if !snippet.folder.is_empty() {
             let fp = draw::pill(
                 scene,
                 tr,
                 t,
-                &s.folder,
+                &snippet.folder,
                 x,
                 y,
                 22.0,
@@ -1960,7 +2251,7 @@ impl SnippetsApp {
             );
             x = fp.x1 + 8.0;
         }
-        for tag in &s.tags {
+        for tag in &snippet.tags {
             let label = format!("#{tag}");
             let tp = draw::pill(
                 scene,
@@ -1977,28 +2268,30 @@ impl SnippetsApp {
             self.record(tp, Action::Select(Selection::Tag(tag.clone())));
             x = tp.x1 + 8.0;
         }
-        y += 34.0;
+        y + 34.0
+    }
 
-        // Description.
-        if !s.description.is_empty() {
-            draw::text(
-                scene,
-                tr,
-                t,
-                &s.description,
-                area.x0 + pad,
-                y,
-                14.0,
-                c.text_dim,
-                TextWeight::Regular,
-            );
-            y += 26.0;
-        }
-
-        // Action toolbar: Copy / Expand / Favorite / Duplicate / Delete.
-        y += 4.0;
+    /// Copy / Expand / Favorite / Duplicate / Delete. Returns the y cursor
+    /// the code card starts from.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus area/y/open/snippet identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
+    )]
+    fn draw_detail_toolbar(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        y: f64,
+        open: SnippetId,
+        snippet: &Snippet,
+    ) -> f64 {
+        let pad = 28.0;
+        let y = y + 4.0;
         let mut bx = area.x0 + pad;
-        let primary_label = if s.has_placeholders() {
+        let primary_label = if snippet.has_placeholders() {
             "Fill & Copy"
         } else {
             "Copy"
@@ -2014,7 +2307,7 @@ impl SnippetsApp {
             true,
             Action::Copy(open),
         );
-        if s.has_placeholders() {
+        if snippet.has_placeholders() {
             bx = self.toolbar_button(
                 scene,
                 t,
@@ -2027,7 +2320,7 @@ impl SnippetsApp {
                 Action::Expand(open),
             );
         }
-        let star_label = if s.favorite {
+        let star_label = if snippet.favorite {
             "★ Starred"
         } else {
             "☆ Star"
@@ -2065,13 +2358,7 @@ impl SnippetsApp {
             false,
             Action::Delete(open),
         );
-        y += 44.0;
-
-        // Code card with syntax-highlighted body.
-        let card = Rect::new(area.x0 + pad, y, area.x1 - pad, area.y1 - 20.0);
-        draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
-        draw::stroke_round(scene, t, card, theme.radii_md(), 1.0, c.border_standard);
-        self.draw_code(scene, t, tr, theme, card, &s);
+        y + 44.0
     }
 
     /// Draw a toolbar button, record its hit region against `action`, and
@@ -2109,7 +2396,6 @@ impl SnippetsApp {
     }
 
     fn draw_code(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2173,7 +2459,10 @@ impl SnippetsApp {
 /// Cycle to the next language in the canonical order (wraps).
 fn next_language(lang: Language) -> Language {
     let i = Language::ALL.iter().position(|l| *l == lang).unwrap_or(0);
-    Language::ALL[(i + 1) % Language::ALL.len()]
+    Language::ALL
+        .get((i + 1) % Language::ALL.len())
+        .copied()
+        .unwrap_or(Language::PlainText)
 }
 
 /// A per-language accent tint for the badge. Derived from theme ramps so
@@ -2227,11 +2516,11 @@ fn draw_toast(
     message: &str,
 ) {
     let c = &theme.tokens.colors;
-    let w = f64::from(tr.measure(message, 14.0, None).0) + 40.0;
-    let h = 40.0;
-    let x = area.x1 - w - 24.0;
-    let y = area.y1 - h - 24.0;
-    let rect = Rect::new(x, y, x + w, y + h);
+    let toast_w = f64::from(tr.measure(message, 14.0, None).0) + 40.0;
+    let toast_h = 40.0;
+    let x = area.x1 - toast_w - 24.0;
+    let y = area.y1 - toast_h - 24.0;
+    let rect = Rect::new(x, y, x + toast_w, y + toast_h);
     draw::fill_round(scene, t, rect, theme.radii_md(), c.surfaces.raised);
     draw::stroke_round(scene, t, rect, theme.radii_md(), 1.0, c.accent[5]);
     draw::text(
@@ -2240,7 +2529,7 @@ fn draw_toast(
         t,
         message,
         x + 20.0,
-        y + (h - 15.0) / 2.0,
+        y + (toast_h - 15.0) / 2.0,
         14.0,
         c.text_primary,
         TextWeight::Medium,
@@ -2349,14 +2638,14 @@ mod tests {
         let mut doc = AutoCommit::new();
         let heads_before = doc.get_heads();
         let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Default::default()).unwrap();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         let mut focus_target = None;
 
         app.search_input.set_focus(true);
         assert!(app.route_search_event(
             &WindowEvent::Ime(winit::event::Ime::Commit("language:rust".into())),
             1.0,
-            &winit::event::Modifiers::default(),
+            winit::event::Modifiers::default(),
             &mut doc,
             &automerge::ROOT,
             &mut focus_target,
@@ -2443,7 +2732,7 @@ mod tests {
     #[test]
     fn wide_keeps_sidebar_docked_and_open() {
         let mut app = SnippetsApp::new();
-        app.layout_at_width_for_test(1280.0);
+        app.layout_at_width_for_test(1280.0).unwrap();
         assert!(
             !app.sidebar_is_overlay_for_test(),
             "wide window docks the sidebar"
@@ -2461,7 +2750,7 @@ mod tests {
     #[test]
     fn narrow_collapses_sidebar_to_overlay_closed_by_default() {
         let mut app = SnippetsApp::new();
-        app.layout_at_width_for_test(720.0);
+        app.layout_at_width_for_test(720.0).unwrap();
         assert!(
             app.sidebar_is_overlay_for_test(),
             "narrow window overlays the sidebar"
@@ -2475,7 +2764,7 @@ mod tests {
     #[test]
     fn hamburger_toggles_the_overlay_sidebar() {
         let mut app = SnippetsApp::new();
-        app.layout_at_width_for_test(720.0);
+        app.layout_at_width_for_test(720.0).unwrap();
         assert!(!app.sidebar_open_for_test());
         app.toggle_sidebar_for_test();
         assert!(
@@ -2489,7 +2778,7 @@ mod tests {
     #[test]
     fn very_narrow_uses_single_pane_push() {
         let mut app = SnippetsApp::new();
-        app.layout_at_width_for_test(480.0);
+        app.layout_at_width_for_test(480.0).unwrap();
         assert!(
             app.is_push_for_test(),
             "very-narrow window switches to single-pane push"
@@ -2503,7 +2792,7 @@ mod tests {
     #[test]
     fn opening_a_snippet_pushes_the_detail_when_very_narrow() {
         let mut app = SnippetsApp::new_demo();
-        app.layout_at_width_for_test(480.0);
+        app.layout_at_width_for_test(480.0).unwrap();
         assert!(!app.push_showing_detail_for_test());
         app.open_first_for_test();
         assert!(
@@ -2515,7 +2804,7 @@ mod tests {
     #[test]
     fn opening_a_snippet_does_not_push_when_wide() {
         let mut app = SnippetsApp::new_demo();
-        app.layout_at_width_for_test(1280.0);
+        app.layout_at_width_for_test(1280.0).unwrap();
         app.open_first_for_test();
         assert!(
             !app.push_showing_detail_for_test(),
@@ -2527,9 +2816,9 @@ mod tests {
     fn resizing_wide_again_restores_the_docked_default() {
         let mut app = SnippetsApp::new();
         // Narrow first (overlay, closed), then widen back.
-        app.layout_at_width_for_test(720.0);
+        app.layout_at_width_for_test(720.0).unwrap();
         assert!(!app.sidebar_open_for_test());
-        app.layout_at_width_for_test(1280.0);
+        app.layout_at_width_for_test(1280.0).unwrap();
         assert!(
             app.sidebar_open_for_test() && !app.sidebar_is_overlay_for_test(),
             "crossing back over the breakpoint restores the docked-open default"
@@ -2565,7 +2854,7 @@ mod tests {
         let spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
         let spec_encoded = match &spec.input {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
-            _ => panic!("delete is immediate"),
+            qos_actions::ActionInput::Prompted { .. } => panic!("delete is immediate"),
         };
 
         app.delete_for_test(id, &mut doc);
@@ -2614,7 +2903,7 @@ mod tests {
             .unwrap();
         let spec_encoded = match &spec.input {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
-            _ => panic!("toggle-favorite is immediate"),
+            qos_actions::ActionInput::Prompted { .. } => panic!("toggle-favorite is immediate"),
         };
 
         app.toggle_favorite_for_test(id, &mut doc);

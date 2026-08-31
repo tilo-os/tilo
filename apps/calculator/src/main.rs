@@ -3,7 +3,7 @@
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -50,6 +50,12 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// Calculator binary entry point — see the module doc for the mode matrix.
+///
+/// # Errors
+///
+/// Returns `Err` when `--bench-clicks` fails to build/compute a taffy layout
+/// frame, or when `--shots` fails to lay out or write the rendered PNG.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -153,57 +159,65 @@ fn synth_click(state: ElementState) -> WindowEvent {
     }
 }
 
+/// Rendering context threaded through each bench frame, grouped to keep
+/// `bench_frame`'s argument count within the lint limit.
+struct RenderCtx<'a> {
+    theme: &'a Theme,
+    presence: &'a PresenceCtx,
+    permission: &'a PermissionContext,
+}
+
 /// One full frame pass (sync → build → compute → apply → draw), mirroring
 /// `ui::App`. Returns the live taffy tree + root child node and the total
 /// frame microseconds. Kept concrete over `CalculatorApp` so the bench can
 /// call the app's `bench_*` accessors between frames.
+///
+/// # Errors
+///
+/// Returns `Err` if taffy fails to build or compute the layout tree (it
+/// can't for this fixed, single-child tree in practice, but the bench
+/// propagates rather than panicking on a future regression).
 fn bench_frame(
     app: &mut calculator::CalculatorApp,
     state: &mut ui::State,
     text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    permission: &PermissionContext,
+    ctx: &RenderCtx<'_>,
     w: u32,
     h: u32,
-) -> (TaffyTree<()>, NodeId, f64) {
+) -> Result<(TaffyTree<()>, NodeId, f64), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
     app.sync(&mut state.doc, &state.root);
 
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = app.build_layout(&mut taffy, theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
+    let child = app.build_layout(&mut taffy, ctx.theme, &mut node_map);
+    let root = taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
             },
-            &[child],
-        )
-        .unwrap();
+            ..Default::default()
+        },
+        &[child],
+    )?;
     {
         let measure_map = node_map.clone();
         let tr = &mut *text_renderer;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
+        taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )?;
     }
     app.apply_layout(&taffy, child, Point::ORIGIN);
     let mut scene = Scene::new();
@@ -211,116 +225,131 @@ fn bench_frame(
         &mut scene,
         Affine::IDENTITY,
         text_renderer,
-        theme,
-        presence,
-        permission,
+        ctx.theme,
+        ctx.presence,
+        ctx.permission,
     );
     let us = t0.elapsed().as_secs_f64() * 1e6;
-    (taffy, child, us)
+    Ok((taffy, child, us))
+}
+
+/// Move the cursor / press / release through the real `handle_event` path
+/// and return the elapsed microseconds.
+fn bench_dispatch(
+    app: &mut calculator::CalculatorApp,
+    state: &mut ui::State,
+    taffy: &TaffyTree<()>,
+    child: NodeId,
+    ev: &WindowEvent,
+) -> f64 {
+    let mut handled = false;
+    let mut focus = None;
+    let t = Instant::now();
+    app.handle_event(
+        ev,
+        1.0,
+        &winit::event::Modifiers::default(),
+        &mut state.doc,
+        &state.root,
+        &mut handled,
+        &mut focus,
+        child,
+        taffy,
+    );
+    t.elapsed().as_secs_f64() * 1e6
 }
 
 /// Drive real Calc-keypad clicks through `handle_event` and report per-click
 /// cost. This is the reproduction harness for the "freezes after a few button
 /// presses" report — headless, no window, identical passes to the live app.
+///
+/// # Errors
+///
+/// Returns `Err` if the taffy layout tree fails to build (see
+/// [`bench_frame`]), or if the bench somehow fails to switch the app into
+/// Calc mode before the click loop starts.
 fn run_clicks_bench(viewport: (u32, u32), n: usize) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
+    let ctx = RenderCtx {
+        theme: &theme,
+        presence: &presence,
+        permission: &permission,
+    };
     let mut text_renderer = TextRenderer::new();
     let mut state = ui::State::new();
     let mut app = calculator::CalculatorApp::new();
-    let modifiers = winit::event::Modifiers::default();
 
-    let dispatch = |app: &mut calculator::CalculatorApp,
-                    state: &mut ui::State,
-                    taffy: &TaffyTree<()>,
-                    child: NodeId,
-                    ev: &WindowEvent|
-     -> f64 {
-        let mut handled = false;
-        let mut focus = None;
-        let t = Instant::now();
-        app.handle_event(
-            ev,
-            1.0,
-            &modifiers,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            child,
-            taffy,
-        );
-        t.elapsed().as_secs_f64() * 1e6
-    };
+    let layout = bench_switch_to_calc_mode(&mut app, &mut state, &mut text_renderer, &ctx, w, h)?;
 
-    // Warm caches.
-    for _ in 0..3 {
-        let _ = bench_frame(
-            &mut app,
-            &mut state,
-            &mut text_renderer,
-            &theme,
-            &presence,
-            &permission,
-            w,
-            h,
-        );
-    }
-
-    // Switch to Calc mode by clicking its header segment (production path).
-    let (mut taffy, mut child, _) = bench_frame(
+    bench_run_click_loop(
         &mut app,
         &mut state,
         &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-        w,
-        h,
-    );
+        &ctx,
+        (w, h),
+        n,
+        layout,
+    )
+}
+
+/// Warm caches, then switch to Calc mode by clicking its header segment (the
+/// production path) and settle on a fresh frame in that mode.
+fn bench_switch_to_calc_mode(
+    app: &mut calculator::CalculatorApp,
+    state: &mut ui::State,
+    text_renderer: &mut TextRenderer,
+    ctx: &RenderCtx<'_>,
+    w: u32,
+    h: u32,
+) -> Result<(TaffyTree<()>, NodeId), Box<dyn std::error::Error>> {
+    // Warm caches.
+    for _ in 0..3 {
+        bench_frame(app, state, text_renderer, ctx, w, h)?;
+    }
+
+    // Switch to Calc mode by clicking its header segment (production path).
+    let (taffy, child, _) = bench_frame(app, state, text_renderer, ctx, w, h)?;
     let seg = app.bench_seg_center(0);
-    dispatch(
-        &mut app,
-        &mut state,
-        &taffy,
-        child,
-        &synth_cursor(seg.x, seg.y),
-    );
-    dispatch(
-        &mut app,
-        &mut state,
+    bench_dispatch(app, state, &taffy, child, &synth_cursor(seg.x, seg.y));
+    bench_dispatch(
+        app,
+        state,
         &taffy,
         child,
         &synth_click(ElementState::Pressed),
     );
-    dispatch(
-        &mut app,
-        &mut state,
+    bench_dispatch(
+        app,
+        state,
         &taffy,
         child,
         &synth_click(ElementState::Released),
     );
-    let (t2, c2, _) = bench_frame(
-        &mut app,
-        &mut state,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-        w,
-        h,
-    );
-    taffy = t2;
-    child = c2;
-    assert!(
-        app.bench_mode_is_calc(),
-        "bench should have switched to Calc mode"
-    );
+    let (taffy, child, _) = bench_frame(app, state, text_renderer, ctx, w, h)?;
 
-    // A never-ending expression: digits + operators, no `=`, so it grows
-    // exactly like the user "1 2 3 + 4 5 6 * 7 ..." mashing report.
+    if !app.bench_mode_is_calc() {
+        return Err("bench should have switched to Calc mode".into());
+    }
+    Ok((taffy, child))
+}
+
+/// Drive `n` clicks through a never-ending expression — digits + operators,
+/// no `=`, so it grows exactly like the user's "1 2 3 + 4 5 6 * 7 ..."
+/// mashing report — and print per-click timings.
+fn bench_run_click_loop(
+    app: &mut calculator::CalculatorApp,
+    state: &mut ui::State,
+    text_renderer: &mut TextRenderer,
+    ctx: &RenderCtx<'_>,
+    viewport: (u32, u32),
+    n: usize,
+    layout: (TaffyTree<()>, NodeId),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    let (mut taffy, mut child) = layout;
     let cycle = ["1", "2", "3", "+", "4", "5", "6", "×", "7", "8", "9", "−"];
 
     println!("calculator --bench-clicks @ {w}x{h}  ({n} clicks; µs, compute-only)");
@@ -332,40 +361,29 @@ fn run_clicks_bench(viewport: (u32, u32), n: usize) -> Result<(), Box<dyn std::e
     let mut max_handle = 0.0f64;
     let mut max_frame = 0.0f64;
     for idx in 0..n {
-        let label = cycle[idx % cycle.len()];
+        let Some(&label) = cycle.get(idx % cycle.len()) else {
+            continue;
+        };
         let Some(pt) = app.bench_calc_key_center(label) else {
             eprintln!("click {idx}: key {label:?} not found in layout");
             continue;
         };
-        let handle_us = dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &synth_cursor(pt.x, pt.y),
-        ) + dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &synth_click(ElementState::Pressed),
-        ) + dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &synth_click(ElementState::Released),
-        );
-        let (t2, c2, frame_us) = bench_frame(
-            &mut app,
-            &mut state,
-            &mut text_renderer,
-            &theme,
-            &presence,
-            &permission,
-            w,
-            h,
-        );
+        let handle_us = bench_dispatch(app, state, &taffy, child, &synth_cursor(pt.x, pt.y))
+            + bench_dispatch(
+                app,
+                state,
+                &taffy,
+                child,
+                &synth_click(ElementState::Pressed),
+            )
+            + bench_dispatch(
+                app,
+                state,
+                &taffy,
+                child,
+                &synth_click(ElementState::Released),
+            );
+        let (t2, c2, frame_us) = bench_frame(app, state, text_renderer, ctx, w, h)?;
         taffy = t2;
         child = c2;
         max_handle = max_handle.max(handle_us);

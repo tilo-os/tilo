@@ -14,16 +14,38 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::app::{ConfirmTarget, ContainersApp, Hit, HitRegion, PromptKind, ViewState};
+use crate::app::{
+    ConfirmTarget, ContainersApp, Hit, HitRegion, PromptKind, PullProgress, ViewState,
+};
 use crate::combobox;
 use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
 use crate::draw::{self, Icon};
-use crate::model::{Container, ContainerStatus, Stats};
+use crate::model::{Container, ContainerStatus, DistroBox, Image, Stats, Volume};
 use crate::podman::{Action, ImageAction};
 
 /// Sizes used across the panels — kept here so the layout reads coherently.
 const PAD: f64 = 16.0;
 const ICON_BTN: f64 = 32.0;
+
+/// Grouped inputs to a single container row's paint (position, the
+/// container itself, the shared column x-positions, and whether the
+/// compact/detail-open layout applies), kept together so the row-drawing
+/// methods' argument counts stay within the lint limit.
+#[derive(Clone, Copy)]
+struct ContainerRow<'a> {
+    row: Rect,
+    container: &'a Container,
+    cols: &'a [f64; 5],
+    compact: bool,
+}
+
+/// One CPU/MEM gauge card's content, for [`ContainersApp::draw_stat_gauge`].
+struct GaugeCard {
+    label: &'static str,
+    value: String,
+    frac: f32,
+    color: Color,
+}
 
 impl ContainersApp {
     fn push_hit(&mut self, rect: Rect, hit: Hit) {
@@ -69,9 +91,23 @@ impl ContainersApp {
             &border,
         );
 
-        // No app-name wordmark or brand mark — the OS owns window chrome and
-        // shows "Containers" in the titlebar. The rail leads with its collapse
-        // affordance and flows the section list up into the reclaimed space.
+        self.draw_rail_toggle(scene, tr, theme, rail, expanded);
+        self.draw_rail_sections(scene, tr, theme, rail, view, expanded);
+        self.draw_rail_footer(scene, tr, theme, rail, expanded);
+    }
+
+    /// The collapse/expand chevron at the top of the rail. No app-name
+    /// wordmark or brand mark — the OS owns window chrome and shows
+    /// "Containers" in the titlebar.
+    fn draw_rail_toggle(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        expanded: bool,
+    ) {
+        let c = &theme.tokens.colors;
         let title_y = rail.y0 + PAD + 8.0;
         // Collapse / expand toggle — a chevron at the top-right of the rail.
         let tgl = Rect::new(rail.x1 - 30.0, title_y - 4.0, rail.x1 - 6.0, title_y + 20.0);
@@ -117,8 +153,19 @@ impl ContainersApp {
             );
             self.push_hit(ctgl, Hit::ToggleSidebar);
         }
+    }
 
-        // Section items.
+    /// The section list (Containers / Images / Volumes / Distrobox).
+    fn draw_rail_sections(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        view: &ViewState,
+        expanded: bool,
+    ) {
+        let c = &theme.tokens.colors;
         let items = [
             (Section::Containers, Icon::Box, self.engine.containers.len()),
             (Section::Images, Icon::Layers, self.engine.images.len()),
@@ -198,8 +245,18 @@ impl ContainersApp {
             self.push_hit(item, Hit::Section(section));
             y += 46.0;
         }
+    }
 
-        // Engine status footer (text only when expanded; the live dot always).
+    /// Engine status footer (text only when expanded; the live dot always).
+    fn draw_rail_footer(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        expanded: bool,
+    ) {
+        let c = &theme.tokens.colors;
         let foot_y = rail.y1 - 76.0;
         let dot_color = if self.engine.live {
             c.semantic.success
@@ -233,11 +290,13 @@ impl ContainersApp {
                 scene,
                 tr,
                 &self.engine.connection,
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
+                draw::TextStyle {
+                    size: theme.tokens.typography.scale.xs,
+                    color: c.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(rail.x0 + PAD, foot_y + 18.0),
                 rail.width() - PAD * 2.0,
-                TextWeight::Regular,
             );
             let summary = format!(
                 "{} running · {} stopped",
@@ -268,7 +327,6 @@ impl ContainersApp {
         theme: &Theme,
         content: Rect,
         title: &str,
-        view: &ViewState,
         action_label: Option<(&str, Hit)>,
     ) -> f64 {
         let c = &theme.tokens.colors;
@@ -340,7 +398,6 @@ impl ContainersApp {
         // Search launcher — a thin affordance that opens the shared Ctrl+K
         // palette scoped to this app, instead of an inline filter. The search
         // UI and ranking live in one shared toolkit widget, not here.
-        let _ = view;
         let search_w = (right - (header.x0 + PAD + 8.0) - 220.0).clamp(180.0, 360.0);
         let sx0 = right - search_w;
         let search = Rect::new(
@@ -422,7 +479,6 @@ impl ContainersApp {
             theme,
             content,
             "Containers",
-            view,
             Some(("New container", Hit::NewContainer)),
         );
 
@@ -442,7 +498,25 @@ impl ContainersApp {
             .cloned()
             .collect();
 
-        // Column header.
+        let cols = Self::container_columns(list, detail_open);
+        let colhead_bottom =
+            self.draw_container_list_header(scene, tr, theme, list, detail_open, &cols);
+        let rows_area = Rect::new(list.x0, colhead_bottom, list.x1, list.y1);
+        self.draw_container_rows(scene, tr, theme, rows_area, &rows, &cols, detail_open, view);
+        self.draw_container_detail_pane(scene, tr, theme, content, list, body_y, view);
+    }
+
+    /// The list column header (labels + divider) above the scrollable rows.
+    /// Returns the y just below the divider, where the rows area starts.
+    fn draw_container_list_header(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        list: Rect,
+        detail_open: bool,
+        cols: &[f64; 5],
+    ) -> f64 {
         let colhead = Rect::new(list.x0, list.y0, list.x1, list.y0 + 28.0);
         let c = &theme.tokens.colors;
         scene.fill(
@@ -452,7 +526,6 @@ impl ContainersApp {
             None,
             &colhead,
         );
-        let cols = self.container_columns(list, detail_open);
         // The compact (detail-open) layout drops the image + stats columns,
         // so its header must match — otherwise the labels collide.
         let labels: [&str; 5] = if detail_open {
@@ -464,13 +537,16 @@ impl ContainersApp {
             if lbl.is_empty() {
                 continue;
             }
+            let Some(&x) = cols.get(i) else {
+                continue;
+            };
             draw::text(
                 scene,
                 tr,
                 lbl,
                 theme.tokens.typography.scale.xs,
                 c.text_dim,
-                Point::new(cols[i], colhead.center().y - 5.0),
+                Point::new(x, colhead.center().y - 5.0),
                 TextWeight::Semibold,
             );
         }
@@ -481,24 +557,43 @@ impl ContainersApp {
             colhead.y1,
             c.border_standard,
         );
+        colhead.y1
+    }
 
-        // Rows (scrollable).
-        let rows_area = Rect::new(list.x0, colhead.y1, list.x1, list.y1);
+    /// The scrollable container rows, plus the empty-state fallbacks and the
+    /// list scrollbar.
+    fn draw_container_rows(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rows_area: Rect,
+        rows: &[Container],
+        cols: &[f64; 5],
+        detail_open: bool,
+        view: &ViewState,
+    ) {
         let content_h = rows.len() as f64 * crate::app::ROW_HEIGHT;
         let max_scroll = (content_h - rows_area.height()).max(0.0);
         self.clamp_list_scroll(max_scroll);
         let mut y = rows_area.y0 - self.list_scroll;
-        for container in &rows {
+        for container in rows {
             let row = Rect::new(rows_area.x0, y, rows_area.x1, y + crate::app::ROW_HEIGHT);
             if row.y1 >= rows_area.y0 && row.y0 <= rows_area.y1 {
-                self.draw_container_row(scene, tr, theme, row, container, &cols, detail_open, view);
+                let info = ContainerRow {
+                    row,
+                    container,
+                    cols,
+                    compact: detail_open,
+                };
+                self.draw_container_row(scene, tr, theme, info, view);
             }
             y += crate::app::ROW_HEIGHT;
         }
         if rows.is_empty() {
             if self.engine.containers.is_empty() {
                 if self.engine.live {
-                    self.draw_empty_state(
+                    Self::draw_empty_state(
                         scene,
                         tr,
                         theme,
@@ -507,7 +602,7 @@ impl ContainersApp {
                         "Pull an image and create a container to get started.",
                     );
                 } else {
-                    self.draw_empty_state(
+                    Self::draw_empty_state(
                         scene,
                         tr,
                         theme,
@@ -517,7 +612,7 @@ impl ContainersApp {
                     );
                 }
             } else {
-                self.draw_empty(
+                Self::draw_empty(
                     scene,
                     tr,
                     theme,
@@ -526,9 +621,21 @@ impl ContainersApp {
                 );
             }
         }
-        self.draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
+        Self::draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
+    }
 
-        // Detail pane.
+    /// The selected container's detail pane, if any (or the "no longer
+    /// exists" fallback when the selection went stale).
+    fn draw_container_detail_pane(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        list: Rect,
+        body_y: f64,
+        view: &ViewState,
+    ) {
         if let Some(sel) = &view.selected {
             let detail = Rect::new(list.x1, body_y, content.x1, content.y1);
             if let Some(container) = self.engine.find(sel).cloned() {
@@ -544,12 +651,12 @@ impl ContainersApp {
                     None,
                     &panel,
                 );
-                self.draw_empty(scene, tr, theme, panel, "Container no longer exists.");
+                Self::draw_empty(scene, tr, theme, panel, "Container no longer exists.");
             }
         }
     }
 
-    fn container_columns(&self, list: Rect, detail_open: bool) -> [f64; 5] {
+    fn container_columns(list: Rect, detail_open: bool) -> [f64; 5] {
         let x = list.x0 + PAD;
         let w = list.width() - PAD * 2.0;
         if detail_open {
@@ -565,13 +672,11 @@ impl ContainersApp {
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
-        row: Rect,
-        container: &Container,
-        cols: &[f64; 5],
-        compact: bool,
+        info: ContainerRow<'_>,
         view: &ViewState,
     ) {
         let c = &theme.tokens.colors;
+        let ContainerRow { row, container, .. } = info;
         let selected = view.selected.as_deref() == Some(container.id.as_str());
         let inner = Rect::new(row.x0 + 8.0, row.y0 + 4.0, row.x1 - 8.0, row.y1 - 4.0);
         if selected {
@@ -609,11 +714,13 @@ impl ContainersApp {
             scene,
             tr,
             &container.name,
-            theme.tokens.typography.scale.base,
-            c.text_primary,
-            Point::new(cols[0] + 8.0, name_y),
-            (cols[1] - cols[0] - 16.0).max(40.0),
-            TextWeight::Semibold,
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.base,
+                color: c.text_primary,
+                weight: TextWeight::Semibold,
+            },
+            Point::new(info.cols[0] + 8.0, name_y),
+            (info.cols[1] - info.cols[0] - 16.0).max(40.0),
         );
         draw::text(
             scene,
@@ -621,10 +728,38 @@ impl ContainersApp {
             container.short_id(),
             theme.tokens.typography.scale.xs,
             c.text_dim,
-            Point::new(cols[0] + 8.0, sub_y),
+            Point::new(info.cols[0] + 8.0, sub_y),
             TextWeight::Regular,
         );
 
+        self.draw_container_row_layout(scene, tr, theme, info, name_y, sub_y);
+
+        // Action buttons cluster on the far right.
+        self.draw_row_actions(scene, tr, theme, container, row);
+
+        // Whole-row selection hit (lowest priority — pushed before actions so
+        // action hits, pushed earlier, win at resolve time which scans last).
+        self.push_hit(row, Hit::SelectContainer(container.id.clone()));
+    }
+
+    /// The compact (detail-open) vs. full row content: a bare status pill,
+    /// or the image / status-detail text plus the CPU/MEM mini-stats.
+    fn draw_container_row_layout(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        info: ContainerRow<'_>,
+        name_y: f64,
+        sub_y: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let ContainerRow {
+            row,
+            container,
+            cols,
+            compact,
+        } = info;
         if compact {
             // status pill near the right, then actions
             let pill_x = cols[1];
@@ -643,11 +778,13 @@ impl ContainersApp {
                 scene,
                 tr,
                 &container.image,
-                theme.tokens.typography.scale.sm,
-                c.text_dim,
+                draw::TextStyle {
+                    size: theme.tokens.typography.scale.sm,
+                    color: c.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(cols[1], row.center().y - 6.0),
                 (cols[2] - cols[1] - 12.0).max(40.0),
-                TextWeight::Regular,
             );
             // Status pill + detail
             draw::status_pill(
@@ -663,14 +800,16 @@ impl ContainersApp {
                 scene,
                 tr,
                 &container.status_detail,
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
+                draw::TextStyle {
+                    size: theme.tokens.typography.scale.xs,
+                    color: c.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(cols[2], sub_y + 2.0),
                 (cols[3] - cols[2] - 12.0).max(30.0),
-                TextWeight::Regular,
             );
             // CPU / MEM mini-stats
-            self.draw_row_stats(
+            Self::draw_row_stats(
                 scene,
                 tr,
                 theme,
@@ -679,17 +818,9 @@ impl ContainersApp {
                 cols[4] - cols[3] - 96.0,
             );
         }
-
-        // Action buttons cluster on the far right.
-        self.draw_row_actions(scene, tr, theme, container, row);
-
-        // Whole-row selection hit (lowest priority — pushed before actions so
-        // action hits, pushed earlier, win at resolve time which scans last).
-        self.push_hit(row, Hit::SelectContainer(container.id.clone()));
     }
 
     fn draw_row_stats(
-        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -698,7 +829,7 @@ impl ContainersApp {
         width: f64,
     ) {
         let c = &theme.tokens.colors;
-        let w = width.max(80.0).min(160.0);
+        let w = width.clamp(80.0, 160.0);
         if !container.status.is_running() {
             draw::text(
                 scene,
@@ -747,7 +878,9 @@ impl ContainersApp {
     fn draw_row_actions(
         &mut self,
         scene: &mut Scene,
-        tr: &mut TextRenderer,
+        // Icons here are vector-only (no text), but kept for signature
+        // consistency with the sibling `draw_row_*` methods.
+        _tr: &TextRenderer,
         theme: &Theme,
         container: &Container,
         row: Rect,
@@ -807,7 +940,6 @@ impl ContainersApp {
                     action,
                 },
             );
-            let _ = tr; // keep signature consistent; icons are vector-only
             x -= 4.0;
         }
     }
@@ -842,27 +974,59 @@ impl ContainersApp {
             &border,
         );
 
-        // Header: name + close.
+        let head = self.draw_detail_header(scene, tr, theme, panel, container);
+        let strip = self.draw_detail_tab_strip(scene, tr, theme, panel, head.y1, view);
+
+        // Action toolbar.
+        let toolbar = Rect::new(panel.x0, strip.y1, panel.x1, strip.y1 + 48.0);
+        self.draw_detail_toolbar(scene, tr, theme, toolbar, container);
+        draw::divider(scene, toolbar.x0, toolbar.x1, toolbar.y1, c.border_standard);
+
+        // Tab body.
+        let body = Rect::new(panel.x0, toolbar.y1, panel.x1, panel.y1);
+        match view.tab {
+            DetailTab::Logs => self.draw_logs(scene, tr, theme, body, container),
+            DetailTab::Stats => Self::draw_stats(scene, tr, theme, body, container),
+            DetailTab::Inspect => self.draw_inspect(scene, tr, theme, body, container),
+            DetailTab::Terminal => self.draw_terminal(scene, tr, theme, body, container),
+        }
+    }
+
+    /// The detail panel header: name + image, and the close button. Returns
+    /// the header's rect (its `y1` is where the tab strip starts).
+    fn draw_detail_header(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        container: &Container,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
         let head = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 56.0);
         draw::text_clip(
             scene,
             tr,
             &container.name,
-            theme.tokens.typography.scale.xl,
-            c.text_primary,
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.xl,
+                color: c.text_primary,
+                weight: TextWeight::Bold,
+            },
             Point::new(head.x0 + PAD, head.y0 + 12.0),
             head.width() - PAD * 2.0 - 32.0,
-            TextWeight::Bold,
         );
         draw::text_clip(
             scene,
             tr,
             &container.image,
-            theme.tokens.typography.scale.xs,
-            c.text_dim,
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.xs,
+                color: c.text_dim,
+                weight: TextWeight::Regular,
+            },
             Point::new(head.x0 + PAD, head.y0 + 34.0),
             head.width() - PAD * 2.0 - 32.0,
-            TextWeight::Regular,
         );
         let close = Rect::new(
             head.x1 - 36.0,
@@ -888,9 +1052,22 @@ impl ContainersApp {
             TextWeight::Regular,
         );
         self.push_hit(close, Hit::CloseDetail);
+        head
+    }
 
-        // Tab strip.
-        let strip = Rect::new(panel.x0, head.y1, panel.x1, head.y1 + 36.0);
+    /// The detail panel's tab strip (Logs/Stats/Inspect/Terminal). Returns
+    /// its rect (its `y1` is where the action toolbar starts).
+    fn draw_detail_tab_strip(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        head_bottom: f64,
+        view: &ViewState,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
+        let strip = Rect::new(panel.x0, head_bottom, panel.x1, head_bottom + 36.0);
         let tab_w = strip.width() / DetailTab::ALL.len() as f64;
         for (i, tab) in DetailTab::ALL.iter().enumerate() {
             let tx0 = strip.x0 + i as f64 * tab_w;
@@ -934,20 +1111,7 @@ impl ContainersApp {
             self.push_hit(trect, Hit::DetailTab(*tab));
         }
         draw::divider(scene, strip.x0, strip.x1, strip.y1, c.border_standard);
-
-        // Action toolbar.
-        let toolbar = Rect::new(panel.x0, strip.y1, panel.x1, strip.y1 + 48.0);
-        self.draw_detail_toolbar(scene, tr, theme, toolbar, container);
-        draw::divider(scene, toolbar.x0, toolbar.x1, toolbar.y1, c.border_standard);
-
-        // Tab body.
-        let body = Rect::new(panel.x0, toolbar.y1, panel.x1, panel.y1);
-        match view.tab {
-            DetailTab::Logs => self.draw_logs(scene, tr, theme, body, container),
-            DetailTab::Stats => self.draw_stats(scene, tr, theme, body, container),
-            DetailTab::Inspect => self.draw_inspect(scene, tr, theme, body, container),
-            DetailTab::Terminal => self.draw_terminal(scene, tr, theme, body, container),
-        }
+        strip
     }
 
     fn draw_detail_toolbar(
@@ -1055,7 +1219,7 @@ impl ContainersApp {
         let inner = Rect::new(body.x0 + 8.0, body.y0 + 8.0, body.x1 - 8.0, body.y1 - 8.0);
         draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), term_bg);
         if container.logs.is_empty() {
-            self.draw_empty(scene, tr, theme, inner, "No log output yet.");
+            Self::draw_empty(scene, tr, theme, inner, "No log output yet.");
             return;
         }
         let mono = theme.tokens.typography.scale.xs;
@@ -1073,15 +1237,17 @@ impl ContainersApp {
                 scene,
                 tr,
                 line,
-                mono,
-                color,
+                draw::TextStyle {
+                    size: mono,
+                    color,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(inner.x0 + 12.0, y),
                 inner.width() - 24.0,
-                TextWeight::Regular,
             );
             y += line_h;
         }
-        self.draw_scrollbar(scene, theme, inner, self.detail_scroll, content_h);
+        Self::draw_scrollbar(scene, theme, inner, self.detail_scroll, content_h);
         // tail indicator
         let tail = format!("{total} lines");
         draw::text(
@@ -1096,7 +1262,6 @@ impl ContainersApp {
     }
 
     fn draw_stats(
-        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1109,64 +1274,18 @@ impl ContainersApp {
         let card_w = body.width() - PAD * 2.0;
 
         // Big CPU + MEM gauges.
-        let gauge = |scene: &mut Scene,
-                     tr: &mut TextRenderer,
-                     app: &ContainersApp,
-                     label: &str,
-                     value: String,
-                     frac: f32,
-                     color: Color,
-                     y: f64| {
-            let card = Rect::new(body.x0 + PAD, y, body.x0 + PAD + card_w, y + 72.0);
-            draw::fill_round(
-                scene,
-                card,
-                f64::from(theme.tokens.radii.md),
-                c.surfaces.base,
-            );
-            draw::stroke_round(
-                scene,
-                card,
-                f64::from(theme.tokens.radii.md),
-                1.0,
-                c.border_standard,
-            );
-            draw::text(
-                scene,
-                tr,
-                label,
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
-                Point::new(card.x0 + 14.0, card.y0 + 12.0),
-                TextWeight::Semibold,
-            );
-            draw::text(
-                scene,
-                tr,
-                &value,
-                theme.tokens.typography.scale.xl,
-                c.text_primary,
-                Point::new(card.x0 + 14.0, card.y0 + 26.0),
-                TextWeight::Bold,
-            );
-            let bar = Rect::new(
-                card.x0 + 14.0,
-                card.y1 - 16.0,
-                card.x1 - 14.0,
-                card.y1 - 10.0,
-            );
-            draw::usage_bar(scene, theme, bar, frac, color);
-            let _ = app;
-        };
-        gauge(
+        let cpu_card = Rect::new(body.x0 + PAD, y, body.x0 + PAD + card_w, y + 72.0);
+        Self::draw_stat_gauge(
             scene,
             tr,
-            self,
-            "CPU",
-            format!("{:.1}%", s.cpu_percent * 100.0),
-            s.cpu_percent.min(1.0),
-            c.accent[5],
-            y,
+            theme,
+            cpu_card,
+            &GaugeCard {
+                label: "CPU",
+                value: format!("{:.1}%", s.cpu_percent * 100.0),
+                frac: s.cpu_percent.min(1.0),
+                color: c.accent[5],
+            },
         );
         y += 84.0;
         let mem_label = if s.mem_limit_bytes > 0 {
@@ -1178,19 +1297,85 @@ impl ContainersApp {
         } else {
             ui::format::bytes(s.mem_bytes)
         };
-        gauge(
+        let mem_card = Rect::new(body.x0 + PAD, y, body.x0 + PAD + card_w, y + 72.0);
+        Self::draw_stat_gauge(
             scene,
             tr,
-            self,
-            "MEMORY",
-            mem_label,
-            s.mem_fraction(),
-            c.semantic.info,
-            y,
+            theme,
+            mem_card,
+            &GaugeCard {
+                label: "MEMORY",
+                value: mem_label,
+                frac: s.mem_fraction(),
+                color: c.semantic.info,
+            },
         );
         y += 84.0;
 
         // Network + block IO + pids as a small grid.
+        Self::draw_stat_grid(scene, tr, theme, body, card_w, y, s);
+    }
+
+    /// One big CPU/MEM gauge card: label, value, and a usage bar.
+    fn draw_stat_gauge(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        spec: &GaugeCard,
+    ) {
+        let c = &theme.tokens.colors;
+        draw::fill_round(
+            scene,
+            card,
+            f64::from(theme.tokens.radii.md),
+            c.surfaces.base,
+        );
+        draw::stroke_round(
+            scene,
+            card,
+            f64::from(theme.tokens.radii.md),
+            1.0,
+            c.border_standard,
+        );
+        draw::text(
+            scene,
+            tr,
+            spec.label,
+            theme.tokens.typography.scale.xs,
+            c.text_dim,
+            Point::new(card.x0 + 14.0, card.y0 + 12.0),
+            TextWeight::Semibold,
+        );
+        draw::text(
+            scene,
+            tr,
+            &spec.value,
+            theme.tokens.typography.scale.xl,
+            c.text_primary,
+            Point::new(card.x0 + 14.0, card.y0 + 26.0),
+            TextWeight::Bold,
+        );
+        let bar = Rect::new(
+            card.x0 + 14.0,
+            card.y1 - 16.0,
+            card.x1 - 14.0,
+            card.y1 - 10.0,
+        );
+        draw::usage_bar(scene, theme, bar, spec.frac, spec.color);
+    }
+
+    /// Network + block IO + pids as a small key/value grid card.
+    fn draw_stat_grid(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        body: Rect,
+        card_w: f64,
+        y: f64,
+        s: &Stats,
+    ) {
+        let c = &theme.tokens.colors;
         let rows = [
             ("Network RX", ui::format::bytes(s.net_rx_bytes)),
             ("Network TX", ui::format::bytes(s.net_tx_bytes)),
@@ -1254,7 +1439,6 @@ impl ContainersApp {
             }
             ry += 30.0;
         }
-        let _ = Stats::default();
     }
 
     fn draw_inspect(
@@ -1267,11 +1451,12 @@ impl ContainersApp {
     ) {
         let c = &theme.tokens.colors;
         // Build a flat list of inspect fields so it scrolls as one column.
-        let mut lines: Vec<(String, String, bool)> = Vec::new();
-        lines.push(("Id".into(), container.id.clone(), true));
-        lines.push(("Command".into(), container.command.clone(), false));
-        lines.push(("Created".into(), container.created.clone(), false));
-        lines.push(("Status".into(), container.status_detail.clone(), false));
+        let mut lines: Vec<(String, String, bool)> = vec![
+            ("Id".into(), container.id.clone(), true),
+            ("Command".into(), container.command.clone(), false),
+            ("Created".into(), container.created.clone(), false),
+            ("Status".into(), container.status_detail.clone(), false),
+        ];
         // section: ports
         if !container.ports.is_empty() {
             lines.push(("— Ports —".into(), String::new(), false));
@@ -1328,11 +1513,13 @@ impl ContainersApp {
                         scene,
                         tr,
                         k,
-                        theme.tokens.typography.scale.sm,
-                        c.text_dim,
+                        draw::TextStyle {
+                            size: theme.tokens.typography.scale.sm,
+                            color: c.text_dim,
+                            weight: TextWeight::Regular,
+                        },
                         Point::new(area.x0 + PAD, y + 6.0),
                         key_w,
-                        TextWeight::Regular,
                     );
                     let vx = area.x0 + PAD + key_w + 8.0;
                     let weight = if *mono {
@@ -1344,17 +1531,19 @@ impl ContainersApp {
                         scene,
                         tr,
                         v,
-                        theme.tokens.typography.scale.sm,
-                        c.text_primary,
+                        draw::TextStyle {
+                            size: theme.tokens.typography.scale.sm,
+                            color: c.text_primary,
+                            weight,
+                        },
                         Point::new(vx, y + 6.0),
                         area.x1 - vx - PAD,
-                        weight,
                     );
                 }
             }
             y += line_h;
         }
-        self.draw_scrollbar(scene, theme, area, self.detail_scroll, content_h);
+        Self::draw_scrollbar(scene, theme, area, self.detail_scroll, content_h);
     }
 
     fn draw_terminal(
@@ -1487,13 +1676,34 @@ impl ContainersApp {
             theme,
             content,
             "Images",
-            view,
             Some(("Pull image", Hit::PullTyped)),
         );
-        let c = &theme.tokens.colors;
         let list = Rect::new(content.x0, body_y, content.x1, content.y1);
+        let banner = self.draw_images_banner(scene, tr, theme, list);
 
-        // Summary banner.
+        let query = view.search.clone();
+        let images: Vec<usize> = self
+            .engine
+            .images
+            .iter()
+            .enumerate()
+            .filter(|(_, im)| im.matches(&query))
+            .map(|(i, _)| i)
+            .collect();
+
+        let rows_area = Rect::new(list.x0, banner.y1 + 8.0, list.x1, list.y1);
+        self.draw_image_rows(scene, tr, theme, rows_area, &images);
+    }
+
+    /// The summary banner above the image list (count + total disk usage).
+    fn draw_images_banner(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        list: Rect,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
         let banner = Rect::new(list.x0 + PAD, list.y0 + 8.0, list.x1 - PAD, list.y0 + 44.0);
         draw::fill_round(
             scene,
@@ -1515,134 +1725,167 @@ impl ContainersApp {
             Point::new(banner.x0 + 14.0, banner.center().y - 7.0),
             TextWeight::Medium,
         );
+        banner
+    }
 
-        let query = view.search.clone();
-        let images: Vec<usize> = self
-            .engine
-            .images
-            .iter()
-            .enumerate()
-            .filter(|(_, im)| im.matches(&query))
-            .map(|(i, _)| i)
-            .collect();
-
-        let rows_area = Rect::new(list.x0, banner.y1 + 8.0, list.x1, list.y1);
+    /// The scrollable image rows (by index into `self.engine.images`), plus
+    /// the empty-state fallback and the list scrollbar.
+    fn draw_image_rows(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rows_area: Rect,
+        images: &[usize],
+    ) {
         let row_h = 56.0;
         let content_h = images.len() as f64 * row_h;
         let max_scroll = (content_h - rows_area.height()).max(0.0);
         self.clamp_list_scroll(max_scroll);
         let mut y = rows_area.y0 - self.list_scroll;
-        for &idx in &images {
-            let image = self.engine.images[idx].clone();
+        for &idx in images {
+            let Some(image) = self.engine.images.get(idx).cloned() else {
+                continue;
+            };
             let row = Rect::new(rows_area.x0, y, rows_area.x1, y + row_h);
             // Whole-row select FIRST (lowest priority — action buttons pushed
             // later win at resolve time, which returns the last matching hit).
             self.push_hit(row, Hit::SelectImage(idx));
             if row.y1 >= rows_area.y0 && row.y0 <= rows_area.y1 {
-                let inner = Rect::new(row.x0 + PAD, row.y0 + 4.0, row.x1 - PAD, row.y1 - 4.0);
-                if self.hovered(row) {
-                    draw::fill_round(
-                        scene,
-                        inner,
-                        f64::from(theme.tokens.radii.md),
-                        c.surface_white_5,
-                    );
-                }
-                draw::icon(
-                    scene,
-                    Icon::Layers,
-                    Rect::new(
-                        inner.x0 + 8.0,
-                        inner.center().y - 12.0,
-                        inner.x0 + 32.0,
-                        inner.center().y + 12.0,
-                    ),
-                    c.accent[6],
-                    1.5,
-                );
-                draw::text_clip(
-                    scene,
-                    tr,
-                    &image.reference(),
-                    theme.tokens.typography.scale.base,
-                    c.text_primary,
-                    Point::new(inner.x0 + 44.0, row.center().y - 16.0),
-                    inner.width() * 0.42,
-                    TextWeight::Semibold,
-                );
-                draw::text(
-                    scene,
-                    tr,
-                    image.short_id(),
-                    theme.tokens.typography.scale.xs,
-                    c.text_dim,
-                    Point::new(inner.x0 + 44.0, row.center().y + 4.0),
-                    TextWeight::Regular,
-                );
-                // Action cluster on the far right (pull again / tag / inspect / remove).
-                let acts_right = self.draw_image_actions(scene, theme, &image.reference(), row);
-                // right metadata cluster: size, created, in-use chip — left of the actions.
-                let meta_right = acts_right - 12.0;
-                let size = ui::format::bytes(image.size_bytes);
-                let (sw, _) = tr.measure_weighted(
-                    &size,
-                    theme.tokens.typography.scale.base,
-                    None,
-                    TextWeight::Semibold,
-                );
-                draw::text(
-                    scene,
-                    tr,
-                    &size,
-                    theme.tokens.typography.scale.base,
-                    c.text_primary,
-                    Point::new(meta_right - f64::from(sw), row.center().y - 16.0),
-                    TextWeight::Semibold,
-                );
-                draw::text(
-                    scene,
-                    tr,
-                    &image.created,
-                    theme.tokens.typography.scale.xs,
-                    c.text_dim,
-                    Point::new(meta_right - 100.0, row.center().y + 4.0),
-                    TextWeight::Regular,
-                );
-                if image.in_use_by > 0 {
-                    draw::chip(
-                        scene,
-                        tr,
-                        theme,
-                        &format!("in use ×{}", image.in_use_by),
-                        Point::new(inner.x0 + inner.width() * 0.42, row.center().y - 8.0),
-                        16.0,
-                        c.semantic.success,
-                    );
-                } else {
-                    draw::chip(
-                        scene,
-                        tr,
-                        theme,
-                        "unused",
-                        Point::new(inner.x0 + inner.width() * 0.42, row.center().y - 8.0),
-                        16.0,
-                        c.text_dim,
-                    );
-                }
-                draw::divider(
-                    scene,
-                    inner.x0,
-                    inner.x1,
-                    row.y1,
-                    draw::with_alpha(c.border_standard, 90),
-                );
+                self.draw_image_row(scene, tr, theme, row, &image);
             }
             y += row_h;
         }
         if images.is_empty() {
-            self.draw_empty(scene, tr, theme, rows_area, "No images match your search.");
+            Self::draw_empty(scene, tr, theme, rows_area, "No images match your search.");
         }
-        self.draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
+        Self::draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
+    }
+
+    /// One image row's content: icon, reference + short id, action cluster,
+    /// size/created metadata, and the in-use/unused chip.
+    fn draw_image_row(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        image: &Image,
+    ) {
+        let c = &theme.tokens.colors;
+        let inner = Rect::new(row.x0 + PAD, row.y0 + 4.0, row.x1 - PAD, row.y1 - 4.0);
+        if self.hovered(row) {
+            draw::fill_round(
+                scene,
+                inner,
+                f64::from(theme.tokens.radii.md),
+                c.surface_white_5,
+            );
+        }
+        draw::icon(
+            scene,
+            Icon::Layers,
+            Rect::new(
+                inner.x0 + 8.0,
+                inner.center().y - 12.0,
+                inner.x0 + 32.0,
+                inner.center().y + 12.0,
+            ),
+            c.accent[6],
+            1.5,
+        );
+        draw::text_clip(
+            scene,
+            tr,
+            &image.reference(),
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.base,
+                color: c.text_primary,
+                weight: TextWeight::Semibold,
+            },
+            Point::new(inner.x0 + 44.0, row.center().y - 16.0),
+            inner.width() * 0.42,
+        );
+        draw::text(
+            scene,
+            tr,
+            image.short_id(),
+            theme.tokens.typography.scale.xs,
+            c.text_dim,
+            Point::new(inner.x0 + 44.0, row.center().y + 4.0),
+            TextWeight::Regular,
+        );
+        // Action cluster on the far right (pull again / tag / inspect / remove).
+        let acts_right = self.draw_image_actions(scene, theme, &image.reference(), row);
+        Self::draw_image_row_meta(scene, tr, theme, row, inner, acts_right, image);
+        draw::divider(
+            scene,
+            inner.x0,
+            inner.x1,
+            row.y1,
+            draw::with_alpha(c.border_standard, 90),
+        );
+    }
+
+    /// The right-hand metadata cluster on an image row: size, created,
+    /// in-use/unused chip — left of the action buttons.
+    fn draw_image_row_meta(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        inner: Rect,
+        acts_right: f64,
+        image: &Image,
+    ) {
+        let c = &theme.tokens.colors;
+        let meta_right = acts_right - 12.0;
+        let size = ui::format::bytes(image.size_bytes);
+        let (sw, _) = tr.measure_weighted(
+            &size,
+            theme.tokens.typography.scale.base,
+            None,
+            TextWeight::Semibold,
+        );
+        draw::text(
+            scene,
+            tr,
+            &size,
+            theme.tokens.typography.scale.base,
+            c.text_primary,
+            Point::new(meta_right - f64::from(sw), row.center().y - 16.0),
+            TextWeight::Semibold,
+        );
+        draw::text(
+            scene,
+            tr,
+            &image.created,
+            theme.tokens.typography.scale.xs,
+            c.text_dim,
+            Point::new(meta_right - 100.0, row.center().y + 4.0),
+            TextWeight::Regular,
+        );
+        if image.in_use_by > 0 {
+            draw::chip(
+                scene,
+                tr,
+                theme,
+                &format!("in use ×{}", image.in_use_by),
+                Point::new(inner.x0 + inner.width() * 0.42, row.center().y - 8.0),
+                16.0,
+                c.semantic.success,
+            );
+        } else {
+            draw::chip(
+                scene,
+                tr,
+                theme,
+                "unused",
+                Point::new(inner.x0 + inner.width() * 0.42, row.center().y - 8.0),
+                16.0,
+                c.text_dim,
+            );
+        }
     }
 
     /// Draw the per-image action cluster (pull-again / tag / inspect /
@@ -1735,13 +1978,33 @@ impl ContainersApp {
             theme,
             content,
             "Volumes",
-            view,
             Some(("New volume", Hit::CreateVolume)),
         );
-        let c = &theme.tokens.colors;
         let list = Rect::new(content.x0, body_y, content.x1, content.y1);
+        let banner = self.draw_volumes_banner(scene, tr, theme, list);
 
-        // Summary banner.
+        let query = view.search.clone();
+        let vols: Vec<Volume> = self
+            .engine
+            .volumes
+            .iter()
+            .filter(|v| v.matches(&query))
+            .cloned()
+            .collect();
+
+        let rows_area = Rect::new(list.x0, banner.y1 + 8.0, list.x1, list.y1);
+        self.draw_volume_rows(scene, tr, theme, rows_area, &vols);
+    }
+
+    /// The summary banner above the volume list (count + in-use count).
+    fn draw_volumes_banner(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        list: Rect,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
         let banner = Rect::new(list.x0 + PAD, list.y0 + 8.0, list.x1 - PAD, list.y0 + 44.0);
         draw::fill_round(
             scene,
@@ -1765,129 +2028,33 @@ impl ContainersApp {
             Point::new(banner.x0 + 14.0, banner.center().y - 7.0),
             TextWeight::Medium,
         );
+        banner
+    }
 
-        let query = view.search.clone();
-        let vols: Vec<_> = self
-            .engine
-            .volumes
-            .iter()
-            .filter(|v| v.matches(&query))
-            .cloned()
-            .collect();
-
-        let rows_area = Rect::new(list.x0, banner.y1 + 8.0, list.x1, list.y1);
+    /// The scrollable volume rows, plus the empty-state fallback and the
+    /// list scrollbar.
+    fn draw_volume_rows(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rows_area: Rect,
+        vols: &[Volume],
+    ) {
         let row_h = 56.0;
         let content_h = vols.len() as f64 * row_h;
         let max_scroll = (content_h - rows_area.height()).max(0.0);
         self.clamp_list_scroll(max_scroll);
         let mut y = rows_area.y0 - self.list_scroll;
-        for v in &vols {
+        for v in vols {
             let row = Rect::new(rows_area.x0, y, rows_area.x1, y + row_h);
             if row.y1 >= rows_area.y0 && row.y0 <= rows_area.y1 {
-                let inner = Rect::new(row.x0 + PAD, row.y0 + 4.0, row.x1 - PAD, row.y1 - 4.0);
-                if self.hovered(row) {
-                    draw::fill_round(
-                        scene,
-                        inner,
-                        f64::from(theme.tokens.radii.md),
-                        c.surface_white_5,
-                    );
-                }
-                draw::icon(
-                    scene,
-                    Icon::Box,
-                    Rect::new(
-                        inner.x0 + 8.0,
-                        inner.center().y - 12.0,
-                        inner.x0 + 32.0,
-                        inner.center().y + 12.0,
-                    ),
-                    c.accent[6],
-                    1.5,
-                );
-                draw::text_clip(
-                    scene,
-                    tr,
-                    &v.name,
-                    theme.tokens.typography.scale.base,
-                    c.text_primary,
-                    Point::new(inner.x0 + 44.0, row.center().y - 16.0),
-                    inner.width() * 0.5,
-                    TextWeight::Semibold,
-                );
-                draw::text_clip(
-                    scene,
-                    tr,
-                    &v.mountpoint,
-                    theme.tokens.typography.scale.xs,
-                    c.text_dim,
-                    Point::new(inner.x0 + 44.0, row.center().y + 4.0),
-                    inner.width() * 0.55,
-                    TextWeight::Regular,
-                );
-                // driver + usage chips
-                if v.in_use_by > 0 {
-                    draw::chip(
-                        scene,
-                        tr,
-                        theme,
-                        &format!("in use ×{}", v.in_use_by),
-                        Point::new(inner.x0 + inner.width() * 0.62, row.center().y - 8.0),
-                        16.0,
-                        c.semantic.success,
-                    );
-                } else {
-                    draw::chip(
-                        scene,
-                        tr,
-                        theme,
-                        "unused",
-                        Point::new(inner.x0 + inner.width() * 0.62, row.center().y - 8.0),
-                        16.0,
-                        c.text_dim,
-                    );
-                }
-                // remove button (far right)
-                let bw = ICON_BTN;
-                let btn = Rect::new(
-                    inner.x1 - bw,
-                    row.center().y - bw / 2.0,
-                    inner.x1,
-                    row.center().y + bw / 2.0,
-                );
-                let hov = self.hovered(btn);
-                if hov {
-                    draw::fill_round(
-                        scene,
-                        btn,
-                        f64::from(theme.tokens.radii.md),
-                        draw::with_alpha(c.semantic.danger, 46),
-                    );
-                }
-                draw::icon(
-                    scene,
-                    Icon::Trash,
-                    Rect::new(btn.x0 + 7.0, btn.y0 + 7.0, btn.x1 - 7.0, btn.y1 - 7.0),
-                    if hov {
-                        c.semantic.danger
-                    } else {
-                        draw::with_alpha(c.semantic.danger, 200)
-                    },
-                    1.6,
-                );
-                self.push_hit(btn, Hit::RemoveVolume(v.name.clone()));
-                draw::divider(
-                    scene,
-                    inner.x0,
-                    inner.x1,
-                    row.y1,
-                    draw::with_alpha(c.border_standard, 90),
-                );
+                self.draw_volume_row(scene, tr, theme, row, v);
             }
             y += row_h;
         }
         if vols.is_empty() {
-            self.draw_empty(
+            Self::draw_empty(
                 scene,
                 tr,
                 theme,
@@ -1895,7 +2062,135 @@ impl ContainersApp {
                 "No volumes yet — create one to persist container data.",
             );
         }
-        self.draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
+        Self::draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
+    }
+
+    /// One volume row's content: icon, name + mountpoint, usage chip, and
+    /// the remove button.
+    fn draw_volume_row(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        v: &Volume,
+    ) {
+        let c = &theme.tokens.colors;
+        let inner = Rect::new(row.x0 + PAD, row.y0 + 4.0, row.x1 - PAD, row.y1 - 4.0);
+        if self.hovered(row) {
+            draw::fill_round(
+                scene,
+                inner,
+                f64::from(theme.tokens.radii.md),
+                c.surface_white_5,
+            );
+        }
+        draw::icon(
+            scene,
+            Icon::Box,
+            Rect::new(
+                inner.x0 + 8.0,
+                inner.center().y - 12.0,
+                inner.x0 + 32.0,
+                inner.center().y + 12.0,
+            ),
+            c.accent[6],
+            1.5,
+        );
+        draw::text_clip(
+            scene,
+            tr,
+            &v.name,
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.base,
+                color: c.text_primary,
+                weight: TextWeight::Semibold,
+            },
+            Point::new(inner.x0 + 44.0, row.center().y - 16.0),
+            inner.width() * 0.5,
+        );
+        draw::text_clip(
+            scene,
+            tr,
+            &v.mountpoint,
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.xs,
+                color: c.text_dim,
+                weight: TextWeight::Regular,
+            },
+            Point::new(inner.x0 + 44.0, row.center().y + 4.0),
+            inner.width() * 0.55,
+        );
+        // driver + usage chips
+        if v.in_use_by > 0 {
+            draw::chip(
+                scene,
+                tr,
+                theme,
+                &format!("in use ×{}", v.in_use_by),
+                Point::new(inner.x0 + inner.width() * 0.62, row.center().y - 8.0),
+                16.0,
+                c.semantic.success,
+            );
+        } else {
+            draw::chip(
+                scene,
+                tr,
+                theme,
+                "unused",
+                Point::new(inner.x0 + inner.width() * 0.62, row.center().y - 8.0),
+                16.0,
+                c.text_dim,
+            );
+        }
+        self.draw_volume_row_remove_button(scene, theme, row, inner, v);
+        draw::divider(
+            scene,
+            inner.x0,
+            inner.x1,
+            row.y1,
+            draw::with_alpha(c.border_standard, 90),
+        );
+    }
+
+    /// The remove button on the far right of a volume row.
+    fn draw_volume_row_remove_button(
+        &mut self,
+        scene: &mut Scene,
+        theme: &Theme,
+        row: Rect,
+        inner: Rect,
+        v: &Volume,
+    ) {
+        let c = &theme.tokens.colors;
+        let bw = ICON_BTN;
+        let btn = Rect::new(
+            inner.x1 - bw,
+            row.center().y - bw / 2.0,
+            inner.x1,
+            row.center().y + bw / 2.0,
+        );
+        let hov = self.hovered(btn);
+        if hov {
+            draw::fill_round(
+                scene,
+                btn,
+                f64::from(theme.tokens.radii.md),
+                draw::with_alpha(c.semantic.danger, 46),
+            );
+        }
+        draw::icon(
+            scene,
+            Icon::Trash,
+            Rect::new(btn.x0 + 7.0, btn.y0 + 7.0, btn.x1 - 7.0, btn.y1 - 7.0),
+            if hov {
+                c.semantic.danger
+            } else {
+                draw::with_alpha(c.semantic.danger, 200)
+            },
+            1.6,
+        );
+        self.push_hit(btn, Hit::RemoveVolume(v.name.clone()));
     }
 
     // =================================================================
@@ -1916,7 +2211,6 @@ impl ContainersApp {
             theme,
             content,
             "Distrobox",
-            view,
             Some(("Create box", Hit::DistroCreate)),
         );
         let c = &theme.tokens.colors;
@@ -1927,15 +2221,17 @@ impl ContainersApp {
             scene,
             tr,
             intro,
-            theme.tokens.typography.scale.sm,
-            c.text_dim,
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.sm,
+                color: c.text_dim,
+                weight: TextWeight::Regular,
+            },
             Point::new(list.x0 + PAD, list.y0 + 12.0),
             list.width() - PAD * 2.0,
-            TextWeight::Regular,
         );
 
         let query = view.search.clone();
-        let boxes: Vec<_> = self
+        let boxes: Vec<DistroBox> = self
             .engine
             .distroboxes
             .iter()
@@ -1958,106 +2254,11 @@ impl ContainersApp {
             if card.y1 < list.y0 || card.y0 > list.y1 {
                 continue;
             }
-            let hov = self.hovered(card);
-            draw::fill_round(
-                scene,
-                card,
-                f64::from(theme.tokens.radii.lg),
-                c.surfaces.raised,
-            );
-            draw::stroke_round(
-                scene,
-                card,
-                f64::from(theme.tokens.radii.lg),
-                1.0,
-                if hov {
-                    c.border_focus
-                } else {
-                    c.border_standard
-                },
-            );
-            draw::icon(
-                scene,
-                Icon::Terminal,
-                Rect::new(
-                    card.x0 + 14.0,
-                    card.y0 + 14.0,
-                    card.x0 + 38.0,
-                    card.y0 + 38.0,
-                ),
-                c.accent[6],
-                1.6,
-            );
-            draw::text_clip(
-                scene,
-                tr,
-                &b.name,
-                theme.tokens.typography.scale.lg,
-                c.text_primary,
-                Point::new(card.x0 + 48.0, card.y0 + 14.0),
-                card_w - 60.0,
-                TextWeight::Bold,
-            );
-            draw::status_pill(
-                scene,
-                tr,
-                theme,
-                b.status,
-                b.status.label(),
-                Point::new(card.x0 + 48.0, card.y0 + 38.0),
-                20.0,
-            );
-            draw::text_clip(
-                scene,
-                tr,
-                &b.image,
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
-                Point::new(card.x0 + 14.0, card.y1 - 24.0),
-                card_w - 120.0,
-                TextWeight::Regular,
-            );
-            // enter button
-            let bw = 86.0;
-            let btn = Rect::new(
-                card.x1 - 14.0 - bw,
-                card.y1 - 36.0,
-                card.x1 - 14.0,
-                card.y1 - 8.0,
-            );
-            let bhov = self.hovered(btn);
-            draw::fill_round(
-                scene,
-                btn,
-                f64::from(theme.tokens.radii.md),
-                if bhov { c.accent[4] } else { c.accent[5] },
-            );
-            draw::icon(
-                scene,
-                Icon::Enter,
-                Rect::new(
-                    btn.x0 + 10.0,
-                    btn.center().y - 8.0,
-                    btn.x0 + 26.0,
-                    btn.center().y + 8.0,
-                ),
-                Color::WHITE,
-                1.6,
-            );
-            draw::text(
-                scene,
-                tr,
-                "Enter",
-                theme.tokens.typography.scale.sm,
-                Color::WHITE,
-                Point::new(btn.x0 + 30.0, btn.center().y - 7.0),
-                TextWeight::Semibold,
-            );
-            self.push_hit(btn, Hit::DistroEnter(b.name.clone()));
+            self.draw_distrobox_card(scene, tr, theme, card, card_w, b);
         }
         if boxes.is_empty() {
             let area = Rect::new(list.x0, grid_top, list.x1, list.y1);
-            self.draw_empty(
+            Self::draw_empty(
                 scene,
                 tr,
                 theme,
@@ -2065,6 +2266,132 @@ impl ContainersApp {
                 "No distroboxes yet — create one to get started.",
             );
         }
+    }
+
+    /// One distrobox card: icon, name + status pill, image, and the Enter
+    /// button.
+    fn draw_distrobox_card(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        card_w: f64,
+        b: &DistroBox,
+    ) {
+        let c = &theme.tokens.colors;
+        let hov = self.hovered(card);
+        draw::fill_round(
+            scene,
+            card,
+            f64::from(theme.tokens.radii.lg),
+            c.surfaces.raised,
+        );
+        draw::stroke_round(
+            scene,
+            card,
+            f64::from(theme.tokens.radii.lg),
+            1.0,
+            if hov {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+        );
+        draw::icon(
+            scene,
+            Icon::Terminal,
+            Rect::new(
+                card.x0 + 14.0,
+                card.y0 + 14.0,
+                card.x0 + 38.0,
+                card.y0 + 38.0,
+            ),
+            c.accent[6],
+            1.6,
+        );
+        draw::text_clip(
+            scene,
+            tr,
+            &b.name,
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.lg,
+                color: c.text_primary,
+                weight: TextWeight::Bold,
+            },
+            Point::new(card.x0 + 48.0, card.y0 + 14.0),
+            card_w - 60.0,
+        );
+        draw::status_pill(
+            scene,
+            tr,
+            theme,
+            b.status,
+            b.status.label(),
+            Point::new(card.x0 + 48.0, card.y0 + 38.0),
+            20.0,
+        );
+        draw::text_clip(
+            scene,
+            tr,
+            &b.image,
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.xs,
+                color: c.text_dim,
+                weight: TextWeight::Regular,
+            },
+            Point::new(card.x0 + 14.0, card.y1 - 24.0),
+            card_w - 120.0,
+        );
+        self.draw_distrobox_enter_button(scene, tr, theme, card, b);
+    }
+
+    /// The "Enter" button on a distrobox card.
+    fn draw_distrobox_enter_button(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        b: &DistroBox,
+    ) {
+        let c = &theme.tokens.colors;
+        let bw = 86.0;
+        let btn = Rect::new(
+            card.x1 - 14.0 - bw,
+            card.y1 - 36.0,
+            card.x1 - 14.0,
+            card.y1 - 8.0,
+        );
+        let bhov = self.hovered(btn);
+        draw::fill_round(
+            scene,
+            btn,
+            f64::from(theme.tokens.radii.md),
+            if bhov { c.accent[4] } else { c.accent[5] },
+        );
+        draw::icon(
+            scene,
+            Icon::Enter,
+            Rect::new(
+                btn.x0 + 10.0,
+                btn.center().y - 8.0,
+                btn.x0 + 26.0,
+                btn.center().y + 8.0,
+            ),
+            Color::WHITE,
+            1.6,
+        );
+        draw::text(
+            scene,
+            tr,
+            "Enter",
+            theme.tokens.typography.scale.sm,
+            Color::WHITE,
+            Point::new(btn.x0 + 30.0, btn.center().y - 7.0),
+            TextWeight::Semibold,
+        );
+        self.push_hit(btn, Hit::DistroEnter(b.name.clone()));
     }
 
     // =================================================================
@@ -2123,7 +2450,36 @@ impl ContainersApp {
             TextWeight::Regular,
         );
 
-        // Defer the image combobox dropdown so it overlays the fields below it.
+        let combo_input = self.draw_create_modal_fields(scene, tr, theme, modal, view);
+        self.draw_create_modal_buttons(scene, tr, theme, modal);
+
+        // Image suggestion dropdown — drawn LAST so it overlays the rows below.
+        if self.combo.open
+            && let Some(input) = combo_input
+        {
+            let typed = view
+                .create
+                .get(CreateField::Image.index())
+                .cloned()
+                .unwrap_or_default();
+            self.draw_image_dropdown(scene, tr, theme, input, &typed);
+        }
+    }
+
+    /// The create-form field rows (label, input box, value/placeholder,
+    /// caret, and the image combobox chevron). Returns the image field's
+    /// input rect, if any, so the caller can anchor the suggestion dropdown.
+    fn draw_create_modal_fields(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        modal: Rect,
+        view: &ViewState,
+    ) -> Option<Rect> {
+        let c = &theme.tokens.colors;
+        // Deferred so the caller can overlay the combobox dropdown on top of
+        // the fields below it.
         let mut combo_input: Option<Rect> = None;
 
         let row_step = 56.0;
@@ -2157,64 +2513,105 @@ impl ContainersApp {
                     c.border_standard
                 },
             );
-            let value = &view.create[i];
-            // The Image field is the typeable combobox: text reservation leaves
-            // room for the dropdown chevron on the right.
-            let is_image = *field == CreateField::Image;
-            let text_w = if is_image {
-                input.width() - 24.0 - 28.0
-            } else {
-                input.width() - 24.0
+            let Some(value) = view.create.get(i) else {
+                y += row_step;
+                continue;
             };
-            if value.is_empty() {
-                draw::text(
-                    scene,
-                    tr,
-                    field.placeholder(),
-                    theme.tokens.typography.scale.sm,
-                    draw::with_alpha(c.text_dim, 150),
-                    Point::new(input.x0 + 12.0, input.center().y - 7.0),
-                    TextWeight::Regular,
-                );
-            } else {
-                draw::text_clip(
-                    scene,
-                    tr,
-                    value,
-                    theme.tokens.typography.scale.sm,
-                    c.text_primary,
-                    Point::new(input.x0 + 12.0, input.center().y - 7.0),
-                    text_w,
-                    TextWeight::Regular,
-                );
-            }
-            if focused {
-                let (vw, _) = tr.measure(value, theme.tokens.typography.scale.sm, None);
-                let cx = (input.x0 + 12.0 + f64::from(vw)).min(input.x0 + 12.0 + text_w);
-                let caret = Rect::new(cx, input.center().y - 8.0, cx + 1.5, input.center().y + 8.0);
-                scene.fill(Fill::NonZero, Affine::IDENTITY, c.accent[5], None, &caret);
-            }
+            let is_image = *field == CreateField::Image;
+            Self::draw_create_field_value(scene, tr, theme, input, *field, value, focused);
             self.push_hit(input, Hit::CreateField(*field));
             if is_image {
                 // Dropdown chevron toggles the suggestion list.
-                let chev = Rect::new(input.x1 - 28.0, input.y0, input.x1, input.y1);
-                let glyph = if self.combo.open { "▴" } else { "▾" };
-                draw::text(
-                    scene,
-                    tr,
-                    glyph,
-                    theme.tokens.typography.scale.sm,
-                    c.text_dim,
-                    Point::new(chev.center().x - 5.0, chev.center().y - 8.0),
-                    TextWeight::Bold,
-                );
-                self.push_hit(chev, Hit::ComboToggle);
+                self.draw_create_field_combo_toggle(scene, tr, theme, input);
                 combo_input = Some(input);
             }
             y += row_step;
         }
+        combo_input
+    }
 
-        // Buttons
+    /// The field value (or placeholder) and the focus caret. The Image
+    /// field is the typeable combobox: its text reservation leaves room for
+    /// the dropdown chevron on the right.
+    fn draw_create_field_value(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        input: Rect,
+        field: CreateField,
+        value: &str,
+        focused: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let text_w = if field == CreateField::Image {
+            input.width() - 24.0 - 28.0
+        } else {
+            input.width() - 24.0
+        };
+        if value.is_empty() {
+            draw::text(
+                scene,
+                tr,
+                field.placeholder(),
+                theme.tokens.typography.scale.sm,
+                draw::with_alpha(c.text_dim, 150),
+                Point::new(input.x0 + 12.0, input.center().y - 7.0),
+                TextWeight::Regular,
+            );
+        } else {
+            draw::text_clip(
+                scene,
+                tr,
+                value,
+                draw::TextStyle {
+                    size: theme.tokens.typography.scale.sm,
+                    color: c.text_primary,
+                    weight: TextWeight::Regular,
+                },
+                Point::new(input.x0 + 12.0, input.center().y - 7.0),
+                text_w,
+            );
+        }
+        if focused {
+            let (vw, _) = tr.measure(value, theme.tokens.typography.scale.sm, None);
+            let cx = (input.x0 + 12.0 + f64::from(vw)).min(input.x0 + 12.0 + text_w);
+            let caret = Rect::new(cx, input.center().y - 8.0, cx + 1.5, input.center().y + 8.0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, c.accent[5], None, &caret);
+        }
+    }
+
+    /// The image field's dropdown-toggle chevron.
+    fn draw_create_field_combo_toggle(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        input: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let chev = Rect::new(input.x1 - 28.0, input.y0, input.x1, input.y1);
+        let glyph = if self.combo.open { "▴" } else { "▾" };
+        draw::text(
+            scene,
+            tr,
+            glyph,
+            theme.tokens.typography.scale.sm,
+            c.text_dim,
+            Point::new(chev.center().x - 5.0, chev.center().y - 8.0),
+            TextWeight::Bold,
+        );
+        self.push_hit(chev, Hit::ComboToggle);
+    }
+
+    /// The Cancel / Create buttons at the bottom of the create modal.
+    fn draw_create_modal_buttons(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        modal: Rect,
+    ) {
+        let c = &theme.tokens.colors;
         let cancel = Rect::new(
             modal.x1 - 24.0 - 200.0,
             modal.y1 - 52.0,
@@ -2267,14 +2664,6 @@ impl ContainersApp {
         );
         self.push_hit(cancel, Hit::CreateCancel);
         self.push_hit(create, Hit::CreateSubmit);
-
-        // Image suggestion dropdown — drawn LAST so it overlays the rows below.
-        if self.combo.open
-            && let Some(input) = combo_input
-        {
-            let typed = view.create[CreateField::Image.index()].clone();
-            self.draw_image_dropdown(scene, tr, theme, input, &typed);
-        }
     }
 
     /// The combobox suggestion dropdown: locally-installed image references
@@ -2345,16 +2734,20 @@ impl ContainersApp {
                 c.accent[6],
                 1.4,
             );
-            draw::text_clip(
-                scene,
-                tr,
-                &options[opt_idx],
-                theme.tokens.typography.scale.sm,
-                c.text_primary,
-                Point::new(row.x0 + 28.0, row.center().y - 7.0),
-                row.width() - 36.0,
-                TextWeight::Regular,
-            );
+            if let Some(reference) = options.get(opt_idx) {
+                draw::text_clip(
+                    scene,
+                    tr,
+                    reference,
+                    draw::TextStyle {
+                        size: theme.tokens.typography.scale.sm,
+                        color: c.text_primary,
+                        weight: TextWeight::Regular,
+                    },
+                    Point::new(row.x0 + 28.0, row.center().y - 7.0),
+                    row.width() - 36.0,
+                );
+            }
             self.push_hit(row, Hit::ComboPick(pos));
             y += row_h;
         }
@@ -2395,7 +2788,23 @@ impl ContainersApp {
             c.border_standard,
         );
 
-        // Header: spinner-ish dot + reference + state.
+        Self::draw_pull_overlay_header(scene, tr, theme, modal, pull);
+        Self::draw_pull_overlay_console(scene, tr, theme, modal, pull);
+        // Computed before the close-button call, which needs `&mut self` —
+        // `pull` (borrowed from `self.pull`) must not still be live then.
+        let done_or_failed = pull.done || pull.failed.is_some();
+        self.draw_pull_overlay_close_button(scene, tr, theme, modal, done_or_failed);
+    }
+
+    /// The pull overlay's header: spinner-ish dot + reference + state text.
+    fn draw_pull_overlay_header(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        modal: Rect,
+        pull: &PullProgress,
+    ) {
+        let c = &theme.tokens.colors;
         let state_color = if pull.failed.is_some() {
             c.semantic.danger
         } else if pull.done {
@@ -2430,8 +2839,17 @@ impl ContainersApp {
             Point::new(modal.x0 + 44.0, modal.y0 + 40.0),
             TextWeight::Medium,
         );
+    }
 
-        // Console body.
+    /// The pull overlay's console body (tail-bounded streamed lines).
+    fn draw_pull_overlay_console(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        modal: Rect,
+        pull: &PullProgress,
+    ) {
+        let c = &theme.tokens.colors;
         let body = Rect::new(
             modal.x0 + 16.0,
             modal.y0 + 60.0,
@@ -2449,16 +2867,29 @@ impl ContainersApp {
                 scene,
                 tr,
                 line,
-                mono,
-                c.text_dim,
+                draw::TextStyle {
+                    size: mono,
+                    color: c.text_dim,
+                    weight: TextWeight::Regular,
+                },
                 Point::new(body.x0 + 12.0, y),
                 body.width() - 24.0,
-                TextWeight::Regular,
             );
             y += line_h;
         }
+    }
 
-        // Close button (always available; cancels by dismissing the overlay).
+    /// The close/hide button (always available; cancels by dismissing the
+    /// overlay). `done_or_failed` selects the "Close" vs. "Hide" label.
+    fn draw_pull_overlay_close_button(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        modal: Rect,
+        done_or_failed: bool,
+    ) {
+        let c = &theme.tokens.colors;
         let close = Rect::new(
             modal.x1 - 24.0 - 92.0,
             modal.y1 - 48.0,
@@ -2475,11 +2906,7 @@ impl ContainersApp {
                 c.surface_white_10
             },
         );
-        let label = if pull.done || pull.failed.is_some() {
-            "Close"
-        } else {
-            "Hide"
-        };
+        let label = if done_or_failed { "Close" } else { "Hide" };
         draw::text(
             scene,
             tr,
@@ -2534,11 +2961,13 @@ impl ContainersApp {
             scene,
             tr,
             &toast.message,
-            theme.tokens.typography.scale.sm,
-            c.text_primary,
+            draw::TextStyle {
+                size: theme.tokens.typography.scale.sm,
+                color: c.text_primary,
+                weight: TextWeight::Medium,
+            },
             Point::new(toast_rect.x0 + 34.0, toast_rect.center().y - 7.0),
             w - 48.0,
-            TextWeight::Medium,
         );
     }
 
@@ -2546,14 +2975,7 @@ impl ContainersApp {
     // Shared helpers
     // =================================================================
 
-    fn draw_empty(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        msg: &str,
-    ) {
+    fn draw_empty(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, area: Rect, msg: &str) {
         let c = &theme.tokens.colors;
         let (w, _) = tr.measure(msg, theme.tokens.typography.scale.base, None);
         let p = Point::new(area.center().x - f64::from(w) / 2.0, area.center().y - 8.0);
@@ -2573,7 +2995,6 @@ impl ContainersApp {
     /// centred in `area`. Used for the section-level empty states (no engine,
     /// no containers) where a single grey sentence would read as unfinished.
     fn draw_empty_state(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -2607,14 +3028,7 @@ impl ContainersApp {
         );
     }
 
-    fn draw_scrollbar(
-        &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        area: Rect,
-        scroll: f64,
-        content_h: f64,
-    ) {
+    fn draw_scrollbar(scene: &mut Scene, theme: &Theme, area: Rect, scroll: f64, content_h: f64) {
         if content_h <= area.height() {
             return;
         }
@@ -2670,23 +3084,33 @@ impl ContainersApp {
         // Clicking outside a modal closes it (but a hit inside still routes).
         let Some(hit) = hit else {
             if modal_active {
-                // click on the scrim: dismiss the top-most overlay only.
-                if self.pull.take().is_some() {
-                } else if self.combo.open {
-                    // First click outside the dropdown only closes it.
-                    self.combo.close();
-                } else {
-                    self.create_open = false;
-                }
-                *handled = true;
-            } else {
-                *handled = true;
+                self.dismiss_top_modal();
             }
+            *handled = true;
             self.refresh_view(doc);
             return;
         };
 
         *handled = true;
+        self.apply_hit(doc, hit);
+        self.refresh_view(doc);
+    }
+
+    /// Dismiss the top-most open overlay when a click lands on the scrim
+    /// behind it: pull progress, then the combobox dropdown, then the
+    /// create modal (in that priority order).
+    fn dismiss_top_modal(&mut self) {
+        if self.pull.take().is_some() {
+        } else if self.combo.open {
+            // First click outside the dropdown only closes it.
+            self.combo.close();
+        } else {
+            self.create_open = false;
+        }
+    }
+
+    /// Apply the resolved click hit against the engine/document.
+    fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
         match hit {
             Hit::Section(s) => {
                 ViewDoc::set_section(doc, s);
@@ -2706,79 +3130,13 @@ impl ContainersApp {
                 ViewDoc::set_selected(doc, if already { None } else { Some(&id) });
                 self.detail_scroll = 0.0;
             }
-            Hit::SelectImage(idx) => {
-                if let Some(image) = self.engine.images.get(idx) {
-                    self.show_toast(
-                        format!(
-                            "{} · {}",
-                            image.reference(),
-                            ui::format::bytes(image.size_bytes)
-                        ),
-                        false,
-                    );
-                }
-            }
-            Hit::Action { id, action } => {
-                if action.is_destructive() {
-                    let name = self
-                        .engine
-                        .find(&id)
-                        .map_or_else(|| id.clone(), |c| c.name.clone());
-                    self.confirm = Some(crate::app::Confirm {
-                        name,
-                        verb: "Remove container".into(),
-                        target: ConfirmTarget::Container { id, action },
-                    });
-                } else {
-                    self.apply_action(action, &id);
-                }
-            }
-            Hit::ImageAct { reference, action } => {
-                // Only Remove exists; it's destructive → confirm.
-                let _ = action;
-                self.confirm = Some(crate::app::Confirm {
-                    name: reference.clone(),
-                    verb: "Remove image".into(),
-                    target: ConfirmTarget::Image { reference },
-                });
-            }
-            Hit::PullImage(reference) => {
-                self.start_pull(&reference);
-            }
-            Hit::PullTyped => {
-                // Pull whatever is typed into the create-form image field, or
-                // prompt via a quick image pull dialog when empty.
-                let typed = ViewDoc::create_field(doc, CreateField::Image);
-                if typed.trim().is_empty() {
-                    self.prompt = Some(crate::app::Prompt {
-                        kind: PromptKind::NewVolume, // generic text path; handled below
-                        title: "Pull image".into(),
-                        placeholder: "docker.io/library/alpine:3.20".into(),
-                        value: String::new(),
-                        context: "__pull__".into(),
-                    });
-                } else {
-                    self.start_pull(&typed);
-                }
-            }
-            Hit::TagImage(reference) => {
-                self.prompt = Some(crate::app::Prompt {
-                    kind: PromptKind::TagImage,
-                    title: format!("Tag {reference}"),
-                    placeholder: "registry.local/app:edge".into(),
-                    value: String::new(),
-                    context: reference,
-                });
-            }
-            Hit::InspectImage(reference) => {
-                if self.live {
-                    let json = crate::podman::inspect_image(&reference);
-                    let n = json.lines().count();
-                    self.show_toast(format!("Inspected {reference} ({n} lines)"), false);
-                } else {
-                    self.show_toast(format!("podman image inspect {reference}"), false);
-                }
-            }
+            Hit::SelectImage(idx) => self.apply_hit_select_image(idx),
+            Hit::Action { id, action } => self.apply_hit_action(id, action),
+            Hit::ImageAct { reference, action } => self.apply_hit_image_act(reference, action),
+            Hit::PullImage(reference) => self.start_pull(&reference),
+            Hit::PullTyped => self.apply_hit_pull_typed(doc),
+            Hit::TagImage(reference) => self.apply_hit_tag_image(reference),
+            Hit::InspectImage(reference) => self.apply_hit_inspect_image(reference),
             Hit::CreateVolume => {
                 self.prompt = Some(crate::app::Prompt {
                     kind: PromptKind::NewVolume,
@@ -2812,29 +3170,13 @@ impl ContainersApp {
             Hit::CloseDetail => {
                 ViewDoc::set_selected(doc, None);
             }
-            Hit::CreateField(field) => {
-                self.create_focus = field.index();
-                // Focusing a non-image field closes the suggestion dropdown.
-                if field == CreateField::Image {
-                    self.combo.open = true;
-                } else {
-                    self.combo.close();
-                }
-            }
+            Hit::CreateField(field) => self.apply_hit_create_field(field),
             Hit::ComboToggle => {
                 self.create_focus = CreateField::Image.index();
                 self.combo.open = !self.combo.open;
                 self.combo.highlight = 0;
             }
-            Hit::ComboPick(pos) => {
-                let typed = ViewDoc::create_field(doc, CreateField::Image);
-                let options = self.engine.image_references();
-                let filtered = combobox::filter_options(&options, &typed);
-                if let Some(&idx) = filtered.get(pos) {
-                    ViewDoc::set_create_field(doc, CreateField::Image, &options[idx]);
-                }
-                self.combo.close();
-            }
+            Hit::ComboPick(pos) => self.apply_hit_combo_pick(doc, pos),
             Hit::CreateSubmit => {
                 self.submit_create(doc);
             }
@@ -2847,7 +3189,104 @@ impl ContainersApp {
                 self.pull = None;
             }
         }
-        self.refresh_view(doc);
+    }
+
+    fn apply_hit_select_image(&mut self, idx: usize) {
+        if let Some(image) = self.engine.images.get(idx) {
+            self.show_toast(
+                format!(
+                    "{} · {}",
+                    image.reference(),
+                    ui::format::bytes(image.size_bytes)
+                ),
+                false,
+            );
+        }
+    }
+
+    fn apply_hit_action(&mut self, id: String, action: Action) {
+        if action.is_destructive() {
+            let name = self
+                .engine
+                .find(&id)
+                .map_or_else(|| id.clone(), |c| c.name.clone());
+            self.confirm = Some(crate::app::Confirm {
+                name,
+                verb: "Remove container".into(),
+                target: ConfirmTarget::Container { id, action },
+            });
+        } else {
+            self.apply_action(action, &id);
+        }
+    }
+
+    fn apply_hit_image_act(&mut self, reference: String, action: ImageAction) {
+        // Only Remove exists; it's destructive → confirm.
+        let _ = action;
+        self.confirm = Some(crate::app::Confirm {
+            name: reference.clone(),
+            verb: "Remove image".into(),
+            target: ConfirmTarget::Image { reference },
+        });
+    }
+
+    /// Pull whatever is typed into the create-form image field, or prompt
+    /// via a quick image pull dialog when empty.
+    fn apply_hit_pull_typed(&mut self, doc: &mut AutoCommit) {
+        let typed = ViewDoc::create_field(doc, CreateField::Image);
+        if typed.trim().is_empty() {
+            self.prompt = Some(crate::app::Prompt {
+                kind: PromptKind::NewVolume, // generic text path; handled below
+                title: "Pull image".into(),
+                placeholder: "docker.io/library/alpine:3.20".into(),
+                value: String::new(),
+                context: "__pull__".into(),
+            });
+        } else {
+            self.start_pull(&typed);
+        }
+    }
+
+    fn apply_hit_tag_image(&mut self, reference: String) {
+        self.prompt = Some(crate::app::Prompt {
+            kind: PromptKind::TagImage,
+            title: format!("Tag {reference}"),
+            placeholder: "registry.local/app:edge".into(),
+            value: String::new(),
+            context: reference,
+        });
+    }
+
+    fn apply_hit_inspect_image(&mut self, reference: String) {
+        if self.live {
+            let json = crate::podman::inspect_image(&reference);
+            let n = json.lines().count();
+            self.show_toast(format!("Inspected {reference} ({n} lines)"), false);
+        } else {
+            self.show_toast(format!("podman image inspect {reference}"), false);
+        }
+    }
+
+    fn apply_hit_create_field(&mut self, field: CreateField) {
+        self.create_focus = field.index();
+        // Focusing a non-image field closes the suggestion dropdown.
+        if field == CreateField::Image {
+            self.combo.open = true;
+        } else {
+            self.combo.close();
+        }
+    }
+
+    fn apply_hit_combo_pick(&mut self, doc: &mut AutoCommit, pos: usize) {
+        let typed = ViewDoc::create_field(doc, CreateField::Image);
+        let options = self.engine.image_references();
+        let filtered = combobox::filter_options(&options, &typed);
+        if let Some(&idx) = filtered.get(pos)
+            && let Some(reference) = options.get(idx)
+        {
+            ViewDoc::set_create_field(doc, CreateField::Image, reference);
+        }
+        self.combo.close();
     }
 
     /// Apply a committed text prompt (new volume / image tag / image pull).
@@ -2886,7 +3325,7 @@ impl ContainersApp {
         &mut self,
         doc: &mut AutoCommit,
         key: &KeyEvent,
-        _modifiers: &winit::event::Modifiers,
+        _modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
         if key.state != ElementState::Pressed {
@@ -2958,7 +3397,9 @@ impl ContainersApp {
     }
 
     fn create_modal_key(&mut self, doc: &mut AutoCommit, key: &KeyEvent, handled: &mut bool) {
-        let field = CreateField::ALL[self.create_focus];
+        let Some(&field) = CreateField::ALL.get(self.create_focus) else {
+            return;
+        };
         let on_image = field == CreateField::Image;
         // The combobox owns Up/Down/Enter while its dropdown is open and the
         // image field is focused.
@@ -2981,8 +3422,11 @@ impl ContainersApp {
                     let typed = ViewDoc::create_field(doc, CreateField::Image);
                     let options = self.engine.image_references();
                     let filtered = combobox::filter_options(&options, &typed);
-                    if let Some(&idx) = filtered.get(self.combo.highlight) {
-                        ViewDoc::set_create_field(doc, CreateField::Image, &options[idx]);
+                    if let Some(reference) = filtered
+                        .get(self.combo.highlight)
+                        .and_then(|&idx| options.get(idx))
+                    {
+                        ViewDoc::set_create_field(doc, CreateField::Image, reference);
                         self.combo.close();
                     } else {
                         self.submit_create(doc);

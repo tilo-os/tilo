@@ -38,8 +38,10 @@ fn label(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, s: &str, x: f6
 pub fn run(_args: &[String]) {
     let dir = std::env::var("TEXTINPUT_EXT_SHOTS_OUT")
         .unwrap_or_else(|_| "target/textinput_ext_shots".to_string());
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("failed to create output dir {dir}: {e}"));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("textinput_ext_shots: failed to create output dir {dir}: {e}");
+        return;
+    }
     let dir = PathBuf::from(dir);
 
     let theme = Theme::dark();

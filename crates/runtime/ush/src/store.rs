@@ -90,6 +90,12 @@ impl Store {
     }
 
     /// Create the directory skeleton. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any of the store's subdirectories can't be
+    /// created, or the store root's permissions can't be restricted to
+    /// owner-only.
     pub fn ensure(&self) -> std::io::Result<()> {
         for dir in [
             self.root.clone(),

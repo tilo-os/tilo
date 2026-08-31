@@ -55,6 +55,11 @@ pub fn menu_label(path: &Path) -> String {
 /// Create a new file in `dest_dir` by copying `template` there under a
 /// non-colliding name. Returns the created path. Delegates de-duplication to
 /// [`crate::fileops::copy_into`] so `Untitled.md` → `Untitled 2.md`.
+///
+/// # Errors
+///
+/// Returns an error if `template` has no file name, or the underlying copy
+/// fails (see [`crate::fileops::copy_into`]).
 pub fn create_from_template(template: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     crate::fileops::copy_into(template, dest_dir)
 }

@@ -158,9 +158,23 @@ impl JobResult {
 /// `dst` is opened for writing (created if absent — for a block device the
 /// node already exists and is opened in place). This is the real copy loop:
 /// in tests `dst` is a temp file; in a gated production run it is `/dev/sdX`.
+///
+/// # Errors
+///
+/// Returns an error if `src` cannot be opened for reading, `dst` cannot be
+/// opened for writing, any chunk read or write fails, or the final flush or
+/// sync to `dst` fails.
 pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> io::Result<u64> {
     let mut reader = OpenOptions::new().read(true).open(src)?;
-    let mut writer = OpenOptions::new().write(true).create(true).open(dst)?;
+    // `truncate(true)`: a fresh, exact byte-for-byte copy — no stale trailing
+    // bytes survive from whatever previously occupied `dst`. Truncation is a
+    // no-op on a real block device (not a regular file), so this is safe for
+    // both the temp-file test path and the gated device path.
+    let mut writer = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(dst)?;
     let mut buf = vec![0u8; CHUNK];
     let mut written: u64 = 0;
     loop {
@@ -168,7 +182,13 @@ pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> 
         if n == 0 {
             break;
         }
-        writer.write_all(&buf[..n])?;
+        // `n` is guaranteed <= buf.len() by the `Read::read` contract, but a
+        // block-device write is exactly the place to fail loudly rather than
+        // trust that contract silently.
+        let chunk = buf
+            .get(..n)
+            .ok_or_else(|| io::Error::other("read() returned a length past the buffer end"))?;
+        writer.write_all(chunk)?;
         written += n as u64;
         on_progress(written);
     }
@@ -183,6 +203,12 @@ pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> 
 /// `on_progress` reports cumulative bytes verified. This is a genuine
 /// post-write read-back — the device is re-opened and its bytes are compared,
 /// not merely re-hashed from memory.
+///
+/// # Errors
+///
+/// Returns an error if `src` or `dst` cannot be opened or seeked to the
+/// start, or if a chunk read during the comparison fails (including a short
+/// read / unexpected EOF).
 pub fn verify_readback(
     src: &Path,
     dst: &Path,
@@ -198,9 +224,23 @@ pub fn verify_readback(
     let mut done: u64 = 0;
     while done < len {
         let want = CHUNK.min((len - done) as usize);
-        read_exact_fill(&mut a, &mut ba[..want])?;
-        read_exact_fill(&mut b, &mut bb[..want])?;
-        if let Some(i) = first_diff(&ba[..want], &bb[..want]) {
+        // `want` <= CHUNK == ba.len() == bb.len() by construction; still fail
+        // loudly instead of trusting that on a device read-back.
+        let chunk_a = ba
+            .get_mut(..want)
+            .ok_or_else(|| io::Error::other("verify chunk size exceeds buffer"))?;
+        read_exact_fill(&mut a, chunk_a)?;
+        let chunk_b = bb
+            .get_mut(..want)
+            .ok_or_else(|| io::Error::other("verify chunk size exceeds buffer"))?;
+        read_exact_fill(&mut b, chunk_b)?;
+        let cmp_a = ba
+            .get(..want)
+            .ok_or_else(|| io::Error::other("verify chunk size exceeds buffer"))?;
+        let cmp_b = bb
+            .get(..want)
+            .ok_or_else(|| io::Error::other("verify chunk size exceeds buffer"))?;
+        if let Some(i) = first_diff(cmp_a, cmp_b) {
             return Ok(Some(done + i as u64));
         }
         done += want as u64;
@@ -215,7 +255,10 @@ pub fn verify_readback(
 fn read_exact_fill(r: &mut impl Read, buf: &mut [u8]) -> io::Result<()> {
     let mut off = 0;
     while off < buf.len() {
-        let n = r.read(&mut buf[off..])?;
+        let rest = buf
+            .get_mut(off..)
+            .ok_or_else(|| io::Error::other("read offset past buffer end"))?;
+        let n = r.read(rest)?;
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,

@@ -180,7 +180,7 @@ fn build_filter(profile: Profile) -> Result<SeccompFilter, SeccompError> {
 }
 
 fn bpf_to_bytes(prog: &BpfProgram) -> Vec<u8> {
-    let mut out = Vec::with_capacity(prog.len() * 8);
+    let mut out = Vec::with_capacity(prog.len().saturating_mul(8));
     for stmt in prog {
         out.extend_from_slice(&stmt.code.to_ne_bytes());
         out.push(stmt.jt);
@@ -191,6 +191,12 @@ fn bpf_to_bytes(prog: &BpfProgram) -> Vec<u8> {
 }
 
 /// Compile the guest filter for `profile` to a raw BPF blob.
+///
+/// # Errors
+///
+/// Returns [`SeccompError::UnsupportedArch`] on a host architecture the
+/// guest filter has no rules for, or [`SeccompError::Compile`] if
+/// `seccompiler` refuses to compile the filter.
 pub fn compile_guest_filter(profile: Profile) -> Result<Vec<u8>, SeccompError> {
     let filter = build_filter(profile)?;
     let program: BpfProgram = filter.try_into()?;
@@ -199,6 +205,12 @@ pub fn compile_guest_filter(profile: Profile) -> Result<Vec<u8>, SeccompError> {
 
 /// Write the guest filter into `dir`, returning the path. The supervisor opens
 /// it and hands the fd to `bwrap --seccomp`.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] if the filter can't be compiled (see
+/// [`compile_guest_filter`]), or [`SeccompError::Io`] if `dir` can't be
+/// created or the blob can't be written.
 pub fn write_guest_filter(
     dir: &std::path::Path,
     profile: Profile,

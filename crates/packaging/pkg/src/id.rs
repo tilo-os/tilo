@@ -48,7 +48,7 @@ impl fmt::Debug for PackageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Short form for logs: first 8 hex chars are unique enough.
         let h = self.to_hex();
-        write!(f, "PackageId(qpkg:{}…)", &h[..8])
+        write!(f, "PackageId(qpkg:{}…)", h.get(..8).unwrap_or(&h))
     }
 }
 

@@ -227,10 +227,209 @@ pub fn collect_text_lines(tr: &mut TextRenderer, theme: &Theme, page: &Page) -> 
     out
 }
 
-/// Draw one page: paper card, drop shadow, content, search bands, then
-/// the annotations + signatures that live on it.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_page(
+/// Shadow + paper backdrop for a page card. Returns the rounded rect used to
+/// clip its content and to stroke its border.
+fn draw_page_backdrop(scene: &mut Scene, theme: &Theme, base: Affine, card: Rect) -> RoundedRect {
+    // Soft drop shadow (two offset translucent slabs).
+    for (off, a) in [(7.0, 22u8), (3.0, 30u8)] {
+        let s = RoundedRect::new(card.x0, card.y0 + off, card.x1, card.y1 + off, 3.0);
+        scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, a), None, &s);
+    }
+    let card_rr = RoundedRect::from_rect(card, 3.0);
+    scene.fill(Fill::NonZero, base, paper(theme), None, &card_rr);
+    card_rr
+}
+
+/// Paint the raster backend's page bitmap (pdfium output) scaled to fill the
+/// card width.
+fn draw_page_raster_image(scene: &mut Scene, base: Affine, card: Rect, img: &PenikoImage) {
+    if img.width > 0 && img.height > 0 {
+        let sx = card.width() / f64::from(img.width);
+        let img_tf =
+            base * Affine::translate((card.x0, card.y0)) * Affine::scale_non_uniform(sx, sx);
+        scene.draw_image(img, img_tf);
+    }
+}
+
+/// Stroke a page card's outline. Shared by the raster and vector-text paths.
+fn draw_page_border(scene: &mut Scene, base: Affine, card_rr: &RoundedRect) {
+    scene.stroke(
+        &Stroke::new(1.0),
+        base,
+        Color::from_rgb8(203, 213, 225),
+        None,
+        card_rr,
+    );
+}
+
+/// The annotations + signatures anchored to `page`, drawn on top of its
+/// content — shared by the raster and vector-text draw paths.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same page-draw context as draw_page; splitting further would fragment one cohesive overlay pass"
+)]
+fn draw_page_markup(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    base: Affine,
+    page: &Page,
+    origin: Point,
+    scale: f64,
+    annotations: &[Annotation],
+    signatures: &[Signature],
+    selected_anno: Option<&str>,
+) {
+    for a in annotations.iter().filter(|a| a.page == page.number) {
+        draw_annotation(
+            scene,
+            tr,
+            theme,
+            base,
+            a,
+            origin,
+            scale,
+            selected_anno == Some(a.id.as_str()),
+        );
+    }
+    for s in signatures.iter().filter(|s| s.page == page.number) {
+        draw_signature(scene, tr, theme, base, s, origin, scale);
+    }
+}
+
+/// Draw a figure placeholder block (box, glyph, caption). Returns the
+/// updated running screen-space `y`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same page-draw context as draw_page; splitting further would fragment one cohesive layout pass"
+)]
+fn draw_page_figure(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    base: Affine,
+    content_x: f64,
+    content_w: f64,
+    y: f64,
+    height: f64,
+    label: &str,
+    scale: f64,
+) -> f64 {
+    let h = height * scale;
+    let box_rect = Rect::new(content_x, y, content_x + content_w, y + h);
+    scene.fill(
+        Fill::NonZero,
+        base,
+        Color::from_rgb8(241, 245, 249),
+        None,
+        &RoundedRect::from_rect(box_rect, 2.0),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        base,
+        ink_faint(),
+        None,
+        &RoundedRect::from_rect(box_rect, 2.0),
+    );
+    draw_figure_glyph(scene, theme, base, box_rect);
+    let y = y + h + 4.0 * scale;
+    let csize = 9.5 * scale as f32;
+    tr.draw_text_styled(
+        scene,
+        label,
+        csize,
+        ink_faint(),
+        base * Affine::translate((content_x, y)),
+        Some(content_w as f32),
+        TextWeight::Regular,
+        true,
+        false,
+    );
+    let (_, ch) = tr.measure(label, csize, Some(content_w as f32));
+    y + f64::from(ch) + 8.0 * scale
+}
+
+/// Draw one heading/body/quote/caption block's text, plus its search-match
+/// highlight band when `bi` is in `matched_blocks`. Returns the updated
+/// running screen-space `y`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same page-draw context as draw_page; splitting further would fragment one cohesive layout pass"
+)]
+fn draw_page_text_block<S: std::hash::BuildHasher>(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    base: Affine,
+    content_x: f64,
+    content_w: f64,
+    y: f64,
+    scale: f64,
+    bi: usize,
+    block: &Block,
+    spec: &Spec,
+    matched_blocks: &HashSet<usize, S>,
+    active_block: Option<usize>,
+) -> f64 {
+    let text = block.search_text().unwrap_or("");
+    let size = spec.size * scale as f32;
+    let max_w = content_w as f32;
+    let (_, th) = tr.measure(text, size, Some(max_w));
+
+    if matched_blocks.contains(&bi) {
+        let band = Rect::new(
+            content_x - 4.0 * scale,
+            y - 1.0 * scale,
+            content_x + content_w + 4.0 * scale,
+            y + f64::from(th) + 1.0 * scale,
+        );
+        let is_active = active_block == Some(bi);
+        let fill = if is_active {
+            alpha(theme.accent_primary, 64)
+        } else {
+            alpha(theme.accent_primary, 26)
+        };
+        scene.fill(
+            Fill::NonZero,
+            base,
+            fill,
+            None,
+            &RoundedRect::from_rect(band, 2.0),
+        );
+        if is_active {
+            let bar = Rect::new(band.x0, band.y0, band.x0 + 2.5 * scale, band.y1);
+            scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
+        }
+    }
+
+    let mut x = content_x;
+    if matches!(block, Block::Quote(_)) {
+        let bar = Rect::new(content_x, y, content_x + 3.0 * scale, y + f64::from(th));
+        scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
+        x += 14.0 * scale;
+    }
+    tr.draw_text_styled(
+        scene,
+        text,
+        size,
+        spec.color,
+        base * Affine::translate((x, y)),
+        Some(max_w),
+        spec.weight,
+        spec.italic,
+        false,
+    );
+    y + f64::from(th) + spec.after * scale
+}
+
+/// Lay out and draw every content block of a vector (non-raster) page —
+/// spacers, dividers, figures and styled text — updating the running
+/// screen-space `y` as it goes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same page-draw context as draw_page; splitting further would fragment one cohesive layout pass"
+)]
+fn draw_page_blocks<S: std::hash::BuildHasher>(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     theme: &Theme,
@@ -239,62 +438,9 @@ pub fn draw_page(
     origin: Point,
     scale: f64,
     page_w: f64,
-    page_h: f64,
-    raster: Option<&PenikoImage>,
-    matched_blocks: &HashSet<usize>,
+    matched_blocks: &HashSet<usize, S>,
     active_block: Option<usize>,
-    annotations: &[Annotation],
-    signatures: &[Signature],
-    selected_anno: Option<&str>,
 ) {
-    let card = page_card_rect(origin, scale, page_w, page_h);
-
-    // Soft drop shadow (two offset translucent slabs).
-    for (off, a) in [(7.0, 22u8), (3.0, 30u8)] {
-        let s = RoundedRect::new(card.x0, card.y0 + off, card.x1, card.y1 + off, 3.0);
-        scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, a), None, &s);
-    }
-    let card_rr = RoundedRect::from_rect(card, 3.0);
-    scene.fill(Fill::NonZero, base, paper(theme), None, &card_rr);
-
-    // Clip content to the paper.
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
-
-    // Raster backend: paint the page bitmap (pdfium output) scaled to fill the
-    // card width, then let the shared markup overlay draw on top.
-    if let Some(img) = raster {
-        if img.width > 0 && img.height > 0 {
-            let sx = card.width() / f64::from(img.width);
-            let img_tf =
-                base * Affine::translate((card.x0, card.y0)) * Affine::scale_non_uniform(sx, sx);
-            scene.draw_image(img, img_tf);
-        }
-        for a in annotations.iter().filter(|a| a.page == page.number) {
-            draw_annotation(
-                scene,
-                tr,
-                theme,
-                base,
-                a,
-                origin,
-                scale,
-                selected_anno == Some(a.id.as_str()),
-            );
-        }
-        for s in signatures.iter().filter(|s| s.page == page.number) {
-            draw_signature(scene, tr, theme, base, s, origin, scale);
-        }
-        scene.pop_layer();
-        scene.stroke(
-            &Stroke::new(1.0),
-            base,
-            Color::from_rgb8(203, 213, 225),
-            None,
-            &card_rr,
-        );
-        return;
-    }
-
     let content_x = origin.x + MARGIN * scale;
     let content_w = (page_w - 2.0 * MARGIN) * scale;
     let mut y = origin.y; // running screen-space top
@@ -311,121 +457,108 @@ pub fn draw_page(
                 y += 16.0 * scale;
             }
             Block::Figure { height, label } => {
-                let h = height * scale;
-                let box_rect = Rect::new(content_x, y, content_x + content_w, y + h);
-                scene.fill(
-                    Fill::NonZero,
-                    base,
-                    Color::from_rgb8(241, 245, 249),
-                    None,
-                    &RoundedRect::from_rect(box_rect, 2.0),
+                y = draw_page_figure(
+                    scene, tr, theme, base, content_x, content_w, y, *height, label, scale,
                 );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    base,
-                    ink_faint(),
-                    None,
-                    &RoundedRect::from_rect(box_rect, 2.0),
-                );
-                draw_figure_glyph(scene, theme, base, box_rect);
-                y += h + 4.0 * scale;
-                let csize = 9.5 * scale as f32;
-                tr.draw_text_styled(
-                    scene,
-                    label,
-                    csize,
-                    ink_faint(),
-                    base * Affine::translate((content_x, y)),
-                    Some(content_w as f32),
-                    TextWeight::Regular,
-                    true,
-                    false,
-                );
-                let (_, ch) = tr.measure(label, csize, Some(content_w as f32));
-                y += f64::from(ch) + 8.0 * scale;
             }
             _ => {
                 let Some(spec) = body_spec(block, theme) else {
                     continue;
                 };
-                let text = block.search_text().unwrap_or("");
-                let size = spec.size * scale as f32;
-                let max_w = content_w as f32;
-                let (_, th) = tr.measure(text, size, Some(max_w));
-
-                if matched_blocks.contains(&bi) {
-                    let band = Rect::new(
-                        content_x - 4.0 * scale,
-                        y - 1.0 * scale,
-                        content_x + content_w + 4.0 * scale,
-                        y + f64::from(th) + 1.0 * scale,
-                    );
-                    let is_active = active_block == Some(bi);
-                    let fill = if is_active {
-                        alpha(theme.accent_primary, 64)
-                    } else {
-                        alpha(theme.accent_primary, 26)
-                    };
-                    scene.fill(
-                        Fill::NonZero,
-                        base,
-                        fill,
-                        None,
-                        &RoundedRect::from_rect(band, 2.0),
-                    );
-                    if is_active {
-                        let bar = Rect::new(band.x0, band.y0, band.x0 + 2.5 * scale, band.y1);
-                        scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
-                    }
-                }
-
-                let mut x = content_x;
-                if matches!(block, Block::Quote(_)) {
-                    let bar = Rect::new(content_x, y, content_x + 3.0 * scale, y + f64::from(th));
-                    scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
-                    x += 14.0 * scale;
-                }
-                tr.draw_text_styled(
+                y = draw_page_text_block(
                     scene,
-                    text,
-                    size,
-                    spec.color,
-                    base * Affine::translate((x, y)),
-                    Some(max_w),
-                    spec.weight,
-                    spec.italic,
-                    false,
+                    tr,
+                    theme,
+                    base,
+                    content_x,
+                    content_w,
+                    y,
+                    scale,
+                    bi,
+                    block,
+                    &spec,
+                    matched_blocks,
+                    active_block,
                 );
-                y += f64::from(th) + spec.after * scale;
             }
         }
     }
+}
 
-    for a in annotations.iter().filter(|a| a.page == page.number) {
-        draw_annotation(
+/// Draw one page: paper card, drop shadow, content, search bands, then
+/// the annotations + signatures that live on it.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_page<S: std::hash::BuildHasher>(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    base: Affine,
+    page: &Page,
+    origin: Point,
+    scale: f64,
+    page_w: f64,
+    page_h: f64,
+    raster: Option<&PenikoImage>,
+    matched_blocks: &HashSet<usize, S>,
+    active_block: Option<usize>,
+    annotations: &[Annotation],
+    signatures: &[Signature],
+    selected_anno: Option<&str>,
+) {
+    let card = page_card_rect(origin, scale, page_w, page_h);
+    let card_rr = draw_page_backdrop(scene, theme, base, card);
+
+    // Clip content to the paper.
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
+
+    // Raster backend: paint the page bitmap (pdfium output) scaled to fill the
+    // card width, then let the shared markup overlay draw on top.
+    if let Some(img) = raster {
+        draw_page_raster_image(scene, base, card, img);
+        draw_page_markup(
             scene,
             tr,
             theme,
             base,
-            a,
+            page,
             origin,
             scale,
-            selected_anno == Some(a.id.as_str()),
+            annotations,
+            signatures,
+            selected_anno,
         );
+        scene.pop_layer();
+        draw_page_border(scene, base, &card_rr);
+        return;
     }
-    for s in signatures.iter().filter(|s| s.page == page.number) {
-        draw_signature(scene, tr, theme, base, s, origin, scale);
-    }
+
+    draw_page_blocks(
+        scene,
+        tr,
+        theme,
+        base,
+        page,
+        origin,
+        scale,
+        page_w,
+        matched_blocks,
+        active_block,
+    );
+    draw_page_markup(
+        scene,
+        tr,
+        theme,
+        base,
+        page,
+        origin,
+        scale,
+        annotations,
+        signatures,
+        selected_anno,
+    );
 
     scene.pop_layer();
-
-    scene.stroke(
-        &Stroke::new(1.0),
-        base,
-        Color::from_rgb8(203, 213, 225),
-        None,
-        &card_rr,
-    );
+    draw_page_border(scene, base, &card_rr);
 }
 
 fn draw_figure_glyph(scene: &mut Scene, theme: &Theme, base: Affine, b: Rect) {
@@ -462,7 +595,7 @@ fn pt(origin: Point, scale: f64, x: f64, y: f64) -> Point {
 #[allow(clippy::too_many_arguments)]
 fn draw_annotation(
     scene: &mut Scene,
-    tr: &mut TextRenderer,
+    tr: &TextRenderer,
     theme: &Theme,
     base: Affine,
     a: &Annotation,
@@ -482,24 +615,26 @@ fn draw_annotation(
             }
         }
         AnnoKind::Ink { points } => {
+            let Some(&(fx, fy)) = points.first() else {
+                return;
+            };
             if points.len() < 2 {
                 return;
             }
             let mut path = BezPath::new();
-            let first = pt(origin, scale, points[0].0, points[0].1);
+            let first = pt(origin, scale, fx, fy);
             path.move_to(first);
             for w in points.windows(2) {
-                let a0 = pt(origin, scale, w[0].0, w[0].1);
-                let b0 = pt(origin, scale, w[1].0, w[1].1);
+                let [(x0, y0), (x1, y1)] = w else { continue };
+                let a0 = pt(origin, scale, *x0, *y0);
+                let b0 = pt(origin, scale, *x1, *y1);
                 let mid = Point::new(f64::midpoint(a0.x, b0.x), f64::midpoint(a0.y, b0.y));
                 path.quad_to(a0, mid);
             }
-            let last = pt(
-                origin,
-                scale,
-                points[points.len() - 1].0,
-                points[points.len() - 1].1,
-            );
+            let Some(&(lx, ly)) = points.last() else {
+                return;
+            };
+            let last = pt(origin, scale, lx, ly);
             path.line_to(last);
             scene.stroke(&Stroke::new((2.4 * scale).max(1.5)), base, col, None, &path);
         }
@@ -716,52 +851,69 @@ pub fn draw_signature_preview(
 // Thumbnails — abstract bar representation (fast, readable at small size)
 // ----------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-pub fn draw_thumbnail(
+/// The current-page border + has-markup dot, shared by the raster and
+/// vector-bar thumbnail paths.
+fn draw_thumbnail_border_and_marker(
     scene: &mut Scene,
     theme: &Theme,
     base: Affine,
-    page: &Page,
+    rr: &RoundedRect,
     rect: Rect,
-    page_w: f64,
-    raster: Option<&PenikoImage>,
+    is_current: bool,
+    has_markup: bool,
+) {
+    let border = if is_current {
+        theme.accent_primary
+    } else {
+        theme.tokens.colors.border_standard
+    };
+    let stroke_w = if is_current { 2.0 } else { 1.0 };
+    scene.stroke(&Stroke::new(stroke_w), base, border, None, rr);
+
+    if has_markup {
+        let d = 5.0;
+        let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
+        scene.fill(
+            Fill::NonZero,
+            base,
+            theme.tokens.colors.semantic.warning,
+            None,
+            &dot,
+        );
+    }
+}
+
+/// Paint the real page miniature (raster backend) plus its border + marker.
+fn draw_thumbnail_raster(
+    scene: &mut Scene,
+    theme: &Theme,
+    base: Affine,
+    rect: Rect,
+    img: &PenikoImage,
     is_current: bool,
     has_markup: bool,
 ) {
     let rr = RoundedRect::from_rect(rect, 2.0);
-    scene.fill(Fill::NonZero, base, paper(theme), None, &rr);
-
-    // Raster backend: paint the real page miniature.
-    if let Some(img) = raster {
-        if img.width > 0 && img.height > 0 {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rr);
-            let sx = rect.width() / f64::from(img.width);
-            let tf =
-                base * Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sx);
-            scene.draw_image(img, tf);
-            scene.pop_layer();
-        }
-        let border = if is_current {
-            theme.accent_primary
-        } else {
-            theme.tokens.colors.border_standard
-        };
-        let stroke_w = if is_current { 2.0 } else { 1.0 };
-        scene.stroke(&Stroke::new(stroke_w), base, border, None, &rr);
-        if has_markup {
-            let d = 5.0;
-            let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
-            scene.fill(
-                Fill::NonZero,
-                base,
-                theme.tokens.colors.semantic.warning,
-                None,
-                &dot,
-            );
-        }
-        return;
+    if img.width > 0 && img.height > 0 {
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rr);
+        let sx = rect.width() / f64::from(img.width);
+        let tf = base * Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sx);
+        scene.draw_image(img, tf);
+        scene.pop_layer();
     }
+    draw_thumbnail_border_and_marker(scene, theme, base, &rr, rect, is_current, has_markup);
+}
 
+/// Abstract bar representation of a page's content blocks (vector backend):
+/// a small coloured bar per heading/body/figure line, fast and readable at
+/// thumbnail size.
+fn draw_thumbnail_vector_blocks(
+    scene: &mut Scene,
+    base: Affine,
+    page: &Page,
+    rect: Rect,
+    page_w: f64,
+) {
     let scale = rect.width() / page_w;
     let cx = rect.x0 + MARGIN * scale;
     let cw = (page_w - 2.0 * MARGIN) * scale;
@@ -830,32 +982,31 @@ pub fn draw_thumbnail(
             break;
         }
     }
+}
 
-    let border = if is_current {
-        theme.accent_primary
-    } else {
-        theme.tokens.colors.border_standard
-    };
-    let stroke_w = if is_current { 2.0 } else { 1.0 };
-    scene.stroke(
-        &Stroke::new(stroke_w),
-        base,
-        border,
-        None,
-        &RoundedRect::from_rect(rect, 2.0),
-    );
+#[allow(clippy::too_many_arguments)]
+pub fn draw_thumbnail(
+    scene: &mut Scene,
+    theme: &Theme,
+    base: Affine,
+    page: &Page,
+    rect: Rect,
+    page_w: f64,
+    raster: Option<&PenikoImage>,
+    is_current: bool,
+    has_markup: bool,
+) {
+    let rr = RoundedRect::from_rect(rect, 2.0);
+    scene.fill(Fill::NonZero, base, paper(theme), None, &rr);
 
-    if has_markup {
-        let d = 5.0;
-        let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
-        scene.fill(
-            Fill::NonZero,
-            base,
-            theme.tokens.colors.semantic.warning,
-            None,
-            &dot,
-        );
+    // Raster backend: paint the real page miniature.
+    if let Some(img) = raster {
+        draw_thumbnail_raster(scene, theme, base, rect, img, is_current, has_markup);
+        return;
     }
+
+    draw_thumbnail_vector_blocks(scene, base, page, rect, page_w);
+    draw_thumbnail_border_and_marker(scene, theme, base, &rr, rect, is_current, has_markup);
 }
 
 /// Crop a rectangular region (in page-point space) out of a rendered page
@@ -891,7 +1042,12 @@ pub fn crop_page_region(
     let mut out = Vec::with_capacity(cw * ch * 4);
     for row in y0..y1 {
         let start = (row * iw + x0) * 4;
-        out.extend_from_slice(&src[start..start + cw * 4]);
+        let Some(slice) = src.get(start..start + cw * 4) else {
+            // Unreachable given the length check above; bail rather than
+            // paint a partial/garbage crop from a malformed bitmap.
+            return None;
+        };
+        out.extend_from_slice(slice);
     }
     Some((cw, ch, out))
 }

@@ -238,6 +238,7 @@ impl Actor {
 
     /// Add a principal (a room the actor is in, a token it presented,
     /// the app it is running as).
+    #[must_use]
     pub fn with_principal(mut self, p: Principal) -> Self {
         if !self.principals.contains(&p) {
             self.principals.push(p);
@@ -246,6 +247,7 @@ impl Actor {
     }
 
     /// Add room membership.
+    #[must_use]
     pub fn in_room(self, room: impl Into<String>) -> Self {
         self.with_principal(Principal::Room(room.into()))
     }
@@ -309,9 +311,9 @@ impl Scope {
         match (self, resource) {
             (Scope::Workspace, _) => true,
 
-            (Scope::App(a), ResourceRef::App(b)) => a == b,
-            (Scope::App(a), ResourceRef::Artifact { app: Some(b), .. }) => a == b,
-            (Scope::App(a), ResourceRef::Action { app: b, .. }) => a == b,
+            (Scope::App(a), ResourceRef::App(b))
+            | (Scope::App(a), ResourceRef::Artifact { app: Some(b), .. })
+            | (Scope::App(a), ResourceRef::Action { app: b, .. }) => a == b,
             (Scope::App(_), _) => false,
 
             (Scope::ResourceType(k), ResourceRef::Artifact { kind, .. }) => k == kind,
@@ -369,7 +371,7 @@ pub fn path_covers(prefix: &str, path: &str) -> bool {
     if path == prefix {
         return true;
     }
-    let mut with_sep = String::with_capacity(prefix.len() + 1);
+    let mut with_sep = String::with_capacity(prefix.len().saturating_add(1));
     with_sep.push_str(prefix);
     with_sep.push('/');
     path.starts_with(&with_sep)
@@ -601,24 +603,28 @@ impl CapOverride {
     }
 
     /// Attach a stable id.
+    #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
         self
     }
 
     /// Attach a wall-clock expiry (seconds since the Unix epoch).
+    #[must_use]
     pub fn with_expiry(mut self, unix_seconds: u64) -> Self {
         self.expiry = Expiry::AtUnix(unix_seconds);
         self
     }
 
     /// Attach any [`Expiry`].
+    #[must_use]
     pub fn expiring(mut self, expiry: Expiry) -> Self {
         self.expiry = expiry;
         self
     }
 
     /// Record who granted this.
+    #[must_use]
     pub fn granted_by(mut self, who: Principal) -> Self {
         self.granted_by = Some(who);
         self

@@ -39,6 +39,7 @@
 )]
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use taffy::prelude::*;
 use terminal::TerminalWidget;
@@ -57,6 +58,11 @@ use vello::peniko::Color;
 /// enough that the readback buffer stays under a few MB.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 
+/// # Errors
+///
+/// Returns an error when the terminal widget fails to spawn (no PTY, no
+/// shell), when building the offscreen render tree for `--shots` fails, or
+/// when the live event loop's own setup fails.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -318,21 +324,21 @@ fn run_scenario(
             s.push_str("\x1b[1mqOS terminal — SGR palette\x1b[0m\r\n\r\n");
             s.push_str(" 16-color ANSI:  ");
             for n in 0..8 {
-                s.push_str(&format!("\x1b[4{n}m  \x1b[0m"));
+                let _ = write!(s, "\x1b[4{n}m  \x1b[0m");
             }
             s.push(' ');
             for n in 0..8 {
-                s.push_str(&format!("\x1b[48;5;{}m  \x1b[0m", n + 8));
+                let _ = write!(s, "\x1b[48;5;{}m  \x1b[0m", n + 8);
             }
             s.push_str("\r\n\r\n 256-color:      ");
             for n in (16..232).step_by(6) {
-                s.push_str(&format!("\x1b[48;5;{n}m \x1b[0m"));
+                let _ = write!(s, "\x1b[48;5;{n}m \x1b[0m");
             }
             s.push_str("\r\n\r\n truecolor:      ");
             for i in 0..48 {
                 let r = (i * 255 / 47) as u8;
                 let g = (255 - i * 255 / 47) as u8;
-                s.push_str(&format!("\x1b[48;2;{r};{g};128m \x1b[0m"));
+                let _ = write!(s, "\x1b[48;2;{r};{g};128m \x1b[0m");
             }
             s.push_str("\r\n\r\n styles:         ");
             s.push_str("\x1b[1mbold\x1b[0m  \x1b[2mdim\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[9mstrike\x1b[0m  \x1b[7mreverse\x1b[0m\r\n");
@@ -347,6 +353,11 @@ fn run_scenario(
             s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
             // Reverse-video title bar across the top.
             s.push_str("\x1b[1;1H\x1b[7m qOS EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
+            #[allow(
+                clippy::literal_string_with_formatting_args,
+                reason = "demo source text shown verbatim in the tui shot; the braces are \
+                          the sample code's own println! syntax, not a format template here"
+            )]
             let lines = [
                 "fn main() {",
                 "    // alternate-screen redraw via CSI ?1049h",
@@ -358,12 +369,13 @@ fn run_scenario(
             ];
             for (i, line) in lines.iter().enumerate() {
                 // Line-number gutter in a dim color, then source text.
-                s.push_str(&format!(
+                let _ = write!(
+                    s,
                     "\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}",
                     i + 3,
                     i + 1,
                     line
-                ));
+                );
             }
             // A status line near the bottom in reverse video.
             s.push_str("\x1b[23;1H\x1b[7m NORMAL                                              3,17          Top \x1b[0m");
@@ -374,7 +386,10 @@ fn run_scenario(
         "scrollback" => {
             let mut s = String::new();
             for i in 0..80 {
-                s.push_str(&format!("\x1b[38;5;250m{i:>4}\x1b[0m  log entry {i:03}: the quick brown fox jumps over the lazy dog\r\n"));
+                let _ = writeln!(
+                    s,
+                    "\x1b[38;5;250m{i:>4}\x1b[0m  log entry {i:03}: the quick brown fox jumps over the lazy dog\r"
+                );
             }
             widget.feed(doc, root, s.as_bytes());
             widget.sync(doc, root);

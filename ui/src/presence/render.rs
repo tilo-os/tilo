@@ -47,6 +47,13 @@ fn marker_pigment(c: Color) -> Color {
     }
     let k = MARKER_PIGMENT_L / l;
     let rgba = c.to_rgba8();
+    // `enc` is clamped to 0.0..=1.0 just above, so the scaled-and-rounded
+    // result is always 0.0..=255.0 — always in `u8` range.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0.0..=1.0 above, so the rounded result is 0.0..=255.0"
+    )]
     let ch = |v: u8| -> u8 {
         let v = f32::from(v) / 255.0;
         let lin = if v <= 0.04045 {
@@ -55,7 +62,7 @@ fn marker_pigment(c: Color) -> Color {
             ((v + 0.055) / 1.055).powf(2.4)
         };
         let scaled = (lin * k).clamp(0.0, 1.0);
-        let enc = if scaled <= 0.0031308 {
+        let enc = if scaled <= 0.003_130_8 {
             12.92 * scaled
         } else {
             1.055 * scaled.powf(1.0 / 2.4) - 0.055
@@ -127,6 +134,13 @@ impl PresenceCtx {
         }
     }
 
+    /// `kurbo::Affine` composition below is plain f64 matrix math with no
+    /// panic path; `arithmetic_side_effects` flags the `*` operator
+    /// overload anyway.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
+    )]
     pub fn draw_peer_pointer(
         &self,
         scene: &mut Scene,
@@ -315,11 +329,14 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
         viewport.y0.max(viewport.y1),
     );
 
-    let mut order: Vec<usize> = (0..pills.len()).collect();
-    order.sort_by(|&a, &b| {
-        let (pa, pb) = (pills[a].at, pills[b].at);
-        pa.1.total_cmp(&pb.1)
-            .then(pa.0.total_cmp(&pb.0))
+    // Carries each request's original index alongside itself, so the sort
+    // below never needs to index back into `pills`.
+    let mut order: Vec<(usize, PillRequest)> = pills.iter().copied().enumerate().collect();
+    order.sort_by(|&(a, pa), &(b, pb)| {
+        pa.at
+            .1
+            .total_cmp(&pb.at.1)
+            .then(pa.at.0.total_cmp(&pb.at.0))
             .then(a.cmp(&b))
     });
 
@@ -342,11 +359,11 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
         })
     };
 
-    for i in order {
+    for (i, request) in order {
         let PillRequest {
             at: (px, py),
             size: (w, h),
-        } = pills[i];
+        } = request;
         let right = px + RING_R + PILL_GAP;
         let left = px - RING_R - PILL_GAP - w;
         let below = py + RING_R + PILL_GAP;
@@ -377,7 +394,7 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
             let x = x.clamp(vp.x0, (vp.x1 - w).max(vp.x0));
             let mut r = Rect::new(x, below, x + w, below + h);
             let step = h + PILL_GAP;
-            let mut guard = 0;
+            let mut guard: u32 = 0;
             while (!inside(&r, &vp) || !clear(&r, &placed)) && guard < 64 {
                 let next_y = if r.y1 + step <= vp.y1 {
                     r.y0 + step
@@ -390,7 +407,9 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
                     up
                 };
                 r = Rect::new(x, next_y, x + w, next_y + h);
-                guard += 1;
+                // Bounded loop guard, not a meaningful count — saturating
+                // is fine, the `< 64` condition stops the loop first.
+                guard = guard.saturating_add(1);
             }
             let r = Rect::new(
                 r.x0,
@@ -406,10 +425,14 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
         let dx = (rect.x0 - px).abs().min((rect.x1 - px).abs());
         let dy = (rect.y0 - py).abs().min((rect.y1 - py).abs());
         let far = dx.max(dy) > RING_R + PILL_GAP + TETHER_AFTER;
-        out[i] = PillPlacement {
-            rect,
-            tethered: tethered || far,
-        };
+        // `i` is always < `out.len()`: `order` is built from `0..pills.len()`
+        // and `out` is sized to `pills.len()` above.
+        if let Some(slot) = out.get_mut(i) {
+            *slot = PillPlacement {
+                rect,
+                tethered: tethered || far,
+            };
+        }
         placed.push(rect);
     }
     out
@@ -478,6 +501,13 @@ pub fn draw_peer_cursors(
 /// ring together work on both light and dark backgrounds — ring separates
 /// dark-on-dark, shadow separates light-on-light; whichever isn't needed
 /// stays invisible.
+/// `kurbo::Affine` composition below is plain f64 matrix math with no
+/// panic path; `arithmetic_side_effects` flags the `*` operator overload
+/// anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
+)]
 fn draw_peer_dot(scene: &mut Scene, transform: Affine, pos: (f64, f64), peer: Color) {
     let t = transform * Affine::translate((pos.0, pos.1));
     scene.fill(
@@ -502,6 +532,13 @@ fn draw_peer_dot(scene: &mut Scene, transform: Affine, pos: (f64, f64), peer: Co
 /// A peer's name pill, filled in their own colour (not a surface token) so
 /// the pill *is* the swatch — name and cursor match by colour, not by
 /// proximity.
+/// `kurbo::Rect`'s `Add<Vec2>` and `kurbo::Affine`'s `Mul` below are plain
+/// f64 arithmetic with no panic path; `arithmetic_side_effects` flags the
+/// operator overloads anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo Rect/Affine arithmetic is f64 math; it cannot panic or overflow, unlike integer +/-/*"
+)]
 pub(crate) fn draw_peer_pill(
     scene: &mut Scene,
     transform: Affine,
@@ -574,6 +611,11 @@ pub fn draw_remote_cursors(
 }
 
 /// A [`super::RemoteCursor`] as the renderer wants it.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "each channel is clamped to 0.0..=1.0 above, so the scaled result is 0.0..=255.0"
+)]
 fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
     PeerCursor {
         pos: (f64::from(cursor.position[0]), f64::from(cursor.position[1])),
@@ -644,6 +686,10 @@ pub(super) fn mist_band_rect(viewport: vello::kurbo::Rect, mist: &super::geom::E
 
 /// Paint one off-screen peer's edge mist: a soft band fading from the
 /// border (a few inset layers approximating a gradient), plus a name tag.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "f64 -> f32 for rendering alpha factors already bounded to ~0.0..=1.0; f32 precision is more than sufficient"
+)]
 fn draw_edge_mist(
     scene: &mut Scene,
     text_renderer: &mut TextRenderer,
@@ -789,6 +835,11 @@ mod tests {
     /// at all when the compositor overlay does. Both halves are asserted in
     /// one test — either alone would pass a filter that always/never draws.
     #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "`at` is a fixed in-bounds test coordinate, always representable as u32"
+    )]
     fn only_a_pointer_this_layer_owns_reaches_the_screen() {
         use super::super::PointerOwner;
 
@@ -1023,7 +1074,14 @@ mod tests {
     fn four_piled_peers_get_four_readable_pills() {
         let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let pills: Vec<PillRequest> = (0..4)
-            .map(|i| req(600.0 + i as f64 * 3.0, 400.0 + i as f64 * 2.0, 70.0, 22.0))
+            .map(|i| {
+                req(
+                    600.0 + f64::from(i) * 3.0,
+                    400.0 + f64::from(i) * 2.0,
+                    70.0,
+                    22.0,
+                )
+            })
             .collect();
         let out = layout_peer_pills(vp, &pills);
         for i in 0..out.len() {
@@ -1072,7 +1130,7 @@ mod tests {
         // Six peers stacked within a few pixels: the corners run out and
         // the later ones must be walked away and tethered.
         let pile: Vec<PillRequest> = (0..6)
-            .map(|i| req(400.0 + i as f64, 300.0 + i as f64, 60.0, 20.0))
+            .map(|i| req(400.0 + f64::from(i), 300.0 + f64::from(i), 60.0, 20.0))
             .collect();
         let out = layout_peer_pills(vp, &pile);
         assert!(
@@ -1168,8 +1226,19 @@ mod tests {
             let bgc = bg.to_rgba8();
             // Somewhere on the ring around the dot must differ from the
             // background, or the cursor has no edge at all on it.
+            //
+            // `r`/`g`/`b`/`x`/`y`/`a`/`deg` are the conventional color and
+            // polar-coordinate abbreviations; renaming them would only add
+            // width. `x`/`y` are sampled on a fixed 6.8px ring around
+            // (60, 60) on a 120x120 canvas, always in u32 range.
+            #[allow(
+                clippy::many_single_char_names,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "conventional short names for a color/angle sample; x/y are always in-bounds by construction"
+            )]
             let edge = (0..360).step_by(15).any(|deg| {
-                let a = (deg as f64).to_radians();
+                let a = f64::from(deg).to_radians();
                 let x = (60.0 + 6.8 * a.cos()).round() as u32;
                 let y = (60.0 + 6.8 * a.sin()).round() as u32;
                 let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 120, x, y);
@@ -1244,6 +1313,14 @@ mod tests {
         // The chip's own top edge is at caret.y0 - h - 2; a pixel just under
         // its bottom edge should be the shadow, darker than the white ground.
         let top = 60.0 - h - 2.0;
+        // `top + h + 1.0` collapses to a fixed in-bounds sample row (59) on
+        // the 160px-tall offscreen canvas, regardless of the chip height it
+        // was derived from.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "top + h + 1.0 is a fixed, always-positive, in-bounds sample row"
+        )]
         let (sr, sg, sb, _sa) = OffscreenRenderer::sample(&rgba, 160, 24, (top + h + 1.0) as u32);
         assert!(
             sr < 250 && sg < 250 && sb < 250,

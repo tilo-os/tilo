@@ -73,12 +73,14 @@ impl Utterance {
     }
 
     /// Builder: set the priority.
+    #[must_use]
     pub fn with_priority(mut self, priority: Priority) -> Self {
         self.priority = priority;
         self
     }
 
     /// Builder: set whether this utterance interrupts current speech.
+    #[must_use]
     pub fn with_interrupt(mut self, interrupt: bool) -> Self {
         self.interrupt = interrupt;
         self
@@ -122,6 +124,10 @@ pub trait Speaker: Send {
 /// Translate a normalized rate multiplier (`1.0` = default) to SSIP's `i8` `[-100, 100]`
 /// scale (`1.0 -> 0`, `2.0 -> +100`, `0.5 -> -100`), using a log-ish piecewise-linear map so
 /// `0.5`/`2.0` are symmetric extremes, matching how speech-dispatcher perceives rate.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to [-100.0, 100.0] just above, well within i8's range"
+)]
 pub(crate) fn rate_to_ssip(rate: f32) -> i8 {
     if !rate.is_finite() || rate <= 0.0 {
         return 0;

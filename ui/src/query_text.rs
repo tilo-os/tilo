@@ -514,10 +514,8 @@ fn handle_command_shortcut(
         }
         "c" | "C" => {
             let range = selection.range();
-            if !range.is_empty() {
-                if let Some(slice) = text.get(range) {
-                    clipboard_copy(slice);
-                }
+            if let Some(slice) = (!range.is_empty()).then(|| text.get(range)).flatten() {
+                clipboard_copy(slice);
             }
             QueryEventChange::Display
         }

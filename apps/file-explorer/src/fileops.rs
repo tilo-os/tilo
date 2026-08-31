@@ -32,6 +32,11 @@ pub fn ensure_trash_dir() -> Option<PathBuf> {
 }
 
 /// Permanently remove everything in the trash. Returns how many items were purged.
+///
+/// # Errors
+///
+/// Returns an error if the platform trash is unavailable, or listing or
+/// purging its items fails.
 pub fn empty_trash() -> Result<usize, String> {
     let items = trash::os_limited::list().map_err(|e| e.to_string())?;
     let n = items.len();
@@ -66,6 +71,12 @@ fn trash_items_for(entries: &[PathBuf]) -> Result<Vec<trash::TrashItem>, String>
 
 /// Restore the trashed items backing `entries` to their original locations.
 /// Returns how many were restored.
+///
+/// # Errors
+///
+/// Returns an error if the platform trash is unavailable, or listing or
+/// restoring the matched items fails (e.g. the original location no longer
+/// exists).
 pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
     let items = trash_items_for(entries)?;
     let n = items.len();
@@ -75,6 +86,11 @@ pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
 
 /// Permanently delete the trashed items backing `entries` (file + info).
 /// Returns how many were purged.
+///
+/// # Errors
+///
+/// Returns an error if the platform trash is unavailable, or listing or
+/// purging the matched items fails.
 pub fn purge_entries(entries: &[PathBuf]) -> Result<usize, String> {
     let items = trash_items_for(entries)?;
     let n = items.len();
@@ -111,6 +127,11 @@ pub fn unique_destination(dir: &Path, name: &str) -> PathBuf {
 }
 
 /// Create a new folder named `name` (deduplicated) inside `parent`.
+///
+/// # Errors
+///
+/// Returns an error if `name` is empty or contains `/`, or if creating the
+/// directory fails (e.g. `parent` is not writable).
 pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -125,6 +146,12 @@ pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 /// Rename `path` to `new_name` within the same directory.
+///
+/// # Errors
+///
+/// Returns an error if `new_name` is empty or contains `/`, if `path` has
+/// no parent directory, if a file already exists at the destination name,
+/// or if the OS rename fails.
 pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     let new_name = new_name.trim();
     if new_name.is_empty() {
@@ -149,6 +176,12 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
 
 /// Move `paths` to the trash. Falls back to a clear message if the
 /// platform trash isn't available.
+///
+/// # Errors
+///
+/// Returns an error if the platform trash is unavailable or the delete
+/// fails (e.g. a path no longer exists, or crosses a filesystem the trash
+/// backend can't handle).
 pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
@@ -158,6 +191,11 @@ pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
 
 /// Recursively copy `src` into the directory `dest_dir`, choosing a
 /// non-colliding name. Returns the created destination path.
+///
+/// # Errors
+///
+/// Returns an error if `src` has no file name, or the recursive copy fails
+/// (a read/write/permission error partway through the tree).
 pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     let name = src
         .file_name()
@@ -170,6 +208,12 @@ pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
 
 /// Move `src` into `dest_dir`. Tries a cheap rename first; on a
 /// cross-device error falls back to copy-then-delete.
+///
+/// # Errors
+///
+/// Returns an error if `src` has no file name, or if both the rename and
+/// the copy-then-delete fallback fail (a read/write/permission error, or
+/// `src` could not be removed after a successful copy).
 pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     let name = src
         .file_name()

@@ -21,10 +21,16 @@ pub struct PeerPresence {
 }
 
 impl PeerPresence {
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if canonical serialisation fails.
     pub fn to_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(self)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if `bytes` fails to decode as `Self`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, CanonicalError> {
         from_canonical_bytes(bytes)
     }

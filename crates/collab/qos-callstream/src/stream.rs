@@ -305,6 +305,11 @@ impl SurfaceStreamReceiver {
     }
 
     /// Drains every whole frame in the buffer as [`ReceiverEvent`]s, in arrival order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::LengthOverflow`] if a frame header's length
+    /// prefix, read as a `usize`, is greater than `u32::MAX`.
     pub fn drain(&mut self) -> Result<Vec<ReceiverEvent>, FrameError> {
         let mut out = Vec::new();
         loop {
@@ -489,11 +494,11 @@ mod tests {
         assert_eq!(events.len(), 2);
         match &events[0] {
             ReceiverEvent::Frame(f) => assert_eq!(f, &f0),
-            other => panic!("expected Frame, got {other:?}"),
+            other @ ReceiverEvent::SequenceGap { .. } => panic!("expected Frame, got {other:?}"),
         }
         match &events[1] {
             ReceiverEvent::Frame(f) => assert_eq!(f, &f1),
-            other => panic!("expected Frame, got {other:?}"),
+            other @ ReceiverEvent::SequenceGap { .. } => panic!("expected Frame, got {other:?}"),
         }
     }
 

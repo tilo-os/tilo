@@ -196,11 +196,13 @@ fn report_portal(name: &str, result: Result<(), portal_xdg::PortalError>) {
 /// broker logs for a specific device's presence events wants the raw
 /// hex, not the base64 the wire uses.
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
     const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xF) as usize] as char);
+        // Both indices are nibbles (0..=15) so they're always in bounds;
+        // `.get()` + a fallback avoids `indexing_slicing` without changing behaviour.
+        out.push(HEX.get((b >> 4) as usize).copied().unwrap_or(b'?') as char);
+        out.push(HEX.get((b & 0xF) as usize).copied().unwrap_or(b'?') as char);
     }
     out
 }

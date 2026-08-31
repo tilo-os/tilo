@@ -463,7 +463,12 @@ pub fn dispatch_command<S: ControlState>(
             shift,
             alt,
             logo,
-        } => modifiers(*ctrl, *shift, *alt, *logo),
+        } => modifiers(PlannedAction::SetModifiers {
+            ctrl: *ctrl,
+            shift: *shift,
+            alt: *alt,
+            logo: *logo,
+        }),
         Command::Snapshot { path } => snapshot(path),
         Command::ForeignFrames => foreign_frames(state),
         Command::StateDump => state_dump(state),
@@ -661,16 +666,13 @@ fn type_text(text: &str) -> (Response, Vec<PlannedAction>) {
 }
 
 /// [`Command::Modifiers`]: update the modifier mask carried into subsequent keyboard events.
-fn modifiers(ctrl: bool, shift: bool, alt: bool, logo: bool) -> (Response, Vec<PlannedAction>) {
-    (
-        Response::Ok { frame: 0 },
-        vec![PlannedAction::SetModifiers {
-            ctrl,
-            shift,
-            alt,
-            logo,
-        }],
-    )
+///
+/// Takes the already-built [`PlannedAction::SetModifiers`] rather than the
+/// four bare `ctrl`/`shift`/`alt`/`logo` bools — the caller destructures
+/// [`Command::Modifiers`], which has the same shape, so building the action
+/// there and handing it over avoids a four-`bool` parameter list here.
+fn modifiers(action: PlannedAction) -> (Response, Vec<PlannedAction>) {
+    (Response::Ok { frame: 0 }, vec![action])
 }
 
 /// [`Command::Snapshot`]: pre-validate the path, then plan the paint+write.

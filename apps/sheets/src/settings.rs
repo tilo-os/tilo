@@ -109,12 +109,13 @@ impl GlobalSettings {
         if !root.is_object() {
             root = serde_json::json!({});
         }
-        let obj = root.as_object_mut().expect("just ensured object");
-        obj.insert("version".into(), serde_json::json!(1));
-        obj.insert(
-            "locale".into(),
-            serde_json::to_value(self.locale).unwrap_or(serde_json::Value::Null),
-        );
+        if let Some(obj) = root.as_object_mut() {
+            obj.insert("version".into(), serde_json::json!(1));
+            obj.insert(
+                "locale".into(),
+                serde_json::to_value(self.locale).unwrap_or(serde_json::Value::Null),
+            );
+        }
         serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
     }
 
@@ -131,6 +132,11 @@ impl GlobalSettings {
 
     /// Persist to the shared path, preserving foreign keys. Creates the
     /// `qos` config directory if needed. Returns the path written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no config directory is available, or if creating
+    /// the `qos` config directory or writing the settings file fails.
     pub fn save(&self) -> std::io::Result<PathBuf> {
         let path = settings_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
         if let Some(parent) = path.parent() {

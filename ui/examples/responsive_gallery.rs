@@ -1,9 +1,9 @@
 //! Responsive gallery — shows the toolkit's flex/wrap behaviour and CRDT
 //! session persistence, now also exercising the newer shared components
-//! (SearchField, Chip, StatTile, Banner) in a layout that reflows as the
+//! (`SearchField`, Chip, `StatTile`, Banner) in a layout that reflows as the
 //! window narrows. Chips and stat tiles wrap; the toolbar buttons wrap.
 //!
-//! Run:  cargo run -p ui --example ui-lab -- responsive_gallery
+//! Run:  cargo run -p ui --example ui-lab -- `responsive_gallery`
 
 use std::fs;
 
@@ -12,7 +12,7 @@ use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{
     Banner, Button, Chip, Column, Container, Row, SearchField, Spacer, StatTile, Text, TextInput,
-    Trend,
+    Trend, Widget,
 };
 use ui::{App, State};
 
@@ -37,18 +37,40 @@ pub fn run(_args: &[String]) {
         use automerge::transaction::Transactable;
         let _ = state.doc.put(&state.root, "request_save", false);
         let _ = state.doc.put(&state.root, "request_load", false);
-        if state.doc.get(&state.root, "text_val").unwrap().is_none() {
-            let text_id = state
+        let has_text = state
+            .doc
+            .get(&state.root, "text_val")
+            .ok()
+            .flatten()
+            .is_some();
+        if !has_text {
+            match state
                 .doc
                 .put_object(&state.root, "text_val", automerge::ObjType::Text)
-                .unwrap();
-            let _ = state
-                .doc
-                .splice_text(&text_id, 0, 0, "Edit me and restart!");
+            {
+                Ok(text_id) => {
+                    let _ = state
+                        .doc
+                        .splice_text(&text_id, 0, 0, "Edit me and restart!");
+                }
+                Err(err) => {
+                    eprintln!("responsive_gallery: failed to seed text_val: {err}");
+                }
+            }
         }
     }
 
-    let root_widget = Box::new(
+    let root_widget = build_root_widget(&theme);
+
+    let app = App::new(state, root_widget);
+    app.run();
+}
+
+/// Build the reflowing gallery layout: header, banner, search + persisted
+/// text card, wrapping filter chips, wrapping stat tiles, and the original
+/// wrapping action-button row.
+fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
+    Box::new(
         Column::new()
             .with_gap(14.0)
             // Header: title + session buttons.
@@ -126,8 +148,5 @@ pub fn run(_args: &[String]) {
                     .push(Box::new(Button::new("b4", "Wrap Item 4", None)))
                     .push(Box::new(Button::new("b5", "Wrap Item 5", None))),
             )),
-    );
-
-    let app = App::new(state, root_widget);
-    app.run();
+    )
 }

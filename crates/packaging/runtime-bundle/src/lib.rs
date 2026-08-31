@@ -223,6 +223,11 @@ pub const RUNTIME_DIR_ENV: &str = "QOS_RUNTIME_BUNDLE_DIR";
 /// Root holding the per-user bundles, before the version is appended:
 /// [`RUNTIME_DIR_ENV`] when set and non-empty, else
 /// `$XDG_DATA_HOME/qos-runtime`.
+///
+/// # Errors
+///
+/// Returns [`BundleError::NoDataDir`] if [`RUNTIME_DIR_ENV`] is unset
+/// and the platform data directory can't be resolved (`XDG_DATA_HOME`/`HOME` unset).
 pub fn bundle_root() -> Result<PathBuf, BundleError> {
     if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV)
         && !dir.is_empty()
@@ -236,6 +241,10 @@ pub fn bundle_root() -> Result<PathBuf, BundleError> {
 
 /// Default per-user bundle directory: `$XDG_DATA_HOME/qos-runtime/<v>/`,
 /// unless [`RUNTIME_DIR_ENV`] names another root.
+///
+/// # Errors
+///
+/// Returns [`BundleError::NoDataDir`] under the same condition as [`bundle_root`].
 pub fn default_bundle_path(version: &str) -> Result<PathBuf, BundleError> {
     Ok(bundle_root()?.join(version))
 }
@@ -247,15 +256,12 @@ pub fn system_bundle_path(version: &str) -> PathBuf {
 
 /// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
 pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
-    let mut checked: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = default_bundle_path(version) {
-        checked.push(p.clone());
-        if p.join(BUNDLE_MANIFEST_FILENAME).exists() {
-            return Some(p);
-        }
+    if let Ok(p) = default_bundle_path(version)
+        && p.join(BUNDLE_MANIFEST_FILENAME).exists()
+    {
+        return Some(p);
     }
     let sys = system_bundle_path(version);
-    checked.push(sys.clone());
     if sys.join(BUNDLE_MANIFEST_FILENAME).exists() {
         return Some(sys);
     }
@@ -289,12 +295,23 @@ pub struct Identity {
 
 impl Identity {
     /// Load from a JSON file on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BundleError::IdentityIo`] if `path` can't be read, or
+    /// any error [`Self::from_json_bytes`] returns for a malformed file.
     pub fn load(path: &Path) -> Result<Self, BundleError> {
         let bytes = fs::read(path).map_err(|e| BundleError::IdentityIo(e.to_string()))?;
         Self::from_json_bytes(&bytes)
     }
 
     /// Parse an identity JSON blob directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BundleError::IdentityParse`] if `bytes` isn't valid
+    /// JSON for the expected shape, or if `secret_key_hex` doesn't
+    /// decode to exactly 32 bytes.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, BundleError> {
         #[derive(Deserialize)]
         struct File {
@@ -352,6 +369,10 @@ pub fn signing_preimage(version: &str, root_hash_hex: &str) -> [u8; 32] {
 }
 
 /// Build a bundle at `out` for the host architecture; see [`build_bundle_with`] for the full entry point.
+///
+/// # Errors
+///
+/// See [`build_bundle_with`].
 pub fn build_bundle(
     out: &Path,
     version: &str,
@@ -375,6 +396,18 @@ pub fn build_bundle(
 /// `opts.identity`, if set, signs the bundle. Missing source paths
 /// are silently skipped, but if *no* source resolves this returns
 /// `NoSources` so a wrong `--from` or arch mismatch surfaces immediately.
+///
+/// # Errors
+///
+/// Returns [`BundleError::UnsupportedArch`] if `opts.arch` (or
+/// [`host_arch`]) has no source-path table; [`BundleError::NoSources`]
+/// if none of that architecture's candidate paths exist under
+/// `opts.from`; [`BundleError::IncludeMissing`]/[`IncludeUnnamed`] for
+/// a bad `opts.extra_libs` entry; [`BundleError::Io`] on a filesystem
+/// failure while copying or writing `bundle.toml`; and any error
+/// [`Identity::load`] returns when `opts.identity` is set.
+///
+/// [`IncludeUnnamed`]: BundleError::IncludeUnnamed
 pub fn build_bundle_with(
     out: &Path,
     version: &str,
@@ -467,9 +500,10 @@ pub fn build_bundle_with(
     // Optional signing.
     let (publisher_hex, signature_hex) = match opts.identity {
         Some(id_path) => {
+            use ed25519_dalek::Signer;
+
             let identity = Identity::load(id_path)?;
             let preimage = signing_preimage(version, &root_hash);
-            use ed25519_dalek::Signer;
             let sig = identity.signing_key.sign(&preimage);
             (
                 Some(identity.public_key_hex()),
@@ -518,11 +552,32 @@ pub struct VerifyOptions {
 /// Signature policy: a present signature must verify, but an unsigned
 /// bundle is accepted — use [`verify_bundle_with`] with
 /// `require_signature=true` to refuse those.
+///
+/// # Errors
+///
+/// See [`verify_bundle_with`].
 pub fn verify_bundle(root: &Path) -> Result<BundleManifest, BundleError> {
     verify_bundle_with(root, &VerifyOptions::default())
 }
 
 /// Full-featured verify. See [`VerifyOptions`].
+///
+/// # Errors
+///
+/// Returns [`BundleError::ManifestMissing`]/[`ManifestParse`] if
+/// `bundle.toml` is absent or malformed; [`BundleError::ArchMismatch`]
+/// if `opts.require_arch` is set and disagrees; [`BundleError::FileMissing`]/
+/// [`FileUnlisted`]/[`HashMismatch`] if the on-disk payload and the
+/// manifest disagree; [`BundleError::NotSigned`] if `opts` requires a
+/// signature the bundle lacks; and [`BundleError::SignatureFieldMalformed`]/
+/// [`BadSignature`]/[`PublisherMismatch`] if a present signature is
+/// malformed, doesn't verify, or names the wrong publisher.
+///
+/// [`ManifestParse`]: BundleError::ManifestParse
+/// [`FileUnlisted`]: BundleError::FileUnlisted
+/// [`HashMismatch`]: BundleError::HashMismatch
+/// [`BadSignature`]: BundleError::BadSignature
+/// [`PublisherMismatch`]: BundleError::PublisherMismatch
 pub fn verify_bundle_with(
     root: &Path,
     opts: &VerifyOptions,
@@ -589,40 +644,40 @@ pub fn verify_bundle_with(
     }
 
     // Signature policy.
-    let has_sig = manifest.publisher_hex.is_some() && manifest.signature_hex.is_some();
     let need_sig = opts.require_signature || opts.require_publisher.is_some();
-    if !has_sig && need_sig {
-        return Err(BundleError::NotSigned);
-    }
+    match (
+        manifest.publisher_hex.as_deref(),
+        manifest.signature_hex.as_deref(),
+    ) {
+        (Some(publisher_hex), Some(sig_hex)) => {
+            use ed25519_dalek::Verifier;
 
-    if has_sig {
-        let publisher_hex = manifest.publisher_hex.as_deref().unwrap();
-        let sig_hex = manifest.signature_hex.as_deref().unwrap();
+            let pub_bytes: [u8; 32] = decode_fixed_hex(publisher_hex, "publisher_hex")?;
+            let sig_bytes: [u8; 64] = decode_fixed_hex(sig_hex, "signature_hex")?;
 
-        let pub_bytes: [u8; 32] = decode_fixed_hex(publisher_hex, "publisher_hex")?;
-        let sig_bytes: [u8; 64] = decode_fixed_hex(sig_hex, "signature_hex")?;
-
-        let vk = ed25519_dalek::VerifyingKey::from_bytes(&pub_bytes).map_err(|e| {
-            BundleError::SignatureFieldMalformed {
-                field: "publisher_hex",
-                reason: e.to_string(),
+            let vk = ed25519_dalek::VerifyingKey::from_bytes(&pub_bytes).map_err(|e| {
+                BundleError::SignatureFieldMalformed {
+                    field: "publisher_hex",
+                    reason: e.to_string(),
+                }
+            })?;
+            let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+            let preimage = signing_preimage(&manifest.version, &manifest.root_hash);
+            if vk.verify(&preimage, &sig).is_err() {
+                return Err(BundleError::BadSignature);
             }
-        })?;
-        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-        let preimage = signing_preimage(&manifest.version, &manifest.root_hash);
-        use ed25519_dalek::Verifier;
-        if vk.verify(&preimage, &sig).is_err() {
-            return Err(BundleError::BadSignature);
-        }
 
-        if let Some(required) = opts.require_publisher.as_deref()
-            && !eq_hex_ignore_case(publisher_hex, required)
-        {
-            return Err(BundleError::PublisherMismatch {
-                required: required.to_string(),
-                actual: publisher_hex.to_string(),
-            });
+            if let Some(required) = opts.require_publisher.as_deref()
+                && !eq_hex_ignore_case(publisher_hex, required)
+            {
+                return Err(BundleError::PublisherMismatch {
+                    required: required.to_string(),
+                    actual: publisher_hex.to_string(),
+                });
+            }
         }
+        _ if need_sig => return Err(BundleError::NotSigned),
+        _ => {}
     }
 
     Ok(manifest)
@@ -699,8 +754,11 @@ fn hash_file(path: &Path) -> Result<(String, u64), BundleError> {
         if n == 0 {
             break;
         }
-        hasher.update(&buf[..n]);
-        total += n as u64;
+        // `Read::read` never returns more bytes than the buffer it was
+        // given, so `n` is always in-bounds; `.get()` + an empty
+        // fallback avoids indexing without changing behaviour.
+        hasher.update(buf.get(..n).unwrap_or_default());
+        total = total.saturating_add(n as u64);
     }
     Ok((hasher.finalize().to_hex().to_string(), total))
 }

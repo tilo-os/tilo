@@ -37,6 +37,10 @@ pub struct EditorDoc;
 
 impl EditorDoc {
     /// Get-or-create the `editor` Map under the root.
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     fn editor_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "editor") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -47,6 +51,15 @@ impl EditorDoc {
     }
 
     /// Get-or-create the `sql` Text object holding the query buffer.
+    ///
+    /// # Panics
+    /// Never in practice: `editor` is either freshly created by this call or
+    /// already a live Map, so `put_object` on it only fails for an
+    /// already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "editor is either freshly created by this call or already a live Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn sql_text(doc: &mut AutoCommit) -> ObjId {
         let editor = Self::editor_map(doc);
         match doc.get(&editor, "sql") {
@@ -59,9 +72,8 @@ impl EditorDoc {
 
     /// Read the current buffer contents (empty if not yet seeded).
     pub fn read_sql(doc: &AutoCommit) -> String {
-        let editor = match doc.get(&ROOT, "editor") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return String::new(),
+        let Ok(Some((Value::Object(ObjType::Map), editor))) = doc.get(&ROOT, "editor") else {
+            return String::new();
         };
         match doc.get(&editor, "sql") {
             Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).unwrap_or_default(),

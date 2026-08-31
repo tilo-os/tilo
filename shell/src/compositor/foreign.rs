@@ -720,6 +720,12 @@ impl ForeignFrameStore {
     }
 
     /// Size of the tab rectangle in physical pixels.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0.0, u32::MAX] and .round()-ed first, so the casts to u32 below \
+                  neither truncate a fraction nor lose a sign"
+    )]
     pub fn viewport(&self, id: SurfaceId) -> Option<(u32, u32)> {
         self.placement(id).map(|r| {
             (
@@ -731,6 +737,13 @@ impl ForeignFrameStore {
 
     /// The size the client should be configured to, in surface-local (logical)
     /// pixels, **iff** it differs from the last sent — records the value as sent so an unchanged layout returns `None`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "every cast to u32/i32 below is preceded by a .clamp(..) into that type's \
+                  range and a .round(), so none truncates a fraction, loses a sign, or wraps \
+                  out of range"
+    )]
     pub fn take_pending_configure(&self, id: SurfaceId, scale: f64) -> Option<(i32, i32)> {
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
@@ -768,6 +781,14 @@ impl ForeignFrameStore {
     /// invisible); a **frame answers the tab** per [`fills`] (else the
     /// unasked-for buffer size scales via `fit_rect`, snapping to 1:1
     /// later); or **[`PRESENT_GRACE`] passes** (backstop against an unclosable window). `tile` degenerate means not laid out, unjudgeable.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "on the enclosing function because #[allow] on the tracing::warn! invocation \
+                  itself is silently ignored by rustc: the tab_w/tab_h fields it logs are each \
+                  clamped to [0.0, u32::MAX] and .round()-ed first, so neither truncates a \
+                  fraction nor loses a sign"
+    )]
     pub fn mark_presented(&self, id: SurfaceId, tile: Rect) -> bool {
         self.with_entry(id, |e| {
             if e.presented {
@@ -1452,6 +1473,11 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
         1.0
     };
     let (out_w, out_h) = state.output_size;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to [1.0, i32::MAX] and .round()-ed first, so the cast to i32 never \
+                  truncates a fraction or wraps out of range"
+    )]
     let logical = |px: f64| (px / scale).round().clamp(1.0, f64::from(i32::MAX)) as i32;
     let chrome_w = f64::from(crate::shell::sidebar_wheel_chrome::SIDEBAR_WIDTH_PX);
     let chrome_h =

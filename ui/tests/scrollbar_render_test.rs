@@ -53,6 +53,10 @@ fn tall_child() -> Box<dyn Widget> {
 }
 
 /// Drive the 5-pass pipeline and return the rendered RGBA buffer.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "W and H are the fixed small test-canvas dimensions, exactly representable in f32"
+)]
 fn render(scrollable: &mut Scrollable, renderer: &mut OffscreenRenderer) -> Vec<u8> {
     let theme = Theme::dark();
     let mut taffy = TaffyTree::<()>::new();
@@ -87,12 +91,12 @@ fn render(scrollable: &mut Scrollable, renderer: &mut OffscreenRenderer) -> Vec<
 /// Count pixels differing from the background in the rightmost `strip`
 /// columns — where the vertical scrollbar lives.
 fn right_edge_non_bg(rgba: &[u8], strip: u32) -> usize {
-    let mut count = 0;
+    let mut count: usize = 0;
     for y in 0..H {
-        for x in (W - strip)..W {
-            let idx = ((y * W + x) * 4) as usize;
-            if rgba[idx..idx + 4] != BG {
-                count += 1;
+        for x in W.saturating_sub(strip)..W {
+            let idx = (y.saturating_mul(W).saturating_add(x).saturating_mul(4)) as usize;
+            if rgba[idx..idx.saturating_add(4)] != BG {
+                count = count.saturating_add(1);
             }
         }
     }

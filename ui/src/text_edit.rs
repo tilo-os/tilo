@@ -58,7 +58,7 @@ impl Edit {
     }
     /// New byte caret position after this edit is applied.
     pub fn caret_after(&self) -> usize {
-        self.at + self.inserted.len()
+        self.at.saturating_add(self.inserted.len())
     }
 }
 
@@ -221,7 +221,10 @@ impl EditCore {
     /// moves the caret to just after the inserted text.
     pub fn insert(&mut self, s: &str) -> Edit {
         let (at, removed) = if self.has_selection() {
-            (self.sel.min(), self.sel.max() - self.sel.min())
+            (
+                self.sel.min(),
+                self.sel.max().saturating_sub(self.sel.min()),
+            )
         } else {
             (self.sel.cursor, 0)
         };
@@ -240,7 +243,7 @@ impl EditCore {
     pub fn delete_backward(&mut self, text: &str, word: bool) -> Edit {
         if self.has_selection() {
             let at = self.sel.min();
-            let removed = self.sel.max() - at;
+            let removed = self.sel.max().saturating_sub(at);
             self.sel.move_to(at);
             self.affinity = TextAffinity::Before;
             return Edit {
@@ -262,7 +265,7 @@ impl EditCore {
         self.affinity = TextAffinity::Before;
         Edit {
             at: from,
-            removed: c - from,
+            removed: c.saturating_sub(from),
             inserted: String::new(),
         }
     }
@@ -272,7 +275,7 @@ impl EditCore {
     pub fn delete_forward(&mut self, text: &str, word: bool) -> Edit {
         if self.has_selection() {
             let at = self.sel.min();
-            let removed = self.sel.max() - at;
+            let removed = self.sel.max().saturating_sub(at);
             self.sel.move_to(at);
             self.affinity = TextAffinity::Before;
             return Edit {
@@ -294,7 +297,7 @@ impl EditCore {
         self.affinity = TextAffinity::Before;
         Edit {
             at: c,
-            removed: to - c,
+            removed: to.saturating_sub(c),
             inserted: String::new(),
         }
     }
@@ -308,7 +311,7 @@ mod tests {
     /// tests can assert the model produces coherent text.
     fn apply(text: &str, e: &Edit) -> String {
         let mut s = String::from(text);
-        s.replace_range(e.at..e.at + e.removed, &e.inserted);
+        s.replace_range(e.at..e.at.saturating_add(e.removed), &e.inserted);
         s
     }
 

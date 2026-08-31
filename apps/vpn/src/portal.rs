@@ -43,6 +43,15 @@ pub type ImportChannel = Receiver<ImportOutcome>;
 /// caller drains each frame. `kind` seeds the filter shown to the user
 /// (`WireGuard` `.conf` vs `OpenVPN` `.ovpn`). The UI thread is never blocked: the
 /// D-Bus round-trip and the host dialog live entirely on the worker.
+///
+/// # Panics
+/// Panics if the OS refuses to spawn the worker thread (e.g. the process is
+/// out of resources) — at that point the import feature genuinely cannot
+/// work, so there is no meaningful fallback.
+#[allow(
+    clippy::expect_used,
+    reason = "an OS unable to spawn a thread has no meaningful fallback here; see this function's # Panics doc"
+)]
 pub fn request_import(kind: ConnKind) -> ImportChannel {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
@@ -114,6 +123,11 @@ pub fn map_uris(uris: &[url::Url]) -> ImportOutcome {
 /// Test-only: build a channel and immediately deliver `outcome` on it, so a
 /// headless test can exercise the exact per-frame drain path the real portal
 /// worker feeds — without opening a host dialog.
+///
+/// # Panics
+/// Panics if the just-created channel's receiver has already been dropped,
+/// which cannot happen here since both ends are created together and `rx`
+/// hasn't been handed to a caller yet.
 #[cfg(test)]
 pub fn inject_for_test(outcome: ImportOutcome) -> ImportChannel {
     let (tx, rx) = std::sync::mpsc::channel();

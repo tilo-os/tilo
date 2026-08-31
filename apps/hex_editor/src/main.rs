@@ -31,6 +31,10 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match ui::launch::ShotFactory's fn(&LaunchArgs) -> Result<..> signature"
+)]
 fn shot_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(hex_editor::app_root())
 }
@@ -40,5 +44,5 @@ pub fn main() {
         LaunchSpec::new("dev.qos.hex-editor", hex_editor::app_root)
             .shot_root(shot_root)
             .configure_app(|app| hex_editor::actions::register(app.action_registry_mut())),
-    )
+    );
 }

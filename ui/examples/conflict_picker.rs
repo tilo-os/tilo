@@ -30,7 +30,9 @@ fn alt(label: &str, summary: &str, author: &str, secs_ago: u64) -> Alternative {
         label: label.into(),
         summary: summary.into(),
         author: author.into(),
-        timestamp: SystemTime::now() - Duration::from_secs(secs_ago),
+        timestamp: SystemTime::now()
+            .checked_sub(Duration::from_secs(secs_ago))
+            .unwrap_or_else(SystemTime::now),
         payload: Arc::from(Vec::<u8>::new()),
     }
 }

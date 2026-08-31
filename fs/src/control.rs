@@ -137,33 +137,34 @@ fn apply(
             };
             (resp, Vec::new())
         }
-        Req::Snapshot { ino } => match check(&ns, enforcement, ino, Access::Read) {
-            Err(resp) => (resp, Vec::new()),
-            Ok(()) => {
+        Req::Snapshot { ino } => {
+            if let Err(resp) = check(&ns, enforcement, ino, Access::Read) {
+                (resp, Vec::new())
+            } else {
                 let resp = match ns.document_snapshot(ino) {
                     Some(s) => Resp::Snapshot(Box::new(s)),
                     None => Resp::NotFound,
                 };
                 (resp, Vec::new())
             }
-        },
+        }
         Req::InsertBlock { ino, after, kind } => {
-            match check(&ns, enforcement, ino, Access::Write) {
-                Err(resp) => (resp, Vec::new()),
-                Ok(()) => {
-                    let r = ns.document_insert_block(ino, after.as_deref(), &kind);
-                    let delta = ns.save_incremental();
-                    let resp = match r {
-                        Some(block) => Resp::Inserted { block },
-                        None => Resp::Err("not a document".into()),
-                    };
-                    (resp, delta)
-                }
+            if let Err(resp) = check(&ns, enforcement, ino, Access::Write) {
+                (resp, Vec::new())
+            } else {
+                let r = ns.document_insert_block(ino, after.as_deref(), &kind);
+                let delta = ns.save_incremental();
+                let resp = match r {
+                    Some(block) => Resp::Inserted { block },
+                    None => Resp::Err("not a document".into()),
+                };
+                (resp, delta)
             }
         }
-        Req::RemoveBlock { ino, block } => match check(&ns, enforcement, ino, Access::Write) {
-            Err(resp) => (resp, Vec::new()),
-            Ok(()) => {
+        Req::RemoveBlock { ino, block } => {
+            if let Err(resp) = check(&ns, enforcement, ino, Access::Write) {
+                (resp, Vec::new())
+            } else {
                 let ok = ns.document_remove_block(ino, &block);
                 let delta = ns.save_incremental();
                 let resp = if ok {
@@ -173,23 +174,26 @@ fn apply(
                 };
                 (resp, delta)
             }
-        },
+        }
         Req::Splice {
             ino,
             block,
             idx,
             del,
             ins,
-        } => match check(&ns, enforcement, ino, Access::Write) {
-            Err(resp) => (resp, Vec::new()),
-            Ok(()) => {
+        } => {
+            if let Err(resp) = check(&ns, enforcement, ino, Access::Write) {
+                (resp, Vec::new())
+            } else {
                 // `idx`/`del` cross the control socket from the client, so clamp
                 // rather than trust them to fit the narrower native width.
                 let idx = usize::try_from(idx).unwrap_or(usize::MAX);
-                let del = isize::try_from(del).unwrap_or(if del.is_negative() {
-                    isize::MIN
-                } else {
-                    isize::MAX
+                let del = isize::try_from(del).unwrap_or_else(|_| {
+                    if del.is_negative() {
+                        isize::MIN
+                    } else {
+                        isize::MAX
+                    }
                 });
                 let ok = ns.document_splice(ino, &block, idx, del, &ins);
                 let delta = ns.save_incremental();
@@ -200,7 +204,7 @@ fn apply(
                 };
                 (resp, delta)
             }
-        },
+        }
     };
     drop(ns);
     outcome

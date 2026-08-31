@@ -998,6 +998,12 @@ impl ShellNetwork {
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
         let (token, room) = {
+            #[allow(
+                clippy::significant_drop_tightening,
+                reason = "ws is fully chained from tree (via replica's lock); nothing to drop \
+                          earlier without cloning the tree data out for no real gain, and the \
+                          block already ends right after ws is cloned out"
+            )]
             let ws = {
                 let replica = self
                     .replica

@@ -28,7 +28,7 @@
     )
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -142,117 +142,156 @@ fn main() -> ExitCode {
             arch,
             identity,
             include,
-        } => match build_bundle_with(
-            &out,
+        } => cmd_build(
             &version,
-            &BuildOptions {
-                from: from.as_deref(),
-                arch: arch.as_deref(),
-                identity: identity.as_deref(),
-                extra_libs: &include,
-            },
-        ) {
-            Ok(manifest) => {
-                println!("built bundle at {}", out.display());
-                println!("  version  : {}", manifest.version);
-                println!("  arch     : {}", manifest.arch);
-                println!("  files    : {}", manifest.files.len());
-                println!("  root-hash: blake3:{}", manifest.root_hash);
-                if let Some(pk) = &manifest.publisher_hex {
-                    println!("  publisher: ed25519:{pk}");
-                }
-                if manifest.signature_hex.is_some() {
-                    println!("  signed   : yes");
-                }
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("qos-runtime-bundle build: {e}");
-                ExitCode::from(1)
-            }
-        },
+            &out,
+            from.as_deref(),
+            arch.as_deref(),
+            identity.as_deref(),
+            &include,
+        ),
         Cmd::Verify {
             dir,
             require_publisher,
             require_signature,
             require_arch,
-        } => match verify_bundle_with(
-            &dir,
-            &VerifyOptions {
-                require_publisher,
-                require_signature,
-                require_arch,
-            },
-        ) {
-            Ok(manifest) => {
-                println!("bundle {} verified", dir.display());
-                println!("  version  : {}", manifest.version);
-                println!("  arch     : {}", manifest.arch);
-                println!("  files    : {}", manifest.files.len());
-                println!("  root-hash: blake3:{}", manifest.root_hash);
-                if let Some(pk) = &manifest.publisher_hex {
-                    println!("  publisher: ed25519:{pk}");
-                }
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("qos-runtime-bundle verify: {e}");
-                ExitCode::from(1)
-            }
+        } => cmd_verify(&dir, require_publisher, require_signature, require_arch),
+        Cmd::Path { version, system } => cmd_path(&version, system),
+        Cmd::Key { cmd } => cmd_key(cmd),
+    }
+}
+
+fn cmd_build(
+    version: &str,
+    out: &Path,
+    from: Option<&Path>,
+    arch: Option<&str>,
+    identity: Option<&Path>,
+    include: &[PathBuf],
+) -> ExitCode {
+    match build_bundle_with(
+        out,
+        version,
+        &BuildOptions {
+            from,
+            arch,
+            identity,
+            extra_libs: include,
         },
-        Cmd::Path { version, system } => {
-            if system {
-                println!("{}", system_bundle_path(&version).display());
-                return ExitCode::SUCCESS;
+    ) {
+        Ok(manifest) => {
+            println!("built bundle at {}", out.display());
+            println!("  version  : {}", manifest.version);
+            println!("  arch     : {}", manifest.arch);
+            println!("  files    : {}", manifest.files.len());
+            println!("  root-hash: blake3:{}", manifest.root_hash);
+            if let Some(pk) = &manifest.publisher_hex {
+                println!("  publisher: ed25519:{pk}");
             }
-            if let Some(p) = resolve_bundle_path(&version) {
-                println!("{}", p.display());
-                return ExitCode::SUCCESS;
+            if manifest.signature_hex.is_some() {
+                println!("  signed   : yes");
             }
-            match default_bundle_path(&version) {
-                Ok(p) => {
-                    println!("{}", p.display());
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("qos-runtime-bundle path: {e}");
-                    ExitCode::from(1)
-                }
-            }
+            ExitCode::SUCCESS
         }
-        Cmd::Key { cmd } => match cmd {
-            KeyCmd::Generate { out } => {
-                let identity = Identity::generate();
-                if let Some(parent) = out.parent()
-                    && let Err(e) = std::fs::create_dir_all(parent)
-                {
-                    eprintln!("qos-runtime-bundle key generate: {e}");
-                    return ExitCode::from(1);
-                }
-                if let Err(e) = std::fs::write(&out, identity.to_json_bytes()) {
-                    eprintln!("qos-runtime-bundle key generate: {e}");
-                    return ExitCode::from(1);
-                }
-                // Best-effort restrict permissions on the secret file.
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o600));
-                }
-                println!("wrote identity to {}", out.display());
-                println!("public-key: ed25519:{}", identity.public_key_hex());
-                ExitCode::SUCCESS
-            }
-            KeyCmd::Pubkey { identity } => match Identity::load(&identity) {
-                Ok(id) => {
-                    println!("{}", id.public_key_hex());
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("qos-runtime-bundle key pubkey: {e}");
-                    ExitCode::from(1)
-                }
-            },
+        Err(e) => {
+            eprintln!("qos-runtime-bundle build: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn cmd_verify(
+    dir: &Path,
+    require_publisher: Option<String>,
+    require_signature: bool,
+    require_arch: Option<String>,
+) -> ExitCode {
+    match verify_bundle_with(
+        dir,
+        &VerifyOptions {
+            require_publisher,
+            require_signature,
+            require_arch,
         },
+    ) {
+        Ok(manifest) => {
+            println!("bundle {} verified", dir.display());
+            println!("  version  : {}", manifest.version);
+            println!("  arch     : {}", manifest.arch);
+            println!("  files    : {}", manifest.files.len());
+            println!("  root-hash: blake3:{}", manifest.root_hash);
+            if let Some(pk) = &manifest.publisher_hex {
+                println!("  publisher: ed25519:{pk}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("qos-runtime-bundle verify: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn cmd_path(version: &str, system: bool) -> ExitCode {
+    if system {
+        println!("{}", system_bundle_path(version).display());
+        return ExitCode::SUCCESS;
+    }
+    if let Some(p) = resolve_bundle_path(version) {
+        println!("{}", p.display());
+        return ExitCode::SUCCESS;
+    }
+    match default_bundle_path(version) {
+        Ok(p) => {
+            println!("{}", p.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("qos-runtime-bundle path: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn cmd_key(cmd: KeyCmd) -> ExitCode {
+    match cmd {
+        KeyCmd::Generate { out } => key_generate(&out),
+        KeyCmd::Pubkey { identity } => key_pubkey(&identity),
+    }
+}
+
+fn key_generate(out: &Path) -> ExitCode {
+    let identity = Identity::generate();
+    if let Some(parent) = out.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("qos-runtime-bundle key generate: {e}");
+        return ExitCode::from(1);
+    }
+    if let Err(e) = std::fs::write(out, identity.to_json_bytes()) {
+        eprintln!("qos-runtime-bundle key generate: {e}");
+        return ExitCode::from(1);
+    }
+    // Best-effort restrict permissions on the secret file.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o600));
+    }
+    println!("wrote identity to {}", out.display());
+    println!("public-key: ed25519:{}", identity.public_key_hex());
+    ExitCode::SUCCESS
+}
+
+fn key_pubkey(identity: &Path) -> ExitCode {
+    match Identity::load(identity) {
+        Ok(id) => {
+            println!("{}", id.public_key_hex());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("qos-runtime-bundle key pubkey: {e}");
+            ExitCode::from(1)
+        }
     }
 }

@@ -19,6 +19,8 @@
 //! Set `QUICK_UI_PERF=1` to see per-frame phase timings printed
 //! to stderr (the App's redraw cycle is instrumented in `app.rs`).
 
+use std::fmt::Write as _;
+
 use ui::i18n::I18nManager;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -47,7 +49,7 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
         .with_intrinsic_height()
         .push(Box::new(Text::new(title_key).with_size(18.0)));
     for i in 0..ROWS_PER_PANEL {
-        let row_idx = idx * ROWS_PER_PANEL + i;
+        let row_idx = idx.saturating_mul(ROWS_PER_PANEL).saturating_add(i);
         let label_key = leak_label(&format!("dash_lbl_{row_idx}"));
         match i % 3 {
             0 => {
@@ -65,7 +67,9 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
-                        .push(Box::new(Badge::count((i as u32) * 3))),
+                        .push(Box::new(Badge::count(
+                            u32::try_from(i).unwrap_or(u32::MAX).saturating_mul(3),
+                        ))),
                 ));
             }
             _ => {
@@ -85,12 +89,12 @@ pub fn run(_args: &[String]) {
     let mut ftl = String::new();
     ftl.push_str("dash_title = QuickDesktop Dashboard\n");
     for i in 0..8 {
-        ftl.push_str(&format!("dash_p{i} = Panel {i}\n"));
+        let _ = writeln!(ftl, "dash_p{i} = Panel {i}");
     }
     for row_idx in 0..(8 * ROWS_PER_PANEL) {
-        ftl.push_str(&format!("dash_lbl_{row_idx} = Metric {row_idx}\n"));
-        ftl.push_str(&format!("dash_btn_{row_idx} = btn_{row_idx}\n"));
-        ftl.push_str(&format!("dash_btnlbl_{row_idx} = Open\n"));
+        let _ = writeln!(ftl, "dash_lbl_{row_idx} = Metric {row_idx}");
+        let _ = writeln!(ftl, "dash_btn_{row_idx} = btn_{row_idx}");
+        let _ = writeln!(ftl, "dash_btnlbl_{row_idx} = Open");
     }
     I18nManager::add_resource("en-US", ftl);
 

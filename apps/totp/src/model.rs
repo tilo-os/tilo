@@ -277,6 +277,11 @@ impl Vault {
 ///
 /// `hotp://` (counter-based) is rejected with a clear message — this
 /// app is time-based only.
+///
+/// # Errors
+/// Returns `Err` when the string doesn't start with `otpauth://`, names an
+/// unsupported type (`hotp://`, or anything other than `totp`), or omits
+/// the required `secret` query parameter.
 pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String> {
     let uri = uri.trim();
     let rest = uri
@@ -386,7 +391,18 @@ pub fn account_palette(theme: &Theme) -> Vec<Color> {
 /// theme palette (wrapping).
 pub fn account_color(theme: &Theme, color_index: u8) -> Color {
     let palette = account_palette(theme);
-    palette[(color_index as usize) % palette.len()]
+    // `account_palette` always returns a fixed, non-empty set, so this is
+    // unreachable in practice — `.get()` documents that instead of indexing
+    // straight into the palette, and falls back to a themed colour (never a
+    // hard-coded literal) rather than panicking.
+    if palette.is_empty() {
+        return theme.tokens.colors.text_primary;
+    }
+    let idx = (color_index as usize) % palette.len();
+    palette
+        .get(idx)
+        .copied()
+        .unwrap_or(theme.tokens.colors.text_primary)
 }
 
 /// First-run demo vault: a handful of recognisable services with real,

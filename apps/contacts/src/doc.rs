@@ -29,31 +29,33 @@ pub struct ContactsDoc;
 
 impl ContactsDoc {
     /// Get-or-create the top-level `contacts` Map.
-    pub fn contacts_map(doc: &mut AutoCommit) -> ObjId {
+    ///
+    /// Returns `None` only if the document rejects the write (e.g. the root
+    /// was somehow replaced by a non-map); callers treat that as a no-op
+    /// rather than crashing.
+    pub fn contacts_map(doc: &mut AutoCommit) -> Option<ObjId> {
         match doc.get(&ROOT, "contacts") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "contacts", ObjType::Map)
-                .expect("put_object contacts on root never fails"),
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => doc.put_object(&ROOT, "contacts", ObjType::Map).ok(),
         }
     }
 
     /// Get-or-create the per-contact Map for `id`.
-    fn ensure_contact(doc: &mut AutoCommit, id: ContactId) -> ObjId {
-        let contacts = Self::contacts_map(doc);
+    fn ensure_contact(doc: &mut AutoCommit, id: ContactId) -> Option<ObjId> {
+        let contacts = Self::contacts_map(doc)?;
         let key = id.to_string();
         match doc.get(&contacts, key.as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), cid))) => cid,
-            _ => doc
-                .put_object(&contacts, key.as_str(), ObjType::Map)
-                .expect("put_object contact map never fails"),
+            Ok(Some((Value::Object(ObjType::Map), cid))) => Some(cid),
+            _ => doc.put_object(&contacts, key.as_str(), ObjType::Map).ok(),
         }
     }
 
     /// Insert or update a contact record, writing only the fields that
     /// actually changed so concurrent edits don't thrash.
     pub fn upsert_contact(doc: &mut AutoCommit, c: &Contact) {
-        let m = Self::ensure_contact(doc, c.id);
+        let Some(m) = Self::ensure_contact(doc, c.id) else {
+            return;
+        };
         sync_text(doc, &m, "first", &c.first);
         sync_text(doc, &m, "last", &c.last);
         sync_text(doc, &m, "org", &c.org);
@@ -77,7 +79,9 @@ impl ContactsDoc {
 
     /// Remove a contact from the document.
     pub fn delete_contact(doc: &mut AutoCommit, id: ContactId) {
-        let contacts = Self::contacts_map(doc);
+        let Some(contacts) = Self::contacts_map(doc) else {
+            return;
+        };
         let _ = doc.delete(&contacts, id.to_string().as_str());
     }
 
@@ -86,7 +90,9 @@ impl ContactsDoc {
     /// can't resurrect a deleted record. The guarded put makes an unchanged
     /// re-store free.
     pub fn set_favorite(doc: &mut AutoCommit, id: ContactId, favorite: bool) {
-        let contacts = Self::contacts_map(doc);
+        let Some(contacts) = Self::contacts_map(doc) else {
+            return;
+        };
         let key = id.to_string();
         if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&contacts, key.as_str()) {
             ui::doc::put_if_changed(doc, &m, "favorite", favorite);
@@ -96,9 +102,8 @@ impl ContactsDoc {
     /// Read every contact out of the document. Records with an
     /// unparseable id key are skipped.
     pub fn list_contacts(doc: &AutoCommit) -> Vec<Contact> {
-        let contacts = match doc.get(&ROOT, "contacts") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), contacts))) = doc.get(&ROOT, "contacts") else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         for key in doc.keys(&contacts) {
@@ -133,17 +138,17 @@ impl ContactsDoc {
 // Field helpers
 // ---------------------------------------------------------------------
 
-fn text_obj(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
+fn text_obj(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(parent, key) {
-        Ok(Some((Value::Object(ObjType::Text), id))) => id,
-        _ => doc
-            .put_object(parent, key, ObjType::Text)
-            .expect("put_object text field never fails"),
+        Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
+        _ => doc.put_object(parent, key, ObjType::Text).ok(),
     }
 }
 
 fn sync_text(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
-    let tid = text_obj(doc, parent, key);
+    let Some(tid) = text_obj(doc, parent, key) else {
+        return;
+    };
     ui::doc::splice_text_diffed(doc, &tid, value);
 }
 
@@ -176,12 +181,10 @@ fn read_bool(doc: &AutoCommit, parent: &ObjId, key: &str) -> bool {
 }
 
 /// Get-or-create a List object at `parent[key]`.
-fn list_obj(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
+fn list_obj(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(parent, key) {
-        Ok(Some((Value::Object(ObjType::List), id))) => id,
-        _ => doc
-            .put_object(parent, key, ObjType::List)
-            .expect("put_object list never fails"),
+        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+        _ => doc.put_object(parent, key, ObjType::List).ok(),
     }
 }
 
@@ -194,9 +197,8 @@ fn clear_list(doc: &mut AutoCommit, list: &ObjId) {
 }
 
 fn read_str_list(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<String> {
-    let list = match doc.get(parent, key) {
-        Ok(Some((Value::Object(ObjType::List), id))) => id,
-        _ => return Vec::new(),
+    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(parent, key) else {
+        return Vec::new();
     };
     let mut out = Vec::new();
     for i in 0..doc.length(&list) {
@@ -213,7 +215,9 @@ fn sync_str_list(doc: &mut AutoCommit, parent: &ObjId, key: &str, values: &[Stri
     if read_str_list(doc, parent, key) == values {
         return;
     }
-    let list = list_obj(doc, parent, key);
+    let Some(list) = list_obj(doc, parent, key) else {
+        return;
+    };
     clear_list(doc, &list);
     for (i, v) in values.iter().enumerate() {
         let _ = doc.insert(&list, i, v.clone());
@@ -221,9 +225,8 @@ fn sync_str_list(doc: &mut AutoCommit, parent: &ObjId, key: &str, values: &[Stri
 }
 
 fn read_labeled_list(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<Labeled> {
-    let list = match doc.get(parent, key) {
-        Ok(Some((Value::Object(ObjType::List), id))) => id,
-        _ => return Vec::new(),
+    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(parent, key) else {
+        return Vec::new();
     };
     let mut out = Vec::new();
     for i in 0..doc.length(&list) {
@@ -241,15 +244,16 @@ fn sync_labeled_list(doc: &mut AutoCommit, parent: &ObjId, key: &str, values: &[
     if read_labeled_list(doc, parent, key) == values {
         return;
     }
-    let list = list_obj(doc, parent, key);
+    let Some(list) = list_obj(doc, parent, key) else {
+        return;
+    };
     clear_list(doc, &list);
     for (i, v) in values.iter().enumerate() {
         if let Ok(m) = doc.insert_object(&list, i, ObjType::Map) {
             let _ = doc.put(&m, "label", v.label.clone());
-            let vid = doc
-                .put_object(&m, "value", ObjType::Text)
-                .expect("put value text never fails");
-            if !v.value.is_empty() {
+            if let Ok(vid) = doc.put_object(&m, "value", ObjType::Text)
+                && !v.value.is_empty()
+            {
                 let _ = doc.splice_text(&vid, 0, 0, &v.value);
             }
         }
@@ -257,9 +261,8 @@ fn sync_labeled_list(doc: &mut AutoCommit, parent: &ObjId, key: &str, values: &[
 }
 
 fn read_address_list(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<Address> {
-    let list = match doc.get(parent, key) {
-        Ok(Some((Value::Object(ObjType::List), id))) => id,
-        _ => return Vec::new(),
+    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(parent, key) else {
+        return Vec::new();
     };
     let mut out = Vec::new();
     for i in 0..doc.length(&list) {
@@ -281,7 +284,9 @@ fn sync_address_list(doc: &mut AutoCommit, parent: &ObjId, key: &str, values: &[
     if read_address_list(doc, parent, key) == values {
         return;
     }
-    let list = list_obj(doc, parent, key);
+    let Some(list) = list_obj(doc, parent, key) else {
+        return;
+    };
     clear_list(doc, &list);
     for (i, a) in values.iter().enumerate() {
         if let Ok(m) = doc.insert_object(&list, i, ObjType::Map) {

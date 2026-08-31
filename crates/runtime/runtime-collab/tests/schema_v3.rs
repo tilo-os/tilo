@@ -30,6 +30,7 @@ use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use capnp::capability::Promise;
+use capnp::message::ReaderOptions;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::net::UnixStream;
 use tokio::task::LocalSet;
@@ -79,10 +80,18 @@ enum PublishedInput {
 
 type SharedCaptures = Rc<RefCell<Captures>>;
 
+/// Pre-seeded `(hash, bytes)` pairs shared between a `FakeChannel` and the
+/// `FakeBlobStream` it hands out.
+type BlobBacklog = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
+
+/// Pre-seeded `(type_id, payload, from_user_id)` triples shared between a
+/// `FakeChannel` and the `FakeActionStream` it hands out.
+type ActionBacklog = Rc<RefCell<Vec<(String, Vec<u8>, String)>>>;
+
 // fake streams
 
 struct FakeBlobStream {
-    backlog: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
+    backlog: BlobBacklog,
 }
 
 impl blob_stream::Server for FakeBlobStream {
@@ -104,7 +113,7 @@ impl blob_stream::Server for FakeBlobStream {
 }
 
 struct FakeActionStream {
-    backlog: Rc<RefCell<Vec<(String, Vec<u8>, String)>>>,
+    backlog: ActionBacklog,
 }
 
 impl action_stream::Server for FakeActionStream {
@@ -172,8 +181,8 @@ impl invocation_stream::Server for FakeInvocationStream {
 
 struct FakeChannel {
     captures: SharedCaptures,
-    blob_backlog: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
-    action_backlog: Rc<RefCell<Vec<(String, Vec<u8>, String)>>>,
+    blob_backlog: BlobBacklog,
+    action_backlog: ActionBacklog,
     invocation_backlog: Rc<RefCell<Vec<SeedInvocation>>>,
 }
 
@@ -355,7 +364,7 @@ impl collab_service::Server for FakeBroker {
     }
 }
 
-async fn stand_up_client(broker: FakeBroker) -> CollabClient {
+fn stand_up_client(broker: FakeBroker) -> CollabClient {
     let (server_side, client_side) = UnixStream::pair().unwrap();
 
     let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
@@ -364,7 +373,7 @@ async fn stand_up_client(broker: FakeBroker) -> CollabClient {
         server_read.compat(),
         server_write.compat_write(),
         rpc_twoparty_capnp::Side::Server,
-        Default::default(),
+        ReaderOptions::default(),
     ));
     let server_rpc = RpcSystem::new(server_network, Some(broker_client.client));
     tokio::task::spawn_local(async move {
@@ -390,7 +399,7 @@ async fn offer_and_want_blob_reach_the_broker_verbatim() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-blob", b"identity").await.unwrap();
 
             channel
@@ -421,7 +430,7 @@ async fn subscribe_blobs_yields_hash_and_bytes() {
                 ],
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab
                 .join_channel("chan-blob-rx", b"identity")
                 .await
@@ -451,7 +460,7 @@ async fn send_action_carries_type_id_and_opaque_payload() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-act", b"identity").await.unwrap();
 
             channel
@@ -480,7 +489,7 @@ async fn subscribe_actions_keeps_sender_attribution_separate_from_payload() {
                 action_backlog: vec![("chat.remark".into(), b"payload".to_vec(), "peer-3".into())],
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab
                 .join_channel("chan-act-rx", b"identity")
                 .await
@@ -507,7 +516,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-pub", b"identity").await.unwrap();
 
             channel
@@ -593,7 +602,7 @@ async fn invocation_distinguishes_an_empty_argument_from_no_argument() {
                 ],
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-inv", b"identity").await.unwrap();
             let stream = channel.subscribe_invocations().await.unwrap();
 
@@ -623,7 +632,7 @@ async fn complete_invocation_reports_both_success_and_refusal() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-done", b"identity").await.unwrap();
 
             channel.complete_invocation(1, "", "").await.unwrap();
@@ -659,7 +668,7 @@ async fn compose_remark_carries_the_reference_and_the_window_local_rect() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab
                 .join_channel("chan-remark", b"identity")
                 .await

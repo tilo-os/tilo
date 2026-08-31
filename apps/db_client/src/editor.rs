@@ -225,124 +225,146 @@ impl SqlEditor {
             }
             WindowEvent::KeyboardInput {
                 event:
-                    KeyEvent {
-                        logical_key,
-                        text,
+                    key_event @ KeyEvent {
                         state: ElementState::Pressed,
                         ..
                     },
                 ..
             } => {
-                if !self.focused {
-                    return;
-                }
-                let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                match logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        if ctrl {
-                            self.run_requested = true;
-                        } else {
-                            self.caret = EditorDoc::insert(doc, self.caret, "\n");
-                            self.buffer = EditorDoc::read_sql(doc);
-                            self.mutated = true;
-                            self.ensure_caret_visible();
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Backspace) => {
-                        if self.caret > 0 {
-                            self.caret = EditorDoc::delete(doc, self.caret - 1, 1);
-                            self.buffer = EditorDoc::read_sql(doc);
-                            self.mutated = true;
-                            self.ensure_caret_visible();
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Delete) => {
-                        let len = self.buffer.chars().count();
-                        if self.caret < len {
-                            self.caret = EditorDoc::delete(doc, self.caret, 1);
-                            self.buffer = EditorDoc::read_sql(doc);
-                            self.mutated = true;
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Tab) => {
-                        self.caret = EditorDoc::insert(doc, self.caret, "  ");
-                        self.buffer = EditorDoc::read_sql(doc);
-                        self.mutated = true;
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Space) => {
-                        self.caret = EditorDoc::insert(doc, self.caret, " ");
-                        self.buffer = EditorDoc::read_sql(doc);
-                        self.mutated = true;
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        if self.caret > 0 {
-                            self.caret -= 1;
-                        }
-                        self.ensure_caret_visible();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowRight) => {
-                        if self.caret < self.buffer.chars().count() {
-                            self.caret += 1;
-                        }
-                        self.ensure_caret_visible();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        let (l, c) = self.caret_line_col();
-                        if l > 0 {
-                            self.move_caret_to(l - 1, c);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        let (l, c) = self.caret_line_col();
-                        self.move_caret_to(l + 1, c);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Home) => {
-                        let (l, _) = self.caret_line_col();
-                        self.move_caret_to(l, 0);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::End) => {
-                        let (l, _) = self.caret_line_col();
-                        self.move_caret_to(l, self.line_len(l));
-                        *handled = true;
-                    }
-                    Key::Character(_) => {
-                        if let Some(t) = text
-                            && !ctrl
-                        {
-                            self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
-                            self.buffer = EditorDoc::read_sql(doc);
-                            self.mutated = true;
-                            self.ensure_caret_visible();
-                            *handled = true;
-                        }
-                    }
-                    _ => {
-                        // Some layouts deliver printable text without a
-                        // Character key; honour `text` as a fallback.
-                        if let Some(t) = text
-                            && !ctrl
-                            && !t.is_empty()
-                        {
-                            self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
-                            self.buffer = EditorDoc::read_sql(doc);
-                            self.mutated = true;
-                            self.ensure_caret_visible();
-                            *handled = true;
-                        }
-                    }
-                }
+                self.handle_key_event(key_event, modifiers, doc, handled);
             }
             _ => {}
+        }
+    }
+
+    fn handle_key_event(
+        &mut self,
+        key_event: &KeyEvent,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if !self.focused {
+            return;
+        }
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        let text = &key_event.text;
+        let logical_key = &key_event.logical_key;
+        if self.handle_navigation_key(logical_key) {
+            *handled = true;
+            return;
+        }
+        match logical_key {
+            Key::Named(NamedKey::Enter) => {
+                if ctrl {
+                    self.run_requested = true;
+                } else {
+                    self.caret = EditorDoc::insert(doc, self.caret, "\n");
+                    self.buffer = EditorDoc::read_sql(doc);
+                    self.mutated = true;
+                    self.ensure_caret_visible();
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if self.caret > 0 {
+                    self.caret = EditorDoc::delete(doc, self.caret - 1, 1);
+                    self.buffer = EditorDoc::read_sql(doc);
+                    self.mutated = true;
+                    self.ensure_caret_visible();
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::Delete) => {
+                let len = self.buffer.chars().count();
+                if self.caret < len {
+                    self.caret = EditorDoc::delete(doc, self.caret, 1);
+                    self.buffer = EditorDoc::read_sql(doc);
+                    self.mutated = true;
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::Tab) => {
+                self.caret = EditorDoc::insert(doc, self.caret, "  ");
+                self.buffer = EditorDoc::read_sql(doc);
+                self.mutated = true;
+                *handled = true;
+            }
+            Key::Named(NamedKey::Space) => {
+                self.caret = EditorDoc::insert(doc, self.caret, " ");
+                self.buffer = EditorDoc::read_sql(doc);
+                self.mutated = true;
+                *handled = true;
+            }
+            Key::Character(_) => {
+                if let Some(t) = text
+                    && !ctrl
+                {
+                    self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
+                    self.buffer = EditorDoc::read_sql(doc);
+                    self.mutated = true;
+                    self.ensure_caret_visible();
+                    *handled = true;
+                }
+            }
+            _ => {
+                // Some layouts deliver printable text without a Character
+                // key; honour `text` as a fallback.
+                if let Some(t) = text
+                    && !ctrl
+                    && !t.is_empty()
+                {
+                    self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
+                    self.buffer = EditorDoc::read_sql(doc);
+                    self.mutated = true;
+                    self.ensure_caret_visible();
+                    *handled = true;
+                }
+            }
+        }
+    }
+
+    /// Caret-movement keys, which never touch the document. Returns whether
+    /// `logical_key` was one of these (and so has already been handled).
+    fn handle_navigation_key(&mut self, logical_key: &Key) -> bool {
+        match logical_key {
+            Key::Named(NamedKey::ArrowLeft) => {
+                if self.caret > 0 {
+                    self.caret -= 1;
+                }
+                self.ensure_caret_visible();
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if self.caret < self.buffer.chars().count() {
+                    self.caret += 1;
+                }
+                self.ensure_caret_visible();
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let (l, c) = self.caret_line_col();
+                if l > 0 {
+                    self.move_caret_to(l - 1, c);
+                }
+                true
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                let (l, c) = self.caret_line_col();
+                self.move_caret_to(l + 1, c);
+                true
+            }
+            Key::Named(NamedKey::Home) => {
+                let (l, _) = self.caret_line_col();
+                self.move_caret_to(l, 0);
+                true
+            }
+            Key::Named(NamedKey::End) => {
+                let (l, _) = self.caret_line_col();
+                self.move_caret_to(l, self.line_len(l));
+                true
+            }
+            _ => false,
         }
     }
 
@@ -423,7 +445,10 @@ impl SqlEditor {
 
             // Tokenize this line and paint each span in its colour.
             let mut x = body_x;
-            for span in syntax::tokenize(lines[li]) {
+            let Some(&text) = lines.get(li) else {
+                continue;
+            };
+            for span in syntax::tokenize(text) {
                 let color = token_color(span.kind, theme, &p);
                 let w = span.text.chars().count() as f64 * char_w;
                 if !span.text.trim().is_empty() {
@@ -482,8 +507,7 @@ fn token_color(kind: Tok, theme: &Theme, p: &crate::theme_ext::DbPalette) -> Col
         Tok::Comment => p.comment,
         Tok::Operator => p.op,
         Tok::Punct => theme.text_dim,
-        Tok::Identifier => theme.text_primary,
-        Tok::Whitespace => theme.text_primary,
+        Tok::Identifier | Tok::Whitespace => theme.text_primary,
     }
 }
 

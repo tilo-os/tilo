@@ -134,6 +134,10 @@ pub fn collab_socket() -> PathBuf {
 /// Called by whoever binds a service socket — a `bind` into a missing
 /// parent is `ENOENT`. Mode 0700: the sandbox boundary assumes only
 /// this user's session can reach these live connections.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be created.
 pub fn ensure_services_root() -> std::io::Result<PathBuf> {
     let root = services_root();
     std::fs::create_dir_all(&root)?;
@@ -153,6 +157,13 @@ pub fn ensure_services_root() -> std::io::Result<PathBuf> {
 /// `no_services` short-circuits the lookup: any required service that
 /// would otherwise fail simply logs a warning and is skipped, and no
 /// fds are opened.
+///
+/// # Errors
+///
+/// Returns [`ServiceError::BadRequirement`] if a manifest entry doesn't
+/// parse, [`ServiceError::RequiredMissing`] if a required service's socket
+/// doesn't exist, or [`ServiceError::OpenFailed`] if a required service's
+/// socket exists but refuses the connection.
 pub fn resolve_service_binds(
     services: &BTreeMap<String, String>,
     no_services: bool,
@@ -219,7 +230,7 @@ pub fn resolve_service_binds(
         let host = OwnedFd::from(stream);
 
         let child_fd = next_child_fd;
-        next_child_fd += 1;
+        next_child_fd = next_child_fd.saturating_add(1);
 
         out.push(ResolvedService {
             name: name.clone(),
@@ -355,6 +366,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn a_finished_launch_leaves_no_descriptor_behind() {
+        const LAUNCHES: usize = 8;
+
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
@@ -363,7 +376,6 @@ mod tests {
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), "optional@1".to_string());
 
-        const LAUNCHES: usize = 8;
         let mut handed_out: Vec<String> = Vec::with_capacity(LAUNCHES);
         for _ in 0..LAUNCHES {
             let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");

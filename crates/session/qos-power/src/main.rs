@@ -192,12 +192,15 @@ fn enumerate_cpus() -> Vec<PathBuf> {
     if let Ok(entries) = fs::read_dir(CPU_ROOT) {
         for e in entries.flatten() {
             let name = e.file_name();
-            let s = match name.to_str() {
-                Some(s) => s,
-                None => continue,
-            };
-            // Match `cpu` followed by all-digit suffix.
-            if !s.starts_with("cpu") || !s[3..].chars().all(|c| c.is_ascii_digit()) {
+            let Some(s) = name.to_str() else { continue };
+            // Match `cpu` followed by all-digit suffix. `s.starts_with("cpu")`
+            // (ASCII) guarantees byte offset 3 is a char boundary, but
+            // `.get()` avoids indexing regardless.
+            if !s.starts_with("cpu") {
+                continue;
+            }
+            let Some(digits) = s.get(3..) else { continue };
+            if !digits.chars().all(|c| c.is_ascii_digit()) {
                 continue;
             }
             out.push(e.path());

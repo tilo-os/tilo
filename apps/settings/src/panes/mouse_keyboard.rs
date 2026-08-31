@@ -116,7 +116,7 @@ impl MouseKeyboardPane {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         crate::widgets::cards(vec![
-            self.pointer_card(),
+            Self::pointer_card(),
             self.advanced_pointer_card(),
             self.keyboard_card(),
             self.input_sources_card(),
@@ -124,7 +124,7 @@ impl MouseKeyboardPane {
         ])
     }
 
-    fn pointer_card(&self) -> Box<dyn Widget> {
+    fn pointer_card() -> Box<dyn Widget> {
         card(
             "Pointer",
             rows(vec![
@@ -451,7 +451,7 @@ impl MouseKeyboardPane {
         }
     }
 
-    fn sync_simple_fields(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync_simple_fields(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(v) = read_f64(state, root, POINTER_SPEED_KEY)
             && (v - self.last.pointer_speed).abs() > 0.001
         {
@@ -512,7 +512,7 @@ impl MouseKeyboardPane {
         }
     }
 
-    fn sync_choice_fields(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync_choice_fields(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(label) = read_str(state, root, ACCEL_PROFILE_KEY) {
             let profile = if label == "Flat" { "flat" } else { "adaptive" };
             if profile != self.last.accel_profile {

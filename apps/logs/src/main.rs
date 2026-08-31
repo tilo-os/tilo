@@ -31,6 +31,10 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let entries = if std::env::var("QOS_LOGS_EMPTY").is_ok() {
         Vec::new()
@@ -49,5 +53,5 @@ pub fn main() {
         LaunchSpec::new("dev.qos.logs", logs::app_root)
             .shot_root(shot_root)
             .allowed_flags(&["--detail"]),
-    )
+    );
 }

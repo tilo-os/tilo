@@ -150,7 +150,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
 
     // Local typed collaboration broker, held for the lifetime of `app.run()`.
     // When peer sync is enabled it also bridges app changes between machines.
-    let _collab_broker = spawn_collab_broker(&peer_sync);
+    let _collab_broker = spawn_collab_broker(peer_sync.as_ref());
 
     // Hosted-mode test-control socket: when QOS_TEST_CONTROL is set, bind it like the headless
     // backend and run the App with a proxy injecting clicks/hovers into the event loop — same code
@@ -393,13 +393,11 @@ fn bring_up_portal(
             .thread_name("nirios-portal")
             .build()
             .ok();
-        match rt {
-            Some(rt) => (rt.handle().clone(), Some(rt)),
-            None => {
-                tracing::warn!("portal: tokio runtime build failed; portal stays off");
-                return PortalBringup::RuntimeUnavailable;
-            }
-        }
+        let Some(rt) = rt else {
+            tracing::warn!("portal: tokio runtime build failed; portal stays off");
+            return PortalBringup::RuntimeUnavailable;
+        };
+        (rt.handle().clone(), Some(rt))
     };
     // The portal's grant store shares the same `WorkspaceTreeHandle` as chrome + peer-sync: an
     // `Allow` outcome flips a workspace grant on the same tree the Permissions tab reads, and `doc_insert_grant` mirrors it into the automerge doc so peer-sync ships it next tick.
@@ -448,11 +446,12 @@ fn bring_up_portal(
 /// Binds the local typed collaboration broker socket when `QUICK_COLLAB_CAPNP_SOCK` is set. When
 /// peer sync is enabled it also bridges app changes between machines.
 fn spawn_collab_broker(
-    peer_sync: &Option<Arc<ShellNetwork>>,
+    peer_sync: Option<&Arc<ShellNetwork>>,
 ) -> Option<crate::shell::collab_broker::BrokerHandle> {
     let path = std::env::var_os("QUICK_COLLAB_CAPNP_SOCK")?;
     let socket_path = std::path::PathBuf::from(path);
-    match crate::shell::collab_broker::spawn_native(socket_path.clone(), peer_sync.clone()) {
+    let peer_sync_owned = peer_sync.cloned();
+    match crate::shell::collab_broker::spawn_native(socket_path.clone(), &peer_sync_owned) {
         Ok(handle) => {
             tracing::info!(
                 "collab_broker: bound {} (capnp) — peer_sync={}",

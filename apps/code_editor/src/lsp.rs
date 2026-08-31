@@ -634,7 +634,7 @@ impl LspClient {
     pub fn request_completion(&mut self, uri: &str, pos: Position) {
         self.send_request(
             "textDocument/completion",
-            json!({
+            &json!({
                 "textDocument": { "uri": uri },
                 "position": { "line": pos.line, "character": pos.character }
             }),
@@ -646,7 +646,7 @@ impl LspClient {
     pub fn request_hover(&mut self, uri: &str, pos: Position) {
         self.send_request(
             "textDocument/hover",
-            json!({
+            &json!({
                 "textDocument": { "uri": uri },
                 "position": { "line": pos.line, "character": pos.character }
             }),
@@ -658,7 +658,7 @@ impl LspClient {
     pub fn request_definition(&mut self, uri: &str, pos: Position) {
         self.send_request(
             "textDocument/definition",
-            json!({
+            &json!({
                 "textDocument": { "uri": uri },
                 "position": { "line": pos.line, "character": pos.character }
             }),
@@ -666,13 +666,13 @@ impl LspClient {
         );
     }
 
-    fn send_request(&mut self, method: &str, params: Value, kind: Pending) {
+    fn send_request(&mut self, method: &str, params: &Value, kind: Pending) {
         let id = self.next_id;
         self.next_id += 1;
         if let Ok(mut pending) = self.pending.lock() {
             pending.insert(id, kind);
         }
-        self.send_request_raw(method, &params, Some(id));
+        self.send_request_raw(method, params, Some(id));
     }
 
     fn send_request_raw(&mut self, method: &str, params: &Value, id: Option<i64>) {
@@ -690,7 +690,7 @@ impl LspClient {
         self.write(&payload);
     }
 
-    fn send_notification(&mut self, method: &str, params: &Value) {
+    fn send_notification(&self, method: &str, params: &Value) {
         let payload = json!({
             "jsonrpc": "2.0",
             "method": method,

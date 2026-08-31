@@ -133,9 +133,8 @@ pub fn verify_with_trust<S: BlobStore>(
     let Some(sig_bytes) = signed.signature else {
         return Verification::NotSigned;
     };
-    let vk = match VerifyingKey::from_bytes(&signed.publisher_identity) {
-        Ok(vk) => vk,
-        Err(_) => return Verification::InvalidPublisherKey,
+    let Ok(vk) = VerifyingKey::from_bytes(&signed.publisher_identity) else {
+        return Verification::InvalidPublisherKey;
     };
     let signature = DalekSig::from_bytes(&sig_bytes);
     if vk.verify(&signed.signing_bytes(), &signature).is_err() {
@@ -176,9 +175,8 @@ pub fn verify_with_trust<S: BlobStore>(
         }
     }
     // Decode the manifest.
-    let manifest_str = match std::str::from_utf8(&manifest_bytes) {
-        Ok(s) => s,
-        Err(_) => return Verification::ManifestParseFailed("non-UTF-8 manifest".into()),
+    let Ok(manifest_str) = std::str::from_utf8(&manifest_bytes) else {
+        return Verification::ManifestParseFailed("non-UTF-8 manifest".into());
     };
     let manifest = match Manifest::from_toml_str(manifest_str) {
         Ok(m) => m,

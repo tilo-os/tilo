@@ -44,7 +44,9 @@ impl DeviceInfo {
             2
         };
         // Negate so a stronger (less negative) RSSI sorts first; unknown strength sorts last.
-        let rssi = self.rssi.map_or(i16::MAX, |r| -r);
+        // `i16::MIN` has no positive counterpart, but real RSSI never gets near it — saturating
+        // just means such a reading sorts alongside "unknown" instead of panicking.
+        let rssi = self.rssi.map_or(i16::MAX, i16::saturating_neg);
         (rank, rssi, self.name.clone())
     }
 }
@@ -55,6 +57,15 @@ pub fn sort_devices(devices: &mut [DeviceInfo]) {
 }
 
 /// The adapter's own state.
+// Four independently-toggleable `BlueZ` properties (Powered, Discovering, Discoverable,
+// Pairable), not a state machine with illegal combinations, so a bitflags-style redesign
+// wouldn't earn its keep here — and this type is read by field across `shell`, `settings` and
+// `os-actions`, so restructuring it ripples well outside this crate.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent BlueZ adapter properties, not a state machine; consumers in \
+              other crates read these by field"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AdapterInfo {
     pub path: String,
@@ -147,24 +158,25 @@ pub enum PairingReply {
 /// Whether a reply actually answers the question that was asked. The agent checks this so a
 /// UI bug becomes a rejected pairing rather than a panic or nonsense handed to the daemon.
 pub fn reply_answers(prompt: &PairingPrompt, reply: &PairingReply) -> bool {
-    match (prompt, reply) {
-        (PairingPrompt::RequestPasskey, PairingReply::Passkey(_)) => true,
-        (PairingPrompt::RequestPinCode, PairingReply::PinCode(_)) => true,
-        (PairingPrompt::RequestPasskey | PairingPrompt::RequestPinCode, PairingReply::Reject) => {
-            true
+    match prompt {
+        PairingPrompt::RequestPasskey => {
+            matches!(reply, PairingReply::Passkey(_) | PairingReply::Reject)
         }
-        (PairingPrompt::RequestPasskey | PairingPrompt::RequestPinCode, _) => false,
-        (_, PairingReply::Accept | PairingReply::Reject) => true,
-        _ => false,
+        PairingPrompt::RequestPinCode => {
+            matches!(reply, PairingReply::PinCode(_) | PairingReply::Reject)
+        }
+        // Every other prompt is yes/no: an accept or a reject answers it, a typed
+        // passkey or PIN does not.
+        _ => matches!(reply, PairingReply::Accept | PairingReply::Reject),
     }
 }
 
 /// Extract a `DeviceInfo` from the property map `BlueZ` hands out via `ObjectManager` /
 /// `PropertiesChanged`. `interfaces` is the `a{sa{sv}}` value for one object path: interface
 /// name → property map. Returns `None` when the object is not a device.
-pub fn device_from_interfaces(
+pub fn device_from_interfaces<S: std::hash::BuildHasher>(
     path: &str,
-    interfaces: &HashMap<String, HashMap<String, OwnedValue>>,
+    interfaces: &HashMap<String, HashMap<String, OwnedValue, S>, S>,
 ) -> Option<DeviceInfo> {
     let props = interfaces.get("org.bluez.Device1")?;
     let address = str_prop(props, "Address").unwrap_or_default();
@@ -196,9 +208,9 @@ pub fn device_from_interfaces(
 
 /// Extract an `AdapterInfo` from an `ObjectManager` entry, or `None` when the object is not
 /// an adapter.
-pub fn adapter_from_interfaces(
+pub fn adapter_from_interfaces<S: std::hash::BuildHasher>(
     path: &str,
-    interfaces: &HashMap<String, HashMap<String, OwnedValue>>,
+    interfaces: &HashMap<String, HashMap<String, OwnedValue, S>, S>,
 ) -> Option<AdapterInfo> {
     let props = interfaces.get("org.bluez.Adapter1")?;
     Some(AdapterInfo {
@@ -218,25 +230,34 @@ pub fn adapter_from_interfaces(
 // through the borrowed `Value` rather than converting; matching explicitly also means an
 // unexpected property type is ignored rather than panicking.
 
-fn str_prop(props: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+fn str_prop<S: std::hash::BuildHasher>(
+    props: &HashMap<String, OwnedValue, S>,
+    key: &str,
+) -> Option<String> {
     match props.get(key).map(|v| &**v) {
         Some(Value::Str(s)) => Some(s.to_string()),
         _ => None,
     }
 }
 
-fn bool_prop(props: &HashMap<String, OwnedValue>, key: &str) -> bool {
+fn bool_prop<S: std::hash::BuildHasher>(props: &HashMap<String, OwnedValue, S>, key: &str) -> bool {
     matches!(props.get(key).map(|v| &**v), Some(Value::Bool(true)))
 }
 
-fn u8_prop(props: &HashMap<String, OwnedValue>, key: &str) -> Option<u8> {
+fn u8_prop<S: std::hash::BuildHasher>(
+    props: &HashMap<String, OwnedValue, S>,
+    key: &str,
+) -> Option<u8> {
     match props.get(key).map(|v| &**v) {
         Some(Value::U8(n)) => Some(*n),
         _ => None,
     }
 }
 
-fn i16_prop(props: &HashMap<String, OwnedValue>, key: &str) -> Option<i16> {
+fn i16_prop<S: std::hash::BuildHasher>(
+    props: &HashMap<String, OwnedValue, S>,
+    key: &str,
+) -> Option<i16> {
     match props.get(key).map(|v| &**v) {
         Some(Value::I16(n)) => Some(*n),
         _ => None,

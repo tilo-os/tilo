@@ -13,6 +13,17 @@ use vello::peniko::{Color, Fill};
 /// Standard toolbar height, so callers can reserve space consistently.
 pub const TOOLBAR_HEIGHT: f64 = 50.0;
 
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
+              or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
+    transform * Affine::translate((dx, dy))
+}
+
 /// A decoration drawn on (and font weight applied to) a button's label, so a
 /// formatting button reads as what it does (Bold = bold "B", etc.).
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -44,14 +55,17 @@ impl ToolbarItem {
             group_start: false,
         }
     }
+    #[must_use]
     pub fn active(mut self, active: bool) -> Self {
         self.active = active;
         self
     }
+    #[must_use]
     pub fn cue(mut self, cue: LabelCue) -> Self {
         self.cue = cue;
         self
     }
+    #[must_use]
     pub fn group_start(mut self, group_start: bool) -> Self {
         self.group_start = group_start;
         self
@@ -123,7 +137,7 @@ pub fn draw(
                 &item.label,
                 15.0,
                 color,
-                transform * Affine::translate((lx, ly)),
+                translated(transform, lx, ly),
                 None,
                 TextWeight::Bold,
             );
@@ -133,7 +147,7 @@ pub fn draw(
                 &item.label,
                 15.0,
                 color,
-                transform * Affine::translate((lx, ly)),
+                translated(transform, lx, ly),
                 None,
             );
         }

@@ -119,6 +119,11 @@ fn an_explicitly_denied_role_cannot_be_rescued_by_a_grant() {
 struct NoOpWidget;
 impl ui::widget::Widget for NoOpWidget {
     fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+    #[allow(
+        clippy::unimplemented,
+        reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
+                  exercise presence_key/permission_scope/draw_with_presence default delegation)"
+    )]
     fn build_layout(
         &mut self,
         _t: &mut taffy::TaffyTree<()>,
@@ -200,6 +205,11 @@ struct GatedButton {
 
 impl ui::widget::Widget for GatedButton {
     fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+    #[allow(
+        clippy::unimplemented,
+        reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
+                  exercise dispatch_gated_event via handle_event)"
+    )]
     fn build_layout(
         &mut self,
         _t: &mut taffy::TaffyTree<()>,

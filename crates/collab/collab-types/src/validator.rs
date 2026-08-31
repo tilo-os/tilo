@@ -24,7 +24,7 @@ use crate::event::RoleAttestation;
 use crate::identity::{Attestation, AttestationId, Claim, Clearance};
 use crate::op::SignedOp;
 use crate::redaction::{OpId, RedactRequest, RedactedMarker, RedactionError, parse_redact_payload};
-use crate::role::{ArtifactKind, OpClass, role_permits};
+use crate::role::{ArtifactKind, OpClass, Role, role_permits};
 
 /// Default upper bound on the per-channel in-memory op log; the oldest op
 /// is evicted on overflow. 4096 balances "enough scrollback to satisfy a
@@ -272,6 +272,11 @@ impl ChannelState {
     /// - `Err`: nothing is recorded and `last_seq_per_author` is untouched.
     ///
     /// Returns the same [`ValidationError`] the validator would, for audit logging.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ValidationError`] the validation pipeline hits;
+    /// see [`validate_inbound_op`] for the step ordering.
     pub fn apply_and_relay(&mut self, op: &SignedOp) -> Result<(), ValidationError> {
         validate_inbound_op(op, self)?;
         self.record_validated_op(op.clone());
@@ -293,6 +298,12 @@ impl ChannelState {
     /// The prefix hash is computed over matching ops sorted by `seq`
     /// ascending — zero overhead for an in-order log, a negligible sort cost
     /// otherwise (≤ 4096 ops at v1 scale).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompactionError::PrefixHashMismatch`] if the locally
+    /// recomputed prefix hash doesn't match the checkpoint's, or
+    /// [`CompactionError::Malformed`] if hashing the prefix itself fails.
     pub fn apply_compaction(
         &mut self,
         checkpoint: &CompactionCheckpoint,
@@ -304,7 +315,7 @@ impl ChannelState {
         let mut prefix: Vec<SignedOp> = self
             .op_log
             .iter()
-            .filter(|op| op.artifact == checkpoint.artifact && op.seq <= checkpoint.up_to_seq)
+            .filter(|op| op_in_checkpoint_prefix(op, checkpoint))
             .map(|op| {
                 let id = OpId::from_op(op);
                 if self.redacted_ops.contains(&id)
@@ -328,11 +339,9 @@ impl ChannelState {
         // after the targeted op is gone.
         let before = self.op_log.len();
         self.op_log.retain(|op| {
-            !(op.artifact == checkpoint.artifact
-                && op.seq <= checkpoint.up_to_seq
-                && op.op_class != OpClass::Redact)
+            !(op_in_checkpoint_prefix(op, checkpoint) && op.op_class != OpClass::Redact)
         });
-        Ok(before - self.op_log.len())
+        Ok(before.saturating_sub(self.op_log.len()))
     }
 
     /// Is this op-id in `redacted_ops`? Consulted by the broker before
@@ -356,13 +365,18 @@ impl ChannelState {
     ///
     /// Does **not** add the Redact op itself to `op_log` — the broker's hot
     /// path records the validated op before calling here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedactionError::Malformed`] if serialising the redacted
+    /// marker payload fails.
     pub fn apply_redaction(&mut self, req: &RedactRequest) -> Result<usize, RedactionError> {
         let target = req.target_op_id;
         self.redacted_ops.insert(target);
         let marker_bytes = RedactedMarker::v1()
             .canonical()
             .map_err(RedactionError::Malformed)?;
-        let mut rewritten = 0usize;
+        let mut rewritten: usize = 0;
         for entry in &mut self.op_log {
             if OpId::from_op(entry) == target && entry.op_class != OpClass::Redact {
                 // Snapshot the pre-redaction envelope for audit + stable compaction
@@ -371,8 +385,8 @@ impl ChannelState {
                 self.original_envelopes
                     .entry(target)
                     .or_insert_with(|| Box::new(entry.clone()));
-                entry.payload = marker_bytes.clone();
-                rewritten += 1;
+                entry.payload.clone_from(&marker_bytes);
+                rewritten = rewritten.saturating_add(1);
             }
         }
         Ok(rewritten)
@@ -405,7 +419,9 @@ impl ChannelState {
         // Take the highest-seq window — late joiners scroll backwards from
         // "before this seq", so the most recent ops are the most useful first batch.
         let start = total.saturating_sub(max_usize);
-        let ops: Vec<SignedOp> = matching[start..].to_vec();
+        let ops: Vec<SignedOp> = matching
+            .get(start..)
+            .map_or_else(Vec::new, <[SignedOp]>::to_vec);
         let exhausted = ops.len() >= total;
         (ops, exhausted)
     }
@@ -426,94 +442,25 @@ impl ChannelState {
 /// 5b. if `Redact`, parse the payload and reject recursive redaction; 6.
 /// timestamp inside the attestation's validity window; 7. monotonic seq;
 /// 8. clearance gate; 9. redaction-aware filter for late arrivals.
+///
+/// # Errors
+///
+/// Returns the first-failing step's [`ValidationError`] variant — see the
+/// step list above and the variant docs for exactly when each fires.
 pub fn validate_inbound_op(
     op: &SignedOp,
     channel_state: &mut ChannelState,
 ) -> Result<(), ValidationError> {
-    // Step 1: resolve attestation.
-    let ra = channel_state
-        .attestations
-        .get(&op.attestation_id)
-        .ok_or(ValidationError::UnknownAttestation(op.attestation_id))?
-        .clone();
+    // Steps 1-4: resolve + verify the attestation chain and op signature.
+    let ra = verify_attestation_chain(op, channel_state)?;
     let attestation = &ra.attestation;
 
-    // Step 2: verify the attestation traces to an authorised signer —
-    // `issued_by` must be in `authorised_signers`, and its own signature
-    // must verify against that key.
-    if !channel_state
-        .authorised_signers
-        .contains(&attestation.issued_by)
-    {
-        return Err(ValidationError::UnauthorisedAttestation(
-            attestation.issued_by,
-        ));
-    }
-    {
-        let bytes = attestation
-            .signing_bytes()
-            .map_err(|e| ValidationError::BadAttestationSignature(VerifyError::Canonical(e)))?;
-        verify_event(&bytes, &attestation.signature, &attestation.issued_by)
-            .map_err(ValidationError::BadAttestationSignature)?;
-    }
+    // Steps 5, 5a: role table + capability overrides.
+    check_op_permission(op, ra.role, channel_state)?;
 
-    // Step 3: verify the op signature against the author's pubkey.
-    verify_op(op).map_err(ValidationError::BadOpSignature)?;
-
-    // Step 4: author matches attestation subject.
-    if op.author != attestation.subject {
-        return Err(ValidationError::AuthorMismatch);
-    }
-
-    // Step 5: role-table lookup. Requires artifact kind.
-    let artifact_kind = channel_state
-        .artifacts
-        .get(&op.artifact)
-        .copied()
-        .ok_or(ValidationError::UnknownArtifact(op.artifact))?;
-    let base_role_allows = role_permits(ra.role, artifact_kind, op.op_class);
-
-    // Step 5a: capability overrides on top of the coarse role table.
-    // `role_permits` is the base; overrides narrow (app-scoped `Restrict`)
-    // or extend (per-user `Grant`/share) it. Fail-closed: neither base nor
-    // grant ⇒ denied. `RoleForbidsOpClass` (pure role denial) is
-    // distinguished from `CapabilityDenied` (override narrowing).
-    let ctx = ResourceScope {
-        app: channel_state.artifact_apps.get(&op.artifact).cloned(),
-        kind: artifact_kind,
-        instance: op.artifact,
-    };
-    match decide(
-        base_role_allows,
-        verb_for_opclass(op.op_class),
-        ra.role,
-        op.author,
-        &ctx,
-        &channel_state.cap_overrides,
-    ) {
-        CapDecision::Allow => {}
-        CapDecision::DeniedByRole => return Err(ValidationError::RoleForbidsOpClass),
-        CapDecision::DeniedByRestriction => return Err(ValidationError::CapabilityDenied),
-    }
-
-    // Step 5b (Phase 9): if Redact, parse the payload and reject
-    // recursive redactions. Parsing also catches the
-    // envelope-author/payload-redactor mismatch and the reason-length
-    // bound, surfaced as `MalformedRedact`.
+    // Step 5b: Redact payload parsing + recursive-redaction rejection.
     if op.op_class == OpClass::Redact {
-        let req = parse_redact_payload(op).map_err(ValidationError::MalformedRedact)?;
-        // Recursive-redaction check: walk the op log for an entry whose
-        // derived OpId matches `req.target_op_id` and is itself `Redact` —
-        // disallowed. Bounded by max_in_memory_ops; original_envelopes isn't
-        // consulted since a previously-redacted Redact would have been
-        // refused here on first apply, so by induction the cache never holds one.
-        for entry in &channel_state.op_log {
-            if entry.op_class == OpClass::Redact && OpId::from_op(entry) == req.target_op_id {
-                return Err(ValidationError::RecursiveRedaction {
-                    target: req.target_op_id,
-                });
-            }
-        }
+        check_redact_payload(op, channel_state)?;
     }
 
     // Step 6: timestamp inside attestation validity window.
@@ -533,43 +480,7 @@ pub fn validate_inbound_op(
     }
 
     // Step 8: clearance gate.
-    let required = effective_clearance(channel_state, op.artifact);
-    if let Some(required) = required {
-        let found = highest_cleared_at(
-            channel_state,
-            op.author,
-            op.timestamp,
-            &channel_state.accepted_trust_roots,
-        );
-        match found {
-            Some((clearance, _)) if clearance >= required => {
-                // OK
-            }
-            Some((clearance, issuer)) => {
-                // Found a claim, but below the required level or from an
-                // untrusted issuer — `highest_cleared_at` only returns accepted-root
-                // claims, so reaching here means the level itself is too low.
-                let _ = issuer;
-                return Err(ValidationError::InsufficientClearance {
-                    required,
-                    found: Some(clearance),
-                });
-            }
-            None => {
-                // No `ClearedAt` claim at all, or all from untrusted issuers — to
-                // distinguish for the audit log, re-scan for any untrusted-issuer claim.
-                if let Some(bad_issuer) =
-                    untrusted_cleared_at_issuer(channel_state, op.author, op.timestamp)
-                {
-                    return Err(ValidationError::UntrustedClearanceIssuer { issuer: bad_issuer });
-                }
-                return Err(ValidationError::InsufficientClearance {
-                    required,
-                    found: None,
-                });
-            }
-        }
-    }
+    check_clearance_gate(channel_state, op)?;
 
     // Step 9 (Phase 9): redaction-aware filter. An op whose derived OpId
     // is in `redacted_ops` is the late-arrival case — the redaction
@@ -591,6 +502,162 @@ pub fn validate_inbound_op(
     // All checks passed. Bump replay sequence.
     channel_state.last_seq_per_author.insert(op.author, op.seq);
     Ok(())
+}
+
+/// Steps 1-4: resolve the op's attestation, verify it traces to an
+/// authorised channel signer, verify the op's own signature, and check the
+/// author matches the attestation subject. Returns the resolved
+/// [`RoleAttestation`] for the caller to reuse (validity window, role).
+fn verify_attestation_chain(
+    op: &SignedOp,
+    channel_state: &ChannelState,
+) -> Result<RoleAttestation, ValidationError> {
+    // Step 1: resolve attestation.
+    let ra = channel_state
+        .attestations
+        .get(&op.attestation_id)
+        .ok_or(ValidationError::UnknownAttestation(op.attestation_id))?
+        .clone();
+    let attestation = &ra.attestation;
+
+    // Step 2: verify the attestation traces to an authorised signer —
+    // `issued_by` must be in `authorised_signers`, and its own signature
+    // must verify against that key.
+    if !channel_state
+        .authorised_signers
+        .contains(&attestation.issued_by)
+    {
+        return Err(ValidationError::UnauthorisedAttestation(
+            attestation.issued_by,
+        ));
+    }
+    let bytes = attestation
+        .signing_bytes()
+        .map_err(|e| ValidationError::BadAttestationSignature(VerifyError::Canonical(e)))?;
+    verify_event(&bytes, &attestation.signature, &attestation.issued_by)
+        .map_err(ValidationError::BadAttestationSignature)?;
+
+    // Step 3: verify the op signature against the author's pubkey.
+    verify_op(op).map_err(ValidationError::BadOpSignature)?;
+
+    // Step 4: author matches attestation subject.
+    if op.author != attestation.subject {
+        return Err(ValidationError::AuthorMismatch);
+    }
+
+    Ok(ra)
+}
+
+/// Steps 5, 5a: role-table lookup, then capability overrides on top of the
+/// coarse role table. `role_permits` is the base; overrides narrow
+/// (app-scoped `Restrict`) or extend (per-user `Grant`/share) it.
+/// Fail-closed: neither base nor grant ⇒ denied. `RoleForbidsOpClass` (pure
+/// role denial) is distinguished from `CapabilityDenied` (override narrowing).
+fn check_op_permission(
+    op: &SignedOp,
+    role: Role,
+    channel_state: &ChannelState,
+) -> Result<(), ValidationError> {
+    let artifact_kind = channel_state
+        .artifacts
+        .get(&op.artifact)
+        .copied()
+        .ok_or(ValidationError::UnknownArtifact(op.artifact))?;
+    let base_role_allows = role_permits(role, artifact_kind, op.op_class);
+
+    let ctx = ResourceScope {
+        app: channel_state.artifact_apps.get(&op.artifact).cloned(),
+        kind: artifact_kind,
+        instance: op.artifact,
+    };
+    match decide(
+        base_role_allows,
+        verb_for_opclass(op.op_class),
+        role,
+        op.author,
+        &ctx,
+        &channel_state.cap_overrides,
+    ) {
+        CapDecision::Allow => Ok(()),
+        CapDecision::DeniedByRole => Err(ValidationError::RoleForbidsOpClass),
+        CapDecision::DeniedByRestriction => Err(ValidationError::CapabilityDenied),
+    }
+}
+
+/// Step 5b (Phase 9): if Redact, parse the payload and reject recursive
+/// redactions. Parsing also catches the envelope-author/payload-redactor
+/// mismatch and the reason-length bound, surfaced as `MalformedRedact`.
+fn check_redact_payload(
+    op: &SignedOp,
+    channel_state: &ChannelState,
+) -> Result<(), ValidationError> {
+    let req = parse_redact_payload(op).map_err(ValidationError::MalformedRedact)?;
+    // Recursive-redaction check: walk the op log for an entry whose
+    // derived OpId matches `req.target_op_id` and is itself `Redact` —
+    // disallowed. Bounded by max_in_memory_ops; original_envelopes isn't
+    // consulted since a previously-redacted Redact would have been
+    // refused here on first apply, so by induction the cache never holds one.
+    for entry in &channel_state.op_log {
+        if entry.op_class == OpClass::Redact && OpId::from_op(entry) == req.target_op_id {
+            return Err(ValidationError::RecursiveRedaction {
+                target: req.target_op_id,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Step 8: clearance gate — is the author's `ClearedAt` claim (if any) from
+/// an accepted trust root and at or above the artifact's classification floor?
+fn check_clearance_gate(
+    channel_state: &ChannelState,
+    op: &SignedOp,
+) -> Result<(), ValidationError> {
+    let Some(required) = effective_clearance(channel_state, op.artifact) else {
+        return Ok(());
+    };
+    let found = highest_cleared_at(
+        channel_state,
+        op.author,
+        op.timestamp,
+        &channel_state.accepted_trust_roots,
+    );
+    match found {
+        Some((clearance, _)) if clearance >= required => Ok(()),
+        Some((clearance, issuer)) => {
+            // Found a claim, but below the required level or from an
+            // untrusted issuer — `highest_cleared_at` only returns accepted-root
+            // claims, so reaching here means the level itself is too low.
+            let _ = issuer;
+            Err(ValidationError::InsufficientClearance {
+                required,
+                found: Some(clearance),
+            })
+        }
+        None => {
+            // No `ClearedAt` claim at all, or all from untrusted issuers — to
+            // distinguish for the audit log, re-scan for any untrusted-issuer claim.
+            if let Some(bad_issuer) =
+                untrusted_cleared_at_issuer(channel_state, op.author, op.timestamp)
+            {
+                return Err(ValidationError::UntrustedClearanceIssuer { issuer: bad_issuer });
+            }
+            Err(ValidationError::InsufficientClearance {
+                required,
+                found: None,
+            })
+        }
+    }
+}
+
+/// Does `op` fall within `checkpoint`'s prefix — same artifact, `seq` no
+/// later than the checkpoint's `up_to_seq`? Shared by both the hash
+/// recomputation and the eviction pass in [`ChannelState::apply_compaction`]
+/// so the two stay in lock-step by construction.
+fn op_in_checkpoint_prefix(op: &SignedOp, checkpoint: &CompactionCheckpoint) -> bool {
+    let same_artifact = op.artifact == checkpoint.artifact;
+    let within_prefix = op.seq <= checkpoint.up_to_seq;
+    same_artifact && within_prefix
 }
 
 /// Effective classification floor for an artifact:

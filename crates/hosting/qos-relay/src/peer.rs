@@ -262,7 +262,9 @@ where
 {
     let mut replay = Vec::new();
     let mut replay_cleanup = Vec::new();
-    let reply = handle_envelope(
+    // Named apart from `replay` on purpose — "reply" vs "replay" reads as a
+    // typo at a glance even though they're deliberately distinct concepts.
+    let direct_reply = handle_envelope(
         peer,
         env,
         session,
@@ -278,8 +280,8 @@ where
     for path in replay_cleanup {
         std::fs::remove_file(path)?;
     }
-    if let Some(reply) = reply {
-        let bytes = crate::transport::encode(&reply)?;
+    if let Some(direct_reply) = direct_reply {
+        let bytes = crate::transport::encode(&direct_reply)?;
         write.write_all(&bytes).await?;
     }
     Ok(())
@@ -366,8 +368,8 @@ async fn handle_subscribe(
             }));
         }
     }
-    let retained_count = load_retained_replay(&mut wr, workspace_id, replay)?;
-    let pending_count = load_pending_replay(&mut wr, peer, workspace_id, replay, replay_cleanup)?;
+    let retained_count = load_retained_replay(&wr, workspace_id, replay)?;
+    let pending_count = load_pending_replay(&wr, peer, workspace_id, replay, replay_cleanup)?;
     wr.add_subscriber(Subscriber {
         device_public_key: peer.device_public_key,
         role: peer.role,
@@ -388,7 +390,7 @@ async fn handle_subscribe(
 /// pending queue these exist before a newly invited device has ever
 /// connected, which is what makes an offline owner + new guest work.
 fn load_retained_replay(
-    wr: &mut crate::workspace::WorkspaceRuntime,
+    wr: &crate::workspace::WorkspaceRuntime,
     workspace_id: u64,
     replay: &mut Vec<Envelope>,
 ) -> Result<u32, PeerError> {
@@ -419,7 +421,7 @@ fn load_retained_replay(
 /// files until the connection task has written the complete replay.
 /// A write failure therefore leaves the queue intact for reconnect.
 fn load_pending_replay(
-    wr: &mut crate::workspace::WorkspaceRuntime,
+    wr: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
     workspace_id: u64,
     replay: &mut Vec<Envelope>,

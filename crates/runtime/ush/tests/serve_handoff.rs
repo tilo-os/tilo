@@ -27,7 +27,9 @@ use ush::supervisor::{ServeRequest, ServeResponse, decide_serve, recv_with_fd};
 /// Read from a descriptor until `needle` shows up or the deadline passes.
 fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
     let mut seen = String::new();
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
     // SAFETY: `fd` is a pty master this test owns. Non-blocking so the loop can
     // give up rather than hang the suite.
     unsafe {
@@ -39,7 +41,10 @@ fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
         // SAFETY: as above; `buf` is a live local buffer.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
         if n > 0 {
-            seen.push_str(&String::from_utf8_lossy(&buf[..n as usize]));
+            // `n > 0` was just checked, so the cast below cannot lose the sign.
+            #[allow(clippy::cast_sign_loss, reason = "n > 0 was just checked above")]
+            let n = n as usize;
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
             if seen.contains(needle) {
                 return seen;
             }
@@ -182,7 +187,9 @@ fn run_handoff() {
     });
 
     // Wait for the listener rather than sleeping a fixed amount.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .unwrap_or_else(Instant::now);
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -259,7 +266,11 @@ fn run_handoff() {
     // `TempDir`'s own cleanup fails silently — tear it down like the runtime does.
     let path = dir.keep();
     ush::guest::remove_dir_all_forced(&path);
-    assert!(!path.exists(), "the test left its store behind at {path:?}");
+    assert!(
+        !path.exists(),
+        "the test left its store behind at {}",
+        path.display()
+    );
 }
 
 /// A malformed request must be refused with a reply, not by dropping the

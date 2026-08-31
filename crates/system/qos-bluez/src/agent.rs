@@ -191,7 +191,7 @@ impl PairingAgent {
 #[interface(name = "org.bluez.Agent1")]
 impl PairingAgent {
     /// `BlueZ` is done with us.
-    async fn release(&self) {
+    fn release(&self) {
         debug!(target: "qos::bluez", "agent released by bluez");
         let _ = self.tx.send(AgentEvent::Released);
     }
@@ -207,7 +207,7 @@ impl PairingAgent {
     }
 
     /// Legacy pairing: show a PIN for the user to type on the other device.
-    async fn display_pin_code(&self, device: ObjectPath<'_>, pincode: String) {
+    fn display_pin_code(&self, device: ObjectPath<'_>, pincode: String) {
         self.notify(&device, PairingPrompt::DisplayPinCode { pin: pincode });
     }
 
@@ -223,7 +223,7 @@ impl PairingAgent {
 
     /// Show a passkey for the user to type on the other device. `entered` is how many digits
     /// the remote has acknowledged so far, so the prompt can show progress.
-    async fn display_passkey(&self, device: ObjectPath<'_>, passkey: u32, entered: u16) {
+    fn display_passkey(&self, device: ObjectPath<'_>, passkey: u32, entered: u16) {
         self.notify(&device, PairingPrompt::DisplayPasskey { passkey, entered });
     }
 
@@ -260,7 +260,7 @@ impl PairingAgent {
     }
 
     /// The request went away. Dismiss whatever is on screen.
-    async fn cancel(&self) {
+    fn cancel(&self) {
         debug!(target: "qos::bluez", "bluez cancelled the pending pairing request");
         let _ = self.tx.send(AgentEvent::Cancelled);
     }
@@ -278,11 +278,21 @@ impl AgentRegistration {
     /// Serve `agent` at [`AGENT_PATH`] on `connection`, register it with `BlueZ`, and ask to
     /// become the default agent — which routes prompts for pairings the user starts from
     /// anywhere (including `bluetoothctl` or the remote device) to this desktop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serving the object or `RegisterAgent` fails (for
+    /// example, another agent is already registered at this path).
     pub async fn register(connection: &Connection, agent: PairingAgent) -> zbus::Result<Self> {
         Self::register_at(connection, agent, AGENT_PATH, AGENT_CAPABILITY).await
     }
 
     /// Register at an explicit path and capability. Tests use this to run several agents on one bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` is not a valid object path, or if serving
+    /// the object or the `RegisterAgent` D-Bus call fails.
     pub async fn register_at(
         connection: &Connection,
         agent: PairingAgent,
@@ -317,6 +327,11 @@ impl AgentRegistration {
     }
 
     /// Unregister from `BlueZ` and drop the object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `UnregisterAgent` D-Bus call fails or removing
+    /// the served object fails.
     pub async fn unregister(self) -> zbus::Result<()> {
         let object_path = ObjectPath::try_from(self.path.clone())?;
         let manager = zbus::Proxy::new(
@@ -470,7 +485,7 @@ mod tests {
     #[tokio::test]
     async fn display_passkey_returns_at_once_and_still_notifies() {
         let (a, mut rx) = agent();
-        a.display_passkey(dev(), 42, 3).await;
+        a.display_passkey(dev(), 42, 3);
         let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else {
             panic!()
         };
@@ -487,9 +502,9 @@ mod tests {
     #[tokio::test]
     async fn cancel_and_release_reach_the_ui() {
         let (a, mut rx) = agent();
-        a.cancel().await;
+        a.cancel();
         assert!(matches!(rx.recv().await, Some(AgentEvent::Cancelled)));
-        a.release().await;
+        a.release();
         assert!(matches!(rx.recv().await, Some(AgentEvent::Released)));
     }
 
@@ -498,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_devices_are_named_by_address() {
         let (a, mut rx) = PairingAgent::with_timeout(DeviceNames::new(), Duration::from_millis(50));
-        a.display_passkey(dev(), 1, 0).await;
+        a.display_passkey(dev(), 1, 0);
         let AgentEvent::Ask { request, .. } = rx.recv().await.unwrap() else {
             panic!()
         };

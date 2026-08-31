@@ -66,7 +66,10 @@ impl file_handle::Server for FakeFile {
                 Ok(r) => r,
                 Err(e) => return Promise::err(e),
             };
-            (r.get_offset() as usize, r.get_max_len() as usize)
+            (
+                usize::try_from(r.get_offset()).expect("offset fits usize"),
+                r.get_max_len() as usize,
+            )
         };
         let store = self.store.borrow();
         let Some(bytes) = store.get(&self.path) else {
@@ -76,7 +79,7 @@ impl file_handle::Server for FakeFile {
             results.get().set_bytes(&[]);
             return Promise::ok(());
         }
-        let end = (offset + max_len).min(bytes.len());
+        let end = offset.saturating_add(max_len).min(bytes.len());
         results.get().set_bytes(&bytes[offset..end]);
         Promise::ok(())
     }
@@ -90,7 +93,7 @@ impl file_handle::Server for FakeFile {
             Ok(r) => r,
             Err(e) => return Promise::err(e),
         };
-        let offset = r.get_offset() as usize;
+        let offset = usize::try_from(r.get_offset()).expect("offset fits usize");
         let bytes = match r.get_bytes() {
             Ok(b) => b.to_vec(),
             Err(e) => return Promise::err(e),
@@ -103,14 +106,16 @@ impl file_handle::Server for FakeFile {
         // In-place splice: overwrite [offset..offset+len), extending
         // as needed.
         for (i, byte) in bytes.iter().enumerate() {
-            let dst = offset + i;
+            let dst = offset.saturating_add(i);
             if dst < entry.len() {
                 entry[dst] = *byte;
             } else {
                 entry.push(*byte);
             }
         }
-        results.get().set_written(bytes.len() as u32);
+        results
+            .get()
+            .set_written(u32::try_from(bytes.len()).expect("write size fits u32"));
         Promise::ok(())
     }
 
@@ -160,9 +165,8 @@ impl workspace_fs::Server for FakeFs {
             Ok(p) => normalise(&p),
             Err(e) => return Promise::err(e),
         };
-        let mode = match r.get_mode() {
-            Ok(m) => m,
-            Err(_) => return Promise::err(capnp::Error::failed("bad mode".into())),
+        let Ok(mode) = r.get_mode() else {
+            return Promise::err(capnp::Error::failed("bad mode".into()));
         };
         // Truncate on write; leave alone on append/read.
         if matches!(mode, OpenMode::Write) {
@@ -216,9 +220,13 @@ impl workspace_fs::Server for FakeFs {
                 Some((rest.to_owned(), v.len() as u64))
             })
             .collect();
-        let mut entries = results.get().init_entries(matching.len() as u32);
+        let mut entries = results
+            .get()
+            .init_entries(u32::try_from(matching.len()).expect("entry count fits u32"));
         for (i, (name, size)) in matching.iter().enumerate() {
-            let mut e = entries.reborrow().get(i as u32);
+            let mut e = entries
+                .reborrow()
+                .get(u32::try_from(i).expect("index fits u32"));
             e.set_name(name);
             let mut md = e.init_metadata();
             md.set_kind(WireKind::File);
@@ -307,7 +315,7 @@ async fn round_trip_write_read_list_stat() {
                 server_read.compat(),
                 server_write.compat_write(),
                 rpc_twoparty_capnp::Side::Server,
-                Default::default(),
+                capnp::message::ReaderOptions::default(),
             ));
             let server_rpc = RpcSystem::new(server_network, Some(backend_client.client));
             tokio::task::spawn_local(async move {

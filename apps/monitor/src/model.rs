@@ -180,6 +180,10 @@ impl MonitorModel {
     /// Build a representative, fully-populated snapshot with no IO. This
     /// is what `--shots` renders, and what the live app starts from before
     /// the first real `sysinfo` sample lands a second later.
+    #[allow(
+        clippy::similar_names,
+        reason = "net_rx_hist/net_tx_hist are the standard receive/transmit pair; renaming either would read worse"
+    )]
     pub fn sample() -> Self {
         // ---- per-core history: a few cores hot, most idle-ish -------
         let core_base = [62.0, 18.0, 47.0, 9.0, 88.0, 33.0, 14.0, 71.0];
@@ -303,292 +307,317 @@ impl MonitorModel {
     }
 }
 
-/// A believable process table. Values are hand-tuned so the sort columns
+/// One sample-data process row, as `(name, parent, user, cpu, mem_MiB,
+/// threads, status, kernel)`. `parent` is `""` for a forest root.
+type SampleRow = (
+    &'static str,
+    &'static str,
+    &'static str,
+    f32,
+    u64,
+    usize,
+    &'static str,
+    bool,
+);
+
+/// Hand-tuned sample process table. Values are picked so the sort columns
 /// and the CPU/MEM ranking read realistically in the screenshot. The
 /// `parent` column names each row's parent process (by name) so the tree
 /// view ([`crate::tree`]) reads as a real session hierarchy: `systemd`
 /// roots the system services, `shell` roots the user session, and the heavy
 /// apps (`browser`, `code`) fan out into the children that account for most
-/// of "what they're doing" — exactly the subtree-sum story.
-fn sample_processes() -> Vec<ProcessInfo> {
-    // (name, parent, user, cpu, mem_MiB, threads, status, kernel)
-    //
-    // `parent` is "" for a forest root. Multi-instance names (e.g. two
-    // "Web Content") attach to the *first* matching parent, which is what
-    // a real renderer fan-out looks like.
-    let rows: &[(&str, &str, &str, f32, u64, usize, &str, bool)] = &[
-        // ---- the user session, rooted at the compositor ----------------
-        ("shell", "", "quinten", 14.6, 412, 24, "Running", false),
-        (
-            "browser", "shell", "quinten", 12.3, 643, 14, "Running", false,
-        ),
-        (
-            "Web Content",
-            "browser",
-            "quinten",
-            31.8,
-            988,
-            22,
-            "Running",
-            false,
-        ),
-        (
-            "Web Content",
-            "browser",
-            "quinten",
-            48.1,
-            1210,
-            19,
-            "Running",
-            false,
-        ),
-        (
-            "GPU Process",
-            "browser",
-            "quinten",
-            9.4,
-            512,
-            8,
-            "Running",
-            false,
-        ),
-        ("code", "shell", "quinten", 6.4, 420, 18, "Sleeping", false),
-        (
-            "rust-analyzer",
-            "code",
-            "quinten",
-            63.9,
-            2680,
-            12,
-            "Running",
-            false,
-        ),
-        ("cargo", "code", "quinten", 11.2, 140, 4, "Running", false),
-        ("rustc", "cargo", "quinten", 88.7, 760, 1, "Running", false),
-        (
-            "firefox", "shell", "quinten", 47.1, 2210, 51, "Running", false,
-        ),
-        (
-            "terminal", "shell", "quinten", 3.2, 142, 6, "Sleeping", false,
-        ),
-        ("fish", "terminal", "quinten", 0.4, 28, 1, "Sleeping", false),
-        ("monitor", "shell", "quinten", 5.7, 96, 5, "Running", false),
-        (
-            "file-explorer",
-            "shell",
-            "quinten",
-            1.1,
-            188,
-            8,
-            "Sleeping",
-            false,
-        ),
-        (
-            "Xwayland", "shell", "quinten", 4.3, 176, 5, "Running", false,
-        ),
-        // ---- the system service tree, rooted at systemd ----------------
-        ("systemd", "", "root", 0.2, 18, 1, "Sleeping", false),
-        ("qos-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
-        (
-            "iroh-node",
-            "qos-fs",
-            "quinten",
-            6.1,
-            310,
-            16,
-            "Running",
-            false,
-        ),
-        (
-            "gossip",
-            "iroh-node",
-            "quinten",
-            2.2,
-            88,
-            6,
-            "Running",
-            false,
-        ),
-        (
-            "systemd-journald",
-            "systemd",
-            "root",
-            1.7,
-            96,
-            1,
-            "Sleeping",
-            false,
-        ),
-        (
-            "systemd-logind",
-            "systemd",
-            "root",
-            0.1,
-            12,
-            1,
-            "Sleeping",
-            false,
-        ),
-        (
-            "systemd-resolved",
-            "systemd",
-            "systemd+",
-            0.3,
-            22,
-            2,
-            "Sleeping",
-            false,
-        ),
-        (
-            "NetworkManager",
-            "systemd",
-            "root",
-            0.6,
-            38,
-            3,
-            "Sleeping",
-            false,
-        ),
-        (
-            "dbus-broker",
-            "systemd",
-            "dbus",
-            0.8,
-            16,
-            1,
-            "Running",
-            false,
-        ),
-        ("greetd", "systemd", "root", 0.0, 8, 1, "Sleeping", false),
-        ("chronyd", "systemd", "chrony", 0.1, 6, 1, "Sleeping", false),
-        ("sshd", "systemd", "root", 0.0, 11, 1, "Sleeping", false),
-        (
-            "avahi-daemon",
-            "systemd",
-            "avahi",
-            0.2,
-            9,
-            2,
-            "Sleeping",
-            false,
-        ),
-        (
-            "pipewire", "systemd", "quinten", 2.4, 64, 4, "Sleeping", false,
-        ),
-        (
-            "wireplumber",
-            "pipewire",
-            "quinten",
-            1.3,
-            52,
-            4,
-            "Sleeping",
-            false,
-        ),
-        (
-            "pulseaudio",
-            "systemd",
-            "quinten",
-            0.9,
-            41,
-            3,
-            "Sleeping",
-            false,
-        ),
-        (
-            "podman", "systemd", "quinten", 0.5, 64, 7, "Sleeping", false,
-        ),
-        ("conmon", "podman", "quinten", 0.1, 14, 1, "Sleeping", false),
-        ("swaybg", "shell", "quinten", 0.2, 44, 2, "Sleeping", false),
-        (
-            "gnome-keyring-d",
-            "systemd",
-            "quinten",
-            0.1,
-            19,
-            3,
-            "Sleeping",
-            false,
-        ),
-        ("upowerd", "systemd", "root", 0.1, 10, 1, "Sleeping", false),
-        (
-            "bluetoothd",
-            "systemd",
-            "root",
-            0.2,
-            13,
-            1,
-            "Sleeping",
-            false,
-        ),
-        ("cupsd", "systemd", "root", 0.0, 15, 1, "Sleeping", false),
-        // ---- kernel worker threads (own forest; hidden by default) -----
-        ("kworker/0:1", "", "root", 1.4, 0, 1, "Idle", true),
-        ("kworker/u32:3", "", "root", 2.1, 0, 1, "Idle", true),
-        ("ksoftirqd/4", "", "root", 0.6, 0, 1, "Idle", true),
-        ("kcompactd0", "", "root", 0.0, 0, 1, "Idle", true),
-        ("kswapd0", "", "root", 0.3, 0, 1, "Idle", true),
-        ("migration/2", "", "root", 0.0, 0, 1, "Idle", true),
-        ("jbd2/nvme0n1p3", "", "root", 0.5, 0, 1, "Idle", true),
-        ("irq/142-nvme0", "", "root", 0.1, 0, 1, "Idle", true),
-    ];
+/// of "what they're doing" — exactly the subtree-sum story. Multi-instance
+/// names (e.g. two "Web Content") attach to the *first* matching parent,
+/// which is what a real renderer fan-out looks like.
+const SAMPLE_ROWS: &[SampleRow] = &[
+    // ---- the user session, rooted at the compositor ----------------
+    ("shell", "", "quinten", 14.6, 412, 24, "Running", false),
+    (
+        "browser", "shell", "quinten", 12.3, 643, 14, "Running", false,
+    ),
+    (
+        "Web Content",
+        "browser",
+        "quinten",
+        31.8,
+        988,
+        22,
+        "Running",
+        false,
+    ),
+    (
+        "Web Content",
+        "browser",
+        "quinten",
+        48.1,
+        1210,
+        19,
+        "Running",
+        false,
+    ),
+    (
+        "GPU Process",
+        "browser",
+        "quinten",
+        9.4,
+        512,
+        8,
+        "Running",
+        false,
+    ),
+    ("code", "shell", "quinten", 6.4, 420, 18, "Sleeping", false),
+    (
+        "rust-analyzer",
+        "code",
+        "quinten",
+        63.9,
+        2680,
+        12,
+        "Running",
+        false,
+    ),
+    ("cargo", "code", "quinten", 11.2, 140, 4, "Running", false),
+    ("rustc", "cargo", "quinten", 88.7, 760, 1, "Running", false),
+    (
+        "firefox", "shell", "quinten", 47.1, 2210, 51, "Running", false,
+    ),
+    (
+        "terminal", "shell", "quinten", 3.2, 142, 6, "Sleeping", false,
+    ),
+    ("fish", "terminal", "quinten", 0.4, 28, 1, "Sleeping", false),
+    ("monitor", "shell", "quinten", 5.7, 96, 5, "Running", false),
+    (
+        "file-explorer",
+        "shell",
+        "quinten",
+        1.1,
+        188,
+        8,
+        "Sleeping",
+        false,
+    ),
+    (
+        "Xwayland", "shell", "quinten", 4.3, 176, 5, "Running", false,
+    ),
+    // ---- the system service tree, rooted at systemd ----------------
+    ("systemd", "", "root", 0.2, 18, 1, "Sleeping", false),
+    ("qos-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
+    (
+        "iroh-node",
+        "qos-fs",
+        "quinten",
+        6.1,
+        310,
+        16,
+        "Running",
+        false,
+    ),
+    (
+        "gossip",
+        "iroh-node",
+        "quinten",
+        2.2,
+        88,
+        6,
+        "Running",
+        false,
+    ),
+    (
+        "systemd-journald",
+        "systemd",
+        "root",
+        1.7,
+        96,
+        1,
+        "Sleeping",
+        false,
+    ),
+    (
+        "systemd-logind",
+        "systemd",
+        "root",
+        0.1,
+        12,
+        1,
+        "Sleeping",
+        false,
+    ),
+    (
+        "systemd-resolved",
+        "systemd",
+        "systemd+",
+        0.3,
+        22,
+        2,
+        "Sleeping",
+        false,
+    ),
+    (
+        "NetworkManager",
+        "systemd",
+        "root",
+        0.6,
+        38,
+        3,
+        "Sleeping",
+        false,
+    ),
+    (
+        "dbus-broker",
+        "systemd",
+        "dbus",
+        0.8,
+        16,
+        1,
+        "Running",
+        false,
+    ),
+    ("greetd", "systemd", "root", 0.0, 8, 1, "Sleeping", false),
+    ("chronyd", "systemd", "chrony", 0.1, 6, 1, "Sleeping", false),
+    ("sshd", "systemd", "root", 0.0, 11, 1, "Sleeping", false),
+    (
+        "avahi-daemon",
+        "systemd",
+        "avahi",
+        0.2,
+        9,
+        2,
+        "Sleeping",
+        false,
+    ),
+    (
+        "pipewire", "systemd", "quinten", 2.4, 64, 4, "Sleeping", false,
+    ),
+    (
+        "wireplumber",
+        "pipewire",
+        "quinten",
+        1.3,
+        52,
+        4,
+        "Sleeping",
+        false,
+    ),
+    (
+        "pulseaudio",
+        "systemd",
+        "quinten",
+        0.9,
+        41,
+        3,
+        "Sleeping",
+        false,
+    ),
+    (
+        "podman", "systemd", "quinten", 0.5, 64, 7, "Sleeping", false,
+    ),
+    ("conmon", "podman", "quinten", 0.1, 14, 1, "Sleeping", false),
+    ("swaybg", "shell", "quinten", 0.2, 44, 2, "Sleeping", false),
+    (
+        "gnome-keyring-d",
+        "systemd",
+        "quinten",
+        0.1,
+        19,
+        3,
+        "Sleeping",
+        false,
+    ),
+    ("upowerd", "systemd", "root", 0.1, 10, 1, "Sleeping", false),
+    (
+        "bluetoothd",
+        "systemd",
+        "root",
+        0.2,
+        13,
+        1,
+        "Sleeping",
+        false,
+    ),
+    ("cupsd", "systemd", "root", 0.0, 15, 1, "Sleeping", false),
+    // ---- kernel worker threads (own forest; hidden by default) -----
+    ("kworker/0:1", "", "root", 1.4, 0, 1, "Idle", true),
+    ("kworker/u32:3", "", "root", 2.1, 0, 1, "Idle", true),
+    ("ksoftirqd/4", "", "root", 0.6, 0, 1, "Idle", true),
+    ("kcompactd0", "", "root", 0.0, 0, 1, "Idle", true),
+    ("kswapd0", "", "root", 0.3, 0, 1, "Idle", true),
+    ("migration/2", "", "root", 0.0, 0, 1, "Idle", true),
+    ("jbd2/nvme0n1p3", "", "root", 0.5, 0, 1, "Idle", true),
+    ("irq/142-nvme0", "", "root", 0.1, 0, 1, "Idle", true),
+];
 
-    // Spread synthetic but stable PIDs, then resolve each row's parent name
-    // to the first matching pid (rows above it in the table).
+/// Spread synthetic but stable PIDs across `rows`, one per row in order.
+fn sample_pids(rows: &[SampleRow]) -> Vec<u32> {
     let mut pid: u32 = 1;
-    let mut pids: Vec<u32> = Vec::with_capacity(rows.len());
+    let mut pids = Vec::with_capacity(rows.len());
     for (name, ..) in rows {
         pid += 37 + (name.len() as u32 * 11) % 113;
         pids.push(pid);
     }
-    rows.iter()
+    pids
+}
+
+/// Turn sample row `i` into a full [`ProcessInfo`]: resolve its parent's pid
+/// by name (the first matching row above it), and synthesise a believable
+/// command line, virtual size, run time and fd count from the row's stable
+/// inputs so the detail pane reads as "alive" in the hermetic `--shots`
+/// frame (which never samples).
+#[allow(
+    clippy::similar_names,
+    reason = "pid/ppid are the standard process-table terms; renaming either would read worse"
+)]
+fn build_sample_process(rows: &[SampleRow], pids: &[u32], i: usize, row: SampleRow) -> ProcessInfo {
+    let (name, parent, user, cpu, mem_mib, threads, status, kernel) = row;
+    let ppid = if parent.is_empty() {
+        None
+    } else {
+        rows.iter()
+            .position(|r| r.0 == parent)
+            .and_then(|j| pids.get(j).copied())
+    };
+    let mem_bytes = mem_mib * 1024 * 1024;
+    let cmd = if kernel {
+        format!("[{name}]")
+    } else {
+        sample_cmdline(name, user)
+    };
+    // Virtual size runs a few× RSS (shared libs + reserved heap/stack).
+    let virt_bytes = if mem_bytes == 0 {
+        0
+    } else {
+        mem_bytes.saturating_mul(3) + 220 * 1024 * 1024
+    };
+    let pid = pids.get(i).copied().unwrap_or(0);
+    // Deterministic run time from the pid so rows differ but are stable.
+    let run_secs = 37 + (u64::from(pid) * 7) % 90_000;
+    let open_files = if kernel {
+        None
+    } else {
+        Some(threads * 2 + (pid as usize % 17) + 4)
+    };
+    ProcessInfo {
+        pid,
+        ppid,
+        name: name.to_string(),
+        user: user.to_string(),
+        cpu,
+        mem_bytes,
+        virt_bytes,
+        threads,
+        status: status.to_string(),
+        cmd,
+        run_secs,
+        open_files,
+        kernel,
+    }
+}
+
+fn sample_processes() -> Vec<ProcessInfo> {
+    let pids = sample_pids(SAMPLE_ROWS);
+    SAMPLE_ROWS
+        .iter()
         .enumerate()
-        .map(
-            |(i, (name, parent, user, cpu, mem_mib, threads, status, kernel))| {
-                let ppid = if parent.is_empty() {
-                    None
-                } else {
-                    rows.iter().position(|r| r.0 == *parent).map(|j| pids[j])
-                };
-                let mem_bytes = *mem_mib * 1024 * 1024;
-                // Synthesise a believable command line, virtual size, run time and
-                // fd count from the row's stable inputs so the detail pane reads as
-                // "alive" in the hermetic `--shots` frame (which never samples).
-                let cmd = if *kernel {
-                    format!("[{name}]")
-                } else {
-                    sample_cmdline(name, user)
-                };
-                // Virtual size runs a few× RSS (shared libs + reserved heap/stack).
-                let virt_bytes = if mem_bytes == 0 {
-                    0
-                } else {
-                    mem_bytes.saturating_mul(3) + 220 * 1024 * 1024
-                };
-                // Deterministic run time from the pid so rows differ but are stable.
-                let run_secs = 37 + (u64::from(pids[i]) * 7) % 90_000;
-                let open_files = if *kernel {
-                    None
-                } else {
-                    Some(*threads * 2 + (pids[i] as usize % 17) + 4)
-                };
-                ProcessInfo {
-                    pid: pids[i],
-                    ppid,
-                    name: (*name).to_string(),
-                    user: (*user).to_string(),
-                    cpu: *cpu,
-                    mem_bytes,
-                    virt_bytes,
-                    threads: *threads,
-                    status: (*status).to_string(),
-                    cmd,
-                    run_secs,
-                    open_files,
-                    kernel: *kernel,
-                }
-            },
-        )
+        .map(|(i, row)| build_sample_process(SAMPLE_ROWS, &pids, i, *row))
         .collect()
 }
 
@@ -627,7 +656,7 @@ pub fn fmt_bytes(b: u64) -> String {
     if i == 0 {
         format!("{} {}", b, U[0])
     } else {
-        format!("{:.1} {}", v, U[i])
+        format!("{:.1} {}", v, U.get(i).copied().unwrap_or("TiB"))
     }
 }
 
