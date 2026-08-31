@@ -1547,10 +1547,10 @@ impl BooksApp {
             Action::JumpTo(id) => self.on_jump_to(id),
             Action::Delete(id) => self.on_delete_annotation(id, doc),
             Action::OpenComments(group) => self.on_open_comments(group),
-            Action::CloseComments => self.on_close_comments(doc),
+            Action::CloseComments => self.on_close_comments(),
             Action::DeleteHighlight(group) => self.on_delete_highlight(group, doc),
             Action::AddComment(group) => self.on_add_comment(group, doc),
-            Action::EditComment(id) => self.composing = Some(id),
+            Action::EditComment(id) => self.on_edit_comment(id),
             Action::DeleteComment(id) => self.on_delete_comment(id, doc),
             Action::OpenViaPortal => self.request_open_via_portal(),
             Action::ShareToWorkspace(i) => self.on_share_to_workspace(i, doc),
@@ -1809,11 +1809,8 @@ impl BooksApp {
         self.comment_overlay.open(group);
     }
 
-    fn on_close_comments(&mut self, doc: &mut AutoCommit) {
-        // Finish any comment mid-composition so its text is saved.
-        if self.composing.is_some() {
-            self.finish_composing(doc);
-        }
+    fn on_close_comments(&mut self) {
+        self.comment_overlay.finish_editing();
         self.comment_overlay.close();
     }
 
@@ -1828,9 +1825,7 @@ impl BooksApp {
 
     fn on_add_comment(&mut self, group: Uuid, doc: &mut AutoCommit) {
         // Anchor to the highlight's first piece so it sorts with the range.
-        if self.composing.is_some() {
-            self.finish_composing(doc);
-        }
+        self.comment_overlay.finish_editing();
         let anchor = self
             .annotations
             .iter()
@@ -1854,14 +1849,23 @@ impl BooksApp {
             );
             self.perform_action(doc, &action);
             self.comment_overlay.open(group);
-            self.composing = Some(id);
+            self.comment_overlay.begin_editing(id, "");
+        }
+    }
+
+    fn on_edit_comment(&mut self, id: Uuid) {
+        if let Some(comment) = self
+            .annotations
+            .iter()
+            .find(|annotation| annotation.id == id && annotation.kind == AnnoKind::Note)
+        {
+            self.comment_overlay.begin_editing(id, &comment.note);
         }
     }
 
     fn on_delete_comment(&mut self, id: Uuid, doc: &mut AutoCommit) {
-        if self.composing == Some(id) {
-            self.composing = None;
-            self.note_composer.close();
+        if self.comment_overlay.editing_id() == Some(id) {
+            self.comment_overlay.finish_editing();
         }
         self.perform_action(doc, &crate::actions::delete_annotation_action(id));
     }
@@ -2898,38 +2902,22 @@ impl BooksApp {
         self.perform_action(doc, &action);
     }
 
-    /// Append/erase a character on the note currently being composed. Each
-    /// keystroke rewrites the note's scalar in the CRDT — coarse-grained but
-    /// genuinely collaborative at the annotation level.
-    fn edit_note_text(&mut self, doc: &mut AutoCommit, edit: NoteEdit) -> bool {
-        let Some(id) = self.composing else {
-            return false;
-        };
-        let Some(mut a) = self.annotations.iter().find(|a| a.id == id).cloned() else {
-            self.composing = None;
-            return false;
-        };
-        match edit {
-            NoteEdit::Insert(s) => a.note.push_str(&s),
-            NoteEdit::Backspace => {
-                a.note.pop();
-            }
-            NoteEdit::Done => {
-                self.composing = None;
-                a.created = a.created.max(now_ms());
-            }
-        }
-        BooksDoc::upsert_annotation(doc, &a);
-        true
-    }
-
     fn set_composing_text(&mut self, doc: &mut AutoCommit, text: String) -> bool {
         let Some(id) = self.composing else {
             return false;
         };
+        self.set_annotation_text(doc, id, text)
+    }
+
+    fn set_annotation_text(&mut self, doc: &mut AutoCommit, id: Uuid, text: String) -> bool {
         let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
-            self.composing = None;
-            self.note_composer.close();
+            if self.composing == Some(id) {
+                self.composing = None;
+                self.note_composer.close();
+            }
+            if self.comment_overlay.editing_id() == Some(id) {
+                self.comment_overlay.finish_editing();
+            }
             return false;
         };
         annotation.note = text;
@@ -2938,12 +2926,19 @@ impl BooksApp {
     }
 
     fn finish_composing(&mut self, doc: &mut AutoCommit) -> bool {
+        let Some(id) = self.composing.take() else {
+            return false;
+        };
         let note_editor_open = self.note_composer.is_open();
-        let handled = self.edit_note_text(doc, NoteEdit::Done);
         if note_editor_open {
             self.note_composer.close();
         }
-        handled
+        let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+            return false;
+        };
+        annotation.created = annotation.created.max(now_ms());
+        BooksDoc::upsert_annotation(doc, &annotation);
+        true
     }
 
     // --- Hit-test helpers ----------------------------------------------------
@@ -2955,12 +2950,6 @@ impl BooksApp {
     fn is_hover(&self, rect: Rect) -> bool {
         rect.contains(self.cursor)
     }
-}
-
-enum NoteEdit {
-    Insert(String),
-    Backspace,
-    Done,
 }
 
 impl Widget for BooksApp {
@@ -3276,6 +3265,23 @@ impl BooksApp {
         handled: &mut bool,
     ) -> bool {
         let mut input_handled = false;
+        let (comment_text, comment_submitted) = self.comment_overlay.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            node_id,
+            taffy,
+            &mut input_handled,
+        );
+        if let Some((id, text)) = comment_text {
+            self.set_annotation_text(doc, id, text);
+        }
+        if comment_submitted {
+            input_handled = true;
+        }
+
         let (note_text, submit) = self.note_composer.handle_event(
             event,
             scale_factor,
@@ -3796,7 +3802,8 @@ impl BooksApp {
             return self.handle_settings_escape_key(key, doc);
         }
 
-        // While composing a note, characters feed the note text.
+        // The note's shared TextInput owns editing. Escape remains app-level
+        // policy so it can finish and dismiss the floating composer.
         if self.composing.is_some() {
             return self.handle_composing_key(key, doc);
         }
@@ -3827,15 +3834,7 @@ impl BooksApp {
     }
 
     fn handle_composing_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
-        match key {
-            Key::Named(NamedKey::Escape | NamedKey::Enter) => {
-                self.edit_note_text(doc, NoteEdit::Done)
-            }
-            Key::Named(NamedKey::Backspace) => self.edit_note_text(doc, NoteEdit::Backspace),
-            Key::Named(NamedKey::Space) => self.edit_note_text(doc, NoteEdit::Insert(" ".into())),
-            Key::Character(c) => self.edit_note_text(doc, NoteEdit::Insert(c.to_string())),
-            _ => false,
-        }
+        matches!(key, Key::Named(NamedKey::Escape)) && self.finish_composing(doc)
     }
 
     fn handle_reader_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
@@ -5517,7 +5516,6 @@ impl BooksApp {
             self.cursor,
             &self.annotations,
             self.hi_color,
-            self.composing,
         );
         // Reading-settings floats above everything and owns its own modal hit
         // stack; only the available reader span is supplied by the host.
@@ -11950,7 +11948,10 @@ mod interaction_tests {
         // Add the first comment and type it.
         let add = find_hit(&app, |a| matches!(a, Action::AddComment(_))).expect("add-comment");
         assert!(click(&mut app, &mut doc, add), "add handled");
-        assert!(app.composing.is_some(), "the new comment is being composed");
+        assert!(
+            app.comment_overlay.editing_id().is_some(),
+            "the new comment is being composed"
+        );
         for ch in ["H", "i"] {
             key_char(&mut app, &mut doc, ch);
         }
@@ -11976,7 +11977,10 @@ mod interaction_tests {
         let edit =
             find_hit(&app, |a| matches!(a, Action::EditComment(_))).expect("an edit affordance");
         assert!(click(&mut app, &mut doc, edit), "edit handled");
-        assert!(app.composing.is_some(), "a comment reopened for editing");
+        assert!(
+            app.comment_overlay.editing_id().is_some(),
+            "a comment reopened for editing"
+        );
         key_named(&mut app, &mut doc, NamedKey::Enter);
 
         // Delete one comment.
